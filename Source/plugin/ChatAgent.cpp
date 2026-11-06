@@ -430,8 +430,9 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
-        // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
-        void addRenderProps(juce::var& props)
+        // The render's settings as a tool's input schema has them (measure_output's own, which the others share); with
+        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too.
+        void addRenderProps(juce::var& props, bool metrics = true)
         {
             auto* o = props.getDynamicObject();
             if constexpr (kInstrument)
@@ -440,9 +441,11 @@ namespace playground
                                                          { "items", claude::object({ { "type", "integer" } }) },
                                                          { "description", "MIDI notes played together (69 is A, 440 Hz). "
                                                                           "Default: one note, 48 (C3)." } }));
-                o->setProperty("velocity", prop("number", "The velocity, 0 to 1 (default 0.8)"));
-                o->setProperty("modwheel", prop("number", "The mod wheel, 0 to 1, from the start (default 0)"));
-                o->setProperty("pitchbend", prop("number", "The pitch wheel, -1 to 1, from the start (default 0)"));
+                o->setProperty("velocity", prop("number", "0 to 1 (default 0.8)"));
+                o->setProperty("modwheel", prop("number", "0 to 1, from the start (default 0)"));
+                o->setProperty("pitchbend", prop("number", "-1 to 1, from the start (default 0)"));
+                if (metrics)
+                    o->setProperty("base_hz", prop("number", "off_order_db's base (default: the expected pitch)"));
             }
             o->setProperty("hold_seconds", prop("number", kInstrument ? "How long the notes are held; default 1, at most 10"
                                                                       : "How long the input plays; default 1, at most 10"));
@@ -1343,6 +1346,8 @@ namespace playground
                     o->setProperty("scenario", sc);
                 if (const juce::var w = scenario::windowVar(r.window); !w.isVoid())
                     o->setProperty("window", w);
+                if (r.baseHz > 0.0)
+                    o->setProperty("base_hz", r.baseHz);
                 if (!r.dials.empty())
                 {
                     juce::var dials = claude::object({});
@@ -1885,7 +1890,7 @@ namespace playground
                        {}));
         {
             juce::var props = claude::object({});
-            addRenderProps(props);
+            addRenderProps(props, false);
             if constexpr (!kInstrument)
             {
                 props.getDynamicObject()->setProperty(
@@ -2960,12 +2965,14 @@ namespace playground
         for (std::size_t i = 0; i < results.size() && i < checks.size(); ++i)
         {
             const measure::CheckResult& r = results[i];
-            // Its window and where it takes its dials from, as its line and the card say them.
+            // Its window, its base and where it takes its dials from, as its line and the card say them.
             const measure::Window& w = checks[i].request.window;
-            const std::string dialsWords = dialsFromWords(checks[i].dialsFrom);
-            const std::string from = !w.set()             ? dialsWords
-                                   : dialsWords.empty()   ? measure::windowText(w)
-                                                          : measure::windowText(w) + "; " + dialsWords;
+            std::string from;
+            for (const std::string& part : { w.set() ? measure::windowText(w) : std::string(),
+                                             checks[i].request.baseHz > 0.0 ? "base_hz " + number(checks[i].request.baseHz) : std::string(),
+                                             dialsFromWords(checks[i].dialsFrom) })
+                if (!part.empty())
+                    from += (from.empty() ? "" : "; ") + part;
             rows.push_back({ checks[i].label, r.text + (from.empty() ? "" : "; " + from), r.measured, r.pass });
             pass += r.measured && r.pass ? 1 : 0;
             const std::string line = std::string(!r.measured ? "- NOT MEASURED " : r.pass ? "- pass " : "- FAIL ") + checks[i].label

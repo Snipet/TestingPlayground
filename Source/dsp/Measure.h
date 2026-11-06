@@ -9,8 +9,11 @@
 // measures as often as asked, each render from the program as new (Engine::restart: the same as a fresh compile's).
 //
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
-//                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
-//                  partials and its centroid, the pitch (the strongest partial near the expected note; the report names
+//                  the held level (peak, RMS, DC, the stereo correlation and balance), its loudness (BS.1770's
+//                  integrated, and the RMS A-weighted), the spectrum's strongest partials and its centroid, what is off
+//                  the orders of a fixed base (base_hz, else the expected pitch: the share of the power, the strongest
+//                  lines off them, the half- and third-orders), how the spectrum's shape moves from frame to frame
+//                  (wobble), the pitch (the strongest partial near the expected note; the report names
 //                  the sound unpitched instead when the lowest note and a whole tone up, each alone for 0.6 s with none
 //                  of the scenario's moves, do not measure a whole tone apart, and then gives no Inharmonic words), the
 //                  largest step between two samples and the clicks (clicks(), trace's rule), the
@@ -23,8 +26,10 @@
 //                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed
 //                  by tailSeconds of silence, and silence alone: the output's level and the gain for each, the sine's
-//                  partials (what the effect adds) and its THD+N, the noise's spectral centroid in and out, the impulse
-//                  response's peak, delay and decay (60 dB), what comes out of silence, the alerts and the CPU time.
+//                  partials (what the effect adds), its THD+N and what is off its orders (220 Hz's multiples), the
+//                  noise's spectral centroid in and out, its loudness out and in and how the shape of its gain moves
+//                  (wobble), the impulse response's peak, delay and decay (60 dB), what comes out of silence, the
+//                  alerts and the CPU time.
 //
 // Every metric is measured over a span the metric's words (MetricInfo::what) name, and the same at every sample rate.
 // The held part (heldSpans) is an instrument's notes from kSettleSeconds after each note-on (half the note when it is
@@ -42,7 +47,8 @@
 // effect's is in seconds of the sine's and the noise's renders (each from the program as new, the signal from 0), cut
 // at their end (hold_seconds): their metrics measure it, sine_peak_db too; the impulse's, silence's and the whole
 // renders' keep theirs. A window that holds too little of what a metric needs (an effect's that starts after
-// hold_seconds, or less than kMinWindowSeconds before it) leaves it unmeasured, saying why (Result::unmeasured).
+// hold_seconds, or less than kMinWindowSeconds before it) leaves it unmeasured, saying why (Result::unmeasured), as a
+// held part (or a window) of fewer than three of wobble_db's frames leaves it.
 // view_sound's average spectrum and RMS are over it (SoundView.h).
 //
 // The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
@@ -79,6 +85,7 @@
 
 #include <array>
 #include <complex>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -202,6 +209,9 @@ namespace playground::measure
         int signal = -1;                          // an effect's input for view_sound and compare, numbered as SoundView's
                                                   // ViewInput (-1: the tool's own); measure() plays its test signals
         Window window;                            // the metrics' seconds in place of the held part (above)
+        // off_order_db's base in Hz (analysis only, as `want`): an instrument's orders are its multiples (0: the expected
+        // pitch); an effect's are the sine's, 220 Hz, always.
+        double baseHz = 0.0;
         // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of bandSpectrum),
         // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
         Bands spectrum = Bands::none;
@@ -230,7 +240,7 @@ namespace playground::measure
         double captureFrom = 0.0, captureTo = -1.0;
 
         // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario) measured
-        // over the same window, `want` and `spectrum` aside.
+        // over the same window with the same base, `want` and `spectrum` aside.
         bool sameRender(const Request& o) const;
         // Anything of a scenario beyond the notes held together: a phrase, moves, wheels, host edits, a recording.
         bool scenario() const;
@@ -326,7 +336,7 @@ namespace playground::measure
     struct MetricInfo
     {
         const char* name;                         // "release_s"
-        const char* unit;                         // "dB", "dBFS", "Hz", "s", "ms", "cents", "%", "" (a ratio or a flag)
+        const char* unit;                         // "dB", "dBFS", "LUFS", "Hz", "s", "ms", "cents", "%", "" (a ratio or a flag)
         const char* what;                         // exactly what it measures (its span, window, weighting and band, in
                                                   // the words metricTerms() defines), for Claude's instructions
         double tolerance;                         // how near counts as met: in the unit, or a share of the target when
@@ -528,6 +538,64 @@ namespace playground::measure
     // The strongest partials of all of `x` (kSpectrumSeconds Hann frames; Spectrum::peaks), at most `count`, by
     // frequency; and its centroid (Spectrum::centroid).
     std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz = nullptr);
+
+    // ---- loudness and time variation: lufs (noise_lufs), rms_a_db, off_order_db, wobble_db -----------------------------
+    inline constexpr double kLoudnessBlockSeconds = 0.4;     // BS.1770's gating blocks, one every kLoudnessStepSeconds
+    inline constexpr double kLoudnessStepSeconds = 0.1;
+    inline constexpr double kOrderSeconds = 2.0;             // off_order_db's Blackman-Harris frames: as long as the part,
+                                                             // up to this (an order's zone 3 Hz at 2 s, 6.3 Hz at 0.95 s)
+    inline constexpr double kOrderBins = 6.0;                // an order's zone: within this many of the shortest frame's
+                                                             // bins of a multiple of the base (its main lobe: 4)
+    inline constexpr double kWobbleRangeDb = 30.0;           // wobble_db's bands: within this of the loudest
+    inline constexpr double kWobbleFloorDb = 60.0;           // a band's share in a frame: at least this far under the whole
+
+    // BS.1770-4's integrated loudness of both channels over `spans`, in LUFS: each channel K-weighted (its two filters made
+    // for `rate` from the analog shelf and high-pass its 48 kHz coefficients come from: the same at 48 kHz, within 0.03 dB
+    // at 192 kHz), the channels' mean squares summed over blocks of kLoudnessBlockSeconds every kLoudnessStepSeconds inside
+    // each span (a span shorter than a block: one block of it; under 16 samples: none), gated at -70 LUFS, then 10 LU under
+    // the mean of the blocks left; -240 when no block is over -70.
+    double loudness(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans);
+
+    // IEC 61672's A-weighting of a frequency as a power ratio, 1 at 1 kHz; and a spectrum's power A-weighted in the band
+    // (kBandLowHz to kBandHighHz, cut at the Nyquist frequency), its mean square (rms_a_db's, of bandSpectrum's semitone
+    // frames: a tone's lobe narrow enough that the weight across it holds from 20 Hz).
+    double aWeight(double hz);
+    double aWeightedPower(const Spectrum& spectrum);
+
+    // The orders of a base (its multiples, from the base up) in a spectrum: off_order_db, the power in the band farther
+    // than kOrderBins of the spectrum's shortest frame's bins from every multiple (an order's zone), against all of it in
+    // the band; -240 when none is off them (or the band is silent). With kOrderSeconds Blackman-Harris frames: a pure
+    // harmonic sound's lobes stay inside the zones.
+    struct Orders
+    {
+        double offDb = -240.0;
+        double zoneHz = 0.0;                      // how far from a multiple counts as on it
+        // The power near the half-orders (the odd multiples of half the base) and the third-orders (the multiples of a
+        // third of it that are not the base's), off the orders, against all of it: a period of two or three of the base's
+        // cycles. NaN where those zones would overlap (half or a third of the base under two zones).
+        double halfDb = std::numeric_limits<double>::quiet_NaN();
+        double thirdDb = std::numeric_limits<double>::quiet_NaN();
+        std::vector<Peak> lines;                  // the strongest local maxima off the orders (within 60 dB of the
+                                                  // strongest component), at most 3, strongest first, db under the strongest
+    };
+    Orders orders(const Spectrum& spectrum, double baseHz);
+
+    // How the spectrum's shape moves (wobble_db): over `spans` in kSpectrumSeconds Hann frames overlapped by half (a span
+    // shorter than a frame has none), each third-octave band's share of the frame's power in the thirds, in dB (at least
+    // -kWobbleFloorDb), and its standard deviation over the frames; the mean of those, weighted by each band's power, over
+    // the bands within kWobbleRangeDb of the loudest. With an input (an effect's: the same samples in), each band's gain
+    // (its bins' power out over in, averaged: a fixed filter's whatever the input's spectrum inside the band) against the
+    // mean of the thirds' gains, weighted by the band's gain: a band the effect passes counts as much as another, one it
+    // cuts less, and a fixed filter reads about 0. NaN with fewer than three frames.
+    struct Wobble
+    {
+        double db = std::numeric_limits<double>::quiet_NaN();
+        double bandHz = 0.0;                      // the band of those weighed that moves most (its nominal centre)
+        double bandDb = 0.0;                      // its standard deviation
+        int frames = 0;
+    };
+    Wobble wobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                  const std::vector<float>* inL = nullptr, const std::vector<float>* inR = nullptr);
 
     // The click rule, the metrics' and trace's (Debug.h): in 10 ms windows from the first sample, each window's largest
     // step between two neighbouring samples (of either channel); a window's step is a click when it is over 0.05, over

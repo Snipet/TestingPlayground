@@ -256,7 +256,7 @@ You cannot hear the plugin, but these tools check what you build against what wa
 - trace: where a problem starts, once a tool shows one (an alert, a click, silence) or the user hears one; fields watches the program's fields. Fix it with try_edits and trace again until it finds nothing.
 - the user's recording (capture stop keeps it), as a scenario: %CAPTURE%, its dials, the host and its blocks as they played (from, to: a part of it, in seconds); compare {a: "capture", b: "editor"} holds what played against your code on it. Each says how closely a replay of the program that played matched what played: bit for bit, or from when, and why not.
 
-The metrics, the names checks and goals use (measure_output's last line lists them, name=value; a value that never comes, as a release that does not end within the tail, is infinity, which only "at least" meets). %METRICS%)";
+The metrics, the names checks and goals use (measure_output's last line lists them, name=value; a value that never comes, as a release past the tail, is infinity, which only "at least" meets). %METRICS%)";
 
         const char* const kThreads = R"(
 THREADS: parallel for AND parallel { }

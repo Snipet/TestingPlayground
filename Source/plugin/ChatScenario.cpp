@@ -212,6 +212,14 @@ namespace playground::scenario
                     req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
         if (std::string bad; !readWindow(input, req.window, bad) && why != nullptr)
             *why = bad;
+        // off_order_db's base, an instrument's (an effect's orders are its sine's, 220 Hz).
+        if (const juce::var base = input.getProperty("base_hz", juce::var()); kInstrument && !base.isVoid() && !base.isUndefined())
+        {
+            if (isNumber(base) && static_cast<double>(base) >= 1.0 && static_cast<double>(base) <= measure::kBandHighHz)
+                req.baseHz = static_cast<double>(base);
+            else if (why != nullptr)
+                *why = "base_hz: the orders' base, 1 to 20000 Hz";
+        }
         read(input, req, why);
         return req;
     }

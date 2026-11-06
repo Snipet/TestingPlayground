@@ -42,6 +42,18 @@
 //            harmonics' thirds their RMS, white noise's thirds 3 dB an octave; an effect's fader every band of the noise
 //            -6.02 dB over a window shorter than a frame, a gain of a half every band of its own input's replay, with a
 //            window and without, two low-passes the same at both rates up to 2 kHz
+//   LOUDNESS lufs and rms_a_db at 48 and 192 kHz: an instrument's sine at 997 Hz of amplitude 0.1 reads -20.0 LUFS
+//            (BS.1770's reference), at 100 Hz and 10 kHz the K-weighting's 48 kHz response against it, A-weighted at
+//            31.5 Hz to 10 kHz IEC 61672's A within 0.1 dB; a part 40 dB under the rest left out by the relative gate,
+//            one under -70 LUFS none ("under -70 LUFS"); an effect's noise_lufs the test noise's own when passed, a gain
+//            of a half 6.02 dB under it
+//   ORDERS   off_order_db at 48 and 192 kHz: eight harmonics nothing off their orders; a line of its own at 470 Hz its
+//            share of the power, named; at 220 Hz a line at 330 Hz among the half-orders, on the orders of base_hz 110;
+//            a base under twice the zone says so; an effect's sine passed nothing, a cubic shaper distorting but on the
+//            orders, a line of its own its share
+//   WOBBLE   wobble_db at 48 and 192 kHz: a steady sound and a tremolo about 0, harmonics a comb sweeps over at least
+//            1 dB, white noise under 1 dB; an effect's pass and a fixed comb about 0, a flanger at least 1 dB; the same
+//            at both rates; a held part under 0.2 s not measured, saying why
 //   LINE     the report's last line every metric measured, name=value, in the table's order
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
@@ -381,6 +393,180 @@ module Voice
     }
 };
 )";
+
+    // A number as an FMinus float literal.
+    [[maybe_unused]] std::string lit(double v)
+    {
+        char buf[48];
+        std::snprintf(buf, sizeof buf, "%.9g", v);
+        std::string s = buf;
+        if (s.find('.') == std::string::npos && s.find('e') == std::string::npos)
+            s += ".0";
+        return s + "f";
+    }
+
+    // A voice of one sine at `hz` (whatever the note) of amplitude `amp` in both channels, its level times `gain` from
+    // `stepAt` seconds on (none when negative).
+    [[maybe_unused]] std::string toneVoice(double hz, double amp, double stepAt = -1.0, double gain = 1.0)
+    {
+        return R"(module Voice
+{
+    float rate, ph, env;
+    int at;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { held = true; env = 0; ph = 0; at = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1 / (0.005f * rate);
+        const float fall = expf(-6.90775528f / (0.05f * rate));
+        const int step = (int)()" + lit(stepAt) + R"( * rate);
+        for (int i = 0; i < n; ++i)
+        {
+            if (held) env = fminf(1, env + up); else env *= fall;
+            const float g = step >= 0 && at >= step ? )" + lit(gain) + R"( : 1.0f;
+            at += 1;
+            const float x = )" + lit(amp) + R"( * g * env * sinf(6.28318531f * ph);
+            ph += )" + lit(hz) + R"( / rate;
+            if (ph >= 1) ph -= 1;
+            left[i] += x;
+            right[i] += x;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+    }
+
+    // kHarmonicVoice's eight harmonics of the note (0.1 / h), and a line of its own at `lineHz` whatever the note (an
+    // exhaust's self-oscillation), of amplitude `lineAmp`.
+    [[maybe_unused]] std::string ordersVoice(double lineHz, double lineAmp)
+    {
+        return R"(module Voice
+{
+    float rate, ph, step, lph, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 0; ph = 0; lph = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1 / (0.005f * rate);
+        const float fall = expf(-6.90775528f / (0.2f * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (held) env = fminf(1, env + up); else env *= fall;
+            float x = 0;
+            for (int h = 1; h <= 8; ++h)
+                x += 0.1f * sinf(6.28318531f * h * ph) / h;
+            x += )" + lit(lineAmp) + R"( * sinf(6.28318531f * lph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            lph += )" + lit(lineHz) + R"( / rate;
+            if (lph >= 1) lph -= 1;
+            left[i] += env * x;
+            right[i] += env * x;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+    }
+
+    // kHarmonicVoice's eight harmonics, all of them times 1 + tremolo sin(2 pi 3 Hz t), harmonic h also times
+    // 1 + comb sin(2 pi 1 Hz t + h): a level that moves (the shape the same), and a shape that moves (a comb's notches
+    // sweeping over them once a second).
+    [[maybe_unused]] std::string movingVoice(double tremolo, double comb)
+    {
+        return R"(module Voice
+{
+    float rate, ph, step, t, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 0; ph = 0; t = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1 / (0.005f * rate);
+        const float fall = expf(-6.90775528f / (0.2f * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (held) env = fminf(1, env + up); else env *= fall;
+            float x = 0;
+            for (int h = 1; h <= 8; ++h)
+                x += (1 + )" + lit(comb) + R"( * sinf(6.28318531f * t + h)) * sinf(6.28318531f * h * ph) / h;
+            x *= 0.1f * (1 + )" + lit(tremolo) + R"( * sinf(18.8495559f * t));
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            t += 1 / rate;
+            left[i] += env * x;
+            right[i] += env * x;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+    }
+
+    // The input with a sine of its own added at `hz` of amplitude `amp` (a line that sounds whatever comes in), then
+    // shaped: x + cubic x^3.
+    [[maybe_unused]] std::string addEffect(double hz, double amp, double cubic)
+    {
+        return R"(module Effect
+{
+    float rate, ph;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float add = )" + lit(amp) + R"( * sinf(6.28318531f * ph);
+            ph += )" + lit(hz) + R"( / rate;
+            if (ph >= 1) ph -= 1;
+            const float l = left[i] + add;
+            const float r = right[i] + add;
+            left[i] = l + )" + lit(cubic) + R"( * l * l * l;
+            right[i] = r + )" + lit(cubic) + R"( * r * r * r;
+        }
+    }
+};
+)";
+    }
+
+    // A comb: half the input and half of it delayed by 1 ms + depth ms x sin(2 pi 0.5 Hz t), read between samples in a
+    // straight line: a flanger, or with depth 0 a fixed comb.
+    [[maybe_unused]] std::string combEffect(double depthMs)
+    {
+        return R"(module Effect
+{
+    float rate, t;
+    float bl[4096];
+    float br[4096];
+    int w;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            bl[w] = left[i];
+            br[w] = right[i];
+            const float d = (0.001f + )" + lit(depthMs / 1000.0) + R"( * sinf(3.14159265f * t)) * rate;
+            const int di = (int)d;
+            const float fr = d - di;
+            const int a = (w - di + 4096) % 4096;
+            const int b = (w - di - 1 + 4096) % 4096;
+            const float dl = bl[a] + fr * (bl[b] - bl[a]);
+            const float dr = br[a] + fr * (br[b] - br[a]);
+            left[i] = 0.5f * (left[i] + dl);
+            right[i] = 0.5f * (right[i] + dr);
+            w = (w + 1) % 4096;
+            t += 1 / rate;
+        }
+    }
+};
+)";
+    }
 
     ms::Result measured(const pg::Sources& files, double rate, ms::Request r)
     {
@@ -1135,6 +1321,207 @@ PROBE(dsp, metrics)
             P.eq("bands.dark_rates", same, 7);
             P.le("bands.dark_cuts_high", named(darkBands[0], "8k"), -20.0);
         }
+    }
+
+    // ---- LOUDNESS: lufs and rms_a_db (an instrument's), noise_lufs (an effect's) -----------------------------------------
+    for (const double rate : { 48000.0, 192000.0 })
+    {
+        const std::string tag = rate == 48000.0 ? "48k" : "192k";
+        if constexpr (kInstrument)
+        {
+            ms::Request r;
+            r.holdSeconds = 1.0f;
+            r.tailSeconds = 0.1f;
+            r.want = { "lufs", "rms_a_db", "rms_db" };
+            const auto tone = [&](double hz, double amp, const ms::Request& q) {
+                return measured(pg::singleFile(toneVoice(hz, amp)), rate, q);
+            };
+            // BS.1770's reference: a sine at 997 Hz reads its mean square, both channels' summed, plus the K-weighting
+            // there less 0.691 dB (one channel's 0 dBFS sine reads -3.01): of amplitude 0.1 in both, -20.0 LUFS.
+            const ms::Result ref = tone(997.0, 0.1, r);
+            if (rate == 48000.0)
+                std::printf("a sine at 997 Hz, amplitude 0.1:\n%s", ref.report.c_str());
+            const double lref = at(ref.values, "lufs");
+            P.near("loudness.reference_" + tag, lref, -20.0, 0.05);
+            P.eq("loudness.line_" + tag, has(ref.report, "Loudness while held: -20.0 LUFS integrated (BS.1770); RMS A-weighted -23.0 dBFS.")
+                                             ? 1 : 0, 1);
+            // The K-weighting against 997 Hz, as BS.1770's 48 kHz filters have it: -1.82 dB at 100 Hz, +3.35 at 10 kHz.
+            for (const auto& [hz, k] : { std::pair{ 100.0, -1.824 }, std::pair{ 10000.0, 3.351 } })
+            {
+                const double l = at(tone(hz, 0.1, r).values, "lufs");
+                std::printf("a sine at %.0f Hz at %s: %.3f LUFS (%+.3f dB against 997 Hz)\n", hz, tag.c_str(), l, l - lref);
+                P.near("loudness.k_" + std::to_string(static_cast<int>(hz)) + "_" + tag, l - lref, k, 0.05);
+            }
+            // A-weighting: rms_db plus IEC 61672's A at the tone, from 31.5 Hz (its slope steep there) up.
+            for (const auto& [hz, a] : { std::pair{ 31.5, -39.529 }, std::pair{ 100.0, -19.145 }, std::pair{ 1000.0, 0.0 },
+                                         std::pair{ 10000.0, -2.492 } })
+            {
+                const ms::Result t = tone(hz, 0.1, r);
+                const double got = at(t.values, "rms_a_db") - at(t.values, "rms_db");
+                std::printf("a sine at %.1f Hz at %s: A-weighted %+.3f dB\n", hz, tag.c_str(), got);
+                P.near("loudness.a_" + std::to_string(static_cast<int>(hz)) + "_" + tag, got, a, 0.1);
+            }
+            // The gates: 0.5 s at amplitude 0.1, then 40 dB under to 1.5 s. Of the eleven blocks the quiet ones are 10 LU
+            // under the mean, so the five with any of the loud part make it (loud for 1, 0.875, 0.625, 0.375 and 0.125 of
+            // a block: 0.6 of its power), 3.4 dB above the eleven's.
+            ms::Request g = r;
+            g.holdSeconds = 1.5f;
+            const double gated = at(measured(pg::singleFile(toneVoice(997.0, 0.1, 0.5, 0.01)), rate, g).values, "lufs");
+            std::printf("loud for 0.5 s, then 40 dB under to 1.5 s, at %s: %.3f LUFS\n", tag.c_str(), gated);
+            P.near("loudness.relative_gate_" + tag, gated - lref, 10.0 * std::log10((3.0 + 2.0e-4) / 5.0), 0.02);
+            // Under the absolute gate (-70 LUFS): -240, in words "under -70 LUFS".
+            const ms::Result quiet = tone(997.0, 1.0e-4, r);
+            P.eq("loudness.absolute_gate_" + tag, at(quiet.values, "lufs") == -240.0
+                                                      && has(quiet.report, "Loudness while held: under -70 LUFS integrated")
+                                                      ? 1 : 0, 1);
+        }
+        else
+        {
+            // The test noise's own (-11.9 LUFS at 48 kHz: white, its power above 2 kHz 4 dB up; at 192 kHz -11.7, more
+            // of it there), as an effect that passes it reads; a gain of a half 6.02 dB under it at both rates.
+            ms::Request r;
+            r.holdSeconds = 1.0f;
+            r.tailSeconds = 0.1f;
+            r.want = { "noise_lufs" };
+            const ms::Result pass = measured(pg::singleFile(kPassEffect), rate, r);
+            const double half = at(measured(pg::singleFile(kHalfEffect), rate, r).values, "noise_lufs");
+            const double in = at(pass.values, "noise_lufs");
+            std::printf("the noise's loudness at %s: %.3f LUFS, halved %.3f\n%s", tag.c_str(), in, half, pass.report.c_str());
+            P.near("loudness.noise_in_" + tag, in, rate == 48000.0 ? -11.855 : -11.720, 0.01);
+            P.near("loudness.half_" + tag, half - in, -6.0206, 0.01);
+            P.eq("loudness.noise_line_" + tag,
+                 has(pass.report, std::string("; loudness ") + (rate == 48000.0 ? "-11.9 LUFS out, -11.9 LUFS in" : "-11.7 LUFS out, -11.7 LUFS in")
+                                      + " (BS.1770, integrated).") ? 1 : 0, 1);
+        }
+    }
+
+    // ---- ORDERS: off_order_db ------------------------------------------------------------------------------------------
+    for (const double rate : { 48000.0, 192000.0 })
+    {
+        const std::string tag = rate == 48000.0 ? "48k" : "192k";
+        if constexpr (kInstrument)
+        {
+            ms::Request r;
+            r.notes = { 48 };
+            r.holdSeconds = 1.0f;
+            r.tailSeconds = 0.3f;
+            r.want = { "off_order_db" };
+            // Eight harmonics alone: nothing off their orders but the frames' sidelobes.
+            const ms::Result pure = measured(pg::singleFile(kHarmonicVoice), rate, r);
+            std::printf("eight harmonics at %s:\n%s", tag.c_str(), pure.report.c_str());
+            P.le("orders.harmonics_" + tag, at(pure.values, "off_order_db"), -70.0);
+            // A line of its own at 470 Hz, 20 dB under the fundamental: its share of all the power.
+            double harmonics = 0.0;
+            for (int h = 1; h <= 8; ++h)
+                harmonics += 0.5 * (0.1 / h) * (0.1 / h);
+            const double share = 10.0 * std::log10(5.0e-5 / (harmonics + 5.0e-5));
+            const ms::Result line = measured(pg::singleFile(ordersVoice(470.0, 0.01)), rate, r);
+            std::printf("and a line at 470 Hz:\n%s", line.report.c_str());
+            P.near("orders.line_" + tag, at(line.values, "off_order_db"), share, 0.1);
+            P.eq("orders.line_named_" + tag,
+                 has(line.report, "Off the orders of 130.81 Hz (the expected pitch) while held, more than 6.32 Hz from each in 0.95 s "
+                                  "Blackman-Harris frames: ")
+                         && has(line.report, "the strongest lines off them 470.0 Hz (-20 dB)") ? 1 : 0, 1);
+            // A half-order: at 220 Hz (note 57), a line at 330 Hz is off the orders and among the half-orders; base_hz
+            // 110 has it on its orders.
+            ms::Request a3 = r;
+            a3.notes = { 57 };
+            const ms::Result half = measured(pg::singleFile(ordersVoice(330.0, 0.01)), rate, a3);
+            std::printf("a line at 330 Hz over 220 Hz's harmonics:\n%s", half.report.c_str());
+            P.near("orders.half_" + tag, at(half.values, "off_order_db"), share, 0.1);
+            P.eq("orders.half_named_" + tag, has(half.report, "-21.9 dB of the power (half-orders -21.9 dB, third-orders -1") ? 1 : 0, 1);
+            a3.baseHz = 110.0;
+            const ms::Result based = measured(pg::singleFile(ordersVoice(330.0, 0.01)), rate, a3);
+            std::printf("and base_hz 110:\n%s", based.report.c_str());
+            P.le("orders.base_" + tag, at(based.values, "off_order_db"), -70.0);
+            P.eq("orders.base_named_" + tag, has(based.report, "Off the orders of 110.00 Hz (base_hz) while held") ? 1 : 0, 1);
+            // A base under twice the zone: every frequency is near an order, and the line says why.
+            a3.baseHz = 10.0;
+            P.eq("orders.base_too_low_" + tag,
+                 has(measured(pg::singleFile(ordersVoice(330.0, 0.01)), rate, a3).report, "every frequency is that near one") ? 1 : 0, 1);
+        }
+        else
+        {
+            ms::Request r;
+            r.holdSeconds = 1.0f;
+            r.tailSeconds = 0.1f;
+            r.want = { "off_order_db", "thd_db" };
+            // A sine passed: nothing off 220 Hz's orders. A cubic shaper: its harmonics distort (thd_db), all on the
+            // orders. A line of its own at 470 Hz: its share of the sine's power.
+            const ms::Result pass = measured(pg::singleFile(kPassEffect), rate, r);
+            const ms::Result cubic = measured(pg::singleFile(addEffect(470.0, 0.0, 4.0)), rate, r);
+            const ms::Result line = measured(pg::singleFile(addEffect(470.0, 0.01, 0.0)), rate, r);
+            std::printf("at %s: passed\n%sa cubic\n%sa line at 470 Hz\n%s", tag.c_str(), pass.report.c_str(), cubic.report.c_str(),
+                        line.report.c_str());
+            const double sine = 0.5 * std::pow(10.0, -12.0 / 10.0);
+            P.le("orders.pass_" + tag, at(pass.values, "off_order_db"), -70.0);
+            P.ge("orders.cubic_distorts_" + tag, at(cubic.values, "thd_db"), -40.0);
+            P.le("orders.cubic_on_orders_" + tag, at(cubic.values, "off_order_db"), -70.0);
+            P.near("orders.line_" + tag, at(line.values, "off_order_db"), 10.0 * std::log10(5.0e-5 / (sine + 5.0e-5)), 0.1);
+            P.eq("orders.line_named_" + tag, has(line.report, "Off the orders of 220 Hz in the sine's output, more than 6.32 Hz from each")
+                                                 && has(line.report, "the strongest lines off them 470.0 Hz (-28 dB)") ? 1 : 0, 1);
+        }
+    }
+
+    // ---- WOBBLE: wobble_db ---------------------------------------------------------------------------------------------
+    {
+        std::array<double, 2> moved{};
+        for (const double rate : { 48000.0, 192000.0 })
+        {
+            const std::string tag = rate == 48000.0 ? "48k" : "192k";
+            ms::Request r;
+            r.holdSeconds = 1.5f;
+            r.tailSeconds = 0.1f;
+            r.want = { "wobble_db" };
+            if constexpr (kInstrument)
+            {
+                r.notes = { 48 };
+                // A steady sound, and one whose level moves with its shape (a tremolo of 3 Hz): 0. One whose harmonics
+                // move as a comb sweeps over them (each 0.5 to 1.5 times, once a second): its shape moves.
+                const double steady = at(measured(pg::singleFile(kHarmonicVoice), rate, r).values, "wobble_db");
+                const double tremolo = at(measured(pg::singleFile(movingVoice(0.5, 0.0)), rate, r).values, "wobble_db");
+                const ms::Result moving = measured(pg::singleFile(movingVoice(0.0, 0.5)), rate, r);
+                const double noise = at(measured(pg::withLibraryIncludes(pg::singleFile(kNoiseVoice)), rate, r).values, "wobble_db");
+                moved[rate == 48000.0 ? 0 : 1] = at(moving.values, "wobble_db");
+                std::printf("wobble at %s: steady %.3f dB, a tremolo %.3f dB, the harmonics moving %.3f dB, white noise "
+                            "%.3f dB\n%s", tag.c_str(), steady, tremolo, at(moving.values, "wobble_db"), noise, moving.report.c_str());
+                P.le("wobble.steady_" + tag, steady, 0.05);
+                P.le("wobble.tremolo_" + tag, tremolo, 0.1);
+                P.ge("wobble.moving_" + tag, at(moving.values, "wobble_db"), 1.0);
+                P.eq("wobble.moving_line_" + tag, has(moving.report, "Wobble while held: each third-octave band's share of the power moves ")
+                                                      && has(moving.report, " (its SD over 28 frames of 0.1 s, power-weighted over the bands "
+                                                                            "within 30 dB of the loudest); the most, ")
+                                                      ? 1 : 0, 1);
+                P.le("wobble.noise_" + tag, noise, 1.0);
+            }
+            else
+            {
+                // An effect that passes its input, and a fixed comb: the noise's gain keeps its shape (the comb's deep
+                // notches about 0.2 dB: a frame's own error there). A flanger (the comb's delay from 0.2 to 1.8 ms and
+                // back every 2 s): its notches move.
+                const double pass = at(measured(pg::singleFile(kPassEffect), rate, r).values, "wobble_db");
+                const double comb = at(measured(pg::singleFile(combEffect(0.0)), rate, r).values, "wobble_db");
+                const ms::Result flanger = measured(pg::singleFile(combEffect(0.8)), rate, r);
+                moved[rate == 48000.0 ? 0 : 1] = at(flanger.values, "wobble_db");
+                std::printf("wobble at %s: passed %.3f dB, a fixed comb %.3f dB, a flanger %.3f dB\n%s", tag.c_str(), pass, comb,
+                            at(flanger.values, "wobble_db"), flanger.report.c_str());
+                P.le("wobble.pass_" + tag, pass, 0.05);
+                P.le("wobble.comb_" + tag, comb, 0.3);
+                P.ge("wobble.flanger_" + tag, at(flanger.values, "wobble_db"), 1.0);
+                P.eq("wobble.flanger_line_" + tag,
+                     has(flanger.report, "Wobble: the noise's gain in each third-octave band, against their mean gain, moves ")
+                         && has(flanger.report, "frames of 0.1 s, weighted by the gain over the bands within 30 dB of the most); the most, ") ? 1 : 0, 1);
+            }
+            // A held part under 0.2 s holds fewer than three frames: not measured, saying why.
+            ms::Request brief = r;
+            brief.holdSeconds = 0.2f;
+            const ms::Result b = measured(pg::singleFile(kInstrument ? kHarmonicVoice : kPassEffect), rate, brief);
+            const auto why = b.unmeasured.find("wobble_db");
+            P.eq("wobble.too_short_" + tag, b.values.count("wobble_db") == 0 && why != b.unmeasured.end()
+                                                && has(why->second, "holds fewer than three 0.1 s frames (it needs 0.2 s)")
+                                                && has(b.report, "Wobble: not measured, ") ? 1 : 0, 1);
+        }
+        P.near("wobble.rates", moved[1] / moved[0], 1.0, kInstrument ? 0.05 : 0.15);
     }
 
     // ---- LINE: the report ends with the metrics measured, name=value ---------------------------------------------------

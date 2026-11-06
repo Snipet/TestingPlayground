@@ -111,6 +111,8 @@
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
+//   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
+//            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -2312,12 +2314,51 @@ PROBE(plugin, chat)
                     widthsRefused += r.isError && has(allText(r), "spectrum is octave, third or semitone") ? 1 : 0;
                 }
                 P.eq("spectrum.bad_refused", widthsRefused, 3);
-                // Every report ends with the metrics measured, name=value; one without a spectrum has no bands.
+                // Every report ends with the metrics measured, name=value; one without a spectrum has no bands line (the
+                // wobble line names bands of its own).
                 const std::string plain = toolText(sa.mcpCall("measure_output", input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 } })));
                 const std::size_t line = plain.rfind("\nMetrics: ");
                 P.eq("spectrum.metrics_line", line != std::string::npos && plain.find('\n', line + 1) == plain.size() - 1
                                                   && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
-                                                  && !has(plain, " bands ") ? 1 : 0, 1);
+                                                  && !has(plain, "Octave bands") && !has(plain, "Third-octave bands")
+                                                  && !has(plain, "Semitone bands") ? 1 : 0, 1);
+            }
+
+            // ---- BASE ------------------------------------------------------------------------------------------------------
+            if constexpr (pg::product::kIsInstrument)
+            {
+                const auto withBase = [&](const juce::var& base) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "base_hz", base } });
+                    in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string based = toolText(sa.mcpCall("measure_output", withBase(110.0)));
+                std::printf("measure_output with base_hz 110:\n%s\n", based.c_str());
+                P.eq("base.measure", has(based, "Off the orders of 110.00 Hz (base_hz) while held, more than ")
+                                         && has(based, " off_order_db=") ? 1 : 0, 1);
+                int refused = 0;
+                for (const juce::var& b : { juce::var(0.5), juce::var(30000.0), juce::var("low") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBase(b));
+                    refused += r.isError && has(allText(r), "base_hz: the orders' base, 1 to 20000 Hz") ? 1 : 0;
+                }
+                P.eq("base.bad_refused", refused, 3);
+                // A check keeps its base: its line names it, the session saves it and loads it back.
+                juce::var check = withBase(110.0);
+                check.getDynamicObject()->setProperty("label", "Nothing off the orders");
+                check.getDynamicObject()->setProperty("metric", "off_order_db");
+                check.getDynamicObject()->setProperty("max", -300.0);
+                const std::string failing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                P.eq("base.check_line", has(failing, "- FAIL Nothing off the orders (off_order_db; base_hz 110): ") ? 1 : 0, 1);
+                check.getDynamicObject()->setProperty("max", 100.0);
+                const std::string passing = allText(sa.mcpCall("set_checks", input({ { "checks", juce::Array<juce::var>{ check } } })));
+                const std::string keptState = sa.saveState();
+                const juce::var baseCheck = arr(claude::parseJson(keptState).getProperty("checks", {}))[0];
+                P.eq("base.check_saved", has(passing, "Checks: 1 of 1 pass.") && std::fabs(static_cast<double>(baseCheck["base_hz"]) - 110.0) < 1e-9
+                                             ? 1 : 0, 1);
+                sa.loadState(keptState);
+                P.eq("base.check_loads", sa.saveState() == keptState ? 1 : 0, 1);
+                sa.clearChecks();
             }
             setDial(was);
         }
