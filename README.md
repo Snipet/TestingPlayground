@@ -1127,8 +1127,8 @@ each socket 0600), and `<name>MCP` (`TestingPlaygroundMCP`, `TestingPlaygroundSy
 makes for each product, passes Claude's requests to it, with the chat's own tools (each titled in words, those that
 only look marked read-only, each described in a sentence or two, so that they take little room in every conversation)
 and the chat's instructions as a guide that teaches FMinus, in parts (what only the plugin's own chat uses, its
-planner, web search and questions, left out of all but the whole): Claude reads its start (about 7,000 tokens for the
-effect, 8,100 for the synth) and then only the part the work needs (a large program, the panel, the library's
+planner, web search and questions, left out of all but the whole): Claude reads its start (about 7,200 tokens for the
+effect, 8,400 for the synth) and then only the part the work needs (a large program, the panel, the library's
 building blocks, whose code it can read without adding a tab to your editor, host.fm whole, the tools for a problem
 you hear, the examples, the projects). Without the extension, Claude Desktop's `claude_desktop_config.json` can name the servers
 itself:

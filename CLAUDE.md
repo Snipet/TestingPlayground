@@ -719,7 +719,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   a tool that has room, or a trim elsewhere pays for it (as these did: `instance` in a few words, described once, how
   to name one in the server's instructions and the guide's start; an instrument's render settings in an instrument's
   tools only; tune_dials' metric a plain string the tool checks, set_checks' the enum; the annotations' defaults left
-  out; the longest descriptions in fewer words: the synth's 20,959 bytes, the effect's 19,565). `plugin.mcp` checks,
+  out; the longest descriptions in fewer words: the synth's 20,959 bytes after those trims, the effect's 19,565;
+  22,012 and 20,638 with the measuring tools' properties added since). `plugin.mcp` checks,
   and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
@@ -805,7 +806,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes of listen, capture, trace and compare, whose uses CHECKING YOUR WORK names), examples, projects, circuits
   (CIRCUITS: .cir NETLISTS, the prompt's last section; a guide.md from before it cuts as it did), all. A heading
   renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails. Its start is at most 9,200 tokens for the synth
-  and 8,100 for the effect (bytes / 4: 8,100 and 7,000 now; `plugin.mcp` prints them).
+  and 8,100 for the effect (bytes / 4: 8,360 and 7,237 now; `plugin.mcp` prints them).
 - **The GUI sandbox** (`gui_sandbox`, the server's own tool, `mcp/Main.cpp`; its helper `<Name>GuiSandbox`,
   `Source/sandbox/`): Claude Desktop designs a panel.gui and sees it drawn as the plugin's PANEL view draws it, with no
   plugin open and nothing of an open one touched until the user asks to apply it. Its rules:
