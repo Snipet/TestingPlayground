@@ -142,6 +142,9 @@ namespace playground::measure
         Point best;
         Metrics bestValues;
         bool allMet = false;
+        // A goal whose metric the render leaves unmeasured, and why (Result::unmeasured: its window, which no dial
+        // changes): left out of the score and of "every goal met", and named in the outcome.
+        std::map<std::string, std::string> unmeasured;
         const auto plainAt = [&](const std::vector<double>& x, std::size_t i) {
             return plainOf(controls[static_cast<std::size_t>(slots[i])], static_cast<float>(x[i]));
         };
@@ -161,10 +164,14 @@ namespace playground::measure
             for (std::size_t i = 0; i < n; ++i)
                 r.dials[names[i]] = plainAt(x, i);
             const Result m = session.measure(r);
+            if (out.renders == 0)
+                unmeasured = m.unmeasured;
             double score = 0.0;
             bool every = true;
             for (const Goal& g : request.goals)
             {
+                if (unmeasured.count(g.metric) != 0)
+                    continue;
                 const auto it = m.values.find(g.metric);
                 const double v = it == m.values.end() ? std::nan("") : it->second;
                 score += g.weight * penalty(g, v);
@@ -191,6 +198,20 @@ namespace playground::measure
         out.startValues = bestValues;
         for (std::size_t i = 0; i < n; ++i)
             out.start[names[i]] = plainAt(x0, i);
+        // No goal measured in this render: nothing to tune for (the dials stay as they are).
+        if (std::all_of(request.goals.begin(), request.goals.end(), [&](const Goal& g) { return unmeasured.count(g.metric) != 0; }))
+        {
+            std::string why;
+            std::vector<std::string> named;
+            for (const Goal& g : request.goals)
+                if (std::find(named.begin(), named.end(), g.metric) == named.end())
+                {
+                    named.push_back(g.metric);
+                    why += (why.empty() ? "" : "; ") + g.metric + " is not measured in this render: " + unmeasured[g.metric];
+                }
+            out.error = "Nothing to tune for: " + why + ".";
+            return out;
+        }
 
         // A few points spread over the ranges, then Nelder-Mead from the best (and again from the best when it settles).
         const int spread = std::min(static_cast<int>(2 * n + 2), budget / 5);
@@ -288,6 +309,11 @@ namespace playground::measure
         for (std::size_t j = 0; j < request.goals.size(); ++j)
         {
             const Goal& g = request.goals[j];
+            if (const auto why = unmeasured.find(g.metric); why != unmeasured.end())
+            {
+                t += "- " + g.metric + " (" + goalText(g) + "): not measured, " + why->second + ": left out of the search.\n";
+                continue;
+            }
             const auto value = [&](const Metrics& m) {
                 const auto it = m.find(g.metric);
                 return it == m.end() ? std::string("not measured") : valueText(g.metric, it->second);
@@ -295,7 +321,10 @@ namespace playground::measure
             t += "- " + g.metric + " " + value(out.bestValues) + " (" + goalText(g) + "): "
                + (out.bestMet[j] ? "met" : "NOT met") + "; it was " + value(out.startValues) + ".\n";
         }
-        if (metCount < static_cast<int>(request.goals.size()))
+        int unmet = 0;                                   // the measured goals not met
+        for (std::size_t j = 0; j < request.goals.size(); ++j)
+            unmet += !out.bestMet[j] && unmeasured.count(request.goals[j].metric) == 0 ? 1 : 0;
+        if (unmet > 0)
             t += "Not every goal was met within " + std::to_string(budget)
                + " renders: the dials may not reach it (a goal the program cannot give, or one at odds with another), or "
                  "another dial matters. Measure the best, change the program, or tune again with other dials or goals.\n";

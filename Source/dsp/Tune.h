@@ -6,8 +6,10 @@
 // dials as they are first, then a few points spread over the ranges (a Halton sequence, the same every time), then
 // Nelder-Mead from the best, started again from the best when it settles while a goal is unmet, until every goal is met,
 // the budget of renders is spent, `progress` says stop, or the time limit passes (`seconds`, wall-clock). The score is
-// the goals' penalties, weighted (Goals.h). Deterministic: the same files and request give the same dials (unless the
-// time limit stops the search).
+// the goals' penalties, weighted (Goals.h). A goal whose metric the render leaves unmeasured (Result::unmeasured: a
+// window that holds none of it, which no dial changes) is left out of the score and named in the outcome; with every
+// goal so, it does not search (an error that says why). Deterministic: the same files and request give the same dials
+// (unless the time limit stops the search).
 //
 // Off the audio thread only (it compiles and allocates).
 #pragma once

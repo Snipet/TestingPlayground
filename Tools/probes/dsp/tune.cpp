@@ -21,7 +21,8 @@
 //   TUNE     tune_dials finds a level for an RMS, a release for a release time (an instrument), a gain for a gain and
 //            a drive for a THD+N (an effect), each goal met within its budget; two dials at once; goals met already
 //            take one render; an int, a name the program has not and an empty request are refused; progress can stop
-//            it; the same request gives the same dials
+//            it; the same request gives the same dials; an effect's window after its test signals leaves a goal on them
+//            out of the search, and with no other goal does not search, saying why
 //   VIEW     view_sound's analysis: a 440 Hz tone (an instrument's note 69; an effect's sine) is the spectrogram's
 //            loudest row and the spectrum's loudest column, within a row; the close-up four of its cycles; the waveform
 //            and the level as rendered; an effect's sweep rises through the rows; the note-off where it was; analyse()
@@ -639,6 +640,25 @@ PROBE(dsp, tune)
             ms::TuneRequest intDial = q;
             intDial.dials = { "mode" };
             P.eq("tune.int_refused", ms::tune(files(), intDial).error.find("float dials only") != std::string::npos ? 1 : 0, 1);
+            // A window after the sine and the noise (they end at 1 s): no goal on them is measured, whatever the dials, so
+            // it does not search, and says why; beside a goal it can measure, that one alone is searched for.
+            ms::TuneRequest gone = q;
+            gone.render.window = { 1.2, 1.5 };
+            const ms::TuneResult g = ms::tune(files(), gone);
+            report("window after the signals", g);
+            P.eq("tune.window_unmeasured_stops", g.renders == 1 && g.error == "Nothing to tune for: sine_gain_db is not measured in this "
+                                                                              "render: the window starts after the sine and the noise end "
+                                                                              "(hold_seconds, 1.00 s)."
+                                                     ? 1 : 0, 1);
+            gone.goals.push_back(atMost("alerts", 0.5));
+            const ms::TuneResult h = ms::tune(files(), gone);
+            report("window after the signals, and the alerts", h);
+            P.eq("tune.window_unmeasured_left_out", h.error.empty() && h.renders == 1 && h.bestMet.size() == 2 && h.bestMet[1]
+                                                        && h.text.find("- sine_gain_db (") != std::string::npos
+                                                        && h.text.find("): not measured, the window starts after the sine and the noise end "
+                                                                       "(hold_seconds, 1.00 s): left out of the search.") != std::string::npos
+                                                        && h.text.find("Not every goal was met") == std::string::npos
+                                                        ? 1 : 0, 1);
         }
         ms::TuneRequest already = q;
         already.goals = { atMost("alerts", 0.5) };
