@@ -101,7 +101,7 @@ namespace playground::scenario
     // The result's first line: "With 2 trial edits; nothing in the plugin changed.\n" ("" for none).
     std::string trialLine(int count);
 
-    // ---- the recording (the capture lane's seam) --------------------------------------------------------------------
+    // ---- the recording (the capture's seam) -------------------------------------------------------------------------
     // What the user played, recorded in the processor per host block (the events, the dials' values, the transport,
     // the input and the output), as a render: `request` replays it (its rate, its blocks and the processor's parts, its
     // MIDI by sample, its dials as the processor sent them (Request::frames; `dials` and `automate`, the request's own,

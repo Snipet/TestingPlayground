@@ -165,7 +165,7 @@ namespace playground::measure
         double jumpToBeat = 0.0;
     };
 
-    // An effect's own input, at the request's rate, in place of the test signals (a recording's: the capture lane).
+    // An effect's own input, at the request's rate, in place of the test signals (a recording's: the capture's).
     struct Input
     {
         std::vector<float> l, r;
@@ -221,13 +221,13 @@ namespace playground::measure
         // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of bandSpectrum),
         // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
         Bands spectrum = Bands::none;
-        // A recording replayed (the capture lane's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
+        // A recording replayed (the capture's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
         // samples, the transport the host sent at a block's start, the host's blocks as they came (their sizes in
         // order; after the last, `block` each).
         std::vector<std::pair<std::size_t, Event>> events;
         std::vector<std::pair<std::size_t, Transport>> transport;
         std::vector<int> blocks;
-        // A recording's dials, clock and parts (the capture lane's), for a replay that gives what played bit for bit:
+        // A recording's dials, clock and parts (the capture's), for a replay that gives what played bit for bit:
         // `frames`, the 32 normalised values the processor sent with the host block at each sample (where they
         // changed), of a program whose dials were `frameControls`: as they are for a program with the same dials, else
         // by name through their plain values; they set every dial but those `dials` names (and `automate` moves).
@@ -306,7 +306,7 @@ namespace playground::measure
     // capture's report names its steps' nearest events so).
     Timeline timeline(const Request& request, const Controls& controls, double rate, std::size_t length = 0);
 
-    // A render's calls into the Engine, for a tool that watches the program as it plays (the trace lane's). render()
+    // A render's calls into the Engine, for a tool that watches the program as it plays (trace's). render()
     // calls started once the Engine is restarted, before its first call, then asks callLength before each call and
     // calls afterCall after it; without hooks a host block is one call. Offline only: `engine` is the Session's own,
     // never the one that plays.

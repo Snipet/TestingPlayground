@@ -20,7 +20,7 @@
 // render then lasts at least until its end) replaces the held part: the average spectrum and the RMS are over it, the
 // default close-up is at its middle, and the picture shades it (View::windowFrom, windowTo).
 //
-// view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
+// view() is renderSound() then analyse(): a sound recorded instead of rendered (a capture's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the
 // held part its first note-on to its last note-off), an effect's input chosen by Request::signal or its own
 // (Request::input). The render lasts until the scenario's last move or edit and the tail after it, if that is later.
