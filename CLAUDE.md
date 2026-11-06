@@ -63,7 +63,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | `Tools/wheel-dump/` | wheel-dump, a developer's tool: a connected G29's HID elements and live values beside `WheelMap.h`'s table, the MIDI it would make (README, "A racing wheel") | a CMake target outside `all` (`--target wheel-dump`), never installed nor run by a test; it shares `WheelMap.cpp`, so a table row it shows wrong is fixed there |
 | `Tools/logo/logo.swift` | the mark ("Caret": a wave written up to the editor's caret), its one source: the construction in its header (the 3-4-5 arcs, the effect's processed trough, the optical corrections, the hinting of every size, the colours) and every number, and what writes every asset from them: `Assets/logo/`, `Source/mcp/icon-<key>.png` and `Source/editor/LogoMark.h`; it reads `products/*.cmake` and the instrument's accent in `Theme.h` | `swift Tools/logo/logo.swift` after any change (it needs JetBrains Mono: a build's FunkGui checkout, or `--font <ttf>`; `--out <dir>` writes elsewhere, `--preview <dir>` adds enlargements); the same bytes run after run; look at `Assets/logo/sheet.png` and `construction.png`; never edit its outputs by hand |
 | `Assets/logo/**` | its outputs: `<kind>/` (`effect`, `instrument`: a product's `PRODUCT_KIND`) the app icon (`icon.iconset`, 16 to 1024 px: every size from 64 up on the pixel grid (the crest, the trough, the floor and the stem on whole px), 32 hinted on its own grid, 16 set pixel by pixel; `icon.icns`; `icon.svg`; `installer-1024.png`, the master an installer takes), `extension-512.png`, the mark's SVGs (`mark-graphite`, `mark-paper`, `mark-flat`) and lockups; `readme-*.png` (the README's header: both marks), `construction.png`, `sheet.png` (the top bar's tiles in FunkGui's own pixels: logo.swift mirrors its rasteriser) | generated, committed. CMakeLists.txt gives JUCE `installer-1024.png` as ICON_BIG and puts `icon.icns` over the Icon.icns JUCE makes, in every bundle (the Standalone's `CFBundleIconFile`; the About box shows it) |
-| `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine; `installer/`, the installer's (no product's: their own executable, each run once; `Fixture.h`, their payload, root and `System` stand-in) | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
+| `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine, `common/Cadence.h` an editor's frames at FramePump's cadence; `installer/`, the installer's (no product's: their own executable, each run once; `Fixture.h`, their payload, root and `System` stand-in) | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
 
 There are no starters here (`scripts/starters/` is the template's, and new plugins start from FunkPluginTemplate).
 `plugin.py add` makes another product of this tree from one of these (its kind, a copy of its examples and its icon;
@@ -999,8 +999,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   something else draws (at most a second: the safety net); `gui.dump` DRAW has a row for each source. A value that
   moves on its own and moves smoothly (a host's automation, a field's mark, a shader's input) is motion too, or it
   steps at the calm 12 Hz: `Items.h`'s `Stirred` in the item's `tick()`, held a quarter second past the last move.
-  Only a shown item keeps the full rate (`wantsFullRate`), and a display settles when what it draws stands still
-  (`DisplayItem`: a scope within half a px); gui.styles RATE and gui.panel SETTLE check.
+  What changes in steps a few times a second (a readout's text) is a draw key, not motion: the hold would keep the full
+  rate between steps. Only a shown item keeps the full rate (`wantsFullRate`), and a display settles when what it draws
+  stands still (`DisplayItem`: a scope within half a px); gui.styles RATE and gui.panel SETTLE check, at the frame
+  pump's cadence (`Tools/probes/common/Cadence.h`).
 - **A .gui element** (a control, a display, a container): its `GuiKind` in `PanelSpec.h` and its word, arguments,
   properties and notes in `GuiSpec.cpp`, its natural size in `GuiLayout.cpp`, its item and drawing in `GuiItems` (a
   display's in `DisplayItem`), placed by `Panel::layoutGuiItems`; teach it in the prompt's THE INTERFACE
@@ -1022,7 +1024,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   and whose body is `PROBE(<layer>, <name>) { ...; return P.finish(); }`; it runs for every product
   (`<key>:<layer>.<name>`), so it branches on `product::kIsInstrument` where the kinds differ and keeps any folder of
   its own apart from the other product's run (the product's prefix in its name). Use spec rows (`P.near`, `P.le`,
-  `P.ge`, `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h` and `Tools/probes/common/Rig.h`.
+  `P.ge`, `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h`, `Tools/probes/common/Rig.h` and
+  `Tools/probes/common/Cadence.h` (an editor's frames at FramePump's cadence, 60 a second or 12 when calm: a frame
+  rate's row takes it rather than a cadence of its own).
 - **The logo** (the mark, the app and extension icons, the README's header, the top bar's mark): change
   `Tools/logo/logo.swift` (or the instrument's accent in `Theme.h`), run `swift Tools/logo/logo.swift`, and look at
   `Assets/logo/sheet.png`, `construction.png` and the sizes you changed; then build (the bundles take the new
