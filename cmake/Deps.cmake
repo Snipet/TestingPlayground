@@ -24,7 +24,12 @@
 #                         bitwise operators on int (& | ^ ~ << >> and their assignments), the builtins hash and randf
 #                         (white noise from a counter), const tables of constants stored once (local, and at the top
 #                         level, shared by the functions after them), switch with case and default, and enum, whose
-#                         constants size arrays: switch, case, default and enum are keywords from it on
+#                         constants size arrays: switch, case, default and enum are keywords from it on; 28b2e47 (its
+#                         main: safety merged) C's conditionals (#if, #ifdef, #ifndef, #elif, #else, #endif, #define,
+#                         #undef: macros read in conditions only, never substituted in code) with the host's own
+#                         (Options::defines), warnings beside the errors (Program::warnings: -Wswitch, a switch on an
+#                         enumerated value missing some of its constants), one error a mistake, the loop budget and
+#                         bounds checks (Options::loopBudget, boundsCheck), and the x86-64 math wrapper's fix
 #
 # Windows (FP_WINDOWS, CMakeLists.txt): FunkGui's GPU layer draws on Direct3D 11 there, its shaders and the plugin's
 # compiled by a shaderc.exe built from bgfx.cmake (it compiles HLSL with the system's d3dcompiler_47.dll); with
@@ -52,7 +57,7 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.24.0)
 set(FP_FUNKGUI_SHA       935a6672f653d50ae4271b7827eadd2b982c32bb)
 set(FP_FUNKGUI_VERSION   0.24.0)
-set(FP_FMINUS_SHA        11edb8a0c939fb87e6899a0845daca5579e3cc78)   # no tags: a commit (the language: bits, switch, enum)
+set(FP_FMINUS_SHA        28b2e473e47b28c3fb216b271d74405377791b0a)   # no tags: a commit (conditionals, warnings, checks)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------
