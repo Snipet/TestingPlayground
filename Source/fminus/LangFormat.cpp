@@ -120,6 +120,18 @@ namespace playground::lang
             {
             }
 
+            // A line of a group a conditional skips: as it is (its trailing blanks aside), nothing of it counted.
+            void verbatim(std::string_view text)
+            {
+                if (blank(text))
+                {
+                    blankPending_ = !out_.empty();
+                    return;
+                }
+                flushBlank();
+                out_.push_back(rtrim(text));
+            }
+
             void line(std::string_view text, bool startsInComment, const std::vector<Token>& toks)
             {
                 if (startsInComment)
@@ -820,11 +832,21 @@ namespace playground::lang
         }
     }
 
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames)
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames,
+                     const std::vector<uint8_t>* skipped)
     {
         Formatted r;
         r.text = std::string(text);
         const std::vector<std::string_view> lines = splitLines(text);
+        // The groups a conditional skips: the caller's, else the text's own conditionals.
+        std::vector<uint8_t> alone;
+        if (skipped == nullptr)
+        {
+            const std::vector<FileConditionals> c = conditionals({ { "text.fm", std::string(text) } }, hostDefines());
+            alone = c.empty() ? std::vector<uint8_t>{} : c.front().skipped;
+            skipped = &alone;
+        }
+        const auto aside = [&](std::size_t i) { return i < skipped->size() && (*skipped)[i] != 0; };
         // The lines' tokens, and the block-comment state each starts in.
         std::vector<std::vector<Token>> toks(lines.size());
         std::vector<bool> inComment(lines.size(), false);
@@ -834,7 +856,7 @@ namespace playground::lang
             inComment[i] = state;
             lexLine(lines[i], static_cast<int>(i), state, toks[i]);
             for (const Token& t : toks[i])
-                if (t.kind == Tok::unknown)
+                if (t.kind == Tok::unknown && !aside(i))
                 {
                     r.ok = false;
                     r.why = "line " + std::to_string(i + 1) + " has '" + std::string(t.text) + "', which FMinus does not read";
@@ -854,7 +876,10 @@ namespace playground::lang
         std::sort(constants.begin(), constants.end());
         Formatter f(types, constants);
         for (std::size_t i = 0; i < lines.size(); ++i)
-            f.line(lines[i], inComment[i], toks[i]);
+            if (aside(i))
+                f.verbatim(lines[i]);
+            else
+                f.line(lines[i], inComment[i], toks[i]);
         std::string out = f.finish();
         if (signatureOf(out) != signatureOf(text))
         {

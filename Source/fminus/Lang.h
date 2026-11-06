@@ -9,7 +9,7 @@
 //                      1.5f, .5, 2e3, 0x1F, 0x1p-3f), operators (longest first: <<= before <<, the bitwise & | ^ ~
 //                      << >> and their assignments), punctuation, // and /* */ comments (a block comment spans lines:
 //                      lexLine carries the state) and directives (a line whose first non-blank character is #:
-//                      #include "file" and #pragma, one token each). A word after `::` is an identifier, as C23 reads a
+//                      #include "file", #pragma, the conditionals, #define and #undef, one token each). A word after `::` is an identifier, as C23 reads a
 //                      keyword in an attribute (fminus::default). FMinus has no strings: a quote outside a directive,
 //                      and any other character FMinus does not read, is `unknown`.
 //   lexCirLine(),      a circuit netlist's tokens (a .cir file, SPICE's: fminus/Circuits.h), on the same kinds: a
@@ -18,8 +18,14 @@
 //                      XU1), a number (SPICE's values: 2.2k, 10meg, 1u, -60dB; 1N914 is a name), punctuation ({ } ( )
 //                      = , : and a continuation line's leading +), an operator (+ - * / ^ inside braces) and the
 //                      identifiers (nodes, pots, models, keys). Never FMinus's lexer: a netlist is no FMinus.
+//   conditionals()     the groups of lines a compile reads (#if, #ifdef, ... on the plugin's macros, kDefines, and the
+//                      program's #define's; LangConditionals.cpp), which the index, the editor's highlighter and
+//                      formatter and the panel's #pragma lines follow; macroAt(), the macro a name is at a place
 //   Service            an index of the program's files, host.fm (the plugin's own file, Patch::hostSource) and the
-//                      library's (Library.h, offered by name), rebuilt when a file changes. A netlist (a .cir file,
+//                      library's (Library.h, offered by name), rebuilt when a file changes; a group a conditional skips
+//                      is no part of it. A conditional's line hovers (the directive, `defined`, a macro: the plugin's
+//                      or its #define as that line sees it), goes to a macro's #define and completes the directives
+//                      after `#` and the macros in a condition. A netlist (a .cir file,
 //                      the program's or the library's) is read line by line into the one module it generates: its
 //                      name (.title, else the file's stem, its first letter capitalised), its documentation (the *
 //                      lines it starts with), and the methods every configuration has, as the generated module
@@ -73,7 +79,8 @@
 //                      and a long list after a comma): never joined. It
 //                      checks its own work: the formatted text's tokens are the original's, in order and with the same
 //                      spelling, and every directive and comment is the same text, or it returns the text unchanged
-//                      with why. Idempotent: formatting its output again changes nothing.
+//                      with why. Idempotent: formatting its output again changes nothing. A group a conditional skips
+//                      is kept as it is (only its trailing blanks go), and its brackets count for nothing.
 //
 // Every query is pure and fast (a program's files are small: the index is rebuilt in well under a millisecond) and
 // runs on the calling thread; nothing here allocates on, or is meant for, the audio thread.
@@ -86,6 +93,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace playground::lang
@@ -131,6 +139,72 @@ namespace playground::lang
 
     // `#include "name"` on this line: the name and its columns (inside the quotes); false for any other line.
     bool includeOn(std::string_view line, std::string& name, int& from, int& to);
+
+    // ---- conditional compilation (LangConditionals.cpp) ---------------------------------------------------------------
+    // FMinus's conditionals, as its scanner reads them (C's: its recipe 31): #if, #ifdef, #ifndef, #elif, #elifdef,
+    // #elifndef, #else and #endif choose the groups of lines a compile reads, on macros the program defines (#define NAME
+    // value, #undef NAME) or the plugin does (kDefines). A macro is read only in conditions, never substituted in code
+    // (its name there is FMinus's error). A skipped group's lines are never scanned (prose is fine there), but its block
+    // comments and its conditionals' names are; macros are the compilation's, so one an included file defines holds
+    // after its #include.
+
+    // A macro the plugin defines for every program it compiles: each of Patch's builds (RUN's, the check's, Claude's
+    // renders, the IR's), the frozen copy's too, which plays through the program's instances and must be the program
+    // (its fields, its sound, what its displays read). A program built elsewhere (fminus, a C compiler) has none, and
+    // `#undef DEBUG` at a program's top builds it here without.
+    struct Define
+    {
+        const char* name;
+        const char* value;
+        const char* doc;                         // hover's
+    };
+    inline constexpr Define kDefines[] = {
+        { "DEBUG", "1",
+          "Defined by the plugin for every program it compiles: RUN's, the check's, Claude's renders and the frozen "
+          "copy's (which must be the program: its fields, its sound). #ifdef DEBUG keeps instrumentation (a field a "
+          "display or trace reads) that a copy built elsewhere (fminus, a C compiler) leaves out; #undef DEBUG at the "
+          "program's top builds it here without." },
+    };
+    using Defines = std::vector<std::pair<std::string, std::string>>;
+    Defines hostDefines();                                   // kDefines, as Options::defines and FMinus take them
+
+    // A conditional directive of a file, as the scanner meets it.
+    struct Conditional
+    {
+        int line = 0;
+        bool inert = false;                      // in a skipped group: only its name is read, and it chooses nothing
+        bool skipping = false;                   // the lines after it, to the file's next conditional, are skipped
+    };
+
+    // A file's conditionals: its conditional directives in order (every one, an inert one too), and its lines.
+    struct FileConditionals
+    {
+        std::vector<Conditional> directives;
+        std::vector<uint8_t> skipped;            // a line a skipped group holds 1 (an inert directive's too), else 0
+        bool read = false;                       // the program reads the file: the first, or an #include in a group read
+    };
+
+    // The conditionals of `files` (the first the program) as a compile reads them on `defines`: the first file from its
+    // top, an #include of another of them in a group read followed there, once; a file the program never reads, alone
+    // after (on `defines`). A .gui or .cir file has none (no lines). Where FMinus stops with an error (a bad
+    // expression, an #else without #if), this reads on: a group whose condition FMinus refuses is skipped.
+    std::vector<FileConditionals> conditionals(const Sources& files, const Defines& defines);
+    // A macro, as a place sees it (hover, go to definition): its value, and its #define's file (the files' index) and
+    // line, or -1 for the plugin's (kDefines). Nothing when the name is no macro there.
+    struct Macro
+    {
+        std::string name, value;
+        int file = -1, line = -1;
+    };
+    std::optional<Macro> macroAt(const Sources& files, const Defines& defines, int file, int line, std::string_view name);
+    // Every macro's name: `defines`' and every #define's of the files, sorted (the highlighter's, completion's).
+    std::vector<std::string> macroNames(const Sources& files, const Defines& defines);
+    // The lines lexLine reads as directives (a # first, after blanks, outside a block comment), with their numbers.
+    void directiveLines(std::string_view text, std::vector<std::pair<int, std::string_view>>& out);
+    // A directive's name (`#  ifdef X` -> "ifdef"; a comment between the # and the name is a space), and where what
+    // follows it starts; "" for a line that is no directive.
+    std::string_view directiveName(std::string_view line, std::size_t* end = nullptr);
+    bool isConditional(std::string_view name) noexcept;      // if ifdef ifndef elif elifdef elifndef else endif
 
     // A netlist's line's tokens appended to `out` (no line break in `line`; a netlist has no state across lines: a
     // continuation line's leading + is punctuation), and every line's, in order.
@@ -213,6 +287,7 @@ namespace playground::lang
     struct Options
     {
         bool instrument = false;                 // the product's kind: the contract's snippets (Voice or Effect)
+        Defines defines = hostDefines();         // the macros the compile defines (above): its skipped groups
     };
 
     // ---- a program's circuits as dials (Patch.h's "Circuits"; circuitDials() below) ----------------------------------
@@ -290,6 +365,9 @@ namespace playground::lang
         };
         const std::vector<File>& files() const noexcept;
         int fileIndex(std::string_view name) const noexcept;    // -1 for none
+        // A file's conditionals as the compile reads them on Options::defines (conditionals() above): the groups it
+        // skips, which the index leaves out (no symbol, #include or bracket of theirs).
+        const FileConditionals& fileConditionals(int file) const noexcept;
 
         CompletionList complete(int file, Pos at) const;
         std::optional<Signature> signature(int file, Pos at) const;
@@ -340,9 +418,12 @@ namespace playground::lang
 
     // `typeNames`: the program's module names (a `*` after one is a pointer's, `Svf* f`); the ones the text declares
     // itself are found anyway. `constantNames`: the program's constants (Service::constantNames), which a `*` after
-    // multiplies (`Gain * x`), as it does after any name with no lowercase letter (`TWO_PI * phase`).
+    // multiplies (`Gain * x`), as it does after any name with no lowercase letter (`TWO_PI * phase`). A group of
+    // lines a conditional skips is kept as it is (it need not be FMinus: prose, the other branch's braces), its
+    // brackets counting for nothing: `skipped` says which (FileConditionals::skipped, the compile's: the editor's
+    // Service::fileConditionals), else the text's conditionals read alone on the plugin's macros.
     Formatted format(std::string_view text, const std::vector<std::string>& typeNames = {},
-                     const std::vector<std::string>& constantNames = {});
+                     const std::vector<std::string>& constantNames = {}, const std::vector<uint8_t>* skipped = nullptr);
     // A place in `before` moved to the same token's place in `after` (a formatted text: the same tokens), so the caret
     // stays on what it was on.
     Pos mapFormatted(std::string_view before, std::string_view after, Pos p);
