@@ -8,6 +8,7 @@
 //   gui.panel.small.png   the least size, CODE view, scrolled to its end
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
+//   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
 // and checks:
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
@@ -41,6 +42,13 @@
 //             as asked (the text says so, and what the displays read), a name that is none listed with the fields, the
 //             dial moving the picture and not the user's dial; at's dials drawn as the render left them, and its state
 //             refused once the program that plays is another (gui.panel.state.png, gui.panel.state.picture.png)
+//   SETTLE    while a steady 220 Hz tone plays, its scope (found from its rising zero crossing between two samples) and a
+//             field scope of a constant settle: neither unsettled over a second of frames, and the panel's frames as its
+//             items ask them (Cadence.h) at the calm rate, 12 a second; the tone's level moved by a few hundredths of a
+//             px of its trace is no move, by px a move; the field's step moves its scope, which settles again once its
+//             points are all the new value; after a ramp longer than its 150 points, they are oldest first, the newest
+//             last (its ring)
+#include "Cadence.h"
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -756,6 +764,126 @@ PROBE(gui, panel)
                 std::fwrite(a.png.data(), 1, a.png.size(), f);
                 std::fclose(f);
             }
+    }
+
+    // ---- SETTLE --------------------------------------------------------------------------------------------------------
+    // A steady tone's scope and a field scope of a constant stand still while the audio plays (Panel.h "Unchanged
+    // frames": the panel then runs at the calm rate), and move when what they show changes.
+    {
+        const std::string params = "    param float gain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                                   "    float hold;\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n" + params + "    float ph;\n"
+                                       "    void start(float n, float v) {}\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            const float s = gain[i] * sinf(6.28318531f * ph);\n"
+                                       "            ph += 220.0f / 48000;\n            if (ph >= 1) ph -= 1;\n"
+                                       "            left[i] += s;\n            right[i] += s;\n        }\n"
+                                       "        hold = level[n - 1];\n        return true;\n    }\n};\n"
+                                     : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n"
+                                       "        hold = level[n - 1];\n    }\n};\n";
+        const std::string settleGui = "panel { row { scope out label=\"WAVE\" width=240 height=120; scope hold label=\"HOLD\" width=240 height=120 }\n"
+                                      "        row { knob gain; knob level } }\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", settleGui } });
+        processor.prepareToPlay(48000.0, 256);
+        settleRun(processor, host);
+        panel.setPanelView(true);
+        host.settle();
+        P.eq("settle.compiles", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        const pg::ui::DisplayItem* wave = nullptr;
+        const pg::ui::DisplayItem* field = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::scope)
+                (item.display().audio() ? wave : field) = &item;
+        }
+        P.eq("settle.scopes_shown", wave != nullptr && field != nullptr ? 1 : 0, 1);
+        // A sixtieth of a second of audio (three blocks of 256): the effect's input a 220 Hz sine at 0.5, the synth's
+        // voice its own (its note held from the first block).
+        juce::AudioBuffer<float> buffer(2, 256);
+        double phase = 0.0;
+        bool noted = false;
+        const auto sixtieth = [&](int) {
+            for (int b = 0; b < 3; ++b)
+            {
+                juce::MidiBuffer midi;
+                if (kInstrument && !noted)
+                {
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+                    noted = true;
+                }
+                for (int i = 0; i < 256; ++i)
+                {
+                    const float v = kInstrument ? 0.0f : static_cast<float>(0.5 * std::sin(phase));
+                    phase += 2.0 * 3.14159265358979 * 220.0 / 48000.0;
+                    buffer.setSample(0, i, v);
+                    buffer.setSample(1, i, v);
+                }
+                processor.processBlock(buffer, midi);
+            }
+        };
+        // n frames at 60 Hz with audio; how many of them found the display unsettled.
+        const auto unsettled = [&](const pg::ui::DisplayItem* item, int n) {
+            int k = 0;
+            for (int f = 0; f < n; ++f)
+            {
+                sixtieth(f);
+                host.tick(1);
+                k += item != nullptr && !item->settled() ? 1 : 0;
+            }
+            return k;
+        };
+        (void)unsettled(nullptr, 180);                   // the tone starts; the field's scope fills (2.5 s)
+        constexpr int stillFrames = 60;
+        int waveUnsettled = 0, fieldUnsettled = 0;
+        for (int f = 0; f < stillFrames; ++f)
+        {
+            sixtieth(f);
+            host.tick(1);
+            waveUnsettled += wave != nullptr && !wave->settled() ? 1 : 0;
+            fieldUnsettled += field != nullptr && !field->settled() ? 1 : 0;
+        }
+        std::printf("settle: of %d frames of a steady tone, the scope unsettled in %d, the field scope in %d\n", stillFrames,
+                    waveUnsettled, fieldUnsettled);
+        P.eq("settle.audio_scope_still", waveUnsettled, 0);
+        P.eq("settle.field_scope_still", fieldUnsettled, 0);
+        // The panel's frames as the items ask them (probe/Cadence.h): the calm rate, about 12 a second.
+        const probe::Cadence calm = probe::runCadence(host, 120, sixtieth, [&] { return panel.moving(); });
+        std::printf("settle: a steady tone's panel, %.1f frames a second\n", calm.framesPerSecond());
+        P.le("settle.calm_frames_per_second", calm.framesPerSecond(), 12.5);
+        // The tone's level moved by a few hundredths of a px of the trace: no move; by px: a move.
+        juce::AudioProcessorParameter& gain = *processor.getParameters()[0];
+        juce::AudioProcessorParameter& level = *processor.getParameters()[1];
+        gain.setValueNotifyingHost(0.501f);
+        P.eq("settle.audio_scope_sub_px", unsettled(wave, 30), 0);
+        gain.setValueNotifyingHost(0.8f);
+        P.ge("settle.audio_scope_moves", unsettled(wave, 6), 1);
+        // The field's value steps: its scope moves, then stands still again once its points are all the new value.
+        level.setValueNotifyingHost(0.75f);
+        P.ge("settle.field_scope_steps", unsettled(field, 6), 1);
+        (void)unsettled(field, 180);
+        P.eq("settle.field_scope_still_again", unsettled(field, 30), 0);
+        // Its ring: a ramp longer than its points, oldest first, the newest last.
+        for (int f = 0; f < 200; ++f)
+        {
+            level.setValueNotifyingHost(0.1f + 0.8f * static_cast<float>(f) / 199.0f);
+            sixtieth(f);
+            host.tick(1);
+        }
+        const std::vector<float> points = field != nullptr ? field->points() : std::vector<float>{};
+        bool rising = points.size() == static_cast<std::size_t>(pg::ui::DisplayItem::kHistory);
+        for (std::size_t k = 1; k < points.size(); ++k)
+            rising = rising && points[k] >= points[k - 1];
+        P.eq("settle.ring_oldest_first", rising && points.front() < points.back() ? 1 : 0, 1);
+        P.near("settle.ring_newest_last", points.empty() ? -9.0 : static_cast<double>(points.back()), 2.0 * 0.9 - 1.0, 0.01);
+        writePng(P, host, "gui.panel.settle.png", "settle");
     }
     return P.finish();
 }

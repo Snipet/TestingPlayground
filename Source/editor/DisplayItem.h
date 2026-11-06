@@ -7,12 +7,16 @@
 //   led     the audio's clip light (a peak at 0 dBFS lights it for 0.4 s); or a field's value as its brightness
 //   number  the audio's peak in dBFS, or the field's value, eight times a second (an int's or a bool's a whole number;
 //           with unit=, decimals= or scale=, as a knob's value reads)
-//   scope   the audio's last 21 ms from a rising zero crossing; or the field's last 2.5 seconds
+//   scope   the audio's last 21 ms from a rising zero crossing (found between two samples, so a steady tone's trace
+//           stands still); or the field's last 2.5 seconds
 //   spectrum (a .gui file's) the audio's last 2048 samples through a Hann window and an FFT, in dB against a full-
 //           scale sine, at kSpectrumPoints frequencies from 20 Hz to 20 kHz spaced evenly in octaves (each the
 //           strongest bin in its share of them); a peak shows at once and falls 30 dB a second
-// It is a readout: no input, no Tab stop; accessibility reads its label and value. settled() while nothing it shows
-// moves, so a silent panel lets the host rest.
+// It is a readout: no input, no Tab stop; accessibility reads its label and value. settled() once nothing it shows has
+// moved for a moment (Stirred: the audio's blocks may come a frame or two apart), so a silent or steady panel lets the
+// host rest: an audio scope moves when a point of its trace would move by more than half a px (the trace drawn is the
+// last one that did), a field scope when the field's value changes or its points differ (a flat line shifted along is
+// the same line).
 #pragma once
 
 #include "editor/DialLayout.h"
@@ -60,23 +64,33 @@ namespace playground::ui
         const std::string& readout() const noexcept { return readout_; }
         // Its readout made again at the next update (a picture's last frame: what it shows then, not 1/8 s before).
         void readoutNow() noexcept { readoutIn_ = 0.0f; }
-        int traceSize() const noexcept { return static_cast<int>(display_.audio() ? trace_.size() : history_.size()); }
+        int traceSize() const noexcept { return display_.audio() ? static_cast<int>(trace_.size()) : historyCount_; }
+        // A scope's points as draw() takes them: the audio's trace, or the field's values, oldest first.
+        std::vector<float> points() const
+        {
+            return display_.audio() ? trace_ : std::vector<float>(history(), history() + historyCount_);
+        }
 
         // Item
-        void tick(float, bool, bool, funkgui::Point) override {}
+        void tick(float dt, bool, bool, funkgui::Point) override { stir_.tick(dt, moving_); }   // after update()
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const override;
         bool contains(funkgui::Point p) const override { return shown_ && cell_.contains(p) && (area_.w <= 0.0f || area_.contains(p)); }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return !moving_; }
+        bool settled() const override { return !shown_ || !stir_.moving(); }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
         bool focusable() const override { return false; }
 
     private:
         float fieldPosition(float v) const noexcept;  // a field's value across its range, 0..1
+        void pushHistory(float v) noexcept;
+        const float* history() const noexcept         // a field scope's values, oldest first (historyCount_)
+        {
+            return history_.data() + (historyAt_ + kHistory - historyCount_) % kHistory;
+        }
 
         uint32_t id_;
         PanelDisplay display_;
@@ -88,11 +102,15 @@ namespace playground::ui
         float glow_ = 0.0f;                           // an LED's
         float readoutIn_ = 0.0f;                      // seconds to the number's next refresh
         std::string readout_;
-        std::vector<float> trace_;                    // a scope's points, -1..1
-        std::vector<float> history_;                  // a field scope's values, oldest first
+        std::vector<float> trace_;                    // a scope's points, -1..1, as last moved
+        // A field scope's values: a ring written twice over (each value at i and i + kHistory), so the newest
+        // historyCount_ are always in a row, oldest first (history()); historySame_ of the newest are equal.
+        std::array<float, 2 * kHistory> history_{};
+        int historyAt_ = 0, historyCount_ = 0, historySame_ = 0;
         std::vector<float> spectrum_;                 // a spectrum's points, dB
         funkgui::Rect area_;
-        bool moving_ = false;
+        bool moving_ = false;                         // at the last update()
+        Stirred stir_;                                // moving: kept a moment, as blocks come a frame or two apart
         uint32_t lastFrame_ = 0;
     };
 }

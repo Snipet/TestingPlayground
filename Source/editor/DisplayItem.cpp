@@ -163,7 +163,7 @@ namespace playground::ui
             needle_ = glow_ = 0.0f;
             readout_.clear();
             trace_.clear();
-            history_.clear();
+            historyAt_ = historyCount_ = historySame_ = 0;
             spectrum_.clear();
             readoutIn_ = 0.0f;
         }
@@ -179,6 +179,16 @@ namespace playground::ui
     {
         const float span = display_.hi - display_.lo;
         return span > 0.0f ? std::clamp((v - display_.lo) / span, 0.0f, 1.0f) : 0.0f;
+    }
+
+    void DisplayItem::pushHistory(float v) noexcept
+    {
+        const bool same = historyCount_ > 0 && v == history()[historyCount_ - 1];
+        history_[static_cast<std::size_t>(historyAt_)] = v;
+        history_[static_cast<std::size_t>(historyAt_ + kHistory)] = v;
+        historyAt_ = (historyAt_ + 1) % kHistory;
+        historyCount_ = std::min(historyCount_ + 1, kHistory);
+        historySame_ = same ? std::min(historySame_ + 1, kHistory) : 1;
     }
 
     float DisplayItem::level() const noexcept
@@ -277,32 +287,51 @@ namespace playground::ui
             {
                 if (audio && scope != nullptr)
                 {
-                    // The window that starts at the last rising zero crossing before the newest window's room.
-                    int start = kScopeSamples - kScopeWindow;
+                    // The window that starts at the last rising zero crossing before the newest window's room, where
+                    // the line between its two samples crosses 0: a steady tone's window starts at the same phase
+                    // each frame, so its trace stands still.
+                    float start = static_cast<float>(kScopeSamples - kScopeWindow);
                     for (int i = kScopeSamples - kScopeWindow; i > 0; --i)
                         if (scope[i - 1] < 0.0f && scope[i] >= 0.0f)
                         {
-                            start = i;
+                            start = static_cast<float>(i - 1) + scope[i - 1] / (scope[i - 1] - scope[i]);
                             break;
                         }
-                    std::vector<float> next(kScopePoints);
+                    std::array<float, kScopePoints> next{};
+                    constexpr float kSpacing = static_cast<float>(kScopeWindow - 1) / static_cast<float>(kScopePoints - 1);
                     for (int k = 0; k < kScopePoints; ++k)
-                        next[static_cast<std::size_t>(k)] = scope[start + k * (kScopeWindow - 1) / (kScopePoints - 1)];
-                    moved = moved || next != trace_;
-                    trace_ = std::move(next);
+                    {
+                        const float x = start + kSpacing * static_cast<float>(k);
+                        const int i = std::min(static_cast<int>(x), kScopeSamples - 2);
+                        const float t = x - static_cast<float>(i);
+                        next[static_cast<std::size_t>(k)] = scope[i] + (scope[i + 1] - scope[i]) * t;
+                    }
+                    // Moved when a point would move by more than half a px; the trace drawn stays the last that did, so
+                    // a slow drift moves it once it is half a px off.
+                    const float tolerance = 0.5f / std::max(looks::scopeScale(cell_), 1.0f);
+                    bool off = trace_.size() != next.size();
+                    for (std::size_t k = 0; k < next.size() && !off; ++k)
+                        off = !(std::fabs(next[k] - trace_[k]) <= tolerance);
+                    if (off)
+                    {
+                        trace_.assign(next.begin(), next.end());
+                        moved = true;
+                    }
                 }
                 else if (!audio && fresh)
                 {
-                    history_.push_back(2.0f * fieldPosition(field) - 1.0f);
-                    if (static_cast<int>(history_.size()) > kHistory)
-                        history_.erase(history_.begin());
-                    moved = true;
+                    // A flat line shifted along by a value equal to its own is the same line: no move.
+                    const float v = 2.0f * fieldPosition(field) - 1.0f;
+                    const bool flat = historyCount_ >= 2 && historySame_ >= historyCount_ && v == history()[historyCount_ - 1];
+                    pushHistory(v);
+                    moved = moved || !flat;
                 }
                 break;
             }
         }
 
-        // The readout, eight times a second (a meter's and a number's).
+        // The readout, eight times a second: a meter and a number draw it (a move); every display speaks it and the
+        // footer shows it (the Panel watches the footer's line).
         if ((readoutIn_ -= step) <= 0.0f || readout_.empty())
         {
             readoutIn_ = kReadoutEvery;
@@ -311,7 +340,8 @@ namespace playground::ui
                 next = decibels(std::max(peak[0], peak[1]));
             else
                 next = fieldText(display_, field);
-            moved = moved || next != readout_;
+            const bool drawn = display_.kind == DisplayKind::meter || display_.kind == DisplayKind::number;
+            moved = moved || (drawn && next != readout_);
             readout_ = std::move(next);
         }
         moving_ = moved;
@@ -346,7 +376,7 @@ namespace playground::ui
                 if (audio)
                     looks::scope(c, th, d, trace_.empty() ? nullptr : trace_.data(), static_cast<int>(trace_.size()));
                 else
-                    looks::scope(c, th, d, history_.empty() ? nullptr : history_.data(), static_cast<int>(history_.size()));
+                    looks::scope(c, th, d, historyCount_ == 0 ? nullptr : history(), historyCount_);
                 break;
             case DisplayKind::spectrum:
                 drawSpectrum(c, th, cell_, label.c_str(), spectrum_.empty() ? nullptr : spectrum_.data(),
