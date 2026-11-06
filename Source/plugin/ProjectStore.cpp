@@ -6,6 +6,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -24,14 +25,16 @@ namespace playground::projectstore
         constexpr int kFormatVersion = 1;
         constexpr juce::int64 kMaxBytes = 64 * 1024 * 1024;   // a project larger than this is no project
 
-        // The listing's cache: a file read again only when its size or its time changes.
+        // The listing's cache, and its presets' (presetsOf): a file read again only when its size or its time changes.
         struct Cached
         {
             juce::int64 modified = 0, size = 0;
             Entry entry;
+            std::vector<PresetSummary> presets;
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
+        std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
 
         std::string kindName(bool instrument) { return instrument ? "instrument" : "effect"; }
 
@@ -265,6 +268,7 @@ namespace playground::projectstore
         // The project in `f`.
         std::optional<Project> parse(const juce::File& f, std::string* why)
         {
+            parsed.fetch_add(1, std::memory_order_relaxed);
             if (f.getSize() > kMaxBytes)
             {
                 fail(why, f.getFileName().toStdString() + " is too large to be a project");
@@ -272,6 +276,24 @@ namespace playground::projectstore
             }
             return parseRoot(juce::JSON::parse(f.loadFileAsString()), f.getFileNameWithoutExtension().toStdString(),
                              f.getFileName().toStdString(), why);
+        }
+
+        // What the cache keeps of a project read whole: the listing's entry and its presets'.
+        Cached cachedOf(const Project& p, juce::int64 modified, juce::int64 size)
+        {
+            Cached c;
+            c.modified = modified;
+            c.size = size;
+            c.entry.name = p.name;
+            c.entry.savedMs = p.latest().savedMs;
+            c.entry.latest = p.latest().number;
+            c.entry.versions = static_cast<int>(p.versions.size());
+            for (const Preset& pr : p.presets)
+            {
+                c.entry.presets.push_back(pr.name);
+                c.presets.push_back({ pr.name, pr.savedMs, pr.from });
+            }
+            return c;
         }
 
         juce::var rootOf(const Project& p);
@@ -553,14 +575,7 @@ namespace playground::projectstore
                     std::optional<Project> p = parse(f, nullptr);
                     if (!p)
                         continue;
-                    c.modified = modified;
-                    c.size = size;
-                    c.entry.name = p->name;
-                    c.entry.savedMs = p->latest().savedMs;
-                    c.entry.latest = p->latest().number;
-                    c.entry.versions = static_cast<int>(p->versions.size());
-                    for (const Preset& pr : p->presets)
-                        c.entry.presets.push_back(pr.name);
+                    c = cachedOf(*p, modified, size);
                 }
                 out.push_back(c.entry);
                 seen.emplace(path, std::move(c));
@@ -573,6 +588,41 @@ namespace playground::projectstore
         });
         return out;
     }
+
+    std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why)
+    {
+        // Its file by its name first (one look, where a scan of the folder looks at every project), else, as load()
+        // finds it, by the name in another case, once the presets from before projects are projects.
+        const std::string tidy = tidyName(name);
+        juce::File f = tidy.empty() ? juce::File() : directory().getChildFile(str(tidy) + kExtension);
+        if (f == juce::File() || !f.existsAsFile())
+        {
+            migrate();
+            f = fileOf(name);
+        }
+        if (f == juce::File())
+        {
+            fail(why, "there is no project named \"" + std::string(name) + "\"");
+            return std::nullopt;
+        }
+        const std::string path = f.getFullPathName().toStdString();
+        const juce::int64 modified = f.getLastModificationTime().toMilliseconds(), size = f.getSize();
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                return it->second.presets;
+        }
+        std::optional<Project> p = parse(f, why);
+        if (!p)
+            return std::nullopt;
+        Cached c = cachedOf(*p, modified, size);
+        std::vector<PresetSummary> out = c.presets;
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        cache[path] = std::move(c);
+        return out;
+    }
+
+    int parses() { return parsed.load(std::memory_order_relaxed); }
 
     bool exists(std::string_view name)
     {

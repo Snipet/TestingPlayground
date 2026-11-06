@@ -3624,7 +3624,7 @@ namespace playground::ui
         if (open)
         {
             projectsAt_ = -100.0;                        // the projects read again at once
-            explorerKey_.clear();
+            explorerStale_ = true;
         }
         layout();
         dirty_ = true;
@@ -3659,33 +3659,36 @@ namespace playground::ui
             return;
         const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
         const ProjectState st = port_.project();
+        // The projects and the open one's presets, every 3 s (the presets' file is read only when it changed:
+        // ProjectStore's presetsOf): a revision when they differ from what the rows show.
         if (projectsAt_ < 0.0 || now - projectsAt_ > 3.0 || presetsOf_ != st.name)
         {
-            projectList_ = port_.projects();
-            std::sort(projectList_.begin(), projectList_.end(),
+            std::vector<ProjectEntry> projects = port_.projects();
+            std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            presetList_ = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name)
+                ++listsRevision_;
+            projectList_ = std::move(projects);
+            presetList_ = std::move(presets);
             presetsOf_ = st.name;
             projectsAt_ = now;
         }
         const auto erred = [this](const std::string& file) {
             return std::any_of(problems_.begin(), problems_.end(), [&](const Problem& p) { return p.error && p.file == file; });
         };
-        std::string key;
+        // What the rows are made from, as a hash each frame (the lists by their revision, not item by item).
+        DrawKey key;
         for (int i = 0; i < files().count(); ++i)
-            key += files().name(i) + (i == files().active() ? "*" : "") + (erred(files().name(i)) ? "!" : "") + '\x1f';
-        key += files().count() < static_cast<int>(kMaxFiles) ? "+" : "-";
+            key.mix(files().name(i)).mix(i == files().active()).mix(erred(files().name(i)));
         const bool frozenPlays = port_.frozen();
-        key += std::string(files().irOpen() ? "I" : "-") + (files().irShown() ? "S" : "-") + std::to_string(files().irView())
-             + (frozenPlays ? "F" : "-");
-        key += '\x1c' + st.name + '\x1d' + st.preset;
-        for (const ProjectEntry& e : projectList_)
-            key += '\x1e' + e.name + '\x1d' + e.when + '\x1d' + std::to_string(e.latest);
-        for (const PresetEntry& e : presetList_)
-            key += '\x1b' + e.name + '\x1d' + std::to_string(e.from);
-        if (key == explorerKey_)
+        key.mix(files().count()).mix(files().irOpen()).mix(files().irShown()).mix(files().irView()).mix(frozenPlays)
+            .mix(st.name).mix(st.preset).mix(listsRevision_);
+        if (!explorerStale_ && key.h == explorerKey_)
             return;
-        explorerKey_ = std::move(key);
+        explorerKey_ = key.h;
+        explorerStale_ = false;
+        ++explorerBuilds_;
 
         using S = ExplorerItem::Section;
         std::vector<ExplorerItem::Group> groups;
@@ -3856,7 +3859,7 @@ namespace playground::ui
                     openIrView(row.index);
                 break;
         }
-        explorerKey_.clear();                            // what it shows may have changed (a tab, a tick)
+        explorerStale_ = true;                           // what it shows may have changed (a tab, a tick)
         dirty_ = true;
     }
 
@@ -4102,7 +4105,7 @@ namespace playground::ui
         files().openIr(view);
         syncIr();
         setFocus(editorItem_);
-        explorerKey_.clear();
+        explorerStale_ = true;
         dirty_ = true;
     }
 
@@ -4110,7 +4113,7 @@ namespace playground::ui
     {
         files().closeIr();
         syncIr();
-        explorerKey_.clear();
+        explorerStale_ = true;
         dirty_ = true;
     }
 
@@ -4127,7 +4130,7 @@ namespace playground::ui
                 port_.addIrViewer();
             else
                 port_.removeIrViewer();
-            explorerKey_.clear();
+            explorerStale_ = true;
         }
         if (!files().irShown())
             return;
@@ -4948,7 +4951,7 @@ namespace playground::ui
             compiling_ = true;
             layout();
             setFocus(editorItem_);
-            explorerKey_.clear();
+            explorerStale_ = true;
             dirty_ = true;
         };
         files().endRename();

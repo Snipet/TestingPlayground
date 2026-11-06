@@ -15,6 +15,10 @@
 //            (noticed) and the preset applied: the dial back at once, not edited; a processor with no project open
 //            applies it: the project's newest version opens and the preset's dials land after the compile; a preset
 //            with no project open is refused; a name taken is replaced (case aside)
+//   POLL     a project's presets as the explorer asks for them (ProjectStore's presetsOf): as load() has them; asked
+//            again, its file is not read (ProjectStore's parses()), the name in another case the same; after a preset
+//            is saved, read once and not again; a preset more written by another (the file rewritten) seen at the next
+//            ask; a change list() read is not read again (one cache); a project that is not there: nothing, and why
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
@@ -256,6 +260,61 @@ PROBE(plugin, projects)
     P.eq("presets.replace", pa.savePreset("BRIGHT", why) && pa.presets("Glass Bloom").size() == 1
                                 && pa.presets("Glass Bloom")[0].name == "BRIGHT" ? 1 : 0, 1);
     P.eq("presets.second", pa.savePreset("Dark", why) && pa.presets("Glass Bloom").size() == 2 ? 1 : 0, 1);
+
+    // POLL: the presets as the explorer asks for them every few seconds (ProjectStore's presetsOf), the file read whole
+    // only when it changed.
+    {
+        const auto same = [](const std::optional<std::vector<ps::PresetSummary>>& got, const std::optional<ps::Project>& p) {
+            if (!got || !p || got->size() != p->presets.size())
+                return false;
+            for (std::size_t k = 0; k < got->size(); ++k)
+                if ((*got)[k].name != p->presets[k].name || (*got)[k].savedMs != p->presets[k].savedMs
+                    || (*got)[k].from != p->presets[k].from)
+                    return false;
+            return true;
+        };
+        const auto first = ps::presetsOf("Glass Bloom");
+        P.eq("poll.as_load", same(first, ps::load("Glass Bloom")) ? 1 : 0, 1);
+        const int p0 = ps::parses();
+        for (int k = 0; k < 5; ++k)
+            (void)pa.presets("Glass Bloom");
+        P.eq("poll.unchanged_reads_nothing", ps::parses() - p0, 0);
+        P.eq("poll.case_aside", ps::presetsOf("glass bloom") == first ? 1 : 0, 1);
+        // A preset saved (by the store: the processor's preset applied stays): the next ask reads the file once, then
+        // not again.
+        P.eq("poll.saved", ps::savePreset("Glass Bloom", "Warm", { { "level", 0.3f } }, 3, &why) ? 1 : 0, 1);
+        const int p1 = ps::parses();
+        const auto warm = ps::presetsOf("Glass Bloom");
+        const auto warmAgain = ps::presetsOf("Glass Bloom");
+        P.eq("poll.change_read_once", ps::parses() - p1, 1);
+        P.eq("poll.change_listed", same(warm, ps::load("Glass Bloom")) && warm->size() == first->size() + 1
+                                       && warmAgain == warm ? 1 : 0, 1);
+        // Written by another (a preset more in its JSON, the file rewritten in place): seen at the next ask.
+        const auto addPreset = [](const char* name) {
+            return [name](juce::var& root) {
+                juce::Array<juce::var>* presets = root["presets"].getArray();
+                juce::var copy = presets->getFirst().clone();
+                copy.getDynamicObject()->setProperty("name", name);
+                presets->add(copy);
+            };
+        };
+        rewrite(dir, "Glass Bloom", "Glass Bloom", addPreset("Zed"));
+        const int p2 = ps::parses();
+        const auto zed = ps::presetsOf("Glass Bloom");
+        P.eq("poll.other_writer", ps::parses() - p2 == 1 && zed && zed->size() == warm->size() + 1 && zed->back().name == "Zed"
+                                      ? 1 : 0, 1);
+        // One cache with the listing: a change list() read is not read again here.
+        rewrite(dir, "Glass Bloom", "Glass Bloom", addPreset("Zz"));
+        const int p3 = ps::parses();
+        (void)ps::list();
+        const auto zz = ps::presetsOf("Glass Bloom");
+        P.eq("poll.shared_with_list", ps::parses() - p3 == 1 && zz && zz->back().name == "Zz" ? 1 : 0, 1);
+        why.clear();
+        P.eq("poll.none", !ps::presetsOf("No Such Project", &why) && why.find("no project") != std::string::npos ? 1 : 0, 1);
+        // Back as it was (the presets above as saved): Zed and Zz go.
+        P.eq("poll.tidy", ps::removePreset("Glass Bloom", "Zed") && ps::removePreset("Glass Bloom", "Zz")
+                              && ps::removePreset("Glass Bloom", "Warm") ? 1 : 0, 1);
+    }
 
     // BYNAME: version 1's dials listed tone first, and one the program lacks.
     {

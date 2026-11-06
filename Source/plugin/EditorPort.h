@@ -221,6 +221,7 @@ namespace playground
         int latest = 0;                          // its latest version's number
         int versions = 0;                        // how many it keeps
         int presets = 0;
+        friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
     struct VersionEntry
@@ -235,6 +236,7 @@ namespace playground
         std::string name;
         std::string when;
         int from = 0;                            // the version it was saved with
+        friend bool operator==(const PresetEntry&, const PresetEntry&) = default;
     };
 
     struct ProjectState

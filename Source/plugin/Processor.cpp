@@ -1438,8 +1438,8 @@ namespace playground
     std::vector<PresetEntry> Processor::presets(const std::string& project) const
     {
         std::vector<PresetEntry> out;
-        if (const std::optional<projectstore::Project> p = projectstore::load(project))
-            for (const projectstore::Preset& pr : p->presets)
+        if (const auto ps = projectstore::presetsOf(project))   // its file read only when it changed
+            for (const projectstore::PresetSummary& pr : *ps)
                 out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
         return out;
     }

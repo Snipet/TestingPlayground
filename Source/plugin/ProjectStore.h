@@ -38,7 +38,7 @@
 // folder's "Presets before projects" (never deleted).
 //
 // Any thread; the functions do their own I/O. They hold no state but the folder override and a cache of the listing
-// (a file read again only when its size or its time changes).
+// and of each project's presets (a file read again only when its size or its time changes).
 #pragma once
 
 #include "dsp/Controls.h"
@@ -159,6 +159,19 @@ namespace playground::projectstore
     bool sameName(std::string_view a, std::string_view b);   // case aside
 
     std::vector<Entry> list();                           // by name, case aside
+    // A project's presets as the listing keeps them (by name): its file read whole only when its size or its time
+    // changed since it was last read (here or by list()), so a project open, whose presets the explorer asks for every
+    // few seconds, costs a look at its file, not a parse of it (an Engine's file is half a MB and more). Nothing, with
+    // why, as load(). parses() counts the files read whole, by any function, for the probes.
+    struct PresetSummary
+    {
+        std::string name;
+        int64_t savedMs = 0;
+        int from = 0;                                    // the version it was saved with (0: none)
+        friend bool operator==(const PresetSummary&, const PresetSummary&) = default;
+    };
+    std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why = nullptr);
+    int parses();
     bool exists(std::string_view name);
     // The project of that name: nothing, with why, when there is none, it is not a project of this plugin's, or its
     // file is damaged. Its name is its file's.

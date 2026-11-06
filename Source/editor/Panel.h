@@ -316,6 +316,7 @@ namespace playground::ui
         funkgui::Point centreOfExplorerToggle() const;
         ExplorerItem& explorer();
         const ExplorerItem& explorer() const;
+        int explorerBuilds() const noexcept { return explorerBuilds_; }   // its rows made, so far
         funkgui::Rect explorerCard() const noexcept { return explorerCard_; }
         // EXAMPLES' choice (Examples.h): the example and its library files, a fresh start (startAfresh), run.
         void loadExample(int i);
@@ -525,8 +526,9 @@ namespace playground::ui
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
-        // lists (read again every few seconds while it is open); what its rows were made from (syncExplorer rebuilds
-        // them when it changes).
+        // lists (read again every few seconds while it is open: listsRevision_ bumps when what was read differs); what
+        // its rows were made from, as a hash taken each frame (syncExplorer rebuilds them when it changes); how often
+        // they were made.
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
@@ -537,7 +539,10 @@ namespace playground::ui
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;
-        std::string explorerKey_;
+        uint64_t listsRevision_ = 0;
+        uint64_t explorerKey_ = 0;
+        bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
+        int explorerBuilds_ = 0;
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
