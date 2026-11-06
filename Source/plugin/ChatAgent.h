@@ -271,6 +271,12 @@ namespace playground
         // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
         // `since` does not report back to it (the Processor's journal asks).
         bool mcpWorking() const noexcept { return mcpWorking_.load(); }
+        // MCP's marks as the session keeps them (the Processor's state, Live.h's KeptMark): the newest kMcpMarks tokens
+        // get_status gave, oldest first, those kept from before the plugin was opened again first; and back, as marks
+        // of before (mcpKept_), which the new journal does not know: get_status with one of their tokens says which
+        // files changed since it (Live.cpp). Any thread.
+        std::vector<KeptMark> mcpMarksToKeep();
+        void restoreMcpMarks(std::vector<KeptMark> marks);
 
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
@@ -413,6 +419,7 @@ namespace playground
         std::string mcpHint();                                      // "" when nothing changed since MCP's last result
         std::mutex liveMutex_;                                      // the members below (a leaf)
         std::deque<McpMark> mcpMarks_;                              // the newest kMcpMarks tokens MCP was given
+        std::deque<KeptMark> mcpKept_;                              // and those of before the plugin was opened again
         std::set<uint64_t> mcpStopped_;                             // MCP calls cancelled that are not the one running
                                                                     // (a listen, one about to start): mcpCancel's
         std::string mcpLook_;                                       // the journal's token at MCP's last result

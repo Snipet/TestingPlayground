@@ -32,6 +32,9 @@
 //   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "the
 //           user redrew pedal.cir", and with files "changed" that only its drawing changed (no *@ line in the diff); a
 //           netlist line edited beside it: that line's diff alone
+//   REOPEN  the plugin opened again from its session: a token from before still says which files changed since (one
+//           edited, with read_file's versions, one redrawn, one added, one closed, one as it was), and after a second
+//           opening too; files "none" leaves it out; a token of no record is not this instance's
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 #include "Probe.h"
@@ -51,6 +54,7 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/params/ParamPort.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -633,6 +637,60 @@ PROBE(plugin, live)
             std::printf("get_status since, files changed, a netlist line edited and the drawing moved:\n%s", both.c_str());
             P.eq("layout.changed_netlist_lines", end != std::string::npos && has(both, "pedal.cir (+1 -1):\n") && has(both, "; a comment typed")
                                                      && !has(both, "\n+*@") && !has(both, "\n-*@") && !has(both, "only its drawing") ? 1 : 0, 1);
+        }
+
+        // ---- REOPEN ----------------------------------------------------------------------------------------------------
+        // The plugin opened again (a new processor from the session's state): a token from before is not the new
+        // journal's, but the session kept its files' hashes, so get_status says which changed since, after the whole
+        // state (an edit with read_file's versions, a netlist redrawn, a file added, one closed, one as it was); and
+        // so does the next opening's; files "none" says nothing of them; a token of no record is not this instance's.
+        {
+            pg::Draft dq = q.editorPort().draft();
+            dq.files.push_back({ "extra.fm", "// extra\n" });
+            q.editorPort().setDraft(dq);
+            const std::string beforeClose = tokenOf(textOf(a.mcpCall("get_status", none)));
+            juce::MemoryBlock session;
+            q.getStateInformation(session);
+            pg::Processor r;
+            r.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+            pg::ChatAgent& ra = r.chatAgent();
+            pg::Draft dr = r.editorPort().draft();
+            for (pg::SourceFile& f : dr.files)
+            {
+                if (f.name == "program.fm")
+                    f.text += "// after the reopen\n";
+                if (const std::size_t at = f.text.find("*@ part R1 6,-6"); f.name == "pedal.cir" && at != std::string::npos)
+                    f.text.replace(at, 15, "*@ part R1 6,-12");
+            }
+            dr.files.erase(std::remove_if(dr.files.begin(), dr.files.end(), [](const pg::SourceFile& f) { return f.name == "extra.fm"; }),
+                           dr.files.end());
+            dr.files.push_back({ "notes.fm", "// notes\n" });
+            r.editorPort().setDraft(dr);
+            const std::string reopened = textOf(ra.mcpCall("get_status", object({ { "since", juce::String(beforeClose) } })));
+            std::printf("get_status since a token from before the plugin was opened again:\n%s", reopened.c_str());
+            const std::string readNow = resultOf(ra.mcpCall("read_file", object({ { "name", "program.fm" } })));
+            // read_file's first line, "program.fm: 42 lines, version 1a2b3c4d.": "42 lines, version 1a2b3c4d"
+            const std::string readHead = readNow.substr(0, readNow.find('\n'));
+            const std::size_t colon = readHead.find(": ");
+            const std::string linesNow = colon == std::string::npos || readHead.size() < colon + 3 || readHead.find(", version ") == std::string::npos
+                                             ? std::string()
+                                             : readHead.substr(colon + 2, readHead.size() - colon - 3);
+            P.eq("reopen.said", has(reopened, "That token is from before the plugin was opened again") && has(reopened, "Dials:\n") ? 1 : 0, 1);
+            P.eq("reopen.edited", !linesNow.empty() && has(reopened, "program.fm changed: now " + linesNow + " (then ") ? 1 : 0, 1);
+            P.eq("reopen.redrawn", has(reopened, "pedal.cir: only its drawing (its *@ lines) changed.\n") ? 1 : 0, 1);
+            P.eq("reopen.added", has(reopened, "notes.fm: new since then, 1 line.\n") ? 1 : 0, 1);
+            P.eq("reopen.closed", has(reopened, "extra.fm is gone (closed or renamed).\n") ? 1 : 0, 1);
+            P.eq("reopen.as_they_were", has(reopened, "As they were: panel.gui.\n") ? 1 : 0, 1);
+            juce::MemoryBlock sessionAgain;
+            r.getStateInformation(sessionAgain);
+            pg::Processor t;
+            t.setStateInformation(sessionAgain.getData(), static_cast<int>(sessionAgain.getSize()));
+            const std::string twice = textOf(t.chatAgent().mcpCall("get_status", object({ { "since", juce::String(beforeClose) } })));
+            P.eq("reopen.twice", has(twice, "That token is from before the plugin was opened again") && has(twice, "notes.fm: new since then") ? 1 : 0, 1);
+            const std::string quiet = textOf(ra.mcpCall("get_status", object({ { "since", juce::String(beforeClose) }, { "files", "none" } })));
+            P.eq("reopen.files_none", has(quiet, "That token is from before") && !has(quiet, "notes.fm: new") ? 1 : 0, 1);
+            const std::string stranger = textOf(ra.mcpCall("get_status", object({ { "since", "abc-1" } })));
+            P.eq("reopen.unknown_token", has(stranger, "That token is not this instance's") && !has(stranger, "since then") ? 1 : 0, 1);
         }
 
         // Cancels that come before a listen starts, two of them: each stops its own listen at once.

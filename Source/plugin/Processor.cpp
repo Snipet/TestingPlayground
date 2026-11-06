@@ -35,6 +35,11 @@ namespace playground
                                kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
         const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        // MCP's marks (ChatAgent::mcpMarksToKeep, Live.h's KeptMark): <MCP><MARK token><FILE name hash netlist lines/>
+        // </MARK></MCP>, the hashes in hex, so that get_status `since` with a token from before the plugin was opened
+        // again still says which files changed (a state from before them has none).
+        const juce::Identifier kMcpTag{ "MCP" }, kMarkTag{ "MARK" }, kToken{ "token" }, kHash{ "hash" }, kNetlist{ "netlist" },
+                               kLines{ "lines" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
@@ -925,6 +930,28 @@ namespace playground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
+        {
+            const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
+            juce::ValueTree mcp{ kMcpTag };
+            for (const KeptMark& m : marks)
+            {
+                juce::ValueTree mark{ kMarkTag };
+                mark.setProperty(kToken, juce::String(m.token), nullptr);
+                for (const KeptMark::File& f : m.files)
+                {
+                    juce::ValueTree file{ kFileTag };
+                    file.setProperty(kName, juce::String::fromUTF8(f.name.c_str()), nullptr);
+                    file.setProperty(kHash, hex(f.hash), nullptr);
+                    if (f.netlist != 0)
+                        file.setProperty(kNetlist, hex(f.netlist), nullptr);
+                    file.setProperty(kLines, f.lines, nullptr);
+                    mark.appendChild(file, nullptr);
+                }
+                mcp.appendChild(mark, nullptr);
+            }
+            state.appendChild(mcp, nullptr);
+        }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
         if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
@@ -1001,6 +1028,27 @@ namespace playground
         {
             chat_.loadState(chat.getProperty(kJson).toString().toStdString());
             state.removeChild(chat, nullptr);
+        }
+        {
+            // MCP's marks, now of before the plugin was opened again (none in a state from before them).
+            const juce::ValueTree mcp = state.getChildWithName(kMcpTag);
+            const auto hash = [](const juce::var& v) { return static_cast<uint64_t>(v.toString().getHexValue64()); };
+            std::vector<KeptMark> marks;
+            for (int k = 0; mcp.isValid() && k < mcp.getNumChildren() && k < 64; ++k)
+                if (const juce::ValueTree mark = mcp.getChild(k); mark.hasType(kMarkTag))
+                {
+                    KeptMark m;
+                    m.token = mark.getProperty(kToken).toString().substring(0, 64).toStdString();
+                    for (int j = 0; j < mark.getNumChildren() && j < 256; ++j)
+                        if (const juce::ValueTree file = mark.getChild(j); file.hasType(kFileTag))
+                            m.files.push_back({ file.getProperty(kName).toString().substring(0, 200).toStdString(),
+                                                hash(file.getProperty(kHash)), hash(file.getProperty(kNetlist, "0")),
+                                                std::max(0, static_cast<int>(file.getProperty(kLines, 0))) });
+                    marks.push_back(std::move(m));
+                }
+            chat_.restoreMcpMarks(std::move(marks));
+            if (mcp.isValid())
+                state.removeChild(mcp, nullptr);
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");

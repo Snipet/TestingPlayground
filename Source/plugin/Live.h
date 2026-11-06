@@ -6,6 +6,9 @@
 //             latched alerts and the running program's displays. Read about 25 times a second while listen listens.
 //   Changes   what changed since a token, for get_status `since` (Journal.h): a line a change, oldest first, and the
 //             token for next time.
+//   KeptMark  a token get_status gave MCP and its files, as the session keeps them (the Processor's state, <MCP>): a
+//             name, its text's hash and its lines a file, so that once the plugin is opened again (a new journal, the
+//             token unknown to it) get_status still says which files changed since that token, if not how.
 //
 // Both are filled from any thread, beside a running call: lock-free reads (the seqlock, the rings, atomics) and getters
 // under their own mutexes (CLAUDE.md, "A live tool").
@@ -51,5 +54,18 @@ namespace playground
         int changes = 0;                          // of them, what the user, the host or the plugin's chat changed
         int byUser = 0;                           // of those, the user's alone
         int alerts = 0;                           // the output guard's
+    };
+
+    struct KeptMark
+    {
+        struct File
+        {
+            std::string name;
+            uint64_t hash = 0;                    // its text's 64-bit FNV-1a (read_file's version is the top half)
+            uint64_t netlist = 0;                 // a netlist's, without its drawing (its *@ lines); 0 for another file
+            int lines = 0;
+        };
+        std::string token;
+        std::vector<File> files;
     };
 }
