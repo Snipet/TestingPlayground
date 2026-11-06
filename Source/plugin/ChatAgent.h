@@ -220,6 +220,11 @@ namespace playground
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
+        // The system prompt as the MCP guide has it (mcpGuide): without the lines of "How you work" that only the
+        // plugin's own chat needs (its <plugin_state>, the planner, web search, ask_user, its panel's markdown), which
+        // are chatOnlyLines(), a line each, in their order; the two together are systemPrompt()'s text.
+        static const std::string& guidePrompt();
+        static std::string chatOnlyLines();
         // The program in several files the system prompt shows, for this plugin's kind (the program first).
         static Sources promptExample();
         static juce::var toolDefinitions();
@@ -230,9 +235,12 @@ namespace playground
         // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
         // description, inputSchema, annotations }), each description cut to its first paragraph (its first sentence when
         // it has one: Claude Desktop puts the tools in every conversation), view_panel and view_sound with MCP's own
-        // `detail`. mcpGuide(): a word on working from outside, the system prompt, then what the descriptions lost (THE
-        // TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT, each tool's in its guide part); mcpGuidePart(): a part of it
-        // (mcp/McpGuide.h; library:<file>:code from the library, adding nothing to the editor).
+        // `detail`, the annotations only what MCP's defaults do not say (mcp/McpSchema.h). mcpGuide(): a word on
+        // working from outside, the system prompt as guidePrompt() has it, then what the descriptions lost (THE TOOLS:
+        // WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT, each tool's in its guide part), and last the lines only the plugin's
+        // chat needs (chatOnlyLines(), under mcp::guide::kChatOnly: in part "all" alone); mcpGuidePart(): a part of it
+        // (mcp/McpGuide.h; library:<file>:code from the library, adding nothing to the editor; library:host.fm from
+        // the guide's THE HOST).
         //
         // mcpCall() runs one tool as a turn's would, on the caller's thread: refused while a turn of the chat runs; while
         // it runs the chat is busy (nothing can be sent; its stop button cancels a search), its activity says so, and what

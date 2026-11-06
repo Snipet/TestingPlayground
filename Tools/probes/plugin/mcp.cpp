@@ -14,14 +14,16 @@
 //            undescribed (edit_file's words), view_panel's naming the schematic, its `name` too; the guide's start says it is driven
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
-//            notes of the tools it uses and the other parts named; its size printed, in bytes and about tokens),
+//            notes of the tools it uses and the other parts named; none of the lines only the plugin's chat needs;
+//            host.fm in short, every field of its module named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
 //            trace and compare, not in start), examples, projects, circuits (CIRCUITS: .cir NETLISTS, which ends
-//            projects, with THE SCHEMATIC and edit_circuit's notes; start names it), all (the system prompt whole); a
+//            projects, with THE SCHEMATIC and edit_circuit's notes; start names it), all (the system prompt whole, the
+//            lines only the plugin's chat needs at its end); library:host.fm (and :code) host.fm whole; a
 //            guide from before the circuits (an older
 //            plugin's guide.md) still cuts, its projects as they were, and has no circuits part;
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
-//            part refused, naming the parts
+//            part refused, naming the parts and library:host.fm (a library file that is none too)
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
 //            read_file gives it back (after its line count and version); view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
@@ -57,10 +59,12 @@
 //            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
 //   GONE     a processor gone, its socket goes; the server, asked again, finds the one left; the server gone, the
 //            processor no longer counts as connected; with none open, a call says to open the plugin, the tools
-//            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them
+//            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them (host.fm
+//            among them)
 #include "Probe.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Patch.h"
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
@@ -75,6 +79,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -647,7 +652,54 @@ PROBE(plugin, mcp)
         const auto part = [&](const std::string& name) { return ask(*a, r, id++, "guide", object({ { "part", juce::String(name) } })); };
         const auto text = [&](const std::string& name) { return part(name)["result"].toString().toStdString(); };
         const std::string all = text("all");
-        P.eq("guide.all", all.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && has(all, pg::ChatAgent::systemPrompt()) ? 1 : 0, 1);
+        // all: the system prompt but the lines of How you work only the plugin's own chat needs, which end it, under
+        // their heading (the two together the prompt's text).
+        const std::string chatOnly = pg::ChatAgent::chatOnlyLines();
+        P.eq("guide.all", all.rfind("WORKING FROM OUTSIDE THE PLUGIN", 0) == 0 && has(all, pg::ChatAgent::guidePrompt())
+                              && !chatOnly.empty() && all.size() > chatOnly.size()
+                              && all.compare(all.size() - chatOnly.size(), chatOnly.size(), chatOnly) == 0
+                              && has(all, std::string("\n") + pg::mcp::guide::kChatOnly + "\n")
+                              && pg::ChatAgent::guidePrompt().size() + chatOnly.size() == pg::ChatAgent::systemPrompt().size() ? 1 : 0, 1);
+        {
+            // start: none of those five lines (the chat's <plugin_state>, planner, web search, ask_user, markdown).
+            int lines = 0, kept = 0;
+            for (std::size_t p = 0; p < chatOnly.size();)
+            {
+                const std::size_t eol = chatOnly.find('\n', p);
+                kept += has(guide, chatOnly.substr(p, std::min<std::size_t>(80, eol - p))) ? 1 : 0;
+                ++lines;
+                p = eol == std::string::npos ? chatOnly.size() : eol + 1;
+            }
+            P.eq("guide.start_chat_only", lines == 5 && kept == 0 ? 1 : 0, 1);
+        }
+        {
+            // start: host.fm in short, no <host_file>: every field of its module on its line, and where it is whole.
+            const std::string src(pg::Patch::hostSource());
+            const std::size_t open = src.find('{', src.find("module Host")), close = src.find("};", open);
+            std::vector<std::string> fields;
+            std::string word;
+            for (const char ch : src.substr(open + 1, close - open - 1) + " ")
+                if (std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_')
+                    word += ch;
+                else
+                {
+                    if (!word.empty() && word != "float" && word != "int" && word != "bool")
+                        fields.push_back(word);
+                    word.clear();
+                }
+            const std::size_t at = guide.find("\nmodule Host { ");
+            const std::string line = at == std::string::npos ? std::string() : guide.substr(at + 1, guide.find('\n', at + 1) - at - 1);
+            bool named = fields.size() >= 16;
+            for (const std::string& f : fields)
+                named = named && (has(line, " " + f + ";") || has(line, " " + f + ","));
+            std::printf("host.fm in start: %s\n", line.c_str());
+            P.eq("guide.start_host", named && !has(guide, "<host_file") && has(guide, "part \"library:host.fm\"")
+                                         && has(guide, "declare `Host* host;`") ? 1 : 0, 1);
+            // library:host.fm (and :code): host.fm whole, as THE HOST quotes it in the prompt.
+            const std::string whole = "<host_file name=\"host.fm\">\n" + src + "</host_file>\n";
+            P.eq("guide.host_file", text("library:host.fm") == whole && text("library:host.fm:code") == whole
+                                        && has(pg::ChatAgent::systemPrompt(), whole) ? 1 : 0, 1);
+        }
         P.eq("guide.start", has(guide, "\nFMINUS, THE LANGUAGE\n") && has(guide, "\nDSP PRACTICE IN THIS PLUGIN\n")
                                 && has(guide, "\nCHECKING YOUR WORK\n") && has(guide, "\nTHE OTHER PARTS OF THIS GUIDE\n")
                                 && has(guide, "<tool name=\"write_file\" part=\"start\">") && has(guide, "\"library:<file>:code\"")
@@ -720,9 +772,12 @@ PROBE(plugin, mcp)
         a->poll();
         const pg::Draft after = a->editorPort().draft();
         P.eq("guide.library_code", has(code, lib.source) && before.files.size() == after.files.size() && before.files == after.files ? 1 : 0, 1);
-        const juce::var unknown = part("nonsense");
-        std::printf("unknown part: %s\n", unknown["error"].toString().toRawUTF8());
-        P.eq("guide.unknown", unknown.hasProperty("error") && unknown["error"].toString().contains("\"interface\"") ? 1 : 0, 1);
+        const juce::var unknown = part("nonsense"), noFile = part("library:nosuch.fm");
+        std::printf("unknown part: %s\nno such library file: %s\n", unknown["error"].toString().toRawUTF8(),
+                    noFile["error"].toString().toRawUTF8());
+        P.eq("guide.unknown", unknown.hasProperty("error") && unknown["error"].toString().contains("\"interface\"")
+                                  && unknown["error"].toString().contains("\"library:host.fm\"")
+                                  && noFile["error"].toString().contains("\"library:host.fm\"") ? 1 : 0, 1);
     }
 
     // ---- CALL ------------------------------------------------------------------------------------------------------------
@@ -1133,8 +1188,10 @@ PROBE(plugin, mcp)
         const juce::var cachedPart = s.request({}, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "interface" } }) } }));
         const juce::var cachedCode = s.request({}, "tools/call", object({ { "name", "playground_guide" },
                                                                           { "arguments", object({ { "part", juce::String("library:") + pg::kLibrary[0].name + ":code" } }) } }));
+        const juce::var cachedHost = s.request({}, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "library:host.fm" } }) } }));
         P.eq("gone.guide_cached", firstText(rep["result"]) == guide && firstText(cachedPart["result"]) == interfacePart
-                                      && has(firstText(cachedCode["result"]), pg::kLibrary[0].source) ? 1 : 0, 1);
+                                      && has(firstText(cachedCode["result"]), pg::kLibrary[0].source)
+                                      && has(firstText(cachedHost["result"]), std::string(pg::Patch::hostSource())) ? 1 : 0, 1);
         s.stop();
     }
     {
