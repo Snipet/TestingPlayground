@@ -830,7 +830,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
     `[[fminus::default]]`, as `Patch`'s `controlOf` makes controls of them), or Claude's list (its `unit` only what a
     blank panel writes as unit=: as in the plugin, a dial shows a unit from the .gui alone); with no program, the
     fields the displays name are mocked as floats; shaders built with the installed plugin's shaderc (or
-    `<prefix>SHADERC`), else a placeholder and a note (and render says so). render's theme is the user's (the
+    `<prefix>SHADERC`), through the plugin's cache (its disk folder too), else a placeholder and a note (and render
+    says so). render's theme is the user's (the
     product's preferences, read again each time) unless asked. render's `values` name dials and, as view_panel's do,
     fields and in and out (`View::setShown`: over the demo meters); the two tools' `values` share their words
     (`mcp::kPanelValues`), so the server's list gives them once.
@@ -1009,9 +1010,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   display's in `DisplayItem`), placed by `Panel::layoutGuiItems`; teach it in the prompt's THE INTERFACE
   (`ChatPrompt.cpp`) and GuiSpec.h's header; run `fminus.gui`, `gui.panel` and `gui.styles` (look at their PNGs) and
   `plugin.chatexample`. Shaders (`fminus/Shaders.h`: built with the bundled shaderc where the program compiles, the
-  compiler's thread for a RUN and compileNow's caller for a host's state load, and checked there by the renderer,
-  `ShaderTools::check`, FunkGui's `shaders::check`, so the message thread's `shaders::set()` runs no Metal compile;
-  `GuiShaderItem`, registered by `GuiView::registerShaders`) have `gui.shaders`; the build copies shaderc into each
+  compiler's thread for a RUN and compileNow's caller for a host's state load, which wait for them, and checked there
+  by the renderer, `ShaderTools::check`, FunkGui's `shaders::check`, so the message thread's `shaders::set()` runs no
+  Metal compile; a panel's at once (`ShaderCache::buildAll`, shaderc `kShadercAtOnce` at most in a process), started
+  before FMinus compiles (`readGuiShaders`: the inputs as written; a wrong guess costs a build, never the result);
+  kept by `shaderCache()`, the process's, and on disk (`ShaderTools::cacheDir`, `shaderCacheFolder()`: the user's
+  caches, the probe's sandbox under CTest), keyed by everything a build's bytes come from, shaderc's path, size and
+  time among them, written under a temporary name and renamed into place, read back only whole; `GuiShaderItem`,
+  registered by `GuiView::registerShaders`) have `gui.shaders` (CACHE, TIME); the build copies shaderc into each
   bundle (`CMakeLists.txt`) and CTest gives the probes its path (`<prefix>SHADERC`). A property every element of a kind
   could take goes through `class` and `defaults` without more: they hand on properties, not kinds.
 - **A dial style or a display kind** of the `#pragma panel` lines: its enum in `PanelSpec.h` (`DialStyle`,
