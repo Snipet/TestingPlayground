@@ -1001,9 +1001,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   properties and notes in `GuiSpec.cpp`, its natural size in `GuiLayout.cpp`, its item and drawing in `GuiItems` (a
   display's in `DisplayItem`), placed by `Panel::layoutGuiItems`; teach it in the prompt's THE INTERFACE
   (`ChatPrompt.cpp`) and GuiSpec.h's header; run `fminus.gui`, `gui.panel` and `gui.styles` (look at their PNGs) and
-  `plugin.chatexample`. Shaders (`fminus/Shaders.h`: built on the compiler's thread with the bundled shaderc, and
-  checked there by the renderer, `ShaderTools::check`, FunkGui's `shaders::check`, so the message thread's
-  `shaders::set()` runs no Metal compile; `GuiShaderItem`, registered by `GuiView::registerShaders`) have `gui.shaders`; the build copies shaderc into each
+  `plugin.chatexample`. Shaders (`fminus/Shaders.h`: built with the bundled shaderc where the program compiles, the
+  compiler's thread for a RUN and compileNow's caller for a host's state load, and checked there by the renderer,
+  `ShaderTools::check`, FunkGui's `shaders::check`, so the message thread's `shaders::set()` runs no Metal compile;
+  `GuiShaderItem`, registered by `GuiView::registerShaders`) have `gui.shaders`; the build copies shaderc into each
   bundle (`CMakeLists.txt`) and CTest gives the probes its path (`<prefix>SHADERC`). A property every element of a kind
   could take goes through `class` and `defaults` without more: they hand on properties, not kinds.
 - **A dial style or a display kind** of the `#pragma panel` lines: its enum in `PanelSpec.h` (`DialStyle`,

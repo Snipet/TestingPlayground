@@ -390,9 +390,10 @@ module Voice
   holds the body of a fragment shader in bgfx's GLSL (a `main()` that sets `gl_FragColor`, reading `v_uv`, `v_px`,
   `u_size`, `u_time` and its inputs as `in0`..`in7` or `in_cutoff`, `in_out`: a parameter's 0..1, a field's value, the
   audio's level). The plugin builds it with the shaderc it carries (`Contents/Resources/shaderc`, bgfx's) when the
-  program runs, and has the GPU check it then too, off the editor's thread, so a new shader never stalls the window;
-  one that does not compile, or that the GPU refuses, is a note on its own line, and draws nothing until it does
-  (`Source/fminus/Shaders.h`). Four a panel at most. `taper=log` gives a frequency's or a time's knob the same
+  program runs, and has the GPU check it then too, where the program compiles: for a RUN on the compiler's own
+  thread, so a new shader does not stall the window, and for a host's session or preset load on the thread that
+  loads it, as shaderc and the program's compile run there; one that does not compile, or that the GPU refuses, is a
+  note on its own line, and draws nothing until it does (`Source/fminus/Shaders.h`). Four a panel at most. `taper=log` gives a frequency's or a time's knob the same
   turn for each octave, and the host's automation follows it; `unit=`, `decimals=` and `scale=` say how a value reads,
   to the host too (`Source/dsp/Controls.h`). Displays are those of the lines below and `spectrum` (an analyser of `in`
   or `out`), sixteen at most; a field of the module `Shared` is named through the main module's pointer to it,

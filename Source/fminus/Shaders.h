@@ -11,11 +11,14 @@
 //                      out the audio's level (its peak, 0..1)
 // and v_uv (0..1 across, y down) and v_px (px from the top left corner), FunkGui's varyings.
 //
-// buildShader() runs bgfx's shaderc on it (Compiler's thread: about 60 ms; never the audio or the message thread) into
-// the binary FunkGui's ShaderLibrary takes. shaderc's errors come back as a note's text on the file's own line. The
-// Compiler then has the renderer check the binary there too (ShaderTools::check: FunkGui's shaders::check, on macOS
-// Metal's own compiler, milliseconds and more), so that the Panel's shaders::set() on the message thread compiles
-// nothing; a binary the renderer refuses is a note too, and not handed on.
+// buildShader() runs bgfx's shaderc on it (about 60 ms; never on the audio thread) into the binary FunkGui's
+// ShaderLibrary takes, where the Compiler compiles the program: on its own thread for a RUN, on the calling thread for
+// compileNow (the processor's construction, a host's session or preset load: often the message thread). shaderc's
+// errors come back as a note's text on the file's own line. The Compiler then has the renderer check the binary there
+// too (ShaderTools::check: FunkGui's shaders::check, on macOS Metal's own compiler, milliseconds and more), so that the
+// Panel's shaders::set() on the message thread compiles nothing; a binary the renderer refuses is a note too, and not
+// handed on. A state load pays for the check whether or not an editor opens (FunkGui remembers a code it accepted, so
+// another instance's load of the same shader does not compile it again).
 #pragma once
 
 #include <cstdint>

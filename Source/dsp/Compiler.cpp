@@ -28,9 +28,10 @@ namespace playground
             return out;
         }
 
-        // The panel's shaders built (their binaries in it), each from its file, and checked by the renderer here, on
-        // the compiler's thread (ShaderTools::check: the Panel's shaders::set() then compiles nothing on the message
-        // thread); a failure appended to `notes`, and the shader left without a binary.
+        // The panel's shaders built (their binaries in it), each from its file, and checked by the renderer, on the
+        // thread that compiles (the compiler's, or compileNow's caller's: ShaderTools::check, so the Panel's
+        // shaders::set() then compiles nothing on the message thread); a failure appended to `notes`, and the shader
+        // left without a binary.
         void buildShaders(PanelSpec& panel, const Sources& files, const ShaderTools& tools, ShaderCache& cache,
                           std::string& notes)
         {
