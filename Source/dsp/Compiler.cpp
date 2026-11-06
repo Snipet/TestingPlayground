@@ -3,12 +3,15 @@
 
 #include "dsp/Engine.h"
 #include "fminus/Circuits.h"
+#include "fminus/GuiSpec.h"
 #include "fminus/Patch.h"
 
 #include "Product.h"
 
 #include <algorithm>
 #include <chrono>
+#include <system_error>
+#include <thread>
 #include <utility>
 
 namespace playground
@@ -28,24 +31,43 @@ namespace playground
             return out;
         }
 
-        // The panel's shaders built (their binaries in it), each from its file, and checked by the renderer, on the
-        // thread that compiles (the compiler's, or compileNow's caller's: ShaderTools::check, so the Panel's
-        // shaders::set() then compiles nothing on the message thread); a failure appended to `notes`, and the shader
-        // left without a binary.
+        // The jobs for `shaders`, each from its file among `files` (one with no file is left out: GuiSpec said so);
+        // `which`, when given, gets each job's shader.
+        std::vector<ShaderJob> shaderJobs(const std::vector<PanelShader>& shaders, const Sources& files,
+                                          std::vector<std::size_t>* which = nullptr)
+        {
+            std::vector<ShaderJob> jobs;
+            for (std::size_t k = 0; k < shaders.size(); ++k)
+            {
+                const PanelShader& sh = shaders[k];
+                const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& s) { return s.name == sh.file; });
+                if (f == files.end())
+                    continue;
+                jobs.push_back({ sh.file, f->text, sh.inputs });
+                if (which != nullptr)
+                    which->push_back(k);
+            }
+            return jobs;
+        }
+
+        // The panel's shaders built (their binaries in it), each from its file, and checked by the renderer, at once
+        // (ShaderCache::buildAll) on threads of their own while the thread that compiles waits (the compiler's, or
+        // compileNow's caller's: ShaderTools::check, so the Panel's shaders::set() then compiles nothing on the message
+        // thread); a failure appended to `notes`, and the shader left without a binary.
         void buildShaders(PanelSpec& panel, const Sources& files, const ShaderTools& tools, ShaderCache& cache,
                           std::string& notes)
         {
-            for (PanelShader& sh : panel.shaders)
+            std::vector<std::size_t> which;
+            const std::vector<ShaderJob> jobs = shaderJobs(panel.shaders, files, &which);
+            const std::vector<ShaderBuild> builds = cache.buildAll(jobs, tools);
+            for (std::size_t j = 0; j < builds.size(); ++j)
             {
-                const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& s) { return s.name == sh.file; });
-                if (f == files.end())
-                    continue;                            // GuiSpec said so
-                const ShaderBuild b = cache.build(sh.file, f->text, sh.inputs, tools);
-                std::string refused;
-                if (b.ok() && tools.check && !tools.check(b.binary, refused))
+                PanelShader& sh = panel.shaders[which[j]];
+                const ShaderBuild& b = builds[j];
+                if (b.ok() && b.refused)
                 {
                     const std::string line = sh.file + ":1:1: note: the GPU refused it: "
-                                           + (refused.empty() ? std::string("no reason given") : noteLine(refused)) + "\n";
+                                           + (b.refusal.empty() ? std::string("no reason given") : noteLine(b.refusal)) + "\n";
                     if (notes.find(line) == std::string::npos)
                         notes += line;
                 }
@@ -58,6 +80,45 @@ namespace playground
                     notes += b.error;
             }
         }
+
+        // The shaders a program's .gui file asks for, built (and checked) on a thread of its own while FMinus compiles
+        // the program (readGuiShaders: their inputs taken at their word, before the program says which it has), so
+        // that buildShaders, after the compile, finds them made: a RUN waits for the longer of the two, not their sum.
+        // Joined before buildShaders runs (`wait`) and when it goes.
+        class EarlyShaders
+        {
+        public:
+            EarlyShaders(const Sources& files, const ShaderTools& tools, ShaderCache& cache)
+            {
+                if (!tools.usable())
+                    return;
+                const auto gui = std::find_if(files.begin(), files.end(), [](const SourceFile& f) { return isGuiFile(f.name); });
+                if (gui == files.end())
+                    return;
+                std::vector<ShaderJob> jobs = shaderJobs(readGuiShaders(*gui, product::kIsInstrument), files);
+                if (jobs.empty())
+                    return;
+                try
+                {
+                    thread_ = std::thread([&cache, tools, guessed = std::move(jobs)] { cache.buildAll(guessed, tools); });
+                }
+                catch (const std::system_error&)
+                {
+                }                                    // no thread: buildShaders builds them after the compile
+            }
+            ~EarlyShaders() { wait(); }
+            EarlyShaders(const EarlyShaders&) = delete;
+            EarlyShaders& operator=(const EarlyShaders&) = delete;
+
+            void wait()
+            {
+                if (thread_.joinable())
+                    thread_.join();
+            }
+
+        private:
+            std::thread thread_;
+        };
 
         std::string fileOf(const CompileStatus& s)
         {
@@ -82,6 +143,7 @@ namespace playground
                                                      ShaderCache& cache, bool keepIr)
     {
         auto b = std::make_unique<Built>();
+        EarlyShaders early(files, tools, cache);
         Patch::Result r = Patch::compile(files, rate, keepIr);
         b->ir = std::move(r.ir);
         b->keepIr = keepIr;
@@ -99,7 +161,10 @@ namespace playground
             s.controls = r.patch->controls();
             s.panel = r.patch->panel();
             if (!s.panel.shaders.empty())
+            {
+                early.wait();
                 buildShaders(s.panel, s.sources, tools, cache, s.notes);
+            }
             r.patch->setProgram(id);
             s.program = id;
             b->recipe = r.patch->recipe();

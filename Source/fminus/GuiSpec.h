@@ -95,4 +95,9 @@ namespace playground
     // a shader names). Notes, a line each, are appended.
     PanelSpec readGuiSpec(const SourceFile& gui, Controls& controls, const std::vector<PanelField>& fields,
                           bool instrument, const std::vector<std::string>& fileNames, std::string& notes);
+
+    // The shaders `gui` asks for, read before the program compiles (the Compiler builds them meanwhile: Shaders.h):
+    // as readGuiSpec reads them, but each input taken at its word, where readGuiSpec keeps only the parameters and
+    // fields the program has; their binaries empty. No notes (readGuiSpec's to give).
+    std::vector<PanelShader> readGuiShaders(const SourceFile& gui, bool instrument);
 }

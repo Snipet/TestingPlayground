@@ -23,11 +23,12 @@
 // beside the compiles: a RUN never waits for it.
 //
 // A program that plays and has a .gui file with shaders gets them built too (fminus/Shaders.h: shaderc, with the
-// tools setShaderTools gave; a shader seen before comes from the cache) and checked by the renderer, both on the thread
-// that compiles (the compiler's for a RUN; compileNow's caller's, often the message thread, for the processor's
-// construction and a host's state load) (ShaderTools::check: on macOS Metal's own compile, which the editor's
-// shaders::set() then skips): their binaries go into the status's panel (PanelShader::binary), and a shader that does
-// not compile, or that the renderer refuses, is a note on its own file's line.
+// tools setShaderTools gave; a shader seen before comes from the process's cache, in memory or on disk) and checked by
+// the renderer (ShaderTools::check: on macOS Metal's own compile, which the editor's shaders::set() then skips), each on
+// a thread of its own, started before FMinus compiles the program and waited for by the thread that compiles (the
+// compiler's for a RUN; compileNow's caller's, often the message thread, for the processor's construction and a host's
+// state load): their binaries go into the status's panel (PanelShader::binary), and a shader that does not compile, or
+// that the renderer refuses, is a note on its own file's line.
 //
 // The IR (Patch.h, "The IR"; the editor's IR view). While someone looks (setIrWanted: the editor's IR tab is open), a
 // RUN keeps the program's LLVM IR, as lowered and as optimised (Patch::compile's keepIr), and the freezer the frozen
@@ -271,7 +272,7 @@ namespace playground
         mutable std::mutex mutex_;
         ShaderTools tools_;                    // mutex_
         DialCarrier carrier_;                  // mutex_
-        ShaderCache shaders_;
+        ShaderCache& shaders_ = shaderCache();   // the process's (Shaders.h)
         std::condition_variable wake_, idle_;
         Sources queued_;
         bool hasQueued_ = false;
