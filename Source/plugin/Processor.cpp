@@ -781,6 +781,9 @@ namespace playground
         // A carry made since (a later program on its way, or played already) writes instead: this one's values came
         // from the same host values, which still mean what they meant.
         const bool newest = k.ticket != 0 && k.ticket == carryTickets_;
+        // And each carry writes once: its status applied again (a new revision of the same program: the self-test's
+        // notes) leaves a value moved back since (an undo, the host's automation) where it is.
+        const bool carrying = newest && k.ticket != carryWritten_;
         for (int c = 0; c < kMaxControls; ++c)
         {
             const auto i = static_cast<std::size_t>(c);
@@ -792,7 +795,7 @@ namespace playground
             float plain = 0.0f;
             if (((given.slots >> c) & 1u) != 0)
                 plain = given.plain[i];
-            else if (newest && ((k.slots >> c) & 1u) != 0 && norm == k.fromNorm[i])
+            else if (carrying && ((k.slots >> c) & 1u) != 0 && norm == k.fromNorm[i])
                 plain = k.plain[i];
             else
                 continue;                                        // moved since (the host's, the user's): theirs stands
@@ -806,6 +809,7 @@ namespace playground
         }
         if (!newest)
             return;
+        carryWritten_ = k.ticket;
         meaningControls_ = controls;
         meaningOptions_ = options;
         meaningProgram_.store(s.program, std::memory_order_release);   // after the writes (readParameters)
@@ -1810,7 +1814,17 @@ namespace playground
     {
         if (slot < 0 || slot >= kMaxControls)
             return 0.0f;
-        const Control c = chatDials()[static_cast<std::size_t>(slot)];
+        const auto i = static_cast<std::size_t>(slot);
+        // One status for the control and its carry (chatDials' rule: a failed compile's are the program's that plays).
+        const CompileStatus s = compiler_.status();
+        Control c;
+        if (s.ok)
+            c = s.controls[i];
+        else
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            c = controls_[i];
+        }
         {
             // A value Claude set that poll() has not applied yet is the dial's now: a measurement right after set_dial
             // renders it (as the parameter will hold it: through its range and steps).
@@ -1819,18 +1833,17 @@ namespace playground
                 if (it->first == slot)
                     return plainOf(c, normOf(c, it->second));
         }
-        const float norm = raw_[static_cast<std::size_t>(slot)]->load();
+        // Whose controls the value is in, then the value, as readParameters reads them (apply() stores the meaning after
+        // its writes): under the old meaning the value is the one the carry was made from or the one apply() wrote, and
+        // under the new one it is the written one.
+        const uint64_t meaning = meaningProgram_.load(std::memory_order_acquire);
+        const float norm = raw_[i]->load();
         if (!std::isfinite(norm))
             return c.def;
         // A program compiled whose carry poll() has not written yet: the value it plays (Engine.h, "The dials' carry").
-        if (const CompileStatus s = compiler_.status(); s.ok)
-        {
-            const uint64_t meaning = meaningProgram_.load(std::memory_order_acquire);
-            const auto i = static_cast<std::size_t>(slot);
-            if (meaning != s.program && meaning == s.carry.from && ((s.carry.slots >> slot) & 1u) != 0
-                && std::clamp(norm, 0.0f, 1.0f) == s.carry.fromNorm[i])
-                return s.carry.plain[i];
-        }
+        if (s.ok && meaning != s.program && meaning == s.carry.from && ((s.carry.slots >> slot) & 1u) != 0
+            && std::clamp(norm, 0.0f, 1.0f) == s.carry.fromNorm[i])
+            return s.carry.plain[i];
         return plainOf(c, norm);
     }
 

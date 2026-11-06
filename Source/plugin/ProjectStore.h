@@ -24,10 +24,11 @@
 // value that has a name (its switch's, buttons' or menu's text) keeps it too ("label": optional, added later, read past
 // by an older build), and lands on that name wherever the program's options put it now (valueOf; Controls.h, "a dial's
 // value across a declaration change"), so a preset saved on PITCH applies PITCH after an option is inserted before
-// it; a name the options lack lands on the number. A version's note says
-// what changed since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions
-// versions; the numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project
-// renamed); names are told apart case aside, as the Mac's disks tell files apart.
+// it; a name the options lack lands on the number. Saving a version from before labels again unchanged adds no version
+// (a label follows from its value and the files) but gives it its values' names. A version's note says what changed
+// since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions versions; the
+// numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project renamed); names
+// are told apart case aside, as the Mac's disks tell files apart.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.

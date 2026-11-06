@@ -26,7 +26,12 @@
 //           (1, never TRUCK) and PITCH on PITCH (2 -> 3, "option moved"), the host's text the name. A range that no
 //           longer holds a value clamps it (25 L -> 10 L, "clamped"). Two dials that swap places each start at their
 //           default, as before, run_program saying where each moved from. The host's automation: a value the host
-//           writes after the compile and before poll() plays as it says (the new declarations read it) and stays
+//           writes after the compile and before poll() plays as it says (the new declarations read it) and stays. Two
+//           runs before one poll(): the second carries from the first program's controls (what the values still mean),
+//           never from the one between (9.68 L, never 20 L), and only it is written, one gesture a dial. A state load
+//           carries nothing and its values are its program's: a run of the same declarations after it writes nothing.
+//           A carry writes once: its status applied again (the self-test giving up: a new revision, the same program)
+//           leaves a value the host moved back to the one the carry was made from (an undo) as it is
 //   BROKEN  a session whose program does not compile (here: a syntax error) leaves the program that played playing,
 //           its errors in the status, and the draft the session's
 //   EMPTY   a session saved without a program (an older version's) plays the first example
@@ -522,6 +527,109 @@ PROBE(plugin, state)
         P.near("carry.reorder_beta_default", static_cast<double>(h.value(0)), 3.0, 1e-5);
         P.near("carry.reorder_alpha_default", static_cast<double>(h.value(1)), 2.0, 1e-5);
         P.eq("carry.report_moved", has(ran, "alpha: 7.00 -> 2.00 (moved from dial 1 to 2: its default)") ? 1 : 0, 1);
+    }
+    {
+        // Two runs before one poll(): the second's carry is made from what the host's values still mean (the first
+        // program's controls), never from the program between, and only it is written. size 9.68 L (to 10), then to 30,
+        // then to 20: carried from the program between, 9.68 L would read as 28.84 L and clamp to 20 L (mass 309 kg).
+        HostRig h;
+        h.run(carryFloats(10, 3000, false));
+        h.p.poll();
+        h.set(0, 9.68f);
+        h.set(1, 626.0f);
+        h.render(0.05);
+        HostView view;
+        h.p.addListener(&view);
+        h.run(carryFloats(30, 50000, true));
+        h.render(0.05);
+        const std::string ran = h.run(carryFloats(20, 20000, true));
+        std::printf("run_program (the second before poll):\n%s\n", ran.c_str());
+        const probe::Stereo window = h.render(0.06);
+        const std::size_t settled = static_cast<std::size_t>(0.03 * kFs);
+        P.eq("carry.twice_window_no_writes", view.total(), 0);
+        if constexpr (kInstrument)
+            P.le("carry.twice_window_size", offBy(window.l, settled, window.l.size(), 0.0968), 1e-5);
+        else
+            P.le("carry.twice_window_size", offBy(window.l, 0, window.l.size(), 0.0968), 1e-5);   // the crossfade too
+        P.le("carry.twice_window_mass", offBy(window.r, settled, window.r.size(), 0.00626) * 1e5, 0.01);
+        h.p.poll();
+        P.eq("carry.twice_one_gesture_each", view.changes[0] == 1 && view.begins[0] == 1 && view.ends[0] == 1 && view.changes[1] == 1
+                                                 && view.begins[1] == 1 && view.ends[1] == 1 && view.total() == 2 ? 1 : 0, 1);
+        P.near("carry.twice_host_size", static_cast<double>(h.value(0)), 9.68, 1e-3);
+        P.near("carry.twice_host_mass", static_cast<double>(h.value(1)), 626.0, 0.01);
+        P.eq("carry.twice_report", has(ran, "size: 9.68 L -> 9.68 L (range changed)\n") && has(ran, "mass: 626 kg -> 626 kg (range changed)\n")
+                                       ? 1 : 0, 1);
+        h.p.removeListener(&view);
+    }
+    {
+        // A state load carries nothing, and its values are its program's from then on: a run of the same declarations
+        // after it writes nothing and keeps 9.68 L and 626 kg (carried from the program the processor started with,
+        // Init, whose dials have other names, both would start at their defaults, 1 L and 100 kg).
+        juce::MemoryBlock saved;
+        {
+            HostRig a;
+            a.run(carryFloats(10, 3000, false));
+            a.p.poll();
+            a.set(0, 9.68f);
+            a.set(1, 626.0f);
+            a.p.getStateInformation(saved);
+        }
+        HostRig h;
+        h.p.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+        h.p.poll();
+        P.eq("carry.load_values", std::fabs(h.value(0) - 9.68f) < 1e-3f && std::fabs(h.value(1) - 626.0f) < 0.01f ? 1 : 0, 1);
+        HostView view;
+        h.p.addListener(&view);
+        const std::string ran = h.run(carryFloats(10, 3000, false));
+        const probe::Stereo window = h.render(0.06);
+        const std::size_t settled = static_cast<std::size_t>(0.03 * kFs);
+        P.le("carry.load_run_plays_size", offBy(window.l, settled, window.l.size(), 0.0968), 1e-5);
+        P.le("carry.load_run_plays_mass", offBy(window.r, settled, window.r.size(), 0.00626) * 1e5, 0.01);
+        h.p.poll();
+        P.eq("carry.load_run_writes_nothing", view.total(), 0);
+        P.near("carry.load_run_size", static_cast<double>(h.value(0)), 9.68, 1e-3);
+        P.near("carry.load_run_mass", static_cast<double>(h.value(1)), 626.0, 0.01);
+        P.eq("carry.load_run_unchanged", has(ran, "Its dials: unchanged") && !has(ran, "What the new declarations did") ? 1 : 0, 1);
+        h.p.removeListener(&view);
+    }
+    {
+        // A carry writes once: its status applied again (a new revision of the same program: the self-test's notes,
+        // here a test that gives up) leaves a value moved back since where it is (an undo in the host, or its
+        // automation, back on the value the carry was made from), never writing the carry over it again.
+        pg::circuits::Answers& store = pg::circuits::answers();
+        store.clearForTests();
+        const auto clipped = [](pg::Sources files) {
+            files.front().text = "#include \"clipper.cir\"\n" + files.front().text;
+            files.push_back({ "clipper.cir", probe::kAutoClipper });
+            return files;
+        };
+        HostRig h;
+        h.p.compiler().setSelfTesting(false);
+        h.p.compiler().setSelfTestBudget(1);                     // its test stops before its references: no answer
+        h.run(clipped(carryFloats(10, 3000, false)));
+        h.p.poll();
+        h.set(0, 9.68f);
+        h.render(0.05);
+        const float fromNorm = h.p.getParameters()[0]->getValue();
+        h.run(clipped(carryFloats(30, 50000, true)));
+        h.p.poll();                                              // the carry written: 9.68 L in the range to 30
+        const bool written = h.p.getParameters()[0]->getValue() != fromNorm && std::fabs(h.value(0) - 9.68f) < 1e-3f;
+        h.p.getParameters()[0]->setValueNotifyingHost(fromNorm); // the host's undo
+        const pg::CompileStatus before = h.p.editorPort().status();
+        HostView view;
+        h.p.addListener(&view);
+        const bool refined = h.p.compiler().selfTestNow();
+        const pg::CompileStatus after = h.p.editorPort().status();
+        h.p.poll();
+        std::printf("carry once: refined %d, revisions %llu -> %llu, notes: %s", refined ? 1 : 0,
+                    static_cast<unsigned long long>(before.revision), static_cast<unsigned long long>(after.revision), after.notes.c_str());
+        P.eq("carry.once_written", written ? 1 : 0, 1);
+        P.eq("carry.once_applied_again", before.ok && has(before.notes, "provisional: ") && !refined && after.ok
+                                             && after.revision == before.revision + 1 && after.program == before.program
+                                             && after.carry.ticket == before.carry.ticket ? 1 : 0, 1);
+        P.eq("carry.once_undo_stands", view.total() == 0 && h.p.getParameters()[0]->getValue() == fromNorm ? 1 : 0, 1);
+        h.p.removeListener(&view);
+        store.clearForTests();
     }
 
     // BROKEN

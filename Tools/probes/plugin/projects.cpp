@@ -22,7 +22,8 @@
 //            saved on PITCH (KEYS CAR PITCH) has "label": "PITCH" in its JSON (a float none), and so does a preset;
 //            after TRUCK is inserted before PITCH (the run keeps PITCH: 3) and the dial moved to KEYS, the preset
 //            applies PITCH (3, never TRUCK), not edited; version 1 opens on PITCH (2) and a version saved since on its
-//            own (3); a project from before labels (the field taken out) lands on the number, as it did
+//            own (3); a project from before labels (the field taken out) lands on the number, as it did, and its
+//            latest version saved again unchanged adds no version but gains its label
 //   SESSION  the session keeps the project, its version and the preset; a session from before projects names a preset,
 //            now the project of that name
 //   MIGRATE  a preset file from before projects becomes a project of one version (its files, tab and dials, a note of
@@ -379,13 +380,26 @@ PROBE(plugin, projects)
         // A project from before labels: the number, as before (2 is TRUCK now).
         rewrite(dir, "Gears", "Old gears", [](juce::var& old) {
             old.getDynamicObject()->setProperty("name", "Old gears");
-            for (juce::var& pr : *old["presets"].getArray())
-                for (juce::var& d : *pr["dials"].getArray())
-                    d.getDynamicObject()->removeProperty("label");
+            for (const char* list : { "versions", "presets" })
+                for (juce::var& item : *old[list].getArray())
+                    for (juce::var& d : *item["dials"].getArray())
+                        d.getDynamicObject()->removeProperty("label");
         });
         P.eq("label.old_applied", e.editorPort().applyPreset("Old gears", "On pitch", why) ? 1 : 0, 1);
         e.settle();
         P.near("label.old_by_number", static_cast<double>(dial(e, 0)), 2.0, 0.0);
+        // Its latest version opened (on 3, PITCH: the number) and saved again unchanged: no version added, the version
+        // given its values' names.
+        P.eq("label.old_opens", e.editorPort().openProject("Old gears", 2, why) ? 1 : 0, 1);
+        e.settle();
+        const bool same = e.editorPort().saveVersion("Old gears", saved, why) && saved.unchanged && saved.number == 2;
+        const juce::var old = juce::JSON::parse(dir.getChildFile("Old gears.fmproject").loadFileAsString());
+        const juce::var v1 = old["versions"][0]["dials"][0], v2 = old["versions"][1]["dials"][0];
+        std::printf("label: an old version saved again: unchanged %d, number %d, versions %d\n", saved.unchanged ? 1 : 0, saved.number,
+                    old["versions"].size());
+        P.eq("label.old_unchanged_no_version", same && old["versions"].size() == 2 ? 1 : 0, 1);
+        P.eq("label.old_gains_label", v2["label"].toString() == "PITCH" && static_cast<int>(v2["value"]) == 3 && !v1.hasProperty("label")
+                                          ? 1 : 0, 1);
         P.eq("label.removed", pc.deleteProject("Gears", why) && pc.deleteProject("Old gears", why) ? 1 : 0, 1);
     }
 

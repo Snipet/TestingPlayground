@@ -180,6 +180,7 @@ namespace playground
         DialCarry carryFor(const Controls& controls, const PanelSpec& panel);
         // The carry of `s` (or `given`) written as host gestures, a slot whose value the host or the user moved since
         // left as it is; then the values' meaning is `s`'s program (unless a carry was made since: it writes instead).
+        // A carry writes once: `s` applied again (a new revision, the same program) writes only `given`.
         void writeCarry(const CompileStatus& s, const Controls& controls,
                         const std::array<std::vector<std::string>, kMaxControls>& options, const Given& given);
         // The values' meaning set to a program whose values came with it (a state load), any carry made before stale.
@@ -318,13 +319,15 @@ namespace playground
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads
         std::array<juce::RangedAudioParameter*, kMaxControls> params_{};
         // The values' meaning (the dials' carry, apply()): the program whose controls the host's values are in, its
-        // controls and options, and the carries made (each a ticket). The audio thread reads meaningProgram_ before the
-        // values (release after apply's writes); the rest under meaningMutex_, which apply holds while it writes and the
-        // carrier while it reads (never calling the Compiler under it: a refine asks under the Compiler's mutex).
+        // controls and options, the carries made (each a ticket) and the last one written. The audio thread and
+        // chatDialValue read meaningProgram_ before the values (release after apply's writes); the rest under
+        // meaningMutex_, which apply holds while it writes and the carrier while it reads (never calling the Compiler
+        // under it: a refine asks under the Compiler's mutex).
         mutable std::mutex meaningMutex_;
         Controls meaningControls_{};
         std::array<std::vector<std::string>, kMaxControls> meaningOptions_{};
         uint64_t carryTickets_ = 0;
+        uint64_t carryWritten_ = 0;
         std::atomic<uint64_t> meaningProgram_{ 0 };
         // Declared after apvts_, so they are destroyed before the parameters they refer to.
         std::vector<std::unique_ptr<GesturePort>> portStore_;   // JuceParamPorts that say when the editor moved them

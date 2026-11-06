@@ -163,12 +163,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `meaningMutex_`) and the carry travels in the Patch (for the audio thread) and the status (for `apply`). The Engine
   plays a slot's carried value while `setControls`' meaning is the carry's `from` and the slot's value is still
   `fromNorm`; `apply` writes the carried values (one gesture each; a slot the host or the user moved since left as it
-  is, one that plays its value already not written; only the newest carry writes), then stores `meaningProgram_`
-  (release; `readParameters` reads it before the values): keep that order. A state load carries nothing
-  (`compileNow(files, false)`, `adoptMeaning` after `replaceState`). The carrier never calls the Compiler (a refine
-  asks under its mutex). chatDialValue says the carried value until `apply` has run, so run_program reports what plays.
-  Projects and presets keep a value's name with its number (`projectstore::Dial::label`, an added field). `plugin.state`
-  CARRY and `plugin.projects` LABEL check.
+  is, one that plays its value already not written; only the newest carry writes, and only once), then stores
+  `meaningProgram_` (release; `readParameters` and `chatDialValue` read it before the values): keep that order. A state
+  load carries nothing (`compileNow(files, false)`, `adoptMeaning` after `replaceState`). The carrier never calls the
+  Compiler (a refine asks under its mutex). chatDialValue says the carried value until `apply` has run, so run_program
+  reports what plays. Projects and presets keep a value's name with its number (`projectstore::Dial::label`, an added
+  field; a version saved again unchanged gains the names it lacked). `plugin.state` CARRY and `plugin.projects` LABEL
+  check.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked
