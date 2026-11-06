@@ -514,7 +514,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   measures, its span, window, weighting and band, in the words `metricTerms()` defines, and a default tolerance; the
   system prompt's CHECKING YOUR WORK lists them from the table, the terms first, each line's tolerance written by
   `toleranceText` from the same table `Goals` reads (`plugin.chatexample` holds the guide's to `toleranceOf`), so a
-  metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. Every
+  metric added there is taught at once); a request's `want` runs only the renders and the analysis they need. The
+  report ends with the values measured, name=value in the table's order (`metricsLine`: the guide says so), and
+  measure_output's `spectrum` (octave, third or semitone: `Request::spectrum`, analysis only, as `want`) adds band levels
+  as data (`bandsOf`, `bandLevels` over `stereoSpectrum`: both channels' power, in `kBandSeconds` Hann frames, a band's
+  bins by their share of it; an instrument's in dBFS while held, an effect's noise's gain, out against in), the bands
+  compare and the capture's report read too, so that none of them moves with the rate. Every
   metric is over its own span and the same at every rate: the held part (`heldSpans`: each note from 50 ms after its
   note-on, half the note when shorter, to its note-off; an effect's signal from 50 ms in to its end), its spectra
   Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid and the
