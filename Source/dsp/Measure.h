@@ -448,6 +448,7 @@ namespace playground::measure
                                                              // one holds less and the tone spreads over those beside it
     inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
     inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
+    inline constexpr double kSameBendCents = 1.0;            // pitch wheel moves within this of each other: one stretch
 
     // The held part of a timeline's notes (an instrument's): from kSettleSeconds after each note-on (half the note when
     // it is shorter) to its note-off (a key pressed again while held ends it there and starts the next; a key still down
@@ -455,9 +456,12 @@ namespace playground::measure
     std::vector<Span> heldSpans(const Timeline& timeline, std::size_t heldEnd, double rate);
 
     // The expected pitch's stretches: `held` (the held part, or a window) cut where the expected pitch changes: the lowest
-    // key held there (from its held span's start, as heldSpans; where none is, as in a window after the note-offs, `key`)
-    // bent by the pitch wheel at 2 semitones (host.fm's), as the timeline's events set them. `next`: the nearest key above
-    // it held anywhere in the stretch (-1: none). The metrics read the pitch of each stretch alone (Session::measure).
+    // key held there (from its held span's start, as heldSpans; where none is, in a window, the lowest sounding, from its
+    // note-on to its note-off; where none sounds, the lowest of those released last; before any note-on, `key`) bent by
+    // the pitch wheel at 2 semitones (host.fm's), as the timeline's events set them; the wheel's moves within
+    // kSameBendCents of each other make one stretch, bent by their mean over it. `next`: the nearest key above it held
+    // (or sounding, as `key`) anywhere in the stretch (-1: none). The metrics read the pitch of each stretch alone
+    // (Session::measure).
     struct Stretch
     {
         Span span;
@@ -548,10 +552,12 @@ namespace playground::measure
 
     // The strongest component of a spectrum between 20 Hz and maxHz (and the Nyquist frequency) that is no harmonic of
     // f0 (farther than six of its resolution bins from every multiple of it: 15 Hz with kPuritySeconds frames): an
-    // alias, or the sound's own. A component is a peak (a local maximum over two bins each side): a level that moves
-    // within a frame (a slow attack, a decay) widens each harmonic's lobe past the six bins, and that skirt, falling away
-    // from its harmonic, has none. db relative to the strongest component, -200 when nothing is found. The second form
-    // reads all of `x` through kPuritySeconds Blackman-Harris frames.
+    // alias, or the sound's own. A component is a peak (a local maximum over two bins each side): a slow attack widens
+    // each harmonic's lobe past the six bins within a frame, and that skirt, falling away from its harmonic, has none. A
+    // decay through the held part can still make peaks of its own (frames whose level falls across them: 60 dB in 0.1 s
+    // reads about -29 dB, in 1 s about -87), so a decaying sound's aliasing is judged on a held, steady note. db relative
+    // to the strongest component, -200 when nothing is found. The second form reads all of `x` through kPuritySeconds
+    // Blackman-Harris frames.
     Peak inharmonic(const Spectrum& spectrum, double f0, double maxHz);
     Peak inharmonic(const std::vector<float>& x, double rate, double f0, double maxHz);
     // The energy in the band farther than six resolution bins from `hz`, against all of it in the band, in dB: a sine's

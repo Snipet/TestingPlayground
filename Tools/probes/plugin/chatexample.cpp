@@ -654,7 +654,7 @@ PROBE(plugin, chatexample)
             P.near("measure.host_bent_hz", firstPartial(w), 220.0 * std::pow(2.0, 2.0 / 12.0), 0.3);
             // One note bent by a scenario's pitch wheel from the start: still its pitch line, the expected pitch bent with it
             // (it follows the wheel through the note), so 0 cents from it (the pitch's judgement renders the note and a whole
-            // tone up each alone, both bent alike).
+            // tone up each alone, with no scenario wheel: the request's pitchbend, 0 here, which it looks around).
             pg::measure::Request wheel;
             wheel.notes = { 57 };
             wheel.wheels.push_back({ pg::measure::Wheel::bend, 0.0, 1.0f });

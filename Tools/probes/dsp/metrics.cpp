@@ -17,11 +17,15 @@
 //            alone, a whole tone apart)
 //   STRETCH  the expected pitch stretch by stretch (stretches()), at 48 and 192 kHz: a C3 held 1 s, the pitch wheel
 //            half way up at 0.3 s, reads the bent pitch (its longest stretch) and 0 cents, the report naming both
-//            stretches; down at 0.6 s the unbent pitch; up from the start by a scenario's wheel 0 cents; a phrase whose
-//            notes are each off by their own (0, 40, 70, 120 cents) their average (57.5), its lowest note's own pitch,
-//            the farthest named, and in tune 0; sixteenth notes of C3 and D3 0; E1 held 0.1 s no pitch (a note of
-//            0.15 s, it says), held 0.2 s its pitch but no inharmonic_db (a note of 0.34 s), held 0.4 s both; a chord of
-//            a semitone no pitch ("too near")
+//            stretches; down at 0.6 s the unbent pitch; up from the start by a scenario's wheel 0 cents; the wheel
+//            jittering by 0.08 cents every 20 ms one stretch, 0 cents; gliding 4 cents every 20 ms no pitch, the wheel
+//            named, not the note's length; a phrase whose notes are each off by their own (0, 40, 70, 120 cents) the
+//            farthest (+120), its lowest note's own pitch, the spread and the mean (57.5) named, in tune 0, and notes off
+//            either way (-30, +30, -30, +30) 30 cents off, not their mean; a window over a phrase (C4, then E4) from E4's
+//            note-on E4's pitch at 0 cents (its first 50 ms E4's, not C4's), over both notes 0; sixteenth notes of C3
+//            and D3 0; E1 held 0.1 s no pitch (a note of 0.15 s, it says), held 0.2 s its pitch but no inharmonic_db (a
+//            note of 0.34 s), held 0.4 s both; a chord of a semitone no pitch ("too near"); a noise hit of 0.05 s,
+//            too short for the pitch's frames, "Unpitched" and no Inharmonic line
 //   INHARMONIC a 0.3 s attack (linear, exponential) widens the harmonics' lobes but makes no peak: inharmonic_db under
 //            -90; a partial of its own at -60 dB under the same attack is found within a dB, at 48 and 192 kHz
 //   CLICKS   measure's click metric and trace's click finding agree: a sound with a step every 40 ms (an engine's
@@ -30,7 +34,9 @@
 //            for an effect that passes its input (the test impulse and its echoes are the response, not clicks), nor
 //            trace with the impulse as its input (find click and any), which says why
 //   HELD     heldSpans: a note number above 127 (a malformed message, which the Engine ignores) is no held part;
-//            stretches(): two notes and a bend cut where the lowest key or the wheel changes, each with the key above
+//            stretches(): two notes and a bend cut where the lowest key or the wheel changes, each with the key above;
+//            a window's parts no held span covers the key sounding there, else the key released last, else (before
+//            any note-on) the one given; the wheel's moves within a cent of each other one stretch, bent by their mean
 //   WINDOW   a request's window, at 48 and 192 kHz: an instrument's voice that sounds on after a short note (a sine for
 //            its first second, sixteen harmonics after) measured over 1.5 to 2.5 s reads the bright part (its centroid
 //            within 5 % of the harmonics' power centroid, its RMS and its pitch), where the held part reads the sine;
@@ -231,12 +237,14 @@ module Voice
     }
 
     // Eight harmonics (1/h) on the pitch wheel (2 semitones), tuned `stretch` cents a semitone sharp above note 48 (a
-    // phrase's notes each off by their own), under an attack of `attack` seconds (`shape` 0: linear; 1: exponential, 60 dB
-    // in it), with a partial of its own at 1.37 times the note, `odd` dB under the fundamental (-200: none).
+    // phrase's notes each off by their own) and `apart` cents flat on even notes, sharp on odd ones, under an attack of
+    // `attack` seconds (`shape` 0: linear; 1: exponential, 60 dB in it), with a partial of its own at 1.37 times the
+    // note, `odd` dB under the fundamental (-200: none).
     [[maybe_unused]] const char* kWheelVoice = R"(#include "host.fm"
 module Voice
 {
     param float stretch [[fminus::range(-50, 50)]] [[fminus::default(0)]];
+    param float apart [[fminus::range(-50, 50)]] [[fminus::default(0)]];
     param float attack [[fminus::range(0.001, 4)]] [[fminus::default(0.005)]];
     param int shape [[fminus::range(0, 1)]] [[fminus::default(0)]];
     param float odd [[fminus::range(-200, 0)]] [[fminus::default(-200)]];
@@ -246,7 +254,8 @@ module Voice
     void init(float r) { rate = r; }
     void start(float note, float v)
     {
-        step = 440 * expf(0.0577622650f * (note - 69 + 0.01f * stretch[0] * fmaxf(0, note - 48))) / rate;
+        step = 440 * expf(0.0577622650f * (note - 69 + 0.01f * stretch[0] * fmaxf(0, note - 48)
+                                           - 0.01f * apart[0] * cosf(3.14159265f * note))) / rate;
         held = true; env = 0; t = 0; ph = 0; po = 0;
     }
     void stop() { held = false; }
@@ -913,8 +922,26 @@ PROBE(dsp, metrics)
             P.near("stretch.wheel_down_hz" + tag, at(down.values, "fundamental_hz") / noteHz(48), 1.0, 0.0005);
             P.near("stretch.wheel_down_cents" + tag, at(down.values, "pitch_cents"), 0.0, 1.0);
             P.near("stretch.wheel_start_cents" + tag, at(start.values, "pitch_cents"), 0.0, 1.0);
+            // The wheel's moves within a cent of each other are one stretch (a resting wheel's jitter, every 20 ms between
+            // 0 and 0.08 cents: C3 read, 0 cents); a glide in steps of 4 cents every 20 ms leaves no stretch C3's frames
+            // can read, and says the wheel moves too often, not that the note is short.
+            ms::Request jitter = note, glide = note;
+            for (int k = 1; k < 50; ++k)
+            {
+                jitter.wheels.push_back({ ms::Wheel::bend, 0.02 * k, k % 2 == 0 ? 0.0f : 0.0004f });
+                glide.wheels.push_back({ ms::Wheel::bend, 0.02 * k, 0.02f * static_cast<float>(k) });
+            }
+            const ms::Result jittered = measured(wheel, rate, jitter), glided = measured(wheel, rate, glide);
+            std::printf("the wheel gliding every 20 ms at %s: %s", tag.c_str(), glided.report.c_str());
+            P.near("stretch.wheel_jitter_cents" + tag, at(jittered.values, "pitch_cents"), 0.0, 1.0);
+            P.eq("stretch.wheel_jitter_one" + tag, has(jittered.report, "(note 48)") && !has(jittered.report, "Each stretch") ? 1 : 0, 1);
+            P.eq("stretch.wheel_glide_says" + tag, std::isnan(at(glided.values, "pitch_cents"))
+                                                      && has(unmeasured(glided, "pitch_cents"), "the pitch wheel moves too often: note 48 "
+                                                                                                "stays at one place of it for 0.02 s at most")
+                                                      && !has(unmeasured(glided, "pitch_cents"), "a note of") ? 1 : 0, 1);
             // A phrase's expected pitch is each note's: four notes each off by their own (0, 40, 70 and 120 cents) read
-            // their average (57.5), the lowest note's pitch its own, the farthest named; in tune, 0.
+            // the farthest (+120: no note off one way hides another off the other), the lowest note's pitch its own, the
+            // spread and the mean (57.5) named; in tune, 0.
             ms::Request phrase;
             phrase.phrase = { { 48, 0.0, 0.5, 0.8f }, { 52, 0.5, 0.5, 0.8f }, { 55, 1.0, 0.5, 0.8f }, { 60, 1.5, 0.5, 0.8f } };
             phrase.tailSeconds = 0.3f;
@@ -922,11 +949,33 @@ PROBE(dsp, metrics)
             sharp.dials = { { "stretch", 10.0f } };
             const ms::Result tuned = measured(wheel, rate, phrase), off = measured(wheel, rate, sharp);
             std::printf("a phrase each note off by its own at %s: %s", tag.c_str(), off.report.c_str());
-            P.near("stretch.phrase_each_cents" + tag, at(off.values, "pitch_cents"), 57.5, 1.0);
+            P.near("stretch.phrase_each_cents" + tag, at(off.values, "pitch_cents"), 120.0, 1.0);
             P.near("stretch.phrase_lowest_hz" + tag, at(off.values, "fundamental_hz") / noteHz(48), 1.0, 0.0005);
-            P.eq("stretch.phrase_farthest" + tag, has(off.report, "over 4 stretches, +0.") && has(off.report, " to +120.0 (the farthest note 60 at 1.55 s)")
+            P.eq("stretch.phrase_farthest" + tag, has(off.report, "over 4 stretches: +120.0 cents at the farthest (note 60 at 1.55 s), +0.")
+                                                     && has(off.report, " to +120.0, +57.") && has(off.report, " on average.")
                                                      ? 1 : 0, 1);
             P.near("stretch.phrase_tuned_cents" + tag, at(tuned.values, "pitch_cents"), 0.0, 1.0);
+            // Notes off either way (-30, +30, -30, +30 cents) read 30 cents off (the farthest), not their mean, 0.
+            ms::Request apart = phrase;
+            apart.phrase = { { 48, 0.0, 0.5, 0.8f }, { 51, 0.5, 0.5, 0.8f }, { 48, 1.0, 0.5, 0.8f }, { 51, 1.5, 0.5, 0.8f } };
+            apart.dials = { { "apart", 30.0f } };
+            const ms::Result split = measured(wheel, rate, apart);
+            std::printf("a phrase of notes off either way at %s: pitch_cents %+.2f\n", tag.c_str(), at(split.values, "pitch_cents"));
+            P.near("stretch.phrase_apart_cents" + tag, std::fabs(at(split.values, "pitch_cents")), 30.0, 1.0);
+            // A window over a phrase reads the notes sounding in it: C4 then E4 (1 s each), over 1 to 2 s E4 alone (its
+            // first 50 ms, held by no key's span, E4's too, not C4's), over 0 to 2 s each note its own.
+            ms::Request legato;
+            legato.phrase = { { 60, 0.0, 1.0, 0.8f }, { 64, 1.0, 1.0, 0.8f } };
+            legato.tailSeconds = 0.3f;
+            ms::Request second = legato, whole = legato;
+            second.window = { 1.0, 2.0 };
+            whole.window = { 0.0, 2.0 };
+            const ms::Result late = measured(wheel, rate, second), both = measured(wheel, rate, whole);
+            std::printf("C4 then E4 over 1 to 2 s at %s: %s", tag.c_str(), late.report.c_str());
+            P.near("stretch.window_second_hz" + tag, at(late.values, "fundamental_hz") / noteHz(64), 1.0, 0.0005);
+            P.near("stretch.window_second_cents" + tag, at(late.values, "pitch_cents"), 0.0, 1.0);
+            P.eq("stretch.window_second_says" + tag, has(late.report, "from the expected 329.63 Hz (note 64)") ? 1 : 0, 1);
+            P.near("stretch.window_phrase_cents" + tag, at(both.values, "pitch_cents"), 0.0, 1.0);
             // Notes shorter than 0.45 s (their held part under the pitch's 0.4 s frames): sixteenth notes of C3 and D3,
             // each its own; a low note's (E1) pitch measured from a note of 0.2 s, not from one of 0.1 s, which no frame
             // that short parts from 0 Hz (saying how long a note must be), nor its harmonics' gaps under 0.35 s; and a
@@ -961,6 +1010,16 @@ PROBE(dsp, metrics)
             const ms::Result near = measured(wheel, rate, semitone);
             P.eq("stretch.semitone_unmeasured" + tag, std::isnan(at(near.values, "pitch_cents"))
                                                          && has(unmeasured(near, "fundamental_hz"), "is too near it") ? 1 : 0, 1);
+            // A noise hit too short for the pitch's frames (note 36 held 0.05 s) is still judged: "Unpitched", not a
+            // pitch that a longer note would read, and no Inharmonic line.
+            ms::Request hit;
+            hit.notes = { 36 };
+            hit.holdSeconds = 0.05f;
+            hit.tailSeconds = 0.3f;
+            const ms::Result drum = measured(pg::withLibraryIncludes(pg::singleFile(kNoiseVoice)), rate, hit);
+            std::printf("a noise hit of 0.05 s at %s: %s", tag.c_str(), drum.report.c_str());
+            P.eq("stretch.short_unpitched" + tag, has(drum.report, " Unpitched: ") && !has(drum.report, "Pitch: not measured")
+                                                     && !has(drum.report, "Inharmonic") ? 1 : 0, 1);
         }
     }
 
@@ -1101,6 +1160,38 @@ PROBE(dsp, metrics)
         std::printf("stretches: %s\n", got.c_str());
         P.eq("held.stretches", got == "[7200,19200) 48/52; [19200,28800) 48/52 bent; [28800,43200) 52/-1 bent; " ? 1 : 0, 1);
         P.near("held.stretch_hz", parts.size() == 3 ? parts[1].hz() : 0.0, noteHz(49), 1e-9);
+        const auto listed = [](const std::vector<ms::Stretch>& ps) {
+            std::string s;
+            for (const ms::Stretch& p : ps)
+                s += "[" + std::to_string(p.span.first) + "," + std::to_string(p.span.second) + ") " + std::to_string(p.key) + "/"
+                   + std::to_string(p.next) + (p.bend != 0.0f ? " bent" : "") + "; ";
+            return s;
+        };
+        // A window's parts no held span covers: C3 from 0.1 to 0.6 s, then E3 to 0.9 s, over 0 to 1.2 s (`key` 60): before
+        // the first note-on `key`, C3's first 50 ms C3, E3's E3 (sounding), after the note-off E3 (released last).
+        ms::Timeline seq;
+        seq.events = { { 0, pg::Event{ 0, pg::EventKind::pitchBend, 0, 0.0f } },
+                       { 4800, pg::Event{ 0, pg::EventKind::noteOn, 48, 0.8f } },
+                       { 28800, pg::Event{ 0, pg::EventKind::noteOff, 48, 0.0f } },
+                       { 28800, pg::Event{ 0, pg::EventKind::noteOn, 52, 0.8f } },
+                       { 43200, pg::Event{ 0, pg::EventKind::noteOff, 52, 0.0f } } };
+        const std::string inWindow = listed(ms::stretches(seq, { { 0, 57600 } }, 48000, 48000.0, 60));
+        std::printf("stretches in a window: %s\n", inWindow.c_str());
+        P.eq("held.window_sounding", inWindow == "[0,4800) 60/-1; [4800,28800) 48/-1; [28800,57600) 52/-1; " ? 1 : 0, 1);
+        // The wheel's moves within a cent of each other (kSameBendCents) make one stretch, bent by their mean: C3 from 0.1
+        // s, the wheel at 0.003 (0.6 cents) at 0.3 s joins it, at 0.006 at 0.5 s (1.2 cents from the first) starts the
+        // next, at 0.1 at 0.7 s the next.
+        ms::Timeline wheel;
+        wheel.events = { { 0, pg::Event{ 0, pg::EventKind::pitchBend, 0, 0.0f } },
+                         { 4800, pg::Event{ 0, pg::EventKind::noteOn, 48, 0.8f } },
+                         { 14400, pg::Event{ 0, pg::EventKind::pitchBend, 0, 0.003f } },
+                         { 24000, pg::Event{ 0, pg::EventKind::pitchBend, 0, 0.006f } },
+                         { 33600, pg::Event{ 0, pg::EventKind::pitchBend, 0, 0.1f } } };
+        const std::vector<ms::Stretch> moved = ms::stretches(wheel, ms::heldSpans(wheel, 48000, 48000.0), 48000, 48000.0, 48);
+        std::printf("stretches of a wheel's small moves: %s\n", listed(moved).c_str());
+        P.eq("held.wheel_within_a_cent", listed(moved) == "[7200,24000) 48/-1 bent; [24000,33600) 48/-1 bent; [33600,48000) 48/-1 bent; "
+                                             ? 1 : 0, 1);
+        P.near("held.wheel_mean", moved.empty() ? 0.0 : moved[0].bend, static_cast<double>(0.003f) * 9600.0 / 16800.0, 1e-7);
     }
 
     // ---- WINDOW --------------------------------------------------------------------------------------------------------
