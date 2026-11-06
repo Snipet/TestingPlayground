@@ -108,13 +108,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`projectstore::setDirectoryForTests`; its name starts with the product's prefix, as both products' probes run at
   once). The file format (`funk-playground-project`, version 1) is read by every later build: add fields, never change
   one's meaning (a version's `circuits`, the self-test's answers for its netlists, is such an added field); a project names its product and kind, and the other kind's is refused. The presets from before
-  projects (`.fmpreset`) are migrated, never deleted. `ProjectStore` caches each file's listing entry and its presets
-  by the file's time and size (one look a file: readdir and stat on the Mac), so the explorer's poll every 3 s
-  (`presetsOf`, `Processor::presets`) reads a project's file whole only when it changed (`projectstore::parses`,
-  plugin.projects and gui.explorer POLL), and the explorer hashes what its rows show each frame (the lists by a
-  revision a poll bumps). `Source/plugin/ProjectExport` writes a project as a source .zip
-  (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through macOS's
-  libcompression, zlib elsewhere) and reads both back; the same rule holds for both formats. plugin.export checks them.
+  projects (`.fmpreset`) are migrated, never deleted. `ProjectStore` caches each file's listing entry and its presets by
+  the file's time and size (one look a file: readdir and stat on the Mac; on Windows JUCE's listing, whose entries hold
+  both; a name asked in another case than its file's finds the same file's entry by its device and inode, on Windows by
+  its path case aside), so the explorer's poll every 3 s (`presetsOf`, `Processor::presets`) reads a project's file
+  whole only when it changed (`projectstore::parses`, plugin.projects and gui.explorer POLL), and the explorer hashes
+  what its rows show each frame (the lists by a revision a poll bumps). `Source/plugin/ProjectExport` writes a project
+  as a source .zip (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through
+  macOS's libcompression, zlib elsewhere) and reads both back; the same rule holds for both formats. plugin.export
+  checks them.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`, both products. `scripts/install.sh`
   copies both products' AU and VST3 into `~/Library/Audio/Plug-Ins` and their Standalone apps into `/Applications`
   (`~/Applications` when that is not writable; `scripts/install.sh synth`: one; `--dry-run` says what it would copy);
