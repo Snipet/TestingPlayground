@@ -90,8 +90,13 @@
 //     second, a frame each, the rate calm), a label read through a callback, a notice that ran out.
 // Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
 // differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
-// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, or a
-// compile running: what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps the rate up.
+// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, a
+// compile running, or input in the last kInputHold seconds (a pointer's move, press, drag, release or exit, a wheel, a
+// key, a double-click, a file drag): what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps
+// the rate up. Without the hold the pump went back to its calm 12 Hz after each input frame (a hover changes what is
+// drawn at once, no ease), and the next event's frame waited for the calm tick: the hover trailed the pointer.
+// SoftEditorHost holds after input too. A release and the pointer's exit also nudge the host's pump at once
+// (HostServices::nudgeFullRate), which FunkGui's EditorHost does for the other events.
 // gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob and
 // RATE what moves with no input (a knob's, a pad's, an envelope's), gui.shaders DRAW a shader's inputs, gui.panel
 // SETTLE displays that stand still and readouts that change.
@@ -175,6 +180,9 @@ namespace playground::ui
     // The size (logical px): the default, the least.
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
     inline constexpr int kMinWidth = 1000, kMinHeight = 600;
+    // After any input the full rate holds this long (s; Panel.h "Unchanged frames", Panel::wantsFullRate): the next
+    // event of a hover, a drag or typing finds the pump at 60 Hz.
+    inline constexpr double kInputHold = 0.3;
 
     // The panel's own primitive tags, for probes that find what they check by tag.
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
@@ -699,6 +707,9 @@ namespace playground::ui
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout() and scroll (what moved)
+        double inputAt_ = -1.0e9;                        // the last input's time (the host's clock: kInputHold)
+        void noteInput(bool nudge = false);
+        bool inputHeld() const;
         int layouts_ = 0;                                // layout()'s calls (probes)
         std::string title_, subtitle_, status_, meter_;
         std::string meterAlerts_, meterLoad_;            // meter_'s two parts, drawn either side of the snowflake

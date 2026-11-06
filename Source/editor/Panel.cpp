@@ -3761,6 +3761,7 @@ namespace playground::ui
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
     {
+        noteInput();
         dropActive_ = true;
         dropHover_ = card_.contains({ x, y });
         dirty_ = true;
@@ -3768,6 +3769,7 @@ namespace playground::ui
 
     void Panel::filesDragMove(float x, float y)
     {
+        noteInput();
         const bool over = card_.contains({ x, y });
         if (over != dropHover_)
         {
@@ -3778,12 +3780,14 @@ namespace playground::ui
 
     void Panel::filesDragExit()
     {
+        noteInput();
         dropActive_ = dropHover_ = false;
         dirty_ = true;
     }
 
     void Panel::filesDropped(const std::vector<std::string>& paths)
     {
+        noteInput();
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
@@ -6329,9 +6333,26 @@ namespace playground::ui
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_ || compiling_)
+        if (dirty_ || compiling_ || inputHeld())
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
+    }
+
+    // Input (Panel.h "Unchanged frames", kInputHold): the time of the last, which holds the full rate. `nudge`: tell the
+    // host's pump now too, for the events FunkGui's EditorHost does not nudge it on (a release, the pointer leaving),
+    // so the frame that draws them runs at the next display tick.
+    void Panel::noteInput(bool nudge)
+    {
+        if (host_ == nullptr)
+            return;
+        inputAt_ = host_->nowSeconds();
+        if (nudge)
+            host_->nudgeFullRate();
+    }
+
+    bool Panel::inputHeld() const
+    {
+        return host_ != nullptr && host_->nowSeconds() - inputAt_ < kInputHold;
     }
 
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
@@ -6620,6 +6641,7 @@ namespace playground::ui
 
     void Panel::pointerMove(const funkgui::PointerEvent& e)
     {
+        noteInput();
         const int before = hasPointer_ ? itemAt(pointer_) : -1;
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
@@ -6633,6 +6655,7 @@ namespace playground::ui
 
     void Panel::pointerExit()
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no exit
         if (hasPointer_)
             if (const int before = itemAt(pointer_); before >= 0)
                 items_[static_cast<std::size_t>(before)]->pointerExit();
@@ -6648,6 +6671,7 @@ namespace playground::ui
 
     void Panel::pointerDown(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
@@ -6729,6 +6753,7 @@ namespace playground::ui
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         pointer_ = { e.x, e.y };
         if (pressed_ >= 0 && gestures_)
@@ -6738,6 +6763,7 @@ namespace playground::ui
 
     void Panel::pointerUp(const funkgui::PointerEvent& e)
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no release
         dirty_ = true;                                   // input: drawn at the next frame
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerUp(e, *gestures_);
@@ -6747,6 +6773,7 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
@@ -6773,6 +6800,7 @@ namespace playground::ui
 
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {
@@ -6832,6 +6860,7 @@ namespace playground::ui
 
     bool Panel::key(const funkgui::KeyEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {

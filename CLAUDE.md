@@ -75,7 +75,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
   build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" above).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and probes,
-  and the installer) and run every test in `build-dev`: each of the 49 probes once for each product
+  and the installer) and run every test in `build-dev`: each of the 50 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
   change to its window). Done means it exits 0 with no warning from our sources (they build with `-Werror`). While
@@ -1128,6 +1128,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   something else draws (at most a second: the safety net); `gui.dump` DRAW has a row for each source. A value that
   moves on its own and moves smoothly (a host's automation, a field's mark, a shader's input) is motion too, or it
   steps at the calm 12 Hz: `Items.h`'s `Stirred` in the item's `tick()`, held a quarter second past the last move.
+  Input holds the full rate too, `kInputHold` (0.3 s) past the last event of any kind (`Panel::noteInput`: the pointer's
+  move, press, drag, release and exit, the wheel, keys, a double-click, a file drag; a release and an exit also nudge the
+  host's pump, which FunkGui's EditorHost does for the others), as SoftEditorHost holds it: a hover changes what is
+  drawn at once, so without it the pump fell back to 12 Hz after each event's frame and the next waited (gui.switch
+  RATE). A probe that checks the rate right after input ticks past the hold first.
   What changes in steps a few times a second (a readout's text) is a draw key, not motion: the hold would keep the full
   rate between steps. Only a shown item keeps the full rate (`wantsFullRate`), and a display settles when what it draws
   stands still (`DisplayItem`: a scope within half a px); gui.styles RATE and gui.panel SETTLE check, at the frame

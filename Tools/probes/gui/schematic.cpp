@@ -2159,6 +2159,7 @@ PROBE(gui, schematic)
         P.eq("probes.reason_not_playing_spoken", spoken("Probe: " + notPlaying) ? 1 : 0, 1);
         const funkgui::Rect canvas1 = v.canvasRect();
         P.eq("probes.select_keeps_canvas", canvas1.x == canvas0.x && canvas1.y == canvas0.y && canvas1.w == canvas0.w && canvas1.h == canvas0.h ? 1 : 0, 1);
+        host.tick(static_cast<int>(std::ceil(pg::ui::kInputHold * 60.0)) + 1);   // past the click's hold (Panel.h)
         P.eq("probes.select_keeps_rate", !rate0 && !panel.wantsFullRate() && v.settled() && !v.probesLive() && v.probeCard().h == 0.0f ? 1 : 0, 1);
         P.eq("probes.nothing_sent", v.probeSet() == pg::ProbeSet{} && panel.probeOwner() == 0 ? 1 : 0, 1);
         r.run();
