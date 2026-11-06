@@ -18,7 +18,8 @@
 //   POLL     a project's presets as the explorer asks for them (ProjectStore's presetsOf): as load() has them; asked
 //            again, its file is not read (ProjectStore's parses()), the name in another case the same; after a preset
 //            is saved, read once and not again; a preset more written by another (the file rewritten) seen at the next
-//            ask; a change list() read is not read again (one cache); a project that is not there: nothing, and why
+//            ask; a change list() read is not read again (one cache); a project that is not there: nothing, and why;
+//            the listing has a file whose extension is in capitals, not a folder named as a project
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
@@ -311,6 +312,23 @@ PROBE(plugin, projects)
         P.eq("poll.shared_with_list", ps::parses() - p3 == 1 && zz && zz->back().name == "Zz" ? 1 : 0, 1);
         why.clear();
         P.eq("poll.none", !ps::presetsOf("No Such Project", &why) && why.find("no project") != std::string::npos ? 1 : 0, 1);
+        // The listing (readdir, one look a file): a project's file whose extension is in capitals is listed, a folder
+        // named as a project is not.
+        {
+            const juce::File shouty = dir.getChildFile("Shouty.FMPROJECT"), folder = dir.getChildFile("Folder.fmproject");
+            dir.getChildFile("Glass Bloom.fmproject").copyFileTo(shouty);
+            folder.createDirectory();
+            bool listed = false, folderListed = false;
+            for (const ps::Entry& e : ps::list())
+            {
+                listed = listed || e.name == "Shouty";
+                folderListed = folderListed || e.name == "Folder";
+            }
+            P.eq("poll.list_extension_case", listed ? 1 : 0, 1);
+            P.eq("poll.list_no_folder", folderListed ? 0 : 1, 1);
+            shouty.deleteFile();
+            folder.deleteRecursively();
+        }
         // Back as it was (the presets above as saved): Zed and Zz go.
         P.eq("poll.tidy", ps::removePreset("Glass Bloom", "Zed") && ps::removePreset("Glass Bloom", "Zz")
                               && ps::removePreset("Glass Bloom", "Warm") ? 1 : 0, 1);

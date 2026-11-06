@@ -12,7 +12,13 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
+
+#if !defined(_WIN32)
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 namespace playground::projectstore
 {
@@ -276,6 +282,65 @@ namespace playground::projectstore
             }
             return parseRoot(juce::JSON::parse(f.loadFileAsString()), f.getFileNameWithoutExtension().toStdString(),
                              f.getFileName().toStdString(), why);
+        }
+
+        // A file's time (ms) and size from one look at it (a stat), or false when it is no file. On Windows, JUCE's two.
+        bool look(const juce::File& f, juce::int64& modified, juce::int64& size)
+        {
+#if defined(_WIN32)
+            if (!f.existsAsFile())
+                return false;
+            modified = f.getLastModificationTime().toMilliseconds();
+            size = f.getSize();
+            return true;
+#else
+            struct stat st{};
+            if (::stat(f.getFullPathName().toRawUTF8(), &st) != 0 || !S_ISREG(st.st_mode))
+                return false;
+#if defined(__APPLE__)
+            const timespec& t = st.st_mtimespec;
+#else
+            const timespec& t = st.st_mtim;
+#endif
+            modified = static_cast<juce::int64>(t.tv_sec) * 1000 + static_cast<juce::int64>(t.tv_nsec / 1000000);
+            size = static_cast<juce::int64>(st.st_size);
+            return true;
+#endif
+        }
+
+        // The folder's project files (*.fmproject, the extension's case aside), each with its time and size. On the Mac
+        // read with readdir and one look a file: JUCE's listing asks macOS of every file whether it is hidden, and the
+        // time and the size were a look each, about 50 us a file in all on a busy Mac.
+        struct Found
+        {
+            juce::File file;
+            juce::int64 modified = 0, size = 0;
+        };
+        std::vector<Found> projectFiles(const juce::File& dir)
+        {
+            std::vector<Found> out;
+#if defined(_WIN32)
+            for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension))
+                if (Found x{ f }; look(f, x.modified, x.size))
+                    out.push_back(std::move(x));
+#else
+            DIR* d = ::opendir(dir.getFullPathName().toRawUTF8());
+            if (d == nullptr)
+                return out;
+            const std::string_view ext = kExtension;
+            while (const dirent* e = ::readdir(d))
+            {
+                const std::string_view name = e->d_name;
+                if (name.size() <= ext.size()
+                    || !sameName(name.substr(name.size() - ext.size()), ext))
+                    continue;
+                Found x{ dir.getChildFile(juce::String::fromUTF8(e->d_name)) };
+                if (look(x.file, x.modified, x.size))
+                    out.push_back(std::move(x));
+            }
+            ::closedir(d);
+#endif
+            return out;
         }
 
         // What the cache keeps of a project read whole: the listing's entry and its presets'.
@@ -560,13 +625,14 @@ namespace playground::projectstore
         std::map<std::string, Cached> seen;
         {
             const std::lock_guard<std::mutex> lock(cacheMutex);
-            for (const juce::File& f : directory().findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension))
+            for (const Found& found : projectFiles(directory()))
             {
+                const juce::File& f = found.file;
                 const std::string name = f.getFileNameWithoutExtension().toStdString();
                 if (tidyName(name) != name || name.empty())
                     continue;
                 const std::string path = f.getFullPathName().toStdString();
-                const juce::int64 modified = f.getLastModificationTime().toMilliseconds(), size = f.getSize();
+                const juce::int64 modified = found.modified, size = found.size;
                 Cached c;
                 if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
                     c = it->second;
@@ -606,7 +672,12 @@ namespace playground::projectstore
             return std::nullopt;
         }
         const std::string path = f.getFullPathName().toStdString();
-        const juce::int64 modified = f.getLastModificationTime().toMilliseconds(), size = f.getSize();
+        juce::int64 modified = 0, size = 0;
+        if (!look(f, modified, size))
+        {
+            fail(why, "there is no project named \"" + std::string(name) + "\"");
+            return std::nullopt;
+        }
         {
             const std::lock_guard<std::mutex> lock(cacheMutex);
             if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
