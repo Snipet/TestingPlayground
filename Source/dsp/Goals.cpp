@@ -188,8 +188,11 @@ namespace playground::measure
                 const auto it = m.values.find(g.metric);
                 if (it == m.values.end())
                 {
-                    c.text = "not measured: " + g.metric + " needs "
-                           + (g.metric == "inharmonic_db" || g.metric == "chord_peak_db" ? "one note" : "another render");
+                    const auto why = m.unmeasured.find(g.metric);
+                    c.text = why != m.unmeasured.end() ? "not measured: " + why->second
+                                                       : "not measured: " + g.metric + " needs "
+                                                             + (g.metric == "inharmonic_db" || g.metric == "chord_peak_db" ? "one note"
+                                                                                                                             : "another render");
                     continue;
                 }
                 c.measured = true;

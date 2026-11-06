@@ -367,6 +367,20 @@ namespace playground::measure
         v.hiHz = std::min(20000.0, 0.5 * rate);
         v.heldUntil = heldUntil;
         const std::size_t holdN = heldUntil > 0.0 ? std::min(total, static_cast<std::size_t>(heldUntil * rate)) : total;
+        // The held part: from 50 ms in to the note-off (with nothing held, the RMS from 50 ms in and the spectrum all
+        // of it, to the end); or the window (Measure.h), both.
+        const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
+        std::size_t rmsFrom = settle, spectrumFrom = v.heldUntil > 0.0 ? settle : 0;
+        std::size_t heldTo = v.heldUntil > 0.0 ? holdN : total;
+        const Window& window = request.render.window;
+        if (window.set() && total > 0)
+        {
+            rmsFrom = spectrumFrom = std::min(total - 1, static_cast<std::size_t>(std::llround(window.from * rate)));
+            heldTo = std::clamp(static_cast<std::size_t>(std::llround(std::min(window.to, kMaxWindowSeconds) * rate)), rmsFrom + 1,
+                                total);
+            v.windowFrom = static_cast<double>(rmsFrom) / rate;
+            v.windowTo = static_cast<double>(heldTo) / rate;
+        }
         if (harmonics && cycleHz > 0.0)
             for (int k = 1; k <= 40 && cycleHz * k < v.hiHz; ++k)
                 v.harmonics.push_back(cycleHz * k);
@@ -386,12 +400,10 @@ namespace playground::measure
         }
         v.peakDb = toDb(top);
         {
-            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
-            const std::size_t end = v.heldUntil > 0.0 ? holdN : total;
             double e = 0.0;
-            for (std::size_t i = settle; i < end; ++i)
+            for (std::size_t i = rmsFrom; i < heldTo; ++i)
                 e += 0.5 * (static_cast<double>(L[i]) * L[i] + static_cast<double>(R[i]) * R[i]);
-            v.rmsDb = end > settle ? toDb(std::sqrt(e / static_cast<double>(end - settle))) : -240.0;
+            v.rmsDb = heldTo > rmsFrom ? toDb(std::sqrt(e / static_cast<double>(heldTo - rmsFrom))) : -240.0;
         }
         const std::size_t w10 = static_cast<std::size_t>(0.01 * rate);
         for (int c = 0; c < cols && total > 0; ++c)
@@ -442,11 +454,10 @@ namespace playground::measure
         }
         normalise(v.cells);
 
-        // The average spectrum of the held part (an impulse's or silence's: all of it).
+        // The average spectrum of the held part (an impulse's or silence's: all of it), or of the window.
         {
             constexpr std::size_t kWelch = 8192;
-            const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(0.05 * rate));
-            const std::size_t from = v.heldUntil > 0.0 ? settle : 0, to = v.heldUntil > 0.0 ? holdN : total;
+            const std::size_t from = spectrumFrom, to = heldTo;
             std::vector<double> sum(kWelch / 2 + 1, 0.0), p;
             Spectra spectra(kWelch);
             int frames = 0;
@@ -482,11 +493,12 @@ namespace playground::measure
                                              ? std::clamp(static_cast<std::size_t>(4.0 * rate / cycleHz),
                                                           static_cast<std::size_t>(0.002 * rate), static_cast<std::size_t>(0.05 * rate))
                                              : static_cast<std::size_t>(0.01 * rate);
-                const std::size_t middle = v.heldUntil > 0.0 ? holdN / 2
+                const std::size_t middle = window.set()     ? (spectrumFrom + heldTo) / 2
+                                         : v.heldUntil > 0.0 ? holdN / 2
                                                              : std::min(total, static_cast<std::size_t>(0.002 * rate) + span / 2);
                 a = middle > span / 2 ? middle - span / 2 : 0;
                 b = std::min(total, a + span);
-                if (fromStart)
+                if (fromStart && !window.set())
                 {
                     a = 0;                                   // the response's start
                     b = std::min(total, static_cast<std::size_t>(0.02 * rate));

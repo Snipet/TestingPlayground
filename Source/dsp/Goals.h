@@ -48,7 +48,9 @@ namespace playground::measure
     {
         std::string label;                        // what it checks, in a few words ("Releases within two seconds")
         Goal goal;
-        Request request;                          // the render it is measured in (its `dials` those it fixes)
+        Request request;                          // the render it is measured in (its `dials` those it fixes) and its
+                                                  // window (Measure.h: a window that holds none of what the metric needs
+                                                  // leaves it not measured, saying why)
         DialsFrom dialsFrom = DialsFrom::current;
         std::map<std::string, float> snapshot;    // the plugin's dials when it was set, by name (dialsFrom snapshot)
     };

@@ -353,17 +353,19 @@ namespace playground::measure
 
         // The words every line uses (metricTerms): "held" and "the spectrum" are defined there, once.
         constexpr const char* kInstrumentTerms =
-            "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together. "
-            "The spectrum: the held part's power, Welch's average of 0.1 s Hann frames overlapped by half, the same at "
-            "every rate. The band: 20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives "
-            "one.\n";
+            "Held: from 50 ms after each note-on (half the note if shorter) to its note-off, a phrase's notes together; a "
+            "window {from, to} (seconds of the render) replaces it, except in attack_s and release_s. The spectrum: the "
+            "held part's power, Welch's average of 0.1 s Hann frames overlapped by half, the same at every rate. The band: "
+            "20 Hz to 20 kHz. After each unit, the tolerance a target takes unless its goal gives one.\n";
         constexpr const char* kEffectTerms =
-            "Held: a test signal from 50 ms after it starts to its end (hold_seconds). The spectrum: the held part's power, "
-            "Welch's average of 0.1 s Hann frames overlapped by half, the same at every rate. The band: 20 Hz to 20 kHz. "
-            "After each unit, the tolerance a target takes unless its goal gives one.\n";
+            "Held: a test signal from 50 ms after it starts to its end (hold_seconds); a window {from, to} (seconds of each "
+            "signal's render) replaces it, cut at hold_seconds. The spectrum: the held part's power, Welch's average of "
+            "0.1 s Hann frames overlapped by half, the same at every rate. The band: 20 Hz to 20 kHz. After each unit, the "
+            "tolerance a target takes unless its goal gives one.\n";
 
         constexpr MetricInfo kInstrumentMetrics[] = {
-            { "peak_db", "dBFS", "the largest sample from the first note-on to the last note-off", 1.0, false, 0.0 },
+            { "peak_db", "dBFS", "the largest sample from the first note-on to the last note-off, or the window's", 1.0,
+              false, 0.0 },
             { "rms_db", "dBFS", "the RMS of both channels while held, DC and all", 1.0, false, 0.0 },
             { "dc", "", "the mean sample while held", 0.002, false, 0.0 },
             { "correlation", "", "left against right while held: 1 mono, 0 unrelated, -1 out of phase", 0.05, false, 0.0 },
@@ -395,7 +397,7 @@ namespace playground::measure
               "from the render's loudest 10 ms (RMS) until the 10 ms RMS stays 60 dB under it: a pluck's or a bell's "
               "decay",
               0.1, true, 0.002 },
-            { "release_s", "s", "from the last note-off until the 10 ms RMS stays 60 dB under rms_db",
+            { "release_s", "s", "from the last note-off until the 10 ms RMS stays 60 dB under the RMS while held",
               0.1, true, 0.002 },
             { "voice_end_s", "s", "from the last note-off until the last voice ended (process returned false)",
               0.1, true, 0.002 },
@@ -416,7 +418,8 @@ namespace playground::measure
         };
 
         constexpr MetricInfo kEffectMetrics[] = {
-            { "sine_peak_db", "dBFS", "the largest output sample of a 220 Hz sine at -12 dBFS", 1.0, false, 0.0 },
+            { "sine_peak_db", "dBFS", "the largest output sample of a 220 Hz sine at -12 dBFS, or the window's", 1.0, false,
+              0.0 },
             { "sine_rms_db", "dBFS", "its output's RMS of both channels while held", 1.0, false, 0.0 },
             { "sine_gain_db", "dB", "its output RMS over its input's, while held", 0.5, false, 0.0 },
             { "thd_db", "dB",
@@ -890,7 +893,7 @@ namespace playground::measure
         };
         return notes == o.notes && velocity == o.velocity && holdSeconds == o.holdSeconds && tailSeconds == o.tailSeconds
             && dials == o.dials && current == o.current && rate == o.rate && bpm == o.bpm && modwheel == o.modwheel
-            && pitchbend == o.pitchbend && block == o.block && input == o.input && signal == o.signal
+            && pitchbend == o.pitchbend && block == o.block && input == o.input && signal == o.signal && window == o.window
             && std::equal(phrase.begin(), phrase.end(), o.phrase.begin(), o.phrase.end(),
                           [](const PhraseNote& a, const PhraseNote& b) {
                               return a.note == b.note && a.at == b.at && a.length == b.length && a.velocity == b.velocity;
@@ -910,6 +913,8 @@ namespace playground::measure
             && blocks == o.blocks && frames == o.frames && frameControls == o.frameControls && clock == o.clock
             && part == o.part;
     }
+
+    std::string windowText(const Window& w) { return fmt("%.2f", w.from) + " to " + fmt("%.2f s", w.to); }
 
     bool Request::scenario() const
     {
@@ -1559,6 +1564,20 @@ namespace playground::measure
         }
 
         std::size_t lastMoment(const Timeline& tl) { return std::max(tl.heldUntil, lastChange(tl)); }
+
+        // Where a request's window ends (0: none), which its render reaches at least.
+        std::size_t windowEnd(const Request& req, double rate)
+        {
+            return req.window.set() ? sampleOf(std::min(req.window.to, kMaxWindowSeconds), rate) : 0;
+        }
+
+        // A window's samples within a render of `length`: at least one when it starts inside it, none (first ==
+        // second == length) when it starts at or after its end.
+        Span windowSpan(const Window& w, std::size_t length, double rate)
+        {
+            const std::size_t a = std::min(sampleOf(w.from, rate), length);
+            return { a, std::clamp(sampleOf(std::min(w.to, kMaxWindowSeconds), rate), std::min(a + 1, length), length) };
+        }
     }
 
     struct Session::Impl
@@ -1582,12 +1601,12 @@ namespace playground::measure
             if constexpr (kInstrument)
             {
                 noteParts(tl, req, keys, keys != nullptr ? offAt : holdN, rate);
-                tl.length = length > 0 ? length : lastMoment(tl) + tailN;
+                tl.length = length > 0 ? length : std::max(lastMoment(tl) + tailN, windowEnd(req, rate));
             }
             else
             {
                 tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-                tl.length = length > 0 ? length : std::max(tl.heldUntil, lastMoment(tl)) + tailN;
+                tl.length = length > 0 ? length : std::max(std::max(tl.heldUntil, lastMoment(tl)) + tailN, windowEnd(req, rate));
             }
             sortMarks(tl);
             return tl;
@@ -1823,12 +1842,12 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             noteParts(tl, req, nullptr, holdN, rate);
-            tl.length = length > 0 ? length : lastMoment(tl) + tailN;
+            tl.length = length > 0 ? length : std::max(lastMoment(tl) + tailN, windowEnd(req, rate));
         }
         else
         {
             tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-            tl.length = length > 0 ? length : std::max(tl.heldUntil, lastMoment(tl)) + tailN;
+            tl.length = length > 0 ? length : std::max(std::max(tl.heldUntil, lastMoment(tl)) + tailN, windowEnd(req, rate));
         }
         sortMarks(tl);
         return tl;
@@ -1889,6 +1908,13 @@ namespace playground::measure
         }
         if (!kInstrument && request.signal >= 0)
             out += "(input is for view_sound and compare: measure_output plays its own test signals.)\n";
+        // The window (Measure.h): the metrics measured while held measure it instead.
+        const bool windowed = request.window.set();
+        if (windowed)
+            out += "Window: " + windowText(request.window)
+                 + (kInstrument ? " of the render, measured in place of the held part (attack_s and release_s keep the notes')"
+                                : " of the sine's and the noise's renders, measured in place of their held part")
+                 + ".\n";
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         const std::size_t tailN = static_cast<std::size_t>(tail * rate);
         std::vector<std::string> warnings;
@@ -1914,9 +1940,13 @@ namespace playground::measure
                 notes = notesOf(request);
             const float vel = std::clamp(request.velocity, 0.0f, 1.0f);
             const std::size_t from = plan.firstNote, heldEnd = std::max(plan.heldUntil, from + 1);
+            // The window's samples (the render reaches its end: plan()), else the notes'.
+            const Span win = windowed ? windowSpan(request.window, plan.length, rate) : Span{ from, heldEnd };
             Timeline tl = plan;
-            const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, from, heldEnd);
+            const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
             voiceMarks(tl, r);
+            // How long the render goes on after the last note-off: the tail, or to the window's end when that is later.
+            const double after = windowed ? static_cast<double>(plan.length - std::min(plan.length, heldEnd)) / rate : tail;
 
             if (!phrased)
             {
@@ -1925,18 +1955,21 @@ namespace playground::measure
                     what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ", "
                           + fmt("%.1f Hz", noteHz(n)) + ")";
                 out += (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity " + fmt("%.2f", vel) + ", held "
-                     + seconds(hold) + ", then released for " + seconds(tail) + ".\n";
+                     + seconds(hold) + ", then released for " + seconds(after) + ".\n";
             }
             else
                 out += "Played: from the first note-on (" + seconds(static_cast<double>(from) / rate) + ") to the last note-off ("
-                     + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(tail) + " more.\n";
+                     + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(after) + " more.\n";
 
-            // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it.
-            std::vector<Span> held = heldSpans(plan, heldEnd, rate);
-            if (held.empty())
-                held.push_back({ from, heldEnd });
+            // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it;
+            // or the window. The notes' own (the envelope's, the release's reference) stays theirs.
+            std::vector<Span> notesHeld = heldSpans(plan, heldEnd, rate);
+            if (notesHeld.empty())
+                notesHeld.push_back({ from, heldEnd });
+            const std::vector<Span> held = windowed ? std::vector<Span>{ win } : notesHeld;
             const std::vector<float> m = mono(r.out, 0, r.out.size());
-            const double heldPeak = peak(r.out, from, heldEnd), heldRms = rmsOver(r.out, held);
+            const double heldPeak = peak(r.out, win.first, win.second), heldRms = rmsOver(r.out, held);
+            const double notesRms = windowed ? rmsOver(r.out, notesHeld) : heldRms;
             double corr = 1.0, bal = 0.0;
             stereoOver(r.out, held, corr, bal);
             const double heldDc = dcOver(r.out, held);
@@ -1945,10 +1978,11 @@ namespace playground::measure
             v["dc"] = heldDc;
             v["correlation"] = corr;
             v["balance_db"] = bal;
-            out += "Held: peak " + dbfs(heldPeak) + ", RMS " + dbfs(heldRms) + ", DC " + fmt("%.4f", heldDc)
-                 + ", left/right correlation " + fmt("%.2f", corr) + fmt(" (balance %+.1f dB).\n", bal);
+            out += std::string(windowed ? "In the window: peak " : "Held: peak ") + dbfs(heldPeak) + ", RMS " + dbfs(heldRms)
+                 + ", DC " + fmt("%.4f", heldDc) + ", left/right correlation " + fmt("%.2f", corr)
+                 + fmt(" (balance %+.1f dB).\n", bal);
             if (heldRms < 1e-5)
-                warnings.push_back("It is silent (or nearly) while the note is held.");
+                warnings.push_back(windowed ? "It is silent (or nearly) in the window." : "It is silent (or nearly) while the note is held.");
             if (heldPeak > 1.0)
                 warnings.push_back("Peaks above 0 dBFS with " + std::to_string(notes.size())
                                    + " note(s): a voice should peak near 0.2 to 0.3, since sixteen can sound at once.");
@@ -1976,7 +2010,8 @@ namespace playground::measure
                 const Spectrum sp = spectrum(m, rate, held);
                 const double centroid = sp.centroid();
                 v["centroid_hz"] = centroid;
-                out += "Spectrum while held: centroid " + fmt("%.0f Hz", centroid) + "; strongest partials "
+                out += std::string(windowed ? "Spectrum in the window" : "Spectrum while held") + ": centroid "
+                     + fmt("%.0f Hz", centroid) + "; strongest partials "
                      + partials(sp.peaks(8)) + ".";
                 // The pitch from frames of its own, long enough to part a low chord's notes (Measure.h).
                 const Pitch pitch = pitchOf(spectrum(m, rate, held, Taper::hann, kPitchSeconds), expectedHz, loHz, hiHz);
@@ -2079,28 +2114,29 @@ namespace playground::measure
                 }
                 v["attack_s"] = attack;
                 v["decay_s"] = decay;
-                if (heldRms >= 1e-5)
+                if (notesRms >= 1e-5)
                     out += "Envelope: its peaks come within 3 dB of their loudest " + valueText("attack_s", attack)
                          + " after the note-on; from its loudest moment it falls 60 dB in "
                          + (std::isinf(decay) ? std::string("more than the render") : valueText("decay_s", decay))
                          + ".\n";
             }
 
-            const long fall = fallTime(r.out, heldEnd, toDb(heldRms), 60.0, rate);
-            v["release_s"] = heldRms >= 1e-5 && fall >= 0 ? static_cast<double>(fall) / rate : heldRms < 1e-5 ? 0.0 : kInf;
+            // The release under the notes' held level, whatever the window.
+            const long fall = fallTime(r.out, heldEnd, toDb(notesRms), 60.0, rate);
+            v["release_s"] = notesRms >= 1e-5 && fall >= 0 ? static_cast<double>(fall) / rate : notesRms < 1e-5 ? 0.0 : kInf;
             v["voice_end_s"] = r.endedAt >= 0 ? static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate : kInf;
             out += "Release: ";
-            if (heldRms < 1e-5)
+            if (notesRms < 1e-5)
                 out += "nothing to release.";
             else if (fall < 0)
-                out += "still within 60 dB of the held level " + seconds(tail) + " after the note-off.";
+                out += "still within 60 dB of the held level " + seconds(after) + " after the note-off.";
             else
                 out += "falls 60 dB below the held level " + seconds(static_cast<double>(fall) / rate) + " after the note-off.";
             if (r.endedAt >= 0)
                 out += " The last voice ended " + seconds(static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate)
                      + " after it (process returned false).\n";
             else
-                out += " No voice ended within " + seconds(tail) + ": process kept returning true (end the release, or give "
+                out += " No voice ended within " + seconds(after) + ": process kept returning true (end the release, or give "
                        "a longer tail_seconds).\n";
 
             if (notes.size() == 1 && !phrased)
@@ -2150,8 +2186,8 @@ namespace playground::measure
             const double heldSeconds = static_cast<double>(r.cpuSamples) / rate;
             const double share = cpuShare(r.cpuMs, heldSeconds);
             v["cpu_percent"] = share;
-            out += "CPU: the notes held take " + percent(share) + " of one core (" + fmt("%.2f ms", r.cpuMs) + " for "
-                 + seconds(heldSeconds) + ")";
+            out += std::string(windowed ? "CPU: the window takes " : "CPU: the notes held take ") + percent(share) + " of one core ("
+                 + fmt("%.2f ms", r.cpuMs) + " for " + seconds(heldSeconds) + ")";
             if (need({ "cpu16_percent" }))
             {
                 const int low = std::min(*std::min_element(notes.begin(), notes.end()), 127 - 15);
@@ -2229,40 +2265,68 @@ namespace playground::measure
                 return std::move(r.out);
             };
 
-            // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h).
+            // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h); or the
+            // window, cut at its end (none when it starts there or after: those metrics are then not measured).
             const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(kSettleSeconds * rate));
-            const std::vector<Span> held{ { settle, holdN } };
-            if (everything || need({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "dc", "correlation", "balance_db" }))
+            const Span win = windowed ? windowSpan(request.window, holdN, rate) : Span{ 0, holdN };
+            const std::vector<Span> held{ windowed ? win : Span{ settle, holdN } };
+            const bool outside = win.first >= win.second;
+            const std::string outsideWhy = "the window starts after the sine and the noise end (hold_seconds, " + seconds(hold) + ")";
+            const auto unmeasured = [&](std::initializer_list<const char*> names) {
+                for (const char* n : names)
+                    res.unmeasured[n] = outsideWhy;
+            };
+            // A window outside the signals: their metrics are not measured (the signals still play for the steps, the
+            // alerts and the CPU of every signal).
+            const bool sineWanted = need({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "dc", "correlation", "balance_db" });
+            if (sineWanted && outside)
+            {
+                unmeasured({ "sine_peak_db", "sine_rms_db", "sine_gain_db", "thd_db", "dc", "correlation", "balance_db" });
+                out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + ": not measured, " + outsideWhy + ".\n";
+            }
+            if (everything || (sineWanted && !outside))
             {
                 const Stereo sine = signal(holdN, [&](std::size_t i) {
                     return sineAmp * static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / rate));
                 });
                 const Stereo o = through(sine, "the sine", holdN);
-                const double inRms = rmsOver(sine, held), outRms = rmsOver(o, held);
-                double corr = 1.0, bal = 0.0;
-                stereoOver(o, held, corr, bal);
-                const double outDc = dcOver(o, held);
-                const std::vector<float> mo = mono(o, 0, holdN);
-                const double thd = outRms > 1e-9 ? awayDb(spectrum(mo, rate, held, Taper::blackmanHarris, kPuritySeconds), 220.0) : -240.0;
-                v["sine_peak_db"] = toDb(peak(o, 0, holdN));
-                v["sine_rms_db"] = toDb(outRms);
-                v["sine_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
-                v["thd_db"] = thd;
-                v["dc"] = outDc;
-                v["correlation"] = corr;
-                v["balance_db"] = bal;
-                out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + ": out peak " + dbfs(peak(o, 0, holdN)) + ", RMS "
-                     + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + ", DC " + fmt("%.4f", outDc) + ", left/right correlation " + fmt("%.2f", corr)
-                     + fmt(" (balance %+.1f dB)", bal) + ". Partials out: "
-                     + partials(spectrum(mo, rate, held).peaks(8))
-                     + (outRms > 1e-9 ? "; THD+N (all but 220 Hz, in the band) " + valueText("thd_db", thd) : std::string()) + ".\n";
-                if (outRms < 1e-5)
-                    warnings.push_back("The sine comes out silent (or nearly).");
-                if (peak(o, 0, holdN) > 1.0)
-                    warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
+                if (sineWanted && !outside)
+                {
+                    const double inRms = rmsOver(sine, held), outRms = rmsOver(o, held);
+                    double corr = 1.0, bal = 0.0;
+                    stereoOver(o, held, corr, bal);
+                    const double outDc = dcOver(o, held);
+                    const std::vector<float> mo = mono(o, 0, holdN);
+                    const double thd = outRms > 1e-9 ? awayDb(spectrum(mo, rate, held, Taper::blackmanHarris, kPuritySeconds), 220.0) : -240.0;
+                    const double outPeak = peak(o, win.first, win.second);
+                    v["sine_peak_db"] = toDb(outPeak);
+                    v["sine_rms_db"] = toDb(outRms);
+                    v["sine_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
+                    v["thd_db"] = thd;
+                    v["dc"] = outDc;
+                    v["correlation"] = corr;
+                    v["balance_db"] = bal;
+                    out += "Sine 220 Hz at -12.0 dBFS for " + seconds(hold) + (windowed ? ", in the window" : "") + ": out peak "
+                         + dbfs(outPeak) + ", RMS " + dbfs(outRms)
+                         + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string()) + ", DC "
+                         + fmt("%.4f", outDc) + ", left/right correlation " + fmt("%.2f", corr)
+                         + fmt(" (balance %+.1f dB)", bal) + ". Partials out: " + partials(spectrum(mo, rate, held).peaks(8))
+                         + (outRms > 1e-9 ? "; THD+N (all but 220 Hz, in the band) " + valueText("thd_db", thd) : std::string())
+                         + ".\n";
+                    if (outRms < 1e-5)
+                        warnings.push_back(windowed ? "The sine comes out silent (or nearly) in the window."
+                                                    : "The sine comes out silent (or nearly).");
+                    if (outPeak > 1.0)
+                        warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
+                }
             }
-            if (everything || need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" }))
+            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" });
+            if (noiseWanted && outside)
+            {
+                unmeasured({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" });
+                out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + ": not measured, " + outsideWhy + ".\n";
+            }
+            if (everything || (noiseWanted && !outside))
             {
                 uint32_t seed = 22222;                       // a fixed noise: the same report each time
                 const float noiseAmp = static_cast<float>(std::pow(10.0, -18.0 / 20.0) * std::sqrt(3.0));
@@ -2271,18 +2335,21 @@ namespace playground::measure
                     return noiseAmp * (static_cast<float>(seed >> 8) / 8388608.0f - 1.0f);
                 });
                 const Stereo o = through(noise, "the noise", holdN);
-                const double inRms = rmsOver(noise, held), outRms = rmsOver(o, held);
-                double corr = 1.0, bal = 0.0;
-                stereoOver(o, held, corr, bal);
-                const double cin = spectrum(mono(noise, 0, holdN), rate, held).centroid();
-                const double cout = spectrum(mono(o, 0, holdN), rate, held).centroid();
-                v["noise_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
-                v["centroid_in_hz"] = cin;
-                v["centroid_out_hz"] = cout;
-                out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + ": out RMS " + dbfs(outRms)
-                     + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + ", left/right correlation " + fmt("%.2f", corr) + "; spectral centroid " + fmt("%.0f Hz", cin)
-                     + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                if (noiseWanted && !outside)
+                {
+                    const double inRms = rmsOver(noise, held), outRms = rmsOver(o, held);
+                    double corr = 1.0, bal = 0.0;
+                    stereoOver(o, held, corr, bal);
+                    const double cin = spectrum(mono(noise, 0, holdN), rate, held).centroid();
+                    const double cout = spectrum(mono(o, 0, holdN), rate, held).centroid();
+                    v["noise_gain_db"] = outRms > 1e-12 ? toDb(outRms / inRms) : -240.0;
+                    v["centroid_in_hz"] = cin;
+                    v["centroid_out_hz"] = cout;
+                    out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + (windowed ? ", in the window" : "") + ": out RMS "
+                         + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
+                         + ", left/right correlation " + fmt("%.2f", corr) + "; spectral centroid " + fmt("%.0f Hz", cin)
+                         + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                }
             }
             if (everything || need({ "impulse_peak_db", "impulse_delay_ms", "impulse_decay_s" }))
             {
@@ -2344,13 +2411,20 @@ namespace playground::measure
                 own.l.resize(n + tailN, 0.0f);
                 own.r.resize(n + tailN, 0.0f);
                 const Stereo o = through(own, "its own input", n);
-                const double inRms = rms(own, 0, n), outRms = rms(o, 0, n);
-                const double cin = spectrum(mono(own, 0, n), rate, { { 0, n } }).centroid();
-                const double cout = spectrum(mono(o, 0, n), rate, { { 0, n } }).centroid();
-                out += "Its own input, " + seconds(static_cast<double>(n) / rate) + ": in peak " + dbfs(peak(own, 0, n)) + ", RMS "
-                     + dbfs(inRms) + "; out peak " + dbfs(peak(o, 0, n)) + ", RMS " + dbfs(outRms)
-                     + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
-                     + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                // All of it, or the window's part of it.
+                const Span part = windowed ? windowSpan(request.window, n, rate) : Span{ 0, n };
+                const auto [a, b] = part;
+                const double inRms = rms(own, a, b), outRms = rms(o, a, b);
+                const double cin = spectrum(mono(own, 0, n), rate, { part }).centroid();
+                const double cout = spectrum(mono(o, 0, n), rate, { part }).centroid();
+                out += "Its own input, " + seconds(static_cast<double>(n) / rate);
+                if (a >= b)
+                    out += ": the window starts after it ends.\n";
+                else
+                    out += (windowed ? ", in the window" : "") + std::string(": in peak ") + dbfs(peak(own, a, b)) + ", RMS "
+                         + dbfs(inRms) + "; out peak " + dbfs(peak(o, a, b)) + ", RMS " + dbfs(outRms)
+                         + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
+                         + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
             }
             if (everything)
             {

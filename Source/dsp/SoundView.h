@@ -13,6 +13,10 @@
 //   a close-up     a few cycles of the held sound (four of the lowest note; an effect's: of its sine, or 10 ms), or the
 //                  stretch from..to that the request asks for
 //
+// A request's window (Request::window, Measure.h: seconds of the render, which then lasts at least until its end)
+// replaces the held part: the average spectrum and the RMS are over it, the default close-up is at its middle, and the
+// picture shades it (View::windowFrom, windowTo).
+//
 // view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the
 // held part its first note-on to its last note-off), an effect's input chosen by Request::signal or its own
@@ -52,10 +56,11 @@ namespace playground::measure
         double rate = 48000.0;
         std::size_t length = 0;                   // samples rendered
         double heldUntil = -1.0;                  // seconds: the note-off (an effect's input's end; -1 for none)
+        double windowFrom = -1.0, windowTo = -1.0;   // seconds: the window the spectrum and the RMS are over (-1: none)
         std::string title;                        // what played ("Note 48 (C3) at velocity 0.80, held 1.00 s, ...")
         std::string dials;                        // "cutoff 1200, resonance 0.3"
         uint32_t alerts = 0;
-        double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS
+        double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS (the window's)
 
         std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
         bool stereo = false;                      // left and right differ
@@ -65,7 +70,8 @@ namespace playground::measure
         double loHz = 20.0, hiHz = 20000.0;       // the frequency axis (log)
         std::vector<float> cells;                 // rows x columns, row 0 the lowest: dB under the loudest cell, >= -120
 
-        std::vector<float> spectrum;              // the held part's average, per spectrum column: dB under its loudest
+        std::vector<float> spectrum;              // the held part's average (the window's), per spectrum column: dB
+                                                  // under its loudest
         float spectrumTop = -300.0f;              // that loudest column, in dB of power (two views' spectra drawn on one
                                                   // scale: compare's picture)
         std::vector<double> harmonics;            // one note: its harmonics' Hz below hiHz (at most 40)

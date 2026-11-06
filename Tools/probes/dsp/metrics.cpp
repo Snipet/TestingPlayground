@@ -20,6 +20,15 @@
 //            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds, and none
 //            for an effect that passes its input (the test impulse and its echoes are the response, not clicks)
 //   HELD     heldSpans: a note number above 127 (a malformed message, which the Engine ignores) is no held part
+//   WINDOW   a request's window, at 48 and 192 kHz: an instrument's voice that sounds on after a short note (a sine for
+//            its first second, sixteen harmonics after) measured over 1.5 to 2.5 s reads the bright part (its centroid
+//            within 5 % of the harmonics' power centroid, its RMS and its pitch), where the held part reads the sine;
+//            its render lasts until the window's end; a window inside a held note keeps attack_s, release_s,
+//            voice_end_s and step as they are without it; an effect's fader (0 dB, then -6 dB from 0.5 s) reads -6.0 dB
+//            on the sine and the noise over 0.6 to 0.95 s, 0 dB over 0.1 to 0.4 s, its impulse as without a window; one
+//            that starts after hold_seconds leaves the sine's and the noise's metrics unmeasured, saying why, and a
+//            check on it says so; checks alike but for their windows measured apart; view_sound's RMS and spectrum
+//            over the window, its close-up inside it
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
 #include "Probe.h"
@@ -34,6 +43,7 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -290,6 +300,56 @@ module Voice
 };
 )";
 
+    // A voice that sounds for three seconds whatever its note-off: a sine for its first second, then sixteen harmonics
+    // (1/h) at about the same level (a sound a short key starts, as an engine's).
+    [[maybe_unused]] const char* kOnAfterVoice = R"(module Voice
+{
+    float rate, ph, step;
+    int at;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; ph = 0; at = 0; }
+    void stop() {}
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const int second = (int)rate;
+        for (int i = 0; i < n; ++i)
+        {
+            const int top = at < second ? 1 : 16;
+            float x = 0;
+            for (int h = 1; h <= top; ++h)
+                x += sinf(6.28318531f * h * ph) / h;
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            at += 1;
+            const float g = top > 1 ? 0.1f : 0.16f;
+            left[i] += g * x;
+            right[i] += g * x;
+        }
+        return at < 3 * second;
+    }
+};
+)";
+
+    // A fader: the input as it is for the first 0.5 s, then at half (-6 dB).
+    [[maybe_unused]] const char* kFaderEffect = R"(module Effect
+{
+    float rate;
+    int at;
+    void init(float r) { rate = r; at = 0; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const int half = (int)(0.5f * rate);
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = at < half ? 1.0f : 0.5f;
+            at += 1;
+            left[i] *= g;
+            right[i] *= g;
+        }
+    }
+};
+)";
+
     ms::Result measured(const pg::Sources& files, double rate, ms::Request r)
     {
         r.rate = rate;
@@ -500,6 +560,161 @@ PROBE(dsp, metrics)
                     with.empty() ? 0 : with[0].second);
         P.eq("held.no_midi_note_ignored", with.size() == 1 && with[0] == ms::Span{ 4800 + 2400, 28800 } ? 1 : 0, 1);
         P.eq("held.alone_to_the_end", alone.size() == 1 && alone[0] == ms::Span{ 4800 + 2400, 48000 } ? 1 : 0, 1);
+    }
+
+    // ---- WINDOW --------------------------------------------------------------------------------------------------------
+    if constexpr (kInstrument)
+    {
+        // The power centroid of sixteen harmonics at 1/h: the note times the sum of 1/h over the sum of 1/h^2.
+        double num = 0.0, den = 0.0;
+        for (int h = 1; h <= 16; ++h)
+        {
+            num += 1.0 / h;
+            den += 1.0 / (h * h);
+        }
+        const double brightHz = noteHz(48) * num / den, brightDb = 20.0 * std::log10(0.1 * std::sqrt(den / 2.0));
+        const pg::Sources after = pg::singleFile(kOnAfterVoice);
+        ms::Request r;
+        r.notes = { 48 };
+        r.holdSeconds = 0.2f;
+        r.tailSeconds = 0.5f;
+        ms::Request w = r;
+        w.window = { 1.5, 2.5 };
+        std::array<double, 2> centroid{}, level{};
+        int k = 0;
+        for (const double rate : { 48000.0, 192000.0 })
+        {
+            const std::string tag = std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+            const ms::Result held = measured(after, rate, r), in = measured(after, rate, w);
+            std::printf("on after its note at %s: held centroid %.1f Hz, RMS %.2f dBFS; in 1.5 to 2.5 s centroid %.1f Hz (the "
+                        "harmonics' %.1f Hz), RMS %.2f dBFS (theirs %.2f), pitch %+.2f cents\n%s",
+                        tag.c_str(), at(held.values, "centroid_hz"), at(held.values, "rms_db"), at(in.values, "centroid_hz"), brightHz,
+                        at(in.values, "rms_db"), brightDb, at(in.values, "pitch_cents"), in.report.c_str());
+            P.near("window.held_reads_the_sine_" + tag, at(held.values, "centroid_hz") / noteHz(48), 1.0, 0.02);
+            P.near("window.reads_the_bright_" + tag, at(in.values, "centroid_hz") / brightHz, 1.0, 0.05);
+            P.near("window.rms_" + tag, at(in.values, "rms_db"), brightDb, 0.2);
+            P.near("window.pitch_" + tag, at(in.values, "pitch_cents"), 0.0, 2.0);
+            P.eq("window.report_" + tag, has(in.report, "Window: 1.50 to 2.50 s of the render") && has(in.report, "In the window: peak")
+                                            && has(in.report, "Spectrum in the window: ") && !has(held.report, "Window:") ? 1 : 0, 1);
+            ms::Session session(after, rate);
+            P.ge("window.render_reaches_its_end_" + tag, static_cast<double>(session.lengthOf(w)), 2.5 * rate);
+            P.le("window.render_without_" + tag, static_cast<double>(session.lengthOf(r)), 0.75 * rate);
+            centroid[static_cast<std::size_t>(k)] = at(in.values, "centroid_hz");
+            level[static_cast<std::size_t>(k++)] = at(in.values, "rms_db");
+        }
+        P.near("window.rates_centroid", centroid[1] / centroid[0], 1.0, 0.05);
+        P.near("window.rates_rms", level[1] - level[0], 0.0, 0.1);
+
+        // A window inside a held note: the notes' own spans as without it.
+        ms::Request note;
+        note.notes = { 48 };
+        note.holdSeconds = 1.0f;
+        note.tailSeconds = 0.5f;
+        ms::Request inside = note;
+        inside.window = { 0.3, 0.6 };
+        const pg::Sources harmonic = pg::singleFile(kHarmonicVoice);
+        const ms::Result a = measured(harmonic, 48000.0, note), b = measured(harmonic, 48000.0, inside);
+        for (const char* m : { "attack_s", "release_s", "voice_end_s", "step", "decay_s" })
+            P.eq(std::string("window.keeps_") + m, at(a.values, m) == at(b.values, m) ? 1 : 0, 1);
+        P.near("window.steady_rms", at(b.values, "rms_db"), at(a.values, "rms_db"), 0.1);
+
+        // view_sound: its RMS and spectrum over the window, its close-up inside it, the render to its end.
+        ms::ViewRequest vr;
+        vr.render = w;
+        const ms::View v = ms::view(after, vr);
+        std::printf("view_sound over 1.5 to 2.5 s: RMS %.2f dBFS, window %.3f to %.3f s, close-up %zu to %zu of %zu\n", v.rmsDb,
+                    v.windowFrom, v.windowTo, v.zoomFrom, v.zoomTo, v.length);
+        P.near("window.view_rms", v.rmsDb, brightDb, 0.2);
+        P.eq("window.view_marks", std::fabs(v.windowFrom - 1.5) < 1e-6 && std::fabs(v.windowTo - 2.5) < 1e-6 ? 1 : 0, 1);
+        P.eq("window.view_close_up_inside", v.zoomFrom >= 72000 && v.zoomTo <= 120000 ? 1 : 0, 1);
+        P.ge("window.view_render_to_its_end", static_cast<double>(v.length), 2.5 * 48000.0);
+        // Its spectrum: the bright part's (its sixteenth harmonic shows, which the sine has none of).
+        ms::ViewRequest plain;
+        plain.render = r;
+        const ms::View p = ms::view(after, plain);
+        const auto column = [&](const ms::View& x, double hz) {
+            const double pos = std::log(hz / x.loHz) / std::log(x.hiHz / x.loHz) * static_cast<double>(x.spectrum.size());
+            return x.spectrum[static_cast<std::size_t>(std::clamp(pos, 0.0, static_cast<double>(x.spectrum.size() - 1)))];
+        };
+        std::printf("the 16th harmonic's column: %.1f dB in the window, %.1f dB held\n", column(v, 16 * noteHz(48)),
+                    column(p, 16 * noteHz(48)));
+        P.ge("window.view_spectrum_bright", column(v, 16 * noteHz(48)), -45.0);
+        P.le("window.view_spectrum_held_dark", column(p, 16 * noteHz(48)), -80.0);
+    }
+    else
+    {
+        const pg::Sources fader = pg::singleFile(kFaderEffect);
+        ms::Request r;
+        r.holdSeconds = 1.0f;
+        r.tailSeconds = 0.2f;
+        for (const double rate : { 48000.0, 192000.0 })
+        {
+            const std::string tag = std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+            ms::Request late = r, early = r, past = r;
+            late.window = { 0.6, 0.95 };
+            early.window = { 0.1, 0.4 };
+            past.window = { 1.2, 1.5 };
+            const ms::Result all = measured(fader, rate, r), l = measured(fader, rate, late), e = measured(fader, rate, early),
+                             gone = measured(fader, rate, past);
+            std::printf("a fader at %s: sine gain %.2f dB held, %.2f in 0.6 to 0.95 s, %.2f in 0.1 to 0.4 s\n%s%s", tag.c_str(),
+                        at(all.values, "sine_gain_db"), at(l.values, "sine_gain_db"), at(e.values, "sine_gain_db"),
+                        l.report.c_str(), gone.report.c_str());
+            P.near("window.fader_sine_late_" + tag, at(l.values, "sine_gain_db"), -6.02, 0.05);
+            P.near("window.fader_noise_late_" + tag, at(l.values, "noise_gain_db"), -6.02, 0.05);
+            P.near("window.fader_peak_late_" + tag, at(l.values, "sine_peak_db"), -12.0 - 6.02, 0.1);
+            P.near("window.fader_sine_early_" + tag, at(e.values, "sine_gain_db"), 0.0, 0.05);
+            P.near("window.fader_held_between_" + tag, at(all.values, "sine_gain_db"), -2.2, 0.3);
+            P.eq("window.impulse_its_own_" + tag, at(l.values, "impulse_peak_db") == at(all.values, "impulse_peak_db") ? 1 : 0, 1);
+            P.eq("window.past_unmeasured_" + tag, std::isnan(at(gone.values, "sine_gain_db")) && std::isnan(at(gone.values, "noise_gain_db"))
+                                                     && gone.unmeasured.count("sine_gain_db") == 1
+                                                     && has(gone.report, "not measured, the window starts after the sine and the noise end")
+                                                     && !std::isnan(at(gone.values, "impulse_peak_db")) ? 1 : 0, 1);
+            P.eq("window.report_" + tag, has(l.report, "Window: 0.60 to 0.95 s of the sine's and the noise's renders")
+                                            && has(l.report, "Sine 220 Hz at -12.0 dBFS for 1.00 s, in the window: ") ? 1 : 0, 1);
+        }
+        // view_sound's sine through the fader: the RMS over the window, at -6 dB.
+        ms::ViewRequest vr;
+        vr.render = r;
+        vr.render.window = { 0.6, 0.95 };
+        vr.input = ms::ViewInput::sine;
+        const ms::View v = ms::view(fader, vr);
+        std::printf("view_sound's sine over 0.6 to 0.95 s: RMS %.2f dBFS, close-up %zu to %zu\n", v.rmsDb, v.zoomFrom, v.zoomTo);
+        P.near("window.view_rms", v.rmsDb, -12.0 - 3.01 - 6.02, 0.1);
+        P.eq("window.view_close_up_inside", v.zoomFrom >= 28800 && v.zoomTo <= 45600 ? 1 : 0, 1);
+    }
+    {
+        // Checks alike but for their windows: measured apart; one outside says why.
+        ms::Check plain, windowed, outside;
+        plain.label = windowed.label = outside.label = "level";
+        plain.goal.metric = kInstrument ? "rms_db" : "sine_gain_db";
+        plain.goal.hasMax = true;
+        plain.goal.max = 100.0;
+        windowed.goal = outside.goal = plain.goal;
+        if constexpr (kInstrument)
+        {
+            plain.request.notes = { 48 };
+            plain.request.holdSeconds = 0.2f;
+            plain.request.tailSeconds = 0.5f;
+        }
+        else
+        {
+            plain.request.holdSeconds = 1.0f;
+            plain.request.tailSeconds = 0.2f;
+        }
+        windowed.request = outside.request = plain.request;
+        windowed.request.window = kInstrument ? ms::Window{ 1.5, 2.5 } : ms::Window{ 0.6, 0.95 };
+        outside.request.window = { 1.2, 1.5 };
+        const std::vector<ms::CheckResult> res = ms::evaluate(pg::singleFile(kInstrument ? kOnAfterVoice : kFaderEffect),
+                                                              kInstrument ? std::vector<ms::Check>{ plain, windowed }
+                                                                          : std::vector<ms::Check>{ plain, windowed, outside },
+                                                              {});
+        for (const ms::CheckResult& c : res)
+            std::printf("check: %s\n", c.text.c_str());
+        P.eq("window.checks_apart", res.size() >= 2 && res[0].measured && res[1].measured
+                                        && std::fabs(res[0].value - res[1].value) > (kInstrument ? 1.0 : 3.0) ? 1 : 0, 1);
+        if constexpr (!kInstrument)
+            P.eq("window.check_outside_says_why", res.size() == 3 && !res[2].measured
+                                                      && has(res[2].text, "not measured: the window starts after the sine") ? 1 : 0, 1);
     }
 
     // ---- TERMS ---------------------------------------------------------------------------------------------------------

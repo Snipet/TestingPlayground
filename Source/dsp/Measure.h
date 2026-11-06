@@ -32,6 +32,17 @@
 // after it starts to its end. Its levels are over all of it, and its spectra Welch's average over all of it (Spectrum:
 // frames fixed in seconds, so a frame holds the same stretch of sound at 48 and at 192 kHz).
 //
+// A request's window (Window: the render settings' `window`, from and to in seconds) replaces the held part, for a
+// part of the sound that no note holds (a key that is a control, a sound that goes on after its note-off, the stretch
+// after a dial moves). An instrument's is in seconds of its render, which then lasts at least until the window's end:
+// every metric "while held" and peak_db measure it (the CPU's too), and the others keep their own spans (attack_s
+// from the first note-on over the notes, release_s from the last note-off under the notes' held RMS, the whole
+// render's, the chord's and the sixteen voices' own renders). An effect's is in seconds of the sine's and the noise's
+// renders (each from the program as new, the signal from 0), cut at their end (hold_seconds): their metrics measure
+// it, sine_peak_db too; the impulse's, silence's and the whole renders' keep theirs. A window that holds none of what a
+// metric needs (an effect's that starts after hold_seconds) leaves it unmeasured, saying why (Result::unmeasured).
+// view_sound's average spectrum and RMS are over it (SoundView.h).
+//
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
 // Engine as the audio thread runs it with no editor open (flush-to-zero, no meters), of the program's own code with
@@ -137,6 +148,17 @@ namespace playground::measure
         std::vector<float> l, r;
     };
 
+    // The seconds a request's metrics measure, from the render's start (above): none while `to` is not after `from`.
+    inline constexpr double kMaxWindowSeconds = 2.0 * kMaxPlaySeconds;   // the moves' end and the longest tail
+    struct Window
+    {
+        double from = 0.0, to = 0.0;
+        bool set() const { return to > from; }
+        bool operator==(const Window&) const = default;
+    };
+    // "1.50 to 2.50 s".
+    std::string windowText(const Window& window);
+
     struct Request
     {
         std::vector<int> notes;                   // an instrument's notes, played together; empty: one, 48 (C3)
@@ -164,6 +186,7 @@ namespace playground::measure
         std::shared_ptr<const Input> input;       // an effect's input in place of the test signals (none: those)
         int signal = -1;                          // an effect's input for view_sound and compare, numbered as SoundView's
                                                   // ViewInput (-1: the tool's own); measure() plays its test signals
+        Window window;                            // the metrics' seconds in place of the held part (above)
         // A recording replayed (the capture lane's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
         // samples, the transport the host sent at a block's start, the host's blocks as they came (their sizes in
         // order; after the last, `block` each).
@@ -188,8 +211,8 @@ namespace playground::measure
         bool hostRate = false, hostBlock = false, fromCapture = false;
         double captureFrom = 0.0, captureTo = -1.0;
 
-        // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario), `want`
-        // aside.
+        // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario) measured
+        // over the same window, `want` aside.
         bool sameRender(const Request& o) const;
         // Anything of a scenario beyond the notes held together: a phrase, moves, wheels, host edits, a recording.
         bool scenario() const;
@@ -308,6 +331,8 @@ namespace playground::measure
         bool compiled = false;
         std::string report;                       // the words (what run() returns)
         Metrics values;                           // the numbers measured (those `want` asked for, or all)
+        std::map<std::string, std::string> unmeasured;   // a metric the window left unmeasured, and why ("the window
+                                                         // starts after the sine and the noise end, at 1.00 s")
         std::string dials;                        // the dials rendered with, "cutoff 1200, resonance 0.3"
         std::vector<std::string> unknown;         // dials asked for by a name the program has not
     };
@@ -348,7 +373,7 @@ namespace playground::measure
         // What `request` plays over `length` samples (0: lengthOf), by absolute sample.
         Timeline timeline(const Request& request, std::size_t length = 0) const;
         // The samples a render of `request` takes: an instrument's held part (its phrase's, else holdSeconds) and the
-        // tail; an effect's holdSeconds and the tail, or its own input's length.
+        // tail; an effect's holdSeconds and the tail, or its own input's length; at least until its window's end.
         std::size_t lengthOf(const Request& request) const;
 
     private:
