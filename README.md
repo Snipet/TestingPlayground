@@ -1640,8 +1640,8 @@ where something moves 60: what moves with no hand on it too (a host's automation
 steady tone (its trace starts where the wave crosses zero, between two samples, and moves only by half a pixel or
 more), a field scope of a value that does not change. A number's or a meter's readout that changes (eight times a
 second at most) draws one frame for each new number and leaves the window at its calm rate. A spectrum is worked out
-once for each new block of audio, however many displays show its source, and not again while the samples stay the
-same (silence; its peaks still fall 30 dB a second). While the plugin is
-processing, the top bar's CPU figure changes four times a second at most, and that is drawn. The code editor keeps
-each line's colours and works them out again only for the lines an edit touches (and every line when a module's or a
-constant's name comes or goes).
+at most once a frame, and only when new audio has come since the last one, however many displays show its source: not
+at all while the samples stay the same (silence; its peaks still fall 30 dB a second). While the plugin is processing,
+the top bar's CPU figure changes four times a second at most, and that is drawn. The code editor keeps each line's
+colours and works them out again only for the lines an edit touches (and every line when a module's or a constant's
+name comes or goes).
