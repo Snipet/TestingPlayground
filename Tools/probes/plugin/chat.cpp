@@ -108,6 +108,9 @@
 //            and the least taken; trace and compare refusing one; a check with
 //            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
 //            failing one says so; tune_dials takes one
+//   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
+//            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
+//            ending with the metrics, name=value
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -2277,6 +2280,38 @@ PROBE(plugin, chat)
                 tune.getDynamicObject()->setProperty("apply", false);
                 const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", tune);
                 P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
+            }
+
+            // ---- SPECTRUM ----------------------------------------------------------------------------------------------
+            {
+                const auto withBands = [&](const juce::var& kind) {
+                    juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "spectrum", kind } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const std::string thirds = toolText(sa.mcpCall("measure_output", withBands("third")));
+                const std::string notes = toolText(sa.mcpCall("measure_output", withBands("semitone")));
+                const std::string octaves = toolText(sa.mcpCall("measure_output", withBands("octave")));
+                std::printf("measure_output with spectrum third:\n%s\n", thirds.c_str());
+                const std::string of = pg::product::kIsInstrument ? " while held (Hz: dBFS; " : " of the noise, out against in (Hz: gain dB; ";
+                P.eq("spectrum.third", has(thirds, "Third-octave bands" + of + "0.4 s Hann frames): 20: ") && has(thirds, ", 20k: ") ? 1 : 0, 1);
+                P.eq("spectrum.octave", has(octaves, "Octave bands" + of + "0.4 s Hann frames): 31.5: ") && has(octaves, ", 16k: ") ? 1 : 0, 1);
+                P.eq("spectrum.semitone", has(notes, "Semitone bands") && has(notes, "a point a MIDI note, an octave a group after its first note")
+                                              && has(notes, "): E0 20.6: ") && has(notes, "; C4 262: ") ? 1 : 0, 1);
+                int widthsRefused = 0;
+                for (const juce::var& askedWidth : { juce::var("fifth"), juce::var(3), juce::var("Third") })
+                {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withBands(askedWidth));
+                    widthsRefused += r.isError && has(allText(r), "spectrum is octave, third or semitone") ? 1 : 0;
+                }
+                P.eq("spectrum.bad_refused", widthsRefused, 3);
+                // Every report ends with the metrics measured, name=value; one without a spectrum has no bands.
+                const std::string plain = toolText(sa.mcpCall("measure_output", input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 } })));
+                const std::size_t line = plain.rfind("\nMetrics: ");
+                P.eq("spectrum.metrics_line", line != std::string::npos && plain.find('\n', line + 1) == plain.size() - 1
+                                                  && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
+                                                  && !has(plain, " bands ") ? 1 : 0, 1);
             }
             setDial(was);
         }

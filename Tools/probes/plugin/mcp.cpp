@@ -8,7 +8,8 @@
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
 //            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); measure_output's,
 //            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; the render
-//            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's; read_file's from, lines and
+//            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's;
+//            measure_output's spectrum (octave, third, semitone), described, on no other tool; read_file's from, lines and
 //            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
@@ -619,6 +620,21 @@ PROBE(plugin, mcp)
                                            && checked["type"].toString() == "object" && !checked.hasProperty("description")
                                            && tuned["type"].toString() == "object" && !tuned.hasProperty("description")
                                            && !trace["properties"].hasProperty("window") ? 1 : 0, 1);
+            // measure_output's spectrum (its report's bands): its three widths, described, and on no other tool.
+            juce::var spectrum;
+            int elsewhere = 0;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        spectrum = tool["inputSchema"]["properties"]["spectrum"];
+                    else
+                        elsewhere += tool["inputSchema"]["properties"].hasProperty("spectrum") ? 1 : 0;
+                }
+            const juce::Array<juce::var>* widths = spectrum["enum"].getArray();
+            P.eq("link.spectrum", widths != nullptr && widths->size() == 3 && (*widths)[0].toString() == "octave"
+                                      && (*widths)[1].toString() == "third" && (*widths)[2].toString() == "semitone"
+                                      && spectrum.hasProperty("description") && elsewhere == 0 ? 1 : 0, 1);
         }
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.

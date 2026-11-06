@@ -453,9 +453,8 @@ namespace playground
             o->setProperty("dials", claude::object({ { "type", "object" },
                                                      { "additionalProperties", claude::object({ { "type", "number" } }) },
                                                      { "description", "Dial values to render with, by parameter name, in "
-                                                                      "the parameter's own units. Dials not named keep the "
-                                                                      "values they have now." } }));
-            o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm); default 120"));
+                                                                      "the parameter's own units." } }));
+            o->setProperty("bpm", prop("number", "The host's tempo (host.fm); default 120"));
             o->setProperty("scenario", scenario::schema());
             o->setProperty("window", prop("object", "{from, to}: the seconds measured, not the held part"));
         }
@@ -1847,6 +1846,10 @@ namespace playground
             }
             o->setProperty("try_edits", scenario::trialSchema());
             o->setProperty("dials_from", scenario::dialsFromSchema(true));
+            // The report's band levels as data (Measure.h's Request::spectrum).
+            o->setProperty("spectrum", claude::object({ { "enum", juce::Array<juce::var>{ "octave", "third", "semitone" } },
+                                                        { "description", kInstrument ? "Band levels while held, as data"
+                                                                                     : "The noise's gain in bands, as data" } }));
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. Its report gives "
                            "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
@@ -3850,6 +3853,17 @@ namespace playground
             bool defaults = false;
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 req.current = currentDials();
+            if (const juce::var sp = input.getProperty("spectrum", juce::var()); why.empty() && !sp.isVoid() && !sp.isUndefined())
+            {
+                const juce::String kind = sp.toString();
+                req.spectrum = !sp.isString()     ? measure::Bands::none
+                             : kind == "octave"   ? measure::Bands::octave
+                             : kind == "third"    ? measure::Bands::third
+                             : kind == "semitone" ? measure::Bands::semitone
+                                                  : measure::Bands::none;
+                if (req.spectrum == measure::Bands::none)
+                    why = "spectrum is octave, third or semitone: the bands' width.";
+            }
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
