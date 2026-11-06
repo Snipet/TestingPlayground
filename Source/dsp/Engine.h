@@ -123,7 +123,8 @@
 // Threads. prepare() while the audio thread is stopped (it allocates); setControls() and process() on the audio
 // thread (no allocation, no lock, no I/O); offer() and collect() off it (Compiler.h), under a mutex prepare() shares.
 // A program crosses by an atomic pointer each way: offer() leaves it in `pending_`, the audio thread takes it at the
-// start of a block once the previous swap is over, and leaves the old one in `retired_` for collect() to destroy.
+// start of a block once the previous swap is over (and while holdPending does not hold it: the processor's A/B trim,
+// for at most a 20 ms ramp), and leaves the old one in `retired_` for collect() to destroy.
 #pragma once
 
 #include "dsp/Controls.h"
@@ -209,6 +210,16 @@ namespace playground
         std::array<uint8_t, wheelcc::kStateCcs> wheelCcs() const noexcept;
         // At most prepare()'s maxBlockSize samples (the processor cuts a host's larger block); events sorted by offset.
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
+        // The program that plays (Patch::program; 0 for none), as of the last process call: the audio thread's own (the
+        // processor's A/B trim reads it after each call), or offline.
+        uint64_t playingProgram() const noexcept { return current_ != nullptr ? current_->program() : 0; }
+        // A program going out still sounds (an effect's crossfade, an instrument's old voices fading). The audio thread's.
+        bool outgoing() const noexcept { return old_ != nullptr || xfading_; }
+        // The program offered and not taken yet (Patch::program; 0: none), any thread; and holding it there, the audio
+        // thread's: while held, process() takes none (the processor's A/B trim turns the program that plays down to the
+        // coming one's trim first, so that one never plays above it). prepare() takes one waiting, held or not.
+        uint64_t pendingProgram() const noexcept { return pendingProgram_.load(std::memory_order_acquire); }
+        void holdPending(bool hold) noexcept { holdPending_ = hold; }
 
         // ---- off the audio thread --------------------------------------------------------------------------------
         // Plays from the next block, as above. `revertible`: should it stop while the program it replaces is still
@@ -433,6 +444,8 @@ namespace playground
 
         std::mutex mutex_;                            // offer, collect, prepare; never the audio thread
         std::atomic<Patch*> pending_{ nullptr };
+        std::atomic<uint64_t> pendingProgram_{ 0 };   // pending_'s program (offer() writes it first)
+        bool holdPending_ = false;                    // the audio thread's (holdPending)
         std::atomic<Patch*> retired_{ nullptr };
         Patch* current_ = nullptr;                    // the audio thread's
         Patch* old_ = nullptr;                        // fading out, or waiting for retired_ to empty

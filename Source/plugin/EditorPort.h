@@ -31,6 +31,17 @@
 //                     line of their own, set with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
+//   codePanel()       the CODE view shows the program's panel under the editor (its dials, or its .gui file's
+//                     interface), one choice while the program's code shows and one while a file of its interface does;
+//                     kept in the session, set with setCodePanel()
+//   explorerWidth()   the explorer's and the chat's widths as the user set them (editor/Columns.h), kept in the session;
+//   chatWidth()       0: none set
+//   codeWindow()      the code editor and the explorer in a window of their own (editor/Panel.h, "the code window"):
+//                     whether it is out, its size and its place, kept in the session, set with setCodeWindow();
+//                     codeWindowOpen() whether an editor's code is in it now (addCodeWindow(), removeCodeWindow())
+//   folder()          the program's files mirrored to a folder on disk for VS Code or any editor, synced both ways
+//                     (plugin/FolderSync.h): on or off, its name and path, run on save, the conflicts and the notes;
+//                     setFolderSync(), setFolderRunOnSave(), resolveFolderConflict(), openFolder() (the Finder, VS Code)
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -62,7 +73,7 @@
 //                     run, and every dial goes to its default once they compile. No project is open after it, no preset
 //                     applied, Claude's checks are cleared and the interface's pages are its first; `what` names them
 //                     in the journal ("the example \"Init\""). The chat's conversation and the editor's own look (its
-//                     size, theme, zoom, view, folds) stay
+//                     size, theme, zoom, view, folds, widths) stay
 //   deleteProject()   its file deleted; deleteVersion() one version (never the only one)
 //   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
@@ -73,12 +84,24 @@
 //                     newest only; exportFolder() where a chooser starts (the Desktop)
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
 //                     not opened
+//   ab()              A/B listening (AbState below; editor/AbCard.h): two sides, each the editor's files as they were
+//                     when it began ("Current") or a saved version of a project, played in turn while the host plays
+//                     (each a run of its files: the draft stays as it is), the louder turned down to the quieter's
+//                     loudness. startAb() begins one (A plays first, unless B is what plays already), setAbSides()
+//                     changes its sides, playAb() plays a side, setAbOwnDials() gives each side its own dials (a
+//                     version's saved ones, Current's as they were; each side's moves kept while it lasts) or the same
+//                     dials for both, setAbMatch() turns the matched loudness on or off. keepAb() makes a side current
+//                     (its files the draft: an open editor merges them as one undo step; a version's the project open)
+//                     and ends it; endAb() ends it as it was before: what played then plays again, and its dials
+//                     when each side had its own. A program that runs from elsewhere (Claude's, a session loaded) ends
+//                     it too (AbState::ended says so). abRevision() is ab().revision, cheaply
 //   chat()            the chat with Claude (ChatPort.h)
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
 //   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
 #pragma once
 
+#include <array>
 #include <cctype>
 #include <string_view>
 
@@ -282,6 +305,37 @@ namespace playground
         std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
     };
 
+    // The code window (EditorPort::codeWindow): the code editor and the explorer in a top-level window of their own, the
+    // main window showing the panel full size while it is out. Its size is the Panel's (logical px; 0 x 0: the default),
+    // its place the window's top-left on the screen (points; `placed` false: none yet, it opens beside the main window).
+    struct CodeWindow
+    {
+        bool out = false;
+        int width = 0, height = 0;
+        bool placed = false;
+        int x = 0, y = 0;
+
+        friend bool operator==(const CodeWindow&, const CodeWindow&) = default;
+    };
+
+    // The folder the program's files are mirrored to, for VS Code or any editor (EditorPort::folder; plugin/FolderSync.h).
+    struct FolderState
+    {
+        bool on = false;
+        std::string name;                        // the folder's ("Synth 1", or the project's)
+        std::string path;                        // where it is, "~/..." for the home folder
+        bool runOnSave = false;                  // a save there runs the program
+        bool watching = false;                   // the system says when it changes (else it is looked at twice a second)
+        std::vector<std::string> conflicts;      // files changed on both sides since they last agreed: held, neither
+                                                 // side written, until the user keeps one (resolveFolderConflict)
+        std::vector<std::string> notes;          // what it did and did not take, and why, short: the newest first
+        std::string landed;                      // the files the last save in the folder changed ("program.fm")
+        uint64_t landedCount = 0;                // bumps with each save that lands
+        std::string error;                       // why it is not on ("" when it is, or was turned off)
+    };
+    // Where a folder opens (EditorPort::openFolder).
+    enum class FolderApp : uint8_t { files, vscode };   // the Finder (Windows' Explorer), or VS Code
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -293,6 +347,35 @@ namespace playground
         int number = 0;
         bool unchanged = false;                  // nothing changed since the latest: no version added
         bool created = false;                    // a new project
+    };
+
+    // A/B listening (EditorPort::ab): its two sides and how it plays them.
+    struct AbSide
+    {
+        int version = 0;                         // the version's number in the project; 0: Current, the editor's files
+                                                 // as they were when it began
+        std::string label;                       // "Current", "v3"
+        std::string note;                        // the version's note ("program.fm +12 -3"), or what Current is
+        Sources files;
+    };
+    struct AbState
+    {
+        bool on = false;
+        std::string project;                     // whose versions the sides are ("" for none: Current alone)
+        std::array<AbSide, 2> sides{};           // A and B
+        int playing = -1;                        // the side that plays: 0 A, 1 B; -1 neither yet
+        int pending = -1;                        // the side whose compile is on its way (-1: none)
+        bool ownDials = false;                   // each side its own dials; else the same dials for both
+        bool match = true;                       // the louder side turned down to the quieter's loudness
+        bool measuring = false;                  // the loudness is being measured (offline, off the message thread),
+                                                 // or the dials moved since and it is measured again once they rest
+        std::array<double, 2> lufs{ 0.0, 0.0 };  // each side's loudness as measured (BS.1770, LUFS); NaN until then
+        std::array<float, 2> trimDb{ 0.0f, 0.0f };   // the output's gain while that side plays (<= 0 dB; 0 unmatched)
+        std::string why;                         // one line: a side that does not compile
+        std::string unmatched;                   // why the loudness is not matched, once measured ("" when it is)
+        std::string ended;                       // why it ended when it ended on its own (another program ran, a
+                                                 // session loaded), else ""
+        uint64_t revision = 0;                   // bumps whenever any of the above changes
     };
 
     class EditorPort
@@ -365,6 +448,17 @@ namespace playground
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
         virtual std::string exportFolder() const = 0;
+        // A/B listening (AbState). Sides are version numbers of `project` (0: Current). False, with why, when a version is
+        // not kept (startAb, setAbSides) or none is on (keepAb).
+        virtual AbState ab() const = 0;
+        virtual uint64_t abRevision() const = 0;         // AbState::revision, without the copy
+        virtual bool startAb(const std::string& project, int a, int b, std::string& why) = 0;
+        virtual bool setAbSides(int a, int b, std::string& why) = 0;
+        virtual void playAb(int side) = 0;
+        virtual void setAbOwnDials(bool own) = 0;
+        virtual void setAbMatch(bool on) = 0;
+        virtual bool keepAb(int side, std::string& why) = 0;
+        virtual void endAb() = 0;
         // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
         // whether Claude Desktop is talking to it now.
         virtual std::string desktopName() const = 0;
@@ -373,6 +467,12 @@ namespace playground
 
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
+        // Whether the CODE view shows the program's panel (its dials, or its .gui file's interface) under the editor:
+        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc: editor/Items.h's
+        // isInterfaceFile), else the one while the program's code shows (its FMinus files, a netlist, the IR). Both
+        // shown at first; kept in the session (the editor's status line's Panel switch and Cmd-J set them).
+        virtual bool codePanel(bool gui) const = 0;
+        virtual void setCodePanel(bool gui, bool shown) = 0;
 
         // Whether the chat's column is open (else folded into a rail at the right), kept in the session.
         virtual bool chatOpen() const = 0;
@@ -381,6 +481,53 @@ namespace playground
         // open at the left (else folded into a rail), kept in the session.
         virtual bool explorerOpen() const = 0;
         virtual void setExplorerOpen(bool open) = 0;
+        // The explorer's and the chat's widths as the user set them (a drag of the explorer's right edge or the chat's
+        // left edge, their keys: editor/Columns.h), logical px, kept in the session; 0: none set (the editor then takes
+        // this Mac's default for an instance that has set none, else a share of the window).
+        virtual int explorerWidth() const = 0;
+        virtual void setExplorerWidth(int px) = 0;
+        virtual int chatWidth() const = 0;
+        virtual void setChatWidth(int px) = 0;
+        // The code window (CodeWindow, above), kept in the session: the editor's window button and the window's close
+        // set `out`, the window its size and place as the user moves it. The plugin's editor follows `out` (it opens or
+        // closes the window); a Panel drawn headless has no window and shows the editor in place.
+        virtual CodeWindow codeWindow() const { return {}; }
+        virtual void setCodeWindow(const CodeWindow& window) { (void)window; }
+        // Whether an editor's code is in its code window now: its Panel adds itself when it lends the code window the
+        // editor and removes itself when it takes it back or goes. view_panel's picture shows this, not the session's
+        // choice, which an editor follows only once it is on screen (and one without a window's owner never does). In
+        // the processor's memory only.
+        virtual void addCodeWindow() {}
+        virtual void removeCodeWindow() {}
+        virtual bool codeWindowOpen() const { return false; }
+
+        // The folder (FolderState, above): the program's files mirrored to a folder on disk and synced both ways, kept
+        // in the session (its name and run on save). setFolderSync turns it on (a folder of the project open's name,
+        // else the instance's; false with why when none could be made) or off (the folder stays as it is);
+        // folderRevision bumps when folder() changes. resolveFolderConflict keeps one side of a conflict (the other in
+        // the folder's .conflicts/). openFolder opens it in the Finder or VS Code (false with why: VS Code missing).
+        virtual FolderState folder() const { return {}; }
+        virtual uint64_t folderRevision() const { return 0; }
+        virtual bool setFolderSync(bool on, std::string& why)
+        {
+            (void)on;
+            why = "no folder here";
+            return false;
+        }
+        virtual void setFolderRunOnSave(bool on) { (void)on; }
+        virtual bool resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why)
+        {
+            (void)file;
+            (void)keepPlugin;
+            why = "no folder here";
+            return false;
+        }
+        virtual bool openFolder(FolderApp app, std::string& why)
+        {
+            (void)app;
+            why = "no folder here";
+            return false;
+        }
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.

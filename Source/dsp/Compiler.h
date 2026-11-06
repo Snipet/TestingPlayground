@@ -212,6 +212,9 @@ namespace playground
         uint64_t request(Sources files);
         // `carry` false: no carrier asked (a host's state load, whose dials come with it).
         CompileStatus compileNow(Sources files, bool carry = true);
+        // Request `id` taken back while it still waits (true): nothing of it compiles, plays or has a status. One the
+        // thread compiles already, or another, is left as it is (false). Any thread.
+        bool withdraw(uint64_t id);
 
         // The dials' carry (above): asked for on the thread that offers (the compiler's, compileNow's caller; a refine's
         // under the compiler's mutex, so the carrier never calls back into it). Set it before the first compile.

@@ -15,7 +15,8 @@
 //                       content's places, and each tabs node's tabs); what is shown is that moved by the scroll
 //   scrollBy()          the scroll moved: the items placed again, each moved by the scroll (whole px), and nothing
 //                       laid out again (a trackpad sends a hundred events a second)
-//   clear()             no interface: every item hidden
+//   clear()             no interface, or one hidden (the editor's panel under the code): every item hidden, its pages
+//                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
 //   registerShaders()   the spec's shaders' programs given to FunkGui's registry (once built: Shaders.h), or why not
 //   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters

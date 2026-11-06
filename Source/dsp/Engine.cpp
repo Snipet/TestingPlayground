@@ -94,6 +94,7 @@ namespace playground
         bool fresh = false;                          // current_'s instances as init left them
         if (Patch* next = pending_.exchange(nullptr, std::memory_order_acq_rel); next != nullptr)
         {
+            pendingProgram_.store(0, std::memory_order_release);   // (offer() waits for prepare's lock)
             if (old_ != current_)
                 delete old_;
             delete current_;
@@ -176,6 +177,7 @@ namespace playground
         if (patch->rate() != fs_)                    // compiled for another rate than prepare() last set
             patch->reset(fs_);
         revertible_.store(revertible ? patch->program() : 0, std::memory_order_release);
+        pendingProgram_.store(patch->program(), std::memory_order_release);
         delete pending_.exchange(patch.release(), std::memory_order_acq_rel);   // one the audio thread never took
         delete retired_.exchange(nullptr, std::memory_order_acquire);
     }
@@ -237,11 +239,13 @@ namespace playground
     void Engine::takePending() noexcept
     {
         retire(hold_);
-        if (hold_ != nullptr || old_ != nullptr || pending_.load(std::memory_order_acquire) == nullptr)
-            return;                                  // a swap is still under way, or nothing waits
+        if (holdPending_ || hold_ != nullptr || old_ != nullptr || pending_.load(std::memory_order_acquire) == nullptr)
+            return;                                  // held, a swap is still under way, or nothing waits
         Patch* next = pending_.exchange(nullptr, std::memory_order_acq_rel);
         if (next == nullptr)
             return;
+        uint64_t taken = next->program();            // (unless another was offered since: its own, then)
+        pendingProgram_.compare_exchange_strong(taken, 0, std::memory_order_acq_rel, std::memory_order_relaxed);
         old_ = current_;
         current_ = next;
         exitOld_ = exitCur_;                         // its side as it was (an effect's: Engine.h, "A program that stops")

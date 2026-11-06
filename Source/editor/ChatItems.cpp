@@ -444,5 +444,8 @@ namespace playground::ui
         return true;
     }
 
-    void ButtonItem::specLine(char* out, std::size_t n) const { std::snprintf(out, n, "%s", spec_.spec.c_str()); }
+    void ButtonItem::specLine(char* out, std::size_t n) const
+    {
+        std::snprintf(out, n, "%s", spec_.specNow ? spec_.specNow().c_str() : spec_.spec.c_str());
+    }
 }

@@ -166,8 +166,11 @@ namespace playground::ui
     void GuiView::place(const PanelSpec& spec)
     {
         mine_.assign(items_.size(), false);
-        const bool gui = !spec.gui.empty();
-        const std::vector<GuiNode>& nodes = spec.gui.nodes;
+        // An interface with no layout of its nodes (cleared: hidden under the code) is placed as none.
+        const bool gui = !spec.gui.empty() && gui_.rects.size() == spec.gui.nodes.size()
+                      && gui_.visible.size() == spec.gui.nodes.size() && gui_.pages.size() == spec.gui.nodes.size();
+        const std::vector<GuiNode> none;
+        const std::vector<GuiNode>& nodes = gui ? spec.gui.nodes : none;
         const funkgui::Rect area = gui_.area;
         // A node on the pages shown and, at least in part, in the area.
         const auto seen = [&](std::size_t i) {

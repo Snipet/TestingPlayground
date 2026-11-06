@@ -2002,10 +2002,13 @@ namespace playground
         const std::string shown =
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
+        const std::string ab = host_.chatAb();
         std::string tail = "What plays: "
                          + std::string(cir::sameProgram(running, d.files) ? "these files"
+                                       : !ab.empty()                       ? "a side of the user's A/B listening (below)"
                                                                            : "an earlier version of the files (they "
                                                                              "were edited since the last run)")
+                         + (ab.empty() ? std::string() : "\n" + ab)
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
                          + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
@@ -4709,8 +4712,12 @@ namespace playground
                 out += (i == 0 ? "" : ", ") + d.files[i].name + " (" + std::to_string(lineCount(d.files[i].text))
                      + (lineCount(d.files[i].text) == 1 ? " line" : " lines") + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
             out += "\nWhat plays: ";
+            const std::string ab = host_.chatAb();
             out += cir::sameProgram(running, d.files) ? "these files\n"
-                                                      : "an earlier version (the files were edited since the run)\n";
+                 : !ab.empty()                         ? "a side of the user's A/B listening (below)\n"
+                                                       : "an earlier version (the files were edited since the run)\n";
+            if (!ab.empty())
+                out += ab + "\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
             out += "Dials:\n" + dialLines(host_.chatDials(), host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "

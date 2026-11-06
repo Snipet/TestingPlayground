@@ -115,8 +115,10 @@ namespace playground::ui
         for (const Hit& h : hits_)
             if ((h.part == Part::row || h.part == Part::header) && onScreen(h.r).contains(p))
             {
-                if (h.part == Part::row && groups_[static_cast<std::size_t>(h.group)].rows[static_cast<std::size_t>(h.row)].heading)
-                    return nullptr;
+                if (h.part == Part::row)
+                    if (const Row& row = groups_[static_cast<std::size_t>(h.group)].rows[static_cast<std::size_t>(h.row)];
+                        row.heading && row.spec.empty())
+                        return nullptr;                  // a caption: nothing (one with a spec line says it, no more)
                 return &h;
             }
         return nullptr;
@@ -137,6 +139,8 @@ namespace playground::ui
             case Part::row:
             {
                 const Row row = g.rows[static_cast<std::size_t>(h.row)];   // a copy: the hook may change the content
+                if (row.heading)
+                    return;
                 if (twice && hooks_.rename)
                     hooks_.rename(g.section, row);
                 else if (!twice && hooks_.open)
@@ -158,7 +162,10 @@ namespace playground::ui
 
     funkgui::Cursor ExplorerItem::cursorAt(Point p) const
     {
-        return hitAt(p) != nullptr ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
+        const Hit* h = hitAt(p);
+        if (h == nullptr || (h->part == Part::row && groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)].heading))
+            return funkgui::Cursor::normal;
+        return funkgui::Cursor::pointingHand;
     }
 
     void ExplorerItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&)
@@ -208,7 +215,7 @@ namespace playground::ui
                     chat::drawIcon(c, open ? chat::Icon::chevronDown : chat::Icon::chevronRight, r.x + 10.0f, r.centreY(), 8.0f,
                                    hovered ? p.text : p.dim);
                     std::string title = g.title;
-                    if (!g.rows.empty())
+                    if (!g.rows.empty() && g.counted)
                     {
                         int n = 0;
                         for (const Row& row : g.rows)
@@ -423,7 +430,8 @@ namespace playground::ui
                     it.value = asciiText(row.detail);
                     it.checkable = row.active || row.marked;
                     it.checked = row.active || row.marked;
-                    it.help = g.section == Section::files      ? "Shows this file; a double click renames it"
+                    it.help = !row.help.empty()                ? row.help
+                            : g.section == Section::files      ? "Shows this file; a double click renames it"
                             : g.section == Section::ir         ? "Shows the program's LLVM IR, as FMinus compiled it, in a read-only tab"
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
@@ -473,10 +481,16 @@ namespace playground::ui
         const Hit* h = hitAt(pointer_);
         if (h == nullptr)
         {
-            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES AND ITS IR, THE PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
+            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, ITS FOLDER AND ITS IR, THE PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
             return;
         }
         const Section s = groups_[static_cast<std::size_t>(h->group)].section;
+        if (h->part == Part::row)
+            if (const Row& row = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)]; !row.spec.empty())
+            {
+                std::snprintf(out, n, "%s", row.spec.c_str());
+                return;
+            }
         if (s == Section::ir && h->part == Part::row)
         {
             const int view = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)].index;
@@ -488,6 +502,7 @@ namespace playground::ui
         const char* line = h->part == Part::header ? "SECTION   SHOW OR HIDE IT"
                          : h->part == Part::close  ? "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)"
                          : h->part == Part::action ? (s == Section::files     ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"
+                                                      : s == Section::folder  ? "STOP   THE FOLDER STAYS AS IT IS; NOTHING SYNCS UNTIL IT IS ON AGAIN"
                                                       : s == Section::presets ? "NEW PRESET   THE DIALS AS THEY ARE, UNDER A NAME, IN THE PROJECT OPEN"
                                                                               : "PROJECTS   SAVE A VERSION, OPEN AN OLDER ONE, DELETE")
                          : s == Section::files     ? "FILE   SHOW IT   DOUBLE-CLICK RENAMES IT"

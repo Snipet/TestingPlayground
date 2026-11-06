@@ -5,8 +5,11 @@
 // GPU call until bgfx draws them) and records as Canvas::shader draws: the GPU draws them, SoftRaster a placeholder.
 //
 // It is resizable, in both directions, from kMinWidth x kMinHeight (logical px) up: the chat takes about a third of the
-// width at the right (kChatMinW to kChatMaxW), the explorer about a sixth at the left, the editor and the chat's
-// transcript take the height that is left.
+// width at the right, the explorer about a sixth at the left, until the user drags their edges (Columns.h: the
+// explorer's right edge, the chat's left; each within its least and its most, the program's card keeping
+// kProgramMinW, a double-click resetting it; the session keeps the widths, EditorPort::explorerWidth and chatWidth, and
+// this Mac keeps them as the default for new instances); the editor and the chat's transcript take the height that is
+// left.
 //
 //   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
 //             renames it, its cross closes it, the header's + makes one), its LLVM IR (a click opens the IR tab on a
@@ -43,9 +46,14 @@
 //             the height that more rows take. A program with a .gui file (fminus/GuiSpec.h) has its interface instead:
 //             its containers, controls, displays and text placed by GuiLayout.h and made of GuiItems.h, as tall as it
 //             is under the editor (up to the room the editor leaves), and scrolled by the wheel where it is taller or
-//             wider than its area
+//             wider than its area. In the CODE view the editor's status line's Panel switch (Cmd-J) hides it (the
+//             dials or the interface, and a netlist's fold bar): the editor then has the column. The session keeps one
+//             choice for the program's code and one for its interface's files (.gui, .sc), both shown at first
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
+//   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
+//             own (Role::code, below), this window showing the panel full size meanwhile; the session keeps it
+//             (EditorPort::codeWindow)
 //   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
 //             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
 //             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
@@ -89,17 +97,20 @@
 // SETTLE displays that stand still and readouts that change.
 //
 // The meters' reader: the audio thread measures the levels and fills the scopes' rings only while someone reads them
-// (Engine::readers). A Panel is a reader from its making, and while the host ticks it. EditorHost ticks a Panel only
-// while its window shows (a minimised or hidden window is skipped) and calls idle() ten times a second whatever, so a
-// Panel that sees kHiddenIdles idle calls and kHiddenAfter seconds with no tick lets the reader go (its displays then
-// show nothing anyone sees), and takes it again at its next tick: the levels start again from that block and the
-// scopes from silence, as for any reader that comes (Engine.h). HeadlessHost ticks before each idle call, so a probe's
-// Panel stays a reader unless the probe calls idle() alone. gui.panel HIDDEN checks.
+// (Engine::readers). A Panel is a reader from its making, and while the host ticks it (the code window's never: it
+// shows no display). EditorHost ticks a Panel only while its window shows (a minimised or hidden window is skipped)
+// and calls idle() ten times a second whatever, so a Panel that sees kHiddenIdles idle calls and kHiddenAfter seconds
+// with no tick lets the reader go (its displays then show nothing anyone sees), and takes it again at its next tick:
+// the levels start again from that block and the scopes from silence, as for any reader that comes (Engine.h).
+// HeadlessHost ticks before each idle call, so a probe's Panel stays a reader unless the probe calls idle() alone.
+// gui.panel HIDDEN checks.
 //
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
+#include "editor/Columns.h"
 #include "editor/Explorer.h"
+#include "editor/AbCard.h"
 #include "editor/ExportCard.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
@@ -126,6 +137,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -181,6 +193,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kSettingsTag = funkgui::tags::firstProduct + 12;    // SETTINGS' card
     inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
     inline constexpr funkgui::Tag kLogoTag = funkgui::tags::firstProduct + 14;        // the top bar's mark (LogoMark.h)
+    inline constexpr funkgui::Tag kAbTag = funkgui::tags::firstProduct + 15;          // A/B's card
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -201,13 +214,51 @@ namespace playground::ui
     std::vector<std::string> guiPageTitles(const GuiTree& gui, const std::vector<int>& pages);
     std::vector<int> guiPagesOf(const GuiTree& gui, const std::vector<std::string>& titles);
 
+    // The code window's size (logical px): the default, the least. It has no chat and no panel, so it can be smaller.
+    inline constexpr int kCodeDefaultWidth = 1080, kCodeDefaultHeight = 760;
+    inline constexpr int kCodeMinWidth = 720, kCodeMinHeight = 480;
+
     class Panel final : public funkgui::Panel
     {
     public:
-        // `picture`: view_panel's headless Panel (Picture.cpp): it owns no probe and publishes no session pins, so what
-        // it lays out never becomes the user's.
-        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false);
+        // What a Panel is for: the editor (the plugin's window; the probes'), a picture (view_panel's headless Panel,
+        // Picture.cpp: it owns no probe and publishes no session pins, so what it lays out never becomes the user's), or
+        // the code window (below: the code editor and the explorer in a top-level window of their own).
+        enum class Role : uint8_t { editor, picture, code };
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, Role role);
+        Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture = false)
+            : Panel(ports, port, picture ? Role::picture : Role::editor)
+        {
+        }
         ~Panel() override;
+
+        // The code window (EditorPort::codeWindow; the plugin's editor makes it: editor/gpu/CodeWindow.h). The top bar's
+        // window button (or the session) takes the code editor out of the editor's window into a window of its own, with
+        // the explorer: the same editor, not a copy (its tabs, their texts, undo steps, carets and scrolls, the find bar,
+        // the IR tab, the netlists' views and probes), which lendEditor hands to the code window's Panel (Role::code) and
+        // takeEditorBack takes back. While it is out the editor's window shows the panel full size (as the PANEL view,
+        // which the session's choice keeps for when it comes back), its Run runs the code window's files, and its Code
+        // half brings that window to the front; the code window has the top bar, the explorer and the program's card
+        // (no chat, no panel under the code), its Panel half bringing the editor's window to the front. The button, or
+        // the code window's close, brings the editor back. The window's owner gives the editor's Panel its hooks; a
+        // Panel without them (headless, without the GPU) shows no button and keeps the editor in place.
+        struct WindowHooks
+        {
+            std::function<void(bool out)> out;           // the window to follow the session's choice (made or let go,
+                                                         // later on the message thread: never inside the click)
+            std::function<void()> raise;                 // the other window to the front
+        };
+        void setWindowHooks(WindowHooks hooks);
+        Role role() const noexcept { return role_; }
+        bool editorOut() const noexcept { return out_; } // the editor's Panel: the editor is in the code window (a
+                                                         // picture's: an editor had it out when it was made,
+                                                         // EditorPort::codeWindowOpen)
+        bool windowButtonShown() const;
+        funkgui::Point centreOfWindowButton() const;
+        void setEditorOut(bool out);                     // the button: the session's choice, then the hooks' out
+        void lendEditor(Panel& code);                    // the editor's Panel: `code` takes the editor (then shows it)
+        void takeEditorBack();                           // ... and gives it back (before it goes)
+        Panel* peer() const noexcept { return peer_; }   // the other window's Panel while the editor is out
 
         Panel(const Panel&) = delete;
         Panel& operator=(const Panel&) = delete;
@@ -237,6 +288,18 @@ namespace playground::ui
         bool hasGui() const noexcept { return !panelSpec_.gui.empty(); }
         bool panelView() const noexcept { return panelView_; }
         void setPanelView(bool on);
+        // The panel under the code (the editor's status line's Panel switch, Cmd-J): whether the CODE view shows the
+        // program's panel (its dials, or its .gui file's interface) under the editor. One choice while the program's
+        // code shows (its FMinus files, a netlist, the IR), one while a file of its interface does (a .gui file, a
+        // shader's .sc: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
+        // and the tab shown picks the one that applies. Hidden, the editor (or a netlist's drawing) has the column; the
+        // PANEL view always shows the panel, and so do view_panel's pictures of it.
+        bool codePanelShown() const;                     // the choice for the tab shown
+        bool codePanelHidden() const noexcept { return panelHidden_; }   // hidden as layout() placed it (CODE view)
+        void setCodePanel(bool shown);                   // the choice for the tab shown, kept in the session
+        void toggleCodePanel() { setCodePanel(!codePanelShown()); }
+        funkgui::Point centreOfPanelSwitch() const;      // the status line's switch
+        bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone)
         const GuiLayout& guiLayout() const noexcept;
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
@@ -262,6 +325,9 @@ namespace playground::ui
         void openExport(const std::string& project);
         ExportCard& exportCard() noexcept { return export_; }
         void chooseImport();
+        // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
+        void openAb(const std::string& project, int version);
+        AbCard& abCard() noexcept { return ab_; }
         // "PROJECT  NAME  V3  EDITED  PRESET  BRIGHT  EDITED" (what the top bar's pill says, in words), "" for none.
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
@@ -379,6 +445,18 @@ namespace playground::ui
         bool chatUnread() const noexcept { return unread_; }   // folded, Claude has written since
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
+        // The columns' widths (Columns.h): the explorer's card (0: away) and the chat's (or its rail) as layout() fit them,
+        // and each edge's reach; the edges a user drags (the explorer's right, the chat's left: shown while the card is),
+        // their middles. The widths asked: the session's (EditorPort::explorerWidth, chatWidth), else this Mac's default,
+        // else 0 (a share of the window).
+        const columns::Fit& columnFit() const noexcept { return fit_; }
+        float explorerWant() const noexcept { return explorerWant_; }
+        float chatWant() const noexcept { return chatWant_; }
+        bool explorerEdgeShown() const;
+        bool chatEdgeShown() const;
+        bool edgeFocused(bool chat) const noexcept { return focus_ >= 0 && focus_ == (chat ? chatEdgeItem_ : explorerEdgeItem_); }
+        funkgui::Point centreOfExplorerEdge() const;
+        funkgui::Point centreOfChatEdge() const;
         // The key dialog.
         bool keyDialogOpen() const noexcept { return keyOpen_; }
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
@@ -398,8 +476,8 @@ namespace playground::ui
         int   width() const override;
         int   height() const override;
         bool  resizable() const override { return true; }
-        int   minWidth() const override { return kMinWidth; }
-        int   minHeight() const override { return kMinHeight; }
+        int   minWidth() const override { return role_ == Role::code ? kCodeMinWidth : kMinWidth; }
+        int   minHeight() const override { return role_ == Role::code ? kCodeMinHeight : kMinHeight; }
         void  resize(int w, int h) override;
         void  tick(float dt) override;
         void  idle(double nowSec) override;
@@ -433,6 +511,19 @@ namespace playground::ui
         float windowButtonsRoom() const noexcept { return buttonsRoom_; }
 
     private:
+        // The code window (above).
+        Role role_ = Role::editor;
+        bool out_ = false;                               // editorOut()
+        Panel* peer_ = nullptr;
+        WindowHooks windowHooks_;
+        int windowItem_ = -1;                            // the top bar's window button
+        bool hasChat() const noexcept { return role_ != Role::code; }
+        bool full() const noexcept { return role_ != Role::code && (panelView_ || out_); }   // laid out as PANEL
+        void bindFiles();                                // the files' hooks to this Panel (made, lent, taken back)
+        void swapEditor(Panel& other);                   // the editor and what follows it, between two Panels
+        Panel& editorPanel() noexcept { return out_ && peer_ != nullptr ? *peer_ : *this; }   // whose files RUN runs
+        void pushEditor();                               // its files to the processor (a rename typed ended)
+
         float buttonsRoomNow() const;                    // the room for the port's buttons now (layout() keeps it)
         void syncWindowButtons();                        // each frame: a new room lays out again (layout() tells
                                                          // the port where they go)
@@ -445,7 +536,8 @@ namespace playground::ui
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
 
-        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
+        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
+                                                         // items, under the code editor's overlays)
         bool moveFocus(int dir);
         void setFocus(int item);
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
@@ -459,6 +551,13 @@ namespace playground::ui
         const FilesItem& files() const;
         void layout();                                   // every item's place, for width_ x height_
         bool layoutSchematic_ = false;                   // layout() gave the Schematic view its room
+        bool layoutStale() const;                        // the tab shown wants another room than layout() gave
+        // The panel under the code: the choices ([0] the code's, [1] the interface's files'), as the port last had
+        // them (refresh() takes another Panel's or a session's); hidden by layout().
+        bool codePanel_[2] = { true, true };
+        bool panelHidden_ = false;
+        bool interfaceShown() const;                     // the tab shown is a file of the interface
+        void syncCodePanel();
         bool dialsOpen_ = false;                         // the fold's bar shows the dials (per Panel; folded at first)
         bool dialsFolded_ = false;                       // the dials folded into the bar
         bool dialsBar_ = false;                          // the bar shown
@@ -531,6 +630,21 @@ namespace playground::ui
         // they were made.
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
+        // The columns' widths (Columns.h): the edges' items; the widths asked (0: the share); the port's as this Panel
+        // last saw them (another Panel's drag, a session loaded: refresh() takes them); what layout() fit; a step's
+        // width on its way to this Mac's default (-1: none), and when the last step was.
+        int explorerEdgeItem_ = -1, chatEdgeItem_ = -1;
+        float explorerWant_ = 0.0f, chatWant_ = 0.0f;
+        int seenExplorerWidth_ = 0, seenChatWidth_ = 0;
+        columns::Fit fit_;
+        int stepDefault_[2] = { -1, -1 };                // [0] the explorer's, [1] the chat's
+        double stepAt_ = 0.0;
+        bool isEdge(int item) const noexcept { return item >= 0 && (item == explorerEdgeItem_ || item == chatEdgeItem_); }
+        float wantedWidth(int session, bool chat) const; // the session's width, else this Mac's default, else 0
+        void setColumnWidth(bool chat, float px, columns::Keep keep);
+        void syncColumnWidths();                         // refresh(): the port's widths, when another set them
+        void keepStepDefaults(double nowSec, bool now);  // a step's width to this Mac's default, once the steps pause
+                                                         // (now: at once)
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
         void toggleExplorer();
         funkgui::Rect explorerCard_;
@@ -546,6 +660,15 @@ namespace playground::ui
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
+        // The folder (EditorPort::folder, plugin/FolderSync.h): what this Panel last read of it (read again when its
+        // revision moves: refresh()), the rows of its explorer section, what a row does, a conflict's choice (a menu at
+        // the pointer: which side to keep), and the notices a save that landed or a new conflict give.
+        FolderState folderState_;
+        uint64_t folderSeen_ = 0;
+        bool folderKnown_ = false;                       // folderState_ read once (the notices start from it)
+        void syncFolder();
+        void folderRow(const ExplorerItem::Row& row);
+        void chooseConflict(const std::string& file);
         // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
         // has its text made from what there is (refresh(); a view shown again catches up then).
         bool irViewing_ = false;
@@ -555,8 +678,12 @@ namespace playground::ui
         void applyPresetNamed(const std::string& name);  // a preset of the project open
         void afterProjects(bool wasOpen);                // the card's notice to the status, the focus back
         void afterExport(bool wasOpen);                  // its notice; an export asked for: the save chooser, the file
+        void afterAb(bool wasOpen);                      // A/B's notice to the status, the focus back once it closed
         void importFiles(const std::vector<std::string>& paths);
-        bool dialogOpen() const noexcept { return keyOpen_ || projects_.isOpen() || export_.isOpen() || settings_.isOpen(); }
+        bool dialogOpen() const noexcept
+        {
+            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen();
+        }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
@@ -581,6 +708,8 @@ namespace playground::ui
         std::string projectText_;                        // the project open, its version, the preset applied, in words
         ProjectBrowser projects_{ port_ };
         ExportCard export_{ port_ };
+        AbCard ab_{ port_ };
+        uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         int focusBeforeProjects_ = -1;
         // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
         SettingsCard settings_{ port_ };

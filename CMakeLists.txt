@@ -471,6 +471,7 @@ namespace @FP_NAMESPACE@
   endif()
   if(APPLE)
     target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
+    target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework CoreServices")   # FolderWatch.cpp: FSEvents
     target_link_libraries(${PRODUCT_NAME} PRIVATE compression)  # ProjectExport.cpp: a package's xz (libcompression)
   elseif(FP_WINDOWS)
     target_link_libraries(${PRODUCT_NAME} PRIVATE ${FP_WINDOWS_LIBS})

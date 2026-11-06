@@ -4,6 +4,10 @@
 //   FILES     the program's files, the editor's tabs (the one shown marked, one with errors a red dot): a click shows
 //             it, a double click renames it, the cross on a row closes it (not the program, the first); the header's
 //             + makes a new file
+//   FOLDER    the program's files in a folder on disk, synced both ways (plugin/FolderSync.h): off, a row that turns
+//             it on; on, Open in VS Code, Show in Finder (the folder's name), Run on save (ticked when on), a row a
+//             conflict (a red dot: a click asks which side to keep), and its notes as captions; the header's cross
+//             turns it off
 //   LLVM IR   what FMinus made of the program (IrView.h), none of its files: a caption saying so, then a row a view
 //             (optimised, lowered, and the frozen copy's while it plays; the one shown marked): a click opens the
 //             read-only IR tab on it
@@ -36,8 +40,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples, ir };
-        static constexpr int kSections = 6;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder };
+        static constexpr int kSections = 7;
 
         struct Row
         {
@@ -51,6 +55,10 @@ namespace playground::ui
             bool closable = false;                    // a cross under the pointer
             int index = -1;                           // what the Panel acts on: a tab, a library file, an example, an IR view
             std::string key;                          // a preset's or a project's name
+            std::string help;                         // to a screen reader ("": the section's)
+            std::string spec;                         // the status line's under the pointer ("": the section's; a
+                                                      // caption with one says it under the pointer, a caption without
+                                                      // is not there for the pointer)
         };
 
         struct Group
@@ -61,6 +69,7 @@ namespace playground::ui
             chat::Icon action = chat::Icon::none;     // the header's button (none: no button)
             std::string actionTitle;                  // its name to a screen reader ("New file")
             std::string empty;                        // shown when there are no rows ("No presets yet")
+            bool counted = true;                      // the header counts its rows ("FILES  2")
         };
 
         struct Hooks
@@ -136,7 +145,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true, true };
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

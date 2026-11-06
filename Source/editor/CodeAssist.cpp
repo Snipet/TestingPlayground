@@ -44,6 +44,11 @@ namespace playground::ui
         constexpr float kCheckDelay = 0.6f;              // s after the last edit
         constexpr float kOccurrenceDelay = 0.25f;        // s the caret rests
         constexpr const char* kFormatOnRunKey = "codeFormatOnRun";
+        // The status line's Panel switch: its icon (a window with a panel at its bottom) and the room it takes beside
+        // its word; the room the problems' count and Checking... keep at the line's left, before which its word goes.
+        constexpr float kPanelGlyphW = 13.0f, kPanelGlyphH = 10.0f, kPanelIconRoom = 18.0f;
+        constexpr float kProblemsRoom = 160.0f;
+        constexpr const char* kPanelWord = "Panel";
         constexpr int kMaxFind = 200;                    // characters in the find bar's fields
         constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
         constexpr float kGoToW = 330.0f;
@@ -1180,7 +1185,8 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.position.contains(p) || (s.problems.contains(p) && !viewShown())
+            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p)
+                           || (s.problems.contains(p) && !viewShown())
                        ? funkgui::Cursor::pointingHand
                        : funkgui::Cursor::normal;
         }
@@ -1227,6 +1233,11 @@ namespace playground::ui
             const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
                 setFormatOnRun(!formatOnRun());
+            else if (s.panel.contains(p))
+            {
+                if (!e.popup)
+                    togglePanelSwitch();                 // the Panel lays out again (the editor's room changes)
+            }
             else if (s.position.contains(p) && !words)
                 openGoTo();
             else if (s.problems.contains(p) && words && statusProblems_)
@@ -1436,8 +1447,10 @@ namespace playground::ui
         k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
         k.mix(matches_.size()).mix(current_);
         k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
-        k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());   // a machine-wide switch: another
-        return k.h;                                                               // window may flip it
+        // Format on Run is a machine-wide switch (another window may flip it), the Panel switch the session's.
+        k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());
+        k.mix(hasPanelSwitch()).mix(panelSwitchOn());
+        return k.h;
     }
 
     bool CodeAssist::settled() const
@@ -2362,6 +2375,8 @@ namespace playground::ui
             x -= w;
             return Rect{ x, r.y, w, r.h };
         };
+        if (hasPanelSwitch())
+            s.panel = panelSwitchLabelled() ? take(kPanelWord, kPanelIconRoom) : take("", kPanelGlyphW - 2.0f);
         s.formatOnRun = take("Format on Run", 14.0f);
         s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
@@ -2372,6 +2387,22 @@ namespace playground::ui
         s.problems = { r.x + 4.0f, r.y, std::max(0.0f, std::min(200.0f, s.position.x - r.x - 8.0f)), r.h };
         return s;
     }
+
+    bool CodeAssist::panelSwitchLabelled() const
+    {
+        // Its word while the line's other parts at their widest (a long place with a selection's count, the IR's name)
+        // leave the problems' count and Checking... their room: the word stays put as the caret moves, and goes only
+        // near the program's card's least width.
+        const funkgui::TextStyle& st = chat::kSmall;
+        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom          // the switch, its word
+                          + widthOf("Format on Run", st) + 16.0f + 14.0f              // Format on Run
+                          + widthOf("LLVM IR", st) + 16.0f                            // the language
+                          + widthOf("Spaces: 4", st) + 16.0f                          // the indent
+                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+        return statusRect().w - 16.0f - parts >= kProblemsRoom;
+    }
+
+    funkgui::Rect CodeAssist::panelSwitchRect() const { return hasPanelSwitch() ? statusParts().panel : Rect{}; }
 
     // ---- drawing ----------------------------------------------------------------------------------------------------
     void CodeAssist::drawGround(funkgui::Canvas& c, const funkgui::Theme& th) const
@@ -2452,6 +2483,23 @@ namespace playground::ui
             if (on)
                 chat::drawIcon(c, chat::Icon::check, box.centreX(), box.centreY(), 9.0f, p.onAccent);
             c.text("Format on Run", parts.formatOnRun.right() - 8.0f, top, st, on ? p.text : p.faint, funkgui::Align::right);
+            // The Panel switch: a window with its panel at the bottom, filled while the panel shows; its word beside it.
+            if (hasPanelSwitch())
+            {
+                const bool shown = panelSwitchOn();
+                const bool labelled = panelSwitchLabelled();
+                const Rect& b = parts.panel;
+                const float gx = std::round(labelled ? b.x + 6.0f : b.centreX() - 0.5f * kPanelGlyphW);
+                const float gy = std::round(mid - 0.5f * kPanelGlyphH);
+                const Col ink = shown ? p.accent : p.dim;
+                c.rrect(gx, gy, kPanelGlyphW, kPanelGlyphH, 2.0f, ink.withAlpha(0.0f), 1.2f, ink);
+                if (shown)
+                    c.rrect(gx + 1.5f, gy + kPanelGlyphH - 4.5f, kPanelGlyphW - 3.0f, 3.0f, 0.5f, ink);
+                else
+                    c.hairlineH(gx + 1.5f, gy + kPanelGlyphH - 4.0f, kPanelGlyphW - 3.0f, ink);
+                if (labelled)
+                    c.text(kPanelWord, b.right() - 8.0f, top, st, shown ? p.text : p.faint, funkgui::Align::right);
+            }
         }
         // The find bar.
         if (findOpen_)
@@ -2772,6 +2820,14 @@ namespace playground::ui
             if (s.formatOnRun.contains(pointer))
                 std::snprintf(out, n, "FORMAT ON RUN   %s   A CLICK TURNS IT %s   SHIFT-ALT-F FORMATS THE FILE NOW",
                               formatOnRun() ? "ON: RUN FORMATS EVERY FMINUS FILE FIRST" : "OFF", formatOnRun() ? "OFF" : "ON");
+            else if (s.panel.contains(pointer))
+            {
+                const bool gui = !viewShown() && isInterfaceFile(tabs_.name(activeTab()));
+                std::snprintf(out, n, "PANEL   %s   A CLICK (OR CMD-J) %s   %s",
+                              panelSwitchOn() ? "SHOWN UNDER THE EDITOR" : "HIDDEN", panelSwitchOn() ? "HIDES IT" : "SHOWS IT",
+                              gui ? "THE INTERFACE'S FILES KEEP THEIR OWN CHOICE"
+                                  : ".GUI AND .SC FILES KEEP THEIR OWN CHOICE");
+            }
             else if (s.position.contains(pointer))
                 std::snprintf(out, n, "LINE AND COLUMN   A CLICK (OR CTRL-G) GOES TO A LINE");
             else if (viewShown())
