@@ -8,11 +8,24 @@
 //            larger than the signal's own, then is the input exactly (silence exactly); it is called no more (blocks
 //            after it take no budget's time) and an instrument starts no note on it
 //   PARALLEL an effect's process whose parallel for's body never ends: every thread's part stops, and the call returns
+//   BUDGET   a call's budget: 2^32 a second of its samples (89,478 iterations a sample at 48 kHz), 16 samples' worth
+//            at least
 //   INIT     an init that never ends, and Shared's: the compile fails with its message (Patch::Result::stopped), in
-//            seconds; an end that never ends: the program is destroyed, in seconds
+//            seconds; one that never ends at another rate (reset()): it is the last init called (Shared's first, then
+//            the instances': none after it); an end that never ends: the last end called (no other instance's, nor
+//            Shared's), and the program is destroyed in seconds
+//   STOPPED  a Patch that a call stopped calls no end, its state being any: its reset() calls none (and makes it new),
+//            and destroying it calls none (an end that never ends, which would take a second of a core: none taken)
 //   FIRST    a program that stops at its first block, offered revertible while another plays: the Engine goes back to
 //            that one, which plays on (an effect: the same bits as it alone; an instrument: its held key sounds again),
-//            the stop published as gone back from (settle() then says so); offered otherwise, it stops and fades out
+//            the stop published as gone back from (settle() then says so); offered otherwise, it stops and fades out.
+//            LATER: one that stops at its third block, the swap still under way (an effect's crossfade turned back from
+//            where it stood, the stopped side's exit under it; an instrument's old voices fading): no step larger than
+//            the signal's, and then the program before alone (an effect: the same bits as it alone)
+//   GLIDE    an instrument's dial gliding as it goes back: from its start() at the block's start, the glide goes on as
+//            if nothing had stopped (it advances once a block); from a voice's part mid-block, the program gone back to
+//            goes on from the value its instances held since the swap, gliding to the dial's new value from the part's
+//            end (no snap)
 //   RUN      through a Compiler with an audio thread: a RUN of a program that stops at once fails (ok false, stopped,
 //            its message) and the program before plays on (the status's program, the Engine's); a RUN of one that stops
 //            only when a dial turns: ok, and once it turns, a status of its own says it stopped, and the program
@@ -113,6 +126,11 @@ namespace
     const char* kSpin = "        while (1)\n            spins = spins + 1;\n";
     const char* kSpinLater = "        count = count + n;\n        if (count > 12000)\n            while (1)\n"
                              "                spins = spins + 1;\n";
+    // One from its 513th sample on (an effect's third block of 256; a voice's 33rd part), and from its 601st.
+    const char* kSpinThird = "        count = count + n;\n        if (count > 512)\n            while (1)\n"
+                             "                spins = spins + 1;\n";
+    [[maybe_unused]] const char* kSpinAfter600 = "        count = count + n;\n        if (count > 600)\n            while (1)\n"
+                                "                spins = spins + 1;\n";
 
     // The method's position in `source` ("process(" in its declaration), as the message cites it: "L:C".
     std::string positionOf(const std::string& source, const std::string& declaration, const std::string& name)
@@ -166,6 +184,45 @@ namespace
                 *stoppedAt = pos;
         }
         return out;
+    }
+
+    // (GLIDE's.) One block of `n` samples of silence with the dial 0 at `dial`, a note-on of 60 when `note`.
+    [[maybe_unused]] probe::Stereo block(pg::Engine& engine, float dial, bool note = false, int n = kBlock)
+    {
+        probe::Stereo out(static_cast<std::size_t>(n));
+        std::array<float, pg::kMaxControls> norm{};
+        norm[0] = dial;
+        engine.setControls(norm);
+        std::vector<pg::Event> events;
+        if (note)
+        {
+            pg::Event e;
+            e.kind = pg::EventKind::noteOn;
+            e.note = 60;
+            e.velocity = 0.8f;
+            events.push_back(e);
+        }
+        float* ch[2] = { out.l.data(), out.r.data() };
+        engine.process(ch, 2, n, events);
+        return out;
+    }
+
+    // The field `path` of the newest voice that is not fading out, in the program that plays; -1 when none.
+    [[maybe_unused]] double newestVoiceField(const pg::Engine& engine, const std::string& path)
+    {
+        std::vector<pg::Engine::VoiceInfo> vs;
+        engine.voices(vs);
+        const pg::Engine::VoiceInfo* newest = nullptr;
+        for (const pg::Engine::VoiceInfo& v : vs)
+            if (!v.fading && (newest == nullptr || v.age > newest->age))
+                newest = &v;
+        const pg::Patch* p = engine.playingPatch();
+        if (newest == nullptr || p == nullptr)
+            return -1.0;
+        for (const pg::Patch::Field& f : p->fieldMap())
+            if (f.path == path)
+                return p->read(f, newest->instance);
+        return -1.0;
     }
 
     std::unique_ptr<pg::Patch> compiled(const std::string& source, uint64_t id, std::string* errors = nullptr)
@@ -316,6 +373,11 @@ PROBE(dsp, budget)
 {
     const std::size_t second = static_cast<std::size_t>(kFs);
 
+    // ---- BUDGET ------------------------------------------------------------------------------------------------------
+    P.eq("budget.a_sample_48k", pg::Patch::budgetOf(1, 48000.0f) / pg::Patch::kBudgetFloor, int64_t{ 89'478 });
+    P.eq("budget.a_call_of_1", pg::Patch::budgetOf(1, 48000.0f), int64_t{ 89'478 } * 16);
+    P.eq("budget.a_call_of_2048", pg::Patch::budgetOf(2048, 48000.0f), int64_t{ 89'478 } * 2048);
+
     // ---- PROCESS ------------------------------------------------------------------------------------------------------
     {
         pg::Engine engine;
@@ -413,15 +475,86 @@ PROBE(dsp, budget)
         P.le("shared_init.seconds", sharedMs / 1000.0, kSecondsAtMost);
         std::printf("shared init: stopped in %.0f ms\n", sharedMs);
 
-        // An end that never ends: the first instance's is stopped, and no other end is called.
-        const std::string end = program(kSpinField, "", "    void end()\n    {\n" + std::string(kSpin) + "    }\n\n");
+        // An init that never ends at 96 kHz (reset()): the last init called, the instances after it never initialised;
+        // Shared's: before every instance's, so the only one called.
+        const std::string at96 = "        if (rate > 50000.0f)\n" + std::string(kSpin);
+        const std::string plainShared = "module Shared\n{\n    int spins;\n\n    void init(float rate)\n    {\n"
+                                        "        spins = 0;\n    }\n};\n\n";
+        const std::string spinShared = "module Shared\n{\n    int spins;\n\n    void init(float rate)\n    {\n" + at96
+                                     + "    }\n};\n\n";
+        const std::string withShared = std::string("    Shared* shared;\n") + kSpinField;
+        const std::string plainInit = "    void init(float rate)\n    {\n        spins = 0;\n    }\n\n";
+        const std::string spinInit = "    void init(float rate)\n    {\n" + at96 + "    }\n\n";
+        const int instances = kInstrument ? pg::Patch::kInstances : 1;
+        for (const bool sharedSpins : { false, true })
+        {
+            const std::string text = (sharedSpins ? spinShared : plainShared) + program(withShared, "", sharedSpins ? plainInit : spinInit);
+            const std::string row = sharedSpins ? "shared_init_at_96k" : "init_at_96k";
+            r = pg::Patch::compile(pg::singleFile(text), static_cast<float>(kFs));
+            P.eq(row + ".compiles", r.patch != nullptr ? 1 : 0, 1);
+            if (!r.patch)
+            {
+                std::printf("%s", r.errors.c_str());
+                continue;
+            }
+            P.eq(row + ".all_called_at_48k", r.patch->initsCalled(), 1 + instances);
+            r.patch->reset(96000.0f);
+            P.eq(row + ".stopped", static_cast<int>(r.patch->stopped()),
+                 static_cast<int>(sharedSpins ? pg::Patch::Method::sharedInit : pg::Patch::Method::init));
+            P.eq(row + ".none_after_it", r.patch->initsCalled(), sharedSpins ? 1 : 2);
+            r.patch->reset(static_cast<float>(kFs));
+            P.eq(row + ".new_again_at_48k", r.patch->stopped() == pg::Patch::Method::none && r.patch->initsCalled() == 1 + instances ? 1 : 0, 1);
+        }
+
+        // An end that never ends: the first instance's is stopped, and no other end is called (no other instance's, nor
+        // Shared's): reset() calls one, and destroying it takes one's budget.
+        const std::string endShared = "module Shared\n{\n    int ends;\n\n    void end()\n    {\n        ends = ends + 1;\n"
+                                      "    }\n};\n\n";
+        const std::string end = endShared + program(withShared, "", "    void end()\n    {\n" + std::string(kSpin) + "    }\n\n");
         r = pg::Patch::compile(pg::singleFile(end), static_cast<float>(kFs));
         P.eq("end.compiles", r.patch != nullptr ? 1 : 0, 1);
+        if (r.patch)
+        {
+            r.patch->reset(static_cast<float>(kFs));
+            P.eq("end.one_called", r.patch->endsCalled(), 1);
+        }
         t0 = Clock::now();
         r.patch.reset();
         const double endMs = msSince(t0);
         P.le("end.seconds", endMs / 1000.0, kSecondsAtMost);
         std::printf("end: destroyed in %.0f ms\n", endMs);
+    }
+
+    // ---- STOPPED: a Patch a call stopped calls no end ----------------------------------------------------------------
+    {
+        // Its start (an instrument's) or process never ends, and its end never would.
+        const std::string hooks = "    void end()\n    {\n" + std::string(kSpin) + "    }\n\n";
+        const std::string text = kInstrument ? voice(kSpinField, "", kSpin, hooks) : program(kSpinField, kSpin, hooks);
+        pg::Patch::Result r = pg::Patch::compile(pg::singleFile(text), static_cast<float>(kFs));
+        P.eq("stopped.compiles", r.patch != nullptr ? 1 : 0, 1);
+        if (r.patch)
+        {
+            std::vector<float> l(kBlock, 0.0f), rr(kBlock, 0.0f);
+            const auto stopIt = [&] {
+                if constexpr (kInstrument)
+                    r.patch->start(0, 60.0f, 0.8f);
+                else
+                    r.patch->process(l.data(), rr.data(), kBlock);
+            };
+            const pg::Patch::Method call = kInstrument ? pg::Patch::Method::start : pg::Patch::Method::process;
+            stopIt();
+            P.eq("stopped.stops", static_cast<int>(r.patch->stopped()), static_cast<int>(call));
+            r.patch->reset(static_cast<float>(kFs));
+            P.eq("stopped.reset_calls_no_end", r.patch->endsCalled(), 0);
+            P.eq("stopped.reset_makes_it_new", r.patch->stopped() == pg::Patch::Method::none ? 1 : 0, 1);
+            stopIt();
+            P.eq("stopped.stops_again", static_cast<int>(r.patch->stopped()), static_cast<int>(call));
+            const double t0 = threadMs();
+            r.patch.reset();
+            const double ms = threadMs() - t0;
+            P.le("stopped.destroyed_without_end_ms", ms, 250.0);
+            std::printf("stopped: destroyed in %.1f ms of the thread's time (an end would take its budget)\n", ms);
+        }
     }
 
     // ---- FIRST --------------------------------------------------------------------------------------------------------
@@ -475,6 +608,116 @@ PROBE(dsp, budget)
         for (std::size_t i = 6 * kBlock; i < o3.size() && exact; ++i)
             exact = kInstrument ? o3.l[i] == 0.0f : o3.l[i] == rest.l[i];
         P.eq("first.unrevertible_then_input_or_silence", exact ? 1 : 0, 1);
+    }
+
+    // ---- FIRST, LATER: a program that stops while the swap is under way, gone back from -----------------------------
+    {
+        // A, which plays (an effect: a lowpass, its state its own); B: its third block (a voice's 33rd part) never ends
+        // (an effect: its output the input's opposite, so that a side mixed up would step).
+        const std::string a = kInstrument ? program("", "")
+                                          : "module Effect\n{\n    float zl, zr;\n\n"
+                                            "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                            "        for (int i = 0; i < n; ++i)\n        {\n"
+                                            "            zl = zl + 0.2f * (left[i] - zl);\n            zr = zr + 0.2f * (right[i] - zr);\n"
+                                            "            left[i] = zl;\n            right[i] = zr;\n        }\n    }\n};\n";
+        const std::string b = kInstrument ? voice(kSpinField, kSpinThird)
+                                          : "module Effect\n{\n" + std::string(kSpinField)
+                                            + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                            + kSpinThird
+                                            + "        for (int i = 0; i < n; ++i)\n        {\n"
+                                              "            left[i] = -0.5f * left[i];\n            right[i] = -0.5f * right[i];\n"
+                                              "        }\n    }\n};\n";
+        pg::Engine engine, alone;
+        for (pg::Engine* e : { &engine, &alone })
+        {
+            e->prepare(kFs, kBlock);
+            e->offer(compiled(a, 1));
+            e->prepare(kFs, kBlock);
+        }
+        const probe::Stereo in = sineIn(second / 2);
+        const std::size_t half = in.size() / 2 / kBlock * kBlock;
+        probe::Stereo first(half), rest(in.size() - half);
+        std::copy_n(in.l.begin(), half, first.l.begin());
+        std::copy_n(in.r.begin(), half, first.r.begin());
+        std::copy(in.l.begin() + static_cast<std::ptrdiff_t>(half), in.l.end(), rest.l.begin());
+        std::copy(in.r.begin() + static_cast<std::ptrdiff_t>(half), in.r.end(), rest.r.begin());
+        play(engine, first, static_cast<std::size_t>(-1), kInstrument);
+        play(alone, first, static_cast<std::size_t>(-1), kInstrument);
+        engine.offer(compiled(b, 2), true);
+        const probe::Stereo o2 = play(engine, rest);
+        const probe::Stereo r2 = play(alone, rest);
+        pg::Engine::Stopped st;
+        P.eq("later.stops", engine.lastStop(st) && st.program == 2 && st.call == pg::Patch::Method::process ? 1 : 0, 1);
+        P.eq("later.reverted", st.reverted ? 1 : 0, 1);
+        P.eq("later.at_its_513th_sample", static_cast<int64_t>(st.at), static_cast<int64_t>(half + 512));
+        P.eq("later.previous_plays", engine.playingPatch() != nullptr ? static_cast<int>(engine.playingPatch()->program()) : 0, 1);
+        P.le("later.no_step", maxStepOf(o2, 0, 12 * kBlock), 0.03);
+        P.eq("later.finite", probe::allFinite(o2.l) && probe::allFinite(o2.r) ? 1 : 0, 1);
+        const std::size_t after = 8 * kBlock;                // the stop at 512, then 20 ms at most to go back
+        if constexpr (kInstrument)
+            P.ge("later.held_key_sounds_db", probe::rmsDb(o2.l, after, rest.size() - after), -15.0);
+        else
+        {
+            const auto tail = [](const std::vector<float>& x) {
+                return std::vector<float>(x.begin() + static_cast<std::ptrdiff_t>(after), x.end());
+            };
+            P.eq("later.then_same_bits_as_alone",
+                 probe::sameBits(tail(o2.l), tail(r2.l)) && probe::sameBits(tail(o2.r), tail(r2.r)) ? 1 : 0, 1);
+        }
+    }
+
+    // ---- GLIDE: an instrument's dial gliding as the Engine goes back ------------------------------------------------
+    if constexpr (kInstrument)
+    {
+        // A voice that keeps the dial's last value of each call (`seen`), its program A; B the same, but its start
+        // never ends (at the block's start), or its process from its 601st sample (mid-block).
+        const std::string dial = "    param float level [[fminus::range(0, 1)]] [[fminus::default(0)]];\n    float seen;\n";
+        const std::string keep = "        seen = level[n - 1];\n";
+        const std::string a = voice(dial, keep);
+        const double step = 1.0 / 960.0;                     // the glide's: 20 ms at 48 kHz
+        {
+            pg::Engine engine;
+            engine.prepare(kFs, kBlock);
+            engine.offer(compiled(a, 1));
+            engine.prepare(kFs, kBlock);
+            block(engine, 0.0f, true);
+            for (int k = 1; k < 4; ++k)
+                block(engine, 0.0f);
+            block(engine, 1.0f);                             // the glide starts: 256 of its 960 samples
+            const double before = newestVoiceField(engine, "seen");
+            engine.offer(compiled(voice(dial + kSpinField, keep, kSpin), 2), true);
+            block(engine, 1.0f);                             // B's start stops at once: A again, 512 of them
+            pg::Engine::Stopped st;
+            P.eq("glide.start.reverted", engine.lastStop(st) && st.program == 2 && st.reverted && st.call == pg::Patch::Method::start ? 1 : 0, 1);
+            P.in("glide.start.before", before, 256.0 * step - 1e-4, 256.0 * step + 1e-4);
+            const double seen = newestVoiceField(engine, "seen");
+            P.in("glide.start.once_a_block", seen, 512.0 * step - 1e-4, 512.0 * step + 1e-4);
+            std::printf("glide: from a start at the block's start, %.4f after a block of %.4f (a block's glide %.4f)\n", seen, before, 256.0 * step);
+        }
+        {
+            pg::Engine engine;
+            engine.prepare(kFs, kBlock);
+            engine.offer(compiled(a, 1));
+            engine.prepare(kFs, kBlock);
+            block(engine, 0.0f, true);
+            for (int k = 1; k < 4; ++k)
+                block(engine, 0.0f);
+            block(engine, 1.0f);                             // A's glide to 1 starts: its target what A then holds
+            engine.offer(compiled(voice(dial + kSpinField, keep + kSpinAfter600), 2), true);
+            block(engine, 1.0f);                             // B: its dials snap to 1
+            block(engine, 1.0f);
+            block(engine, 0.5f);                             // B glides to 0.5, and stops in it (its 601st sample)
+            pg::Engine::Stopped st;
+            const bool read = engine.lastStop(st);
+            P.eq("glide.part.reverted", read && st.program == 2 && st.reverted && st.call == pg::Patch::Method::process ? 1 : 0, 1);
+            const int from = static_cast<int>(st.at) - 7 * kBlock;   // its part's first sample in the block
+            P.in("glide.part.mid_block", from, 1.0, kBlock - 1.0);
+            const int to = from + 16;
+            const double want = 1.0 - static_cast<double>(kBlock - to) * 0.5 * step;   // from 1, what A held, to 0.5
+            const double seen = newestVoiceField(engine, "seen");
+            P.in("glide.part.from_what_it_held", seen, want - 1e-4, want + 1e-4);
+            std::printf("glide: from a part at %d, %.4f at the block's end (from 1 to 0.5 from %d: %.4f)\n", from, seen, to, want);
+        }
     }
 
     // ---- RUN: through a Compiler, its audio thread running ----------------------------------------------------------
