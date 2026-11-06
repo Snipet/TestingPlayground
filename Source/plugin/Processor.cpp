@@ -14,6 +14,7 @@
 #include <funkgui/gpu/ShaderLibrary.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -54,6 +55,8 @@ namespace playground
         const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         // its netlists' views: <FILE name view="schematic" zoom x y><PROBE node/></FILE> (EditorPort::fileViews)
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
+        // The folder while it is on (FolderSync.h): <FOLDER name=".." run="1"/> (a state from before it has none)
+        const juce::Identifier kFolderTag{ "FOLDER" }, kRunOnSave{ "run" };
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
@@ -491,6 +494,149 @@ namespace playground
         }
         const std::lock_guard<std::mutex> lock(pagesMutex_);
         codeWindow_ = w;
+    }
+
+    // ---- the folder (FolderSync.h; message thread) ------------------------------------------------------------------
+    double Processor::seconds() { return juce::Time::getMillisecondCounterHiRes() / 1000.0; }
+
+    // Under the projects' folder (a probe's sandbox under CTest), where a sandboxed host lets the plugin write.
+    std::filesystem::path Processor::folderRoot() const
+    {
+        const juce::File root = projectstore::directory().getChildFile("Folders");
+#if defined(_WIN32)
+        return std::filesystem::path(root.getFullPathName().toWideCharPointer());
+#else
+        return std::filesystem::path(root.getFullPathName().toStdString());
+#endif
+    }
+
+    void Processor::keepFolder()
+    {
+        folderKeptAt_ = folder_.revision();
+        FolderKept k;
+        k.on = folder_.on();
+        k.name = folder_.name();
+        k.run = folder_.runOnSave();
+        const std::lock_guard<std::mutex> lock(folderMutex_);
+        folderKept_ = std::move(k);
+    }
+
+    FolderState Processor::folder() const
+    {
+        std::string shown;
+        if (folder_.on())
+        {
+            const std::u8string u = folder_.folder().u8string();
+            const juce::String path = juce::String::fromUTF8(reinterpret_cast<const char*>(u.data()), static_cast<int>(u.size()));
+            const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
+            shown = (path.startsWith(home + juce::File::getSeparatorString()) ? "~" + path.substring(home.length()) : path)
+                        .toStdString();
+        }
+        return folder_.state(shown);
+    }
+
+    bool Processor::setFolderSync(bool on, std::string& why)
+    {
+        if (!on)
+        {
+            folder_.stop();
+            keepFolder();
+            return true;
+        }
+        if (folder_.on())
+            return true;
+        // The project open's name, else the instance's ("Synth 2"), else the plugin's.
+        std::string name;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+        }
+        if (name.empty())
+            name = desktopName();
+        if (name.empty())
+            name = product::kName;
+        const bool ok = folder_.start(folderRoot(), name, seconds(), why);
+        keepFolder();
+        return ok;
+    }
+
+    void Processor::setFolderRunOnSave(bool on)
+    {
+        folder_.setRunOnSave(on);
+        keepFolder();
+    }
+
+    bool Processor::resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why)
+    {
+        return folder_.resolve(file, keepPlugin, seconds(), why);
+    }
+
+    bool Processor::openFolder(FolderApp app, std::string& why)
+    {
+        if (!folder_.on())
+        {
+            why = "the folder is off";
+            return false;
+        }
+        const std::u8string u = folder_.folder().u8string();
+        const std::string path(u.begin(), u.end());
+        if (folderLauncher_)
+            return folderLauncher_(app, path, why);
+        // Never from a probe (CTest's sandbox): it launches nothing on the machine that runs it.
+        if (const char* sandbox = std::getenv((std::string(product::kEnvPrefix) + "PREFS_DIR").c_str());
+            sandbox != nullptr && *sandbox != '\0')
+        {
+            why = "nothing opens under a probe";
+            return false;
+        }
+        if (app == FolderApp::files)
+        {
+            if (juce::File(juce::String::fromUTF8(path.c_str())).startAsProcess())
+                return true;
+            why = "the folder did not open";
+            return false;
+        }
+        // VS Code by its URL scheme, vscode://file/<path>/ (a folder), which the system hands to VS Code when it is
+        // installed: no process of ours, so it works in a sandboxed host too.
+        std::string url = "vscode://file";
+        if (!path.empty() && path.front() != '/' && path.front() != '\\')
+            url += '/';                                  // Windows' "C:\..."
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        for (const char c : path)
+        {
+            const auto b = static_cast<unsigned char>(c);
+            if (std::isalnum(b) || c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == ':')
+                url += c;
+            else if (c == '\\')
+                url += '/';
+            else
+            {
+                url += '%';
+                url += kHex[b >> 4];
+                url += kHex[b & 15];
+            }
+        }
+        url += '/';
+        if (juce::Process::openDocument(juce::String::fromUTF8(url.c_str()), {}))
+            return true;
+        why = "VS Code did not open (is it installed?)";
+        return false;
+    }
+
+    // A save in the folder, into the draft (FolderSync's hook): only while the draft is what the pass read, so a write
+    // of Claude's or the editor's typing that came since is never overwritten; the editor merges it as one undo step.
+    bool Processor::folderDraftIf(const Draft& now, const Draft& next)
+    {
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (draft_ != now)
+                return false;
+            before = std::exchange(draft_, next);
+            ++draftRevision_;                                    // the editor merges it into its tabs
+        }
+        journalDraft(before, next, Journal::Who::user);
+        return true;
     }
 
     std::vector<FileView> Processor::fileViews() const
@@ -991,6 +1137,22 @@ namespace playground
         else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
             alerts_.store(0);
         syncOwnDials();                                          // what poll() itself set: a run's, a version's, Claude's
+        // The folder: a loaded state's first, then a pass (FolderSync.h).
+        std::optional<FolderKept> wanted;
+        {
+            const std::lock_guard<std::mutex> lock(folderMutex_);
+            wanted.swap(folderWanted_);
+        }
+        if (wanted && wanted->on)
+        {
+            folder_.setRunOnSave(wanted->run);
+            std::string why;
+            if (!folder_.on() || folder_.name() != wanted->name)
+                (void)folder_.start(folderRoot(), wanted->name, seconds(), why);
+        }
+        folder_.pass(seconds());
+        if (folder_.revision() != folderKeptAt_)
+            keepFolder();
     }
 
     void Processor::setEditorSize(int w, int h) noexcept
@@ -1134,6 +1296,17 @@ namespace playground
             }
             state.appendChild(editor, nullptr);
         }
+        {
+            const std::lock_guard<std::mutex> lock(folderMutex_);
+            if (folderKept_.on)
+            {
+                juce::ValueTree folder{ kFolderTag };
+                folder.setProperty(kName, juce::String::fromUTF8(folderKept_.name.c_str()), nullptr);
+                if (folderKept_.run)
+                    folder.setProperty(kRunOnSave, 1, nullptr);
+                state.appendChild(folder, nullptr);
+            }
+        }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -1190,6 +1363,21 @@ namespace playground
             chat_.restoreMcpMarks(std::move(marks));
             if (mcp.isValid())
                 state.removeChild(mcp, nullptr);
+        }
+        // The folder, for poll() to start on the message thread (a state without one leaves it as it is: a preset or a
+        // session from before folders knows nothing of it, and the folder follows the files it brings).
+        if (const juce::ValueTree folder = state.getChildWithName(kFolderTag); folder.isValid())
+        {
+            FolderKept k;
+            k.on = true;
+            k.name = FolderSync::tidyFolderName(folder.getProperty(kName).toString().substring(0, 200).toStdString());
+            k.run = static_cast<int>(folder.getProperty(kRunOnSave, 0)) != 0;
+            if (!k.name.empty())
+            {
+                const std::lock_guard<std::mutex> lock(folderMutex_);
+                folderWanted_ = k;
+            }
+            state.removeChild(folder, nullptr);
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");

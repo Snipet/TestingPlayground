@@ -20,7 +20,10 @@
 //     a dial queued for poll()).
 //   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
 //     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
-//     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element).
+//     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element);
+//   - the folder (FolderSync.h): the program's files mirrored to a folder under the projects' (Folders/<name>) for VS
+//     Code or any editor, synced both ways on the timer, kept in the session while it is on (<FOLDER name=".."
+//     run="1"/>; a state without one leaves the folder as it is).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -49,6 +52,7 @@
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
 #include "plugin/ProjectStore.h"
@@ -73,6 +77,7 @@
 #include <memory>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -137,6 +142,12 @@ namespace playground
         void showSettings() noexcept { ++settingsAsked_; }
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
+        // The folder (EditorPort::folder): its sync (the probes pass it at a clock of their own), and what opens it in
+        // the Finder or VS Code (EditorPort::openFolder; the probes' records the call, launching nothing; the default
+        // launches nothing under a probe's sandbox either). Message thread.
+        FolderSync& folderSync() noexcept { return folder_; }
+        using FolderLauncher = std::function<bool(FolderApp app, const std::string& path, std::string& why)>;
+        void setFolderLauncher(FolderLauncher launcher) { folderLauncher_ = std::move(launcher); }
         capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
@@ -261,6 +272,12 @@ namespace playground
         void addCodeWindow() override { ++codeWindows_; }
         void removeCodeWindow() override { codeWindows_ = std::max(0, codeWindows_ - 1); }
         bool codeWindowOpen() const override { return codeWindows_ > 0; }
+        FolderState folder() const override;
+        uint64_t folderRevision() const override { return folder_.revision(); }
+        bool setFolderSync(bool on, std::string& why) override;
+        void setFolderRunOnSave(bool on) override;
+        bool resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why) override;
+        bool openFolder(FolderApp app, std::string& why) override;
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -445,6 +462,29 @@ namespace playground
 
         // The chat with Claude. Declared after the members its turn calls (ChatHost), destroyed before them.
         ChatAgent chat_{ *this, claude::httpsTransport() };
+
+        // The folder (FolderSync.h), passed by poll() on the message thread: its hooks reach the draft (folderDraftIf:
+        // version-guarded, journalled as the user's) and RUN. Declared after what they reach, so it stops (writing out
+        // what the plugin changed) before they go. What the session keeps of it is copied under folderMutex_ (a host
+        // may save its state on another thread), and a state's <FOLDER> waits there for poll() (folderWanted_).
+        bool folderDraftIf(const Draft& now, const Draft& next);
+        FolderSync folder_{ FolderSync::Plugin{ [this] { return draft(); },
+                                                [this](const Draft& now, const Draft& next) { return folderDraftIf(now, next); },
+                                                [this](const Sources& files) { run(files); } } };
+        FolderLauncher folderLauncher_;
+        struct FolderKept
+        {
+            bool on = false;
+            std::string name;
+            bool run = false;
+        };
+        mutable std::mutex folderMutex_;
+        FolderKept folderKept_;                                  // what getStateInformation writes
+        std::optional<FolderKept> folderWanted_;                 // a loaded state's, for poll()
+        void keepFolder();                                       // folderKept_ from folder_ (message thread)
+        uint64_t folderKeptAt_ = 0;                              // the folder's revision keepFolder() last copied
+        std::filesystem::path folderRoot() const;                // the projects' folder's Folders/
+        static double seconds();                                 // the folder's clock
 
         // The instance's MCP socket (McpLink.h): Claude Desktop through the chat's tools. Last, so it stops first (a call
         // in flight finishes before the chat goes). The host's name for the track the plugin is on, for list_instances.

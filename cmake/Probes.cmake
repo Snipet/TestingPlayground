@@ -120,6 +120,7 @@ function(fp_add_probes key)
   endif()
   if(APPLE)
     target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
+    target_link_libraries(${FP_PROBES} PRIVATE "-framework CoreServices")   # FolderWatch.cpp: FSEvents
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report

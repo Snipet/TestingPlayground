@@ -39,6 +39,9 @@
 //   codeWindow()      the code editor and the explorer in a window of their own (editor/Panel.h, "the code window"):
 //                     whether it is out, its size and its place, kept in the session, set with setCodeWindow();
 //                     codeWindowOpen() whether an editor's code is in it now (addCodeWindow(), removeCodeWindow())
+//   folder()          the program's files mirrored to a folder on disk for VS Code or any editor, synced both ways
+//                     (plugin/FolderSync.h): on or off, its name and path, run on save, the conflicts and the notes;
+//                     setFolderSync(), setFolderRunOnSave(), resolveFolderConflict(), openFolder() (the Finder, VS Code)
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -300,6 +303,24 @@ namespace playground
         friend bool operator==(const CodeWindow&, const CodeWindow&) = default;
     };
 
+    // The folder the program's files are mirrored to, for VS Code or any editor (EditorPort::folder; plugin/FolderSync.h).
+    struct FolderState
+    {
+        bool on = false;
+        std::string name;                        // the folder's ("Synth 1", or the project's)
+        std::string path;                        // where it is, "~/..." for the home folder
+        bool runOnSave = false;                  // a save there runs the program
+        bool watching = false;                   // the system says when it changes (else it is looked at twice a second)
+        std::vector<std::string> conflicts;      // files changed on both sides since they last agreed: held, neither
+                                                 // side written, until the user keeps one (resolveFolderConflict)
+        std::vector<std::string> notes;          // what it did and did not take, and why, short: the newest first
+        std::string landed;                      // the files the last save in the folder changed ("program.fm")
+        uint64_t landedCount = 0;                // bumps with each save that lands
+        std::string error;                       // why it is not on ("" when it is, or was turned off)
+    };
+    // Where a folder opens (EditorPort::openFolder).
+    enum class FolderApp : uint8_t { files, vscode };   // the Finder (Windows' Explorer), or VS Code
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -424,6 +445,34 @@ namespace playground
         virtual void addCodeWindow() {}
         virtual void removeCodeWindow() {}
         virtual bool codeWindowOpen() const { return false; }
+
+        // The folder (FolderState, above): the program's files mirrored to a folder on disk and synced both ways, kept
+        // in the session (its name and run on save). setFolderSync turns it on (a folder of the project open's name,
+        // else the instance's; false with why when none could be made) or off (the folder stays as it is);
+        // folderRevision bumps when folder() changes. resolveFolderConflict keeps one side of a conflict (the other in
+        // the folder's .conflicts/). openFolder opens it in the Finder or VS Code (false with why: VS Code missing).
+        virtual FolderState folder() const { return {}; }
+        virtual uint64_t folderRevision() const { return 0; }
+        virtual bool setFolderSync(bool on, std::string& why)
+        {
+            (void)on;
+            why = "no folder here";
+            return false;
+        }
+        virtual void setFolderRunOnSave(bool on) { (void)on; }
+        virtual bool resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why)
+        {
+            (void)file;
+            (void)keepPlugin;
+            why = "no folder here";
+            return false;
+        }
+        virtual bool openFolder(FolderApp app, std::string& why)
+        {
+            (void)app;
+            why = "no folder here";
+            return false;
+        }
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.
