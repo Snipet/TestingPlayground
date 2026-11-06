@@ -330,19 +330,16 @@ namespace playground::ui
             }
         }
 
-        // The readout, eight times a second: a meter and a number draw it (a move); every display speaks it and the
-        // footer shows it (the Panel watches the footer's line).
+        // The readout, eight times a second: a meter and a number draw it (drawKey, not a move: one frame for each new
+        // one, while a move holds the full rate a quarter second, longer than the readout's own 1/8 s); every display
+        // speaks it and the footer shows it (the Panel watches the footer's line).
         if ((readoutIn_ -= step) <= 0.0f || readout_.empty())
         {
             readoutIn_ = kReadoutEvery;
-            std::string next;
             if (audio)
-                next = decibels(std::max(peak[0], peak[1]));
+                readout_ = decibels(std::max(peak[0], peak[1]));
             else
-                next = fieldText(display_, field);
-            const bool drawn = display_.kind == DisplayKind::meter || display_.kind == DisplayKind::number;
-            moved = moved || (drawn && next != readout_);
-            readout_ = std::move(next);
+                readout_ = fieldText(display_, field);
         }
         moving_ = moved;
     }

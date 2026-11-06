@@ -78,14 +78,15 @@
 //     after it settles;
 //   - the mix of every shown item's drawKey() (Items.h; a hidden item's is left out, as draw() leaves the item out)
 //     and of the Panel's own words and states, taken each tick, which catches what changes with no input and no
-//     motion: a host's automation of a dial, a live= mark, a shader's inputs, a label read through a callback, a
-//     notice that ran out.
+//     motion: a host's automation of a dial, a live= mark, a shader's inputs, a number display's new readout (eight a
+//     second, a frame each, the rate calm), a label read through a callback, a notice that ran out.
 // Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
 // differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
 // wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, or a
 // compile running: what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps the rate up.
 // gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob and
-// RATE what moves with no input, gui.shaders DRAW a shader's inputs, gui.panel SETTLE displays that stand still.
+// RATE what moves with no input (a knob's, a pad's, an envelope's), gui.shaders DRAW a shader's inputs, gui.panel
+// SETTLE displays that stand still and readouts that change.
 //
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once

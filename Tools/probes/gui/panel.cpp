@@ -47,7 +47,9 @@
 //             items ask them (Cadence.h) at the calm rate, 12 a second; the tone's level moved by a few hundredths of a
 //             px of its trace is no move, by px a move; the field's step moves its scope, which settles again once its
 //             points are all the new value; after a ramp longer than its 150 points, they are oldest first, the newest
-//             last (its ring)
+//             last (its ring); number displays of the output's peak and of a field that moves each block: a new
+//             readout at each refresh is no motion but the item's draw key, each one recorded (needsDraw), the panel
+//             at the calm rate, 12 a second
 #include "Cadence.h"
 #include "Probe.h"
 
@@ -772,7 +774,8 @@ PROBE(gui, panel)
     {
         const std::string params = "    param float gain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
                                    "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
-                                   "    float hold;\n";
+                                   "    float hold, wob;\n";
+        const std::string wob = "        wob += 0.01f;\n        if (wob > 1) wob = 0;\n";
         const std::string main = kInstrument
                                      ? "module Voice\n{\n" + params + "    float ph;\n"
                                        "    void start(float n, float v) {}\n"
@@ -781,11 +784,11 @@ PROBE(gui, panel)
                                        "            const float s = gain[i] * sinf(6.28318531f * ph);\n"
                                        "            ph += 220.0f / 48000;\n            if (ph >= 1) ph -= 1;\n"
                                        "            left[i] += s;\n            right[i] += s;\n        }\n"
-                                       "        hold = level[n - 1];\n        return true;\n    }\n};\n"
+                                       "        hold = level[n - 1];\n" + wob + "        return true;\n    }\n};\n"
                                      : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                                        "        for (int i = 0; i < n; ++i)\n        {\n"
                                        "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n"
-                                       "        hold = level[n - 1];\n    }\n};\n";
+                                       "        hold = level[n - 1];\n" + wob + "    }\n};\n";
         const std::string settleGui = "panel { row { scope out label=\"WAVE\" width=240 height=120; scope hold label=\"HOLD\" width=240 height=120 }\n"
                                       "        row { knob gain; knob level } }\n";
         load(processor, { { pg::kProgramName, main }, { "panel.gui", settleGui } });
@@ -884,6 +887,56 @@ PROBE(gui, panel)
         P.eq("settle.ring_oldest_first", rising && points.front() < points.back() ? 1 : 0, 1);
         P.near("settle.ring_newest_last", points.empty() ? -9.0 : static_cast<double>(points.back()), 2.0 * 0.9 - 1.0, 0.01);
         writePng(P, host, "gui.panel.settle.png", "settle");
+
+        // Number displays (the output's peak, and a field that moves each block): the readout, made again eight times
+        // a second, changes at each refresh. That is no motion but the item's draw key: the frame that made it is
+        // recorded (needsDraw), and the panel stays at the calm rate.
+        load(processor, { { pg::kProgramName, main },
+                          { "panel.gui", "panel { row { number out label=\"PEAK\"; number wob label=\"WOB\" }\n        row { knob gain; knob level } }\n" } });
+        settleRun(processor, host);
+        noted = false;                                   // the synth's note held again, in the new program
+        P.eq("settle.numbers_compile", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        const pg::ui::DisplayItem* number = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::number && !item.display().audio())
+                number = &item;
+        }
+        P.eq("settle.number_shown", number != nullptr ? 1 : 0, 1);
+        (void)unsettled(nullptr, 30);
+        host.draw();
+        std::string drawnReadout = number != nullptr ? number->readout() : std::string();
+        uint64_t key = number != nullptr ? number->drawKey() : 0;
+        int changes = 0, keyMissed = 0, frameMissed = 0, numberUnsettled = 0;
+        const probe::Cadence numbers = probe::runCadence(host, 240, sixtieth, [&] {
+            if (number != nullptr)
+            {
+                numberUnsettled += number->settled() ? 0 : 1;
+                if (number->readout() != drawnReadout)
+                {
+                    ++changes;
+                    keyMissed += number->drawKey() != key ? 0 : 1;
+                    frameMissed += panel.needsDraw() ? 0 : 1;
+                }
+                key = number->drawKey();
+            }
+            if (panel.needsDraw())                       // as EditorHost records a frame
+            {
+                host.draw();
+                drawnReadout = number != nullptr ? number->readout() : std::string();
+            }
+            return panel.moving();
+        });
+        std::printf("settle: number displays, %d readouts in %d frames, %.1f frames a second\n", changes, numbers.frames,
+                    numbers.framesPerSecond());
+        P.ge("settle.number_readouts", changes, 16);
+        P.eq("settle.number_no_motion", numberUnsettled, 0);
+        P.eq("settle.number_key_follows", keyMissed, 0);
+        P.eq("settle.number_frame_recorded", frameMissed, 0);
+        P.le("settle.number_frames_per_second", numbers.framesPerSecond(), 12.5);
     }
     return P.finish();
 }

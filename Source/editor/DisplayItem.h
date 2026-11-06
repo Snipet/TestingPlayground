@@ -16,7 +16,8 @@
 // moved for a moment (Stirred: the audio's blocks may come a frame or two apart), so a silent or steady panel lets the
 // host rest: an audio scope moves when a point of its trace would move by more than half a px (the trace drawn is the
 // last one that did), a field scope when the field's value changes or its points differ (a flat line shifted along is
-// the same line).
+// the same line). The readout's text (a meter's, a number's) is no motion but its drawKey(): each new one, eight a
+// second at most, asks for one frame, so a number that keeps changing leaves the panel at the calm rate.
 #pragma once
 
 #include "editor/DialLayout.h"
@@ -80,6 +81,11 @@ namespace playground::ui
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
         void specLine(char* out, std::size_t n) const override;
         bool settled() const override { return !shown_ || !stir_.moving(); }
+        uint64_t drawKey() const override                // a meter's and a number's readout (no motion: one frame each)
+        {
+            const bool drawn = display_.kind == DisplayKind::meter || display_.kind == DisplayKind::number;
+            return drawn ? DrawKey{}.mix(readout_).h : 0;
+        }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
         bool focusable() const override { return false; }
