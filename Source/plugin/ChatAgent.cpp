@@ -540,6 +540,11 @@ namespace playground
                 return "nothing compiled yet\n";
             if (s.ok)
                 return "compiled in " + number(std::round(s.ms)) + " ms and plays\n" + s.notes;
+            if (s.stopped)                             // Compiler.h, "A program that stops"
+                return std::string(s.program == s.stoppedProgram ? "stopped as it played, and nothing plays now"
+                                   : !s.restored.empty()          ? "stopped as it played; the program before it plays again"
+                                                                  : "stopped as it began; the program before it plays on")
+                     + ":\n" + s.errors;
             return "did not compile (the program before it plays on):\n" + s.errors + s.notes;
         }
 
@@ -4270,11 +4275,16 @@ namespace playground
                      + panelLine(s.panel, s.controls) + capped(told.warnings)
                      + (told.notes.empty() ? "" : "Notes:\n" + capped(told.notes)) + (checks.empty() ? "" : "\n" + checks);
             }
+            isError = true;
+            if (s.stopped)                             // a call ran past its loop budget (Compiler.h, "A program that stops")
+            {
+                note("ran it: it stopped");
+                return "It compiled but stopped as it began, so the program that played before plays on:\n" + capped(s.errors);
+            }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
                 ++errors;
             note("ran it: " + std::to_string(std::max(errors, 1)) + " error" + (errors == 1 ? "" : "s"));
-            isError = true;
             return "It did not compile; the program that played before plays on.\n" + capped(s.errors + s.notes);
         }
         if (name == "set_dial")

@@ -199,7 +199,13 @@ namespace playground::ui::irview
         }
         // How the program stands.
         const bool playing = ir.program != 0 || ir.making || st.ok;
-        if (st.revision > 0 && !st.ok)
+        if (st.revision > 0 && st.stopped)               // Compiler.h, "A program that stops"
+            comment(out, playing && st.program != st.stoppedProgram
+                             ? "The last program stopped as it played (a loop that never ends?, listed under the text): "
+                               "this is the IR of the program that plays now."
+                             : "The last program stopped as it played (a loop that never ends?, listed under the text), "
+                               "and nothing plays.");
+        else if (st.revision > 0 && !st.ok)
         {
             const int errors = errorsIn(st.errors);
             const std::string count = std::to_string(errors) + (errors == 1 ? " error" : " errors");

@@ -4163,17 +4163,26 @@ namespace playground::ui
             const CompileStatus s = port_.status();
             lastOk_ = s.ok;
             lastMs_ = s.ms;
-            problems_ = parseProblems(s.errors + s.notes);
+            // A program that stopped as it played (Compiler.h, "A program that stops"): what plays now, in words.
+            lastStop_ = !s.stopped                       ? std::string()
+                      : s.program == s.stoppedProgram    ? std::string("NOTHING PLAYS")
+                      : !s.restored.empty()              ? std::string("THE PROGRAM BEFORE PLAYS AGAIN")
+                                                         : std::string("THE PROGRAM BEFORE PLAYS ON");
+            problems_ = parseProblems(s.errors + (s.stopped ? std::string() : s.notes));
             files().assist().setRunDiagnostics(diagnosticsOf(problems_), s.sources);
             // The dials and the source of the program that plays: this compile's when it compiled (the processor
-            // takes them on its own timer, which may not have run yet), else the ones before.
-            const Controls cs = s.ok ? s.controls : port_.controls();
+            // takes them on its own timer, which may not have run yet), or the program before one that stopped when it
+            // plays again; else the ones before.
+            const bool own = s.ok || !s.restored.empty();
+            const Controls cs = own ? s.controls : port_.controls();
             if (s.ok)
                 running_ = s.sources;
+            else if (!s.restored.empty())
+                running_ = s.restored;
             circuitDials_ = s.circuitDials;              // the program that plays's (a failed compile's: the one before)
             circuitProbes_ = s.probes;                   // ... its probe table, and its id (the probes' sets name it)
             probeProgram_ = s.program;
-            const PanelSpec spec = s.ok ? s.panel : port_.panel();
+            const PanelSpec spec = own ? s.panel : port_.panel();
             ++controlsRevision_;
             for (int c = 0; c < kMaxControls; ++c)
                 if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
@@ -4239,6 +4248,8 @@ namespace playground::ui
             status_ = notice_;
         else if (compiling_)
             status_ = "COMPILING";
+        else if (!lastStop_.empty())
+            status_ = "STOPPED: A LOOP THAT NEVER ENDS?   " + lastStop_;
         else if (!lastOk_)
         {
             int errors = 0;

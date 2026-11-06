@@ -91,6 +91,7 @@ module Effect
 - Dials: the module's first 32 parameters, in declaration order, are the plugin's dials and the host's parameters P1 to P32. A float parameter is read sample by sample, gain[i], and glides over 20 ms when its dial turns (gain[0] reads it once a call). An int or bool parameter is read once a call (mode[0], or mode[i]). fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: process may not allocate. FMinus refuses a program whose process could reach calloc, malloc or free. Allocate in init (calloc: zeroed) and free in end, or use a fixed array field (float line[96000];).
 - The plugin guards the output: every sample is made finite and kept within +-4 (+12 dBFS), and the toolbar says when it had to. Aim for peaks near 1. A NaN in the program's state stays there until the program runs again.
+- A call whose loops run far longer than its samples last (a loop that never ends) is stopped, and the program before it plays instead; run_program and get_status name the method.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
 - A module named Shared, when the program has one, is made once for the program (its init(float rate) before the effect's, its end() after) and every field of Effect of type Shared* points at it: how an instrument's voices share a table built once. An effect, one instance, may as well hold what it needs.
 )";
@@ -149,6 +150,7 @@ module Voice
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32, the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
 - The voices are summed: sixteen at full scale clip. Scale a voice to about 0.2 to 0.3 at velocity 1. The plugin keeps the output finite and within +-4, and the toolbar says when it had to.
+- A call whose loops run far longer than its samples last (a loop that never ends) is stopped, and the program before it plays instead; run_program and get_status name the method.
 - Subnormals are flushed to zero (the audio thread's mode).
 - Data every voice reads, made once (a wavetable, a lookup table, a sample): a module named Shared, with an optional init(float rate) and end() as the voice's. The plugin makes one Shared for the program, runs its init before the voices' init (a voice's init may read it) and its end after theirs, and points every field of Voice of type Shared* at it:
 

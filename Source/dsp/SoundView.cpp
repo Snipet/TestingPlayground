@@ -372,6 +372,8 @@ namespace playground::measure
         out.dials = played.dials;
         out.values = played.values;
         out.alerts = played.alerts;
+        out.stopCall = played.stopCall;
+        out.stopAt = played.stopAt;
         out.l = std::move(played.l);
         out.r = std::move(played.r);
         return out;
@@ -391,6 +393,10 @@ namespace playground::measure
         v.title = std::move(s.title);
         v.dials = std::move(s.dials);
         v.alerts = s.alerts;
+        if (s.stopCall != Patch::Method::none)
+            v.stopped = "It stopped at " + fmt("%.3f s", static_cast<double>(s.stopAt) / s.rate) + ": "
+                      + Patch::callName(s.stopCall) + " ran past its budget (a loop that never ends?), and from there the "
+                        "program played no more.";
         return v;
     }
 

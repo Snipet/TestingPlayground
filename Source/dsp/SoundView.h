@@ -63,6 +63,7 @@ namespace playground::measure
         std::string title;                        // what played ("Note 48 (C3) at velocity 0.80, held 1.00 s, ...")
         std::string dials;                        // "cutoff 1200, resonance 0.3"
         uint32_t alerts = 0;
+        std::string stopped;                      // a render that stopped (Patch.h, "The loop budget"), in words; "" none
         double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS (the window's)
 
         std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
@@ -99,6 +100,8 @@ namespace playground::measure
         std::string title, dials;
         std::vector<std::pair<std::string, float>> values;   // the dials, plain, by name
         uint32_t alerts = 0;
+        Patch::Method stopCall = Patch::Method::none; // a call that ran past its budget (Session::Render's), and when
+        std::size_t stopAt = 0;
         double cycleHz = 0.0;                     // the close-up shows four cycles of it (0: 10 ms)
         bool harmonics = false;                   // mark cycleHz's harmonics on the spectrum
         bool fromStart = false;                   // the close-up at the start (an impulse's response)

@@ -57,6 +57,10 @@
 // off_order_db with no frame or a base under twice an order's zone.
 // view_sound's average spectrum and RMS are over it (SoundView.h).
 //
+// A render whose program stops (a call past its loop budget: Patch.h, "The loop budget") plays as the plugin's Engine
+// plays it, faded out from there; the report then begins with the stop's message and when it came (Session::stopWords,
+// the first render's), and a render says so (Render::stopCall, stopAt), as view_sound and trace do.
+//
 // The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
 // in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
 // thirty-one or a semitone's 120, the averaged spectrum's points), of both channels' power over the held part (or the
@@ -85,6 +89,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Events.h"
 #include "dsp/Sources.h"
+#include "fminus/Patch.h"
 
 #include <cstdint>
 #include <utility>
@@ -375,6 +380,7 @@ namespace playground::measure
                                                          // 1.00 s"): no value in `values`
         std::string dials;                        // the dials rendered with, "cutoff 1200, resonance 0.3"
         std::vector<std::string> unknown;         // dials asked for by a name the program has not
+        Patch::Method stopped = Patch::Method::none;  // a render stopped (Patch.h, "The loop budget"): the report begins so
     };
 
     // One compile, measured as often as asked. `pins`: its netlists generated with these configurations (Sources.h's
@@ -407,6 +413,8 @@ namespace playground::measure
             std::vector<std::pair<std::string, float>> values;   // the dials rendered with, plain, by name
             uint32_t alerts = 0;
             std::size_t heldUntil = 0;            // the held part's end (the timeline's)
+            Patch::Method stopCall = Patch::Method::none;   // a call that ran past its budget (Patch.h, "The loop budget"),
+            std::size_t stopAt = 0;               // and the sample its block (or its voice's part) began at
         };
         Render render(const Request& request, const std::vector<float>* inputL, const std::vector<float>* inputR,
                       std::size_t length, RenderHooks* hooks = nullptr);
@@ -415,6 +423,8 @@ namespace playground::measure
         // The samples a render of `request` takes: an instrument's held part (its phrase's, else holdSeconds) and the
         // tail; an effect's holdSeconds and the tail, or its own input's length; at least until its window's end.
         std::size_t lengthOf(const Request& request) const;
+        // A render that stopped (Render::stopCall) in words: the stop's message (Patch::stopMessage), and where.
+        std::string stopWords(Patch::Method call, double seconds) const;
 
     private:
         struct Impl;

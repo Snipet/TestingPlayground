@@ -468,7 +468,7 @@ namespace playground::soundpicture
                   + (v.rmsDb <= -150.0 ? std::string("silent") : fmt("%.1f dBFS", v.rmsDb))
                   + (window ? " in the window" : kInstrument ? " while held" : "") + "; the output guard's alerts: "
                   + (v.alerts == 0 ? std::string("none") : "NaN, infinite or clipped samples (" + std::to_string(v.alerts) + ")")
-                  + ".";
+                  + "." + (v.stopped.empty() ? std::string() : "\n" + v.stopped);
         return out;
     }
 
