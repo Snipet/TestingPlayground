@@ -6,7 +6,8 @@
 //   an effect      pink noise at -18 dBFS RMS for 2 s (one seed, the same on both sides): its output's, from 50 ms in
 //
 // Each side renders with its dials as they would play it: `dials` (the side's own, by name) over `current` (the plugin's
-// now, by name), else the program's defaults (measure::Request's rule). A side that does not compile, or is silent there
+// now, by name), else the program's defaults (measure::Request's rule). A side that does not compile, stops partway
+// (a loop past its budget, an index outside its array: never measured on the silence after it), or is silent there
 // (under kSilentLufs, BS.1770's absolute gate), leaves the loudness unmatched (both trims 0 dB) and says why. A side is
 // never turned up (nothing past the output guard's +-4 can come of it), and at most kMaxTrimDb down.
 //
@@ -52,7 +53,8 @@ namespace playground::ab
         std::string why;                                      // why it is not matched ("" when it is)
     };
 
-    // One side's loudness (LUFS; NaN, with why, when it does not compile).
+    // One side's loudness (LUFS; NaN when it does not compile or stops, `why` then the words after its name: "does not
+    // compile: ...", "stops in the test (...): process() ran past its budget (...)").
     double loudness(const Sources& files, const std::map<std::string, float>& dials,
                     const std::map<std::string, float>& current, double rate, std::string* why = nullptr);
     // The trims for two loudnesses: the louder turned down to the quieter (at most kMaxTrimDb); 0 dB both when either is

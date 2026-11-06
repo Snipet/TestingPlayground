@@ -2,6 +2,7 @@
 #include "plugin/AbMatch.h"
 
 #include "dsp/Measure.h"
+#include "fminus/Patch.h"
 
 #include "Product.h"
 
@@ -52,7 +53,7 @@ namespace playground::ab
             if (why != nullptr)
             {
                 const std::string& e = session.errors();
-                *why = e.substr(0, e.find('\n'));
+                *why = "does not compile" + (e.empty() ? std::string() : ": " + e.substr(0, e.find('\n')));
             }
             return std::numeric_limits<double>::quiet_NaN();
         }
@@ -76,6 +77,13 @@ namespace playground::ab
             request.holdSeconds = static_cast<float>(kNoiseSeconds);
             request.tailSeconds = 0.0f;
             played = session.render(request, &noise, &noise, n);
+        }
+        if (played.stopCall != Patch::Method::none)
+        {
+            // It stopped partway (Patch.h, "The loop budget", "Bounds checks"): what follows is its fade, then silence.
+            if (why != nullptr)
+                *why = "stops in the test (a chord, or noise through it): " + Patch::stopWhy(played.stopCall, &played.stopBounds);
+            return std::numeric_limits<double>::quiet_NaN();
         }
         const std::size_t end = std::min(played.l.size(), played.heldUntil > 0 ? played.heldUntil : played.l.size());
         const auto from = static_cast<std::size_t>(kFromSeconds * rate);
@@ -110,7 +118,7 @@ namespace playground::ab
         const char* names[2] = { "A", "B" };
         for (std::size_t k = 0; k < 2 && r.why.empty(); ++k)
             if (!std::isfinite(r.lufs[k]))
-                r.why = std::string(names[k]) + " does not compile" + (failed[k].empty() ? std::string() : ": " + failed[k]);
+                r.why = std::string(names[k]) + " " + (failed[k].empty() ? std::string("does not compile") : failed[k]);
             else if (r.lufs[k] < kSilentLufs)
                 r.why = std::string(names[k]) + " is silent in the test (a chord, or noise through it): the loudness is not matched";
         if (r.why.empty() && (r.trimDb[0] <= kMaxTrimDb || r.trimDb[1] <= kMaxTrimDb))
