@@ -16,14 +16,24 @@
 //   WRAP      at the least size the knobs' row is more than one line, and no knob leaves its section
 //   PAGES     a bar of three pages: the first shows; a click on the third shows it and hides the first's; the processor
 //             keeps the page by its title, its state carries it to another processor, whose Panel opens on it; the
-//             program run again with an edited interface keeps it; pills and a side list switch their pages too
+//             program run again with an edited interface keeps it; pills and a side list switch their pages too; the
+//             live= knob on a page not shown, moved by the host, asks for no frame and leaves the rate calm (nor does
+//             the dial the interface hides keep it up), and on the page shown it asks and keeps the full rate (Panel.h
+//             "Unchanged frames")
 //   KEYBOARD  (an instrument) a press on a key plays its note: the output sounds, at the key's pitch; letting go
 //             releases it (silent); a drag slides to the next key
 //   WHEELS    (an instrument) the keyboard's wheels: the pitch wheel dragged up bends +1 and reaches the Engine's Host
 //             block (host.fm); let go, it springs back to 0; the mod wheel stays where it is left
 //   LIVE      a knob's live= follows its field: the field's value as a share of the parameter's range
+//   RATE      what moves with no input keeps the editor at the full rate (Items.h Stirred), its frames as the items ask
+//             them (Cadence.h): a live= mark on a field that moves each block (55 frames a second or more, where it was
+//             12), a mark on a field that stands still settled; the host's automation of a knob each frame and in
+//             points 50 ms apart, and of a pad and an envelope each frame (whose knobs are on a page not shown): 55 or
+//             more; each settled within 0.3 s of the last move; nothing moving, 12 a second
+#include "Cadence.h"
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/DisplayItem.h"
 #include "editor/GuiItems.h"
 #include "editor/Panel.h"
@@ -37,9 +47,11 @@
 #include <funkgui/prefs/UiPreferences.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -224,6 +236,40 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
         }
         return { std::sqrt(sum / std::max(1, samples)), crossings * 48000.0 / std::max(1, samples) };
     }
+
+    // The host's move of slot's parameter by a twentieth (its automation: no input to the Panel; a step a dial's pointer
+    // eases over, not one it jumps), the Panel drawn and calm before it: whether the Panel was calm (a row that counts
+    // on no frame asks for this too, or it would pass without a move), whether the move asks for a frame (Panel.h
+    // "Unchanged frames"), and whether the Panel then wants the full rate (a shown knob moving).
+    struct HostMove
+    {
+        bool calm = false, asks = false, fullRate = false;
+    };
+    HostMove hostMove(pg::Processor& p, pg::ui::Panel& panel, funkgui::HeadlessHost& host, int slot)
+    {
+        host.settle();
+        // The editor's check while typing landed, and no compile running: either would be a change of its own (on a
+        // loaded machine it lands late).
+        for (int k = 0; k < 600 && (panel.codeAssist().checking() || p.editorPort().compiling()); ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        // The top bar's CPU figure is read a quarter second at most (Panel::refresh), so it may still show a load from
+        // before the last blocks the probe played; its first read after them would land in the tick checked below, a
+        // change whenever those blocks took another time (often on a loaded machine). A third of a second reads it; no
+        // block plays from here on, so it stands.
+        host.tick(4, 1.0f / 12.0f);
+        host.settle();
+        host.draw();
+        host.tick(1, 1.0f / 12.0f);
+        if (panel.needsDraw())
+            return {};
+        juce::AudioProcessorParameter& param = *p.getParameters()[slot];
+        param.setValueNotifyingHost(param.getValue() + (param.getValue() < 0.5f ? 0.05f : -0.05f));
+        host.tick(1, 1.0f / 12.0f);
+        return { true, panel.needsDraw(), panel.wantsFullRate() };
+    }
 }
 
 PROBE(gui, styles)
@@ -385,6 +431,14 @@ PROBE(gui, styles)
         P.eq("pages.third", panel.guiControl(busA).shown() && !panel.guiControl(drive).shown() ? 1 : 0, 1);
         if (keys != nullptr)
             P.eq("pages.keyboard_hidden", keys->shown() ? 0 : 1, 1);
+        // The live= knob on the page not shown, moved by the host: no frame (draw() leaves a hidden item out, and so
+        // does what the Panel watches: Panel.h "Unchanged frames"), and the calm rate (neither it nor the dial the
+        // interface hides keeps the rate up).
+        {
+            const HostMove m = hostMove(processor, panel, host, cutoff);
+            P.eq("pages.hidden_knob_quiet", !panel.guiControl(cutoff).shown() && m.calm && !m.asks ? 1 : 0, 1);
+            P.eq("pages.hidden_knob_calm", m.calm && !m.fullRate ? 1 : 0, 1);
+        }
         const std::vector<std::string> pages = port.guiPages();
         P.eq("pages.kept", !pages.empty() && pages[0] == "MIXER" ? 1 : 0, 1);
         writePng(P, host, "gui.styles.mixer.png", "mixer");
@@ -460,6 +514,12 @@ PROBE(gui, styles)
             host.click(t.centreX(), t.centreY());
             host.settle();
         }
+        // Its page shown again, the same move draws, and the knob moving keeps the full rate.
+        {
+            const HostMove m = hostMove(processor, panel, host, cutoff);
+            P.eq("pages.shown_knob_draws", panel.guiControl(cutoff).shown() && m.asks ? 1 : 0, 1);
+            P.eq("pages.shown_knob_full_rate", m.fullRate ? 1 : 0, 1);
+        }
     }
 
     // ---- WRAP ----------------------------------------------------------------------------------------------------------
@@ -485,6 +545,102 @@ PROBE(gui, styles)
         const int node = controlNode(panel, level);
         P.eq("wrap.node", node >= 0 ? 1 : 0, 1);
         writePng(P, host, "gui.styles.narrow.png", "narrow");
+    }
+
+    // ---- RATE ----------------------------------------------------------------------------------------------------------
+    // What moves with no input to the Panel keeps the full rate while it moves and a quarter second after (Items.h
+    // Stirred), the editor's frames as the items ask them (Cadence.h).
+    {
+        // drive and tone the knobs (slots 0 and 1), then the pad's two (2, 3) and the envelope's four (4 to 7), whose
+        // knobs are on a page not shown (an envelope is no control of its parameters: they need one in the file).
+        enum : int { padX = 2, padY, envAttack };
+        std::string params = "    param float drive [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                             "    param float tone [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        for (const char* name : { "padx", "pady", "atk", "dcy", "sus", "rls" })
+            params += std::string("    param float ") + name + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        params += "    float wob, still;\n";
+        const std::string fields = "        wob += 0.01f;\n        if (wob > 1) wob = 0;\n        still = 0.5f;\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       + fields + "        return true;\n    }\n};\n"
+                                     : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       + fields + "    }\n};\n";
+        const std::string rateGui = "panel {\n    tabs {\n"
+                                    "        page \"RATE\" { row { knob drive live=wob; knob tone live=still; xy padx pady label=\"PAD\"; "
+                                    "envelope atk dcy sus rls label=\"ENV\" } }\n"
+                                    "        page \"ADSR\" { row { knob atk; knob dcy; knob sus; knob rls } }\n    }\n}\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", rateGui } });
+        settleRun(processor, host);
+        P.eq("rate.compiles", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        juce::AudioBuffer<float> buffer(2, 256);
+        bool noted = false;
+        const auto audio = [&](int) {                    // a sixtieth of a second: three blocks (the synth's note held)
+            for (int b = 0; b < 3; ++b)
+            {
+                buffer.clear();
+                juce::MidiBuffer midi;
+                if (kInstrument && !noted)
+                {
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+                    noted = true;
+                }
+                processor.processBlock(buffer, midi);
+            }
+        };
+        const auto moving = [&] { return panel.moving(); };
+        // The frames, at 60 Hz with no input, until an item settles, in seconds (a second at most).
+        const auto settles = [&](const pg::ui::Item& item) {
+            int k = 0;
+            for (; k < 60 && !item.settled(); ++k)
+                host.tick(1);
+            return static_cast<double>(k) / 60.0;
+        };
+        // A live= mark on a field that moves each block: full rate; on one that stands still, settled.
+        const probe::Cadence live = probe::runCadence(host, 120, audio, moving);
+        std::printf("rate: a live= mark moving, %.1f frames a second\n", live.framesPerSecond());
+        P.ge("rate.live_frames_per_second", live.framesPerSecond(), 55.0);
+        P.eq("rate.live_still_field_settled", panel.guiControl(tone).settled() ? 1 : 0, 1);
+        P.le("rate.live_settles_s", settles(panel.guiControl(drive)), 0.3);
+        // The host's automation of a shown knob: each frame, and in points 50 ms apart.
+        juce::AudioProcessorParameter& param = *processor.getParameters()[tone];
+        const probe::Cadence ramp = probe::runCadence(
+            host, 120, [&](int t) { param.setValueNotifyingHost(0.2f + 0.6f * static_cast<float>(t) / 119.0f); }, moving);
+        const probe::Cadence points = probe::runCadence(
+            host, 120, [&](int t) { if (t % 3 == 0) param.setValueNotifyingHost(0.8f - 0.6f * static_cast<float>(t) / 119.0f); }, moving);
+        std::printf("rate: the host's automation, %.1f frames a second (each frame), %.1f (points 50 ms apart)\n",
+                    ramp.framesPerSecond(), points.framesPerSecond());
+        P.ge("rate.automated_frames_per_second", ramp.framesPerSecond(), 55.0);
+        P.ge("rate.automation_points_frames_per_second", points.framesPerSecond(), 55.0);
+        P.le("rate.automation_settles_s", settles(panel.guiControl(tone)), 0.3);
+        // The host's automation of the pad (both its parameters) and of the envelope (its attack), each frame.
+        const pg::ui::Item& pad = panel.guiItem(0, 0);
+        const pg::ui::Item& envelope = panel.guiItem(1, 0);
+        P.eq("rate.pad_envelope_shown", pad.shown() && envelope.shown() && !panel.guiControl(envAttack).shown() ? 1 : 0, 1);
+        juce::AudioProcessorParameter& x = *processor.getParameters()[padX];
+        juce::AudioProcessorParameter& y = *processor.getParameters()[padY];
+        juce::AudioProcessorParameter& attack = *processor.getParameters()[envAttack];
+        const probe::Cadence padRamp = probe::runCadence(
+            host, 120,
+            [&](int t) {
+                const float v = 0.2f + 0.6f * static_cast<float>(t) / 119.0f;
+                x.setValueNotifyingHost(v);
+                y.setValueNotifyingHost(1.0f - v);
+            },
+            moving);
+        P.le("rate.pad_settles_s", settles(pad), 0.3);
+        const probe::Cadence envelopeRamp = probe::runCadence(
+            host, 120, [&](int t) { attack.setValueNotifyingHost(0.2f + 0.6f * static_cast<float>(t) / 119.0f); }, moving);
+        P.le("rate.envelope_settles_s", settles(envelope), 0.3);
+        std::printf("rate: the host's automation of the pad, %.1f frames a second; of the envelope, %.1f\n",
+                    padRamp.framesPerSecond(), envelopeRamp.framesPerSecond());
+        P.ge("rate.pad_automated_frames_per_second", padRamp.framesPerSecond(), 55.0);
+        P.ge("rate.envelope_automated_frames_per_second", envelopeRamp.framesPerSecond(), 55.0);
+        // Nothing moving: the calm rate.
+        const probe::Cadence calm = probe::runCadence(host, 120, [](int) {}, moving);
+        P.le("rate.calm_frames_per_second", calm.framesPerSecond(), 12.5);
     }
     return P.finish();
 }

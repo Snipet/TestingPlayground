@@ -1057,6 +1057,7 @@ namespace playground::ui
             if (key != b.key)
             {
                 b.key = std::move(key);
+                b.laidOut = ++layouts_;
                 layoutBlock(b, state.entries, desc.count, endsTurn, w, d == liveChecks);
             }
             const bool user = b.kind == ChatEntry::Kind::user;
@@ -1081,6 +1082,16 @@ namespace playground::ui
             scroll_ = maxScroll();
         scroll_ = std::clamp(scroll_, 0.0f, maxScroll());
         follow_ = atEnd();
+        // What was laid out (drawKey): each block's layout and place, the empty chat's words, the states drawn. The
+        // Panel shows the conversation again once a second whether or not it changed: that draws nothing.
+        DrawKey k;
+        for (const Block& b : blocks_)
+            k.mix(b.laidOut).mix(b.y).mix(b.h).mix(b.open).mix(b.answers.size());
+        k.mix(emptyText_.title).mix(emptyText_.body).mix(emptyText_.suggestions.size()).mix(ready_).mix(busy_).mix(liveText_)
+            .mix(activity_).mix(contentH_).mix(typingY_);
+        for (const std::string& t : emptyText_.suggestions)
+            k.mix(t);
+        content_ = k.h;
     }
 
     // ---- geometry ----------------------------------------------------------------------------------------------------
@@ -1199,6 +1210,18 @@ namespace playground::ui
     }
 
     bool ChatView::settled() const { return !busy_ && copiedFor_ <= 0.0f; }
+
+    uint64_t ChatView::drawKey() const
+    {
+        DrawKey k;
+        k.mix(content_).mix(bounds_).mix(scroll_).mix(contentH_).mix(pointer_).mix(open_.size()).mix(planClosed_.size())
+            .mix(copiedBlock_).mix(copiedAction_).mix(copiedFor_ > 0.0f);
+        for (const auto& [entry, qs] : picks_)
+            for (const std::vector<bool>& q : qs)
+                for (const bool b : q)
+                    k.mix(b);
+        return k.h;
+    }
 
     funkgui::Cursor ChatView::cursorAt(Point p) const
     {

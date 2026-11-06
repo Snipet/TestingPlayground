@@ -43,7 +43,7 @@ namespace playground
         constexpr float kDpi = 1.5f;             // the picture's pixels a logical px: the panel's text stays legible
 
         // The meters are measured only while someone reads them (EditorPort::addMeterReader). When the picture's Panel
-        // is the only reader (no editor open), wait for two blocks measured (the one under way may have begun before
+        // is the only reader (no editor shown), wait for two blocks measured (the one under way may have begun before
         // it), so its displays show the sound playing now: 100 ms at most, for an audio thread that is not running.
         void waitForMeters(EditorPort& port)
         {
@@ -332,7 +332,10 @@ namespace playground
                 if (out.png.empty())
                     out.why = "the picture could not be written";
                 const int lw = static_cast<int>(std::lround(crop.w)), lh = static_cast<int>(std::lround(crop.h));
-                out.about = std::string(window ? "The whole editor, as the user has it" : "The program's panel, in the PANEL view")
+                out.about = std::string(window ? (panel.editorOut() ? "The whole editor, as the user has it: the panel full "
+                                                                      "size, the code editor in a window of its own (not shown)"
+                                                                    : "The whole editor, as the user has it")
+                                               : "The program's panel, in the PANEL view")
                           + ", " + std::to_string(lw) + " x " + std::to_string(lh) + " logical px (the picture "
                           + std::to_string(w) + " x " + std::to_string(h) + " pixels)"
                           + (window ? "" : (panel.hasGui() ? ", from panel.gui" : ", the dials (no .gui file)"))

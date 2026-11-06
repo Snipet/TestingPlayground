@@ -11,6 +11,8 @@
 //   gui.code.find.png        the find and replace bar, its matches marked
 //   gui.code.paper.png       PAPER: the completion list over the program
 //   gui.code.cir.png         a netlist's tab (screamer.cir) highlighted, a check's squiggle on a broken line
+//   gui.code.conditional.png an #if 0 and an #ifndef DEBUG group dimmed, #ifdef DEBUG's group read, the directives'
+//                            parts, a -Wswitch warning's squiggle and mark after RUN and its row in the problems
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -36,6 +38,12 @@
 //   ORDER     an error with a note before it (FMinus writes the error first): each squiggle's card says its own message
 //   RUN ONLY  a note only RUN gives stays after RUN (no check of what it compiled replaces it); an edit's check takes
 //             it away, and undone (the files RUN compiled) RUN's messages come back
+//   COND      FMinus's conditionals and warnings: an #if 0 group, an #ifndef DEBUG group and a switch under #ifdef
+//             DEBUG that misses an enumeration's constant typed after the main module and RUN: it compiles and plays,
+//             one warning and no error (the status line's count), an amber squiggle and mark on the switch's value and
+//             no note's beside it, the problems list's row a warning; the tab's highlighter dims both skipped groups'
+//             lines (csInactive) and not the group read; hover on DEBUG says the plugin defines it; written to
+//             gui.code.conditional.png; then the program before it again
 //   FIND TABS Escape after the bar was open over two tabs leaves no match marked in either
 //   CIRCUIT   a netlist's tab (the library's screamer.cir, added by LIBRARY with its #include): its own highlighter
 //             (lang::lexCirLine) in the code's palette, SPICE in the status line, no completion (Ctrl-Space) and no
@@ -48,12 +56,20 @@
 //             deleted and undone (the same bytes again) asks for a check, which puts its squiggle back; a RUN in flight
 //             (the netlist included again, Q1 an error) lands its messages on the moved lines after a write gathers
 //             *@ lines from mid-file before .end (cir::lineMap)
+//   TYPES     a module named on a line before it is declared: the line is drawn plain, and after the declaration is
+//             typed (the line itself not edited) it keeps its colour until the index has the name, then is drawn in the
+//             types' colour with no input (CodeAssist::sync rehighlights the editors, whose spans FunkGui keeps), the
+//             Panel asking for that frame; the same through Claude's write_file while the editor has not the keys
+//             (the check's sync, the files rested, recolours it: no caret rests in it, no pointer hovers it); the Code
+//             view's tick, recording and highlighter costs printed; idle, the Code view asks for no frame
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
+#include "plugin/ChatAgent.h"
+#include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 
@@ -70,8 +86,11 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 namespace pg = playground;
 namespace cir = playground::cir;
@@ -601,6 +620,89 @@ PROBE(gui, code)
             P.eq("runonly.restored", notes() == 0 && code.errorCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
         }
 
+        // ---- COND ---------------------------------------------------------------------------------------------------
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            ed.setCaret({ ed.lineCount() - 1, 0 });
+            ed.insert("\n#if 0\n"
+                      "float aside(float x) { return x * x; }   // set aside: never compiled\n"
+                      "#endif\n"
+                      "enum Wave { SAW, SQUARE, NOISE };\n"
+                      "#ifndef DEBUG\n"
+                      "float plain(float x) { return x; }\n"
+                      "#endif\n"
+                      "float wave(enum Wave w)\n"
+                      "{\n"
+                      "#ifdef DEBUG\n"
+                      "    switch (w)\n"
+                      "    {\n"
+                      "        case SAW: return 1;\n"
+                      "        case SQUARE: return -1;\n"
+                      "    }\n"
+                      "#endif\n"
+                      "    return 0;\n"
+                      "}\n");
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            const int sw = posIn(ed, "    switch (w)").line;
+            bool squiggle = false, mark = false, noteThere = false;
+            for (const funkgui::Decoration& d : ed.decorations())
+            {
+                squiggle = squiggle || (d.kind == funkgui::DecorationKind::warning && d.from.line == sw);
+                noteThere = noteThere || (d.kind == funkgui::DecorationKind::info && d.from.line == sw);
+            }
+            for (const funkgui::LineMark& m : ed.lineMarks())
+                mark = mark || (m.line == sw && m.kind == funkgui::LineMark::Kind::warning);
+            int warnRows = 0, errorRows = 0;
+            for (const pg::ui::Problem& p : panel.problems())
+            {
+                warnRows += p.warning ? 1 : 0;
+                errorRows += p.error ? 1 : 0;
+            }
+            std::printf("cond: status %d, %d error(s), %d warning(s); notes: %s", port.status().ok ? 1 : 0, code.errorCount(),
+                        code.warningCount(), port.status().notes.c_str());
+            P.eq("cond.plays", port.status().ok && port.running()[0].text == ed.text() ? 1 : 0, 1);
+            P.eq("cond.counts", code.warningCount() == 1 && code.errorCount() == 0 ? 1 : 0, 1);
+            P.eq("cond.squiggle_and_mark", squiggle && mark && !noteThere ? 1 : 0, 1);
+            P.eq("cond.problem_row", warnRows == 1 && errorRows == 0 ? 1 : 0, 1);
+            // The tab's highlighter: each line from the first, as the editor runs it.
+            const funkgui::text::Highlighter* hl = ed.highlighter();
+            std::vector<bool> dim(static_cast<std::size_t>(ed.lineCount()), false);
+            uint32_t st = 0;
+            for (int l = 0; l < ed.lineCount() && hl != nullptr; ++l)
+            {
+                std::vector<funkgui::text::Span> spans;
+                st = hl->line(ed.line(l), st, spans);
+                dim[static_cast<std::size_t>(l)] = spans.size() == 1 && spans[0].style == pg::ui::csInactive;
+            }
+            const auto dimAt = [&](std::string_view needle) {
+                const int l = posIn(ed, needle).line;
+                return l >= 0 && dim[static_cast<std::size_t>(l)];
+            };
+            P.eq("cond.dims_skipped", dimAt("float aside(") && dimAt("float plain(") ? 1 : 0, 1);
+            P.eq("cond.reads_debug", !dimAt("    switch (w)") && !dimAt("        case SAW") && !dimAt("enum Wave") ? 1 : 0, 1);
+            const int ifdef = posIn(ed, "#ifdef DEBUG").line;
+            const funkgui::Point at = ed.pointOf({ ifdef, 9 });
+            host.move(at.x + 2.0f, at.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            P.eq("cond.hover_debug", code.hoverText().find("Defined by the plugin") != std::string::npos ? 1 : 0, 1);
+            host.move(10.0f, 10.0f);
+            host.tick(2);
+            ed.setCaret({ posIn(ed, "#if 0").line, 0 });
+            ed.scrollToCaret();
+            host.tick(2);
+            writePng(P, host, "gui.code.conditional.png", "cond");
+            ed.selectAll();
+            ed.insert(withSvf);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            P.eq("cond.restored", code.errorCount() + code.warningCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
+        }
+
         // ---- FIND TABS ----------------------------------------------------------------------------------------------
         {
             const auto found = [](const funkgui::TextEditor& e) {
@@ -811,6 +913,143 @@ PROBE(gui, code)
                     port.status().ok ? "compiled" : "failed");
         P.eq("cirlayout.gathered", wrote && now == mid - 2 && cir::sameNetlist(sent, net.text()) ? 1 : 0, 1);
         P.eq("cirlayout.run_lands_moved", !port.status().ok && landed && !elsewhere ? 1 : 0, 1);
+    }
+    // ---- TYPES ------------------------------------------------------------------------------------------------------
+    // The editor keeps each line's spans (FunkGui's TextEditor): a module declared after a line that names it recolours
+    // that line once the index has it (CodeAssist::sync rehighlights), and the Panel draws it with no input.
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        funkgui::TextEditor& ed = panel.editor();
+        const std::string body = pg::product::kIsInstrument
+            ? "module Voice\n{\n    Thing thing;\n    Zork zork;\n    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n    Thing thing;\n    Zork zork;\n"
+              "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        ed.selectAll();
+        ed.insert("// Types probe.\nmodule Thing\n{\n    float x;\n};\n" + body);
+        settleChecks(panel, host);
+        // The first glyph's colour in [from, to) of a line, as drawn (0: none).
+        const auto inkOf = [&](const funkgui::PrimList& frame, std::string_view word) -> uint32_t {
+            const funkgui::TextPos at = posIn(ed, std::string(word) + " ");
+            if (at.line < 0)
+                return 0;
+            const funkgui::Point a = ed.pointOf(at), b = ed.pointOf({ at.line, at.col + static_cast<int>(word.size()) });
+            for (const funkgui::Prim& p : frame.prims)
+            {
+                if (p.tag != funkgui::tags::editText || static_cast<int>(p.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                    continue;
+                const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+                if (cx >= a.x && cx < b.x && cy >= a.y && cy < a.y + ed.rowHeight())
+                    return p.c0;
+            }
+            return 0;
+        };
+        uint32_t thing = 0, zork = 0;
+        {
+            const funkgui::PrimList& frame = host.draw();
+            thing = inkOf(frame, "Thing");
+            zork = inkOf(frame, "Zork");
+        }
+        P.eq("types.drawn", thing != 0 && zork != 0 ? 1 : 0, 1);
+        P.eq("types.unknown_plain", thing != zork ? 1 : 0, 1);
+        // Zork declared at the end: its line above, unedited, keeps its spans until the index has the name.
+        const uint32_t before = code.highlights();
+        ed.setCaret(ed.endPos());
+        ed.insert("module Zork\n{\n    float y;\n};\n");
+        P.eq("types.stale_until_synced", inkOf(host.draw(), "Zork") == zork ? 1 : 0, 1);
+        bool asked = false;
+        for (int k = 0; k < 120 && code.highlights() == before; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            if (code.highlights() != before)
+                asked = panel.needsDraw();           // the tick that recoloured asks for a frame
+            else
+                host.draw();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        P.eq("types.rehighlighted", code.highlights() != before ? 1 : 0, 1);
+        P.eq("types.draw_asked", asked ? 1 : 0, 1);
+        P.eq("types.recoloured", inkOf(host.draw(), "Zork") == thing ? 1 : 0, 1);
+        // Claude's write_file (Claude Desktop's call, merged into the tab) while the editor does not have the keys: no
+        // caret rests in it and no pointer hovers it, so the check's sync, once the files have rested, is what recolours
+        // a module named before its declaration (CodeAssist::takeCheckRequest).
+        {
+            settleChecks(panel, host);
+            host.click(4.0f, static_cast<float>(panel.height()) - 4.0f);   // beside everything: the editor loses the keys
+            settleChecks(panel, host);
+            std::string name;
+            for (const pg::SourceFile& f : port.draft().files)
+                if (f.text.find("// Types probe.") != std::string::npos)
+                    name = f.name;
+            std::string text = ed.text();
+            const std::string field = "    Zork zork;\n";
+            if (const std::size_t at = text.find(field); at != std::string::npos)
+                text.insert(at + field.size(), "    Quux quux;\n");
+            text += "module Quux\n{\n    float z;\n};\n";
+            const uint32_t was = code.highlights();
+            const pg::ChatAgent::McpResult wrote = processor.chatAgent().mcpCall(
+                "write_file", pg::claude::object({ { "name", juce::String(name) }, { "content", juce::String(text) } }));
+            host.tick(1, 1.0f / 12.0f);                  // merged
+            P.eq("types.write_merged", !wrote.isError && !name.empty() && posIn(ed, "Quux quux;").line >= 0 ? 1 : 0, 1);
+            P.eq("types.write_unfocused", ed.focused() ? 0 : 1, 1);
+            P.eq("types.write_stale", inkOf(host.draw(), "Quux") == zork ? 1 : 0, 1);
+            bool drawAsked = false;
+            for (int k = 0; k < 120 && code.highlights() == was; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (code.highlights() != was)
+                    drawAsked = panel.needsDraw();
+                else
+                    host.draw();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            P.eq("types.write_rehighlighted", code.highlights() != was && drawAsked ? 1 : 0, 1);
+            P.eq("types.write_recoloured", inkOf(host.draw(), "Quux") == thing ? 1 : 0, 1);
+        }
+
+        // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the
+        // highlighter's lines (each runs once per edited line since FunkGui v0.25.0, not per drawn row).
+        settleChecks(panel, host);
+        ed.selectAll();
+        ed.insert(withSvf);
+        settleChecks(panel, host);
+        constexpr int kFrames = 120;
+        auto t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < kFrames; ++k)
+            host.tick(1, 1.0f / 12.0f);
+        const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kFrames;
+        t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < kFrames; ++k)
+            (void)host.draw();
+        const double drawMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kFrames;
+        int lines = 0;
+        const pg::ui::CodeHighlighter hl(std::make_shared<pg::ui::TypeNames>());
+        std::vector<funkgui::text::Span> spans;
+        t0 = std::chrono::steady_clock::now();
+        for (int pass = 0; pass < 20; ++pass)
+            for (const pg::LibraryFile& f : pg::kLibrary)
+                for (const std::string_view l : pg::lang::splitLines(f.source))
+                {
+                    spans.clear();
+                    (void)hl.line(l, 0, spans);
+                    ++lines;
+                }
+        const double lineUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / lines;
+        std::printf("code view: a tick %.3f ms, a recording %.3f ms; the highlighter %.3f us a line (%d lines)\n", tickMs,
+                    drawMs, lineUs, lines);
+        int idle = 0;
+        for (int k = 0; k < 11; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            idle += panel.needsDraw() ? 1 : 0;
+        }
+        P.eq("types.code_view_idle", idle, 0);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

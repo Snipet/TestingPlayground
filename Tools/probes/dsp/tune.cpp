@@ -257,7 +257,7 @@ namespace
         return a.l.size() == b.l.size() && a.l == b.l && a.r == b.r;
     }
 
-    // A tool's hooks (the trace lane's seam): every call cut to 16 samples; what the calls cover, checked.
+    // A tool's hooks (trace's seam): every call cut to 16 samples; what the calls cover, checked.
     struct Sixteen final : ms::RenderHooks
     {
         std::size_t next = 0, calls = 0, crossings = 0, longest = 0;

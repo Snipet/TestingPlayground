@@ -358,6 +358,15 @@ namespace playground
                 dials += c.used ? 1 : 0;
             return "ran it: it compiled, " + std::to_string(dials) + (dials == 1 ? " dial" : " dials");
         }
+        if (s.stopped)                               // Compiler.h, "A program that stops"
+        {
+            const std::string first = s.errors.substr(0, s.errors.find('\n'));
+            const std::size_t at = first.find(": error: ");
+            return "ran it: it stopped (" + (at == std::string::npos ? first : first.substr(at + 9)) + "); "
+                 + (s.program == s.stoppedProgram ? "nothing plays"
+                    : !s.restored.empty()          ? "the program before plays again"
+                                                   : "the program before plays on");
+        }
         int errors = 0;
         for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
             ++errors;

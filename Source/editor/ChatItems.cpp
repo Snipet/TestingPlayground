@@ -219,6 +219,15 @@ namespace playground::ui
         return funkgui::Rect{ box_.x, box_.y, box_.w, box_.h - barH_ }.contains(p);
     }
 
+    uint64_t InputItem::drawKey() const
+    {
+        DrawKey k;
+        k.mix(editor_).mix(box_).mix(pictures_.size()).mix(pending_).mix(placeholder_).mix(pointer_).mix(hidden_);
+        for (const ChatPicturePtr& pic : pictures_)
+            k.mix(pic->id);
+        return k.h;
+    }
+
     void InputItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const
     {
         const chat::Palette p = chat::palette(th);
@@ -324,6 +333,20 @@ namespace playground::ui
         return std::ceil(12.0f + (icon ? 18.0f : 0.0f) + tw + (spec_.chevron ? 16.0f : 0.0f) + 10.0f);
     }
 
+    uint64_t ButtonItem::drawKey() const
+    {
+        DrawKey k;
+        k.mix(spec_.label ? spec_.label() : std::string())
+            .mix(static_cast<int>(spec_.look ? spec_.look() : Look::ghost))
+            .mix(static_cast<int>(spec_.icon ? spec_.icon() : chat::Icon::none))
+            .mix(enabled())
+            .mix(spec_.checked ? (spec_.checked() ? 2 : 1) : 0)
+            .mix(bounds_.x).mix(bounds_.y).mix(bounds_.w).mix(bounds_.h)
+            .mix(hovered_)
+            .mix(focused_);
+        return k.h;
+    }
+
     void ButtonItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const
     {
         const chat::Palette p = chat::palette(th);
@@ -421,5 +444,8 @@ namespace playground::ui
         return true;
     }
 
-    void ButtonItem::specLine(char* out, std::size_t n) const { std::snprintf(out, n, "%s", spec_.spec.c_str()); }
+    void ButtonItem::specLine(char* out, std::size_t n) const
+    {
+        std::snprintf(out, n, "%s", spec_.specNow ? spec_.specNow().c_str() : spec_.spec.c_str());
+    }
 }

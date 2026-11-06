@@ -1,13 +1,14 @@
 // Pluck: Karplus-Strong. A burst of noise, as long as one period of the note, circulates in a delay line through a
-// gentle low-pass, which makes it a decaying string. Each voice's line comes from calloc in init (long enough for
-// 20 Hz) and goes back with free in end, both off the audio thread.
+// gentle low-pass, which makes it a decaying string. Each voice's line is an array in the module, long enough for
+// 20 Hz at up to 192 kHz, so the plugin checks every index into it while you work on it (an index outside an array
+// stops the program and names its line), which it cannot do for memory from calloc.
 module Voice
 {
     param float brightness [[fminus::range(0, 1)]] [[fminus::default(0.6)]];
     param float decay [[fminus::range(100, 10000)]] [[fminus::default(3000)]];   // ms, to -60 dB
     param float level [[fminus::range(-36, 0)]] [[fminus::default(-9)]];         // dB
-    float* line;
-    int capacity;     // samples the line holds
+    float line[9602]; // a period of 20 Hz at 192 kHz
+    int capacity;     // samples the line holds at the rate (a period of 20 Hz; of 40 Hz at 384 kHz)
     int length;       // the note's period, in samples
     int at;
     int seed;         // the noise's state, 1 to 65536
@@ -20,16 +21,13 @@ module Voice
     {
         rate = sampleRate;
         capacity = (int)(sampleRate / 20) + 2;
-        line = calloc(capacity, sizeof(float));
-        if (!line)
-            capacity = 0;
+        if (capacity > 9602)
+            capacity = 9602;
         seed = 1;
     }
 
     void start(float note, float velocity)
     {
-        if (capacity == 0)
-            return;
         const float hz = 440 * expf(0.0577622650f * (note - 69));
         length = (int)fminf(fmaxf(rate / hz, 2), (float)capacity);
         for (int i = 0; i < length; ++i)
@@ -49,7 +47,7 @@ module Voice
 
     bool process(float* restrict left, float* restrict right, int n)
     {
-        if (capacity == 0 || length == 0)
+        if (length == 0)
             return false;
         const float ms = held ? decay[0] : 150.0f;          // a released key mutes the string
         loss = expf(-6907.7553f * (float)length / (ms * rate));
@@ -66,10 +64,5 @@ module Voice
             peak = fmaxf(fabsf(y), peak * 0.9999f);
         }
         return peak > 0.0001f;
-    }
-
-    void end()
-    {
-        free(line);
     }
 };

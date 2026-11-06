@@ -183,8 +183,8 @@ namespace playground::ui::irview
         {
             case View::optimised:
                 comment(out, name(v, programFile) + ": the program as FMinus compiled it, in LLVM IR, optimised (FMinus's -O2 "
-                             "pipeline, its own passes among them): the text the JIT made the program's machine code from. "
-                             "Read only, and not one of the program's files.");
+                             "pipeline, its own passes among them, with its bounds checks): the text the JIT made the "
+                             "program's machine code from. Read only, and not one of the program's files.");
                 break;
             case View::lowered:
                 comment(out, name(v, programFile) + ": the program in LLVM IR as FMinus's code generator wrote it for this "
@@ -193,13 +193,22 @@ namespace playground::ui::irview
                 break;
             case View::frozen:
                 comment(out, name(v, programFile) + ": the frozen copy in LLVM IR, optimised: the program compiled again "
-                             "with its dials as constants, in fast math, once they held still for 3 s. Read only, and not "
-                             "one of the program's files.");
+                             "with its dials as constants, in fast math and without its bounds checks, once they held still "
+                             "for 3 s. Read only, and not one of the program's files.");
                 break;
         }
         // How the program stands.
         const bool playing = ir.program != 0 || ir.making || st.ok;
-        if (st.revision > 0 && !st.ok)
+        if (st.revision > 0 && st.stopped)               // Compiler.h, "A program that stops"
+        {
+            const std::string why = st.bounds ? "an index outside its array" : "a loop that never ends?";
+            comment(out, playing && st.program != st.stoppedProgram
+                             ? "The last program stopped as it played (" + why + ", listed under the text): this is the IR "
+                               "of the program that plays now."
+                             : "The last program stopped as it played (" + why + ", listed under the text), and nothing "
+                               "plays.");
+        }
+        else if (st.revision > 0 && !st.ok)
         {
             const int errors = errorsIn(st.errors);
             const std::string count = std::to_string(errors) + (errors == 1 ? " error" : " errors");

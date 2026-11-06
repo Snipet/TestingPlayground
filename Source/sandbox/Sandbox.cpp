@@ -277,6 +277,7 @@ namespace playground::sandbox
         tools_.platform = "linux";
         tools_.profile = "spirv";
 #endif
+        tools_.cacheDir = shaderCacheFolder();         // the plugin's builds, and this helper's, kept between sessions
     }
 
     juce::var Sandbox::handle(const juce::var& r)
@@ -512,6 +513,9 @@ namespace playground::sandbox
             names.push_back(f.name);
         notes_.clear();
         spec_ = readGuiSpec(files_[static_cast<std::size_t>(gui_)], controls_, fields_, instrument_, names, notes_);
+        // The shaders built at once (ShaderCache::buildAll: the process's cache, in memory and on disk).
+        std::vector<ShaderJob> jobs;
+        std::vector<PanelShader*> built;
         for (PanelShader& sh : spec_.shaders)
         {
             const auto f = std::find_if(files_.begin(), files_.end(), [&](const SourceFile& s) { return s.name == sh.file; });
@@ -523,11 +527,17 @@ namespace playground::sandbox
                                     "plugin, and the sandbox finds it there); it shows as a placeholder\n";
                 continue;
             }
-            const ShaderBuild b = shaders_.build(sh.file, f->text, sh.inputs, tools_);
+            jobs.push_back({ sh.file, f->text, sh.inputs });
+            built.push_back(&sh);
+        }
+        const std::vector<ShaderBuild> builds = shaderCache().buildAll(jobs, tools_);
+        for (std::size_t k = 0; k < builds.size(); ++k)
+        {
+            const ShaderBuild& b = builds[k];
             if (b.ok())
             {
-                sh.binary = b.binary;
-                sh.id = shaderId(sh.binary);
+                built[k]->binary = b.binary;
+                built[k]->id = shaderId(b.binary);
             }
             else if (notes_.find(b.error) == std::string::npos)
                 notes_ += b.error;

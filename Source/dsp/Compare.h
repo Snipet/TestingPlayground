@@ -1,6 +1,6 @@
 // Source/dsp/Compare.h: two programs rendered alike and compared, sample by sample (JUCE-free): the chat's compare
 // (plugin/ChatCompare.cpp), an A/B and a null test. Each side is a program's files and the render it is played in (one
-// request, its dials the side's own), or a recording (what played, the capture lane's); each renders at its request's
+// request, its dials the side's own), or a recording (what played, as the capture kept it); each renders at its request's
 // rate (one rate for both, unless B is asked at another), an effect with one input (Request::signal, its own
 // Request::input, else noise; at two rates the sweep), each in a Session of its own, and as long as the recording (in
 // seconds) when a side is one.

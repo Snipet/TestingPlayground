@@ -18,8 +18,17 @@
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
-//   - the editor's size, as the user left it (the editor is resizable), its view and its interface's pages, kept in the
-//     session (<EDITOR w=".." h=".." view="panel" chat="closed"> with a <PAGE title=".."/> a tabs element).
+//   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
+//     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
+//     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element);
+//   - the folder (FolderSync.h): the program's files mirrored to a folder under the projects' (Folders/<name>) for VS
+//     Code or any editor, synced both ways on the timer, kept in the session while it is on (<FOLDER name=".."
+//     run="1"/>; a state without one leaves the folder as it is).
+//   - A/B listening (ProcessorAb.cpp; EditorPort::ab): two versions of a project, or the editor's files and a
+//     version, played in turn as runs of their files, the louder turned down on the Engine's output (AbMatch.h measures
+//     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
+//     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
+//     put back, and a session loaded ends it.
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -45,9 +54,11 @@
 // and the probes call themselves; it also clears the alerts after two seconds.
 #pragma once
 
+#include "plugin/AbMatch.h"
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
 #include "plugin/ProjectStore.h"
@@ -63,6 +74,7 @@
 #include <funkgui/params/ParamPort.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -71,6 +83,7 @@
 #include <memory>
 #include <condition_variable>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -135,6 +148,12 @@ namespace playground
         void showSettings() noexcept { ++settingsAsked_; }
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
+        // The folder (EditorPort::folder): its sync (the probes pass it at a clock of their own), and what opens it in
+        // the Finder or VS Code (EditorPort::openFolder; the probes' records the call, launching nothing; the default
+        // launches nothing under a probe's sandbox either). Message thread.
+        FolderSync& folderSync() noexcept { return folder_; }
+        using FolderLauncher = std::function<bool(FolderApp app, const std::string& path, std::string& why)>;
+        void setFolderLauncher(FolderLauncher launcher) { folderLauncher_ = std::move(launcher); }
         capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
         // The most samples one Engine::process call got since prepareToPlay (never more than it announced).
         int largestEngineCall() const noexcept { return largestCall_; }
@@ -239,15 +258,41 @@ namespace playground
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
         std::string exportFolder() const override;
+        AbState ab() const override;
+        uint64_t abRevision() const override { return ab_.st.revision; }
+        bool startAb(const std::string& project, int a, int b, std::string& why) override;
+        bool setAbSides(int a, int b, std::string& why) override;
+        void playAb(int side) override;
+        void setAbOwnDials(bool own) override;
+        void setAbMatch(bool on) override;
+        bool keepAb(int side, std::string& why) override;
+        void endAb() override;
         std::string desktopName() const override { return mcp_ != nullptr ? mcp_->name() : std::string(); }
         bool desktopConnected() const override { return mcp_ != nullptr && mcp_->connected(); }
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
+        bool codePanel(bool gui) const override { return !(gui ? guiPanelHidden_ : codePanelHidden_).load(); }
+        void setCodePanel(bool gui, bool shown) override { (gui ? guiPanelHidden_ : codePanelHidden_).store(!shown); }
         bool chatOpen() const override { return chatOpen_.load(); }
         void setChatOpen(bool open) override { chatOpen_.store(open); }
         bool explorerOpen() const override { return explorerOpen_.load(); }
         void setExplorerOpen(bool open) override { explorerOpen_.store(open); }
+        int explorerWidth() const override { return explorerW_.load(); }
+        void setExplorerWidth(int px) override { explorerW_.store(std::max(0, px)); }
+        int chatWidth() const override { return chatW_.load(); }
+        void setChatWidth(int px) override { chatW_.store(std::max(0, px)); }
+        CodeWindow codeWindow() const override;
+        void setCodeWindow(const CodeWindow& window) override;
+        void addCodeWindow() override { ++codeWindows_; }
+        void removeCodeWindow() override { codeWindows_ = std::max(0, codeWindows_ - 1); }
+        bool codeWindowOpen() const override { return codeWindows_ > 0; }
+        FolderState folder() const override;
+        uint64_t folderRevision() const override { return folder_.revision(); }
+        bool setFolderSync(bool on, std::string& why) override;
+        void setFolderRunOnSave(bool on) override;
+        bool resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why) override;
+        bool openFolder(FolderApp app, std::string& why) override;
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -287,6 +332,7 @@ namespace playground
         double chatHostRate() const override;
         int chatHostBlock() const override;
         std::string chatProject() const override;
+        std::string chatAb() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -312,6 +358,81 @@ namespace playground
         uint64_t dialsRequest_ = 0;
         // A fresh start's compile (startAfresh): every dial to its default when it lands (poll; message thread).
         uint64_t defaultsRequest_ = 0;
+        // A/B listening (ProcessorAb.cpp; EditorPort::ab), the message thread's: what it shows (`st`), each side's dials (its
+        // own, by name: a version's saved ones, Current's as they were, then as the user left them on that side), its
+        // circuits' answers (a version's, restored before it compiles), the request that compiled each side last (or that
+        // the program it plays answers) and the program that plays it (the trim's key: a refine's when the self-test
+        // compiled it again), what played before it began (its files, program and dials: endAb's), the requests it made (a
+        // program that lands from any other ends it, once its request is past `seenRequest`, the newest known when it
+        // began), the side's compile on its way, the loudness job asked for last and the dials it measured each side at
+        // (none while a move waits to be measured), and the dials as the last poll() saw them, since when.
+        struct AbRun
+        {
+            using Measured = std::array<std::map<std::string, float>, 2>;
+            AbState st;
+            std::array<std::vector<projectstore::Dial>, 2> dials, saved;   // as they play; a version's as saved
+            std::array<std::vector<projectstore::Answer>, 2> answers;
+            std::array<int, 2> active{};                         // each side's tab shown
+            Sources currentFiles;                                // Current: the draft when it began, its tab, its dials
+            int currentActive = 0;
+            std::vector<projectstore::Dial> currentDials;
+            int latest = 0;                                      // the project's newest version then
+            std::array<uint64_t, 2> request{}, program{};
+            Sources beforeFiles;
+            uint64_t beforeProgram = 0;
+            std::vector<projectstore::Dial> beforeDials;
+            std::vector<uint64_t> requests;
+            uint64_t seenRequest = 0;
+            uint64_t pendingRequest = 0;
+            uint64_t job = 0;
+            std::optional<Measured> measuredWith;
+            std::array<float, kMaxControls> rawSeen{};
+            double movedAt = 0.0;                                // seconds() then
+            bool restless = false;                               // the dials moved since the last look
+        };
+        AbRun ab_;
+        uint64_t abJobs_ = 0;
+        // Close's or Keep's compile on its way (0: none), its files and dials: until it lands the trims stay (that program
+        // untrimmed, the side that plays as it was) and a session saved keeps those files (abKept_).
+        uint64_t abEnding_ = 0;
+        Sources abEndingFiles_;
+        std::vector<projectstore::Dial> abEndingDials_;
+        // A side's dials (its own), for when its compile lands (poll), as a version's are; ends with the next request past it.
+        std::vector<projectstore::Dial> abDials_;
+        uint64_t abDialsRequest_ = 0;
+        ab::Matcher abMatcher_;                                  // the loudness (AbMatch.h), on a thread of its own
+        mutable std::mutex abLineMutex_;
+        std::string abLine_;                                     // the A/B in words, for Claude (chatAb: any thread)
+        // What a session saved while the A/B is on (or while its Close or Keep compiles) keeps as the program and dials
+        // that play (getStateInformation, any thread; under programMutex_): what played before it began, and the dials
+        // then (normalised) while each side has its own; the files Keep or Close compiles until they land.
+        struct AbKept
+        {
+            bool on = false;
+            Sources run;
+            bool dials = false;
+            std::array<float, kMaxControls> norms{};
+        };
+        AbKept abKept_;
+        // A session loaded (setStateInformation, any thread): its compile's request, for poll() to end the A/B with (the
+        // message thread's); `abLoading_` meanwhile lets the program it plays be untrimmed at once (trimOutput), and
+        // `abQueued_` is the newest request the A/B made, which a session loaded takes back when it still waits.
+        std::atomic<uint64_t> abStateLoaded_{ 0 };
+        std::atomic<bool> abLoading_{ false };
+        std::atomic<uint64_t> abQueued_{ 0 };
+        void abLanded(const CompileStatus& s);                   // poll(): a compile landed
+        void abStopped(const CompileStatus& s, int side);        // abLanded: that side's program stopped as it played
+        void abMatched();                                        // poll(): the loudness measured, when it is
+        void abSessionLoaded();                                  // poll() and each A/B call: a session loaded ends it
+        void abFollowDials();                                    // poll(): dials moved and at rest measured again
+        AbRun::Measured abMeasureDials() const;                  // each side's dials as a measure now would take them
+        void abMeasure();                                        // the loudness asked for again (both sides' as they play)
+        void abPublish();                                        // the trims to the audio thread, the line for Claude
+        // It ends: nothing more measured; the trims away, or, while `ending` (Close's or Keep's compile) is on its way,
+        // kept until it lands (abLanded).
+        void abStop(uint64_t ending = 0);
+        void abPlay(int side, bool journal);
+        bool abSide(const projectstore::Project* p, int version, int k, std::string& why);   // side k read
         void setDialsToDefaults(const Controls& cs);
         std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
@@ -354,11 +475,18 @@ namespace playground
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
         uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled
+        uint64_t stopJournaled_ = 0;                             // the program whose stop poll() last journalled
+        std::atomic<uint64_t> chatStopJournaled_{ 0 };           // the program whose stop chatRun journalled
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
+        std::atomic<bool> codePanelHidden_{ false };                 // its CODE view's panel hidden under the code,
+        std::atomic<bool> guiPanelHidden_{ false };                  // ... under the interface's files, in the session
         std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
+        std::atomic<int> explorerW_{ 0 }, chatW_{ 0 };               // the widths its user set (0: none), in the session
+        CodeWindow codeWindow_;                                  // its code window (codeWindow), in the session
+                                                                 // (under pagesMutex_)
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session
@@ -370,6 +498,8 @@ namespace playground
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
+        int codeWindows_ = 0;                                    // the editors whose code is in a code window now
+                                                                 // (message thread; never in the session)
         // The probes' owners (EditorPort::addProbeOwner; message thread): each one's set, the oldest first. The newest
         // whose set is armed reaches the Engine (sendProbes), none: an empty set.
         struct ProbeOwner
@@ -396,6 +526,35 @@ namespace playground
         int maxBlock_ = 1;
         int largestCall_ = 0;
 
+        // A/B listening's matched loudness (ProcessorAb.cpp): the programs it knows and the gain each plays at (each
+        // side's, and while Close or Keep compiles, the program on its way at 1; 0: none), and whether a program it does
+        // not know keeps the gain that plays (`hold`: while it is on or ending, so a side's refine, a side's old program
+        // while its next compiles and a program from elsewhere until poll() ends it are never turned up). The message
+        // thread writes them inside a sequence count (odd while it writes); the audio thread keeps the gain it aims at
+        // when the count moved under its read. Then, the audio thread's, the gain as it ramps from one to the next over
+        // 20 ms (smootherstep, one tick per sample) when the program that plays has another. The Engine's output only
+        // (after the recorder, before the bypass), so the meters, the scopes and a recording are untrimmed.
+        struct AbTrims
+        {
+            static constexpr std::size_t kPrograms = 3;
+            std::atomic<uint32_t> sequence{ 0 };
+            std::array<std::atomic<uint64_t>, kPrograms> program{};
+            std::array<std::atomic<float>, kPrograms> gain{};
+            std::atomic<bool> hold{ false };
+        };
+        AbTrims abTrims_;
+        fsdsp::SmoothRamp trimFade_{};
+        float trimFrom_ = 1.0f, trimTo_ = 1.0f, trimNow_ = 1.0f;
+        bool trimSet_ = false;
+        // A switch never plays above the matched level: a program coming that plays lower waits (Engine::holdPending)
+        // while the one that plays is turned down to its gain (`gateGain_`), and one that plays higher is turned up
+        // only once the program going out is silent (Engine::outgoing).
+        float gateGain_ = 1.0f;
+        bool gating_ = false;
+        // The table read for `program`: false when it moved under the read; else its gain when it is known, and `hold`.
+        bool trimLookup(uint64_t program, float& gain, bool& known, bool& hold) const noexcept;
+        void trimGate() noexcept;                                 // before each Engine call
+        void trimOutput(float* const* channels, int numChannels, int numSamples) noexcept;
         // The bypass: w, the Engine's share of the output, 1 while processing and 0 while bypassed, ramped over 20 ms
         // between them (one tick per sample, so the fade does not depend on how the host splits its blocks).
         fsdsp::SmoothRamp wet_{};
@@ -425,6 +584,29 @@ namespace playground
 
         // The chat with Claude. Declared after the members its turn calls (ChatHost), destroyed before them.
         ChatAgent chat_{ *this, claude::httpsTransport() };
+
+        // The folder (FolderSync.h), passed by poll() on the message thread: its hooks reach the draft (folderDraftIf:
+        // version-guarded, journalled as the user's) and RUN. Declared after what they reach, so it stops (writing out
+        // what the plugin changed) before they go. What the session keeps of it is copied under folderMutex_ (a host
+        // may save its state on another thread), and a state's <FOLDER> waits there for poll() (folderWanted_).
+        bool folderDraftIf(const Draft& now, const Draft& next);
+        FolderSync folder_{ FolderSync::Plugin{ [this] { return draft(); },
+                                                [this](const Draft& now, const Draft& next) { return folderDraftIf(now, next); },
+                                                [this](const Sources& files) { run(files); } } };
+        FolderLauncher folderLauncher_;
+        struct FolderKept
+        {
+            bool on = false;
+            std::string name;
+            bool run = false;
+        };
+        mutable std::mutex folderMutex_;
+        FolderKept folderKept_;                                  // what getStateInformation writes
+        std::optional<FolderKept> folderWanted_;                 // a loaded state's, for poll()
+        void keepFolder();                                       // folderKept_ from folder_ (message thread)
+        uint64_t folderKeptAt_ = 0;                              // the folder's revision keepFolder() last copied
+        std::filesystem::path folderRoot() const;                // the projects' folder's Folders/
+        static double seconds();                                 // the folder's clock
 
         // The instance's MCP socket (McpLink.h): Claude Desktop through the chat's tools. Last, so it stops first (a call
         // in flight finishes before the chat goes). The host's name for the track the plugin is on, for list_instances.

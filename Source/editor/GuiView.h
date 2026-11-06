@@ -11,8 +11,12 @@
 //
 //   layout()            the interface `spec` in `area` (its root never smaller than its natural size: it scrolls past
 //                       the area, which then keeps kScrollGutter at its right for the bar), the tabs' pages and the
-//                       scroll kept (clamped), then every item placed (place())
-//   clear()             no interface: every item hidden
+//                       scroll kept (clamped), then every item placed (place()). It lays out once, at no scroll (the
+//                       content's places, and each tabs node's tabs); what is shown is that moved by the scroll
+//   scrollBy()          the scroll moved: the items placed again, each moved by the scroll (whole px), and nothing
+//                       laid out again (a trackpad sends a hundred events a second)
+//   clear()             no interface, or one hidden (the editor's panel under the code): every item hidden, its pages
+//                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
 //   registerShaders()   the spec's shaders' programs given to FunkGui's registry (once built: Shaders.h), or why not
 //   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters
@@ -44,6 +48,8 @@
 
 namespace playground::ui
 {
+    struct DisplayFeed;                                    // DisplayItem.h
+
     class GuiView
     {
     public:
@@ -99,8 +105,9 @@ namespace playground::ui
         float scrollX() const noexcept { return scrollX_; }
         float scrollY() const noexcept { return scrollY_; }
         void resetScroll() noexcept { scrollX_ = scrollY_ = 0.0f; }
-        // Scrolled by (dx, dy) px, clamped: false when it did not move.
-        bool scrollBy(float dx, float dy);
+        // Scrolled by (dx, dy) px, clamped: false when it did not move. The items of `spec` (the one laid out) move by
+        // the scroll, rounded to whole px, as the layout placed them at no scroll.
+        bool scrollBy(const PanelSpec& spec, float dx, float dy);
 
         // The items, by what they are.
         int controlItem(int slot) const;                   // slot's control's index in the owner's list, -1 for none
@@ -115,6 +122,7 @@ namespace playground::ui
 
     private:
         GuiControlItem& control(int slot);
+        void scrolled();                                   // gui_ from content_, moved by the scroll
 
         Items& items_;
         std::vector<int> displays_, controls_, tabs_, pads_, envelopes_, keyboards_, shaders_;
@@ -125,15 +133,20 @@ namespace playground::ui
         std::vector<std::string> shaderWhy_;
         std::vector<bool> shaderMoves_;
         std::vector<bool> mine_;                           // by item: drawn in the area, with its theme
+        // The layout at no scroll, each tabs node's tabs in it (by node), and what is shown: that moved by the scroll,
+        // shownX_ and shownY_ (the scroll rounded to whole px).
+        GuiLayout content_;
+        std::vector<std::vector<funkgui::Rect>> contentTabs_;
         GuiLayout gui_;
+        std::vector<std::vector<funkgui::Rect>> shownTabs_;
+        float shownX_ = 0.0f, shownY_ = 0.0f;
         std::vector<int> pages_;                           // by node
         float scrollX_ = 0.0f, scrollY_ = 0.0f;
     };
 
     // A frame of the displays `items` (DisplayItem) at `displays`: `shown` and, for an audio scope or spectrum, the last
-    // DisplayItem::kScopeSamples samples `scope` fills (input or output, oldest first), dt seconds. `in` and `out` are
-    // the caller's buffers, kept between frames.
+    // DisplayItem::kScopeSamples samples `scope` fills (input or output, oldest first, read once for every display of
+    // that source), and a spectrum's source's Spectrum, dt seconds. `feed` is the caller's, kept between frames.
     void updateDisplays(GuiView::Items& items, const std::vector<int>& displays, const Meters& shown,
-                        const std::function<void(bool input, float* out, int n)>& scope, std::vector<float>& in,
-                        std::vector<float>& out, float dt);
+                        const std::function<void(bool input, float* out, int n)>& scope, DisplayFeed& feed, float dt);
 }

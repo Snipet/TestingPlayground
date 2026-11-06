@@ -33,7 +33,9 @@
 //                  methods, without the code, the instances or a swap of what plays), and its messages replace them
 //                  (RUN's again when the files are what RUN compiled: they say more; RUN itself cancels a check due)
 //   the status     under the editor: the problems' count (a click jumps to the next), Checking..., the caret's line and
-//   line           column, the indent, the language and the Format on Run switch (a machine-wide preference)
+//   line           column, the indent, the language, the Format on Run switch (a machine-wide preference) and, at its
+//                  right end, the Panel switch: the program's panel under the code shown or hidden (the Panel's,
+//                  setPanelSwitch; its icon alone where its word would crowd the problems' count)
 //
 // The completion list, the signature and the hover card are drawn over everything (drawOverlays, after the Panel's
 // items); the find bar and the status line with the editor. Message thread only.
@@ -86,7 +88,9 @@ namespace playground::ui
     enum CodeStyle : uint16_t
     {
         csPlain = 0, csKeyword, csType, csComment, csNumber, csOperator, csDirective, csString, csFunction, csMember,
-        csAttribute, csPunct, csConstant, csCount
+        csAttribute, csPunct, csConstant,
+        csInactive,                              // a group a conditional skips (#if 0, an #ifndef DEBUG's): dimmed
+        csCount
     };
 
     // The module names the highlighter shows as types, and the constants' (enumeration constants, the top level's
@@ -97,15 +101,37 @@ namespace playground::ui
         std::vector<std::string> constants;      // sorted
     };
 
-    // FMinus by lang::lexLine, a line at a time (the state: inside a block comment).
+    // The conditionals the highlighter dims by: each FMinus tab's conditional directives (#if ... #endif), in order, as
+    // the compile reads them on the plugin's macros (lang::conditionals over the tabs, lang::kDefines), by the tab's
+    // name. A snapshot, never changed: CodeAssist makes a new one when the files' change, and gives the tabs whose
+    // directives read otherwise a highlighter of it (the editor keeps each line's start state).
+    struct Conditionals
+    {
+        static constexpr uint8_t kInert = 1;     // the directive is in a skipped group: dimmed itself
+        static constexpr uint8_t kSkipping = 2;  // the lines after it, to the next conditional, are skipped: dimmed
+        std::map<std::string, std::vector<uint8_t>, std::less<>> files;
+
+        static Conditionals of(const Sources& files);
+    };
+
+    // FMinus by lang::lexLine, a line at a time. The state: bit 0, inside a block comment; the bits above it, the
+    // conditional directives met so far in the file, which index `file`'s flags in `conditionals` (a directive met
+    // past them, as while a snapshot is due after an edit, chooses nothing). A group a conditional skips is one span
+    // of csInactive; a conditional's, a #define's and an #undef's line its parts (the macros as constants). Its output
+    // depends on `types` too: when they change, every editor it highlights is rehighlighted (CodeAssist::sync; FunkGui's
+    // TextEditor keeps each line's spans). One editor's: its token buffer is scratch, kept with its capacity.
     class CodeHighlighter final : public funkgui::text::Highlighter
     {
     public:
-        explicit CodeHighlighter(std::shared_ptr<const TypeNames> types) : types_(std::move(types)) {}
+        explicit CodeHighlighter(std::shared_ptr<const TypeNames> types, std::shared_ptr<const Conditionals> conditionals = {},
+                                 std::string_view file = {});
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
 
     private:
         std::shared_ptr<const TypeNames> types_;
+        std::shared_ptr<const Conditionals> conditionals_;
+        const std::vector<uint8_t>* flags_ = nullptr;    // this file's, in conditionals_
+        mutable std::vector<lang::Token> toks_;
     };
 
     // A netlist (a .cir file) by lang::lexCirLine, a line at a time (no state: a SPICE line stands alone), in the code's
@@ -115,6 +141,9 @@ namespace playground::ui
     {
     public:
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
+
+    private:
+        mutable std::vector<lang::Token> toks_;
     };
 
     // The highlighter's palette for a theme (GRAPHITE or PAPER): the theme's inks, and a few colours of its own.
@@ -175,6 +204,9 @@ namespace playground::ui
 
         void tick(float dt, funkgui::Point pointer, bool focused);
         bool settled() const;
+        // What its drawing (the status line, the find and go-to bars, the overlays) shows now, mixed (Item::drawKey):
+        // the Panel draws again when it moves.
+        uint64_t drawKey() const;
         void tabShown();                                 // another tab: the overlays close
         void focusChanged(bool focused);
 
@@ -228,6 +260,25 @@ namespace playground::ui
         // While those words show, a click on the status line's problems calls this (true: Shift, the one before)
         // instead of moving the text's caret.
         void setStatusProblems(std::function<void(bool back)> step) { statusProblems_ = std::move(step); }
+        // The Panel switch at the status line's right end (Panel.h, "the panel under the code"): whether the CODE view
+        // shows the program's panel under the editor for the tab shown, and what a click on it does. Unset: no switch.
+        void setPanelSwitch(std::function<bool()> shown, std::function<void()> toggle)
+        {
+            panelShown_ = std::move(shown);
+            panelToggle_ = std::move(toggle);
+        }
+        bool hasPanelSwitch() const noexcept
+        {
+            return static_cast<bool>(panelShown_) && static_cast<bool>(panelToggle_);
+        }
+        bool panelSwitchOn() const { return hasPanelSwitch() && panelShown_(); }
+        void togglePanelSwitch() const
+        {
+            if (hasPanelSwitch())
+                panelToggle_();
+        }
+        funkgui::Rect panelSwitchRect() const;           // where it is (empty without one)
+        bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone: a narrow line)
 
         // ---- commands ---------------------------------------------------------------------------------------------
         bool formatFile();                               // the tab shown (an FMinus file); false with a notice when not
@@ -268,6 +319,9 @@ namespace playground::ui
         int findCurrent() const noexcept { return current_; }
         const char* language(int tab) const;             // the status line's: FMinus, SPICE, GUI (LLVM IR: a view)
         lang::Service& service();                        // the index, brought up to date
+        // Bumps each time the index's module names or constants change and the FMinus tabs are highlighted again with
+        // them (their texts and revisions unchanged): the Panel draws again (Panel::needsDraw).
+        uint32_t highlights() const noexcept { return highlights_; }
 
     private:
         struct Diag
@@ -319,16 +373,22 @@ namespace playground::ui
         FindParts findParts() const;
         struct StatusParts
         {
-            funkgui::Rect problems, position, indent, language, formatOnRun;
+            funkgui::Rect problems, position, indent, language, formatOnRun, panel;
         };
         StatusParts statusParts() const;
 
         Tabs tabs_;
         std::function<std::string()> statusWords_;
         std::function<void(bool back)> statusProblems_;
+        std::function<bool()> panelShown_;               // the Panel switch (setPanelSwitch)
+        std::function<void()> panelToggle_;
         lang::Service service_;
         uint64_t synced_ = ~uint64_t{ 0 };
         std::shared_ptr<TypeNames> types_ = std::make_shared<TypeNames>();
+        std::shared_ptr<const Conditionals> conditionals_ = std::make_shared<Conditionals>();
+        void updateConditionals();                       // a new snapshot when the files' conditionals change
+        uint64_t conditionalsRevision_ = 0;              // the files' revision the snapshot is of
+        uint32_t highlights_ = 0;
         funkgui::HostServices* host_ = nullptr;
         funkgui::Rect area_{};
         bool themeDark_ = true;

@@ -3,6 +3,8 @@
 
 #include "editor/DisplayItem.h"
 
+#include "fminus/Shaders.h"
+
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/text/FontService.h>
@@ -10,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <sstream>
@@ -82,23 +85,50 @@ namespace playground::ui
             clear(spec);
             return;
         }
+        // Laid out once at no scroll (the content's places): the scroll only moves what is shown (scrolled()).
         pages_.resize(spec.gui.nodes.size(), 0);
-        gui_ = layoutGui(spec, controls, measureText, pages_, area, scrollX_, scrollY_);
-        if (gui_.maxScrollY > 0.0f)                      // a gutter for the scroll bar
+        content_ = layoutGui(spec, controls, measureText, pages_, area, 0.0f, 0.0f);
+        if (content_.maxScrollY > 0.0f)                  // a gutter for the scroll bar
         {
             area.w -= kScrollGutter;
-            gui_ = layoutGui(spec, controls, measureText, pages_, area, scrollX_, scrollY_);
+            content_ = layoutGui(spec, controls, measureText, pages_, area, 0.0f, 0.0f);
         }
-        pages_ = gui_.pages;
-        scrollX_ = std::clamp(scrollX_, 0.0f, gui_.maxScrollX);
-        scrollY_ = std::clamp(scrollY_, 0.0f, gui_.maxScrollY);
+        pages_ = content_.pages;
+        contentTabs_.assign(spec.gui.nodes.size(), {});
+        for (std::size_t i = 0; i < spec.gui.nodes.size(); ++i)
+            if (spec.gui.nodes[i].kind == GuiKind::tabs)
+                contentTabs_[i] = guiTabRects(spec, static_cast<int>(i), content_.rects[i], measureText);
+        scrollX_ = std::clamp(scrollX_, 0.0f, content_.maxScrollX);
+        scrollY_ = std::clamp(scrollY_, 0.0f, content_.maxScrollY);
+        scrolled();
         place(spec);
     }
 
     void GuiView::clear(const PanelSpec& spec)
     {
-        gui_ = GuiLayout{};
+        content_ = gui_ = GuiLayout{};
+        contentTabs_.clear();
+        shownTabs_.clear();
         place(spec);
+    }
+
+    void GuiView::scrolled()
+    {
+        shownX_ = std::round(scrollX_);
+        shownY_ = std::round(scrollY_);
+        gui_ = content_;
+        for (funkgui::Rect& r : gui_.rects)
+        {
+            r.x -= shownX_;
+            r.y -= shownY_;
+        }
+        shownTabs_ = contentTabs_;
+        for (std::vector<funkgui::Rect>& tabs : shownTabs_)
+            for (funkgui::Rect& r : tabs)
+            {
+                r.x -= shownX_;
+                r.y -= shownY_;
+            }
     }
 
     bool GuiView::choosePage(const PanelSpec& spec, int node, int page)
@@ -112,13 +142,18 @@ namespace playground::ui
         return true;
     }
 
-    bool GuiView::scrollBy(float dx, float dy)
+    bool GuiView::scrollBy(const PanelSpec& spec, float dx, float dy)
     {
-        const float x = std::clamp(scrollX_ + dx, 0.0f, gui_.maxScrollX), y = std::clamp(scrollY_ + dy, 0.0f, gui_.maxScrollY);
+        const float x = std::clamp(scrollX_ + dx, 0.0f, content_.maxScrollX), y = std::clamp(scrollY_ + dy, 0.0f, content_.maxScrollY);
         if (x == scrollX_ && y == scrollY_)
             return false;
         scrollX_ = x;
         scrollY_ = y;
+        if (std::round(x) != shownX_ || std::round(y) != shownY_)
+        {
+            scrolled();
+            place(spec);                                 // each item where the layout put it, moved (and shown or not)
+        }
         return true;
     }
 
@@ -131,8 +166,11 @@ namespace playground::ui
     void GuiView::place(const PanelSpec& spec)
     {
         mine_.assign(items_.size(), false);
-        const bool gui = !spec.gui.empty();
-        const std::vector<GuiNode>& nodes = spec.gui.nodes;
+        // An interface with no layout of its nodes (cleared: hidden under the code) is placed as none.
+        const bool gui = !spec.gui.empty() && gui_.rects.size() == spec.gui.nodes.size()
+                      && gui_.visible.size() == spec.gui.nodes.size() && gui_.pages.size() == spec.gui.nodes.size();
+        const std::vector<GuiNode> none;
+        const std::vector<GuiNode>& nodes = gui ? spec.gui.nodes : none;
         const funkgui::Rect area = gui_.area;
         // A node on the pages shown and, at least in part, in the area.
         const auto seen = [&](std::size_t i) {
@@ -201,7 +239,7 @@ namespace playground::ui
                 std::vector<std::string> titles;
                 for (const int child : n.children)
                     titles.push_back(nodes[static_cast<std::size_t>(child)].text);
-                item.place(static_cast<int>(i), gui_.rects[i], guiTabRects(spec, static_cast<int>(i), gui_.rects[i], measureText),
+                item.place(static_cast<int>(i), gui_.rects[i], i < shownTabs_.size() ? shownTabs_[i] : std::vector<funkgui::Rect>(),
                            std::move(titles), gui_.pages[i], area, seen(i), n.color, n.style);
             }
         }
@@ -252,7 +290,7 @@ namespace playground::ui
             const PanelShader& sh = spec.shaders[k];
             const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& x) { return x.name == sh.file; });
             if (f != files.end())
-                shaderMoves_[k] = f->text.find("u_time") != std::string::npos || f->text.find("u_viewSize") != std::string::npos;
+                shaderMoves_[k] = shaderAnimates(f->text);
             if (sh.binary.empty() || sh.id == 0)
             {
                 std::string why = f == files.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");
@@ -357,28 +395,39 @@ namespace playground::ui
     }
 
     void updateDisplays(GuiView::Items& items, const std::vector<int>& displays, const Meters& shown,
-                        const std::function<void(bool input, float* out, int n)>& scope, std::vector<float>& in,
-                        std::vector<float>& out, float dt)
+                        const std::function<void(bool input, float* out, int n)>& scope, DisplayFeed& feed, float dt)
     {
-        bool readIn = false, readOut = false;
+        // Each source's samples read once, and its spectrum made once (when its samples changed), for all its displays.
+        bool readIn = false, readOut = false, analyseIn = false, analyseOut = false;
         for (const int i : displays)
         {
+            const auto& item = static_cast<const DisplayItem&>(*items[static_cast<std::size_t>(i)]);
             bool input = false;
-            if (static_cast<const DisplayItem&>(*items[static_cast<std::size_t>(i)]).wantsScope(input))
-                (input ? readIn : readOut) = true;
+            if (!item.wantsScope(input))
+                continue;
+            (input ? readIn : readOut) = true;
+            if (item.display().kind == DisplayKind::spectrum)
+                (input ? analyseIn : analyseOut) = true;
         }
         if (readIn || readOut)
-            in.resize(DisplayItem::kScopeSamples), out.resize(DisplayItem::kScopeSamples);
+            feed.in.resize(DisplayItem::kScopeSamples), feed.out.resize(DisplayItem::kScopeSamples);
         if (readIn)
-            scope(true, in.data(), DisplayItem::kScopeSamples);
+            scope(true, feed.in.data(), DisplayItem::kScopeSamples);
         if (readOut)
-            scope(false, out.data(), DisplayItem::kScopeSamples);
+            scope(false, feed.out.data(), DisplayItem::kScopeSamples);
+        const float rate = shown.rate > 0.0f ? shown.rate : 48000.0f;
+        if (analyseIn)
+            feed.inSpectrum.update(feed.in.data(), rate);
+        if (analyseOut)
+            feed.outSpectrum.update(feed.out.data(), rate);
         for (const int i : displays)
         {
             auto& item = static_cast<DisplayItem&>(*items[static_cast<std::size_t>(i)]);
             bool input = false;
             const bool wants = item.wantsScope(input);
-            item.update(shown, wants ? (input ? in.data() : out.data()) : nullptr, dt);
+            const Spectrum& spectrum = input ? feed.inSpectrum : feed.outSpectrum;
+            item.update(shown, wants ? (input ? feed.in.data() : feed.out.data()) : nullptr,
+                        wants && item.display().kind == DisplayKind::spectrum ? spectrum.points() : nullptr, dt);
         }
     }
 }

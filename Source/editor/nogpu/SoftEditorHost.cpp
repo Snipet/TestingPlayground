@@ -202,6 +202,11 @@ namespace playground::ui
         ++ticks_;
 
         const float dpi = deviceScale() * zoomScale_;
+        // Unchanged frames (EditorHost's rule since FunkGui v0.25.0): nothing the Panel draws changed (needsDraw()) and
+        // the picture up is of this size, scale and theme: nothing is recorded.
+        if (!dirty_ && image_.isValid() && !panel_->needsDraw() && lastInfo_.logicalW == panel_->width()
+            && lastInfo_.logicalH == panel_->height() && lastInfo_.dpi == dpi && lastInfo_.theme == themeIdx_)
+            return;
         funkgui::FrameInfo info;
         info.logicalW = panel_->width();
         info.logicalH = panel_->height();

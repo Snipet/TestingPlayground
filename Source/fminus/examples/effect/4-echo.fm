@@ -1,7 +1,8 @@
-// Echo: a stereo delay with feedback, ping-pong or straight. Its two lines come from calloc in init and go back with
-// free in end, both off the audio thread: process may not allocate, and FMinus refuses one that could. The #pragma
-// panel lines lay the dials out in titled sections, as a hardware unit's panel. SYNC sets the time in notes at the
-// host's tempo instead (host.fm, a file the plugin provides): 1/16 to 1/2, dotted too.
+// Echo: a stereo delay with feedback, ping-pong or straight. Its two lines are arrays in the module, long enough at
+// up to 192 kHz, so the plugin checks every index into them while you work on it (an index outside an array stops the
+// program and names its line), which it cannot do for memory from calloc. The #pragma panel lines lay the dials out in
+// titled sections, as a hardware unit's panel. SYNC sets the time in notes at the host's tempo instead (host.fm, a file
+// the plugin provides): 1/16 to 1/2, dotted too.
 #include "host.fm"
 #pragma panel section "ECHO" time sync feedback pingpong
 #pragma panel section "OUTPUT" mix out
@@ -18,9 +19,9 @@ module Effect
     param int sync [[fminus::range(0, 6)]] [[fminus::default(0)]];   // OFF (TIME), or the time in notes at the tempo
     Host* host;     // the plugin's (host.fm): the tempo
     float glide;    // the delay in samples, gliding to a new tempo or note
-    float* lineL;
-    float* lineR;
-    int length;     // samples a line holds: two seconds and a little (a synced 1/2 note down to 60 BPM)
+    float lineL[384004];   // two seconds and a little at 192 kHz (a synced 1/2 note down to 60 BPM)
+    float lineR[384004];
+    int length;     // samples a line uses at the rate: two seconds and a little (one at 384 kHz)
     int at;         // where the next sample goes
     float rate;
 
@@ -28,16 +29,12 @@ module Effect
     {
         rate = sampleRate;
         length = 2 * (int)sampleRate + 4;
-        lineL = calloc(length, sizeof(float));
-        lineR = calloc(length, sizeof(float));
-        if (!lineL || !lineR)
-            length = 0;
+        if (length > 384004)
+            length = 384004;
     }
 
     void process(float* restrict left, float* restrict right, int n)
     {
-        if (length == 0)
-            return;
         const int s = sync[0];
         const float beats = s == 1 ? 0.25f : s == 2 ? 0.5f : s == 3 ? 0.75f : s == 4 ? 1.0f : s == 5 ? 1.5f : 2.0f;
         const float synced = beats * 60 / host->bpm * rate;                  // samples
@@ -57,9 +54,11 @@ module Effect
             float pos = (float)at - d;
             if (pos < 0)
                 pos += (float)length;
-            const int i0 = (int)pos;
-            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
+            int i0 = (int)pos;
             const float frac = pos - (float)i0;
+            if (i0 == length)       // a position just under the line's end rounds up to it: the line's first sample
+                i0 = 0;
+            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
             const float dl = lineL[i0] + frac * (lineL[i1] - lineL[i0]);
             const float dr = lineR[i0] + frac * (lineR[i1] - lineR[i0]);
             const float xl = left[i];
@@ -79,11 +78,5 @@ module Effect
             if (++at == length)
                 at = 0;
         }
-    }
-
-    void end()
-    {
-        free(lineL);
-        free(lineR);
     }
 };

@@ -2856,6 +2856,17 @@ namespace playground::ui
             probeStill_ = f != probeFrame_ ? 0.0f : probeStill_ + dt;
             probeFrame_ = f;
         }
+        // The circuit knobs' values: a host's automation of a dial turns its knob with no input here (Stirred).
+        if (dials_.port)
+        {
+            DrawKey k;
+            for (const Knob& kn : knobs())
+                if (const funkgui::ParamPort* port = dials_.port(kn.slot))
+                    k.mix(kn.slot).mix(port->value01());
+            knobsStir_.tick(dt, knobsSeen_ && k.h != knobsKey_);
+            knobsKey_ = k.h;
+            knobsSeen_ = true;
+        }
         if (easing_)
         {
             st_->zoom = funkgui::ease::toward(st_->zoom, zoomTo_, dt, kEaseTau, 1e-4f);
@@ -2922,6 +2933,28 @@ namespace playground::ui
         }
     }
 
+    uint64_t SchematicView::drawKey() const
+    {
+        if (!showing())
+            return 0;
+        DrawKey k;
+        k.mix(ed_->revision()).mix(notice_).mix(flash_.size()).mix(field_.on).mix(field_.row).mix(field_.why);
+        for (const Row& r : field_.rows)
+            k.mix(r.edit.buffer).mix(r.edit.caret).mix(r.edit.allSelected);
+        k.mix(static_cast<int>(tool_)).mix(static_cast<int>(kind_)).mix(static_cast<int>(orient_)).mix(static_cast<int>(drag_));
+        k.mix(pointer_).mix(focused_).mix(laneScroll_).mix(stepAt_).mix(area_).mix(marks_.size());
+        k.mix(st_->schematic).mix(st_->zoom).mix(st_->cx).mix(st_->cy).mix(st_->selected.size()).mix(st_->probes.size());
+        for (const std::string& part : st_->selected)
+            k.mix(part);
+        for (const ProbeSlot& slot : slots_)
+            k.mix(slot.net).mix(slot.node).mix(slot.reason).mix(slot.valid);
+        if (dials_.port)
+            for (const Knob& kn : knobs())
+                if (const funkgui::ParamPort* port = dials_.port(kn.slot))
+                    k.mix(kn.slot).mix(port->value01());
+        return k.h;
+    }
+
     bool SchematicView::settled() const
     {
         if (!showing())
@@ -2929,6 +2962,8 @@ namespace playground::ui
         // (a notice's 4 s count down at the idle rate: it asks for no frames of its own)
         if (easing_ || fitPending_ || !flash_.empty() || (probesLive() && probeStill_ < kProbeStill))
             return false;                                // a live readout: 60 Hz while it shows and its meters move
+        if (knobsStir_.moving())
+            return false;                                // a circuit knob the host moves
         if (drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::carry || drag_ == Drag::knob)
             return false;
         // a part carried near the edge pans

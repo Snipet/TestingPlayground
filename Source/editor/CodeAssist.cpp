@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -43,6 +44,11 @@ namespace playground::ui
         constexpr float kCheckDelay = 0.6f;              // s after the last edit
         constexpr float kOccurrenceDelay = 0.25f;        // s the caret rests
         constexpr const char* kFormatOnRunKey = "codeFormatOnRun";
+        // The status line's Panel switch: its icon (a window with a panel at its bottom) and the room it takes beside
+        // its word; the room the problems' count and Checking... keep at the line's left, before which its word goes.
+        constexpr float kPanelGlyphW = 13.0f, kPanelGlyphH = 10.0f, kPanelIconRoom = 18.0f;
+        constexpr float kProblemsRoom = 160.0f;
+        constexpr const char* kPanelWord = "Panel";
         constexpr int kMaxFind = 200;                    // characters in the find bar's fields
         constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
         constexpr float kGoToW = 330.0f;
@@ -326,15 +332,68 @@ namespace playground::ui
     }
 
     // ---- the highlighter --------------------------------------------------------------------------------------------
+    Conditionals Conditionals::of(const Sources& files)
+    {
+        Conditionals c;
+        const std::vector<lang::FileConditionals> read = lang::conditionals(files, lang::hostDefines());
+        for (std::size_t i = 0; i < files.size() && i < read.size(); ++i)
+        {
+            if (read[i].directives.empty())
+                continue;
+            std::vector<uint8_t>& flags = c.files[files[i].name];
+            for (const lang::Conditional& d : read[i].directives)
+                flags.push_back(static_cast<uint8_t>((d.inert ? kInert : 0) | (d.skipping ? kSkipping : 0)));
+        }
+        return c;
+    }
+
+    CodeHighlighter::CodeHighlighter(std::shared_ptr<const TypeNames> types, std::shared_ptr<const Conditionals> conditionals,
+                                     std::string_view file)
+        : types_(std::move(types)), conditionals_(std::move(conditionals))
+    {
+        if (conditionals_ != nullptr)
+            if (const auto f = conditionals_->files.find(file); f != conditionals_->files.end())
+                flags_ = &f->second;
+    }
+
+    // A line's tokens go into toks_, kept with its capacity, and a name is looked up as it is (a view of the line): the
+    // highlighter allocates nothing once its buffer has grown to a line's tokens (a conditional's or a #define's line
+    // aside). FunkGui's TextEditor calls it only for the lines an edit reached (it keeps every line's spans, v0.25.0),
+    // and for every line on rehighlight() (CodeAssist::sync, when the type names or the constants change) and on a new
+    // highlighter (CodeAssist::updateConditionals, when a tab's conditionals read otherwise).
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
-        bool inComment = stateIn != 0;
-        std::vector<lang::Token> toks;
+        bool inComment = (stateIn & 1u) != 0;
+        uint32_t met = stateIn >> 1;                     // the conditional directives before this line
+        std::vector<lang::Token>& toks = toks_;
+        toks.clear();
         lang::lexLine(l, 0, inComment, toks);
+        const auto state = [&] { return (inComment ? 1u : 0u) | (std::min<uint32_t>(met, 0x7FFFFFFFu) << 1); };
+        const auto flag = [&](uint32_t k) -> uint8_t {
+            return flags_ != nullptr && k < flags_->size() ? (*flags_)[k] : uint8_t{ 0 };
+        };
         const auto span = [&](int a, int b, uint16_t st) {
             if (b > a)
                 out.push_back({ a, b, st });
         };
+        // A conditional's line (a directive is the line's one token): dimmed when a skipped group holds it, else its
+        // parts as below; either way one more met.
+        const bool directive = toks.size() == 1 && toks[0].kind == lang::Tok::directive;
+        const std::string_view dname = directive ? lang::directiveName(toks[0].text) : std::string_view{};
+        if (directive && lang::isConditional(dname))
+        {
+            const uint8_t f = flag(met++);
+            if ((f & Conditionals::kInert) != 0)
+            {
+                span(0, static_cast<int>(l.size()), csInactive);
+                return state();
+            }
+        }
+        else if (met > 0 && (flag(met - 1) & Conditionals::kSkipping) != 0)
+        {
+            span(0, static_cast<int>(l.size()), csInactive);   // a skipped group: never compiled, maybe not FMinus
+            return state();
+        }
         bool attr = false;
         for (std::size_t i = 0; i < toks.size(); ++i)
         {
@@ -362,17 +421,47 @@ namespace playground::ui
                         st = csFunction;
                     else if (prev != nullptr && prev->kind == lang::Tok::keyword && prev->text == "enum")
                         st = csType;                         // an enumeration's tag
-                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), std::string(t.text)))
+                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), t.text, std::less<>{}))
                         st = csType;
                     else if (types_ != nullptr
-                             && std::binary_search(types_->constants.begin(), types_->constants.end(), std::string(t.text)))
+                             && std::binary_search(types_->constants.begin(), types_->constants.end(), t.text, std::less<>{}))
                         st = csConstant;
                     break;
                 }
                 case lang::Tok::directive:
                 {
-                    // `#include "file"`, `#pragma panel ... "TEXT" ...`, a trailing comment.
                     const std::string_view d = t.text;
+                    // A conditional's, a #define's or an #undef's line: `#name`, then its condition or its macro as
+                    // FMinus's tokens, a name a macro's (`defined` a keyword's).
+                    if (lang::isConditional(dname) || dname == "define" || dname == "undef")
+                    {
+                        std::size_t rest = 0;
+                        (void)lang::directiveName(d, &rest);
+                        span(t.col, t.col + static_cast<int>(rest), csDirective);
+                        bool inner = false;
+                        std::vector<lang::Token> parts;
+                        lang::lexLine(d.substr(rest), 0, inner, parts);
+                        for (const lang::Token& p : parts)
+                        {
+                            const int a = t.col + static_cast<int>(rest) + p.col;
+                            uint16_t ps = csPlain;
+                            switch (p.kind)
+                            {
+                                case lang::Tok::comment:   ps = csComment; break;
+                                case lang::Tok::number:    ps = csNumber; break;
+                                case lang::Tok::op:        ps = csOperator; break;
+                                case lang::Tok::punct:     ps = csPunct; break;
+                                case lang::Tok::keyword:   ps = csKeyword; break;
+                                case lang::Tok::identifier:
+                                case lang::Tok::type:      ps = p.text == "defined" ? csKeyword : csConstant; break;
+                                case lang::Tok::directive:
+                                case lang::Tok::unknown:   ps = csPlain; break;
+                            }
+                            span(a, a + p.len, ps);
+                        }
+                        continue;
+                    }
+                    // `#include "file"`, `#pragma panel ... "TEXT" ...`, a trailing comment.
                     std::size_t k = 1;
                     while (k < d.size() && (d[k] == ' ' || d[k] == '\t'))
                         ++k;
@@ -419,14 +508,15 @@ namespace playground::ui
             if (attr && t.text == "]" && prev != nullptr && prev->text == "]")
                 attr = false;
         }
-        return inComment ? 1u : 0u;
+        return state();
     }
 
     funkgui::Col codeGround(const funkgui::Theme& th) { return editorGround(th); }
 
     uint32_t CircuitHighlighter::line(std::string_view l, uint32_t, std::vector<funkgui::text::Span>& out) const
     {
-        std::vector<lang::Token> toks;
+        std::vector<lang::Token>& toks = toks_;          // kept with its capacity, as CodeHighlighter's
+        toks.clear();
         lang::lexCirLine(l, 0, toks);
         for (std::size_t i = 0; i < toks.size(); ++i)
         {
@@ -445,10 +535,13 @@ namespace playground::ui
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {
-                    std::string w(t.text);
-                    for (char& c : w)
-                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                    if (w == "opamp" || w == "ota")
+                    const auto is = [&](std::string_view word) {   // SPICE's case-blind compare, with no copy
+                        return t.text.size() == word.size()
+                               && std::equal(word.begin(), word.end(), t.text.begin(), [](char a, char b) {
+                                      return a == static_cast<char>(std::tolower(static_cast<unsigned char>(b)));
+                                  });
+                    };
+                    if (is("opamp") || is("ota"))
                         st = csType;
                     else if (next != nullptr && next->text == "(")
                         st = csFunction;              // a model's card, D(IS=...), or a solver's steps, omega(2)
@@ -481,6 +574,7 @@ namespace playground::ui
         p[csAttribute] = ink(Ink::ink52);
         p[csPunct] = ink(Ink::ink70);
         p[csConstant] = dark ? custom({ 0x4F, 0xC1, 0xFF, 255 }) : custom({ 0x00, 0x70, 0xC1, 255 });
+        p[csInactive] = ink(Ink::ink32);                 // the theme's faintest ink, as the line numbers'
         return p;
     }
 
@@ -524,7 +618,7 @@ namespace playground::ui
         if (kind == FileKind::Circuit)
             e.setHighlighter(std::make_unique<CircuitHighlighter>());
         else
-            e.setHighlighter(std::make_unique<CodeHighlighter>(types_));
+            e.setHighlighter(std::make_unique<CodeHighlighter>(types_, conditionals_, fileName));
         if (!palette_.empty())
             e.setPalette(palette_);
         else
@@ -598,14 +692,56 @@ namespace playground::ui
         for (int i = 0; i < tabs_.count(); ++i)
             files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
         service_.setFiles(files);
-        types_->names = service_.typeNames();
-        types_->constants = service_.constantNames();
+        std::vector<std::string> names = service_.typeNames();
+        std::vector<std::string> constants = service_.constantNames();
+        if (names == types_->names && constants == types_->constants)
+            return;
+        types_->names = std::move(names);
+        types_->constants = std::move(constants);
+        // The editors keep each line's spans (FunkGui's TextEditor, v0.25.0) and highlight again only the lines an edit
+        // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too).
+        for (int i = 0; i < tabs_.count(); ++i)
+        {
+            funkgui::TextEditor& e = tabs_.editor(i);
+            if (dynamic_cast<const CodeHighlighter*>(e.highlighter()) != nullptr)
+                e.rehighlight();
+        }
+        ++highlights_;                                   // the Panel draws again (its revision did not move)
     }
 
     lang::Service& CodeAssist::service()
     {
         sync();
         return service_;
+    }
+
+    void CodeAssist::updateConditionals()
+    {
+        Sources files;
+        for (int i = 0; i < tabs_.count(); ++i)
+            if (fmFile(i))
+                files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
+        auto next = std::make_shared<Conditionals>(Conditionals::of(files));
+        if (next->files == conditionals_->files)
+            return;
+        // The tabs whose directives read otherwise: a highlighter of the new snapshot (every line's state again; the
+        // editor highlights every line with it), and the Panel draws again (another tab's edit may dim this one).
+        for (int i = 0; i < tabs_.count(); ++i)
+        {
+            if (!fmFile(i))
+                continue;
+            const auto was = conditionals_->files.find(tabs_.name(i));
+            const auto now = next->files.find(tabs_.name(i));
+            const bool same = (was == conditionals_->files.end()) == (now == next->files.end())
+                           && (was == conditionals_->files.end() || was->second == now->second);
+            if (!same)
+            {
+                tabs_.editor(i).setHighlighter(std::make_unique<CodeHighlighter>(types_, next, tabs_.name(i)));
+                ++highlights_;
+            }
+        }
+        // The other tabs keep their highlighters, and the snapshot each holds, whose flags for them are these.
+        conditionals_ = std::move(next);
     }
 
     // ---- keys -------------------------------------------------------------------------------------------------------
@@ -1049,7 +1185,8 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.position.contains(p) || (s.problems.contains(p) && !viewShown())
+            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p)
+                           || (s.problems.contains(p) && !viewShown())
                        ? funkgui::Cursor::pointingHand
                        : funkgui::Cursor::normal;
         }
@@ -1096,6 +1233,11 @@ namespace playground::ui
             const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
                 setFormatOnRun(!formatOnRun());
+            else if (s.panel.contains(p))
+            {
+                if (!e.popup)
+                    togglePanelSwitch();                 // the Panel lays out again (the editor's room changes)
+            }
             else if (s.position.contains(p) && !words)
                 openGoTo();
             else if (s.problems.contains(p) && words && statusProblems_)
@@ -1196,15 +1338,22 @@ namespace playground::ui
     {
         focused_ = focused;
         funkgui::TextEditor& E = ed();
-        // The check: the files changed, and have rested.
-        if (const uint64_t r = filesRevision(); r != editedRevision_)
+        // The check: the files changed, and have rested. The groups a conditional skips, at once (a RUN cancels the
+        // check, never this).
+        const uint64_t revision = filesRevision();
+        if (revision != editedRevision_)
         {
-            editedRevision_ = r;
+            editedRevision_ = revision;
             sinceEdit_ = 0.0f;
             checkDue_ = true;
         }
         else
             sinceEdit_ += dt;
+        if (revision != conditionalsRevision_)
+        {
+            conditionalsRevision_ = revision;
+            updateConditionals();
+        }
         // Find's matches follow the text.
         if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_))
             updateMatches();
@@ -1280,6 +1429,30 @@ namespace playground::ui
         }
     }
 
+    uint64_t CodeAssist::drawKey() const
+    {
+        DrawKey k;
+        k.mix(highlights_).mix(checking_).mix(focused_).mix(area_).mix(activeTab()).mix(errorCount()).mix(warningCount());
+        k.mix(hover_.has_value()).mix(hoverPoint_).mix(hoverProblems_.size());
+        if (hover_)
+            k.mix(hover_->range.from.line).mix(hover_->range.from.col).mix(hover_->range.to.line).mix(hover_->range.to.col);
+        k.mix(completion_.has_value()).mix(choice_).mix(scrollRow_);
+        if (completion_)
+            k.mix(completion_->items.size());
+        k.mix(signature_.has_value()).mix(signatureAt_.line).mix(signatureAt_.col);
+        if (signature_)
+            k.mix(signature_->active).mix(signature_->label);
+        k.mix(findOpen_).mix(replaceOpen_).mix(findFocus_).mix(findField_).mix(matchCase_).mix(wholeWord_);
+        k.mix(findEdit_.buffer).mix(findEdit_.caret).mix(findEdit_.allSelected);
+        k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
+        k.mix(matches_.size()).mix(current_);
+        k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
+        // Format on Run is a machine-wide switch (another window may flip it), the Panel switch the session's.
+        k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());
+        k.mix(hasPanelSwitch()).mix(panelSwitchOn());
+        return k.h;
+    }
+
     bool CodeAssist::settled() const
     {
         if (checkDue_)
@@ -1302,6 +1475,8 @@ namespace playground::ui
         Sources now = filesOf(tabs_);
         const bool drawingOnly = !(now == asked_) && cir::sameProgram(now, asked_);
         asked_ = std::move(now);
+        if (!drawingOnly)
+            sync();                                      // the index, and the types' colours, follow the rested files
         return !drawingOnly;
     }
 
@@ -1419,6 +1594,15 @@ namespace playground::ui
                             {
                                 col = a;
                                 end = b;
+                            }
+                            else
+                            {
+                                // A conditional's word (a macro's name, a number FMinus refuses there): the word.
+                                int b2 = col;
+                                while (b2 < static_cast<int>(text.size())
+                                       && (lang::isIdentChar(text[static_cast<std::size_t>(b2)]) || text[static_cast<std::size_t>(b2)] == '.'))
+                                    ++b2;
+                                end = std::max(end, b2);
                             }
                         }
                 }
@@ -1567,7 +1751,8 @@ namespace playground::ui
         sync();
         funkgui::TextEditor& E = ed();
         const std::string old = E.text();
-        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
+        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames(),
+                                               &service_.fileConditionals(tab).skipped);
         if (!r.ok)
         {
             tabs_.notice("FORMAT: " + upper(r.why));
@@ -1596,7 +1781,8 @@ namespace playground::ui
                 continue;
             funkgui::TextEditor& E = tabs_.editor(i);
             const std::string old = E.text();
-            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
+            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames(),
+                                                   &service_.fileConditionals(i).skipped);
             if (!r.ok || !r.changed)
                 continue;
             const lang::Pos c = lang::mapFormatted(old, r.text, pos(E.caret()));
@@ -2189,6 +2375,8 @@ namespace playground::ui
             x -= w;
             return Rect{ x, r.y, w, r.h };
         };
+        if (hasPanelSwitch())
+            s.panel = panelSwitchLabelled() ? take(kPanelWord, kPanelIconRoom) : take("", kPanelGlyphW - 2.0f);
         s.formatOnRun = take("Format on Run", 14.0f);
         s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
@@ -2199,6 +2387,22 @@ namespace playground::ui
         s.problems = { r.x + 4.0f, r.y, std::max(0.0f, std::min(200.0f, s.position.x - r.x - 8.0f)), r.h };
         return s;
     }
+
+    bool CodeAssist::panelSwitchLabelled() const
+    {
+        // Its word while the line's other parts at their widest (a long place with a selection's count, the IR's name)
+        // leave the problems' count and Checking... their room: the word stays put as the caret moves, and goes only
+        // near the program's card's least width.
+        const funkgui::TextStyle& st = chat::kSmall;
+        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom          // the switch, its word
+                          + widthOf("Format on Run", st) + 16.0f + 14.0f              // Format on Run
+                          + widthOf("LLVM IR", st) + 16.0f                            // the language
+                          + widthOf("Spaces: 4", st) + 16.0f                          // the indent
+                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+        return statusRect().w - 16.0f - parts >= kProblemsRoom;
+    }
+
+    funkgui::Rect CodeAssist::panelSwitchRect() const { return hasPanelSwitch() ? statusParts().panel : Rect{}; }
 
     // ---- drawing ----------------------------------------------------------------------------------------------------
     void CodeAssist::drawGround(funkgui::Canvas& c, const funkgui::Theme& th) const
@@ -2279,6 +2483,23 @@ namespace playground::ui
             if (on)
                 chat::drawIcon(c, chat::Icon::check, box.centreX(), box.centreY(), 9.0f, p.onAccent);
             c.text("Format on Run", parts.formatOnRun.right() - 8.0f, top, st, on ? p.text : p.faint, funkgui::Align::right);
+            // The Panel switch: a window with its panel at the bottom, filled while the panel shows; its word beside it.
+            if (hasPanelSwitch())
+            {
+                const bool shown = panelSwitchOn();
+                const bool labelled = panelSwitchLabelled();
+                const Rect& b = parts.panel;
+                const float gx = std::round(labelled ? b.x + 6.0f : b.centreX() - 0.5f * kPanelGlyphW);
+                const float gy = std::round(mid - 0.5f * kPanelGlyphH);
+                const Col ink = shown ? p.accent : p.dim;
+                c.rrect(gx, gy, kPanelGlyphW, kPanelGlyphH, 2.0f, ink.withAlpha(0.0f), 1.2f, ink);
+                if (shown)
+                    c.rrect(gx + 1.5f, gy + kPanelGlyphH - 4.5f, kPanelGlyphW - 3.0f, 3.0f, 0.5f, ink);
+                else
+                    c.hairlineH(gx + 1.5f, gy + kPanelGlyphH - 4.0f, kPanelGlyphW - 3.0f, ink);
+                if (labelled)
+                    c.text(kPanelWord, b.right() - 8.0f, top, st, shown ? p.text : p.faint, funkgui::Align::right);
+            }
         }
         // The find bar.
         if (findOpen_)
@@ -2599,6 +2820,14 @@ namespace playground::ui
             if (s.formatOnRun.contains(pointer))
                 std::snprintf(out, n, "FORMAT ON RUN   %s   A CLICK TURNS IT %s   SHIFT-ALT-F FORMATS THE FILE NOW",
                               formatOnRun() ? "ON: RUN FORMATS EVERY FMINUS FILE FIRST" : "OFF", formatOnRun() ? "OFF" : "ON");
+            else if (s.panel.contains(pointer))
+            {
+                const bool gui = !viewShown() && isInterfaceFile(tabs_.name(activeTab()));
+                std::snprintf(out, n, "PANEL   %s   A CLICK (OR CMD-J) %s   %s",
+                              panelSwitchOn() ? "SHOWN UNDER THE EDITOR" : "HIDDEN", panelSwitchOn() ? "HIDES IT" : "SHOWS IT",
+                              gui ? "THE INTERFACE'S FILES KEEP THEIR OWN CHOICE"
+                                  : ".GUI AND .SC FILES KEEP THEIR OWN CHOICE");
+            }
             else if (s.position.contains(pointer))
                 std::snprintf(out, n, "LINE AND COLUMN   A CLICK (OR CTRL-G) GOES TO A LINE");
             else if (viewShown())

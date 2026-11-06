@@ -284,11 +284,19 @@ namespace playground::ui::looks
         c.text(text, box.centreX(), c.capCentreTop(box.centreY(), st), st, digits, funkgui::Align::centre);
     }
 
+    namespace
+    {
+        // A scope's screen in its cell: 52 px high in an 80 px cell.
+        Rect scopeScreen(const Rect& r) { return { r.x + 1.0f, r.y + 15.0f, r.w - 2.0f, std::max(24.0f, r.h - 28.0f) }; }
+    }
+
+    float scopeScale(const Rect& cell) { return 0.5f * scopeScreen(cell).h - 3.0f; }
+
     void scope(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const float* ys, int n)
     {
         const Rect& r = d.cell;
         label(c, th, r, d.label, false);
-        const Rect screen{ r.x + 1.0f, r.y + 15.0f, r.w - 2.0f, std::max(24.0f, r.h - 28.0f) };   // 52 in an 80 cell
+        const Rect screen = scopeScreen(r);
         const Col bg{ 0x0B, 0x13, 0x0F };
         const Col trace = d.tinted ? d.color : Col{ 0x6E, 0xEB, 0x83 };
         c.rrect(screen.x, screen.y, screen.w, screen.h, 3.0f, bg, 1.0f, th.ink32);
@@ -303,7 +311,7 @@ namespace playground::ui::looks
         constexpr int kMaxPoints = 256;
         float xs[kMaxPoints], yy[kMaxPoints];
         const int m = std::min(n, kMaxPoints);
-        const float half = 0.5f * screen.h - 3.0f;
+        const float half = scopeScale(r);
         for (int i = 0; i < m; ++i)
         {
             const float v = std::clamp(ys[static_cast<std::size_t>(i * (n - 1) / std::max(m - 1, 1))], -1.0f, 1.0f);

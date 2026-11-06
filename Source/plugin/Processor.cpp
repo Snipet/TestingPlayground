@@ -14,6 +14,7 @@
 #include <funkgui/gpu/ShaderLibrary.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -43,17 +44,25 @@ namespace playground
                                kLines{ "lines" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
+        // its CODE view's panel under the code and under the interface's files: "hidden"
+        const juce::Identifier kCodePanel{ "codePanel" }, kGuiPanel{ "guiPanel" };
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
         const juce::Identifier kExplorer{ "explorer" };                                  // its explorer: "closed"
+        const juce::Identifier kExplorerW{ "explorerW" }, kChatW{ "chatW" };             // the widths its user set
+        // its code window: "out" while the editor is in it; its size (logical px) and its place (screen points)
+        const juce::Identifier kCodeWindow{ "codeWindow" }, kCodeW{ "codeW" }, kCodeH{ "codeH" }, kCodeX{ "codeX" },
+                               kCodeY{ "codeY" };
         const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         // its netlists' views: <FILE name view="schematic" zoom x y><PROBE node/></FILE> (EditorPort::fileViews)
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
+        // The folder while it is on (FolderSync.h): <FOLDER name=".." run="1"/> (a state from before it has none)
+        const juce::Identifier kFolderTag{ "FOLDER" }, kRunOnSave{ "run" };
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
         // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
         // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
-        // prelude, varyings and bgfx_shader.sh; the renderer's target.
+        // prelude, varyings and bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
         ShaderTools shaderTools()
         {
             ShaderTools t;
@@ -85,6 +94,12 @@ namespace playground
             t.platform = "linux";
             t.profile = "spirv";
 #endif
+            // The renderer's own check of a built shader (on macOS Metal's compiler), on the compiler's thread: the
+            // message thread's shaders::set() then finds the code checked and compiles nothing (FunkGui v0.25.0).
+            t.check = [](const std::vector<uint8_t>& binary, std::string& why) {
+                return funkgui::shaders::check(binary.data(), static_cast<uint32_t>(binary.size()), why);
+            };
+            t.cacheDir = shaderCacheFolder();          // the builds kept between sessions (the user's caches)
             return t;
         }
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
@@ -363,6 +378,8 @@ namespace playground
         capture_.prepare(engine_.rate(), maxBlock_);             // a recording under way ends here
         wet_.prepare(engine_.rate());                            // fsdsp::kFadeMs, 20 ms
         wetSet_ = false;
+        trimFade_.prepare(engine_.rate());
+        trimSet_ = false;
         weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
         if constexpr (!product::kIsInstrument)
             dry_.assign(static_cast<std::size_t>(kMaxChannels) * static_cast<std::size_t>(maxBlock_), 0.0f);
@@ -408,8 +425,10 @@ namespace playground
                 keepDry(channels.data(), numCh, len);
             largestCall_ = std::max(largestCall_, len);
             capture_.input(channels.data(), numCh, len);
+            trimGate();                                          // the A/B's: a lower program waits for the trim
             engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
             capture_.output(channels.data(), numCh, len);
+            trimOutput(channels.data(), numCh, len);             // the A/B's matched loudness (ProcessorAb.cpp)
             if (!engineOnly)
                 bypassMix(channels.data(), numCh, len);
             numEvents = 0;
@@ -464,6 +483,170 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(pagesMutex_);
         guiPages_ = titles;
+    }
+
+    CodeWindow Processor::codeWindow() const
+    {
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        return codeWindow_;
+    }
+
+    void Processor::setCodeWindow(const CodeWindow& window)
+    {
+        // A size within the editor's sides (else none: the default), a place within a screen's reach.
+        CodeWindow w = window;
+        if (w.width <= 0 || w.height <= 0 || w.width > kMaxEditorSide || w.height > kMaxEditorSide)
+            w.width = w.height = 0;
+        if (!w.placed || std::abs(w.x) > 4 * kMaxEditorSide || std::abs(w.y) > 4 * kMaxEditorSide)
+        {
+            w.placed = false;
+            w.x = w.y = 0;
+        }
+        const std::lock_guard<std::mutex> lock(pagesMutex_);
+        codeWindow_ = w;
+    }
+
+    // ---- the folder (FolderSync.h; message thread) ------------------------------------------------------------------
+    double Processor::seconds() { return juce::Time::getMillisecondCounterHiRes() / 1000.0; }
+
+    // Under the projects' folder (a probe's sandbox under CTest), where a sandboxed host lets the plugin write.
+    std::filesystem::path Processor::folderRoot() const
+    {
+        const juce::File root = projectstore::directory().getChildFile("Folders");
+#if defined(_WIN32)
+        return std::filesystem::path(root.getFullPathName().toWideCharPointer());
+#else
+        return std::filesystem::path(root.getFullPathName().toStdString());
+#endif
+    }
+
+    void Processor::keepFolder()
+    {
+        folderKeptAt_ = folder_.revision();
+        FolderKept k;
+        k.on = folder_.on();
+        k.name = folder_.name();
+        k.run = folder_.runOnSave();
+        const std::lock_guard<std::mutex> lock(folderMutex_);
+        folderKept_ = std::move(k);
+    }
+
+    FolderState Processor::folder() const
+    {
+        std::string shown;
+        if (folder_.on())
+        {
+            const std::u8string u = folder_.folder().u8string();
+            const juce::String path = juce::String::fromUTF8(reinterpret_cast<const char*>(u.data()), static_cast<int>(u.size()));
+            const juce::String home = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName();
+            shown = (path.startsWith(home + juce::File::getSeparatorString()) ? "~" + path.substring(home.length()) : path)
+                        .toStdString();
+        }
+        return folder_.state(shown);
+    }
+
+    bool Processor::setFolderSync(bool on, std::string& why)
+    {
+        if (!on)
+        {
+            folder_.stop();
+            keepFolder();
+            return true;
+        }
+        if (folder_.on())
+            return true;
+        // The project open's name, else the instance's ("Synth 2"), else the plugin's.
+        std::string name;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+        }
+        if (name.empty())
+            name = desktopName();
+        if (name.empty())
+            name = product::kName;
+        const bool ok = folder_.start(folderRoot(), name, seconds(), why);
+        keepFolder();
+        return ok;
+    }
+
+    void Processor::setFolderRunOnSave(bool on)
+    {
+        folder_.setRunOnSave(on);
+        keepFolder();
+    }
+
+    bool Processor::resolveFolderConflict(const std::string& file, bool keepPlugin, std::string& why)
+    {
+        return folder_.resolve(file, keepPlugin, seconds(), why);
+    }
+
+    bool Processor::openFolder(FolderApp app, std::string& why)
+    {
+        if (!folder_.on())
+        {
+            why = "the folder is off";
+            return false;
+        }
+        const std::u8string u = folder_.folder().u8string();
+        const std::string path(u.begin(), u.end());
+        if (folderLauncher_)
+            return folderLauncher_(app, path, why);
+        // Never from a probe (CTest's sandbox): it launches nothing on the machine that runs it.
+        if (const char* sandbox = std::getenv((std::string(product::kEnvPrefix) + "PREFS_DIR").c_str());
+            sandbox != nullptr && *sandbox != '\0')
+        {
+            why = "nothing opens under a probe";
+            return false;
+        }
+        if (app == FolderApp::files)
+        {
+            if (juce::File(juce::String::fromUTF8(path.c_str())).startAsProcess())
+                return true;
+            why = "the folder did not open";
+            return false;
+        }
+        // VS Code by its URL scheme, vscode://file/<path>/ (a folder), which the system hands to VS Code when it is
+        // installed: no process of ours, so it works in a sandboxed host too.
+        std::string url = "vscode://file";
+        if (!path.empty() && path.front() != '/' && path.front() != '\\')
+            url += '/';                                  // Windows' "C:\..."
+        static constexpr char kHex[] = "0123456789ABCDEF";
+        for (const char c : path)
+        {
+            const auto b = static_cast<unsigned char>(c);
+            if (std::isalnum(b) || c == '-' || c == '.' || c == '_' || c == '~' || c == '/' || c == ':')
+                url += c;
+            else if (c == '\\')
+                url += '/';
+            else
+            {
+                url += '%';
+                url += kHex[b >> 4];
+                url += kHex[b & 15];
+            }
+        }
+        url += '/';
+        if (juce::Process::openDocument(juce::String::fromUTF8(url.c_str()), {}))
+            return true;
+        why = "VS Code did not open (is it installed?)";
+        return false;
+    }
+
+    // A save in the folder, into the draft (FolderSync's hook): only while the draft is what the pass read, so a write
+    // of Claude's or the editor's typing that came since is never overwritten; the editor merges it as one undo step.
+    bool Processor::folderDraftIf(const Draft& now, const Draft& next)
+    {
+        Draft before;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (draft_ != now)
+                return false;
+            before = std::exchange(draft_, next);
+            ++draftRevision_;                                    // the editor merges it into its tabs
+        }
+        journalDraft(before, next, Journal::Who::user);
+        return true;
     }
 
     std::vector<FileView> Processor::fileViews() const
@@ -719,6 +902,26 @@ namespace playground
     {
         Controls controls;
         std::array<std::vector<std::string>, kMaxControls> options;
+        if (!s.ok && !s.restored.empty())
+        {
+            // A program that stopped as it played, and the one before it played again (Compiler.h, "A program that
+            // stops"): its files, dials and panel, and the stopped one's files what played before them.
+            capture_.noteProgram(s.program, s.restored, s.controls, s.circuits);
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                if (s.program == program_)
+                    return;
+                controls_ = s.controls;
+                panel_ = s.panel;
+                program_ = s.program;
+                previous_ = running_;
+                running_ = s.restored;
+            }
+            if (run)
+                writeCarry(s, s.controls, s.panel.options, given);
+            updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
+            return;
+        }
         if (!s.ok)
         {
             // The program that played plays on, unless a refine (Compiler.h, "The self-test") compiled it again since
@@ -898,6 +1101,7 @@ namespace playground
         }
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
+        abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
         {
             const CompileStatus s = compiler_.status();
@@ -909,20 +1113,37 @@ namespace playground
             if (s.ok && dialsRequest_ != 0 && s.request == dialsRequest_)
                 given = givenByName(s.controls, s.panel.options, projectDials_);
             else if (s.ok && defaultsRequest_ != 0 && s.request == defaultsRequest_)
+            {
                 for (int c = 0; c < kMaxControls; ++c)
                     if (const Control& k = s.controls[static_cast<std::size_t>(c)]; k.used)
                     {
                         given.plain[static_cast<std::size_t>(c)] = k.def;
                         given.slots |= 1u << c;
                     }
+            }
+            else if (s.ok && abDialsRequest_ != 0 && s.request == abDialsRequest_)
+                given = givenByName(s.controls, s.panel.options, abDials_);   // an A/B side's own (ProcessorAb.cpp)
             apply(s, true, false, given);
+            abLanded(s);
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
+                if (s.stopped)
+                    stopJournaled_ = s.stoppedProgram;           // said with the run (runWords)
                 if (s.ok)
                     journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
                 else
                     journal_.note(Journal::Who::user, runWords(s));
+            }
+            else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_
+                     && s.stoppedProgram != chatStopJournaled_.load())
+            {
+                // A program that stopped as it played, after its run was journalled (Compiler.h, "A program that stops").
+                stopJournaled_ = s.stoppedProgram;
+                const std::string first = s.errors.substr(0, s.errors.find('\n'));
+                const std::size_t at = first.find(": error: ");
+                journal_.note(Journal::Who::plugin, "the program stopped (" + (at == std::string::npos ? first : first.substr(at + 9))
+                                                        + (s.restored.empty() ? "); nothing plays" : "); the program before plays again"));
             }
             if (dialsRequest_ != 0 && s.request >= dialsRequest_)
             {
@@ -935,7 +1156,14 @@ namespace playground
                     setDialsToDefaults(s.controls);              // the unused slots' too
                 defaultsRequest_ = 0;
             }
+            if (abDialsRequest_ != 0 && s.request >= abDialsRequest_)
+            {
+                abDials_.clear();
+                abDialsRequest_ = 0;
+            }
         }
+        abMatched();                                             // the A/B's loudness, once measured
+        abFollowDials();                                         // and again once its dials moved and came to rest
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
         std::vector<std::pair<int, float>> dials;
         {
@@ -964,6 +1192,22 @@ namespace playground
         else if (alerts_.load() != 0 && now - alertsAt_ > kAlertMs)
             alerts_.store(0);
         syncOwnDials();                                          // what poll() itself set: a run's, a version's, Claude's
+        // The folder: a loaded state's first, then a pass (FolderSync.h).
+        std::optional<FolderKept> wanted;
+        {
+            const std::lock_guard<std::mutex> lock(folderMutex_);
+            wanted.swap(folderWanted_);
+        }
+        if (wanted && wanted->on)
+        {
+            folder_.setRunOnSave(wanted->run);
+            std::string why;
+            if (!folder_.on() || folder_.name() != wanted->name)
+                (void)folder_.start(folderRoot(), wanted->name, seconds(), why);
+        }
+        folder_.pass(seconds());
+        if (folder_.revision() != folderKeptAt_)
+            keepFolder();
     }
 
     void Processor::setEditorSize(int w, int h) noexcept
@@ -999,11 +1243,22 @@ namespace playground
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
             }
-            program.appendChild(filesTree(kRunTag, running_), nullptr);
+            // While an A/B is on (or its Close or Keep compiles), what played before it began (or the files on their
+            // way), and those dials while each side has its own: a side never kept is not what the session plays.
+            const Sources& run = abKept_.on ? abKept_.run : running_;
+            program.appendChild(filesTree(kRunTag, run), nullptr);
             program.appendChild(filesTree(kDraftTag, draft_.files), nullptr);
-            keys = circuits::keysOf(running_);
+            keys = circuits::keysOf(run);
             for (std::string& k : circuits::keysOf(draft_.files))
                 keys.push_back(std::move(k));
+            if (abKept_.on && abKept_.dials)
+                for (int c = 0; c < kMaxControls; ++c)
+                {
+                    juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(idOf(c)));
+                    const float norm = abKept_.norms[static_cast<std::size_t>(c)];
+                    if (p.isValid() && std::isfinite(norm))
+                        p.setProperty(kParamValue, static_cast<double>(std::clamp(norm, 0.0f, 1.0f)), nullptr);
+                }
         }
         // The self-test's answers for the netlists of the program that plays and of the draft (Answers::of: each once).
         if (const std::vector<std::pair<std::string, std::string>> answers = circuits::answers().of(keys); !answers.empty())
@@ -1046,8 +1301,10 @@ namespace playground
         }
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
-        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
-            || !pages.empty() || !views.empty())
+        const CodeWindow code = codeWindow();
+        if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || codePanelHidden_.load()
+            || guiPanelHidden_.load() || !chatOpen_.load() || !explorerOpen_.load() || explorerW_.load() > 0
+            || chatW_.load() > 0 || !pages.empty() || !views.empty() || !(code == CodeWindow{}))
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -1057,10 +1314,30 @@ namespace playground
             }
             if (panelView_.load())
                 editor.setProperty(kView, "panel", nullptr);
+            if (codePanelHidden_.load())
+                editor.setProperty(kCodePanel, "hidden", nullptr);
+            if (guiPanelHidden_.load())
+                editor.setProperty(kGuiPanel, "hidden", nullptr);
             if (!chatOpen_.load())
                 editor.setProperty(kChat, "closed", nullptr);
             if (!explorerOpen_.load())
                 editor.setProperty(kExplorer, "closed", nullptr);
+            if (explorerW_.load() > 0)
+                editor.setProperty(kExplorerW, explorerW_.load(), nullptr);
+            if (chatW_.load() > 0)
+                editor.setProperty(kChatW, chatW_.load(), nullptr);
+            if (code.out)
+                editor.setProperty(kCodeWindow, "out", nullptr);
+            if (code.width > 0 && code.height > 0)
+            {
+                editor.setProperty(kCodeW, code.width, nullptr);
+                editor.setProperty(kCodeH, code.height, nullptr);
+            }
+            if (code.placed)
+            {
+                editor.setProperty(kCodeX, code.x, nullptr);
+                editor.setProperty(kCodeY, code.y, nullptr);
+            }
             for (const std::string& title : pages)
             {
                 juce::ValueTree page{ kPageTag };
@@ -1084,6 +1361,17 @@ namespace playground
                 editor.appendChild(file, nullptr);
             }
             state.appendChild(editor, nullptr);
+        }
+        {
+            const std::lock_guard<std::mutex> lock(folderMutex_);
+            if (folderKept_.on)
+            {
+                juce::ValueTree folder{ kFolderTag };
+                folder.setProperty(kName, juce::String::fromUTF8(folderKept_.name.c_str()), nullptr);
+                if (folderKept_.run)
+                    folder.setProperty(kRunOnSave, 1, nullptr);
+                state.appendChild(folder, nullptr);
+            }
         }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
@@ -1142,10 +1430,45 @@ namespace playground
             if (mcp.isValid())
                 state.removeChild(mcp, nullptr);
         }
+        // The folder, for poll() to start on the message thread (a state without one leaves it as it is: a preset or a
+        // session from before folders knows nothing of it, and the folder follows the files it brings).
+        if (const juce::ValueTree folder = state.getChildWithName(kFolderTag); folder.isValid())
+        {
+            FolderKept k;
+            k.on = true;
+            k.name = FolderSync::tidyFolderName(folder.getProperty(kName).toString().substring(0, 200).toStdString());
+            k.run = static_cast<int>(folder.getProperty(kRunOnSave, 0)) != 0;
+            if (!k.name.empty())
+            {
+                const std::lock_guard<std::mutex> lock(folderMutex_);
+                folderWanted_ = k;
+            }
+            state.removeChild(folder, nullptr);
+        }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
+        // The CODE view's panel (a state from before the choice has it shown under every file).
+        codePanelHidden_.store(editor.isValid() && editor.getProperty(kCodePanel).toString() == "hidden");
+        guiPanelHidden_.store(editor.isValid() && editor.getProperty(kGuiPanel).toString() == "hidden");
         chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
         explorerOpen_.store(!(editor.isValid() && editor.getProperty(kExplorer).toString() == "closed"));
+        // The widths its user set (a state from before them has none: the editor's default).
+        explorerW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kExplorerW, 0)), 0, kMaxEditorSide) : 0);
+        chatW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kChatW, 0)), 0, kMaxEditorSide) : 0);
+        // The code window (a state from before it has the editor in place, the window at its default size and place).
+        {
+            CodeWindow code;
+            if (editor.isValid())
+            {
+                code.out = editor.getProperty(kCodeWindow).toString() == "out";
+                code.width = static_cast<int>(editor.getProperty(kCodeW, 0));
+                code.height = static_cast<int>(editor.getProperty(kCodeH, 0));
+                code.placed = editor.hasProperty(kCodeX) && editor.hasProperty(kCodeY);
+                code.x = static_cast<int>(editor.getProperty(kCodeX, 0));
+                code.y = static_cast<int>(editor.getProperty(kCodeY, 0));
+            }
+            setCodeWindow(code);
+        }
         {
             std::vector<std::string> pages;
             for (int k = 0; editor.isValid() && k < editor.getNumChildren() && k < 64; ++k)
@@ -1195,7 +1518,12 @@ namespace playground
             baseDials_.clear();
             draft_ = std::move(draft);
             ++draftRevision_;
+            abKept_ = {};                                        // an A/B's: the session's program plays, as saved
         }
+        // An A/B (ProcessorAb.cpp) ends: its compile still waiting is taken back (it would play over the session's
+        // program), the session's program plays untrimmed from its first block, and poll() ends it once that is out.
+        abLoading_.store(true);
+        (void)compiler_.withdraw(abQueued_.load());
         // The self-test's answers it kept (each read back as this FMinus's answer for its key, or left out), stored
         // before it compiles: the program plays its refined configuration from the first block.
         const juce::ValueTree kept = program.getChildWithName(kCircuitsTag);
@@ -1210,6 +1538,7 @@ namespace playground
         adoptMeaning(s);                                         // the values are the session's program's now
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
+        abStateLoaded_.store(std::max<uint64_t>(1, s.request));
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -1432,8 +1761,8 @@ namespace playground
     std::vector<PresetEntry> Processor::presets(const std::string& project) const
     {
         std::vector<PresetEntry> out;
-        if (const std::optional<projectstore::Project> p = projectstore::load(project))
-            for (const projectstore::Preset& pr : p->presets)
+        if (const auto ps = projectstore::presetsOf(project))   // its file read only when it changed
+            for (const projectstore::PresetSummary& pr : *ps)
                 out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
         return out;
     }
@@ -1851,6 +2180,8 @@ namespace playground
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
         {
+            if (s.stopped)
+                chatStopJournaled_.store(s.stoppedProgram);     // said with the run: poll() says it no more
             if (s.ok)
                 journal_.dialsNote(Journal::Who::chat, runWords(s));
             else

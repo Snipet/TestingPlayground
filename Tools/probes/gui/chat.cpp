@@ -70,6 +70,8 @@
 //   RESIZE   a size below the least is raised to it; at the least size (with sixteen files, the most, their tabs narrowed) and at
 //            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
 //            processor keeps the editor's size in the session
+//   DRAW     an answer that lands with no input asks for a frame (Panel.h "Unchanged frames"), and the conversation
+//            settled, the panel asks for none
 #include "Probe.h"
 
 #include "../plugin/FakeClaude.h"
@@ -648,7 +650,29 @@ PROBE(gui, chat)
         clickInput(host, panel);
         type(host, "explain it");
         host.keys("return");
+        // The answer lands with no input (the agent's worker): the frame it shows in draws (Panel.h "Unchanged
+        // frames"); then the panel is quiet.
+        host.tick(1);
+        host.draw();
+        processor.chatAgent().waitIdle();
+        bool answered = false;
+        for (int k = 0; k < 60 && !answered; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            answered = has(panel.transcript(), "Done.");
+            if (!answered)
+                host.draw();
+        }
+        P.eq("draw.chat_answer", answered && panel.needsDraw() ? 1 : 0, 1);
         settleChat(processor, host);
+        host.draw();
+        int asked = 0;
+        for (int k = 0; k < 11; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            asked += panel.needsDraw() ? 1 : 0;
+        }
+        P.eq("draw.chat_quiet", asked, 0);
         const std::string t = panel.transcript();
         P.eq("markdown.answer", has(t, "### What it does") && has(t, "Done.") ? 1 : 0, 1);
         panel.chatView().scrollTo(panel.chatView().contentHeight());

@@ -86,6 +86,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Meters.h"
 #include "editor/CodeAssist.h"
+#include "editor/Items.h"
 #include "editor/SchematicDraw.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
@@ -221,7 +222,12 @@ namespace playground::ui
 
         // ---- as an Item (FilesItem's) -------------------------------------------------------------------------------
         void tick(float dt, funkgui::Point pointer, bool focused);
-        bool settled() const;
+        bool settled() const;                            // false too while a circuit knob moves with the host's
+                                                         // automation, and a quarter second after (Items.h Stirred)
+        // What it draws now that no input to it and no motion of its own (settled()) reports, mixed (Item::drawKey):
+        // the notice (its 4 s count down at the idle rate), the flashes, the field, the circuit dials' values (a host's
+        // automation turns them), the probes' slots, the view and the text's revision.
+        uint64_t drawKey() const;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focused) const;
         funkgui::Cursor cursorAt(funkgui::Point p) const;
         void pointerMove(funkgui::Point p);              // the pointer over the item (a key places under it)
@@ -469,6 +475,9 @@ namespace playground::ui
         std::string spoken_, spokenNet_;
         uint32_t probeFrame_ = 0;                        // the meters' frame last seen, and for how long (s)
         float probeStill_ = 0.0f;
+        uint64_t knobsKey_ = 0;                          // the circuit knobs' values last seen (tick), moving: Stirred
+        bool knobsSeen_ = false;
+        Stirred knobsStir_;
         uint32_t probeA11y_ = 0;
         int probeItems_ = 0;
 

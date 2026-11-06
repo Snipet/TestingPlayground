@@ -84,6 +84,7 @@ namespace playground::ui
         // Item
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas&, const funkgui::Theme&, bool focusRing) const override;
+        uint64_t drawKey() const override;               // what show() laid out, the scroll and the hover
         bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerExit() override { pointer_ = { -1.0e4f, -1.0e4f }; }
@@ -147,6 +148,7 @@ namespace playground::ui
             ChatEntry::Kind kind = ChatEntry::Kind::note;
             int entry = 0;                            // its first entry
             std::string key;                          // what its layout was made from
+            uint32_t laidOut = 0;                     // which layout of the view's it is (drawKey: it changed)
             float y = 0.0f, h = 0.0f;                 // in the content
             std::vector<Span> spans;
             std::vector<Shape> shapes;
@@ -221,5 +223,7 @@ namespace playground::ui
         funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         mutable float advBody_ = 0.0f, advSmall_ = 0.0f, advCode_ = 0.0f, advH1_ = 0.0f, advH2_ = 0.0f;
         bool hidden_ = false;
+        uint64_t content_ = 0;                        // what show() laid out, mixed (drawKey)
+        uint32_t layouts_ = 0;                        // blocks laid out so far (Block::laidOut)
     };
 }

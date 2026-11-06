@@ -63,6 +63,7 @@ namespace playground::ui
             pointer_ = p;
         }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override;
         bool contains(funkgui::Point p) const override;
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&) override;
@@ -116,12 +117,14 @@ namespace playground::ui
             std::function<void()> act;
             std::string a11yTitle;
             std::string spec;                         // the footer's line
+            std::function<std::string()> specNow;     // ... when it changes with the state (over `spec` when set)
         };
 
         ButtonItem(uint32_t id, Spec spec);
 
         void setBounds(funkgui::Rect r) { bounds_ = r; }
         funkgui::Rect bounds() const noexcept { return bounds_; }
+        void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         float preferredWidth() const;                 // a pill's, for its label now
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override
@@ -130,6 +133,7 @@ namespace playground::ui
             focused_ = focused;
         }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override;               // its spec's answers now: the label, look, icon, state
         bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point) const override
         {

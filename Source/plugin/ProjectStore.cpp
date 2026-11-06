@@ -6,12 +6,19 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <string_view>
 #include <unordered_map>
+
+#if !defined(_WIN32)
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 namespace playground::projectstore
 {
@@ -24,14 +31,26 @@ namespace playground::projectstore
         constexpr int kFormatVersion = 1;
         constexpr juce::int64 kMaxBytes = 64 * 1024 * 1024;   // a project larger than this is no project
 
-        // The listing's cache: a file read again only when its size or its time changes.
+        // A file's identity: its device and inode where a look gives them (POSIX), so that two spellings of one name
+        // (case aside, on a volume that ignores case) are known for one file; none on Windows (0, 0).
+        struct FileId
+        {
+            uint64_t device = 0, inode = 0;
+            bool known() const noexcept { return inode != 0; }
+            friend bool operator==(const FileId&, const FileId&) = default;
+        };
+
+        // The listing's cache, and its presets' (presetsOf): a file read again only when its size or its time changes.
         struct Cached
         {
             juce::int64 modified = 0, size = 0;
+            FileId id;
             Entry entry;
+            std::vector<PresetSummary> presets;
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
+        std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
 
         std::string kindName(bool instrument) { return instrument ? "instrument" : "effect"; }
 
@@ -265,6 +284,7 @@ namespace playground::projectstore
         // The project in `f`.
         std::optional<Project> parse(const juce::File& f, std::string* why)
         {
+            parsed.fetch_add(1, std::memory_order_relaxed);
             if (f.getSize() > kMaxBytes)
             {
                 fail(why, f.getFileName().toStdString() + " is too large to be a project");
@@ -272,6 +292,90 @@ namespace playground::projectstore
             }
             return parseRoot(juce::JSON::parse(f.loadFileAsString()), f.getFileNameWithoutExtension().toStdString(),
                              f.getFileName().toStdString(), why);
+        }
+
+        // A file's time (ms), size and identity from one look at it (a stat), or false when it is no file. On Windows,
+        // JUCE's two, and no identity.
+        bool look(const juce::File& f, juce::int64& modified, juce::int64& size, FileId& id)
+        {
+#if defined(_WIN32)
+            if (!f.existsAsFile())
+                return false;
+            modified = f.getLastModificationTime().toMilliseconds();
+            size = f.getSize();
+            id = {};
+            return true;
+#else
+            struct stat st{};
+            if (::stat(f.getFullPathName().toRawUTF8(), &st) != 0 || !S_ISREG(st.st_mode))
+                return false;
+#if defined(__APPLE__)
+            const timespec& t = st.st_mtimespec;
+#else
+            const timespec& t = st.st_mtim;
+#endif
+            modified = static_cast<juce::int64>(t.tv_sec) * 1000 + static_cast<juce::int64>(t.tv_nsec / 1000000);
+            size = static_cast<juce::int64>(st.st_size);
+            id = { static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino) };
+            return true;
+#endif
+        }
+
+        // The folder's project files (*.fmproject, the extension's case aside), each with its time and size. On the Mac
+        // read with readdir and one look a file: JUCE's listing asks macOS of every file whether it is hidden, and the
+        // time and the size were a look each, about 50 us a file in all on a busy Mac. On Windows JUCE's listing, whose
+        // entries hold the time and the size from the folder's own records (as look() reads them, the same
+        // conversion), so no look more.
+        struct Found
+        {
+            juce::File file;
+            juce::int64 modified = 0, size = 0;
+            FileId id;
+        };
+        std::vector<Found> projectFiles(const juce::File& dir)
+        {
+            std::vector<Found> out;
+#if defined(_WIN32)
+            for (const juce::DirectoryEntry& e :
+                 juce::RangedDirectoryIterator(dir, false, juce::String("*") + kExtension, juce::File::findFiles))
+                out.push_back({ e.getFile(), e.getModificationTime().toMilliseconds(), e.getFileSize(), {} });
+#else
+            DIR* d = ::opendir(dir.getFullPathName().toRawUTF8());
+            if (d == nullptr)
+                return out;
+            const std::string_view ext = kExtension;
+            while (const dirent* e = ::readdir(d))
+            {
+                const std::string_view name = e->d_name;
+                if (name.size() <= ext.size()
+                    || !sameName(name.substr(name.size() - ext.size()), ext))
+                    continue;
+                Found x{ dir.getChildFile(juce::String::fromUTF8(e->d_name)), 0, 0, {} };
+                if (look(x.file, x.modified, x.size, x.id))
+                    out.push_back(std::move(x));
+            }
+            ::closedir(d);
+#endif
+            return out;
+        }
+
+        // What the cache keeps of a project read whole: the listing's entry and its presets'.
+        Cached cachedOf(const Project& p, juce::int64 modified, juce::int64 size, FileId id)
+        {
+            Cached c;
+            c.modified = modified;
+            c.size = size;
+            c.id = id;
+            c.entry.name = p.name;
+            c.entry.savedMs = p.latest().savedMs;
+            c.entry.latest = p.latest().number;
+            c.entry.versions = static_cast<int>(p.versions.size());
+            for (const Preset& pr : p.presets)
+            {
+                c.entry.presets.push_back(pr.name);
+                c.presets.push_back({ pr.name, pr.savedMs, pr.from });
+            }
+            return c;
         }
 
         juce::var rootOf(const Project& p);
@@ -538,29 +642,27 @@ namespace playground::projectstore
         std::map<std::string, Cached> seen;
         {
             const std::lock_guard<std::mutex> lock(cacheMutex);
-            for (const juce::File& f : directory().findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension))
+            for (const Found& found : projectFiles(directory()))
             {
+                const juce::File& f = found.file;
                 const std::string name = f.getFileNameWithoutExtension().toStdString();
                 if (tidyName(name) != name || name.empty())
                     continue;
                 const std::string path = f.getFullPathName().toStdString();
-                const juce::int64 modified = f.getLastModificationTime().toMilliseconds(), size = f.getSize();
+                const juce::int64 modified = found.modified, size = found.size;
                 Cached c;
+                // By its path as listed: the entry's name is the file's, so another spelling's would not do here.
                 if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                {
                     c = it->second;
+                    c.id = found.id;
+                }
                 else
                 {
                     std::optional<Project> p = parse(f, nullptr);
                     if (!p)
                         continue;
-                    c.modified = modified;
-                    c.size = size;
-                    c.entry.name = p->name;
-                    c.entry.savedMs = p->latest().savedMs;
-                    c.entry.latest = p->latest().number;
-                    c.entry.versions = static_cast<int>(p->versions.size());
-                    for (const Preset& pr : p->presets)
-                        c.entry.presets.push_back(pr.name);
+                    c = cachedOf(*p, modified, size, found.id);
                 }
                 out.push_back(c.entry);
                 seen.emplace(path, std::move(c));
@@ -573,6 +675,54 @@ namespace playground::projectstore
         });
         return out;
     }
+
+    std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why)
+    {
+        // Its file by its name first (one look, where a scan of the folder looks at every project), else, as load()
+        // finds it, by the name in another case, once the presets from before projects are projects.
+        const std::string tidy = tidyName(name);
+        juce::File f = tidy.empty() ? juce::File() : directory().getChildFile(str(tidy) + kExtension);
+        if (f == juce::File() || !f.existsAsFile())
+        {
+            migrate();
+            f = fileOf(name);
+        }
+        if (f == juce::File())
+        {
+            fail(why, "there is no project named \"" + std::string(name) + "\"");
+            return std::nullopt;
+        }
+        const std::string path = f.getFullPathName().toStdString();
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (!look(f, modified, size, id))
+        {
+            fail(why, "there is no project named \"" + std::string(name) + "\"");
+            return std::nullopt;
+        }
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                return it->second.presets;
+            // The path built from the name asked spells it as asked, and list() keys the file by its name on disk: on a
+            // volume that ignores case (Shouty.FMPROJECT asked as Shouty), the same file under another spelling. Its
+            // identity says so where a look gives one, else its path, case aside (Windows). The presets are the
+            // file's, whatever its name.
+            for (const auto& [key, c] : cache)
+                if (c.modified == modified && c.size == size && (id.known() ? c.id == id : sameName(key, path)))
+                    return c.presets;
+        }
+        std::optional<Project> p = parse(f, why);
+        if (!p)
+            return std::nullopt;
+        Cached c = cachedOf(*p, modified, size, id);
+        std::vector<PresetSummary> out = c.presets;
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        cache[path] = std::move(c);
+        return out;
+    }
+
+    int parses() { return parsed.load(std::memory_order_relaxed); }
 
     bool exists(std::string_view name)
     {

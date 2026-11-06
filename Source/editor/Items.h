@@ -14,12 +14,23 @@
 #include <funkgui/params/GestureController.h>
 #include <funkgui/text/Highlighter.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
+
+namespace funkgui
+{
+    class TextEditor;
+}
 
 namespace playground::ui
 {
@@ -44,6 +55,12 @@ namespace playground::ui
         virtual bool a11yAction(uint32_t id, funkgui::A11yAction, double value, funkgui::GestureController&) = 0;
         virtual void specLine(char* out, std::size_t n) const = 0;
         virtual bool settled() const { return true; }
+        // What draw() reads that may change with no input to the Panel, no motion of the item's own (settled()) and no
+        // change the Panel makes and marks: a parameter's value (a host's automation, Claude, a preset), a field the
+        // program writes, a label or a state read through a callback. The Panel mixes every shown item's key each tick
+        // and draws again when the mix moves (Panel::needsDraw, FunkGui's unchanged frames). 0, the default, for an
+        // item whose picture changes only with those.
+        virtual uint64_t drawKey() const { return 0; }
         virtual funkgui::Point centre() const = 0;
         virtual bool shown() const { return true; }      // false: not drawn, no input, no Tab stop
         virtual bool focusable() const { return true; }  // false: no Tab stop (a readout)
@@ -51,6 +68,77 @@ namespace playground::ui
         // A text field holding the caret: every key is its own first (Tab too), Escape (when it does not use it)
         // leaves it.
         virtual bool takesAllKeys() const { return false; }
+    };
+
+    // A draw key's mix (Item::drawKey, Panel::needsDraw): FNV-1a over what is added, in order.
+    struct DrawKey
+    {
+        uint64_t h = 1469598103934665603ull;
+        DrawKey& word(uint64_t v) noexcept
+        {
+            h ^= v;
+            h *= 1099511628211ull;
+            return *this;
+        }
+        template <typename T>
+            requires std::is_integral_v<T>
+        DrawKey& mix(T v) noexcept
+        {
+            return word(static_cast<uint64_t>(v));
+        }
+        DrawKey& mix(float v) noexcept { return word(std::bit_cast<uint32_t>(v)); }
+        DrawKey& mix(std::string_view s) noexcept
+        {
+            for (const char c : s)
+                word(static_cast<unsigned char>(c));
+            return word(s.size());
+        }
+        DrawKey& mix(const char* s) noexcept { return mix(std::string_view(s != nullptr ? s : "")); }
+        DrawKey& mix(const std::string& s) noexcept { return mix(std::string_view(s)); }
+        DrawKey& mix(funkgui::Point p) noexcept { return mix(p.x).mix(p.y); }
+        DrawKey& mix(const funkgui::Rect& r) noexcept { return mix(r.x).mix(r.y).mix(r.w).mix(r.h); }
+        DrawKey& mix(const funkgui::TextEditor& e) noexcept;   // its text's revision, caret, selection, scroll, focus,
+                                                               // decorations and bounds (Items.cpp)
+    };
+
+    // Motion with no input to the item (Item::settled): what it shows that something else moves, a host's automation,
+    // Claude's or a preset's write, MIDI, a field the program writes (a live= mark, a shader's input). Each tick takes
+    // the values it shows (0..1, up to four) or whether it saw one move; it is moving() from the tick that saw a move
+    // until kFor seconds of none, so the Panel runs at full rate while it moves (FunkGui's FramePump runs a settled
+    // editor at about 12 Hz) and automation points a frame or two apart keep it there. A value's move is a change of
+    // more than kStep since the last one counted (smaller ones add up); the first values seen are none.
+    class Stirred
+    {
+    public:
+        static constexpr float kFor = 0.25f;             // seconds
+        static constexpr float kStep = 1.0e-4f;          // of a value's 0..1
+
+        void tick(float dt, bool moved) noexcept
+        {
+            quiet_ = moved ? 0.0f : std::min(quiet_ + std::max(dt, 0.0f), kFor);
+        }
+        void tick(float dt, std::initializer_list<float> values) noexcept
+        {
+            bool moved = false;
+            std::size_t k = 0;
+            for (const float v : values)
+            {
+                if (k == seen_.size())
+                    break;
+                moved = moved || std::fabs(v - seen_[k]) > kStep;
+                ++k;
+            }
+            if (moved || !primed_)
+                std::copy_n(values.begin(), k, seen_.begin());
+            tick(dt, moved && primed_);
+            primed_ = true;
+        }
+        bool moving() const noexcept { return quiet_ < kFor; }
+
+    private:
+        std::array<float, 4> seen_{};
+        bool primed_ = false;
+        float quiet_ = kFor;
     };
 
     inline constexpr funkgui::TextStyle kStatusStyle{ 10.0f, 1.4f, 0.03f, false };
@@ -107,6 +195,16 @@ namespace playground::ui
         if (name.size() > 4 && name.substr(name.size() - 4) == ".gui")
             return FileKind::Gui;
         return isCircuitFile(name) ? FileKind::Circuit : FileKind::FMinus;
+    }
+
+    // A file of the program's interface: its .gui file, or a shader one names (a .sc file, fminus/Shaders.h). While one
+    // shows, the CODE view's panel under the editor follows a choice of its own (Panel.h: the panel under the code).
+    inline bool isInterfaceFile(std::string_view name)
+    {
+        const auto ends = [name](std::string_view tail) {
+            return name.size() > tail.size() && name.substr(name.size() - tail.size()) == tail;
+        };
+        return ends(".gui") || ends(".sc");
     }
 
     // A netlist's words, for a highlighter of keyword rules (a tab's is CodeAssist's CircuitHighlighter, over

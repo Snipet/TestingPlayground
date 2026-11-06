@@ -492,6 +492,9 @@ namespace playground::measure
             std::vector<int> voicesAt;                       // per timeline event: the voices sounding as a note-on's
                                                              // call started (-1 for the others)
             int mostVoices = 0;                              // an instrument's: the most voices sounding after a call
+            Patch::Method stopCall = Patch::Method::none;        // a call that ran past its budget (Patch.h, "The loop
+            std::size_t stopAt = 0;                          // budget"), and the render's sample its block began at
+            Patch::Bounds stopBounds;                        // or the bounds check it failed (Patch.h, "Bounds checks")
         };
 
         double cpuShare(double ms, double audioSeconds)
@@ -2362,6 +2365,12 @@ namespace playground::measure
         int prepared = kDefaultBlock;                        // the largest call engine.prepare() made room for
         bool host = false;                                   // the program reads the Host block
         bool ok = false;
+        Sources files;                                       // what compiled (a stop's words name its method's line)
+        // The first render since measure() began that stopped (Patch.h, "The loop budget", "Bounds checks"): the call,
+        // when, and the bounds check it failed (if one did).
+        Patch::Method stopCall = Patch::Method::none;
+        double stopSeconds = 0.0;
+        Patch::Bounds stopBounds;
 
         // An instrument's plan: the request's scenario (or keys held until offAt) over `length` samples (0: as long as it
         // plays, and the tail); an effect's: the host's parts, over `length` (0: holdSeconds and the tail).
@@ -2405,6 +2414,7 @@ namespace playground::measure
             }
             engine.restart();
             engine.takeAlerts();
+            const uint64_t stops = engine.stops();           // a stop in this render (Engine.h, "A program that stops")
             engine.setClock(tl.clock);                       // a recording's grid phase (0 otherwise)
             if (!tl.transport.empty() && tl.transport.front().at == 0 && !tl.transport.front().transport.known)
                 engine.setBeat(tl.transport.front().transport.beat);   // a recording without the host's: the Engine's own
@@ -2526,6 +2536,18 @@ namespace playground::measure
                 r.cpuSamples = pos - timedFrom;
             }
             r.alerts |= engine.takeAlerts();
+            if (Engine::Stopped st; engine.stops() != stops && engine.lastStop(st))
+            {
+                r.stopCall = st.call;
+                r.stopAt = static_cast<std::size_t>(st.at);
+                r.stopBounds = st.bounds;
+                if (stopCall == Patch::Method::none)
+                {
+                    stopCall = st.call;
+                    stopSeconds = static_cast<double>(st.at) / rate;
+                    stopBounds = st.bounds;
+                }
+            }
             engine.collect();
             return r;
         }
@@ -2560,6 +2582,7 @@ namespace playground::measure
         impl_->controls = r.patch->controls();
         impl_->host = r.patch->host();
         impl_->rate = rate_;
+        impl_->files = files;
         impl_->engine.prepare(rate_, kDefaultBlock);
         impl_->engine.offer(std::move(r.patch));
         impl_->engine.prepare(rate_, kDefaultBlock);         // takes it at once, without a fade
@@ -2606,7 +2629,20 @@ namespace playground::measure
         out.r = std::move(r.out.r);
         out.alerts = r.alerts;
         out.heldUntil = tl.heldUntil;
+        out.stopCall = r.stopCall;
+        out.stopAt = r.stopAt;
+        out.stopBounds = r.stopBounds;
         return out;
+    }
+
+    std::string Session::stopWords(Patch::Method call, double seconds, const Patch::Bounds* bounds) const
+    {
+        // The stop's message (Patch::stopMessage: an error at the method's line, or at the access whose bounds check
+        // failed, and a note), then where the render was.
+        return "Stopped: " + Patch::stopMessage(impl_->files, call, static_cast<float>(rate_), bounds) + "It stopped "
+             + fmt("%.3f s", seconds) + " into the render: from there the program played no more ("
+             + (kInstrument ? "its voices faded out over 20 ms" : "its output faded to its input over 20 ms")
+             + "), as in the plugin, where the program before it plays again.\n";
     }
 
     Timeline Session::timeline(const Request& request, std::size_t length) const
@@ -2647,6 +2683,7 @@ namespace playground::measure
             return res;
         }
         res.compiled = true;
+        impl_->stopCall = Patch::Method::none;                 // the first render that stops, said at the end
         const double rate = rate_;
         const float hold = std::clamp(request.holdSeconds, 0.05f, 10.0f);
         const float tail = std::clamp(request.tailSeconds, 0.0f, 10.0f);
@@ -3566,6 +3603,9 @@ namespace playground::measure
         }
         for (const std::string& w : warnings)
             out += "Note: " + w + "\n";
+        if (impl_->stopCall != Patch::Method::none)            // what the numbers above measured, first
+            out = stopWords(impl_->stopCall, impl_->stopSeconds, &impl_->stopBounds) + out;
+        res.stopped = impl_->stopCall;
         out += metricsLine(v);                               // the numbers, by the names checks use
         res.report = std::move(out);
         return res;

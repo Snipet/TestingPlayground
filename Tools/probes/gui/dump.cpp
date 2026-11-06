@@ -18,6 +18,8 @@
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
+//                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
 //   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
@@ -97,8 +99,21 @@
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
 //             accessibility title saying what it means) and its load's text no longer says FROZEN
+//   STOPPED   a program whose process never ends once it plays (its loop budget: Patch.h), run: once blocks play it
+//             stops, the status says so and that the program before plays again, which the processor plays (its
+//             files), and the problems list has the message at process's line; one that writes outside its array (its
+//             bounds checks) the same, the status naming that, the message at the access's line and column
+//   DRAW      unchanged frames (Panel.h), each frame as EditorHost runs one (a tick; a recording only when needsDraw();
+//             a submit only when it differs from the last one: canvas/FrameCompare.h), at a calm editor's 12 Hz: idle,
+//             nothing for most of a second, and over ten seconds at most one recording a second, none submitted; a
+//             frame for each source of change, and quiet again after it: the pointer (a dial's hover eases in and out),
+//             a host's automation of a dial, a key typed, a compile that finishes, a menu's answer (the host's
+//             callback), each measured once the editor's own check while typing has landed (a change of its own); in
+//             DISPLAYS a frame while the audio plays, and once it stops the displays settle and ask for none; in
+//             PROJECTS the frame the status's notice runs out in
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/DisplayItem.h"
 #include "editor/LogoMark.h"
 #include "editor/Panel.h"
@@ -114,6 +129,7 @@
 #include "Library.h"
 #include "Product.h"
 
+#include <funkgui/canvas/FrameCompare.h>
 #include <funkgui/canvas/Prim.h>
 #include <funkgui/canvas/PrimList.h>
 #include <funkgui/canvas/SoftRaster.h>
@@ -462,6 +478,132 @@ PROBE(gui, dump)
             P.ge(tag + ".floor_run_px", static_cast<double>(run) / static_cast<double>(dpi), 3.0);
         if (dpi == 1.0f)
             writePng(P, host, "gui.dump.1x.png", tag);
+    }
+
+    // DRAW: unchanged frames (Panel.h). A frame as EditorHost runs one: a tick, a recording only when needsDraw(), a
+    // submit only when the recording differs from the last one submitted (canvas/FrameCompare.h).
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        constexpr float kCalm = 1.0f / 12.0f;        // a calm editor's cadence
+        // The editor's first check while typing lands (its status line changes then): a change, not idleness.
+        for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+        {
+            host.tick(1, kCalm);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.settle();
+        funkgui::PrimList shown = host.draw();
+        int recorded = 0, submitted = 0;
+        const auto frame = [&](float dt) {
+            host.tick(1, dt);
+            if (!panel.needsDraw())
+                return false;
+            ++recorded;
+            const funkgui::PrimList& list = host.draw();
+            if (!funkgui::sameDrawing(list, shown))
+            {
+                ++submitted;
+                shown = list;
+            }
+            return true;
+        };
+        // How many of n calm frames ask to draw.
+        const auto asked = [&](int n) {
+            int k = 0;
+            for (int i = 0; i < n; ++i)
+                k += frame(kCalm) ? 1 : 0;
+            return k;
+        };
+        // The panel quiet again: the editor's check while typing and any compile landed (each a change of its own),
+        // settled, drawn, and a calm frame asks for nothing.
+        const auto quiet = [&] {
+            host.settle();
+            for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+            {
+                host.tick(1, kCalm);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            host.settle();
+            host.draw();
+            host.tick(1, kCalm);
+            return !panel.needsDraw();
+        };
+        // Idle: nothing for most of a second; over ten seconds the safety net's recordings (one a second at most),
+        // the same picture each time, so none submitted.
+        P.eq("draw.idle_asks", asked(11), 0);
+        recorded = submitted = 0;
+        (void)asked(120);
+        P.le("draw.idle_10s_recorded", recorded, 10.0);
+        P.eq("draw.idle_10s_submitted", submitted, 0);
+        std::printf("idle 10 s: %d recorded, %d submitted\n", recorded, submitted);
+        // The pointer: a move over a dial draws (its hover eases in), then the panel is quiet again.
+        int dialSlot = -1;
+        for (int c = 0; c < pg::kMaxControls && dialSlot < 0; ++c)
+            if (panel.centreOfDial(c))
+                dialSlot = c;
+        P.eq("draw.has_dial", dialSlot >= 0 ? 1 : 0, 1);
+        const funkgui::Point dial = dialSlot >= 0 ? *panel.centreOfDial(dialSlot) : funkgui::Point{ 400.0f, 600.0f };
+        host.move(dial.x, dial.y);
+        P.eq("draw.pointer", frame(kCalm) ? 1 : 0, 1);
+        P.eq("draw.pointer_quiet", quiet() ? 1 : 0, 1);
+        host.move(10.0f, static_cast<float>(pg::ui::kDefaultHeight) - 4.0f);   // away, over the footer
+        P.eq("draw.pointer_away_quiet", quiet() ? 1 : 0, 1);
+        // A host's automation of the dial: no input, no motion of the Panel's own, its value drawn.
+        if (dialSlot >= 0)
+        {
+            juce::AudioProcessorParameter& param = *processor.getParameters()[dialSlot];
+            const float to = param.getValue() < 0.5f ? 0.8f : 0.2f;
+            param.setValueNotifyingHost(to);
+            P.eq("draw.automation", frame(kCalm) ? 1 : 0, 1);
+            P.eq("draw.automation_quiet", quiet() ? 1 : 0, 1);
+        }
+        // A key typed into the editor.
+        {
+            funkgui::TextEditor& editor = panel.editor();
+            const funkgui::Rect a = editor.textArea();
+            host.click(a.x + 40.0f, a.y + 4.0f);
+            P.eq("draw.click_quiet", quiet() ? 1 : 0, 1);
+            const std::string before = editor.text();
+            host.keys("space");
+            P.eq("draw.key", frame(kCalm) ? 1 : 0, 1);
+            host.keys("backspace");
+            P.eq("draw.key_back", frame(kCalm) && editor.text() == before ? 1 : 0, 1);
+            P.eq("draw.key_quiet", quiet() ? 1 : 0, 1);
+        }
+        // A compile that finishes with no input: its status drawn.
+        {
+            host.keys("cmd+return");
+            host.tick(1, kCalm);
+            host.draw();
+            processor.settle();
+            int waited = 0;
+            while (panel.statusText().rfind("RUNNING", 0) != 0 && waited < 600)
+            {
+                host.tick(1, kCalm);
+                if (panel.statusText().rfind("RUNNING", 0) != 0)
+                    host.draw();                     // the status not there yet: what was drawn is up to date
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                ++waited;
+            }
+            P.eq("draw.compiled", panel.statusText().rfind("RUNNING", 0) == 0 && panel.needsDraw() ? 1 : 0, 1);
+            P.eq("draw.compiled_quiet", quiet() ? 1 : 0, 1);
+        }
+        // A menu's answer, which comes with no input to the Panel (the host's callback).
+        {
+            const funkgui::Point examples = panel.centreOfExamples();
+            host.click(examples.x, examples.y);
+            P.eq("draw.menu_open_quiet", quiet() ? 1 : 0, 1);
+            P.eq("draw.menu_dismissed", host.cancelMenu() && frame(kCalm) ? 1 : 0, 1);
+            P.eq("draw.menu_quiet", quiet() ? 1 : 0, 1);
+        }
+        // Ten more idle seconds: still nothing submitted.
+        recorded = submitted = 0;
+        (void)asked(120);
+        P.eq("draw.idle_again_submitted", submitted, 0);
     }
 
     funkgui::UiPreferences::get().setTheme(0);
@@ -1092,6 +1234,30 @@ PROBE(gui, dump)
             funkgui::UiPreferences::get().setTheme(0);
         }
 
+        // DRAW: while the audio plays the displays move, so frames draw; stopped, they settle and the panel asks for
+        // nothing (Panel.h "Unchanged frames").
+        {
+            push(1, false);
+            host.tick(1, 1.0f / 12.0f);
+            P.eq("draw.displays_move", panel.needsDraw() ? 1 : 0, 1);
+            // At the calm cadence the eases take their last small steps (a display's own thresholds), then nothing:
+            // most of a second of frames that ask for none.
+            int quietRun = 0, k = 0;
+            for (; k < 120 && quietRun < 11; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (panel.needsDraw())
+                {
+                    quietRun = 0;
+                    host.draw();
+                }
+                else
+                    ++quietRun;
+            }
+            std::printf("displays stopped: quiet after %d calm frames\n", k - quietRun);
+            P.eq("draw.displays_stopped_quiet", quietRun >= 11 ? 1 : 0, 1);
+        }
+
         // The controls: slots 0 drive, 1 tone, 2 wave (buttons), 3 invert (switch).
         funkgui::ParamPort& wave = *processor.ports()[2];
         funkgui::ParamPort& invert = *processor.ports()[3];
@@ -1339,6 +1505,18 @@ PROBE(gui, dump)
         host.tick(2);
         P.eq("projects.cmd_s_nothing_new", panel.statusText().find("NOTHING NEW TO SAVE: MY PATCH V2") != std::string::npos
                                                && versionsOf("My Patch") == 2 ? 1 : 0, 1);
+        // DRAW: the status's notice runs out (4 s) with no input: that frame draws (Panel.h "Unchanged frames").
+        {
+            const auto saying = [&] { return panel.statusText().find("NOTHING NEW") != std::string::npos; };
+            host.draw();
+            for (int k = 0; k < 80 && saying(); ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (saying())
+                    host.draw();
+            }
+            P.eq("draw.notice_ends", !saying() && panel.needsDraw() ? 1 : 0, 1);
+        }
         // Two more, for the list.
         for (const char* name : { "Another One", "Zebra Pad" })
         {
@@ -1551,6 +1729,87 @@ PROBE(gui, dump)
             funkgui::UiPreferences::get().setTheme(0);
         }
         processor.compiler().setFreezing(true);                  // back to its own delay
+    }
+
+    // STOPPED: a program whose process never ends, run while blocks play (Compiler.h, "A program that stops"): it
+    // stops at its first block, the program before plays again, and the status and the problems list say why.
+    {
+        constexpr bool kInstrument = pg::product::kIsInstrument;
+        constexpr int kBlock = 256;
+        const pg::Sources before = port.running();
+        const std::string stopping = std::string("module ") + (kInstrument ? "Voice" : "Effect") + "\n{\n    int spins;\n\n"
+                                   + (kInstrument ? "    void start(float note, float velocity) {}\n\n" : "")
+                                   + "    " + (kInstrument ? "bool" : "void")
+                                   + " process(float* restrict left, float* restrict right, int n)\n    {\n        while (1)\n"
+                                     "            spins = spins + 1;\n    }\n};\n";
+        editor.selectAll();
+        editor.insert(stopping);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        for (int k = 0; k < 400 && !(port.status().stopped && port.running() == before); ++k)
+        {
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+            buffer.clear();
+            processor.processBlock(buffer, midi);
+            processor.settle();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.tick(300);                                           // past a notice an earlier step left (4 s)
+        host.settle();
+        std::printf("status: %s\n", panel.statusText().c_str());
+        for (const pg::ui::Problem& p : panel.problems())
+            std::printf("problem %d:%d %s %s\n", p.line, p.column, p.error ? "error" : "note", p.text.c_str());
+        P.eq("stopped.status", panel.statusText().rfind("STOPPED: A LOOP THAT NEVER ENDS?   THE PROGRAM BEFORE PLAYS AGAIN", 0) == 0 ? 1 : 0, 1);
+        P.eq("stopped.before_plays", port.running() == before ? 1 : 0, 1);
+        P.eq("stopped.listed", panel.problems().empty() ? 0 : 1, 1);
+        P.eq("stopped.line", panel.problems().empty() ? 0 : panel.problems()[0].line, kInstrument ? 7 : 5);
+        const funkgui::PrimList& frame = host.draw();
+        P.ge("stopped.problem_drawn", countTag(frame, pg::ui::kProblemTag), 1.0);
+        P.eq("stopped.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        writePng(P, host, "gui.dump.stopped.png", "stopped");
+
+        // A program that writes outside its array at its first block (its bounds checks, Patch.h): said so.
+        const std::string outside = std::string("module ") + (kInstrument ? "Voice" : "Effect") + "\n{\n    float line[16];\n"
+                                    "    int k;\n\n    void init(float rate) { k = 16; }\n\n"
+                                  + (kInstrument ? "    void start(float note, float velocity) {}\n\n" : "")
+                                  + "    " + (kInstrument ? "bool" : "void")
+                                  + " process(float* restrict left, float* restrict right, int n)\n    {\n        line[k] = 1.0f;\n"
+                                  + (kInstrument ? "        return true;\n" : "") + "    }\n};\n";
+        editor.selectAll();
+        editor.insert(outside);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        const uint64_t stoppedBefore = port.status().stoppedProgram;
+        for (int k = 0; k < 400 && !(port.status().stopped && port.status().stoppedProgram != stoppedBefore
+                                     && port.running() == before); ++k)
+        {
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+            buffer.clear();
+            processor.processBlock(buffer, midi);
+            processor.settle();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.tick(300);
+        host.settle();
+        std::printf("status: %s\n", panel.statusText().c_str());
+        for (const pg::ui::Problem& p : panel.problems())
+            std::printf("problem %d:%d %s %s\n", p.line, p.column, p.error ? "error" : "note", p.text.c_str());
+        P.eq("stopped.bounds_status", panel.statusText().rfind("STOPPED: AN INDEX OUTSIDE ITS ARRAY   THE PROGRAM BEFORE PLAYS AGAIN", 0)
+                                          == 0 ? 1 : 0, 1);
+        P.eq("stopped.bounds_before_plays", port.running() == before ? 1 : 0, 1);
+        P.eq("stopped.bounds_line", panel.problems().empty() ? 0 : panel.problems()[0].line, kInstrument ? 12 : 10);
+        P.eq("stopped.bounds_column", panel.problems().empty() ? 0 : panel.problems()[0].column, 13);
+        P.eq("stopped.bounds_says_it", !panel.problems().empty() && panel.problems()[0].text.find("index 16 out of bounds for 'line'")
+                                                                     != std::string::npos ? 1 : 0, 1);
+        const funkgui::PrimList& bounded = host.draw();
+        P.ge("stopped.bounds_problem_drawn", countTag(bounded, pg::ui::kProblemTag), 1.0);
+        P.eq("stopped.bounds_missing_glyphs", static_cast<int64_t>(bounded.missingGlyphs), 0);
+        writePng(P, host, "gui.dump.stopped.bounds.png", "stopped_bounds");
     }
     return P.finish();
 }

@@ -23,7 +23,7 @@ namespace playground::ui
         constexpr float kButtonH = 32.0f;
         constexpr uint32_t kBoxId = ProjectBrowser::kA11yBase, kListId = kBoxId + 1,   // + the list
                            kFieldId = kBoxId + 4, kSaveId = kBoxId + 5, kOpenId = kBoxId + 6, kRemoveId = kBoxId + 7,
-                           kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10,
+                           kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10, kAbId = kBoxId + 11,
                            kRowId = kBoxId + 0x100;                                     // + the list * 0x1000 + the row
 
         using L = ProjectBrowser::List;
@@ -98,6 +98,13 @@ namespace playground::ui
         std::string e;
         e.swap(export_);
         return e;
+    }
+
+    std::pair<std::string, int> ProjectBrowser::takeAb()
+    {
+        std::pair<std::string, int> a;
+        a.swap(ab_);
+        return a;
     }
 
     void ProjectBrowser::chooseProjectNamed(const std::string& name, float width, float height)
@@ -180,6 +187,7 @@ namespace playground::ui
         at.remove = { at.box.x + kPad, by, pillW(removeLabel()), kButtonH };
         at.importIt = { at.remove.right() + 8.0f, by, 96.0f, kButtonH };
         at.exportIt = { at.importIt.right() + 8.0f, by, 96.0f, kButtonH };
+        at.ab = { at.exportIt.right() + 8.0f, by, 72.0f, kButtonH };
         return at;
     }
 
@@ -521,6 +529,21 @@ namespace playground::ui
                 close();
             }
         }
+        else if (at.ab.contains(p))
+        {
+            if (chosenProject().empty() || versions_.empty())
+            {
+                ask_ = Ask::none;
+                why_ = projects_.empty() ? "There is no project yet: A/B plays the editor's files against a saved version."
+                                         : "Choose a project: A/B plays the editor's files against one of its versions.";
+            }
+            else
+            {
+                const int c = chosen_[idx(L::versions)];
+                ab_ = { chosenProject(), c >= 0 && c < static_cast<int>(versions_.size()) ? versions_[static_cast<std::size_t>(c)].number : 0 };
+                close();
+            }
+        }
         else if (at.field.contains(p))
         {
             name_.allSelected = false;
@@ -612,7 +635,7 @@ namespace playground::ui
     {
         const Places at = places(width, height);
         if (at.save.contains(p) || at.open.contains(p) || at.remove.contains(p) || at.close.contains(p) || at.importIt.contains(p)
-            || at.exportIt.contains(p))
+            || at.exportIt.contains(p) || at.ab.contains(p))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
             if (rowAt(p, at, l) >= 0)
@@ -778,6 +801,7 @@ namespace playground::ui
         button(at.remove, removeLabel(), 2, chosen_[idx(focus_)] >= 0);
         button(at.importIt, "Import...", 1, true);
         button(at.exportIt, "Export...", 1, chosen_[idx(L::projects)] >= 0);
+        button(at.ab, "A/B...", 1, chosen_[idx(L::projects)] >= 0 && !versions_.empty());
     }
 
     void ProjectBrowser::accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const
@@ -855,6 +879,7 @@ namespace playground::ui
         button(kRemoveId, at.remove, removeLabel());
         button(kImportId, at.importIt, "Import...");
         button(kExportId, at.exportIt, "Export...");
+        button(kAbId, at.ab, "A/B...");
     }
 
     bool ProjectBrowser::a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height)
@@ -869,10 +894,10 @@ namespace playground::ui
             remove();
         else if (id == kCloseId)
             close();
-        else if (id == kImportId || id == kExportId)
+        else if (id == kImportId || id == kExportId || id == kAbId)
         {
             const Places at = places(width, height);
-            const funkgui::Rect& r = id == kImportId ? at.importIt : at.exportIt;
+            const funkgui::Rect& r = id == kImportId ? at.importIt : id == kExportId ? at.exportIt : at.ab;
             pointerDown({ r.centreX(), r.centreY() }, width, height);
         }
         else if (id >= kRowId && id < kRowId + 3u * 0x1000u)

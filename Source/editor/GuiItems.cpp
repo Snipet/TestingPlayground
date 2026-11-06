@@ -9,6 +9,7 @@
 #include <funkgui/text/TextFit.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -174,10 +175,11 @@ namespace playground::ui
         live01_ = std::isfinite(plain) ? normOf(value_.control(), plain) : -1.0f;
     }
 
-    void GuiControlItem::tick(float, bool hovered, bool, funkgui::Point pointer)
+    void GuiControlItem::tick(float dt, bool hovered, bool, funkgui::Point pointer)
     {
         hovered_ = hovered;
         hoverButton_ = hovered && kind_ == GuiKind::buttons ? buttonAt(pointer) : -1;
+        stir_.tick(dt, { value_.value01(), live01_ });
     }
 
     Rect GuiControlItem::track() const
@@ -1829,7 +1831,8 @@ namespace playground::ui
             c.hairlineH(s.x + 1.0f, s.y + s.h * static_cast<float>(k) / 3.5f, s.w - 2.0f, grid);
         if (db == nullptr || n < 2)
             return;
-        std::vector<float> xs(static_cast<std::size_t>(n)), ys(static_cast<std::size_t>(n));
+        n = std::min(n, kSpectrumMostPoints);
+        std::array<float, kSpectrumMostPoints> xs, ys;
         for (int k = 0; k < n; ++k)
         {
             const float t = std::clamp((db[k] + 84.0f) / 84.0f, 0.0f, 1.0f);
