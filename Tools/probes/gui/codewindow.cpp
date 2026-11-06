@@ -38,11 +38,16 @@
 //   KEPT       the state carries the window's choice, size and place to another processor; a state from before it has
 //              the editor in; sizes out of range are none; an editor that goes while the editor is out leaves the
 //              session out, and the next one's owner takes the editor out again at its first look, the code window at
-//              the size the session kept
+//              the size the session kept; while no editor has its code out (the session out, no window yet, or none
+//              to have), the window picture shows the editor in place
 //   PICTURE    view_panel's window picture while the editor is out: the panel full size, and its words say the code is
 //              in a window of its own; the panel's picture as before; neither changes the session
+//   HIDDEN     the editor's window's hidden copy of the editor while it is out: PROJECTS and EXPORT closed there give it
+//              no focus, keys typed there (a letter, Cmd-Z) reach neither it nor the processor's draft, which stays the
+//              code window's text, and Cmd-S there saves that text as the project's new version
 //   GUI        a program with a .gui file: its interface across the editor's window's column while the editor is out
-//   PANEL      the PANEL view chosen before the editor goes out is kept when it comes back
+//   PANEL      the PANEL view chosen before the editor goes out is kept when it comes back, the caret then nowhere (the
+//              editor is hidden): a key typed changes no file
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -50,6 +55,7 @@
 #include "editor/Panel.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
+#include "plugin/ProjectStore.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -64,6 +70,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -207,6 +214,21 @@ PROBE(gui, codewindow)
     const funkgui::HeadlessGuiScope gui;
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);
+    // The projects (HIDDEN saves one) in a folder of the probe's own, never the user's.
+    const juce::File projects = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                    .getChildFile(juce::String(pg::product::kEnvPrefix) + "gui-codewindow-"
+                                                  + juce::String(juce::Time::currentTimeMillis()));
+    projects.deleteRecursively();
+    pg::projectstore::setDirectoryForTests(projects);
+    struct Gone
+    {
+        juce::File dir;
+        ~Gone()
+        {
+            pg::projectstore::setDirectoryForTests({});
+            dir.deleteRecursively();
+        }
+    } const gone{ projects };
 
     // ---- FIT -----------------------------------------------------------------------------------------------------------
     {
@@ -297,10 +319,11 @@ PROBE(gui, codewindow)
     click(host, panel.centreOfWindowButton());
     P.eq("out.asked", owner.asked, askedBefore + 1);
     P.eq("out.session_out", port.codeWindow().out ? 1 : 0, 1);
-    P.eq("out.not_yet", !panel.editorOut() ? 1 : 0, 1);  // the owner follows after the click
+    P.eq("out.not_yet", !panel.editorOut() && !port.codeWindowOpen() ? 1 : 0, 1);   // the owner follows after the click
     owner.follow();
     host.settle();
     P.eq("out.code_window", owner.code != nullptr && panel.editorOut() && panel.peer() == owner.code.get() ? 1 : 0, 1);
+    P.eq("out.port_open", port.codeWindowOpen() ? 1 : 0, 1);
     if (owner.code == nullptr)
         return P.finish();
     pg::ui::Panel& code = *owner.code;
@@ -467,6 +490,7 @@ PROBE(gui, codewindow)
         owner.follow();
         host.settle();
         P.eq("back.gone", owner.code == nullptr && !panel.editorOut() && panel.peer() == nullptr ? 1 : 0, 1);
+        P.eq("back.port_closed", !port.codeWindowOpen() ? 1 : 0, 1);
         P.eq("back.same_editor", &panel.editor() == editor && &panel.codeAssist() == assist ? 1 : 0, 1);
         P.eq("back.text", panel.editor().text() == text ? 1 : 0, 1);
         P.eq("back.ir", panel.irOpen() && !panel.irShown() ? 1 : 0, 1);
@@ -558,6 +582,14 @@ PROBE(gui, codewindow)
             P.eq("kept.peer_forgotten", other.peer() == nullptr ? 1 : 0, 1);
         }
         P.eq("kept.stays_out", port.codeWindow().out ? 1 : 0, 1);
+        P.eq("kept.port_closed", !port.codeWindowOpen() ? 1 : 0, 1);   // the editor that had it out has gone
+        // The session out, but no editor has its code out (not yet: an editor follows once it is on screen; or never,
+        // without a window's owner): the window picture shows the editor in place.
+        {
+            const pg::PanelPicture inPlace = pg::picturePanel(processor.ports(), port, 0, 0, true, "");
+            P.eq("kept.picture_in_place", !inPlace.png.empty() && inPlace.about.find("a window of its own") == std::string::npos
+                                              ? 1 : 0, 1);
+        }
         owner.follow();                                  // this editor's owner takes it out again
         host.settle();
         P.eq("kept.out_again", owner.code != nullptr && panel.editorOut() && &owner.code->editor() == editor ? 1 : 0, 1);
@@ -571,6 +603,63 @@ PROBE(gui, codewindow)
         const pg::PanelPicture shown = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
         P.eq("picture.panel", !shown.png.empty() && shown.about.find("a window of its own") == std::string::npos ? 1 : 0, 1);
         P.eq("picture.session_kept", port.codeWindow().out && !port.panelView() && panel.editorOut() ? 1 : 0, 1);
+    }
+
+    // ---- HIDDEN --------------------------------------------------------------------------------------------------------
+    // The editor's window keeps a hidden copy of the editor while the code window has it (its focus none: the lend took
+    // the caret from it). A card closed there gives the copy no focus, and no key typed there reaches the copy or the
+    // processor's draft; Cmd-S there saves the code window's text.
+    if (owner.code != nullptr)
+    {
+        pg::ui::Panel& out = *owner.code;
+        funkgui::HeadlessHost& outHost = *owner.host;
+        const funkgui::Rect t = out.editor().textArea();
+        outHost.click(t.x + 30.0f, t.y + 30.0f);
+        outHost.settle();
+        out.editor().setCaret({ 0, static_cast<int>(out.editor().line(0).size()) });
+        typeText(outHost, " hidden");
+        outHost.settle();
+        const std::string text = out.editor().text();
+        P.eq("hidden.synced", !port.draft().files.empty() && port.draft().files[0].text == text ? 1 : 0, 1);
+        const std::string copy = panel.editor().text();
+        P.eq("hidden.copy_apart", &panel.editor() != &out.editor() && !panel.editor().focused() ? 1 : 0, 1);
+        // PROJECTS from the editor's window (Cmd-S, no project open), closed: the focus goes back to none.
+        host.keys("cmd+s");
+        host.settle();
+        P.eq("hidden.projects_open", panel.projectBrowser().isOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("hidden.projects_closed", !panel.projectBrowser().isOpen() && !panel.editor().focused() ? 1 : 0, 1);
+        host.keys("x,cmd+z,y");
+        host.tick(2);
+        outHost.tick(2);
+        host.settle();
+        P.eq("hidden.copy_untouched", panel.editor().text() == copy ? 1 : 0, 1);
+        P.eq("hidden.draft_kept", !port.draft().files.empty() && port.draft().files[0].text == text ? 1 : 0, 1);
+        P.eq("hidden.code_untouched", out.editor().text() == text ? 1 : 0, 1);
+        // A project open, more typed in the code window, then EXPORT from the editor's window, closed, and keys there:
+        // Cmd-S there saves the code window's text as the project's next version.
+        pg::SavedVersion saved;
+        std::string why;
+        P.eq("hidden.project", port.saveVersion("Code Window", saved, why) && saved.number == 1 ? 1 : 0, 1);
+        typeText(outHost, " saved");
+        outHost.settle();
+        const std::string text2 = out.editor().text();
+        panel.openExport("Code Window");
+        host.settle();
+        P.eq("hidden.export_open", panel.exportCard().isOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("hidden.export_closed", !panel.exportCard().isOpen() && !panel.editor().focused() ? 1 : 0, 1);
+        host.keys("z");
+        host.tick(2);
+        host.keys("cmd+s");
+        host.settle();
+        const std::optional<pg::projectstore::Project> p = pg::projectstore::load("Code Window");
+        P.eq("hidden.saved_v2", p.has_value() && p->latest().number == 2 ? 1 : 0, 1);
+        P.eq("hidden.saved_code", p.has_value() && !p->latest().files.empty() && p->latest().files[0].text == text2 ? 1 : 0, 1);
+        P.eq("hidden.draft_code", !port.draft().files.empty() && port.draft().files[0].text == text2 ? 1 : 0, 1);
+        P.eq("hidden.copy_still", panel.editor().text() == copy ? 1 : 0, 1);
     }
 
     // ---- GUI -----------------------------------------------------------------------------------------------------------
@@ -615,6 +704,30 @@ PROBE(gui, codewindow)
         owner.follow();
         host.settle();
         P.eq("panel.kept", !panel.editorOut() && panel.panelView() && port.panelView() ? 1 : 0, 1);
+        // Out again, the caret in the code window, and back by its close: the PANEL view hides the editor, so the caret
+        // goes to nothing, and a key typed changes no file.
+        click(host, panel.centreOfWindowButton());
+        owner.follow();
+        host.settle();
+        if (owner.code != nullptr)
+        {
+            const funkgui::Rect t = owner.code->editor().textArea();
+            owner.host->click(t.x + 30.0f, t.y + 30.0f);
+            owner.host->settle();
+            P.eq("panel.caret_out", owner.code->editor().focused() ? 1 : 0, 1);
+        }
+        cw = port.codeWindow();
+        cw.out = false;                                  // what the window's close button does
+        port.setCodeWindow(cw);
+        owner.follow();
+        host.settle();
+        const pg::Draft draftBefore = port.draft();
+        const std::string shown = panel.editor().text();
+        P.eq("panel.no_caret", !panel.editorOut() && panel.panelView() && !panel.editor().focused() ? 1 : 0, 1);
+        host.keys("q");
+        host.tick(2);
+        host.settle();
+        P.eq("panel.key_nothing", panel.editor().text() == shown && port.draft() == draftBefore ? 1 : 0, 1);
         click(host, panel.centreOfView(false));
     }
 
