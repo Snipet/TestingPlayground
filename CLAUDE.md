@@ -996,7 +996,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   change with no input, no motion and no `dirty_` of the Panel's (a port's value, a field, a callback's label, a
   countdown that ends) goes into its `drawKey()`; a callback the host runs later (a menu's, a file chooser's) goes
   through the Panel's host (`HostProxy`), which marks the Panel. A source that does neither freezes on screen until
-  something else draws (at most a second: the safety net); `gui.dump` DRAW has a row for each source.
+  something else draws (at most a second: the safety net); `gui.dump` DRAW has a row for each source. A value that
+  moves on its own and moves smoothly (a host's automation, a field's mark, a shader's input) is motion too, or it
+  steps at the calm 12 Hz: `Items.h`'s `Stirred` in the item's `tick()`, held a quarter second past the last move.
+  Only a shown item keeps the full rate (`wantsFullRate`), and a display settles when what it draws stands still
+  (`DisplayItem`: a scope within half a px); gui.styles RATE and gui.panel SETTLE check.
 - **A .gui element** (a control, a display, a container): its `GuiKind` in `PanelSpec.h` and its word, arguments,
   properties and notes in `GuiSpec.cpp`, its natural size in `GuiLayout.cpp`, its item and drawing in `GuiItems` (a
   display's in `DisplayItem`), placed by `Panel::layoutGuiItems`; teach it in the prompt's THE INTERFACE
