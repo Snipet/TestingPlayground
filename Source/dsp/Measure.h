@@ -10,12 +10,14 @@
 //
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
 //                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
-//                  partials and its centroid, the pitch (the strongest partial near the expected note), the largest
-//                  step between two samples and the clicks (clicks(), trace's rule), the envelope (when it reaches its
-//                  loudest, and when it falls 60 dB from there), when the sound falls 60 dB below its held level
-//                  after the release and when the last voice ended (process returned false), the output guard's
-//                  alerts, and the CPU time (the notes while held, and sixteen voices at once: a render of sixteen
-//                  notes held, the least of two). With one note, the strongest component that is no harmonic of it
+//                  partials and its centroid, the pitch (the strongest partial near the expected note; the report names
+//                  the sound unpitched instead when the lowest note and a whole tone up, each alone, do not measure a
+//                  whole tone apart), the largest step between two samples and the clicks (clicks(), trace's rule), the
+//                  envelope (when it reaches its loudest, and when it falls 60 dB from there), when the sound falls
+//                  60 dB below its held level after the release and when the last voice ended (process returned
+//                  false), the output guard's alerts, and the CPU time (the notes while held, and sixteen voices at
+//                  once: a render of sixteen notes held, the least of two; in words only when more than one voice
+//                  sounds there). With one note, the strongest component that is no harmonic of it
 //                  (aliasing, or the sound's own: detuning, FM, noise), and a chord (the note, a third, a fifth and an
 //                  octave above) is rendered too, for the summed level.
 //   an effect      a sine of 220 Hz at -12 dBFS and noise at -18 dBFS RMS, each for holdSeconds, an impulse followed

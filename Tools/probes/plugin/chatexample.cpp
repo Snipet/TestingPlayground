@@ -29,7 +29,10 @@
 //            messages; a dial name that is not one is reported; a voice that never ends (or an effect that makes sound from silence) is flagged;
 //            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
-//            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is
+//            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is; the pitch line
+//            for the sine voice, "Unpitched" (with both pitches) for noise and for a sine of its own pitch; the sixteen
+//            voices' CPU in words for the sine voice, none for a voice that ends unless it is the newest, and a voice
+//            that keeps the newest four saying four sound;
 //            (the prompt teaches the FFT's builtins and the module Shared too); the Host block (host.fm) as asked:
 //            its line in the report, an instrument's pitch wheel up 2 semitones, an effect's delay of a beat at 90 BPM
 //            (the prompt has THE HOST and host.fm word for word)
@@ -585,6 +588,50 @@ PROBE(plugin, chatexample)
         P.eq("measure.chord", has(r, "A chord (57 61 64 69)") ? 1 : 0, 1);
         P.eq("measure.unknown_dial", has(r, "No dial is named 'volume'") ? 1 : 0, 1);
         P.eq("measure.sine_nothing_inharmonic", has(r, "Inharmonic: nothing below 20 kHz") ? 1 : 0, 1);
+        // The pitch line for a sound whose pitch follows the note (it and a whole tone up, each alone, a whole tone apart); for one
+        // that does not (noise, a sine of a pitch of its own), "Unpitched" with both pitches, the metrics as before.
+        P.eq("measure.pitch_follows", has(r, " Pitch: 220.0") && !has(r, "Unpitched") ? 1 : 0, 1);
+        {
+            std::string noise = voice;
+            noise.replace(noise.find("float env;"), 10, "float env; int count;");
+            noise.replace(noise.find("sinf(6.28318531f * phase)"), 25, "randf(count)");
+            noise.replace(noise.find("phase += step;"), 14, "count += 1;");
+            const std::string hiss = pg::measure::run(pg::singleFile(noise), req);
+            std::string fixed = voice;
+            const std::string tracked = "step = 440 * expf(0.0577622650f * (note - 69)) / rate;";
+            fixed.replace(fixed.find(tracked), tracked.size(), "step = 200 / rate;");
+            const std::string f = pg::measure::run(pg::singleFile(fixed), req);
+            const auto pitchLine = [](const std::string& report) {
+                const std::size_t at = report.find("Spectrum while held");
+                return at == std::string::npos ? std::string() : report.substr(at, report.find('\n', at) - at);
+            };
+            std::printf("noise's spectrum line: %s\na fixed 200 Hz sine's: %s\n", pitchLine(hiss).c_str(), pitchLine(f).c_str());
+            P.eq("measure.noise_unpitched", has(hiss, " Unpitched: its pitch does not follow the note (") && !has(hiss, " Pitch: ") ? 1 : 0, 1);
+            P.eq("measure.fixed_unpitched", has(f, " Unpitched: its pitch does not follow the note (200.00 Hz at note 57, 200.00 Hz at "
+                                                   "note 59, each alone).") ? 1 : 0, 1);
+        }
+        // The CPU of sixteen keys at once in words only when more than one voice sounds: a voice that ends at once unless it is
+        // the newest (a mono program's token) has none; one that keeps the newest four says so.
+        P.eq("measure.sixteen_voices", has(r, "; sixteen voices at once take ") ? 1 : 0, 1);
+        {
+            std::string alone = "module Shared\n{\n    int newest;\n};\n" + voice;
+            alone.replace(alone.find("    float rate;"), 0, "    Shared* shared;\n    int id;\n");
+            const std::string started = "held = true; env = 1; }";
+            alone.replace(alone.find(started), started.size(), "held = true; env = 1; shared->newest += 1; id = shared->newest; }");
+            std::string four = alone;
+            alone.replace(alone.find("        for (int i = 0; i < n; ++i)"), 0, "        if (id != shared->newest) return false;\n");
+            four.replace(four.find("        for (int i = 0; i < n; ++i)"), 0, "        if (id <= shared->newest - 4) return false;\n");
+            const std::string one = pg::measure::run(pg::singleFile(alone), req), some = pg::measure::run(pg::singleFile(four), req);
+            const auto cpuLine = [](const std::string& report) {
+                const std::size_t at = report.find("CPU: ");
+                return at == std::string::npos ? std::string() : report.substr(at, report.find('\n', at) - at);
+            };
+            std::printf("a voice that plays the newest key alone, its CPU line: %s\nthe newest four: %s\n", cpuLine(one).c_str(),
+                        cpuLine(some).c_str());
+            P.eq("measure.mono_no_sixteen", has(one, "CPU: the notes held take ") && !has(one, "sixteen") && has(one, "Held: peak -12.0 dBFS")
+                                                ? 1 : 0, 1);
+            P.eq("measure.four_of_sixteen", has(some, "; sixteen keys at once take ") && has(some, " (4 voices sound).") ? 1 : 0, 1);
+        }
         // The Host block (host.fm) as measure_output is asked: the pitch wheel up bends it 2 semitones.
         {
             std::string bent = "#include \"host.fm\"\n" + voice;

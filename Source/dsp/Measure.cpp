@@ -328,6 +328,7 @@ namespace playground::measure
             long endedAt = -1;                               // the sample after which no voice was left (-1: never)
             std::vector<int> voicesAt;                       // per timeline event: the voices sounding as a note-on's
                                                              // call started (-1 for the others)
+            int mostVoices = 0;                              // an instrument's: the most voices sounding after a call
         };
 
         double cpuShare(double ms, double audioSeconds)
@@ -1698,6 +1699,8 @@ namespace playground::measure
                     }
                 }
                 pos += n;
+                if (kInstrument)
+                    r.mostVoices = std::max(r.mostVoices, engine.activeVoices());
                 if (kInstrument && r.endedAt < 0 && pos > watchFrom && engine.activeVoices() == 0)
                     r.endedAt = static_cast<long>(pos);
             }
@@ -1938,6 +1941,13 @@ namespace playground::measure
                 warnings.push_back("Peaks above 0 dBFS with " + std::to_string(notes.size())
                                    + " note(s): a voice should peak near 0.2 to 0.3, since sixteen can sound at once.");
 
+            // A plain request without a scenario's moves: the pitch's notes alone, the chord's and the sixteen voices' renders.
+            Request plainReq = request;
+            plainReq.automate.clear();
+            plainReq.hostEdits = {};
+            plainReq.transport.clear();
+            plainReq.blocks.clear();
+
             // The expected pitch: the lowest note, bent by the pitch wheel where the request starts it, at the usual 2
             // semitones (host.fm); the pitch looks within 600 cents of it, and nearer it than the next note up.
             const int lowest = *std::min_element(notes.begin(), notes.end());
@@ -1961,10 +1971,44 @@ namespace playground::measure
                 if (pitch.hz > 0.0)
                 {
                     v["pitch_cents"] = 1200.0 * std::log2(pitch.hz / expectedHz);
-                    out += " Pitch: " + fmt("%.2f Hz", pitch.hz) + fmt(", %+.1f cents from the expected ", v["pitch_cents"])
-                         + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(lowest)
-                         + (bend != 1.0 ? ", bent" : "") + ")"
-                         + (pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
+                    // Whether the pitch follows the note, for the report's words alone (the metrics keep their meaning,
+                    // and a check or a tune, which asks for some, renders nothing more): the lowest note and the note a
+                    // whole tone up (down from 126), each alone, held 0.6 s and measured as this (a single note held:
+                    // its own render for the first), must come within 50 cents of a whole tone apart. Not an octave: a
+                    // sound of a pitch of its own has its second harmonic there. A sound whose pitch does not follow
+                    // (noise, most drums, an engine whose pitch is its own) is named unpitched, with both pitches, in
+                    // place of cents from a note it does not play; a phrase or a chord of a pitched sound keeps its line.
+                    const int other = lowest + 2 <= 127 ? lowest + 2 : lowest - 2;
+                    double baseAt = pitch.hz, otherAt = 0.0;
+                    bool follows = !all;
+                    if (all)
+                    {
+                        const auto alone = [&](int key) {
+                            const double hz = expectedHz * std::exp2(static_cast<double>(key - lowest) / 12.0);
+                            const std::vector<int> keys{ key };
+                            const std::size_t n = static_cast<std::size_t>(0.6 * rate);
+                            const Rendered o = impl_->render(dials, nullptr, impl_->plan(dials, plainReq, n, &keys, n), n);
+                            const std::vector<Span> span{ { std::min(n / 2, static_cast<std::size_t>(kSettleSeconds * rate)), n } };
+                            return pitchOf(spectrum(mono(o.out, 0, o.out.size()), rate, span, Taper::hann, kPitchSeconds), hz,
+                                           hz * std::exp2(-kPitchCents / 1200.0), hz * std::exp2(kPitchCents / 1200.0))
+                                .hz;
+                        };
+                        if (notes.size() > 1 || phrased)
+                            baseAt = alone(lowest);
+                        otherAt = alone(other);
+                        follows = baseAt > 0.0 && otherAt > 0.0
+                               && std::fabs(1200.0 * std::log2(otherAt / baseAt) - 100.0 * static_cast<double>(other - lowest)) <= 50.0;
+                    }
+                    if (follows)
+                        out += " Pitch: " + fmt("%.2f Hz", pitch.hz) + fmt(", %+.1f cents from the expected ", v["pitch_cents"])
+                             + fmt("%.2f Hz", expectedHz) + " (note " + std::to_string(lowest)
+                             + (bend != 1.0 ? ", bent" : "") + ")"
+                             + (pitch.partial ? std::string() : std::string(": no partial near it, its harmonics' sum")) + ".";
+                    else
+                        out += " Unpitched: its pitch does not follow the note ("
+                             + (baseAt > 0.0 ? fmt("%.2f Hz", baseAt) : std::string("none")) + " at note " + std::to_string(lowest) + ", "
+                             + (otherAt > 0.0 ? fmt("%.2f Hz", otherAt) : std::string("none")) + " at note " + std::to_string(other)
+                             + ", each alone).";
                 }
                 out += "\n";
             }
@@ -2045,12 +2089,6 @@ namespace playground::measure
                 out += " No voice ended within " + seconds(tail) + ": process kept returning true (end the release, or give "
                        "a longer tail_seconds).\n";
 
-            // A plain request without a scenario's moves: the chord's and the sixteen voices' renders.
-            Request plainReq = request;
-            plainReq.automate.clear();
-            plainReq.hostEdits = {};
-            plainReq.transport.clear();
-            plainReq.blocks.clear();
             if (notes.size() == 1 && !phrased)
             {
                 const int n = notes.front();
@@ -2108,13 +2146,20 @@ namespace playground::measure
                     keys.push_back(low + k);
                 const std::size_t warm = static_cast<std::size_t>(0.03 * rate), len = static_cast<std::size_t>(0.15 * rate);
                 double best = kInf;
+                int most = 0;
                 for (int k = 0; k < 2; ++k)
                 {
                     const Rendered sixteen = impl_->render(dials, nullptr, impl_->plan(dials, plainReq, len, &keys, len), len, warm, len);
                     best = std::min(best, cpuShare(sixteen.cpuMs, static_cast<double>(sixteen.cpuSamples) / rate));
+                    most = std::max(most, sixteen.mostVoices);
                 }
                 v["cpu16_percent"] = best;
-                out += "; sixteen voices at once take " + percent(best);
+                // Its words only when more than one voice sounds (a program that plays one voice, its others ending
+                // at once, has no sixteen to time), saying how many when fewer than sixteen.
+                if (most >= Patch::kVoices)
+                    out += "; sixteen voices at once take " + percent(best);
+                else if (most > 1)
+                    out += "; sixteen keys at once take " + percent(best) + " (" + std::to_string(most) + " voices sound)";
             }
             out += cpuMoving + ".\n";
         }

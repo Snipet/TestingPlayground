@@ -521,10 +521,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
   power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
   (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
-  checks each at 48 and 192 kHz). Change a definition and its line together. Its CPU figures are the
-  rendering thread's own time (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an
-  Engine as the audio thread runs it with no editor open: an instrument's `cpu_percent` over the held part, and
-  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated; of the
+  checks each at 48 and 192 kHz). Change a definition and its line together. The report's pitch line is a judgement
+  on top, the metrics untouched: with the whole report asked, the lowest note and the note a whole tone up (not an
+  octave: a fixed pitch's second harmonic sits there), each alone, must measure within 50 cents of a whole tone apart,
+  else the line says "Unpitched" with both pitches. Its CPU figures are the rendering thread's own time
+  (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an Engine as the audio thread
+  runs it with no editor open: an instrument's `cpu_percent` over the held part, and
+  `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated (in the
+  report's words only when more than one voice sounds there: `Rendered::mostVoices`); of the
   program's own code with its dials held still, every call flat (a dial that moves costs more: the Filter example
   about 2.7x while its cutoff glides; the frozen copy that plays once they have held still a while usually costs
   less), which the metric's line in the guide says (the result's CPU line gives the numbers, and says when a scenario

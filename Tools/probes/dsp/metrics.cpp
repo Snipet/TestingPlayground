@@ -12,7 +12,9 @@
 //   PITCH    a note with a partial an octave below at -6 dB (a sub-order) reads the note's pitch (pitch_cents within a
 //            cent, the partial its own); one without its fundamental (harmonics 2 to 6) reads it from its harmonics'
 //            sum within 2 cents; a chord of a fifth reads its lowest note; low notes close together (a chord of C3 and
-//            D3, a bass line E2, F#2, G2, A2) and a sine at C2 and at E2 read their lowest note's own partial
+//            D3, a bass line E2, F#2, G2, A2) and a sine at C2 and at E2 read their lowest note's own partial; the
+//            report names each one's pitch (its pitch follows the note: its lowest note and a whole tone up, each
+//            alone, a whole tone apart)
 //   CLICKS   measure's click metric and trace's click finding agree: a sound with a step every 40 ms (an engine's
 //            firing, longer than 1.5 cycles of its note) has none by either, a sine that jumps once has one by both; an
 //            effect's: its report marks no step a click for the engine's, one for the jump, as trace finds, and none
@@ -385,16 +387,24 @@ PROBE(dsp, metrics)
         P.near("pitch.sub_order_cents", at(sub.values, "pitch_cents"), 0.0, 1.0);
         P.near("pitch.sub_order_hz", at(sub.values, "fundamental_hz") / noteHz(60), 1.0, 0.001);
         P.eq("pitch.sub_order_partial", has(sub.report, "its harmonics' sum") ? 0 : 1, 1);
+        // The report's judgement (the lowest note and a whole tone up, each alone, a whole tone apart): each of these
+        // follows the note.
+        const auto follows = [&](const std::string& k, const ms::Result& m) {
+            P.eq("pitch." + k + "_follows", has(m.report, " Pitch: ") && !has(m.report, "Unpitched") ? 1 : 0, 1);
+        };
+        follows("sub_order", sub);
         // No fundamental: harmonics 2 to 6 alone.
         const ms::Result missing = measured(pg::singleFile(partialsVoice(2, 6, 0.0f)), 48000.0, r);
         std::printf("no fundamental: %s", missing.report.c_str());
         P.near("pitch.missing_fundamental_cents", at(missing.values, "pitch_cents"), 0.0, 2.0);
         P.eq("pitch.missing_fundamental_sum", has(missing.report, "its harmonics' sum") ? 1 : 0, 1);
+        follows("missing_fundamental", missing);
         // A fifth: the lowest note's.
         ms::Request fifth = r;
         fifth.notes = { 60, 67 };
         const ms::Result f = measured(pg::singleFile(kHarmonicVoice), 48000.0, fifth);
         P.near("pitch.fifth_lowest", at(f.values, "pitch_cents"), 0.0, 2.0);
+        follows("fifth", f);
         // Low notes close together: C3 and D3 are 16 Hz apart, a bass line's E2 and F#2 10 Hz; and a low sine, whose
         // range of 600 cents spans a few tens of Hz. Each reads its lowest note's own partial.
         const auto own = [&](const std::string& k, const ms::Result& m, double within) {
@@ -402,6 +412,7 @@ PROBE(dsp, metrics)
                         has(m.report, "its harmonics' sum") ? " (its harmonics' sum)" : "");
             P.near("pitch." + k + "_cents", at(m.values, "pitch_cents"), 0.0, within);
             P.eq("pitch." + k + "_partial", has(m.report, "its harmonics' sum") ? 0 : 1, 1);
+            follows(k, m);
         };
         ms::Request close = r;
         close.notes = { 48, 50 };
