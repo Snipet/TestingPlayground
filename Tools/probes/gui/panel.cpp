@@ -34,8 +34,9 @@
 //             A trackpad's run of small steps (Panel::scrollGui, which the wheel over the ground calls) lays nothing
 //             out again (Panel::layouts): every node moves together, by the same whole px, each control and display
 //             shown exactly while its node is on a page shown and at least in part in the area, and each where a
-//             layout at that scroll puts it (the window a px wider and back); a step's cost against a layout's,
-//             printed
+//             layout at that scroll puts it (the window a px wider and back; and layoutGui made apart at the scroll
+//             rounded: the nodes on the pages shown and the tabs' tabs, at no scroll, a step, a half px, a fraction
+//             and the bottom); a step's cost against a layout's, printed
 //   PRAGMAS   a program without a .gui file in the PANEL view: its #pragma panel dials from the column's top
 //   READOUTS  a program whose Shared's init sets its fields, with no note played: number displays of shared->level
 //             (0.750), of an int, shared->notes (3, not 3.000), of shared->speed with unit="rpm" decimals=0 scale=60
@@ -85,6 +86,8 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <algorithm>
@@ -746,6 +749,55 @@ PROBE(gui, panel)
             if (scrolled != laidOut)
                 std::printf("scrolled:\n%s\nlaid out:\n%s\n", scrolled.c_str(), laidOut.c_str());
             P.eq("scroll.as_a_layout", scrolled == laidOut ? 1 : 0, 1);
+        }
+        // And what a layout at that scroll makes, apart from the panel's (both sides above take the layout at no scroll,
+        // moved): layoutGui at the scroll rounded, in the panel's area (its gutter taken), with its pages and the
+        // program's dials, every node on a page shown and each tabs node's tabs. At no scroll first (the inputs are the
+        // panel's), then a step, a half px, a fraction and the bottom; then back where the steps left it.
+        {
+            const pg::ui::GuiMeasure gm = [](const std::string& text, const funkgui::TextStyle& st) {
+                return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
+            };
+            const auto same = [](const funkgui::Rect& a, const funkgui::Rect& b) {
+                return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
+            };
+            const auto apart = [&](float scrollY) {
+                const pg::ui::GuiLayout& shown = panel.guiLayout();
+                const pg::ui::GuiLayout made = pg::ui::layoutGui(panel.panelSpec(), port.controls(), gm, shown.pages,
+                                                                 shown.area, 0.0f, std::round(scrollY));
+                bool ok = made.rects.size() == shown.rects.size() && made.visible == shown.visible;
+                for (std::size_t i = 0; ok && i < made.rects.size(); ++i)
+                    ok = !made.visible[i] || same(made.rects[i], shown.rects[i]);
+                for (int k = 0; ok && k < 8; ++k)
+                {
+                    const auto& tabs = static_cast<const pg::ui::GuiTabsItem&>(panel.guiItem(2, k));
+                    if (!tabs.shown())
+                        continue;
+                    const std::vector<funkgui::Rect> want = pg::ui::guiTabRects(
+                        panel.panelSpec(), tabs.node(), made.rects[static_cast<std::size_t>(tabs.node())], gm);
+                    ok = want.size() == tabs.tabs().size();
+                    for (std::size_t t = 0; ok && t < want.size(); ++t)
+                        ok = same(want[t], tabs.tabs()[t]);
+                }
+                if (!ok)
+                    std::printf("scroll %.2f: the moved layout differs from one made at that scroll\n",
+                                static_cast<double>(scrollY));
+                return ok;
+            };
+            const float bottom = panel.guiLayout().maxScrollY;
+            std::printf("scroll: the bottom at %.2f px\n", static_cast<double>(bottom));
+            int agree = 0;
+            for (const float s : { 0.0f, 19.0f, 57.5f, 120.4f, bottom })
+            {
+                panel.scrollGui(0.0f, -1.0e4f);
+                panel.scrollGui(0.0f, s);
+                host.tick(1);
+                agree += apart(s) ? 1 : 0;
+            }
+            P.eq("scroll.as_a_layout_apart", agree, 5);
+            panel.scrollGui(0.0f, -1.0e4f);
+            panel.scrollGui(0.0f, moved);
+            host.tick(1);
         }
         // A scroll step's cost against a layout's (threadSeconds(); printed, as the machine may be busy).
         {
