@@ -5,11 +5,14 @@
 //
 // Bounded: the newest kMax changes. Drags are merged: a change goes into the last one of its kind and subject (a dial,
 // a file, the bypass) while that one is recent and no token has been handed out since it was made, so a knob turned
-// for two seconds is one line ("14:02:31-33 you moved cutoff 1.20 kHz -> 3.40 kHz") and a reader never misses part of
-// one. A token is the journal's identity (made at random, so a token of another instance or of before a reload is
-// known as not this one's) and the number of the last change: tokens rather than a cursor here, since one server
-// process may serve several conversations, each with its own. Each token handed out is a new one (a number of its own
-// when nothing changed since the last), so what Live.cpp keeps of the files at a token is that token's alone.
+// for two seconds is one line ("14:02:31-33 the user moved cutoff 1.20 kHz -> 3.40 kHz") and a reader never misses part
+// of one. A reader gets each dial's moves after its token as one line, its net change (first -> last, at the first
+// move's place, with how many and who): forty-five minutes of play is a line a dial, not a line a move. The lines say
+// who in the third person ("the user", "the host", "the plugin's own chat"): "you" reads as the reader, a Claude. A
+// token is the journal's identity (made at random, so a token of another instance or of before a reload is known as
+// not this one's) and the number of the last change: tokens rather than a cursor here, since one server process may
+// serve several conversations, each with its own. Each token handed out is a new one (a number of its own when nothing
+// changed since the last), so what Live.cpp keeps of the files at a token is that token's alone.
 //
 // Any thread, under the journal's own mutex (a leaf: nothing is called with it held). The Processor writes it from the
 // message thread (poll(), the editor's calls), the agent's and the link's threads (the chat's tools), and
@@ -29,6 +32,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace playground
 {
@@ -38,7 +42,7 @@ namespace playground
         static constexpr std::size_t kMax = 256;
         enum class Who : uint8_t
         {
-            you,                                      // the user, in the editor
+            user,                                     // the user, in the editor
             host,                                     // the host: its automation, its own controls, its transport
             chat,                                     // the plugin's own chat (its Claude)
             plugin,                                   // the plugin itself (the output guard)
@@ -60,8 +64,8 @@ namespace playground
         // The output guard's alerts (Engine::Alert bits), merged while they go on.
         void alert(uint32_t bits);
 
-        // The changes after token `since` ("" or another journal's: none, known false); `issue`: the token returned
-        // is handed out (later changes go into new lines, not into those it covers).
+        // The changes after token `since` ("" or another journal's: none, known false), a dial's as its net change;
+        // `issue`: the token returned is handed out (later changes go into new lines, not into those it covers).
         Changes since(const std::string& since, bool issue);
         std::string token() const;
 
@@ -69,7 +73,7 @@ namespace playground
         struct Change
         {
             uint64_t seq = 0;
-            Who who = Who::you;
+            Who who = Who::user;
             std::string key;                          // what it is about: "dial:3", "file:program.fm", "bypass"
             std::string words;                        // a dial's name, a file's verb, a note's words
             std::string from, to;                     // a dial's values
@@ -82,6 +86,7 @@ namespace playground
         Change* mergeable(const std::string& key, Who who, int64_t windowMs, int64_t now);   // mutex held
         void add(Change c);                                                                   // mutex held
         std::string line(const Change& c) const;
+        std::string netLine(const std::vector<const Change*>& moves) const;   // a dial's moves, oldest first, as one
 
         mutable std::mutex mutex_;
         std::deque<Change> changes_;

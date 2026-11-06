@@ -819,7 +819,7 @@ namespace playground
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
-                journal_.note(Journal::Who::you, runWords(s));
+                journal_.note(Journal::Who::user, runWords(s));
             }
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
@@ -1091,7 +1091,7 @@ namespace playground
             const std::lock_guard<std::mutex> lock(programMutex_);
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
     }
 
     bool Processor::setDraftIf(const Draft& draft, uint64_t revision)
@@ -1103,7 +1103,7 @@ namespace playground
                 return false;                            // Claude's write (or a host's load) the editor has not merged
             before = std::exchange(draft_, draft);
         }
-        journalDraft(before, draft, Journal::Who::you);
+        journalDraft(before, draft, Journal::Who::user);
         return true;
     }
 
@@ -1388,7 +1388,7 @@ namespace playground
         }
         if (!openVersion(*p, *v, why))
             return false;
-        journal_.note(Journal::Who::you, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        journal_.note(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         return true;
     }
 
@@ -1419,7 +1419,7 @@ namespace playground
         defaultsRequest_ = id;
         editorRun_.store(id);
         userRun_.store(id);
-        journal_.note(Journal::Who::you,
+        journal_.note(Journal::Who::user,
                       "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
@@ -1442,7 +1442,7 @@ namespace playground
             return false;
         saved = { r->number, r->unchanged, r->created };
         if (!r->unchanged)
-            journal_.note(Journal::Who::you, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+            journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -1508,7 +1508,7 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
-        journal_.note(Journal::Who::you, "saved preset \"" + projectstore::tidyName(preset) + "\"");
+        journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = projectstore::tidyName(preset);
         baseDials_ = dials;
@@ -1545,7 +1545,7 @@ namespace playground
         else
             setDialsByName(cs, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.note(Journal::Who::you, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        journal_.note(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);

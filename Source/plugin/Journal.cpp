@@ -48,7 +48,7 @@ namespace playground
         {
             switch (who)
             {
-                case Journal::Who::you:    return "you";
+                case Journal::Who::user:   return "the user";
                 case Journal::Who::host:   return "the host";
                 case Journal::Who::chat:   return "the plugin's own chat";
                 case Journal::Who::plugin: return "the plugin";
@@ -243,6 +243,28 @@ namespace playground
         return out + subject(c.who) + " " + c.words;
     }
 
+    // "14:02:31-14:47:10 the user and the host moved cutoff 1.20 kHz -> 3.40 kHz (12 times)": from the first move's
+    // value to the last one's, over their times; "set" when only the plugin's chat did, "changed" when it and others.
+    std::string Journal::netLine(const std::vector<const Change*>& moves) const
+    {
+        if (moves.size() == 1)
+            return line(*moves.front());
+        const Change& first = *moves.front();
+        const Change& last = *moves.back();
+        std::vector<Who> who;
+        for (const Change* c : moves)
+            if (std::find(who.begin(), who.end(), c->who) == who.end())
+                who.push_back(c->who);
+        std::string subjects;
+        for (std::size_t i = 0; i < who.size(); ++i)
+            subjects += std::string(i == 0 ? "" : i + 1 == who.size() ? " and " : ", ") + subject(who[i]);
+        const bool chat = std::find(who.begin(), who.end(), Who::chat) != who.end();
+        const char* verb = !chat ? " moved " : who.size() == 1 ? " set " : " changed ";
+        return when(first.fromMs, last.toMs) + " " + subjects + verb + first.words + " "
+             + (first.from == last.to ? "and back to " + last.to : first.from + " -> " + last.to) + " ("
+             + std::to_string(moves.size()) + " times)";
+    }
+
     Changes Journal::since(const std::string& since, bool issue)
     {
         Changes out;
@@ -254,15 +276,37 @@ namespace playground
         if (out.known)
         {
             out.complete = from >= dropped_;
+            // A line a change, but a dial's moves (its slot and name: another program's dial in that slot is another
+            // dial) go into one, at its first move's place.
+            std::vector<std::vector<const Change*>> rows;
+            std::vector<std::pair<std::string, std::size_t>> dials;   // a dial's key and name -> its row
             for (const Change& c : changes_)
             {
                 if (c.seq <= from || c.ends > from)       // an un-bypass whose bypass is listed: that line says until
                     continue;
-                out.lines.push_back(line(c));
-                if (c.who == Who::plugin)
+                if (c.key.rfind("dial:", 0) == 0)
+                {
+                    const std::string dial = c.key + '\x1f' + c.words;
+                    const auto it = std::find_if(dials.begin(), dials.end(), [&](const auto& d) { return d.first == dial; });
+                    if (it != dials.end())
+                    {
+                        rows[it->second].push_back(&c);
+                        continue;
+                    }
+                    dials.emplace_back(dial, rows.size());
+                }
+                rows.push_back({ &c });
+            }
+            for (const std::vector<const Change*>& row : rows)
+            {
+                out.lines.push_back(netLine(row));
+                if (row.front()->who == Who::plugin)
                     ++out.alerts;
                 else
+                {
                     ++out.changes;
+                    out.byUser += std::all_of(row.begin(), row.end(), [](const Change* c) { return c->who == Who::user; }) ? 1 : 0;
+                }
             }
         }
         if (issue)

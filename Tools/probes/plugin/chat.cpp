@@ -1768,7 +1768,7 @@ PROBE(plugin, chat)
         const pg::ChatAgent::McpResult guarded = call("edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(mine) }, { "expected", juce::String(v1) } }));
         std::printf("edit_file with expected, after the user's edit:\n%s\n", allText(guarded).c_str());
         // The result's first line names what the user changed since the last MCP call (the edit, by its file).
-        P.eq("files.hint_names_the_edit", allText(guarded).rfind("(The user changed 1 thing since the last MCP call here: you edited notes.fm. "
+        P.eq("files.hint_names_the_edit", allText(guarded).rfind("(The user changed 1 thing since the last MCP call here: the user edited notes.fm. "
                                                                  "get_status with since shows it.)", 0) == 0 ? 1 : 0, 1);
         P.eq("files.expected_refuses", guarded.isError && has(toolText(guarded), "notes.fm changed since version " + v1 + " (the user's edit, which is kept): nothing was written.")
                                            && has(toolText(guarded), "\n+// the user's line\n") && fileText("notes.fm") == theirs ? 1 : 0, 1);

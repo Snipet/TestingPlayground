@@ -389,9 +389,11 @@ namespace playground
         }
         if (!ch.known || (ch.changes == 0 && ch.alerts == 0))
             return {};
+        // "The user changed" when every change is the user's; the host's automation is not the user at work
         std::string what;
+        const std::string things = std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
         if (ch.changes > 0)
-            what = "The user changed " + std::to_string(ch.changes) + (ch.changes == 1 ? " thing" : " things");
+            what = ch.byUser == ch.changes ? "The user changed " + things : things + " changed";
         if (ch.alerts > 0)
             what += ch.changes > 0 ? " and the output guard acted" : "The output guard acted";
         std::string named;
@@ -400,7 +402,7 @@ namespace playground
         {
             if (shown == kHintNamed)
                 break;
-            // "14:02:31-33 you moved cutoff 1.20 kHz -> 3.40 kHz": the change without its time
+            // "14:02:31-33 the user moved cutoff 1.20 kHz -> 3.40 kHz": the change without its time
             const std::size_t sp = l.find(' ');
             const bool timed = sp != std::string::npos && sp > 0
                             && std::all_of(l.begin(), l.begin() + static_cast<std::ptrdiff_t>(sp),
@@ -464,7 +466,7 @@ namespace playground
                 out = "Nothing changed since your last look.\n";
             else
             {
-                out = "What changed since your last look, oldest first:\n";
+                out = "What changed since your last look, oldest first (a dial's moves as one line, its net change):\n";
                 for (const std::string& l : ch.lines)
                     out += "- " + l + "\n";
             }

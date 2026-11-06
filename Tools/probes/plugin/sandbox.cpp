@@ -616,7 +616,7 @@ PROBE(plugin, sandbox)
                 for (const juce::var& b : *blocks)
                     hinted += b["text"].toString().toStdString();
             std::printf("the next MCP result after the sandbox's read: %s\n", hinted.substr(0, hinted.find('\n')).c_str());
-            P.eq("peek.cursor_kept", hinted.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+            P.eq("peek.cursor_kept", hinted.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
         }
         const int exampleNumber = numberIn(opened2.text);
         const std::string theme = funkgui::UiPreferences::get().theme() == 1 ? "paper" : "graphite";
@@ -684,7 +684,7 @@ PROBE(plugin, sandbox)
             labelled = labelled || (n.kind == pg::GuiKind::label && n.text == "APPLIED HERE");
         P.eq("apply.written", !a.error && has(a.text, "wrote panel.gui into its program") && has(written, "label \"APPLIED HERE\"") ? 1 : 0, 1);
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
-        P.eq("apply.hint", a.text.rfind("(The user changed 1 thing since the last MCP call here", 0) == 0 ? 1 : 0, 1);
+        P.eq("apply.hint", a.text.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
         s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
     }
 
