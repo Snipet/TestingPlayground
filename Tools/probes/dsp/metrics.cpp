@@ -49,11 +49,15 @@
 //            of a half 6.02 dB under it
 //   ORDERS   off_order_db at 48 and 192 kHz: eight harmonics nothing off their orders; a line of its own at 470 Hz its
 //            share of the power, named; at 220 Hz a line at 330 Hz among the half-orders, on the orders of base_hz 110;
-//            a base under twice the zone says so; an effect's sine passed nothing, a cubic shaper distorting but on the
-//            orders, a line of its own its share
+//            a base under twice the zone (base_hz 10; a phrase of sixteenth notes from C3, each held 0.075 s; the
+//            effect's hold_seconds 0.1) not measured, saying why (and the phrase's wobble_db: no note held long enough
+//            for a frame); an effect's sine passed nothing, a cubic shaper distorting but on the orders, a line of its
+//            own its share
 //   WOBBLE   wobble_db at 48 and 192 kHz: a steady sound and a tremolo about 0, harmonics a comb sweeps over at least
-//            1 dB, white noise under 1 dB; an effect's pass and a fixed comb about 0, a flanger at least 1 dB; the same
-//            at both rates; a held part under 0.2 s not measured, saying why
+//            1 dB, white noise under 1 dB; an effect's steady tone through a pass, a fixed comb, a 20 ms echo, an
+//            allpass, a 37 ms feedback comb and a tremolo about 0 (the echo and the allpass under a tenth of the
+//            flanger), a flanger at least 0.7 dB; the same at both rates; a held part under 0.2 s, and an effect's
+//            silent output, not measured, saying why
 //   LINE     the report's last line every metric measured, name=value, in the table's order
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
@@ -567,6 +571,118 @@ module Voice
 };
 )";
     }
+
+    // Effects that hold still but remember: an echo (the input and half of it 20 ms later) and a Schroeder allpass of
+    // 5 ms (g 0.7: a flat gain, its phase all that changes). And one that moves its level alone: a tremolo of 3 Hz, its
+    // gain 0.5 to 1.
+    [[maybe_unused]] const char* kEchoEffect = R"(module Effect
+{
+    float rate;
+    float bl[4096];
+    float br[4096];
+    int w;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const int d = (int)(0.02f * rate);
+        for (int i = 0; i < n; ++i)
+        {
+            bl[w] = left[i];
+            br[w] = right[i];
+            const int a = (w - d + 4096) % 4096;
+            left[i] = left[i] + 0.5f * bl[a];
+            right[i] = right[i] + 0.5f * br[a];
+            w = (w + 1) % 4096;
+        }
+    }
+};
+)";
+
+    [[maybe_unused]] const char* kAllpassEffect = R"(module Effect
+{
+    float rate;
+    float xl[4096];
+    float xr[4096];
+    float yl[4096];
+    float yr[4096];
+    int w;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const int d = (int)(0.005f * rate);
+        for (int i = 0; i < n; ++i)
+        {
+            const int a = (w - d + 4096) % 4096;
+            const float ol = -0.7f * left[i] + xl[a] + 0.7f * yl[a];
+            const float orr = -0.7f * right[i] + xr[a] + 0.7f * yr[a];
+            xl[w] = left[i];
+            xr[w] = right[i];
+            yl[w] = ol;
+            yr[w] = orr;
+            left[i] = ol;
+            right[i] = orr;
+            w = (w + 1) % 4096;
+        }
+    }
+};
+)";
+
+    // A feedback comb of 37 ms (g 0.7: its tail falls 60 dB in about 0.7 s), a memory longer than wobble_db's frames.
+    [[maybe_unused]] const char* kFeedbackEffect = R"(module Effect
+{
+    float rate;
+    float yl[8192];
+    float yr[8192];
+    int w;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        const int d = (int)(0.037f * rate);
+        for (int i = 0; i < n; ++i)
+        {
+            const int a = (w - d + 8192) % 8192;
+            const float ol = left[i] + 0.7f * yl[a];
+            const float orr = right[i] + 0.7f * yr[a];
+            yl[w] = ol;
+            yr[w] = orr;
+            left[i] = 0.3f * ol;
+            right[i] = 0.3f * orr;
+            w = (w + 1) % 8192;
+        }
+    }
+};
+)";
+
+    [[maybe_unused]] const char* kMuteEffect = R"(module Effect
+{
+    void init(float r) {}
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = 0;
+            right[i] = 0;
+        }
+    }
+};
+)";
+
+    [[maybe_unused]] const char* kTremoloEffect = R"(module Effect
+{
+    float rate, t;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = 0.75f - 0.25f * sinf(18.8495559f * t);
+            left[i] = g * left[i];
+            right[i] = g * right[i];
+            t += 1 / rate;
+        }
+    }
+};
+)";
 
     ms::Result measured(const pg::Sources& files, double rate, ms::Request r)
     {
@@ -1435,10 +1551,33 @@ PROBE(dsp, metrics)
             std::printf("and base_hz 110:\n%s", based.report.c_str());
             P.le("orders.base_" + tag, at(based.values, "off_order_db"), -70.0);
             P.eq("orders.base_named_" + tag, has(based.report, "Off the orders of 110.00 Hz (base_hz) while held") ? 1 : 0, 1);
-            // A base under twice the zone: every frequency is near an order, and the line says why.
+            // A base under twice the zone: every frequency is near an order, so nothing is measured, saying why. A
+            // phrase of sixteenth notes at 120 bpm from C3: each held 0.075 s, the zone 80 Hz, the expected pitch under
+            // twice it (and no note held long enough for wobble_db's 0.1 s frame).
+            const auto unmeasured = [&](const ms::Result& m, const char* metric, const char* why, const char* said) {
+                const auto it = m.unmeasured.find(metric);
+                return m.values.count(metric) == 0 && it != m.unmeasured.end() && has(it->second, why) && has(m.report, said);
+            };
             a3.baseHz = 10.0;
+            const ms::Result low = measured(pg::singleFile(ordersVoice(330.0, 0.01)), rate, a3);
+            std::printf("base_hz 10:\n%s", low.report.c_str());
             P.eq("orders.base_too_low_" + tag,
-                 has(measured(pg::singleFile(ordersVoice(330.0, 0.01)), rate, a3).report, "every frequency is that near one") ? 1 : 0, 1);
+                 unmeasured(low, "off_order_db", "every frequency is within 6.32 Hz of a multiple of 10.00 Hz, the base being under "
+                                                 "twice that (6 bins of 0.95 s Blackman-Harris frames; longer notes would narrow it",
+                            "Off the orders of 10.00 Hz (base_hz) while held: not measured, every frequency is within") ? 1 : 0, 1);
+            ms::Request run = r;
+            run.want = { "off_order_db", "wobble_db" };
+            for (int k = 0; k < 16; ++k)
+                run.phrase.push_back({ 48 + 4 * (k % 3), 0.125 * k, 0.125, 0.8f });
+            const ms::Result sixteenths = measured(pg::singleFile(kHarmonicVoice), rate, run);
+            std::printf("sixteenths from C3:\n%s", sixteenths.report.c_str());
+            P.eq("orders.short_notes_" + tag,
+                 unmeasured(sixteenths, "off_order_db", "every frequency is within 80 Hz of a multiple of 130.81 Hz",
+                            "while held: not measured, every frequency is within 80 Hz") ? 1 : 0, 1);
+            P.eq("wobble.short_notes_" + tag,
+                 unmeasured(sixteenths, "wobble_db", "the held part makes no 0.1 s frame (each note's held stretch makes its own, "
+                                                     "half a frame apart: three take one over 0.15 s, so a note held over 0.2 s)",
+                            "Wobble: not measured, the held part makes no 0.1 s frame") ? 1 : 0, 1);
         }
         else
         {
@@ -1460,6 +1599,16 @@ PROBE(dsp, metrics)
             P.near("orders.line_" + tag, at(line.values, "off_order_db"), 10.0 * std::log10(5.0e-5 / (sine + 5.0e-5)), 0.1);
             P.eq("orders.line_named_" + tag, has(line.report, "Off the orders of 220 Hz in the sine's output, more than 6.32 Hz from each")
                                                  && has(line.report, "the strongest lines off them 470.0 Hz (-28 dB)") ? 1 : 0, 1);
+            // hold_seconds 0.1: held 0.05 s, the zone 120 Hz, 220 Hz under twice it: not measured, saying why.
+            ms::Request brief = r;
+            brief.holdSeconds = 0.1f;
+            const ms::Result low = measured(pg::singleFile(kPassEffect), rate, brief);
+            const auto why = low.unmeasured.find("off_order_db");
+            P.eq("orders.base_too_low_" + tag,
+                 low.values.count("off_order_db") == 0 && why != low.unmeasured.end()
+                         && has(why->second, "every frequency is within 120 Hz of a multiple of 220.00 Hz, the base being under twice "
+                                             "that (6 bins of 0.05 s Blackman-Harris frames; a longer hold_seconds would narrow it")
+                         && has(low.report, "Off the orders of 220 Hz in the sine's output: not measured, ") ? 1 : 0, 1);
         }
     }
 
@@ -1496,30 +1645,56 @@ PROBE(dsp, metrics)
             }
             else
             {
-                // An effect that passes its input, and a fixed comb: the noise's gain keeps its shape (the comb's deep
-                // notches about 0.2 dB: a frame's own error there). A flanger (the comb's delay from 0.2 to 1.8 ms and
-                // back every 2 s): its notches move.
+                // A steady tone's output, frames on its period: an effect that holds still reads 0 however long it
+                // remembers once settled (a pass, a fixed comb, a 20 ms echo, an allpass; a feedback comb whose tail is
+                // still falling in the first frames about it), and so does a tremolo (its level moves, its shape does
+                // not). A flanger (the comb's delay from 0.2 to 1.8 ms and back every 2 s):
+                // its notches move, and the effects that hold still read under a tenth of it.
                 const double pass = at(measured(pg::singleFile(kPassEffect), rate, r).values, "wobble_db");
                 const double comb = at(measured(pg::singleFile(combEffect(0.0)), rate, r).values, "wobble_db");
+                const double echo = at(measured(pg::singleFile(kEchoEffect), rate, r).values, "wobble_db");
+                const double allpass = at(measured(pg::singleFile(kAllpassEffect), rate, r).values, "wobble_db");
+                const double feedback = at(measured(pg::singleFile(kFeedbackEffect), rate, r).values, "wobble_db");
+                const double tremolo = at(measured(pg::singleFile(kTremoloEffect), rate, r).values, "wobble_db");
                 const ms::Result flanger = measured(pg::singleFile(combEffect(0.8)), rate, r);
-                moved[rate == 48000.0 ? 0 : 1] = at(flanger.values, "wobble_db");
-                std::printf("wobble at %s: passed %.3f dB, a fixed comb %.3f dB, a flanger %.3f dB\n%s", tag.c_str(), pass, comb,
-                            at(flanger.values, "wobble_db"), flanger.report.c_str());
-                P.le("wobble.pass_" + tag, pass, 0.05);
-                P.le("wobble.comb_" + tag, comb, 0.3);
-                P.ge("wobble.flanger_" + tag, at(flanger.values, "wobble_db"), 1.0);
+                const double flanged = at(flanger.values, "wobble_db");
+                moved[rate == 48000.0 ? 0 : 1] = flanged;
+                std::printf("wobble at %s: passed %.4f dB, a fixed comb %.4f dB, an echo %.4f dB, an allpass %.4f dB, a feedback "
+                            "comb %.4f dB, a tremolo %.4f dB, a flanger %.3f dB\n%s", tag.c_str(), pass, comb, echo, allpass, feedback,
+                            tremolo, flanged, flanger.report.c_str());
+                P.le("wobble.pass_" + tag, pass, 0.01);
+                P.le("wobble.comb_" + tag, comb, 0.01);
+                P.le("wobble.echo_" + tag, echo, 0.05);
+                P.le("wobble.allpass_" + tag, allpass, 0.05);
+                P.le("wobble.feedback_" + tag, feedback, 0.1);
+                P.le("wobble.tremolo_" + tag, tremolo, 0.1);
+                P.ge("wobble.flanger_" + tag, flanged, 0.7);
+                P.le("wobble.still_under_flanger_" + tag, std::max(echo, allpass), 0.1 * flanged);
+                // An effect that silences its input: no frame sounds, and the reason says so.
+                const ms::Result mute = measured(pg::singleFile(kMuteEffect), rate, r);
+                const auto muted = mute.unmeasured.find("wobble_db");
+                P.eq("wobble.silent_" + tag, mute.values.count("wobble_db") == 0 && muted != mute.unmeasured.end()
+                                                 && has(muted->second, "the output is silent in 14 of its 14 frames, and fewer than "
+                                                                       "three sound") ? 1 : 0, 1);
                 P.eq("wobble.flanger_line_" + tag,
-                     has(flanger.report, "Wobble: the noise's gain in each third-octave band, against their mean gain, moves ")
-                         && has(flanger.report, "frames of 0.1 s, weighted by the gain over the bands within 30 dB of the most); the most, ") ? 1 : 0, 1);
+                     has(flanger.report, "Steady tone (partials every 10 Hz, flat) at -18.0 dBFS RMS for 1.50 s: each third-octave "
+                                         "band's share of the output's power moves ")
+                         && has(flanger.report, " (its SD over 14 frames of 0.1 s, on the tone's period, power-weighted over the "
+                                                "bands within 30 dB of the loudest); the most, ") ? 1 : 0, 1);
             }
-            // A held part under 0.2 s holds fewer than three frames: not measured, saying why.
+            // A held part under 0.2 s holds fewer than three frames: not measured, saying why (an instrument's note
+            // held 0.15 s makes two; an effect's held part, from 0.05 s, one whole period of the tone).
             ms::Request brief = r;
             brief.holdSeconds = 0.2f;
             const ms::Result b = measured(pg::singleFile(kInstrument ? kHarmonicVoice : kPassEffect), rate, brief);
             const auto why = b.unmeasured.find("wobble_db");
-            P.eq("wobble.too_short_" + tag, b.values.count("wobble_db") == 0 && why != b.unmeasured.end()
-                                                && has(why->second, "holds fewer than three 0.1 s frames (it needs 0.2 s)")
-                                                && has(b.report, "Wobble: not measured, ") ? 1 : 0, 1);
+            P.eq("wobble.too_short_" + tag,
+                 b.values.count("wobble_db") == 0 && why != b.unmeasured.end()
+                         && has(why->second, kInstrument ? "the held part makes fewer than three 0.1 s frames (each note's held stretch "
+                                                           "makes its own, half a frame apart: three take one over 0.15 s"
+                                                         : "the held part holds fewer than three whole 0.1 s periods of the tone (a frame "
+                                                           "each, from its start: hold_seconds 0.4 holds three)")
+                         && has(b.report, kInstrument ? "Wobble: not measured, " : "wobble not measured, ") ? 1 : 0, 1);
         }
         P.near("wobble.rates", moved[1] / moved[0], 1.0, kInstrument ? 0.05 : 0.15);
     }

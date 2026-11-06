@@ -306,17 +306,27 @@ namespace playground::measure
                                        : std::string(taper) + " frames of " + shortest + " to " + longest + " s";
         }
 
+        // Why off_order_db is not measured over `s` (empty when it is): no frame, or a base under twice an order's zone
+        // (every frequency is then near a multiple). `longer` says what narrows the zone ("longer notes").
+        std::string ordersWhy(double base, const Orders& o, const Spectrum& s, const std::string& longer)
+        {
+            if (!(base > 0.0))
+                return "there is no base (no note)";
+            if (s.frames == 0)
+                return "the part holds no frame (it is under 16 samples)";
+            if (base > 2.0 * o.zoneHz)
+                return {};
+            return fmt("every frequency is within %.3g Hz of a multiple of ", o.zoneHz) + fmt("%.2f Hz, the base being under twice ", base)
+                 + fmt("that (%g bins of ", kOrderBins) + framesOf(s, "Blackman-Harris") + "; " + longer + " narrow it, to 3 Hz from 2 s)";
+        }
+
         // off_order_db's line, after `lead` ("Off the orders of 130.81 Hz (the expected pitch)"): ", more than 6.32 Hz from
         // each in 0.95 s Blackman-Harris frames: -88.1 dB of the power (half-orders -101.2 dB, third-orders -110.4 dB); the
-        // strongest lines off them 470.0 Hz (-18 dB), 980.0 Hz (-22 dB) under the strongest component."
-        std::string ordersLine(const std::string& lead, double base, const Orders& o, const Spectrum& s)
+        // strongest lines off them 470.0 Hz (-18 dB), 980.0 Hz (-22 dB) under the strongest component." Measured only
+        // (ordersWhy empty).
+        std::string ordersLine(const std::string& lead, const Orders& o, const Spectrum& s)
         {
-            if (s.frames == 0)
-                return lead + ": no frame (the part is under 16 samples).\n";
             std::string out = lead + fmt(", more than %.3g Hz from each in ", o.zoneHz) + framesOf(s, "Blackman-Harris");
-            if (base <= 2.0 * o.zoneHz)
-                return out + ": every frequency is that near one, the base being under twice that (a longer part has longer "
-                             "frames, up to 2 s).\n";
             const auto db = [](double x) { return x <= -199.0 ? std::string("none") : fmt("%.1f dB", x); };
             out += ": " + (o.offDb <= -199.0 ? std::string("none of the power") : fmt("%.1f dB of the power", o.offDb));
             std::string parts;
@@ -347,6 +357,13 @@ namespace playground::measure
                                          + (w.bandHz >= 1000.0 ? fmt("%g kHz", w.bandHz / 1000.0) : fmt("%g Hz", w.bandHz))
                                    : std::string())
                  + ".\n";
+        }
+
+        // wobble_db's reason when frames enough were there but too few of them sounded.
+        std::string silentWhy(const Wobble& w)
+        {
+            return "the output is silent in " + std::to_string(w.silent) + " of its " + std::to_string(w.frames + w.silent)
+                 + " frames, and fewer than three sound";
         }
 
         // A metric's value as the metrics line writes it: a number in its unit ("inf" for one that never came).
@@ -596,8 +613,9 @@ namespace playground::measure
             { "noise_lufs", "LUFS", "BS.1770 integrated loudness of the noise coming out while held (going in: -11.9 at 48 kHz)",
               1.0, false, 0.0 },
             { "wobble_db", "dB",
-              "the SD over the spectrum's frames of the noise's gain in each third-octave band (its bins', out over in) "
-              "against their mean, weighted by the gain, over bands within 30 dB of the most: a flanger",
+              "a steady tone's output (partials every 10 Hz, flat, -18 dBFS RMS): the SD of each third-octave band's share "
+              "of its power over 0.1 s frames on the tone's period while held (an effect that holds still, a delay or a "
+              "reverb, reads about 0), power-weighted over bands within 30 dB of the loudest: a flanger",
               0.5, false, 0.0 },
             { "impulse_peak_db", "dBFS", "the largest output sample after an impulse of 0.5 (-6 dBFS)", 1.0, false, 0.0 },
             { "impulse_delay_ms", "ms", "when that sample comes", 0.05, true, 0.1 },
@@ -1306,87 +1324,100 @@ namespace playground::measure
         return o;
     }
 
-    namespace
+    std::size_t wobbleFrame(double rate)
     {
-        // The mean over a band's bins (each by its share of the band, as Spectrum::bandPower takes them) of out's power
-        // over in's: a filter's gain there whatever the input's spectrum inside the band; NaN at or above the Nyquist
-        // frequency.
-        double bandGain(const Spectrum& out, const Spectrum& in, double lo, double hi)
+        return std::max<std::size_t>(16, static_cast<std::size_t>(std::llround(kSpectrumSeconds * rate)));
+    }
+
+    std::vector<float> steadyTone(std::size_t n, double rate)
+    {
+        // One period of the tone (wobbleFrame's samples): a partial at every multiple of rate / period (10 Hz) in the band,
+        // each a cosine of a fixed random phase, read from one table of the period (k i mod the period) so that the tone
+        // repeats exactly.
+        const std::size_t period = wobbleFrame(rate);
+        const double spacing = rate / static_cast<double>(period);
+        const auto first = static_cast<std::size_t>(std::ceil(kBandLowHz / spacing - 1e-9));
+        const auto last = static_cast<std::size_t>(std::floor(std::min(kBandHighHz, 0.4999 * rate) / spacing + 1e-9));
+        std::vector<double> c(period), s(period), one(period, 0.0);
+        for (std::size_t m = 0; m < period; ++m)
         {
-            const double nyquist = 0.5 * out.rate;
-            if (out.power.size() < 2 || in.power.size() != out.power.size() || !(out.hzPerBin > 0.0) || !(lo < nyquist))
-                return std::nan("");
-            const double top = static_cast<double>(out.power.size() - 1);
-            const double a = lo / out.hzPerBin, b = std::min(hi, nyquist) / out.hzPerBin;
-            double sum = 0.0, weight = 0.0;
-            for (auto k = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(a + 0.5))); k < out.power.size(); ++k)
-            {
-                const double k0 = static_cast<double>(k) - 0.5, k1 = std::min(static_cast<double>(k) + 0.5, top);
-                if (k0 >= b)
-                    break;
-                if (const double share = std::min(k1, b) - std::max(k0, a); share > 0.0 && in.power[k] > 0.0)
-                {
-                    sum += share * out.power[k] / in.power[k];
-                    weight += share;
-                }
-            }
-            return weight > 0.0 ? sum / weight : 0.0;
+            const double x = 2.0 * std::numbers::pi * static_cast<double>(m) / static_cast<double>(period);
+            c[m] = std::cos(x);
+            s[m] = std::sin(x);
         }
+        const double amp = std::pow(10.0, kSteadyToneDb / 20.0) * std::sqrt(2.0 / static_cast<double>(last - first + 1));
+        uint32_t seed = 33333;                               // fixed phases: the same tone each time
+        for (std::size_t k = first; k <= last; ++k)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            const double phase = 2.0 * std::numbers::pi * static_cast<double>(seed >> 8) / 16777216.0;
+            const double a = amp * std::cos(phase), b = amp * std::sin(phase);
+            for (std::size_t i = 0, m = 0; i < period; ++i)
+            {
+                one[i] += a * c[m] - b * s[m];
+                m += k;
+                if (m >= period)
+                    m -= period;
+            }
+        }
+        // It fades in over its first kSteadyFadeSeconds (raised cosine): no step at its start.
+        const std::size_t fade = std::min(period, static_cast<std::size_t>(kSteadyFadeSeconds * rate));
+        std::vector<float> out(n);
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            const double g = i < fade ? 0.5 - 0.5 * std::cos(std::numbers::pi * static_cast<double>(i) / static_cast<double>(fade)) : 1.0;
+            out[i] = static_cast<float>(g * one[i % period]);
+        }
+        return out;
     }
 
     Wobble wobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
-                  const std::vector<float>* inL, const std::vector<float>* inR)
+                  bool onPeriod)
     {
         Wobble w;
-        const bool gain = inL != nullptr && inR != nullptr;
         const std::vector<Band> bands = bandsOf(Bands::third);
-        std::size_t size = std::min(l.size(), r.size());
-        if (gain)
-            size = std::min({ size, inL->size(), inR->size() });
-        const std::size_t frame = std::max<std::size_t>(16, static_cast<std::size_t>(std::llround(kSpectrumSeconds * rate)));
+        const std::size_t size = std::min(l.size(), r.size());
+        const std::size_t frame = wobbleFrame(rate);
         const double floorShare = std::pow(10.0, -kWobbleFloorDb / 10.0);
         std::vector<std::vector<double>> shares;             // each frame's bands, in dB
-        std::vector<double> weight(bands.size(), 0.0);       // each band's power (an effect's: its gain), summed
-        std::vector<double> p(bands.size()), g(bands.size(), 1.0);
+        std::vector<double> weight(bands.size(), 0.0);       // each band's power, summed
+        std::vector<double> p(bands.size());
         for (const auto& [from, to] : spans)
         {
             const std::size_t end = std::min(to, size);
             if (end < from + frame)
                 continue;                                    // shorter than a frame: none
             // The frames as the spectrum's (welch's): spread evenly from the span's start to its end, at most half a
-            // frame apart.
-            const std::size_t len = end - from;
-            const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+            // frame apart; or (onPeriod) end to end, each from a multiple of a frame from the render's start.
+            const std::size_t len = end - from, first = (from + frame - 1) / frame * frame;
+            const std::size_t count = onPeriod ? (end >= first + frame ? (end - first) / frame : 0)
+                                    : len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
             for (std::size_t f = 0; f < count; ++f)
             {
-                const std::size_t at = from + (count == 1 ? 0 : (len - frame) * f / (count - 1));
+                const std::size_t at = onPeriod ? first + f * frame : from + (count == 1 ? 0 : (len - frame) * f / (count - 1));
                 const std::vector<Span> one{ { at, at + frame } };
                 const Spectrum out = stereoSpectrum(l, r, rate, one, Taper::hann, kSpectrumSeconds);
-                const Spectrum in = gain ? stereoSpectrum(*inL, *inR, rate, one, Taper::hann, kSpectrumSeconds) : Spectrum{};
-                double total = 0.0;                          // the power in the thirds (an effect's: the mean gain)
+                double total = 0.0;                          // the power in the thirds
                 std::size_t used = 0;                        // the bands under the Nyquist frequency
                 for (std::size_t b = 0; b < bands.size(); ++b)
                 {
                     p[b] = out.bandPower(bands[b].lo, bands[b].hi);
                     if (std::isnan(p[b]))
                         break;
-                    if (gain)
-                        g[b] = bandGain(out, in, bands[b].lo, bands[b].hi);
-                    total += gain ? g[b] : p[b];
+                    total += p[b];
                     used = b + 1;
                 }
-                if (gain && used > 0)
-                    total /= static_cast<double>(used);
                 if (!(total > 1e-20))
-                    continue;                                // silent: no shape
-                // A band's share of the frame's power in the thirds (an effect's: its gain against their mean gain), at
-                // least kWobbleFloorDb under it.
+                {
+                    ++w.silent;                              // silent: no shape
+                    continue;
+                }
+                // A band's share of the frame's power in the thirds, at least kWobbleFloorDb under it.
                 std::vector<double> row(used);
                 for (std::size_t b = 0; b < used; ++b)
                 {
-                    const double share = (gain ? g[b] : p[b]) / total;
-                    row[b] = 10.0 * std::log10(std::max(share, floorShare));
-                    weight[b] += gain ? g[b] : p[b];
+                    row[b] = 10.0 * std::log10(std::max(p[b] / total, floorShare));
+                    weight[b] += p[b];
                 }
                 shares.push_back(std::move(row));
             }
@@ -2723,10 +2754,20 @@ namespace playground::measure
                 const double base = given ? request.baseHz : expectedHz;
                 const Spectrum os = stereoSpectrum(r.out.l, r.out.r, rate, held, Taper::blackmanHarris, kOrderSeconds);
                 const Orders o = orders(os, base);
-                v["off_order_db"] = o.offDb;
-                out += ordersLine("Off the orders of " + fmt("%.2f Hz", base) + (given ? " (base_hz)" : " (the expected pitch)")
-                                      + (windowed ? " in the window" : " while held"),
-                                  base, o, os);
+                const std::string lead = "Off the orders of " + fmt("%.2f Hz", base) + (given ? " (base_hz)" : " (the expected pitch)")
+                                       + (windowed ? " in the window" : " while held");
+                // Frames as long as the shortest held stretch (or the window), up to kOrderSeconds.
+                const std::string why = ordersWhy(base, o, os, windowed ? "a longer window would" : "longer notes would");
+                if (!why.empty())
+                {
+                    res.unmeasured["off_order_db"] = why;
+                    out += lead + ": not measured, " + why + ".\n";
+                }
+                else
+                {
+                    v["off_order_db"] = o.offDb;
+                    out += ordersLine(lead, o, os);
+                }
             }
             // How the spectrum's shape moves over the same part (0.1 s frames; three at least).
             if (need({ "wobble_db" }))
@@ -2734,8 +2775,15 @@ namespace playground::measure
                 const Wobble wb = wobble(r.out.l, r.out.r, rate, held);
                 if (wb.frames < 3)
                 {
-                    const std::string why = std::string(windowed ? "the window" : "the held part")
-                                          + " holds fewer than three 0.1 s frames (it needs 0.2 s)";
+                    // Each held stretch makes its own frames, half a frame apart: one over 0.15 s makes three.
+                    const std::string why =
+                        wb.frames + wb.silent >= 3
+                            ? silentWhy(wb)
+                            : std::string(windowed ? "the window" : "the held part") + " makes "
+                                  + (wb.frames + wb.silent == 0 ? "no 0.1 s frame" : "fewer than three 0.1 s frames")
+                                  + (windowed ? " (half a frame apart: three take a window over 0.15 s)"
+                                              : " (each note's held stretch makes its own, half a frame apart: three take "
+                                                "one over 0.15 s, so a note held over 0.2 s)");
                     res.unmeasured["wobble_db"] = why;
                     out += "Wobble: not measured, " + why + ".\n";
                 }
@@ -2923,7 +2971,9 @@ namespace playground::measure
             std::vector<Found> found;
             // A move or an edit at or after a signal's end: the signal, then silence until it and the tail.
             const std::size_t late = lastChange(plan);
-            const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false) {
+            // `counted`: its steps, alerts and CPU time count in step, alerts and cpu_percent (all but wobble_db's tone).
+            const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false,
+                                     bool counted = true) {
                 Stereo padded;
                 if (late >= signalIn.size())
                 {
@@ -2939,6 +2989,8 @@ namespace playground::measure
                     tl.marks.push_back({ 0, name, -1, false });
                 sortMarks(tl);
                 Rendered r = impl_->render(dials, &in, tl, 0);
+                if (!counted)
+                    return std::move(r.out);
                 cpu += r.cpuMs;
                 audio += static_cast<double>(r.cpuSamples) / rate;
                 alerts |= r.alerts;
@@ -3010,9 +3062,18 @@ namespace playground::measure
                     {
                         const Spectrum os = stereoSpectrum(o.l, o.r, rate, held, Taper::blackmanHarris, kOrderSeconds);
                         const Orders ord = orders(os, 220.0);
-                        v["off_order_db"] = ord.offDb;
-                        out += ordersLine(std::string("Off the orders of 220 Hz in the sine's output") + (windowed ? " in the window" : ""),
-                                          220.0, ord, os);
+                        const std::string lead = std::string("Off the orders of 220 Hz in the sine's output") + (windowed ? " in the window" : "");
+                        const std::string why = ordersWhy(220.0, ord, os, windowed ? "a longer window would" : "a longer hold_seconds would");
+                        if (!why.empty())
+                        {
+                            res.unmeasured["off_order_db"] = why;
+                            out += lead + ": not measured, " + why + ".\n";
+                        }
+                        else
+                        {
+                            v["off_order_db"] = ord.offDb;
+                            out += ordersLine(lead, ord, os);
+                        }
                     }
                     if (outRms < 1e-5)
                         warnings.push_back(windowed ? "The sine comes out silent (or nearly) in the window."
@@ -3021,11 +3082,11 @@ namespace playground::measure
                         warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
                 }
             }
-            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs", "wobble_db" })
+            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs" })
                                   || request.spectrum != Bands::none;
             if (noiseWanted && outside)
             {
-                unmeasured({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs", "wobble_db" });
+                unmeasured({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz", "noise_lufs" });
                 out += "Noise at -18.0 dBFS RMS for " + seconds(hold) + ": not measured, " + outsideWhy + ".\n";
             }
             if (everything || (noiseWanted && !outside))
@@ -3059,31 +3120,59 @@ namespace playground::measure
                              + valueText("noise_lufs", loudness(noise.l, noise.r, rate, held)) + " in (BS.1770, integrated)";
                     }
                     out += ".\n";
-                    // How its gain's shape moves: each third's gain, out against in, frame by frame (three at least).
-                    if (need({ "wobble_db" }))
-                    {
-                        const Wobble wb = wobble(o.l, o.r, rate, held, &noise.l, &noise.r);
-                        if (wb.frames < 3)
-                        {
-                            const std::string why = std::string(windowed ? "the window" : "the noise's held part")
-                                                  + " holds fewer than three 0.1 s frames (it needs 0.2 s)";
-                            res.unmeasured["wobble_db"] = why;
-                            out += "Wobble: not measured, " + why + ".\n";
-                        }
-                        else
-                        {
-                            v["wobble_db"] = wb.db;
-                            out += wobbleLine(std::string(windowed ? "Wobble in the window" : "Wobble")
-                                                  + ": the noise's gain in each third-octave band, against their mean gain,",
-                                              wb, "weighted by the gain over the bands within 30 dB of the most");
-                        }
-                    }
                     // Its band levels asked for (Request::spectrum): the effect's gain in each, out against in.
                     if (request.spectrum != Bands::none)
                     {
                         const Spectrum bandsIn = bandSpectrum(request.spectrum, noise.l, noise.r, rate, held);
                         out += bandsLine(request.spectrum, windowed ? "of the noise in the window" : "of the noise",
                                          bandSpectrum(request.spectrum, o.l, o.r, rate, held), &bandsIn);
+                    }
+                }
+            }
+            // How a steady tone's shape moves through it (wobble_db alone: a signal its steps, alerts and CPU time do not
+            // count in): its output's frames on the tone's period, after its fade-in, so that an effect that holds still
+            // reads 0 once its memory has settled (three frames at least).
+            if (need({ "wobble_db" }))
+            {
+                const std::string lead = "Steady tone (partials every 10 Hz, flat) at " + fmt("%.1f dBFS RMS", kSteadyToneDb)
+                                       + " for " + seconds(hold);
+                if (outside)
+                {
+                    const std::string why = win.first >= win.second
+                                              ? "the window starts after the steady tone ends (hold_seconds, " + seconds(hold) + ")"
+                                              : "the window holds less than " + seconds(kMinWindowSeconds)
+                                                    + " of the steady tone (it ends at hold_seconds, " + seconds(hold) + ")";
+                    res.unmeasured["wobble_db"] = why;
+                    out += lead + ": not measured, " + why + ".\n";
+                }
+                else
+                {
+                    Stereo tone;
+                    tone.l = steadyTone(holdN, rate);
+                    tone.r = tone.l;
+                    const Stereo o = through(tone, "the steady tone", holdN, false, false);
+                    const std::size_t faded = static_cast<std::size_t>(std::ceil(kSteadyFadeSeconds * rate));
+                    const std::vector<Span> after{ { std::max(held.front().first, faded), held.front().second } };
+                    const Wobble wb = wobble(o.l, o.r, rate, after, true);
+                    if (wb.frames < 3)
+                    {
+                        // Whole periods only, each from a multiple of 0.1 s: the held part (from 0.05 s) holds three
+                        // from hold_seconds 0.4, and any window of 0.4 s does.
+                        const std::string why = wb.frames + wb.silent >= 3
+                                                  ? silentWhy(wb)
+                                                  : std::string(windowed ? "the window" : "the held part")
+                                                        + " holds fewer than three whole 0.1 s periods of the tone (a frame each, "
+                                                          "from its start: "
+                                                        + (windowed ? "any window of 0.4 s holds three" : "hold_seconds 0.4 holds three")
+                                                        + ")";
+                        res.unmeasured["wobble_db"] = why;
+                        out += lead + ": wobble not measured, " + why + ".\n";
+                    }
+                    else
+                    {
+                        v["wobble_db"] = wb.db;
+                        out += wobbleLine(lead + (windowed ? ", in the window" : "") + ": each third-octave band's share of the output's power",
+                                          wb, "on the tone's period, power-weighted over the bands within 30 dB of the loudest");
                     }
                 }
             }
