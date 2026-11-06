@@ -393,16 +393,17 @@ module Voice
   program runs, and has the GPU check it then too, where the program compiles: for a RUN on the compiler's own
   thread, so a new shader does not stall the window, and for a host's session or preset load on the thread that
   loads it, as shaderc and the program's compile run there; one that does not compile, or that the GPU refuses, is a
-  note on its own line, and draws nothing until it does (`Source/fminus/Shaders.h`). Four a panel at most. `taper=log` gives a frequency's or a time's knob the same
-  turn for each octave, and the host's automation follows it; `unit=`, `decimals=` and `scale=` say how a value reads,
-  to the host too (`Source/dsp/Controls.h`). Displays are those of the lines below and `spectrum` (an analyser of `in`
-  or `out`), sixteen at most; a field of the module `Shared` is named through the main module's pointer to it,
-  `meter shared->level` (its one Shared, read whether a voice sounds or not: the main module's fields of an instrument
-  are its newest sounding voice's, 0 while none sounds), and `live=` and a shader's inputs take one too. A `number`
-  shows an int or a bool field as a whole number and takes a knob's `unit=`, `decimals=` and `scale=` for a field
-  (`number speed unit="rpm" decimals=0` reads "1250 rpm"; its cell wide enough for a sign, four digits, its decimals
-  and unit, and a longer readout drawn smaller, never past its box). What the plugin cannot use is a note on its line
-  and column ("panel.gui:12:5: note: ..."), and the rest stands; a parameter no control names comes last, in a section without a title.
+  note on its own line, and draws nothing until it does (`Source/fminus/Shaders.h`). Four a panel at most.
+  `taper=log` gives a frequency's or a time's knob the same turn for each octave, and the host's automation follows
+  it; `unit=`, `decimals=` and `scale=` say how a value reads, to the host too (`Source/dsp/Controls.h`). Displays are
+  those of the lines below and `spectrum` (an analyser of `in` or `out`), sixteen at most; a field of the module
+  `Shared` is named through the main module's pointer to it, `meter shared->level` (its one Shared, read whether a
+  voice sounds or not: the main module's fields of an instrument are its newest sounding voice's, 0 while none
+  sounds), and `live=` and a shader's inputs take one too. A `number` shows an int or a bool field as a whole number
+  and takes a knob's `unit=`, `decimals=` and `scale=` for a field (`number speed unit="rpm" decimals=0` reads "1250
+  rpm"; its cell wide enough for a sign, four digits, its decimals and unit, and a longer readout drawn smaller, never
+  past its box). What the plugin cannot use is a note on its line and column ("panel.gui:12:5: note: ..."), and the
+  rest stands; a parameter no control names comes last, in a section without a title.
 - **The panel.** `#pragma panel` lines lay the dials out as an analog synth's panel is printed, in titled sections,
   framed, in rows; they choose how each dial looks and add displays that show what the program does as it plays
   (FMinus ignores every `#pragma`; the plugin reads these from the program and what it includes):
