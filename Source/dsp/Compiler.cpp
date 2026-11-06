@@ -393,9 +393,15 @@ namespace playground
     {
         // Until it plays a block with no swap under way, the Engine goes back from it, or the audio thread stops: no
         // block under way, and none ended for three of its own (20 ms at least: none ever came, or a host that calls
-        // none). A block under way may be a call that runs past its budget, sixteen times its samples' time or more:
-        // waited for, ten seconds at most.
+        // none). A block under way may hold a call that runs past its budget, which takes as long as the budget's
+        // iterations do at its loop's pace: waited for as long as the largest call's budget (a block of prepare()'s
+        // most samples) takes at kSlowLoopsPerSecond (2^24: a loop whose iteration takes some 256 cycles), ten seconds
+        // at least. A call slower still is said when it stops, as a later stop is (checkStops).
         using namespace std::chrono;
+        constexpr double kSlowLoopsPerSecond = 16'777'216.0;
+        const double most = static_cast<double>(Patch::budgetOf(std::max(engine_.largestBlock(), 1), engine_.rate()))
+                          / kSlowLoopsPerSecond;
+        const auto cap = duration<double>(std::max(10.0, most));
         const auto start = steady_clock::now();
         const auto idle = [this] {
             const int64_t began = engine_.lastBlockStartNs(), ended = engine_.lastBlockNs();
@@ -406,7 +412,7 @@ namespace playground
             return static_cast<double>(now - ended) * 1e-9 > gap;
         };
         while (engine_.settledProgram() != program && engine_.revertible() == program && !idle()
-               && steady_clock::now() - start < seconds(10))
+               && steady_clock::now() - start < cap)
             std::this_thread::sleep_for(milliseconds(1));
         return engine_.settle(program);
     }
@@ -764,6 +770,18 @@ namespace playground
         // Looked at again now that it is built: a RUN queued since (which plays instead), a recording armed or a key
         // pressed while it compiled hold it, for the next pass that may.
         if (hasQueued_ || stop_ || !quiet())
+            return false;
+        // The program it refines may have stopped meanwhile (above, "A program that stops"): said now, and the refine
+        // let go (the program before it played again let it go already; else nothing plays, and it is never refined).
+        checkStops(lock);
+        if (held_ && recipe_.program == stoppedProgram_)
+        {
+            std::unique_ptr<Built> stopped = std::move(held_);
+            lock.unlock();
+            stopped.reset();
+            lock.lock();
+        }
+        if (!held_ || hasQueued_ || stop_)
             return false;
         std::unique_ptr<Built> b = std::move(held_);
         std::string chosen;

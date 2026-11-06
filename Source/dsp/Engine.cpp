@@ -75,6 +75,7 @@ namespace playground
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         rate_.store(fs_, std::memory_order_relaxed);
         maxBlock_ = std::max(1, maxBlockSize);
+        largestBlock_.store(maxBlock_, std::memory_order_relaxed);
         const auto block = static_cast<std::size_t>(maxBlock_);
         streamBuf_.assign(static_cast<std::size_t>(kMaxControls) * block, 0.0f);
         for (std::vector<float>* v : { &accL_, &accR_, &voiceL_, &voiceR_, &dryL_, &dryR_, &mono_, &inL_, &inR_ })
@@ -255,6 +256,12 @@ namespace playground
                 old_->setStream(c, nullptr);
         if constexpr (kInstrument)
         {
+            // What the old program's instances hold now (its streams gone: each dial's target), should the Engine go
+            // back to it after this block's glides (stopCheck).
+            heldFor_ = fedPatch_ == old_ ? old_ : nullptr;
+            for (int c = 0; c < kMaxControls; ++c)
+                heldDials_[static_cast<std::size_t>(c)] = glide_[static_cast<std::size_t>(c)].tgt;
+            heldCarryOver_ = carryOver_;
             // The old program's voices fade out; the keys still held start again on the new one.
             for (Voice& v : voices_)
                 if (v.patch != nullptr && v.patch == old_ && !v.exiting)
@@ -265,7 +272,7 @@ namespace playground
             for (int k = 0; k < 128; ++k)
                 if (held_[static_cast<std::size_t>(k)])
                     noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
-            stopCheck(0);                            // a start() that ran past its budget
+            stopCheck(0, -1);                        // a start() that ran past its budget
         }
         else
         {
@@ -376,7 +383,7 @@ namespace playground
         meaning_ = meaning;
     }
 
-    void Engine::glideControls(int n) noexcept
+    void Engine::glideControls(int n, int from) noexcept
     {
         if (current_ == nullptr)
             return;
@@ -419,7 +426,7 @@ namespace playground
                 moved_ = moved_ || changed;
                 if (changed && circuit && !snap)
                 {
-                    lastChange = std::max(lastChange, 0);
+                    lastChange = std::max(lastChange, from);
                     switched = switched || info.type != ControlType::real;
                 }
                 g.cur = g.tgt = target;
@@ -430,10 +437,10 @@ namespace playground
             if (!g.moving())
                 continue;
             moved_ = true;
-            if (circuit)                             // it changes at each sample until it lands
-                lastChange = std::max(lastChange, std::min(g.left, n) - 1);
+            if (circuit && from < n)                 // it changes at each sample until it lands
+                lastChange = std::max(lastChange, from + std::min(g.left, n - from) - 1);
             float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
-            for (int i = 0; i < n; ++i)
+            for (int i = from; i < n; ++i)
                 buf[i] = g.tick();
             streaming_[static_cast<std::size_t>(c)] = true;
             streaming = true;
@@ -443,10 +450,10 @@ namespace playground
             // The calls run at every tick through the first at or after the last change; a switch's, the ramp's too.
             // The instances that had the values before have these by the window's calls; the others wait for a first
             // call of their own.
-            const uint64_t from = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
-            circuitUntil_ = std::max(circuitUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
+            const uint64_t tick = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
+            circuitUntil_ = std::max(circuitUntil_, tick + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
             if (switched)
-                switchUntil_ = std::max(switchUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_));
+                switchUntil_ = std::max(switchUntil_, tick + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_));
             const uint64_t was = circuitGen_++;
             if constexpr (kInstrument)
             {
@@ -710,7 +717,7 @@ namespace playground
         return true;
     }
 
-    void Engine::stopCheck(int at) noexcept
+    void Engine::stopCheck(int at, int resume) noexcept
     {
         if (current_ == nullptr || stopNoted_ || current_->stopped() == Patch::Method::none)
             return;
@@ -721,15 +728,38 @@ namespace playground
         }
         if constexpr (kInstrument)
         {
-            // The held keys start again on the program gone back to, from this sample, with its dials as it declares
-            // them; its voices that were fading out go on fading, and the stopped one's exit.
-            glideControls(blockN_);
-            callAt_ = at;
+            // The held keys start again on the program gone back to, from `resume`, with its dials; its voices that
+            // were fading out go on fading, and the stopped one's exit. Its dials: at the block's start (takePending),
+            // the block's glides are still to come and go on from where its last block left them (they were aimed for
+            // it); after them, from what its instances hold, gliding to where the dials are now (resumeGlides).
+            // Nothing steps, and no glide advances twice in a block.
+            if (resume >= 0)
+                resumeGlides(resume);
+            callAt_ = resume;                        // -1: a circuit's first call at the dials the last block left
             for (int k = 0; k < 128; ++k)
                 if (held_[static_cast<std::size_t>(k)])
                     noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
-            stopCheck(at);                           // one that stops at once: no other to go back to now
+            stopCheck(at, resume);                   // one that stops at once: no other to go back to now
         }
+    }
+
+    void Engine::resumeGlides(int from) noexcept
+    {
+        if (heldFor_ == current_)
+        {
+            // Its dials as its instances have held them since the swap, gliding from there (no snap: they are its).
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                Glide& g = glide_[static_cast<std::size_t>(c)];
+                g.cur = g.tgt = heldDials_[static_cast<std::size_t>(c)];
+                g.inc = 0.0f;
+                g.left = 0;
+            }
+            carryOver_ = heldCarryOver_;
+            fedPatch_ = current_;
+        }
+        glideControls(blockN_, std::clamp(from, 0, blockN_));   // (else a snap to its dials: they were another's)
+        ++feedGen_;                                  // every instance of it fed again: the swap took their streams
     }
 
     // ---- the audio thread: a block ---------------------------------------------------------------------------------------
@@ -1321,7 +1351,7 @@ namespace playground
                 allNotesOff();
             else
                 controller(e);
-            stopCheck(at);                           // a start() or stop() that ran past its budget
+            stopCheck(at, at);                       // a start() or stop() that ran past its budget
         }
         if (done < n)
             render(done, n);
@@ -1693,7 +1723,7 @@ namespace playground
                 freeVoice(v, clock_ + static_cast<uint64_t>(to));
             }
         }
-        stopCheck(from);                             // a call of this part that ran past its budget (Engine.h)
+        stopCheck(from, to);                         // a call of this part that ran past its budget (Engine.h)
     }
 
     void Engine::guard(float* x, int n) noexcept

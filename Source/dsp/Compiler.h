@@ -68,7 +68,8 @@
 // A program that stops (Patch.h, "The loop budget"; Engine.h). A RUN's program is offered `revertible`, and the thread
 // waits for its first blocks before it says how the RUN went: until it has played a block with no swap under way, or
 // the audio thread has stopped (no block under way, and none for three of its own, 20 ms at least: a host that calls
-// none); a block under way, which a call past its budget makes long, is waited for (ten seconds at most).
+// none); a block under way, which a call past its budget makes long, is waited for (as long as the largest call's
+// budget takes at a loop of some 256 cycles an iteration, ten seconds at least: firstBlocks).
 // Should it stop meanwhile, the Engine has gone back to the program it replaced, and the RUN's outcome is that of a
 // compile that failed: `ok` false and `stopped`, `errors` the stop's message ("program.fm:14:10: error: process() ran
 // past its budget: a loop that never ends?"), and the program that played plays on, its status (`program`, the
@@ -79,7 +80,8 @@
 // that played (compiled again with their configurations, CircuitPins, under a new id, with the dials' carry) as a
 // refine is offered; their dials in `controls` and `panel`, their files in `restored`, the new id in `program`. With
 // none (the first program, or one a state load brought: no run's, as the processor says), nothing plays until the next
-// RUN. A program that stopped is never gone back to again, nor refined, nor frozen.
+// RUN. A program that stopped is never gone back to again, nor refined, nor frozen: a refine built while the program it
+// refines stopped is let go before the offer, and the stop said.
 //
 // The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
 // a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each

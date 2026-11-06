@@ -101,7 +101,9 @@
 // (an effect's 20 ms crossfade, an instrument's first block or its old voices fading) and the program was offered
 // `revertible` (the compiler's RUN, until settle()), the Engine goes back to the one it replaced instead, which so plays
 // on: an effect's crossfade turns back from where it is, the stopped side fading out under it; an instrument's held
-// keys start again on it (its voices that were fading go on fading). stops() counts the stops of the program that
+// keys start again on it (its voices that were fading go on fading), with its dials going on from where they were for
+// it: at a block's start as its glides were, mid-block from what its instances held since the swap (no snap, and no
+// glide advanced twice in a block). stops() counts the stops of the program that
 // plays, and lastStop() says the newest: the program, the call, the sample (from prepare()) and whether the Engine
 // went back. A stopped program plays no more, even across prepare() (restart() makes it as new: a render's).
 //
@@ -235,6 +237,8 @@ namespace playground
         int64_t lastBlockStartNs() const noexcept { return blockStartNs_.load(std::memory_order_acquire); }
         int64_t lastBlockNs() const noexcept { return blockNs_.load(std::memory_order_acquire); }
         double lastBlockSeconds() const noexcept { return blockSeconds_.load(std::memory_order_relaxed); }
+        // prepare()'s maxBlockSize: the most samples of a block, so of an effect's call (its budget: Patch::budgetOf).
+        int largestBlock() const noexcept { return largestBlock_.load(std::memory_order_relaxed); }
 
         float rate() const noexcept { return rate_.load(std::memory_order_relaxed); }
         double tailSeconds() const noexcept { return 5.0; }
@@ -353,7 +357,8 @@ namespace playground
         bool fits(const Patch::Frozen& f) const noexcept;
         bool holdFrozen(Patch::Frozen* f) noexcept;   // to be handed back; false when every slot is taken
         void retireFrozen() noexcept;                 // the held copies into the slots collect() empties
-        void glideControls(int n) noexcept;           // the ramps over the block: streamBuf_, streaming_, feedGen_
+        // The ramps over the block from its sample `from`: streamBuf_, streaming_, feedGen_.
+        void glideControls(int n, int from = 0) noexcept;
         void feed(Patch& p, int offset, int instance) noexcept;   // the dials into p: streams from `offset`
         // The circuit dials (above): current_'s shims in `instance` with the dials' values at the block's sample `at`
         // (at < 0: their values after the last block, for a block of 0 samples).
@@ -370,10 +375,13 @@ namespace playground
         void exitEffect(Exit& e, float* left, float* right, int n) noexcept;
         // An instrument's voice of a stopped program over [from, from + len) of the block: its held samples, fading.
         void exitVoice(Voice& v, int from, int len, bool onGrid) noexcept;
-        // current_ has stopped: back to old_ when allowed (an instrument's held keys start again on it), else the stop
-        // published; at the block's sample `at`. revert() is the going back alone.
-        void stopCheck(int at) noexcept;
+        // current_ has stopped: back to old_ when allowed (an instrument's held keys start again on it, their calls
+        // from the block's sample `resume`; -1: at the block's start, before its glides), else the stop published; at
+        // the block's sample `at`. revert() is the going back alone; resumeGlides() an instrument's dials for the
+        // program gone back to after the block's glides: from what its instances hold since the swap (heldDials_).
+        void stopCheck(int at, int resume) noexcept;
         bool revert(int at) noexcept;
+        void resumeGlides(int from) noexcept;
         void noteStop(int at, bool reverted) noexcept;
         // A voice of current_ let go at the absolute sample `at`: its instance missed calls if a window was open.
         void freeVoice(Voice& v, uint64_t at) noexcept;
@@ -494,6 +502,13 @@ namespace playground
         Exit exitCur_{}, exitOld_{};
         bool stopNoted_ = false;
         int blockN_ = 0;
+        // An instrument's old program's dials as its instances hold them since the swap (each glide's target: the swap
+        // took their streams), and its carry's ended slots, when the glides were aimed for it (heldFor_): what a revert
+        // after the block's glides goes on from.
+        std::array<float, kMaxControls> heldDials_{};
+        uint32_t heldCarryOver_ = 0;
+        const Patch* heldFor_ = nullptr;
+        std::atomic<int> largestBlock_{ 0 };
         fsdsp::Seqlock<Stopped> stopped_;
         std::atomic<uint64_t> stops_{ 0 };
         std::atomic<uint64_t> revertible_{ 0 };
