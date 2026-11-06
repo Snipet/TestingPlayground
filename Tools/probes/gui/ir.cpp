@@ -703,6 +703,7 @@ PROBE(gui, ir)
             P.eq("frozen.lowered_shown", loweredShown ? 1 : 0, 1);
             panel.editor().select({ 14, 2 }, { 16, 5 });
             const std::string selected = panel.editor().selectedText();
+            const funkgui::TextPos start = panel.editor().selectionStart();   // (clamped to line 14's length)
             const uint32_t textRevision = panel.editor().revision();
             const uint64_t irRevision = processor.compiler().irRevision();
             processor.compiler().setFreezing(true, 0.25);
@@ -719,7 +720,7 @@ PROBE(gui, ir)
             P.eq("frozen.ir_kept", held && processor.compiler().irRevision() > irRevision ? 1 : 0, 1);
             P.eq("frozen.program_view_untouched", static_cast<int64_t>(panel.editor().revision()), static_cast<int64_t>(textRevision));
             P.eq("frozen.selection_kept", !selected.empty() && panel.editor().selectedText() == selected
-                                              && panel.editor().selectionStart() == funkgui::TextPos{ 14, 2 } ? 1 : 0, 1);
+                                              && panel.editor().selectionStart() == start ? 1 : 0, 1);
             const int row = rowOf(ex, S::ir, frozenName);
             P.eq("frozen.row_shown", row, 3);
             clickAt(host, ex.centreOfRow(S::ir, row));
