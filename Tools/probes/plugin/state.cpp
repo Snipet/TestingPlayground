@@ -15,6 +15,18 @@
 //           sixteen; a seventeenth file is refused by write_file and add_library_file, each naming the cap
 //   RENAME  RUN with a program whose first parameter has another name moves that dial to the new parameter's
 //           default; one whose first parameter keeps its name keeps the dial where it was
+//   CARRY   a dial keeps its value in its units across a run whose declarations change (Controls.h's DialCarry), from
+//           the new program's first block, before poll() writes it to the host (a processor playing as a host does;
+//           its output says what plays): a log dial's range 10 -> 30 keeps 9.68 L, a dial made log with its range
+//           widened (100-3000 linear -> 100-50000 log) keeps 626 kg; the effect's crossfade and the instrument's
+//           note after its fade play those values, never the old normalised ones (28.84 L, 309 kg); poll() then
+//           writes them, each one gesture, run_program saying "size: 9.68 L -> 9.68 L (range changed)" and "mass:
+//           626 kg -> 626 kg (range changed, taper changed)", and a run with the same declarations writes nothing.
+//           An int whose values have names keeps its name: KEYS CAR PITCH -> KEYS CAR TRUCK PITCH keeps CAR on CAR
+//           (1, never TRUCK) and PITCH on PITCH (2 -> 3, "option moved"), the host's text the name. A range that no
+//           longer holds a value clamps it (25 L -> 10 L, "clamped"). Two dials that swap places each start at their
+//           default, as before, run_program saying where each moved from. The host's automation: a value the host
+//           writes after the compile and before poll() plays as it says (the new declarations read it) and stays
 //   BROKEN  a session whose program does not compile (here: a syntax error) leaves the program that played playing,
 //           its errors in the status, and the draft the session's
 //   EMPTY   a session saved without a program (an older version's) plays the first example
@@ -155,6 +167,137 @@ namespace
         return files;
     }
 
+    // CARRY's programs: dials as `params` declares them (each a line), the left channel `left` and the right `right`
+    // (expressions of them), and a panel.gui of `gui` (its controls' lines).
+    pg::Sources carryProgram(const std::string& params, const std::string& left, const std::string& right, const std::string& gui)
+    {
+        const std::string body = "        for (int i = 0; i < n; ++i)\n        {\n"
+                                 "            left[i] " + std::string(kInstrument ? "+=" : "=") + " " + left + ";\n"
+                                 "            right[i] " + std::string(kInstrument ? "+=" : "=") + " " + right + ";\n        }\n";
+        const std::string program = kInstrument
+            ? "module Voice\n{\n" + params + "    bool held;\n    void start(float n, float v) { held = true; }\n"
+                  "    void stop() { held = false; }\n    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + body + "        return held;\n    }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + body + "    }\n};\n";
+        return { { "program.fm", program }, { "panel.gui", "row {\n" + gui + "}\n" } };
+    }
+
+    // The floats: size in litres (log, 0.05 to `sizeMax`) and mass in kilograms (100 to `massMax`, log or linear); the
+    // left channel size / 100, the right mass / 100000.
+    pg::Sources carryFloats(int sizeMax, int massMax, bool massLog)
+    {
+        return carryProgram("    param float size [[fminus::range(0.05, " + std::to_string(sizeMax) + ")]] [[fminus::default(1)]];\n"
+                            "    param float mass [[fminus::range(100, " + std::to_string(massMax) + ")]] [[fminus::default(100)]];\n",
+                            "size[i] * 0.01f", "mass[i] * 0.00001f",
+                            "    knob size taper=log unit=\"L\"\n    knob mass" + std::string(massLog ? " taper=log" : "") + " unit=\"kg\"\n");
+    }
+
+    // Two ints whose values have names (`names`, each a quoted text): drive and gear, the left channel drive / 10, the
+    // right gear / 10.
+    pg::Sources carryOptions(const std::string& names, int count)
+    {
+        const std::string range = "[[fminus::range(0, " + std::to_string(count - 1) + ")]]";
+        return carryProgram("    param int drive " + range + ";\n    param int gear " + range + ";\n", "drive[0] * 0.1f",
+                            "gear[0] * 0.1f", "    buttons drive " + names + "\n    buttons gear " + names + "\n");
+    }
+
+    // A processor as a host drives it (48 kHz, blocks of 256; an instrument holding middle C from its first block), its
+    // freezer off: what it plays is its program's own code.
+    struct HostRig
+    {
+        pg::Processor p;
+        bool noteOn = false;
+
+        HostRig()
+        {
+            p.compiler().setFreezing(false);
+            p.setRateAndBufferSizeDetails(kFs, 256);
+            p.prepareToPlay(kFs, 256);
+        }
+
+        probe::Stereo render(double seconds)
+        {
+            const std::size_t n = static_cast<std::size_t>(seconds * kFs);
+            probe::Stereo out(n);
+            for (std::size_t pos = 0; pos < n; pos += 256)
+            {
+                const int len = static_cast<int>(std::min<std::size_t>(256, n - pos));
+                juce::AudioBuffer<float> buffer(2, len);
+                buffer.clear();
+                juce::MidiBuffer midi;
+                if (kInstrument && !noteOn)
+                {
+                    midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<uint8_t>(100)), 0);
+                    noteOn = true;
+                }
+                p.processBlock(buffer, midi);
+                for (int i = 0; i < len; ++i)
+                {
+                    out.l[pos + static_cast<std::size_t>(i)] = buffer.getSample(0, i);
+                    out.r[pos + static_cast<std::size_t>(i)] = buffer.getSample(1, i);
+                }
+            }
+            return out;
+        }
+
+        void set(int slot, float plain) { p.getParameters()[slot]->setValueNotifyingHost(pg::normOf(p.control(slot), plain)); }
+        float value(int slot) const { return pg::plainOf(p.control(slot), p.getParameters()[slot]->getValue()); }
+
+        // run_program on `files` (the draft set to them): its result, the compile done, poll() not yet run.
+        std::string run(const pg::Sources& files)
+        {
+            p.editorPort().setDraft({ files, 0 });
+            return textOf(p.chatAgent().mcpCall("run_program", juce::var(new juce::DynamicObject())));
+        }
+    };
+
+    // The largest distance of x's samples [from, to) from v.
+    double offBy(const std::vector<float>& x, std::size_t from, std::size_t to, double v)
+    {
+        double worst = 0.0;
+        for (std::size_t i = from; i < std::min(to, x.size()); ++i)
+            worst = std::max(worst, std::fabs(static_cast<double>(x[i]) - v));
+        return worst;
+    }
+
+    // The host's view of the parameters: each change (its slot) and each gesture's begin and end, counted.
+    struct HostView final : juce::AudioProcessorListener
+    {
+        std::array<int, pg::kMaxControls> changes{}, begins{}, ends{};
+        void audioProcessorParameterChanged(juce::AudioProcessor*, int index, float) override
+        {
+            if (index >= 0 && index < pg::kMaxControls)
+                ++changes[static_cast<std::size_t>(index)];
+        }
+        void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails&) override {}
+        void audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) override
+        {
+            if (index >= 0 && index < pg::kMaxControls)
+                ++begins[static_cast<std::size_t>(index)];
+        }
+        void audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) override
+        {
+            if (index >= 0 && index < pg::kMaxControls)
+                ++ends[static_cast<std::size_t>(index)];
+        }
+        int total() const
+        {
+            int n = 0;
+            for (int c : changes)
+                n += c;
+            return n;
+        }
+        void reset()
+        {
+            changes.fill(0);
+            begins.fill(0);
+            ends.fill(0);
+        }
+    };
+
+    bool has(const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; }
+
     std::string withFirstParam(const std::string& name, double def)
     {
         const std::string param = "    param float " + name + " [[fminus::range(0, 10)]] [[fminus::default(" +
@@ -263,6 +406,122 @@ PROBE(plugin, state)
         runAndSettle(p, withFirstParam("beta", 3.0));           // another name: its default
         P.near("rename.new_name_default", static_cast<double>(p.getParameters()[0]->getValue()), 0.3, 1e-6);
         P.eq("rename.host_name", p.getParameters()[0]->getName(100) == "1 beta" ? 1 : 0, 1);
+    }
+
+    // CARRY
+    {
+        // The floats: size 9.68 L (log, to 10) and mass 626 kg (linear, to 3000), then a run that widens size's range
+        // to 30 and makes mass log to 50000. The old normalised values would play 28.84 L and 309 kg.
+        HostRig h;
+        const std::string first = h.run(carryFloats(10, 3000, false));
+        h.p.poll();
+        P.eq("carry.first_runs", h.p.editorPort().status().ok && pg::Control(h.p.control(0)).taper == pg::ControlTaper::log ? 1 : 0, 1);
+        if (!h.p.editorPort().status().ok)
+            std::printf("%s\n", first.c_str());
+        h.set(0, 9.68f);
+        h.set(1, 626.0f);
+        h.render(0.1);
+        const probe::Stereo before = h.render(0.02);
+        P.near("carry.before_size", static_cast<double>(before.l.back()) * 100.0, 9.68, 1e-3);
+        P.near("carry.before_mass", static_cast<double>(before.r.back()) * 1e5, 626.0, 0.01);
+        HostView view;
+        h.p.addListener(&view);
+        const std::string ran = h.run(carryFloats(30, 50000, true));
+        std::printf("run_program:\n%s\n", ran.c_str());
+        const probe::Stereo window = h.render(0.06);                 // the new program plays; poll() has not run
+        const std::size_t settled = static_cast<std::size_t>(0.03 * kFs);   // past the effect's crossfade, the voice's fade
+        P.eq("carry.window_no_writes", view.total(), 0);
+        if constexpr (kInstrument)
+            P.le("carry.window_size_never_remapped", offBy(window.l, settled, window.l.size(), 0.0968), 1e-5);
+        else
+            P.le("carry.window_size_never_remapped", offBy(window.l, 0, window.l.size(), 0.0968), 1e-5);   // the crossfade too
+        P.le("carry.window_mass", offBy(window.r, settled, window.r.size(), 0.00626) * 1e5, 0.01);
+        h.p.poll();
+        P.eq("carry.size_one_gesture", view.changes[0] == 1 && view.begins[0] == 1 && view.ends[0] == 1 ? 1 : 0, 1);
+        P.eq("carry.mass_one_gesture", view.changes[1] == 1 && view.begins[1] == 1 && view.ends[1] == 1 ? 1 : 0, 1);
+        P.eq("carry.nothing_else_written", view.total(), 2);
+        P.near("carry.host_size", static_cast<double>(h.value(0)), 9.68, 1e-3);
+        P.near("carry.host_mass", static_cast<double>(h.value(1)), 626.0, 0.01);
+        const probe::Stereo after = h.render(0.05);
+        P.le("carry.after_size", offBy(after.l, 0, after.l.size(), 0.0968), 1e-5);
+        P.le("carry.after_mass", offBy(after.r, 0, after.r.size(), 0.00626) * 1e5, 0.01);
+        P.eq("carry.report_size", has(ran, "size: 9.68 L -> 9.68 L (range changed)") ? 1 : 0, 1);
+        P.eq("carry.report_mass", has(ran, "mass: 626 kg -> 626 kg (range changed, taper changed)") ? 1 : 0, 1);
+        P.eq("carry.report_dial_lines", has(ran, ", now 9.68 L\n") && has(ran, ", now 626 kg\n") ? 1 : 0, 1);
+
+        // The same declarations again: nothing written, no report.
+        view.reset();
+        const std::string same = h.run(carryFloats(30, 50000, true));
+        h.p.poll();
+        P.eq("carry.same_writes_nothing", view.total(), 0);
+        P.eq("carry.same_no_report", !has(same, "What the new declarations did") ? 1 : 0, 1);
+
+        // A range that no longer holds the value: 25 L to a range of 10, clamped; mass back to linear, 626 kg kept. And
+        // the host's automation: size written by the host after the compile and before poll() plays as written (the
+        // new declarations read it) and stays.
+        h.set(0, 25.0f);
+        h.render(0.05);
+        const std::string clamped = h.run(carryFloats(10, 3000, false));
+        std::printf("run_program:\n%s\n", clamped.c_str());
+        h.p.getParameters()[1]->setValueNotifyingHost(0.5f);            // the host's automation, on mass
+        const probe::Stereo moved = h.render(0.06);
+        P.le("carry.clamped_plays", offBy(moved.l, settled, moved.l.size(), 0.10), 1e-5);
+        P.le("carry.automation_plays", offBy(moved.r, settled, moved.r.size(), (100.0 + 0.5 * 2900.0) * 1e-5) * 1e5, 0.05);
+        h.p.poll();
+        P.near("carry.clamped_host", static_cast<double>(h.value(0)), 10.0, 1e-4);
+        P.near("carry.automation_stays", static_cast<double>(h.p.getParameters()[1]->getValue()), 0.5, 1e-7);
+        P.eq("carry.report_clamped", has(clamped, "size: 25.0 L -> 10.0 L (range changed, clamped)") ? 1 : 0, 1);
+        h.p.removeListener(&view);
+    }
+    {
+        // Ints with names: drive on CAR and gear on PITCH, then TRUCK inserted before PITCH. The old normalised values
+        // would play TRUCK (2) for drive.
+        HostRig h;
+        h.run(carryOptions("\"KEYS\" \"CAR\" \"PITCH\"", 3));
+        h.p.poll();
+        h.set(0, 1.0f);
+        h.set(1, 2.0f);
+        h.render(0.1);
+        const std::string ran = h.run(carryOptions("\"KEYS\" \"CAR\" \"TRUCK\" \"PITCH\"", 4));
+        std::printf("run_program:\n%s\n", ran.c_str());
+        const probe::Stereo window = h.render(0.06);
+        const std::size_t settled = static_cast<std::size_t>(0.03 * kFs);
+        if constexpr (kInstrument)
+            P.le("carry.option_car_never_truck", offBy(window.l, settled, window.l.size(), 0.1), 1e-6);
+        else
+            P.le("carry.option_car_never_truck", offBy(window.l, 0, window.l.size(), 0.1), 1e-6);
+        P.le("carry.option_pitch_moved", offBy(window.r, settled, window.r.size(), 0.3), 1e-6);
+        h.p.poll();
+        P.near("carry.option_car_host", static_cast<double>(h.value(0)), 1.0, 0.0);
+        P.near("carry.option_pitch_host", static_cast<double>(h.value(1)), 3.0, 0.0);
+        P.eq("carry.option_text", h.p.getParameters()[0]->getCurrentValueAsText() == "CAR"
+                                      && h.p.getParameters()[1]->getCurrentValueAsText() == "PITCH" ? 1 : 0, 1);
+        P.eq("carry.report_option_moved", has(ran, "gear: PITCH -> PITCH (option moved)") ? 1 : 0, 1);
+        P.eq("carry.report_options_changed", has(ran, "drive: CAR -> CAR (options changed)") ? 1 : 0, 1);
+    }
+    {
+        // Two dials that swap places: each at its default, as before.
+        HostRig h;
+        const auto two = [](const char* a, double da, const char* b, double db) {
+            return carryProgram(std::string("    param float ") + a + " [[fminus::range(0, 10)]] [[fminus::default(" + std::to_string(da) + ")]];\n"
+                                + "    param float " + b + " [[fminus::range(0, 10)]] [[fminus::default(" + std::to_string(db) + ")]];\n",
+                                std::string(a) + "[i] * 0.01f", std::string(b) + "[i] * 0.01f", "");
+        };
+        h.run(two("alpha", 2.0, "beta", 3.0));
+        h.p.poll();
+        h.set(0, 7.0f);
+        h.set(1, 8.0f);
+        h.render(0.05);
+        const std::string ran = h.run(two("beta", 3.0, "alpha", 2.0));
+        std::printf("run_program:\n%s\n", ran.c_str());
+        const probe::Stereo window = h.render(0.06);
+        const std::size_t settled = static_cast<std::size_t>(0.03 * kFs);
+        P.le("carry.reorder_plays_defaults", std::max(offBy(window.l, settled, window.l.size(), 0.03),
+                                                      offBy(window.r, settled, window.r.size(), 0.02)), 1e-6);
+        h.p.poll();
+        P.near("carry.reorder_beta_default", static_cast<double>(h.value(0)), 3.0, 1e-5);
+        P.near("carry.reorder_alpha_default", static_cast<double>(h.value(1)), 2.0, 1e-5);
+        P.eq("carry.report_moved", has(ran, "alpha: 7.00 -> 2.00 (moved from dial 1 to 2: its default)") ? 1 : 0, 1);
     }
 
     // BROKEN

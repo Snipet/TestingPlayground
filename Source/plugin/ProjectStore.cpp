@@ -57,6 +57,8 @@ namespace playground::projectstore
                 auto* o = new juce::DynamicObject();
                 o->setProperty("name", str(d.name));
                 o->setProperty("value", std::isfinite(d.value) ? static_cast<double>(d.value) : 0.0);
+                if (!d.label.empty())
+                    o->setProperty("label", str(d.label));
                 out.add(juce::var(o));
             }
             return out;
@@ -70,7 +72,8 @@ namespace playground::projectstore
                     if (d.isObject())
                     {
                         const double value = static_cast<double>(d["value"]);
-                        out.push_back({ d["name"].toString().toStdString(), std::isfinite(value) ? static_cast<float>(value) : 0.0f });
+                        out.push_back({ d["name"].toString().toStdString(), std::isfinite(value) ? static_cast<float>(value) : 0.0f,
+                                        d.hasProperty("label") ? d["label"].toString().toStdString() : std::string() });
                     }
             return out;
         }
@@ -147,7 +150,7 @@ namespace playground::projectstore
         bool sameDials(const std::vector<Dial>& a, const std::vector<Dial>& b)
         {
             return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const Dial& x, const Dial& y) {
-                       return x.name == y.name && x.value == y.value;
+                       return x.name == y.name && x.value == y.value && x.label == y.label;
                    });
         }
 

@@ -312,6 +312,42 @@ namespace playground
             return out;
         }
 
+        // What a run's new declarations did to the dials' values (Controls.h, "a dial's value across a declaration
+        // change"): each dial of the name its slot had whose range, taper, type or options changed, its value before and
+        // as the new program keeps it ("size: 9.68 L -> 9.68 L (range changed)", "drive: PITCH -> PITCH (option
+        // moved)"), and each that moved to another slot, which starts there at its default; "" when none.
+        std::string carriedLines(const Controls& before, const std::array<std::vector<std::string>, kMaxControls>& beforeOptions,
+                                 const std::array<float, kMaxControls>& was, const Controls& now,
+                                 const std::array<std::vector<std::string>, kMaxControls>& options, const ChatHost& host)
+        {
+            std::string out;
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const auto i = static_cast<std::size_t>(c);
+                const Control& k = now[i];
+                if (!k.used)
+                    continue;
+                const float after = host.chatDialValue(c);
+                if (before[i].used && sameName(before[i], k))
+                {
+                    const std::string why = carryWhy(before[i], beforeOptions[i], k, options[i], was[i], after);
+                    if (!why.empty())
+                        out += std::string(k.name) + ": " + dialText(before[i], was[i], beforeOptions[i]) + " -> "
+                             + dialText(k, after, options[i]) + " (" + why + ")\n";
+                    continue;
+                }
+                for (int o = 0; o < kMaxControls; ++o)
+                    if (const Control& b = before[static_cast<std::size_t>(o)]; b.used && sameName(b, k))
+                    {
+                        out += std::string(k.name) + ": " + dialText(b, was[static_cast<std::size_t>(o)], beforeOptions[static_cast<std::size_t>(o)])
+                             + " -> " + dialText(k, after, options[i]) + " (moved from dial " + std::to_string(o + 1) + " to "
+                             + std::to_string(c + 1) + ": its default)\n";
+                        break;
+                    }
+            }
+            return out.empty() ? out : "What the new declarations did to the dials (each kept in its units):\n" + out;
+        }
+
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
         // their items (a display as its source and kind), then the labels, small dials, styles, options and colours;
         // none without a panel line.
@@ -3777,8 +3813,14 @@ namespace playground
         {
             setActivity("Compiling");
             const Draft d = host_.chatDraft();
-            // The dials as the program that played declared them: listed again only when the new one's differ.
-            const std::string declared = dialDeclarations(host_.chatDials(), host_.chatDialOptions());
+            // The dials as the program that played declared them, and their values: listed again only when the new one's
+            // differ, with what that did to the values.
+            const Controls before = host_.chatDials();
+            const std::array<std::vector<std::string>, kMaxControls> beforeOptions = host_.chatDialOptions();
+            const std::string declared = dialDeclarations(before, beforeOptions);
+            std::array<float, kMaxControls> was{};
+            for (int c = 0; c < kMaxControls; ++c)
+                was[static_cast<std::size_t>(c)] = before[static_cast<std::size_t>(c)].used ? host_.chatDialValue(c) : 0.0f;
             const CompileStatus s = host_.chatRun(d.files);
             if (s.ok)
             {
@@ -3790,7 +3832,9 @@ namespace playground
                 const std::string checks = evaluateChecks();
                 const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
                 return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\n"
-                     + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n" : "Its dials:\n" + dialLines(s.controls, host_))
+                     + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n"
+                             : "Its dials:\n" + dialLines(s.controls, host_)
+                                   + carriedLines(before, beforeOptions, was, s.controls, s.panel.options, host_))
                      + panelLine(s.panel, s.controls) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes))
                      + (checks.empty() ? "" : "\n" + checks);
             }
