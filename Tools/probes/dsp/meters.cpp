@@ -22,6 +22,9 @@
 //           have a reader, as a panel is): with none the levels read 0 and the scope stands still while the fields
 //           and the frame go on; a reader back, the next block's levels are its own (its peak and RMS, not smoothed up
 //           from 0), and the scope holds that block, silence before it
+//   LANES   a block's peak and energy as the Engine measures them, in lanes (dsp/Levels.h), against a serial pass, for
+//           lengths 0 to 4096 (none, fewer than a lane's worth, a lane's and one more, odd ones): the peak the same to
+//           the bit, the energy within 1e-12 of it; NaN and infinities count as 0, a block of them alone reads 0
 //   LISTEN  what a tool that listens reads besides (Meters' second part, Engine::blocks): the samples counted; the host's
 //           transport as the Engine follows it (known, 90 BPM, 3/4, playing, the position at the last block's first
 //           sample); a block a ring entry, oldest first, each with its length, a finite share above 0 and the metering
@@ -58,6 +61,7 @@
 #include "Library.h"
 #include "Product.h"
 
+#include "dsp/Levels.h"
 #include "fminus/CirTemplates.h"
 #include "fminus/LibraryIncludes.h"
 
@@ -65,6 +69,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -773,6 +778,58 @@ PROBE(dsp, meters)
         for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i)
             theBlock = theBlock && after[512 - static_cast<std::size_t>(kBlock) + i] == 0.5f * (block.l[i] + block.r[i]);
         P.eq("readers.back_scope_silence_then_the_block", silentBefore && theBlock ? 1 : 0, 1);
+    }
+
+    // LANES: blockLevels against a serial pass.
+    {
+        const std::vector<int> lengths{ 0, 1, 3, 7, 8, 9, 15, 16, 17, 64, 255, 256, 333, 1000, 1024, 4096 };
+        bool peaks = true, energies = true, notFinite = true;
+        double worst = 0.0;
+        uint32_t seed = 12345u;
+        const auto noise = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return static_cast<float>(static_cast<int32_t>(seed)) * (1.0f / 2147483648.0f);
+        };
+        for (const int n : lengths)
+            for (int kind = 0; kind < 4; ++kind)
+            {
+                std::vector<float> x(static_cast<std::size_t>(n));
+                for (int i = 0; i < n; ++i)
+                    x[static_cast<std::size_t>(i)] = kind == 3 ? 1.0e-30f * noise() : 0.7f * noise();
+                if (n > 0 && kind == 1)                  // the loudest sample last (the tail's lanes), negative
+                    x[static_cast<std::size_t>(n - 1)] = -0.99f;
+                if (n > 2 && kind == 2)                  // NaN and infinities among them, and the loudest first
+                {
+                    x[0] = 0.98f;
+                    x[static_cast<std::size_t>(n / 2)] = std::numeric_limits<float>::quiet_NaN();
+                    x[static_cast<std::size_t>(n - 1)] = -std::numeric_limits<float>::infinity();
+                    x[1] = std::numeric_limits<float>::infinity();
+                }
+                float p = 0.0f;
+                double e = 0.0;
+                for (const float v : x)
+                {
+                    const float s = std::isfinite(v) ? std::fabs(v) : 0.0f;
+                    p = std::max(p, s);
+                    e += static_cast<double>(s) * static_cast<double>(s);
+                }
+                const pg::BlockLevels b = pg::blockLevels(x.data(), n);
+                peaks = peaks && b.peak == p;
+                const double err = std::fabs(b.energy - e) / std::max(e, 1.0e-300);
+                worst = std::max(worst, e > 0.0 ? err : std::fabs(b.energy));
+                energies = energies && (e > 0.0 ? err <= 1.0e-12 : b.energy == 0.0);
+            }
+        for (const int n : { 1, 8, 13 })
+        {
+            std::vector<float> bad(static_cast<std::size_t>(n), std::numeric_limits<float>::quiet_NaN());
+            bad[0] = std::numeric_limits<float>::infinity();
+            const pg::BlockLevels b = pg::blockLevels(bad.data(), n);
+            notFinite = notFinite && b.peak == 0.0f && b.energy == 0.0;
+        }
+        std::printf("lanes: the energy's largest relative difference from a serial sum %.3g\n", worst);
+        P.eq("lanes.peak_bits", peaks ? 1 : 0, 1);
+        P.eq("lanes.energy_close", energies ? 1 : 0, 1);
+        P.eq("lanes.not_finite_0", notFinite ? 1 : 0, 1);
     }
 
     // LISTEN
