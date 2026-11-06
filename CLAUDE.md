@@ -75,7 +75,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
   build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" above).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server and probes,
-  and the installer) and run every test in `build-dev`: each of the 40 probes once for each product
+  and the installer) and run every test in `build-dev`: each of the 41 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
   change to its window). Done means it exits 0 with no warning from our sources (they build with `-Werror`). While
@@ -272,6 +272,20 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `Engine::takeAlerts` (it clears the latch `poll` reads): they read the latched `chatAlerts`.
 - The output guard (Engine::guard) stays: whatever a program computes, what leaves the plugin is finite and within
   +-4. Hosts and speakers come first.
+- **The loop budget** (Patch.h's "The loop budget", Engine.h's and Compiler.h's "A program that stops"): every compile
+  that plays (compile()'s second pass, freeze(), ir(), frozenIr()) has FMinus's `Options::loopBudget`, the frozen copy
+  too (it costs 0.2% to 2.7%: `dsp.budget`, README "A loop that never ends"); each call into a program goes through
+  Patch, which sets its budget (`budgetOf`: 2^36 a second of its samples, 16 samples' worth at least; init and end
+  2^32) and after it records a stop (`Patch::stopped`), and calls nothing of a stopped Patch until reset() (its state
+  may be any). A new call path into a program goes through Patch too, never around it. The Engine fades a stopped
+  program out over 20 ms from its last samples (`Exit`, `exitVoice`; the effect keeps each block's input for it),
+  starts no note on it, goes back to the program it replaced while that one is still there and the program was offered
+  `revertible` (the Compiler's RUN, until `settle()`: one exchange of `revertible_` decides who wins), and publishes
+  the stop (`stops()`, `lastStop()`); a RUN's land() waits for the program's first blocks (a block under way counts as
+  busy: a stuck call takes up to its budget), so a stop there fails the RUN as a compile does; a later stop is the
+  compiler thread's (`checkStops`: the status, `stopped`, and `previous_`, the last program of other files that
+  played, compiled again with its pins and played). A program that stopped is never gone back to, refined or frozen.
+  `dsp.budget` checks it all.
 - The processor copes with what a host may do: the bypass crossfades between the Engine's output and the input (the
   effect) or silence (the synth), and the Engine keeps running (the synth's on the note-offs only, so a note let go
   during the bypass releases); a block before any `prepareToPlay` passes the input through, sanitised; a host's NaN
