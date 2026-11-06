@@ -48,7 +48,9 @@
 //             input the program lacks) costs one build more (two shaderc runs for one shader), never the result; a
 //             compile's four new shaders run shaderc four times and the builds after the compile find them made, and
 //             with a renderer's check of 150 ms (a wait) a program of 100 ms or more compiles in less than the two's
-//             sum (the early builds run while FMinus compiles)
+//             sum (the early builds run while FMinus compiles); a shaderc that does not run (no permission to execute)
+//             leaves a note and nothing kept, in memory or on disk, so that once it runs the same cache builds it; a
+//             shader that does not compile is kept in memory (no second shaderc) and never written to disk
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -988,6 +990,50 @@ PROBE(gui, shaders)
             P.le("cache.early_beside_the_compile", total, h.ms + checkMs);
         }
 
+        // A build that failed for a reason of the moment is never kept: a shaderc that does not run (a copy without its
+        // permission to execute) gives its note and leaves nothing on disk, and once it runs (the permission back, its
+        // path, size and time the same: the same key) the same cache builds it. (Windows has no such permission.)
+#if !defined(_WIN32)
+        {
+            const std::filesystem::path bin = root / "noexec";
+            std::filesystem::create_directories(bin, ec);
+            const std::filesystem::path copy = bin / std::filesystem::path(plain.shaderc).filename();
+            std::filesystem::copy_file(plain.shaderc, copy, std::filesystem::copy_options::overwrite_existing, ec);
+            using std::filesystem::perms;
+            std::filesystem::permissions(copy, perms::owner_read | perms::owner_write | perms::group_read | perms::others_read, ec);
+            const std::filesystem::file_time_type time = std::filesystem::last_write_time(copy, ec);
+            pg::ShaderTools x = fresh(root / "passing");
+            x.shaderc = copy.string();
+            const std::string body = saltedStill(400);
+            pg::ShaderCache c;
+            const pg::ShaderBuild failed = c.build("still.sc", body, { "cutoff" }, x);
+            const int onDisk = folder(root / "passing").entries;
+            std::filesystem::permissions(copy, perms::owner_all | perms::group_read | perms::group_exec | perms::others_read
+                                                   | perms::others_exec, ec);
+            std::filesystem::last_write_time(copy, time, ec);
+            const pg::ShaderBuild working = c.build("still.sc", body, { "cutoff" }, x);
+            const pg::ShaderCache::Counts n = c.counts();
+            P.eq("cache.passing_failure_said", !failed.ok() && has(failed.error, "shaderc did not run") ? 1 : 0, 1);
+            P.eq("cache.passing_failure_not_on_disk", onDisk, 0);
+            P.eq("cache.passing_failure_not_kept", working.ok() && n.built == 2 && n.memory == 0 && n.disk == 0 ? 1 : 0, 1);
+            std::filesystem::remove_all(bin, ec);
+        }
+#endif
+
+        // A shader that does not compile is kept in memory (shaderc does not run for it again in the process) but never
+        // on disk: a session after this one tries it again.
+        {
+            const std::filesystem::path dir = root / "broken";
+            pg::ShaderCache c;
+            const pg::ShaderBuild one = c.build("broken.sc", kBroken, {}, fresh(dir));
+            const uint64_t runs = pg::shadercRuns();
+            const pg::ShaderBuild again = c.build("broken.sc", kBroken, {}, fresh(dir));
+            P.eq("cache.broken_note", !one.ok() && has(one.error, "broken.sc:5:1: note: the shader does not compile:") ? 1 : 0, 1);
+            P.eq("cache.broken_kept_in_memory", !again.ok() && again.error == one.error && c.counts().memory == 1
+                                                    && pg::shadercRuns() == runs ? 1 : 0, 1);
+            const Folder f = folder(dir);
+            P.eq("cache.broken_not_on_disk", f.entries + f.temps, 0);
+        }
         std::filesystem::remove_all(root, ec);
     }
 
