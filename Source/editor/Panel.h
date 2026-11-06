@@ -217,7 +217,8 @@ namespace playground::ui
         void setWindowHooks(WindowHooks hooks);
         Role role() const noexcept { return role_; }
         bool editorOut() const noexcept { return out_; } // the editor's Panel: the editor is in the code window (a
-                                                         // picture's: the session has it out)
+                                                         // picture's: an editor had it out when it was made,
+                                                         // EditorPort::codeWindowOpen)
         bool windowButtonShown() const;
         funkgui::Point centreOfWindowButton() const;
         void setEditorOut(bool out);                     // the button: the session's choice, then the hooks' out

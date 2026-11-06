@@ -37,7 +37,8 @@
 //   explorerWidth()   the explorer's and the chat's widths as the user set them (editor/Columns.h), kept in the session;
 //   chatWidth()       0: none set
 //   codeWindow()      the code editor and the explorer in a window of their own (editor/Panel.h, "the code window"):
-//                     whether it is out, its size and its place, kept in the session, set with setCodeWindow()
+//                     whether it is out, its size and its place, kept in the session, set with setCodeWindow();
+//                     codeWindowOpen() whether an editor's code is in it now (addCodeWindow(), removeCodeWindow())
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -416,6 +417,13 @@ namespace playground
         // closes the window); a Panel drawn headless has no window and shows the editor in place.
         virtual CodeWindow codeWindow() const { return {}; }
         virtual void setCodeWindow(const CodeWindow& window) { (void)window; }
+        // Whether an editor's code is in its code window now: its Panel adds itself when it lends the code window the
+        // editor and removes itself when it takes it back or goes. view_panel's picture shows this, not the session's
+        // choice, which an editor follows only once it is on screen (and one without a window's owner never does). In
+        // the processor's memory only.
+        virtual void addCodeWindow() {}
+        virtual void removeCodeWindow() {}
+        virtual bool codeWindowOpen() const { return false; }
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.

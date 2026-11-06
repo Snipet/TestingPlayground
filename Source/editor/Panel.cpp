@@ -2656,8 +2656,9 @@ namespace playground::ui
         const bool picture = role == Role::picture;
         if (role_ != Role::code)
             port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
-        // A picture shows the editor's window as the user has it: the panel full size while the editor is out.
-        out_ = picture && port_.codeWindow().out;
+        // A picture shows the editor's window as the user has it: the panel full size while an editor's code is in its
+        // window now (not the session's choice alone, which an editor without a window's owner never follows).
+        out_ = picture && port_.codeWindowOpen();
         seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
@@ -3015,8 +3016,7 @@ namespace playground::ui
         refresh(0.0);
         if (layoutStale())
             layout();                                    // the tab the session shows: its room (a netlist's, the panel)
-        focus_ = editorItem_;
-        setFocus(editorItem_);
+        setFocus(editorItem_);                           // none in the PANEL view, where the editor is hidden
     }
 
     // The files' hooks, to this Panel: when it makes its editor, and when the code window lends or gives it back
@@ -3054,6 +3054,8 @@ namespace playground::ui
         // A schematic gesture's files, given to the processor at once unless a draft came that refresh has not merged
         // (Claude's edit_circuit writes only over the text it read: it then sees the gesture and draws on it again).
         fi.setSyncHook([this] {
+            if (out_)
+                return false;                            // the hidden copy gives nothing
             if (files().revision() == syncedFiles_)
                 return true;
             Draft d = files().draft();
@@ -3464,6 +3466,8 @@ namespace playground::ui
         // owner lets both go together (the code window first), or takes the editor back before the code window goes.
         if (peer_ != nullptr && peer_->peer_ == this)
             peer_->peer_ = nullptr;
+        if (role_ == Role::editor && out_)
+            port_.removeCodeWindow();                    // its code window has gone first (the session keeps it out)
         if (irViewing_)
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
     }
@@ -4348,6 +4352,8 @@ namespace playground::ui
 
     bool Panel::pushFiles()
     {
+        if (out_)
+            return false;                                // the hidden copy gives nothing (pushEditor: the code window's)
         for (int tries = 0; tries < 2; ++tries)
         {
             (void)mergeDraft();
@@ -4364,9 +4370,9 @@ namespace playground::ui
         return false;
     }
 
-    // The editor's files to the processor: the code window's Panel's while it has the editor. (This Panel's copy of
-    // them is the draft as it was lent, and as later drafts that are not the editor's own come: hidden, it reads and
-    // gives nothing meanwhile; the processor's draft is the editor's.)
+    // The editor's files to the processor: the code window's Panel's while it has the editor. (This Panel's copy is the
+    // files as the code window's Panel loaded them, hidden: it never has the focus, merges no draft and gives nothing
+    // meanwhile; the processor's draft is the editor's.)
     void Panel::pushEditor()
     {
         Panel& e = editorPanel();
@@ -4400,16 +4406,17 @@ namespace playground::ui
         syncColumnWidths();
         syncCodePanel();
         keepStepDefaults(nowSec, false);
-        // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
+        // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
+        // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
-        if (mergeDraft())
+        if (!out_ && mergeDraft())
         {
             textChanged = true;
             dirty_ = true;
         }
         // The files as typed, and the tab shown, to the processor (it outlives this window), never over a write that
         // came since the merge above (Claude's, on its worker): that one merges first.
-        if (files().revision() != syncedFiles_)
+        if (!out_ && files().revision() != syncedFiles_)
         {
             (void)pushFiles();
             textChanged = true;
@@ -5599,14 +5606,15 @@ namespace playground::ui
     {
         if (role_ != Role::editor || code.role_ != Role::code || out_ || peer_ != nullptr || code.peer_ != nullptr)
             return;
-        // What was typed until now goes to the processor first, and the code window's copy takes it: the copy this
-        // Panel then has is the draft, and the editor the code window takes is what the user had.
+        // What was typed until now goes to the processor first; the editor the code window takes is what the user had.
+        // The copy this Panel gets in return (the files as the code window's Panel loaded them) is hidden and inert
+        // until the editor comes back: no focus, no draft merged, nothing given (refresh, pushFiles).
         (void)pushFiles();
-        (void)code.mergeDraft();
         swapEditor(code);
         peer_ = &code;
         code.peer_ = this;
         out_ = true;
+        port_.addCodeWindow();                           // what a picture shows: the code is out now
         layout();                                        // the panel full size, the copy hidden
         code.layout();
         code.setFocus(code.editorItem_);
@@ -5628,6 +5636,7 @@ namespace playground::ui
             peer_ = nullptr;
         }
         out_ = false;
+        port_.removeCodeWindow();
         layout();
         if (caret)
             setFocus(editorItem_);
@@ -5781,6 +5790,10 @@ namespace playground::ui
 
     void Panel::setFocus(int item)
     {
+        // A hidden item never has the focus (Items.h: no input): the editor in the PANEL view, the hidden copy of it
+        // while the code window has it, a folded chat's box. A card closing gives it back to none then.
+        if (item >= 0 && !items_[static_cast<std::size_t>(item)]->shown())
+            item = -1;
         if (focus_ != item && focus_ >= 0)
             items_[static_cast<std::size_t>(focus_)]->focusChanged(false);
         focus_ = item;
@@ -6182,7 +6195,8 @@ namespace playground::ui
 
     int Panel::textItem() const
     {
-        return focus_ >= 0 && items_[static_cast<std::size_t>(focus_)]->takesAllKeys() ? focus_ : -1;
+        return focus_ >= 0 && items_[static_cast<std::size_t>(focus_)]->shown()
+                       && items_[static_cast<std::size_t>(focus_)]->takesAllKeys() ? focus_ : -1;
     }
 
     void Panel::pointerDown(const funkgui::PointerEvent& e)
@@ -6443,8 +6457,8 @@ namespace playground::ui
             ring_ = false;
             return true;
         }
-        if (focus_ < 0 || !gestures_)
-            return false;
+        if (focus_ < 0 || !gestures_ || !items_[static_cast<std::size_t>(focus_)]->shown())
+            return false;                                // an item hidden since it took the focus takes no key
         return items_[static_cast<std::size_t>(focus_)]->key(e, *gestures_);
     }
 

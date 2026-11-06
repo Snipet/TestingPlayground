@@ -258,6 +258,9 @@ namespace playground
         void setChatWidth(int px) override { chatW_.store(std::max(0, px)); }
         CodeWindow codeWindow() const override;
         void setCodeWindow(const CodeWindow& window) override;
+        void addCodeWindow() override { ++codeWindows_; }
+        void removeCodeWindow() override { codeWindows_ = std::max(0, codeWindows_ - 1); }
+        bool codeWindowOpen() const override { return codeWindows_ > 0; }
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -385,6 +388,8 @@ namespace playground
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
+        int codeWindows_ = 0;                                    // the editors whose code is in a code window now
+                                                                 // (message thread; never in the session)
         // The probes' owners (EditorPort::addProbeOwner; message thread): each one's set, the oldest first. The newest
         // whose set is armed reaches the Engine (sendProbes), none: an empty set.
         struct ProbeOwner
