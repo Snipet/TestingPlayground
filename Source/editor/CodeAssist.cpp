@@ -326,15 +326,62 @@ namespace playground::ui
     }
 
     // ---- the highlighter --------------------------------------------------------------------------------------------
+    Conditionals Conditionals::of(const Sources& files)
+    {
+        Conditionals c;
+        const std::vector<lang::FileConditionals> read = lang::conditionals(files, lang::hostDefines());
+        for (std::size_t i = 0; i < files.size() && i < read.size(); ++i)
+        {
+            if (read[i].directives.empty())
+                continue;
+            std::vector<uint8_t>& flags = c.files[files[i].name];
+            for (const lang::Conditional& d : read[i].directives)
+                flags.push_back(static_cast<uint8_t>((d.inert ? kInert : 0) | (d.skipping ? kSkipping : 0)));
+        }
+        return c;
+    }
+
+    CodeHighlighter::CodeHighlighter(std::shared_ptr<const TypeNames> types, std::shared_ptr<const Conditionals> conditionals,
+                                     std::string_view file)
+        : types_(std::move(types)), conditionals_(std::move(conditionals))
+    {
+        if (conditionals_ != nullptr)
+            if (const auto f = conditionals_->files.find(file); f != conditionals_->files.end())
+                flags_ = &f->second;
+    }
+
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
-        bool inComment = stateIn != 0;
+        bool inComment = (stateIn & 1u) != 0;
+        uint32_t met = stateIn >> 1;                     // the conditional directives before this line
         std::vector<lang::Token> toks;
         lang::lexLine(l, 0, inComment, toks);
+        const auto state = [&] { return (inComment ? 1u : 0u) | (std::min<uint32_t>(met, 0x7FFFFFFFu) << 1); };
+        const auto flag = [&](uint32_t k) -> uint8_t {
+            return flags_ != nullptr && k < flags_->size() ? (*flags_)[k] : uint8_t{ 0 };
+        };
         const auto span = [&](int a, int b, uint16_t st) {
             if (b > a)
                 out.push_back({ a, b, st });
         };
+        // A conditional's line (a directive is the line's one token): dimmed when a skipped group holds it, else its
+        // parts as below; either way one more met.
+        const bool directive = toks.size() == 1 && toks[0].kind == lang::Tok::directive;
+        const std::string_view dname = directive ? lang::directiveName(toks[0].text) : std::string_view{};
+        if (directive && lang::isConditional(dname))
+        {
+            const uint8_t f = flag(met++);
+            if ((f & Conditionals::kInert) != 0)
+            {
+                span(0, static_cast<int>(l.size()), csInactive);
+                return state();
+            }
+        }
+        else if (met > 0 && (flag(met - 1) & Conditionals::kSkipping) != 0)
+        {
+            span(0, static_cast<int>(l.size()), csInactive);   // a skipped group: never compiled, maybe not FMinus
+            return state();
+        }
         bool attr = false;
         for (std::size_t i = 0; i < toks.size(); ++i)
         {
@@ -371,8 +418,38 @@ namespace playground::ui
                 }
                 case lang::Tok::directive:
                 {
-                    // `#include "file"`, `#pragma panel ... "TEXT" ...`, a trailing comment.
                     const std::string_view d = t.text;
+                    // A conditional's, a #define's or an #undef's line: `#name`, then its condition or its macro as
+                    // FMinus's tokens, a name a macro's (`defined` a keyword's).
+                    if (lang::isConditional(dname) || dname == "define" || dname == "undef")
+                    {
+                        std::size_t rest = 0;
+                        (void)lang::directiveName(d, &rest);
+                        span(t.col, t.col + static_cast<int>(rest), csDirective);
+                        bool inner = false;
+                        std::vector<lang::Token> parts;
+                        lang::lexLine(d.substr(rest), 0, inner, parts);
+                        for (const lang::Token& p : parts)
+                        {
+                            const int a = t.col + static_cast<int>(rest) + p.col;
+                            uint16_t ps = csPlain;
+                            switch (p.kind)
+                            {
+                                case lang::Tok::comment:   ps = csComment; break;
+                                case lang::Tok::number:    ps = csNumber; break;
+                                case lang::Tok::op:        ps = csOperator; break;
+                                case lang::Tok::punct:     ps = csPunct; break;
+                                case lang::Tok::keyword:   ps = csKeyword; break;
+                                case lang::Tok::identifier:
+                                case lang::Tok::type:      ps = p.text == "defined" ? csKeyword : csConstant; break;
+                                case lang::Tok::directive:
+                                case lang::Tok::unknown:   ps = csPlain; break;
+                            }
+                            span(a, a + p.len, ps);
+                        }
+                        continue;
+                    }
+                    // `#include "file"`, `#pragma panel ... "TEXT" ...`, a trailing comment.
                     std::size_t k = 1;
                     while (k < d.size() && (d[k] == ' ' || d[k] == '\t'))
                         ++k;
@@ -419,7 +496,7 @@ namespace playground::ui
             if (attr && t.text == "]" && prev != nullptr && prev->text == "]")
                 attr = false;
         }
-        return inComment ? 1u : 0u;
+        return state();
     }
 
     funkgui::Col codeGround(const funkgui::Theme& th) { return editorGround(th); }
@@ -481,6 +558,7 @@ namespace playground::ui
         p[csAttribute] = ink(Ink::ink52);
         p[csPunct] = ink(Ink::ink70);
         p[csConstant] = dark ? custom({ 0x4F, 0xC1, 0xFF, 255 }) : custom({ 0x00, 0x70, 0xC1, 255 });
+        p[csInactive] = ink(Ink::ink32);                 // the theme's faintest ink, as the line numbers'
         return p;
     }
 
@@ -524,7 +602,7 @@ namespace playground::ui
         if (kind == FileKind::Circuit)
             e.setHighlighter(std::make_unique<CircuitHighlighter>());
         else
-            e.setHighlighter(std::make_unique<CodeHighlighter>(types_));
+            e.setHighlighter(std::make_unique<CodeHighlighter>(types_, conditionals_, fileName));
         if (!palette_.empty())
             e.setPalette(palette_);
         else
@@ -606,6 +684,31 @@ namespace playground::ui
     {
         sync();
         return service_;
+    }
+
+    void CodeAssist::updateConditionals()
+    {
+        Sources files;
+        for (int i = 0; i < tabs_.count(); ++i)
+            if (fmFile(i))
+                files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
+        auto next = std::make_shared<Conditionals>(Conditionals::of(files));
+        if (next->files == conditionals_->files)
+            return;
+        // The tabs whose directives read otherwise: a highlighter of the new snapshot (every line's state again).
+        for (int i = 0; i < tabs_.count(); ++i)
+        {
+            if (!fmFile(i))
+                continue;
+            const auto was = conditionals_->files.find(tabs_.name(i));
+            const auto now = next->files.find(tabs_.name(i));
+            const bool same = (was == conditionals_->files.end()) == (now == next->files.end())
+                           && (was == conditionals_->files.end() || was->second == now->second);
+            if (!same)
+                tabs_.editor(i).setHighlighter(std::make_unique<CodeHighlighter>(types_, next, tabs_.name(i)));
+        }
+        // The other tabs keep their highlighters, and the snapshot each holds, whose flags for them are these.
+        conditionals_ = std::move(next);
     }
 
     // ---- keys -------------------------------------------------------------------------------------------------------
@@ -1196,15 +1299,22 @@ namespace playground::ui
     {
         focused_ = focused;
         funkgui::TextEditor& E = ed();
-        // The check: the files changed, and have rested.
-        if (const uint64_t r = filesRevision(); r != editedRevision_)
+        // The check: the files changed, and have rested. The groups a conditional skips, at once (a RUN cancels the
+        // check, never this).
+        const uint64_t revision = filesRevision();
+        if (revision != editedRevision_)
         {
-            editedRevision_ = r;
+            editedRevision_ = revision;
             sinceEdit_ = 0.0f;
             checkDue_ = true;
         }
         else
             sinceEdit_ += dt;
+        if (revision != conditionalsRevision_)
+        {
+            conditionalsRevision_ = revision;
+            updateConditionals();
+        }
         // Find's matches follow the text.
         if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_))
             updateMatches();
@@ -1420,6 +1530,15 @@ namespace playground::ui
                                 col = a;
                                 end = b;
                             }
+                            else
+                            {
+                                // A conditional's word (a macro's name, a number FMinus refuses there): the word.
+                                int b2 = col;
+                                while (b2 < static_cast<int>(text.size())
+                                       && (lang::isIdentChar(text[static_cast<std::size_t>(b2)]) || text[static_cast<std::size_t>(b2)] == '.'))
+                                    ++b2;
+                                end = std::max(end, b2);
+                            }
                         }
                 }
                 const funkgui::DecorationKind kind = d.severity == Diagnostic::Severity::error     ? funkgui::DecorationKind::error
@@ -1567,7 +1686,8 @@ namespace playground::ui
         sync();
         funkgui::TextEditor& E = ed();
         const std::string old = E.text();
-        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
+        const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames(),
+                                               &service_.fileConditionals(tab).skipped);
         if (!r.ok)
         {
             tabs_.notice("FORMAT: " + upper(r.why));
@@ -1596,7 +1716,8 @@ namespace playground::ui
                 continue;
             funkgui::TextEditor& E = tabs_.editor(i);
             const std::string old = E.text();
-            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames());
+            const lang::Formatted r = lang::format(old, service_.typeNames(), service_.constantNames(),
+                                                   &service_.fileConditionals(i).skipped);
             if (!r.ok || !r.changed)
                 continue;
             const lang::Pos c = lang::mapFormatted(old, r.text, pos(E.caret()));

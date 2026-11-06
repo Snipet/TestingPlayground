@@ -15,8 +15,9 @@
 //                inside the braces, the statements after a label a level deeper than the label (a line that starts
 //                with a label at the label's level, the rest of it as written); a label's `:` tight to its value (a ?:
 //                inside the value keeps its spaced `:`), a block after a label (`case 1:` then `{`) under the label
-//   enum         its braces Allman's, as a module's (`enum Wave` then `{` on a line of its own), its constants a level
-//                inside them, one a line or several on one, as written; `enum { N = 16 };` stays on its line
+//   enum         its braces Allman's, as a module's (`enum Wave` then `{` on a line of its own; C23's `enum Wave : int`
+//                too), its constants a level inside them, one a line or several on one, as written; `enum { N = 16 };`
+//                stays on its line, and so do the names after a list (`enum Mode { A, B } mode;`)
 //   a table      an initialiser's list (a const table's, the top level's or a block's) a level inside its braces, and a
 //                line of one longer than kWidth columns broken after its commas so that each line fits (a piece that
 //                cannot fit, one element longer than that, on a line of its own)
@@ -118,6 +119,18 @@ namespace playground::lang
             Formatter(const std::vector<std::string>& types, const std::vector<std::string>& constants)
                 : types_(types), constants_(constants)
             {
+            }
+
+            // A line of a group a conditional skips: as it is (its trailing blanks aside), nothing of it counted.
+            void verbatim(std::string_view text)
+            {
+                if (blank(text))
+                {
+                    blankPending_ = !out_.empty();
+                    return;
+                }
+                flushBlank();
+                out_.push_back(rtrim(text));
             }
 
             void line(std::string_view text, bool startsInComment, const std::vector<Token>& toks)
@@ -750,6 +763,17 @@ namespace playground::lang
                 prevCastClose_ = castClose;
                 prevSwitchParen_ = switchParen;
                 prevLabelColon_ = labelColon;
+                // An enumeration's head so far: `enum`, its tag, C23's `:` and its fixed type.
+                if (t.kind == Tok::keyword && x == "enum")
+                    enumHead_ = EnumHead::keyword;
+                else if (enumHead_ == EnumHead::keyword && t.kind == Tok::identifier)
+                    enumHead_ = EnumHead::tag;
+                else if ((enumHead_ == EnumHead::keyword || enumHead_ == EnumHead::tag) && x == ":")
+                    enumHead_ = EnumHead::colon;
+                else if (enumHead_ == EnumHead::colon && t.kind == Tok::type)
+                    enumHead_ = EnumHead::type;
+                else if (!(enumHead_ == EnumHead::colon && x == "const"))
+                    enumHead_ = EnumHead::none;
                 if (attrClose)
                     prevOperand_ = false;
                 else if (t.kind == Tok::identifier || t.kind == Tok::number)
@@ -767,11 +791,11 @@ namespace playground::lang
                 return used;
             }
 
-            // A `{` after `enum` or `enum Tag`: an enumeration's list (its braces split as a block's, Allman).
+            // A `{` after `enum` or `enum Tag`, or C23's `enum Tag : int` (`enum : bool`): an enumeration's list (its
+            // braces split as a block's, Allman).
             bool enumBrace() const
             {
-                const auto isEnum = [](const Token& t) { return t.kind == Tok::keyword && t.text == "enum"; };
-                return hasPrev_ && (isEnum(prev_) || (prev_.kind == Tok::identifier && hasPrevPrev_ && isEnum(prevPrev_)));
+                return enumHead_ == EnumHead::keyword || enumHead_ == EnumHead::tag || enumHead_ == EnumHead::type;
             }
 
             // A name before `*` that is a type's though no module of that name is known: capitalised and no constant's
@@ -802,6 +826,10 @@ namespace playground::lang
             Token prev_{}, prevPrev_{};
             bool hasPrev_ = false, hasPrevPrev_ = false, prevOperand_ = false, prevUnary_ = false, prevPointer_ = false,
                  prevAttrOpen_ = false, prevCastClose_ = false, prevSwitchParen_ = false, prevLabelColon_ = false;
+            enum class EnumHead : uint8_t
+            {
+                none, keyword, tag, colon, type
+            } enumHead_ = EnumHead::none;
             // A switch's label being read (from its case or default to its `:`), and the indent of the line it was on.
             bool labelOpen_ = false;
             int labelQuestions_ = 0;
@@ -820,11 +848,21 @@ namespace playground::lang
         }
     }
 
-    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames)
+    Formatted format(std::string_view text, const std::vector<std::string>& typeNames, const std::vector<std::string>& constantNames,
+                     const std::vector<uint8_t>* skipped)
     {
         Formatted r;
         r.text = std::string(text);
         const std::vector<std::string_view> lines = splitLines(text);
+        // The groups a conditional skips: the caller's, else the text's own conditionals.
+        std::vector<uint8_t> alone;
+        if (skipped == nullptr)
+        {
+            const std::vector<FileConditionals> c = conditionals({ { "text.fm", std::string(text) } }, hostDefines());
+            alone = c.empty() ? std::vector<uint8_t>{} : c.front().skipped;
+            skipped = &alone;
+        }
+        const auto aside = [&](std::size_t i) { return i < skipped->size() && (*skipped)[i] != 0; };
         // The lines' tokens, and the block-comment state each starts in.
         std::vector<std::vector<Token>> toks(lines.size());
         std::vector<bool> inComment(lines.size(), false);
@@ -834,7 +872,7 @@ namespace playground::lang
             inComment[i] = state;
             lexLine(lines[i], static_cast<int>(i), state, toks[i]);
             for (const Token& t : toks[i])
-                if (t.kind == Tok::unknown)
+                if (t.kind == Tok::unknown && !aside(i))
                 {
                     r.ok = false;
                     r.why = "line " + std::to_string(i + 1) + " has '" + std::string(t.text) + "', which FMinus does not read";
@@ -854,7 +892,10 @@ namespace playground::lang
         std::sort(constants.begin(), constants.end());
         Formatter f(types, constants);
         for (std::size_t i = 0; i < lines.size(); ++i)
-            f.line(lines[i], inComment[i], toks[i]);
+            if (aside(i))
+                f.verbatim(lines[i]);
+            else
+                f.line(lines[i], inComment[i], toks[i]);
         std::string out = f.finish();
         if (signatureOf(out) != signatureOf(text))
         {

@@ -75,9 +75,10 @@ namespace playground
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         rate_.store(fs_, std::memory_order_relaxed);
         maxBlock_ = std::max(1, maxBlockSize);
+        largestBlock_.store(maxBlock_, std::memory_order_relaxed);
         const auto block = static_cast<std::size_t>(maxBlock_);
         streamBuf_.assign(static_cast<std::size_t>(kMaxControls) * block, 0.0f);
-        for (std::vector<float>* v : { &accL_, &accR_, &voiceL_, &voiceR_, &dryL_, &dryR_, &mono_ })
+        for (std::vector<float>* v : { &accL_, &accR_, &voiceL_, &voiceR_, &dryL_, &dryR_, &mono_, &inL_, &inR_ })
             v->assign(block, 0.0f);
         stealFade_ = samplesOf(fsdsp::kStealFadeMs, fs_);
         swapFade_ = samplesOf(fsdsp::kFadeMs, fs_);
@@ -98,12 +99,16 @@ namespace playground
             current_ = next;
             old_ = nullptr;
             fresh = true;
+            stopNoted_ = false;
+            exitCur_ = {};
         }
         else if (old_ != nullptr)
         {
             delete old_;
             old_ = nullptr;
         }
+        exitOld_ = {};                               // no old program now
+        revertible_.store(0, std::memory_order_release);   // nothing to go back to
         delete hold_;
         hold_ = nullptr;
         delete retired_.exchange(nullptr, std::memory_order_acquire);
@@ -128,7 +133,8 @@ namespace playground
         xfade_.setTarget(1.0f);
         voices_ = {};                                // (their stop() came first, above)
         clock_ = 0;
-        if (current_ != nullptr && current_->rate() != fs_)
+        // A stopped program stays stopped (Engine.h, "A program that stops"): never made new here.
+        if (current_ != nullptr && current_->rate() != fs_ && current_->stopped() == Patch::Method::none)
         {
             current_->reset(fs_);
             fresh = true;
@@ -155,19 +161,32 @@ namespace playground
         running_ = true;
         const std::lock_guard<std::mutex> lock(mutex_);
         if (current_ != nullptr)
-            current_->reset(fs_);
+            current_->reset(fs_);                    // a stopped one too: a render's program as new
         instanceSwitch_.fill(0);                     // init's switches
+        stopNoted_ = false;
+        exitCur_ = {};
     }
 
-    void Engine::offer(std::unique_ptr<Patch> patch)
+    void Engine::offer(std::unique_ptr<Patch> patch, bool revertible)
     {
         if (!patch)
             return;
         const std::lock_guard<std::mutex> lock(mutex_);
         if (patch->rate() != fs_)                    // compiled for another rate than prepare() last set
             patch->reset(fs_);
+        revertible_.store(revertible ? patch->program() : 0, std::memory_order_release);
         delete pending_.exchange(patch.release(), std::memory_order_acq_rel);   // one the audio thread never took
         delete retired_.exchange(nullptr, std::memory_order_acquire);
+    }
+
+    bool Engine::settle(uint64_t program) noexcept
+    {
+        // The audio thread claims a revert by an exchange of the same word (revert(): the id with kReverted): whichever
+        // comes first has it. Another value (0 after prepare(), another program's) is no revert of this one.
+        uint64_t expected = program;
+        if (program == 0 || revertible_.compare_exchange_strong(expected, 0, std::memory_order_acq_rel))
+            return true;
+        return expected != (program | kReverted);
     }
 
     void Engine::offerFrozen(std::unique_ptr<Patch::Frozen> frozen)
@@ -224,6 +243,9 @@ namespace playground
             return;
         old_ = current_;
         current_ = next;
+        exitOld_ = exitCur_;                         // its side as it was (an effect's: Engine.h, "A program that stops")
+        exitCur_ = {};
+        stopNoted_ = false;
         forgetProbes();                              // never a write into the old one (Engine.h, "Probes")
         instanceGen_.fill(0);                        // its instances have no circuit dial's value yet
         instanceSwitch_.fill(0);                     // and their switches where init left them
@@ -234,9 +256,15 @@ namespace playground
                 old_->setStream(c, nullptr);
         if constexpr (kInstrument)
         {
+            // What the old program's instances hold now (its streams gone: each dial's target), should the Engine go
+            // back to it after this block's glides (stopCheck).
+            heldFor_ = fedPatch_ == old_ ? old_ : nullptr;
+            for (int c = 0; c < kMaxControls; ++c)
+                heldDials_[static_cast<std::size_t>(c)] = glide_[static_cast<std::size_t>(c)].tgt;
+            heldCarryOver_ = carryOver_;
             // The old program's voices fade out; the keys still held start again on the new one.
             for (Voice& v : voices_)
-                if (v.patch != nullptr && v.patch == old_)
+                if (v.patch != nullptr && v.patch == old_ && !v.exiting)
                 {
                     v.fading = true;
                     v.fall = v.gain / static_cast<float>(swapFade_);
@@ -244,6 +272,7 @@ namespace playground
             for (int k = 0; k < 128; ++k)
                 if (held_[static_cast<std::size_t>(k)])
                     noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            stopCheck(0, -1);                        // a start() that ran past its budget
         }
         else
         {
@@ -256,7 +285,8 @@ namespace playground
     // ---- the audio thread: frozen dials ---------------------------------------------------------------------------------
     bool Engine::fits(const Patch::Frozen& f) const noexcept
     {
-        if (current_ == nullptr || old_ != nullptr || xfading_ || f.program() != current_->program())
+        if (current_ == nullptr || old_ != nullptr || xfading_ || f.program() != current_->program()
+            || current_->stopped() != Patch::Method::none)
             return false;
         const Controls& cs = current_->controls();
         for (int c = 0; c < kMaxControls; ++c)
@@ -353,7 +383,7 @@ namespace playground
         meaning_ = meaning;
     }
 
-    void Engine::glideControls(int n) noexcept
+    void Engine::glideControls(int n, int from) noexcept
     {
         if (current_ == nullptr)
             return;
@@ -396,7 +426,7 @@ namespace playground
                 moved_ = moved_ || changed;
                 if (changed && circuit && !snap)
                 {
-                    lastChange = std::max(lastChange, 0);
+                    lastChange = std::max(lastChange, from);
                     switched = switched || info.type != ControlType::real;
                 }
                 g.cur = g.tgt = target;
@@ -407,10 +437,10 @@ namespace playground
             if (!g.moving())
                 continue;
             moved_ = true;
-            if (circuit)                             // it changes at each sample until it lands
-                lastChange = std::max(lastChange, std::min(g.left, n) - 1);
+            if (circuit && from < n)                 // it changes at each sample until it lands
+                lastChange = std::max(lastChange, from + std::min(g.left, n - from) - 1);
             float* buf = streamBuf_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_);
-            for (int i = 0; i < n; ++i)
+            for (int i = from; i < n; ++i)
                 buf[i] = g.tick();
             streaming_[static_cast<std::size_t>(c)] = true;
             streaming = true;
@@ -420,10 +450,10 @@ namespace playground
             // The calls run at every tick through the first at or after the last change; a switch's, the ramp's too.
             // The instances that had the values before have these by the window's calls; the others wait for a first
             // call of their own.
-            const uint64_t from = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
-            circuitUntil_ = std::max(circuitUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
+            const uint64_t tick = gridCeil(clock_ + static_cast<uint64_t>(lastChange));
+            circuitUntil_ = std::max(circuitUntil_, tick + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(switched ? circuitTicks_ : 1));
             if (switched)
-                switchUntil_ = std::max(switchUntil_, from + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_));
+                switchUntil_ = std::max(switchUntil_, tick + static_cast<uint64_t>(kGrid) * static_cast<uint64_t>(circuitTicks_));
             const uint64_t was = circuitGen_++;
             if constexpr (kInstrument)
             {
@@ -567,6 +597,172 @@ namespace playground
         }
     }
 
+    // ---- the audio thread: a program that stops (Engine.h) -------------------------------------------------------------
+    namespace
+    {
+        // A held sample: finite and within the guard's limit, else 0.
+        float heldSample(float x) noexcept
+        {
+            return std::isfinite(x) ? std::clamp(x, -kLimit, kLimit) : 0.0f;
+        }
+    }
+
+    void Engine::runEffect(float* left, float* right, int n) noexcept
+    {
+        if (current_->stopped() == Patch::Method::none)
+        {
+            playEffect(left, right, n);
+            if (current_->stopped() == Patch::Method::none)
+            {
+                exitCur_.l = heldSample(left[n - 1]);
+                exitCur_.r = heldSample(right[n - 1]);
+                return;
+            }
+        }
+        exitEffect(exitCur_, left, right, n);        // what the stopped call wrote is let go
+    }
+
+    void Engine::runOldEffect(float* left, float* right, int n) noexcept
+    {
+        if (old_->stopped() == Patch::Method::none)
+        {
+            old_->process(left, right, n);
+            if (old_->stopped() == Patch::Method::none)
+            {
+                exitOld_.l = heldSample(left[n - 1]);
+                exitOld_.r = heldSample(right[n - 1]);
+                return;
+            }
+        }
+        exitEffect(exitOld_, left, right, n);
+    }
+
+    void Engine::exitEffect(Exit& e, float* left, float* right, int n) noexcept
+    {
+        if (!e.on)
+        {
+            e.on = true;
+            e.left = swapFade_;
+        }
+        const float len = static_cast<float>(std::max(swapFade_, 1));
+        for (int i = 0; i < n; ++i)
+        {
+            const auto s = static_cast<std::size_t>(i);
+            if (e.left > 0)
+            {
+                const float g = fsdsp::smootherstep(static_cast<float>(e.left) / len);   // 1 at the stop, to 0
+                --e.left;
+                left[i] = inL_[s] + g * (e.l - inL_[s]);
+                right[i] = inR_[s] + g * (e.r - inR_[s]);
+            }
+            else
+            {
+                left[i] = inL_[s];
+                right[i] = inR_[s];
+            }
+        }
+    }
+
+    void Engine::exitVoice(Voice& v, int from, int len, bool onGrid) noexcept
+    {
+        if (!v.exiting)
+        {
+            v.exiting = true;
+            const float fall = v.gain / static_cast<float>(std::max(swapFade_, 1));
+            v.fall = v.fading ? std::max(v.fall, fall) : fall;   // a steal's quicker fade keeps its pace
+            v.fading = true;
+        }
+        float* outL = accL_.data() + from;
+        float* outR = accR_.data() + from;
+        for (int i = 0; i < len; ++i)
+        {
+            v.gain = std::max(0.0f, v.gain - v.fall);
+            outL[i] += v.gain * v.lastL;
+            outR[i] += v.gain * v.lastR;
+        }
+        if (v.gain <= 0.0f && onGrid)
+            freeVoice(v, clock_ + static_cast<uint64_t>(from + len));   // no stop(): its program plays no more
+    }
+
+    void Engine::noteStop(int at, bool reverted) noexcept
+    {
+        Stopped s;
+        s.program = current_->program();
+        s.call = current_->stopped();
+        s.bounds = current_->bounds();
+        s.at = samples_ + static_cast<uint64_t>(std::max(at, 0));
+        s.reverted = reverted;
+        stopped_.publish(s);
+        stops_.fetch_add(1, std::memory_order_acq_rel);
+        stopNoted_ = true;
+        blockFlags_ |= BlockStat::alert;
+    }
+
+    bool Engine::revert(int at) noexcept
+    {
+        if (old_ == nullptr || old_->stopped() != Patch::Method::none || current_ == nullptr)
+            return false;
+        uint64_t expected = current_->program();
+        if (expected == 0 || !revertible_.compare_exchange_strong(expected, expected | kReverted, std::memory_order_acq_rel))
+            return false;                            // not offered so, or the compiler settled it
+        noteStop(at, true);
+        std::swap(current_, old_);
+        stopNoted_ = false;                          // the program gone back to has not stopped
+        forgetProbes();
+        instanceGen_.fill(0);                        // its instances have their dials' values again from first calls
+        instanceSwitch_.fill(kSwitchesUnknown);
+        circuitUntil_ = switchUntil_ = 0;
+        effectCalledAt_ = kNever;
+        for (int c = 0; c < kMaxControls; ++c)       // the stopped one holds still (it is called no more)
+            old_->setStream(c, nullptr);
+        return true;
+    }
+
+    void Engine::stopCheck(int at, int resume) noexcept
+    {
+        if (current_ == nullptr || stopNoted_ || current_->stopped() == Patch::Method::none)
+            return;
+        if (!revert(at))
+        {
+            noteStop(at, false);
+            return;
+        }
+        if constexpr (kInstrument)
+        {
+            // The held keys start again on the program gone back to, from `resume`, with its dials; its voices that
+            // were fading out go on fading, and the stopped one's exit. Its dials: at the block's start (takePending),
+            // the block's glides are still to come and go on from where its last block left them (they were aimed for
+            // it); after them, from what its instances hold, gliding to where the dials are now (resumeGlides).
+            // Nothing steps, and no glide advances twice in a block.
+            if (resume >= 0)
+                resumeGlides(resume);
+            callAt_ = resume;                        // -1: a circuit's first call at the dials the last block left
+            for (int k = 0; k < 128; ++k)
+                if (held_[static_cast<std::size_t>(k)])
+                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            stopCheck(at, resume);                   // one that stops at once: no other to go back to now
+        }
+    }
+
+    void Engine::resumeGlides(int from) noexcept
+    {
+        if (heldFor_ == current_)
+        {
+            // Its dials as its instances have held them since the swap, gliding from there (no snap: they are its).
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                Glide& g = glide_[static_cast<std::size_t>(c)];
+                g.cur = g.tgt = heldDials_[static_cast<std::size_t>(c)];
+                g.inc = 0.0f;
+                g.left = 0;
+            }
+            carryOver_ = heldCarryOver_;
+            fedPatch_ = current_;
+        }
+        glideControls(blockN_, std::clamp(from, 0, blockN_));   // (else a snap to its dials: they were another's)
+        ++feedGen_;                                  // every instance of it fed again: the swap took their streams
+    }
+
     // ---- the audio thread: a block ---------------------------------------------------------------------------------------
     void Engine::process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept
     {
@@ -601,7 +797,10 @@ namespace playground
             return;
         }
         const auto t0 = std::chrono::steady_clock::now();
+        blockStartNs_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(t0.time_since_epoch()).count(),
+                            std::memory_order_release);
         blockFlags_ = 0;
+        blockN_ = n;
         takePending();
         glideControls(n);
         updateFrozen();
@@ -633,11 +832,17 @@ namespace playground
         if (running_)                                // the song's position at the next call's first sample
             beat_ += static_cast<double>(n) * bpm_ / (60.0 * static_cast<double>(fs_));
 
-        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const auto t1 = std::chrono::steady_clock::now();
+        const double took = std::chrono::duration<double>(t1 - t0).count();
         const float share = static_cast<float>(took * static_cast<double>(fs_) / static_cast<double>(n));
         const float decayed = load_.load(std::memory_order_relaxed) * std::pow(0.5f, static_cast<float>(n) / (0.3f * fs_));
         load_.store(std::max(share, decayed), std::memory_order_relaxed);
         blockDone(share, n);
+        // What the compiler waits on (Engine.h, "A program that stops").
+        settled_.store(current_ != nullptr && old_ == nullptr && !xfading_ ? current_->program() : 0, std::memory_order_release);
+        blockSeconds_.store(static_cast<double>(n) / static_cast<double>(fs_), std::memory_order_relaxed);
+        blockNs_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(t1.time_since_epoch()).count(),
+                       std::memory_order_release);
     }
 
     void Engine::heard(const Event& e) noexcept
@@ -1062,10 +1267,15 @@ namespace playground
         if (current_ == nullptr)
             return;                                  // no program yet: the input, as it came
         syncHost(0);
+        // The input, kept: a program that stops fades from its last samples to it (Engine.h, "A program that stops").
+        std::copy(left, left + n, inL_.data());
+        std::copy(right, right + n, inR_.data());
         if (!xfading_)
         {
-            playEffect(left, right, n);
+            runEffect(left, right, n);
             takeProbes();
+            if (current_->stopped() != Patch::Method::none && !stopNoted_)
+                noteStop(0, false);                  // no program to go back to
         }
         else
         {
@@ -1073,9 +1283,25 @@ namespace playground
             std::copy(left, left + n, dryL_.data());
             std::copy(right, right + n, dryR_.data());
             if (old_ != nullptr)
-                old_->process(dryL_.data(), dryR_.data(), n);
-            playEffect(left, right, n);
+                runOldEffect(dryL_.data(), dryR_.data(), n);
+            runEffect(left, right, n);
             takeProbes();                            // current_'s calls only
+            if (current_->stopped() != Patch::Method::none && !stopNoted_)
+            {
+                if (revert(0))
+                {
+                    // The program it replaced plays on: its output (the old side's) the new side's now, the stopped
+                    // one's exit the old side's, and the crossfade turned back from where it stands (smootherstep is
+                    // symmetric: the weight becomes 1 - w, sample for sample).
+                    std::swap_ranges(left, left + n, dryL_.data());
+                    std::swap_ranges(right, right + n, dryR_.data());
+                    std::swap(exitCur_, exitOld_);
+                    xfade_.lin.cur = 1.0f - xfade_.lin.cur;
+                    xfade_.setTarget(1.0f);
+                }
+                else
+                    noteStop(0, false);
+            }
             guard(dryL_.data(), n);
             guard(dryR_.data(), n);
             guard(left, n);
@@ -1126,6 +1352,7 @@ namespace playground
                 allNotesOff();
             else
                 controller(e);
+            stopCheck(at, at);                       // a start() or stop() that ran past its budget
         }
         if (done < n)
             render(done, n);
@@ -1181,8 +1408,8 @@ namespace playground
             return;
         held_[static_cast<std::size_t>(key)] = true;
         heldVelocity_[static_cast<std::size_t>(key)] = velocity;
-        if (current_ == nullptr || maxBlock_ == 0)
-            return;
+        if (current_ == nullptr || maxBlock_ == 0 || current_->stopped() != Patch::Method::none)
+            return;                                  // (a stopped program starts no note: Engine.h)
         // The key's own voice stops first; then, with every voice taken, the oldest released one (else the oldest)
         // gets its stop() (when it had none) and fades out to make room.
         int sounding = 0;
@@ -1416,6 +1643,11 @@ namespace playground
         {
             if (v.patch == nullptr)
                 continue;
+            if (v.exiting || v.patch->stopped() != Patch::Method::none)
+            {
+                exitVoice(v, from, len, onGrid);     // its program stopped (Engine.h): called no more
+                continue;
+            }
             std::fill(voiceL_.begin(), voiceL_.begin() + len, 0.0f);
             std::fill(voiceR_.begin(), voiceR_.begin() + len, 0.0f);
             if (v.patch == current_ && (streamingNow_ || v.fed != feedGen_))   // else it has the dials already
@@ -1439,6 +1671,11 @@ namespace playground
                 }
             }
             const bool sounding = v.patch->render(v.instance, voiceL_.data(), voiceR_.data(), len);
+            if (v.patch->stopped() != Patch::Method::none)
+            {
+                exitVoice(v, from, len, onGrid);     // what the stopped call wrote is let go
+                continue;
+            }
             if (v.patch == current_ && v.instance == probeInstance_)
                 takeProbes();                        // the followed voice's part (Engine.h, "Probes")
             bool finite = true;
@@ -1456,6 +1693,8 @@ namespace playground
                 freeVoice(v, kNever);                // its instance is called afresh
                 continue;
             }
+            v.lastL = voiceL_[static_cast<std::size_t>(len - 1)];   // what an exit holds (finite: above)
+            v.lastR = voiceR_[static_cast<std::size_t>(len - 1)];
             float* outL = accL_.data() + from;
             float* outR = accR_.data() + from;
             if (!v.fading)
@@ -1485,6 +1724,7 @@ namespace playground
                 freeVoice(v, clock_ + static_cast<uint64_t>(to));
             }
         }
+        stopCheck(from, to);                         // a call of this part that ran past its budget (Engine.h)
     }
 
     void Engine::guard(float* x, int n) noexcept

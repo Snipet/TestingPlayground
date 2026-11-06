@@ -71,6 +71,31 @@
 //             compiled on a thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
+//   ENUMS     C's and C23's enumerations as FMinus 28b2e47 has them, after Init (Patch::check clean): `enum Shape :
+//             int;` declared ahead of its list and the list after it (the tag's signature with its type, its doc; the
+//             one ahead no body), a `: bool` one (its tag's type bool, its hover saying so), an anonymous `enum : int {
+//             N = 2 }` folded; the names after a list: the top level's constants (`const enum Gate { ... } kGate =
+//             OPEN, ...`), a module's fields (one an array sized by N), a block's locals with their scope; hover on a
+//             field, a local and the bool tag; a tag's use hovering and going to its list, not the declaration ahead; a
+//             field's occurrences; completion of the field, the local, the block's constant and the tags after `enum`
+//             (the list's signature); the highlighter's constants; a circuit field's extent of the top level's
+//             fixed-type constant, and of the module's own declared with a field after its list; the formatter
+//             (FORMAT's corpus)
+//   COND      FMinus's conditionals (lang::conditionals, on the plugin's DEBUG), over a program of two files (defs.fm
+//             #defines LEVEL after an #ifndef; program.fm includes it, then reads #ifdef DEBUG, #ifndef DEBUG, #if 0,
+//             an #elif chain on LEVEL and defined(), nested groups and a skipped group's inert conditional, prose and a
+//             block comment hiding an #endif in a skipped group): each conditional directive's flags and each line's,
+//             the macro an included file defines holding after its #include, a file nothing includes read alone, the
+//             same without DEBUG (Options::defines); every example's and library file's directive lines as lexLine
+//             reads them (directiveLines); the index without a skipped group's symbols (a function and a field under
+//             #if 0 neither offered nor hovered, those of the group read both); the highlighter (Conditionals::of):
+//             a skipped line one csInactive span, an inert directive dimmed, `#ifdef` a directive, DEBUG and LEVEL
+//             constants, `defined` a keyword, a number a number, a comment a comment, and a stale snapshot choosing
+//             nothing; hover on DEBUG (the plugin's), LEVEL (its #define, its file and line, the comment above it), a
+//             name no macro is, `defined` and `#ifdef`; go to definition of LEVEL (defs.fm, its #define); completion
+//             after `#` (the directives) and `#ifdef ` (DEBUG, LEVEL); the formatter keeps a skipped group as it is
+//             (prose, the other branch's brace) and formats the rest, stable; Patch::check of the program clean, and of
+//             one whose skipped group holds an error clean too, while the same error in a group read is FMinus's
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -313,6 +338,37 @@ namespace
                       "    }\n"
                       "};\n";
     }
+
+    // C's and C23's enumerations as FMinus 28b2e47 reads them, in the house style, for after this product's Init: a tag
+    // with a fixed type declared ahead of its list, a bool one whose constants of its type follow its list, an anonymous
+    // one with a fixed type, and names after a list in a module (one an array sized by the top level's constant) and in
+    // a block.
+    const char* const kEnums =
+        "\n"
+        "// The shapes, declared ahead of their list.\n"
+        "enum Shape : int;\n"
+        "enum Shape : int\n"
+        "{\n"
+        "    SAW,\n"
+        "    SQUARE,\n"
+        "    NOISE = 4\n"
+        "};\n"
+        "// The gate's two states.\n"
+        "const enum Gate : bool { SHUT, OPEN } kGate = OPEN, kIdle = SHUT;\n"
+        "enum : int { N = 2 };\n"
+        "\n"
+        "module Picker\n"
+        "{\n"
+        "    enum Mode { UP, DOWN } mode, modes[N];\n"
+        "    enum Shape shape;\n"
+        "\n"
+        "    float pick()\n"
+        "    {\n"
+        "        enum Step : int { ONE = 1, TWO } step = TWO, other;\n"
+        "        other = ONE;\n"
+        "        return (float)(step + other + mode + modes[1] + shape + kGate);\n"
+        "    }\n"
+        "};\n";
 
     std::string libraryText(std::string_view name)
     {
@@ -906,6 +962,7 @@ PROBE(fminus, lang)
                 corpus.push_back({ f.name, f.source });
         corpus.push_back({ "the newer constructs' tools.fm", kNewTools });
         corpus.push_back({ "the newer constructs' program.fm", newProgram() });
+        corpus.push_back({ "Init with C23's enumerations", std::string(pg::kExamples[0].source) + kEnums });
         int house = 0, back = 0, again = 0, refused = 0;
         for (const auto& [name, text] : corpus)
         {
@@ -1475,6 +1532,337 @@ PROBE(fminus, lang)
             std::printf("newer: check a write to a constant table: %s", s2.errors.c_str());
             P.eq("newer.check_table_write", s2.errors.find("error: cannot assign to variable 'kTable' with const-qualified type 'const float[4]'")
                                                     != std::string::npos && s2.errors == f2.errors ? 1 : 0, 1);
+        }
+    }
+
+    // ---- ENUMS ------------------------------------------------------------------------------------------------------
+    {
+        const std::string text = std::string(pg::kExamples[0].source) + kEnums;
+        const char* kMain = pg::product::kIsInstrument ? "Voice" : "Effect";
+        lg::Options opts;
+        opts.instrument = pg::product::kIsInstrument;
+        lg::Service e;
+        e.setOptions(opts);
+        e.setFiles(pg::singleFile(text));
+        const auto sym = [&](std::string_view name, lg::Kind kind, bool body = true) -> const lg::Symbol* {
+            for (const lg::Symbol& x : e.symbols())
+                if (x.name == name && x.kind == kind && (kind != lg::Kind::enumeration || x.body == body))
+                    return &x;
+            return nullptr;
+        };
+        const pg::Patch::Result check = pg::Patch::check(pg::singleFile(text));
+        std::printf("enums: check %s\n", check.errors.empty() ? "clean" : check.errors.c_str());
+        P.eq("enums.check_clean", check.errors.empty() ? 1 : 0, 1);
+
+        // C23's fixed underlying type: the tag declared ahead of its list, then its list; the constants and their values
+        const lg::Symbol* shape = sym("Shape", lg::Kind::enumeration);
+        const lg::Symbol* ahead = sym("Shape", lg::Kind::enumeration, false);
+        const lg::Symbol* gate = sym("Gate", lg::Kind::enumeration);
+        const lg::Symbol* square = sym("SQUARE", lg::Kind::constant);
+        const lg::Symbol* noise = sym("NOISE", lg::Kind::constant);
+        const lg::Symbol* opened = sym("OPEN", lg::Kind::constant);
+        const lg::Symbol* n2 = sym("N", lg::Kind::constant);
+        const lg::Symbol* two = sym("TWO", lg::Kind::constant);
+        std::printf("enums: %s; %s; %s; N %s\n", shape ? shape->signature.c_str() : "-", ahead ? ahead->signature.c_str() : "-",
+                    gate ? gate->signature.c_str() : "-", n2 && n2->value ? std::to_string(*n2->value).c_str() : "-");
+        P.eq("enums.fixed_tag", shape != nullptr && shape->signature == "enum Shape : int { SAW, SQUARE, NOISE = 4 }" && shape->type == "int"
+                                    && shape->doc.empty() && ahead != nullptr && ahead->signature == "enum Shape : int"
+                                    && ahead->doc == "The shapes, declared ahead of their list." ? 1 : 0, 1);
+        P.eq("enums.fixed_constants", square != nullptr && square->value == 1 && square->enumeration == "Shape" && noise != nullptr
+                                          && noise->value == 4 && opened != nullptr && opened->value == 1 && opened->enumeration == "Gate"
+                                          && n2 != nullptr && n2->value == 2 && n2->enumeration.empty() && two != nullptr
+                                          && two->value == 2 && !(two->scope.from == two->scope.to) ? 1 : 0, 1);
+        P.eq("enums.bool_tag", gate != nullptr && gate->type == "bool" && gate->signature == "enum Gate : bool { SHUT, OPEN }" ? 1 : 0, 1);
+
+        // the names declared after a list: the top level's constants, a module's fields, a block's locals
+        const lg::Symbol* kGate = sym("kGate", lg::Kind::constant);
+        const lg::Symbol* kIdle = sym("kIdle", lg::Kind::constant);
+        const lg::Symbol* mode = sym("mode", lg::Kind::field);
+        const lg::Symbol* modes = sym("modes", lg::Kind::field);
+        const lg::Symbol* step = sym("step", lg::Kind::local);
+        const lg::Symbol* other = sym("other", lg::Kind::local);
+        std::printf("enums: after a list: %s; %s; %s %s; %s; %s\n", kGate ? kGate->signature.c_str() : "-",
+                    kIdle ? kIdle->signature.c_str() : "-", mode ? mode->signature.c_str() : "-", modes ? modes->type.c_str() : "-",
+                    step ? step->signature.c_str() : "-", other ? other->signature.c_str() : "-");
+        P.eq("enums.after_list_constants", kGate != nullptr && kGate->signature == "const enum Gate kGate = OPEN"
+                                               && kGate->doc == "The gate's two states." && kIdle != nullptr
+                                               && kIdle->signature == "const enum Gate kIdle = SHUT" ? 1 : 0, 1);
+        P.eq("enums.after_list_fields", mode != nullptr && mode->container == "Picker" && mode->type == "enum Mode" && modes != nullptr
+                                            && modes->type == "enum Mode[N]" && sym("shape", lg::Kind::field) != nullptr ? 1 : 0, 1);
+        P.eq("enums.after_list_locals", step != nullptr && step->container == "pick" && step->type == "enum Step" && other != nullptr
+                                            && !(other->scope.from == other->scope.to) ? 1 : 0, 1);
+
+        // the editor's services on them
+        std::optional<lg::Hover> h = e.hover(0, posOf(text, "mode + modes", 1));
+        const std::optional<lg::Hover> hs = e.hover(0, posOf(text, "step + other", 1));
+        const std::optional<lg::Hover> hg = e.hover(0, posOf(text, "Gate : bool", 1));
+        std::printf("enums: hover mode [%s], step [%s], Gate [%s] %s\n", h ? h->code.c_str() : "-", hs ? hs->code.c_str() : "-",
+                    hg ? hg->code.c_str() : "-", hg ? hg->doc.c_str() : "");
+        P.eq("enums.hover", h && h->code == "enum Mode mode" && hs && hs->code == "enum Step step" && hg
+                                && hg->doc.rfind("an enumeration: enum Gate is a bool", 0) == 0 ? 1 : 0, 1);
+        h = e.hover(0, posOf(text, "Shape shape", 1));
+        const std::optional<lg::Location> d = e.definition(0, posOf(text, "Shape shape", 1));
+        P.eq("enums.tag_its_list", h && h->code == "enum Shape : int { SAW, SQUARE, NOISE = 4 }" && d
+                                       && d->at == posOf(text, "Shape : int\n{") ? 1 : 0, 1);
+        P.eq("enums.occur_field", static_cast<int64_t>(e.occurrences(0, posOf(text, "mode, modes")).size()), 2);
+        const auto completeAt = [&](const std::string& from, const std::string& to) {
+            const std::string t = replaced(text, from, to);
+            e.setFiles(pg::singleFile(t));
+            return e.complete(0, posOf(t, to, static_cast<int>(to.find('\n'))));
+        };
+        const std::string line = "        other = ONE;\n";
+        lg::CompletionList c = completeAt(line, "        mo\n");
+        const bool field = item(c, "mode") != nullptr && item(c, "mode")->kind == lg::Kind::field;
+        c = completeAt(line, "        st\n");
+        const bool local = item(c, "step") != nullptr && item(c, "step")->kind == lg::Kind::local;
+        c = completeAt(line, "        TW\n");
+        const bool constant = item(c, "TWO") != nullptr && item(c, "TWO")->kind == lg::Kind::constant;
+        c = completeAt(line, "        enum \n");
+        const lg::Completion* tag = item(c, "Shape");
+        std::printf("enums: completion: field %d, local %d, constant %d; after enum: %s (%s)\n", field ? 1 : 0, local ? 1 : 0,
+                    constant ? 1 : 0, labels(c).c_str(), tag ? tag->detail.c_str() : "-");
+        P.eq("enums.complete", field && local && constant && tag != nullptr && tag->detail == "enum Shape : int { SAW, SQUARE, NOISE = 4 }"
+                                   && item(c, "Step") != nullptr ? 1 : 0, 1);
+        e.setFiles(pg::singleFile(text));
+        const std::vector<std::string>& names = e.constantNames();
+        const auto named = [&](const char* x) { return std::binary_search(names.begin(), names.end(), std::string(x)); };
+        P.eq("enums.constant_names", named("SQUARE") && named("OPEN") && named("N") && named("TWO") && named("kGate") && !named("mode")
+                                         ? 1 : 0, 1);
+
+        // a circuit field's extent: the top level's constant of a fixed type, and the module's own declared with a field
+        // after its list
+        for (const bool own : { false, true })
+        {
+            const std::string circuit = std::string("#include \"screamer.cir\"\n")
+                                      + (own ? std::string() : "enum : int { N = 2 };\n") + "module " + kMain + "\n{\n"
+                                      + (own ? "    enum : int { N = 2 } count;\n" : "") + "    Screamer amp[N];\n};\n";
+            lg::Service cs;
+            cs.setFiles({ { "program.fm", circuit }, { "screamer.cir", libraryText("screamer.cir") } });
+            const lg::CircuitDials dials = lg::circuitDials(cs, pg::product::kIsInstrument);
+            bool counted = false;
+            for (const lg::Symbol& x : cs.symbols())
+                counted = counted || (x.name == "count" && x.kind == lg::Kind::field && x.container == kMain);
+            std::printf("enums: a circuit's extent (%s): %d binding(s), dims %d\n", own ? "the module's own" : "the top level's",
+                        static_cast<int>(dials.bindings.size()),
+                        dials.bindings.empty() || dials.bindings[0].dims.empty() ? -1 : dials.bindings[0].dims[0]);
+            P.eq(own ? "enums.circuit_extent_own" : "enums.circuit_extent_fixed",
+                 dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 2 } && dials.bindings[0].names.size() == 3
+                         && (counted || !own) ? 1 : 0, 1);
+        }
+    }
+
+    // ---- COND -------------------------------------------------------------------------------------------------------
+    {
+        const auto has = [](const std::string& text, const char* what) { return text.find(what) != std::string::npos; };
+        const char* kMain = pg::product::kIsInstrument ? "Voice" : "Effect";
+        const std::string defs = "// defs.fm: the program's levels.\n"
+                                 "#ifndef LEVEL\n"
+                                 "// How much the debug build measures.\n"
+                                 "#define LEVEL 2\n"
+                                 "#endif\n";
+        const std::string body =
+            pg::product::kIsInstrument
+                ? "    void start(float note, float velocity) { }\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n            left[i] += 0.0f;\n        return true;\n    }\n"
+                : "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n            left[i] *= 0.5f;\n    }\n";
+        const std::string prog = "#include \"defs.fm\"\n"                       // 0
+                                 "#ifdef DEBUG\n"                                // 1
+                                 "float debugGain(float x) { return x; }\n"      // 2
+                                 "#else\n"                                       // 3
+                                 "float plainGain(float x) { return x; }\n"      // 4
+                                 "#endif\n"                                      // 5
+                                 "#if 0\n"                                       // 6
+                                 "this is prose, not FMinus: it's never read\n"  // 7
+                                 "#ifdef DEBUG\n"                                // 8  inert
+                                 "float asideGain(float x) { return x; }\n"      // 9
+                                 "#endif\n"                                      // 10 inert
+                                 "/* a comment hides\n"                          // 11
+                                 "#endif\n"                                      // 12 in the comment
+                                 "*/\n"                                          // 13
+                                 "#elif defined(DEBUG) && LEVEL >= 2\n"          // 14
+                                 "float levelTwo(float x) { return x; }   // read\n"   // 15
+                                 "#else\n"                                       // 16
+                                 "float levelOne(float x) { return x; }\n"       // 17
+                                 "#endif\n"                                      // 18
+                                 "module " + std::string(kMain) + "\n{\n"       // 19, 20
+                                 "#if LEVEL > 5\n"                               // 21
+                                 "    float hidden;\n"                           // 22
+                                 "#endif\n"                                      // 23
+                                 "    float shown;\n"                            // 24
+                                 + body + "};\n";
+        const auto sources = [&](const std::string& p) {
+            return pg::Sources{ { "program.fm", p }, { "defs.fm", defs }, { "alone.fm", "#ifdef LEVEL\nfloat x;\n#endif\n" } };
+        };
+        const std::vector<lg::FileConditionals> c = lg::conditionals(sources(prog), lg::hostDefines());
+        const auto flags = [&](std::size_t f) {
+            std::string out;
+            for (const lg::Conditional& d : c[f].directives)
+                out += std::to_string(d.line) + (d.inert ? "i" : "") + (d.skipping ? "s" : "") + " ";
+            return out;
+        };
+        const auto lines = [&](std::size_t f) {
+            std::string out;
+            for (const uint8_t k : c[f].skipped)
+                out += k != 0 ? '1' : '0';
+            return out;
+        };
+        std::printf("cond: program directives %s; lines %s; defs %s; alone %s (read %d)\n", flags(0).c_str(), lines(0).c_str(),
+                    flags(1).c_str(), flags(2).c_str(), c[2].read ? 1 : 0);
+        P.eq("cond.directives", flags(0) == "1 3s 5 6s 8is 10is 14 16s 18 21s 23 " ? 1 : 0, 1);
+        P.eq("cond.lines", lines(0).substr(0, 25) == "0000100111111100010000100" ? 1 : 0, 1);
+        P.eq("cond.include_defines", flags(1) == "1 4 " && c[1].read ? 1 : 0, 1);
+        P.eq("cond.unread_alone", flags(2) == "0s 2 " && !c[2].read ? 1 : 0, 1);
+        const std::vector<lg::FileConditionals> without = lg::conditionals(sources(prog), {});
+        std::string w0;
+        for (const lg::Conditional& d : without[0].directives)
+            w0 += std::to_string(d.line) + (d.inert ? "i" : "") + (d.skipping ? "s" : "") + " ";
+        std::printf("cond: without DEBUG %s\n", w0.c_str());
+        P.eq("cond.without_debug", w0 == "1s 3 5 6s 8is 10is 14s 16 18 21s 23 " ? 1 : 0, 1);
+
+        // directiveLines reads what lexLine reads as directives, in every example and library file.
+        int disagree = 0, lexed = 0;
+        const auto agree = [&](const std::string& text) {
+            std::vector<std::pair<int, std::string_view>> mine;
+            lg::directiveLines(text, mine);
+            std::vector<int> theirs;
+            for (const lg::Token& t : lg::lex(text))
+                if (t.kind == lg::Tok::directive)
+                    theirs.push_back(t.line);
+            std::vector<int> ours;
+            for (const auto& [l, d] : mine)
+                ours.push_back(l);
+            disagree += ours == theirs ? 0 : 1;
+            ++lexed;
+        };
+        for (const pg::Example& e : pg::kExamples)
+            agree(e.source);
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            if (!pg::isCircuitFile(f.name))
+                agree(f.source);
+        agree(prog);
+        agree("x /* a\n#if 0 */ y\n#endif\n  # define A 1\n");
+        P.eq("cond.directive_lines_as_lexed", lexed > 10 && disagree == 0 ? 1 : 0, 1);
+
+        // The index: a skipped group's symbols are none.
+        lg::Service n;
+        n.setFiles(sources(prog));
+        const auto named = [&](const char* x) {
+            for (const lg::Symbol& sy : n.symbols())
+                if (sy.name == x)
+                    return true;
+            return false;
+        };
+        P.eq("cond.index_read", named("debugGain") && named("levelTwo") && named("shown") ? 1 : 0, 1);
+        P.eq("cond.index_skipped", !named("plainGain") && !named("asideGain") && !named("levelOne") && !named("hidden") ? 1 : 0, 1);
+        P.eq("cond.service_flags", n.fileConditionals(0).directives.size() == c[0].directives.size() ? 1 : 0, 1);
+        const lg::CompletionList inModule = n.complete(0, posOf(prog, "    float shown;", 4));
+        P.eq("cond.complete_skips", item(inModule, "levelTwo") != nullptr && item(inModule, "levelOne") == nullptr
+                                        && item(inModule, "plainGain") == nullptr ? 1 : 0, 1);
+
+        // The highlighter.
+        {
+            const pg::Sources files = sources(prog);
+            auto snap = std::make_shared<pg::ui::Conditionals>(pg::ui::Conditionals::of(files));
+            const pg::ui::CodeHighlighter hl(std::make_shared<pg::ui::TypeNames>(), snap, "program.fm");
+            const std::vector<std::string_view> ls = lg::splitLines(prog);
+            std::vector<std::vector<funkgui::text::Span>> spans(ls.size());
+            uint32_t st = 0;
+            for (std::size_t k = 0; k < ls.size(); ++k)
+                st = hl.line(ls[k], st, spans[k]);
+            const auto dim = [&](int l) {
+                const auto& sp = spans[static_cast<std::size_t>(l)];
+                return sp.size() == 1 && sp[0].style == pg::ui::csInactive && sp[0].start == 0
+                    && sp[0].end == static_cast<int>(ls[static_cast<std::size_t>(l)].size());
+            };
+            const auto styleAt = [&](int l, std::string_view word) -> int {
+                const std::size_t at = ls[static_cast<std::size_t>(l)].find(word);
+                for (const funkgui::text::Span& sp : spans[static_cast<std::size_t>(l)])
+                    if (at != std::string_view::npos && sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at + word.size()))
+                        return sp.style;
+                return -1;
+            };
+            P.eq("cond.hl_skipped_dim", dim(4) && dim(7) && dim(9) && dim(17) && dim(22) ? 1 : 0, 1);
+            P.eq("cond.hl_inert_dim", dim(8) && dim(10) ? 1 : 0, 1);
+            P.eq("cond.hl_read_not_dim", !dim(2) && !dim(15) && !dim(24) && !dim(1) && !dim(6) ? 1 : 0, 1);
+            P.eq("cond.hl_comment_hides_endif", dim(12) && dim(13) ? 1 : 0, 1);
+            P.eq("cond.hl_directive", styleAt(1, "#ifdef") == pg::ui::csDirective && styleAt(1, "DEBUG") == pg::ui::csConstant ? 1 : 0, 1);
+            P.eq("cond.hl_condition", styleAt(14, "defined") == pg::ui::csKeyword && styleAt(14, "LEVEL") == pg::ui::csConstant
+                                          && styleAt(14, "&&") == pg::ui::csOperator && styleAt(14, "2") == pg::ui::csNumber ? 1 : 0, 1);
+            P.eq("cond.hl_comment", styleAt(15, "// read") == pg::ui::csComment ? 1 : 0, 1);
+            // A snapshot without this file (stale, as just after an edit): nothing dimmed.
+            const pg::ui::CodeHighlighter none(std::make_shared<pg::ui::TypeNames>(), snap, "other.fm");
+            std::vector<funkgui::text::Span> sp;
+            uint32_t s2 = 0;
+            bool anyDim = false;
+            for (const std::string_view l : ls)
+            {
+                sp.clear();
+                s2 = none.line(l, s2, sp);
+                for (const funkgui::text::Span& x : sp)
+                    anyDim = anyDim || x.style == pg::ui::csInactive;
+            }
+            P.eq("cond.hl_stale_nothing", anyDim ? 0 : 1, 1);
+        }
+
+        // Hover, go to definition, completion.
+        {
+            const auto hov = [&](std::string_view needle, int extra, int nth = 0) {
+                return n.hover(0, posOf(prog, needle, extra, nth));
+            };
+            const std::optional<lg::Hover> debug = hov("#ifdef DEBUG", 8);
+            const std::optional<lg::Hover> level = hov("LEVEL >= 2", 1);
+            const std::optional<lg::Hover> none = hov("LEVEL > 5", 1);
+            const std::optional<lg::Hover> defined = hov("defined(DEBUG)", 2);
+            const std::optional<lg::Hover> directive = hov("#ifdef DEBUG", 3);
+            std::printf("cond: hover DEBUG %s | %s\n", debug ? debug->code.c_str() : "-", debug ? debug->doc.c_str() : "-");
+            std::printf("cond: hover LEVEL %s | %s\n", level ? level->code.c_str() : "-", level ? level->doc.c_str() : "-");
+            P.eq("cond.hover_plugin_macro", debug && debug->code == "#define DEBUG 1" && has(debug->doc, "Defined by the plugin") ? 1 : 0, 1);
+            P.eq("cond.hover_program_macro", level && level->code == "#define LEVEL 2" && has(level->doc, "defs.fm:4")
+                                                 && has(level->doc, "How much the debug build measures.") ? 1 : 0, 1);
+            P.eq("cond.hover_macro_value", none && none->code == "#define LEVEL 2" ? 1 : 0, 1);
+            P.eq("cond.hover_defined", defined && defined->code == "defined(NAME)" ? 1 : 0, 1);
+            P.eq("cond.hover_directive", directive && directive->code == "#ifdef NAME" ? 1 : 0, 1);
+            const std::optional<lg::Hover> unknown = n.hover(2, { 0, 8 });
+            P.eq("cond.hover_no_macro", unknown && unknown->code == "LEVEL" && has(unknown->doc, "No macro here") ? 1 : 0, 1);
+            const std::optional<lg::Location> def = n.definition(0, posOf(prog, "LEVEL >= 2", 1));
+            P.eq("cond.definition", def && def->fileName == "defs.fm" && def->at.line == 3 && def->at.col == 8 ? 1 : 0, 1);
+            P.eq("cond.definition_plugin_none", n.definition(0, posOf(prog, "#ifdef DEBUG", 8)) ? 0 : 1, 1);
+            const std::string hashed = replaced(prog, "#if LEVEL > 5\n", "#\n");
+            n.setFiles(sources(hashed));
+            const lg::CompletionList afterHash = n.complete(0, posOf(hashed, "#\n    float hidden", 1));
+            const std::string ifdef = replaced(prog, "#if LEVEL > 5\n", "#ifdef \n");
+            n.setFiles(sources(ifdef));
+            const lg::CompletionList macros = n.complete(0, posOf(ifdef, "#ifdef \n    float hidden", 7));
+            std::printf("cond: after # %s; after #ifdef %s\n", labels(afterHash, 16).c_str(), labels(macros).c_str());
+            P.eq("cond.complete_directives", item(afterHash, "ifdef") && item(afterHash, "endif") && item(afterHash, "define")
+                                                 && item(afterHash, "include") ? 1 : 0, 1);
+            P.eq("cond.complete_macros", item(macros, "DEBUG") && item(macros, "LEVEL") && !item(macros, "shown") ? 1 : 0, 1);
+        }
+
+        // The formatter: a skipped group kept as it is (prose, the other branch's brace), the rest the house style.
+        {
+            const std::string messy = "#ifdef DEBUG\nfloat f(float x) {\n#else\nfloat f(float x, float y)  {\n#endif\nreturn x;\n}\n"
+                                      "#if 0\nprose , with   spaces: it's kept  \n#endif\n";
+            const lg::Formatted fm = lg::format(messy);
+            std::printf("cond: formatted (%s) %s", fm.ok ? "ok" : fm.why.c_str(), fm.text.c_str());
+            P.eq("cond.format_keeps_skipped", fm.ok && fm.text == "#ifdef DEBUG\nfloat f(float x)\n{\n#else\nfloat f(float x, float y)  {\n"
+                                                                 "#endif\n    return x;\n}\n#if 0\nprose , with   spaces: it's kept\n#endif\n"
+                                                  ? 1 : 0, 1);
+            P.eq("cond.format_stable", fm.ok && !lg::format(fm.text).changed ? 1 : 0, 1);
+        }
+
+        // Patch::check: the program clean; an error in a skipped group is none, in a group read FMinus's.
+        {
+            const pg::Patch::Result clean = pg::Patch::check(sources(prog));
+            const pg::Patch::Result aside = pg::Patch::check(sources(replaced(prog, "float levelOne(float x) { return x; }",
+                                                                              "float levelOne(float x) { return y; }")));
+            const pg::Patch::Result read = pg::Patch::check(sources(replaced(prog, "float levelTwo(float x) { return x; }",
+                                                                             "float levelTwo(float x) { return y; }")));
+            std::printf("cond: check %s|%s|%s", clean.errors.c_str(), aside.errors.c_str(), read.errors.c_str());
+            P.eq("cond.check_clean", clean.errors.empty() && aside.errors.empty() ? 1 : 0, 1);
+            P.eq("cond.check_read_error", has(read.errors, "program.fm:16:") && has(read.errors, "undeclared identifier 'y'") ? 1 : 0, 1);
         }
     }
     return P.finish();

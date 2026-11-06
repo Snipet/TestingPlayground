@@ -86,6 +86,35 @@ namespace playground::lang
         {
             std::string_view word, code, doc;
         };
+        // The directives FMinus reads (hover on `#name`, completion after `#`); #include's and #pragma's are their own.
+        constexpr WordDoc kDirectiveDocs[] = {
+            { "if", "#if expression",
+              "Reads the lines up to the next #elif, #else or #endif when the expression is not 0: C's integer "
+              "arithmetic on numbers and macros; defined(NAME) is 1 when NAME is a macro, any other name 0. A skipped "
+              "group is never compiled (its lines need not be FMinus)." },
+            { "ifdef", "#ifdef NAME", "Reads the lines up to the next #elif, #else or #endif when NAME is a macro (the "
+                                      "plugin defines DEBUG)." },
+            { "ifndef", "#ifndef NAME", "Reads the lines up to the next #elif, #else or #endif when NAME is no macro: "
+                                        "#ifndef LEVEL, #define LEVEL 2, #endif gives a default." },
+            { "elif", "#elif expression", "The next group: read when no group before it was and the expression is not 0." },
+            { "elifdef", "#elifdef NAME", "The next group: read when no group before it was and NAME is a macro." },
+            { "elifndef", "#elifndef NAME", "The next group: read when no group before it was and NAME is no macro." },
+            { "else", "#else", "The last group: read when no group before it was." },
+            { "endif", "#endif", "Ends the conditional, in the file it began in." },
+            { "define", "#define NAME value",
+              "A macro, read in #if, #elif, #ifdef and #ifndef only: FMinus never substitutes one in code, where its "
+              "name is an error (for a constant: an enum, or a const at the top level)." },
+            { "undef", "#undef NAME", "Forgets a macro (the plugin's DEBUG too)." },
+        };
+
+        const WordDoc* directiveDoc(std::string_view name)
+        {
+            for (const WordDoc& w : kDirectiveDocs)
+                if (w.word == name)
+                    return &w;
+            return nullptr;
+        }
+
         constexpr WordDoc kWordDocs[] = {
             { "module", "module Name { fields; params; methods };",
               "FMinus's class: a struct with member functions. Its fields start at 0 (a method such as init sets them); "
@@ -555,6 +584,8 @@ namespace playground::lang
             };
             std::vector<Pending> pending;
             std::string header;                  // the comment lines the file starts with
+            FileConditionals cond;               // its conditionals as the compile reads them (Options::defines): the
+                                                 // tokens of a group it skips are left out of the index
             // A netlist's (indexCircuit): its pots and switches, in order, as circuitDials() gives them.
             std::vector<CircuitPot> pots;
             std::vector<CircuitSwitch> switches;
@@ -826,37 +857,59 @@ namespace playground::lang
                 return limit;
             }
 
-            // An enumeration at i, C's: [const] enum [Tag] { NAME [= expr], ... [,] } ; its tag and its constants, a
-            // module's (seen by its methods) when `module` names one, a block's when `scope` is given (to the block's
-            // end), else the top level's. The index after it; i when i starts none.
-            int enumeration(int i, const std::string& module, std::optional<Pos> scopeEnd)
+            // An enumeration at i, C's: [const] enum [Tag] [: type] { NAME [= expr], ... [,] } [declarators] ; its tag
+            // and its constants, a module's (seen by its methods) when `module` names one, a block's when `scope` is
+            // given (to the block's end; `function` the block's), else the top level's. C23's fixed underlying type
+            // (`: int`, `: bool`) is the tag's type, and declares the tag ahead of its list too (`enum Mode : int;`, a
+            // tag without its list: no body). The names after its list (`enum Mode { SAW, SQUARE } mode;`) are what a
+            // declaration of its type declares there, as FMinus has them: a block's locals, a module's fields, the
+            // top level's constants (`const`, as every one there). The index after it; i when i starts none.
+            int enumeration(int i, const std::string& module, std::optional<Pos> scopeEnd, const std::string& function = {})
             {
-                int j = is(i, "const") ? i + 1 : i;
+                const bool constant = is(i, "const");
+                int j = constant ? i + 1 : i;
                 if (!is(j, "enum"))
                     return i;
                 const int keyword = j++;
                 int tag = -1;
                 if (ident(j))
                     tag = j++;
-                if (!is(j, "{") || partner(j) <= j)
-                    return i;
-                const int open = j, close = partner(j);
-                if (tag >= 0)
+                std::string underlying = "int";
+                const bool fixed = is(j, ":");
+                if (fixed)
                 {
+                    j = type(j + 1, underlying);
+                    if (j < 0)
+                        return i;
+                    if (underlying.rfind("const ", 0) == 0)
+                        underlying.erase(0, 6);
+                }
+                const auto addTag = [&](int end, bool list) {
                     Symbol t;
                     t.kind = Kind::enumeration;
                     t.name = std::string(tok(tag).text);
-                    t.type = "enum " + t.name;
+                    t.type = underlying;
                     t.at = startOf(tok(tag));
                     t.container = module;
                     if (scopeEnd)
                         t.scope = { t.at, *scopeEnd };
-                    t.signature = joinTokens(t_, keyword, close + 1);
+                    t.signature = joinTokens(t_, keyword, end);
                     if (t.signature.size() > 160)
                         t.signature = t.signature.substr(0, 156) + " ...";
                     t.doc = docFor(tok(i).line);
+                    t.body = list;
                     add(t);
+                };
+                if (fixed && tag >= 0 && is(j, ";"))
+                {
+                    addTag(j, false);
+                    return j + 1;
                 }
+                if (!is(j, "{") || partner(j) <= j)
+                    return i;
+                const int open = j, close = partner(j);
+                if (tag >= 0)
+                    addTag(close + 1, true);
                 int before = -1;
                 for (int k = open + 1; k < close;)
                 {
@@ -889,10 +942,25 @@ namespace playground::lang
                     before = index;
                     k = e + 1;
                 }
-                int after = close + 1;
+                const int after = close + 1;
                 if (is(after, ";"))
-                    ++after;
-                return after;
+                    return after + 1;
+                // The names of its type after its list, to the statement's ';'.
+                const int stop = std::min(statementEnd(after, n_) + 1, n_);
+                const std::string base = std::string(constant ? "const " : "")
+                                       + (tag >= 0 ? "enum " + std::string(tok(tag).text) : underlying);
+                int e = -1;
+                if (scopeEnd)
+                {
+                    e = localDeclarators(after, base, stop, *scopeEnd, function);
+                    if (is(e, ";"))
+                        ++e;
+                }
+                else if (!module.empty())
+                    e = fieldDeclarators(after, base, module, stop);
+                else if (constant)
+                    e = constantDeclarators(after, base, stop);
+                return e > after ? e : after;
             }
 
             // The top level's constants at i, C's file-scope const objects: const type declarator (, declarator)* ;
@@ -903,11 +971,19 @@ namespace playground::lang
                 if (!is(i, "const"))
                     return i;
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return i;
+                const int e = constantDeclarators(j, base, n_);
+                return e < 0 ? i : e;
+            }
+
+            // The top level's constants of type `base` declared from j on (before `limit`): declarator (, declarator)* ;
+            // The index after its ';', -1 when j starts none.
+            int constantDeclarators(int j, const std::string& base, int limit)
+            {
                 bool any = false;
-                while (j < n_)
+                while (j < limit)
                 {
                     std::string ty = base;
                     j = pointer(j, ty);
@@ -921,12 +997,12 @@ namespace playground::lang
                         j = partner(j) + 1;
                     }
                     if (!any && !(is(j, "=") || is(j, ";") || is(j, ",")))
-                        return i;
+                        return -1;
                     any = true;
                     int e = j, from = -1;
                     if (is(e, "="))
                         from = ++e;
-                    while (e < n_ && !is(e, ",") && !is(e, ";"))
+                    while (e < limit && !is(e, ",") && !is(e, ";"))
                         e = (is(e, "(") || is(e, "[") || is(e, "{")) && partner(e) > e ? partner(e) + 1 : e + 1;
                     Symbol c;
                     c.kind = Kind::constant;
@@ -948,7 +1024,7 @@ namespace playground::lang
                     break;
                 }
                 if (!any)
-                    return i;
+                    return -1;
                 return is(j, ";") ? j + 1 : j;
             }
 
@@ -1004,9 +1080,17 @@ namespace playground::lang
             int fields(int i, const std::string& module, int limit)
             {
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return i;
+                const int e = fieldDeclarators(j, base, module, limit);
+                return e < 0 ? i : e;
+            }
+
+            // A module's fields of type `base` declared from j on (before `limit`): [*] name ([N])? (, ...)* ; the index
+            // after its ';', -1 when j starts none.
+            int fieldDeclarators(int j, const std::string& base, const std::string& module, int limit)
+            {
                 bool any = false;
                 while (j < limit)
                 {
@@ -1021,7 +1105,7 @@ namespace playground::lang
                         j = partner(j) + 1;
                     }
                     if (!any && !(is(j, ";") || is(j, ",")))
-                        return i;
+                        return -1;
                     any = true;
                     Symbol s;
                     s.kind = Kind::field;
@@ -1040,7 +1124,7 @@ namespace playground::lang
                     break;
                 }
                 if (!any)
-                    return i;
+                    return -1;
                 return is(j, ";") ? j + 1 : j;
             }
 
@@ -1146,9 +1230,16 @@ namespace playground::lang
             int locals(int i, int limit, Pos scopeEnd, const std::string& function)
             {
                 std::string base;
-                int j = type(i, base);
+                const int j = type(i, base);
                 if (j < 0)
                     return -1;
+                return localDeclarators(j, base, limit, scopeEnd, function);
+            }
+
+            // A block's locals of type `base` declared from j on (before `limit`): [*] name ([N])? [= init] (, ...)* ;
+            // the index of its ';' (or where it stopped), -1 when j starts none.
+            int localDeclarators(int j, const std::string& base, int limit, Pos scopeEnd, const std::string& function)
+            {
                 bool any = false;
                 while (j < limit)
                 {
@@ -1232,7 +1323,7 @@ namespace playground::lang
                         if (is(k, "enum") || (is(k, "const") && is(k + 1, "enum")))
                         {
                             const int blockClose = partner(blocks.back()) > 0 ? partner(blocks.back()) : close;
-                            const int e = enumeration(k, {}, startOf(tok(blockClose)));
+                            const int e = enumeration(k, {}, startOf(tok(blockClose)), function);
                             if (e > k)
                             {
                                 k = e;
@@ -1478,6 +1569,9 @@ namespace playground::lang
             f.modules.clear();
             for (const Token& t : f.all)
             {
+                // A group a conditional skips is never read: no symbol, no #include, no bracket of it.
+                if (t.line < static_cast<int>(f.cond.skipped.size()) && f.cond.skipped[static_cast<std::size_t>(t.line)] != 0)
+                    continue;
                 if (t.kind == Tok::directive)
                 {
                     std::string name;
@@ -2178,6 +2272,31 @@ namespace playground::lang
 
         static bool scoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
 
+        // The files as Sources (the conditionals' and the macros' input).
+        Sources sources() const
+        {
+            Sources out;
+            for (const auto& f : files)
+                out.push_back({ f->name, f->text });
+            return out;
+        }
+
+        // Every file indexed again: their conditionals first (a skipped group is no part of the index), then each
+        // file, the constants' values, and the lists.
+        void reindex()
+        {
+            const std::vector<FileConditionals> cond = conditionals(sources(), options.defines);
+            std::vector<FileData*> all;
+            for (std::size_t i = 0; i < files.size(); ++i)
+            {
+                files[i]->cond = i < cond.size() ? cond[i] : FileConditionals{};
+                indexFile(*files[i], static_cast<int>(i));
+                all.push_back(files[i].get());
+            }
+            foldValues(all);
+            rebuild();
+        }
+
         int indexOf(std::string_view name) const
         {
             for (std::size_t i = 0; i < files.size(); ++i)
@@ -2209,6 +2328,70 @@ namespace playground::lang
         const FileData* fileAt(int i) const
         {
             return i >= 0 && i < static_cast<int>(files.size()) ? files[static_cast<std::size_t>(i)].get() : nullptr;
+        }
+
+        // ---- the conditionals' lines --------------------------------------------------------------------------------
+        // A conditional's, a #define's or an #undef's line at `at` (a directive the lexer reads as one, outside a block
+        // comment): the directive's name, where its # and its name end, and the word at `at` past the name (a macro, or
+        // `defined`), outside the line's comments. False for any other place.
+        struct DirectiveWord
+        {
+            std::string_view name;               // "ifdef"
+            int hash = 0, nameEnd = 0;           // the # and the end of the name
+            int from = 0, to = 0;                // the word at the place ([from, to), empty when none)
+            bool first = false;                  // the first word after the name (a #define's macro)
+        };
+
+        static std::optional<DirectiveWord> directiveWordAt(const FileData& f, Pos at)
+        {
+            if (at.line < 0 || at.line >= static_cast<int>(f.lines.size()))
+                return std::nullopt;
+            bool directive = false;
+            for (const Token& t : f.all)
+                directive = directive || (t.line == at.line && t.kind == Tok::directive);
+            if (!directive)
+                return std::nullopt;
+            const std::string_view line = f.lines[static_cast<std::size_t>(at.line)];
+            std::size_t rest = 0;
+            DirectiveWord w;
+            w.name = directiveName(line, &rest);
+            if (!isConditional(w.name) && w.name != "define" && w.name != "undef")
+                return std::nullopt;
+            w.hash = static_cast<int>(line.find('#'));
+            w.nameEnd = static_cast<int>(rest);
+            const int n = static_cast<int>(line.size());
+            int comment = n;                             // the line's first comment
+            for (std::size_t k = rest; k + 1 < line.size(); ++k)
+                if (line[k] == '/' && (line[k + 1] == '/' || line[k + 1] == '*'))
+                {
+                    comment = static_cast<int>(k);
+                    break;
+                }
+            int a = std::clamp(at.col, 0, n), b = a;
+            while (a > w.nameEnd && isIdentChar(line[static_cast<std::size_t>(a - 1)]))
+                --a;
+            while (b < comment && isIdentChar(line[static_cast<std::size_t>(b)]))
+                ++b;
+            if (a < b && (a >= comment || isDigit(line[static_cast<std::size_t>(a)])))
+                a = b;                                   // in a comment, or a number
+            w.from = a;
+            w.to = b;
+            int first = w.nameEnd;
+            while (first < n && (line[static_cast<std::size_t>(first)] == ' ' || line[static_cast<std::size_t>(first)] == '\t'))
+                ++first;
+            w.first = a == first;
+            return w;
+        }
+
+        // The macro the word of `w` names on line `at.line` of `file`, as the compile sees it there.
+        std::optional<Macro> macroOf(int file, Pos at, const DirectiveWord& w) const
+        {
+            const FileData* f = fileAt(file);
+            if (f == nullptr || w.from >= w.to)
+                return std::nullopt;
+            const std::string_view word = f->lines[static_cast<std::size_t>(at.line)].substr(static_cast<std::size_t>(w.from),
+                                                                                              static_cast<std::size_t>(w.to - w.from));
+            return macroAt(sources(), options.defines, file, at.line, word);
         }
 
         // ---- names --------------------------------------------------------------------------------------------------
@@ -2296,20 +2479,24 @@ namespace playground::lang
             return best;
         }
 
-        // A module's own constant (an enumeration's, seen by its methods) named `name`, or with `tag` its enumeration.
+        // A module's own constant (an enumeration's, seen by its methods) named `name`, or with `tag` its enumeration
+        // (its list's, before a tag C23 declared ahead of it).
         const Symbol* moduleConstant(std::string_view module, std::string_view name, bool tag) const
         {
+            const Symbol* best = nullptr;
             for (const auto* set : { &files, &library })
                 for (const auto& f : *set)
                     for (const Symbol& s : f->decls)
-                        if (s.kind == (tag ? Kind::enumeration : Kind::constant) && s.container == module && !scoped(s) && s.name == name)
-                            return &s;
-            return nullptr;
+                        if (s.kind == (tag ? Kind::enumeration : Kind::constant) && s.container == module && !scoped(s)
+                            && s.name == name && (best == nullptr || (!best->body && s.body)))
+                            best = &s;
+            return best;
         }
 
         // What the file's scope holds, in the files a file sees: a function or a module named `name` (a definition
-        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration;
-        // else a module's enumeration or its constant, which C's file scope holds too (a struct's are the file's).
+        // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration
+        // (its list's before a tag declared ahead of it); else a module's enumeration or its constant, which C's file
+        // scope holds too (a struct's are the file's).
         const Symbol* globalNamed(int file, std::string_view name, bool tag = false) const
         {
             const auto top = [tag](const Symbol& s) {
@@ -2449,7 +2636,13 @@ namespace playground::lang
     Service::Service() : impl_(new Impl) {}
     Service::~Service() { delete impl_; }
 
-    void Service::setOptions(const Options& o) { impl_->options = o; }
+    void Service::setOptions(const Options& o)
+    {
+        const bool other = o.defines != impl_->options.defines;
+        impl_->options = o;
+        if (other && !impl_->files.empty())
+            impl_->reindex();                            // other groups skipped
+    }
 
     void Service::setFiles(const Sources& files)
     {
@@ -2487,18 +2680,10 @@ namespace playground::lang
         }
         changed = changed || next.size() != m.files.size();
         m.files = std::move(next);
-        // A file's index is part of its symbols: index every file again when any changed (they are small).
+        // A file's index is part of its symbols, and a file's #define reaches the files after it: index every file
+        // again when any changed (they are small).
         if (changed)
-        {
-            std::vector<FileData*> all;
-            for (std::size_t i = 0; i < m.files.size(); ++i)
-            {
-                indexFile(*m.files[i], static_cast<int>(i));
-                all.push_back(m.files[i].get());
-            }
-            foldValues(all);
-            m.rebuild();
-        }
+            m.reindex();
     }
 
     void Service::setLibrary(const Sources& library)
@@ -2509,6 +2694,8 @@ namespace playground::lang
             auto f = std::make_unique<FileData>();
             f->name = s.name;
             f->text = s.text;
+            if (!isCircuitFile(s.name))                  // each as a compile of it alone reads it
+                f->cond = conditionals({ s }, impl_->options.defines).front();
             indexFile(*f, -1);
             impl_->library.push_back(std::move(f));
         }
@@ -2519,6 +2706,12 @@ namespace playground::lang
     }
 
     const std::vector<Service::File>& Service::files() const noexcept { return impl_->view; }
+    const FileConditionals& Service::fileConditionals(int file) const noexcept
+    {
+        static const FileConditionals none;
+        const FileData* f = impl_->fileAt(file);
+        return f != nullptr ? f->cond : none;
+    }
     int Service::fileIndex(std::string_view name) const noexcept { return impl_->indexOf(name); }
     const std::vector<Symbol>& Service::symbols() const noexcept { return impl_->symbols; }
     const std::vector<std::string>& Service::typeNames() const noexcept { return impl_->typeNames; }
@@ -2623,7 +2816,34 @@ namespace playground::lang
                 offer("include", Kind::word, "#include \"file\"", "Reads the file there, once.", "include \"$0\"", 0);
                 offer("pragma", Kind::word, "#pragma panel ...", "The plugin's panel lines (sections, labels, styles, "
                                                                  "displays); FMinus ignores them.", "pragma panel ", 0);
+                for (const WordDoc& d : kDirectiveDocs)
+                    offer(std::string(d.word), Kind::word, std::string(d.code), std::string(d.doc), {}, 1);
                 return finish();
+            }
+            // A condition's or an #undef's macro: the plugin's and the program's (#if's `defined` too).
+            {
+                std::size_t k = 0;
+                while (k < afterHash.size() && isIdentChar(afterHash[k]))
+                    ++k;
+                const std::string dname = afterHash.substr(0, k);
+                if (isConditional(dname) || dname == "undef")
+                {
+                    if (dname == "else" || dname == "endif")
+                        return finish();
+                    for (const std::string& macro : macroNames(m.sources(), m.options.defines))
+                    {
+                        std::string code = "#define " + macro;
+                        for (const auto& [n, v] : m.options.defines)
+                            if (n == macro && !v.empty())
+                                code += " " + v;
+                        offer(macro, Kind::constant, code, {}, {}, 0);
+                    }
+                    if (dname == "if" || dname == "elif")
+                        offer("defined", Kind::keyword, "defined(NAME)", "1 when NAME is a macro, else 0.", "defined($0)", 1);
+                    return finish();
+                }
+                if (dname == "define")
+                    return finish();
             }
             if (afterHash == "pragma")
             {
@@ -2762,16 +2982,18 @@ namespace playground::lang
         const Pos p = out.replace.from;
         const std::string module = m.moduleAt(*f, p);
         // After `enum`: the enumerations' tags (C's tags are a name space of their own): a block's in scope, the
-        // module's, the top level's and another module's (the file's, in C) of the files the program reads.
+        // module's, the top level's and another module's (the file's, in C) of the files the program reads; a tag's
+        // list before C23's declaration of it ahead of the list.
         if (const int b = Impl::lastBefore(*f, p); b >= 0 && Impl::isText(*f, b, "enum"))
         {
             for (const Symbol& s : f->decls)
                 if (s.kind == Kind::enumeration && Impl::scoped(s) && s.scope.from < p && p <= s.scope.to)
-                    offer(s.name, s.kind, s.signature, s.doc, {}, 0);
+                    offer(s.name, s.kind, s.signature, s.doc, {}, s.body ? 0 : 1);
             for (const int fi : m.visible(file))
                 for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
                     if (s.kind == Kind::enumeration && !Impl::scoped(s))
-                        offer(s.name, s.kind, s.signature, s.doc, {}, s.container == module && !module.empty() ? 1 : 2);
+                        offer(s.name, s.kind, s.signature, s.doc, {},
+                              (s.container == module && !module.empty() ? 1 : 2) + (s.body ? 0 : 2));
             return finish();
         }
 
@@ -3024,6 +3246,63 @@ namespace playground::lang
                 return h;
             }
         }
+        // A conditional's line, a #define's or an #undef's: the directive, `defined`, a macro (the plugin's, the
+        // program's as that line sees it, or none).
+        if (const std::optional<Impl::DirectiveWord> w = Impl::directiveWordAt(*f, at))
+        {
+            const std::string_view line = f->lines[static_cast<std::size_t>(at.line)];
+            Hover h;
+            if (at.col >= w->hash && at.col <= w->nameEnd)
+            {
+                const WordDoc* d = directiveDoc(w->name);
+                if (d == nullptr)
+                    return std::nullopt;
+                h.range = { { at.line, w->hash }, { at.line, w->nameEnd } };
+                h.code = std::string(d->code);
+                h.doc = std::string(d->doc);
+                return h;
+            }
+            if (w->from >= w->to)
+                return std::nullopt;
+            const std::string word(line.substr(static_cast<std::size_t>(w->from), static_cast<std::size_t>(w->to - w->from)));
+            h.range = { { at.line, w->from }, { at.line, w->to } };
+            if (word == "defined" && w->name != "define" && w->name != "undef")
+            {
+                h.code = "defined(NAME)";
+                h.doc = "1 when NAME is a macro here, else 0: #if defined(DEBUG) && LEVEL >= 2.";
+                return h;
+            }
+            if (w->name == "define" && w->first)
+            {
+                h.code = trimmed(line.substr(static_cast<std::size_t>(w->hash)));
+                h.doc = std::string(directiveDoc("define")->doc);
+                if (const std::string above = commentsAbove(*f, at.line); !above.empty())
+                    h.doc = above + "\n\n" + h.doc;
+                return h;
+            }
+            if (const std::optional<Macro> mac = m.macroOf(file, at, *w))
+            {
+                h.code = "#define " + mac->name + (mac->value.empty() ? "" : " " + mac->value);
+                if (mac->file < 0)
+                {
+                    for (const Define& d : kDefines)
+                        if (mac->name == d.name)
+                            h.doc = d.doc;
+                    if (h.doc.empty())
+                        h.doc = "Defined by the plugin.";
+                }
+                else if (const FileData* g = m.fileAt(mac->file))
+                {
+                    h.doc = g->name + ":" + std::to_string(mac->line + 1);
+                    if (const std::string above = commentsAbove(*g, mac->line); !above.empty())
+                        h.doc = above + "\n\n" + h.doc;
+                }
+                return h;
+            }
+            h.code = word;
+            h.doc = "No macro here: #ifdef skips its group, #ifndef reads it, and #if reads the name as 0.";
+            return h;
+        }
         const int i = Impl::tokenAt(*f, at);
         if (i < 0)
             return std::nullopt;
@@ -3086,7 +3365,8 @@ namespace playground::lang
                 }
                 case Kind::enumeration:
                     h.code = s->signature;
-                    h.doc = "an enumeration: enum " + s->name + " is an int" + (s->doc.empty() ? "" : "\n" + s->doc);
+                    h.doc = "an enumeration: enum " + s->name + " is " + (s->type == "bool" ? "a bool" : "an int")
+                          + (s->doc.empty() ? "" : "\n" + s->doc);
                     break;
                 case Kind::module:
                 {
@@ -3146,6 +3426,21 @@ namespace playground::lang
             if (g < 0)
                 return std::nullopt;
             return Location{ g, name, {} };
+        }
+        // A macro in a conditional's line: its #define (the program's; the plugin's has none to go to).
+        if (const std::optional<Impl::DirectiveWord> w = Impl::directiveWordAt(*f, at))
+        {
+            if (w->from >= w->to || (w->name == "define" && w->first))
+                return std::nullopt;
+            const std::optional<Macro> mac = m.macroOf(file, at, *w);
+            const FileData* g = mac ? m.fileAt(mac->file) : nullptr;
+            if (g == nullptr)
+                return std::nullopt;
+            const std::string_view def = g->lines[static_cast<std::size_t>(mac->line)];
+            std::size_t rest = 0;
+            (void)directiveName(def, &rest);
+            const std::size_t col = def.find(mac->name, rest);
+            return Location{ mac->file, g->name, { mac->line, col == std::string_view::npos ? 0 : static_cast<int>(col) } };
         }
         const int i = Impl::tokenAt(*f, at);
         if (i < 0)

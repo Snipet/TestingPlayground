@@ -130,7 +130,8 @@
 //            request carries the results as the user's line and the turn goes on, the history valid; a dial set and a
 //            run: the run's result ends with the checks, all passing, its dials one line (their declarations as the
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
-//            again says them unchanged in a line; one card a turn with its rows,
+//            again says them unchanged in a line; a program with FMinus's -Wswitch warning plays, and run_program says
+//            it on one line (clang's note left out, no Notes:); one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
 //            that only sweeps a dial (tune_dials' sweep sets nothing); the
@@ -2859,6 +2860,20 @@ PROBE(plugin, chat)
                 const std::string count = pg::product::kIsInstrument ? "(2)" : "(1)";
                 P.eq("run.dials_listed_when_declared_anew", has(first, "Its dials:\n1 ") && !has(first, "Its dials: unchanged") ? 1 : 0, 1);
                 P.eq("run.dials_then_one_line", has(second, "Its dials: unchanged " + count + ".\n") && !has(second, "Its dials:\n") ? 1 : 0, 1);
+                // FMinus's warnings: the program plays, and run_program says them on one line (clang's note left out).
+                pg::Draft warned = was;
+                warned.files[0].text += "enum Wave { SAW, SQUARE, NOISE };\nfloat wave(enum Wave w)\n{\n    switch (w)\n    {\n"
+                                        "        case SAW: return 1;\n    }\n    return 0;\n}\n";
+                sp.editorPort().setDraft(warned);
+                const pg::ChatAgent::McpResult w = sa.mcpCall("run_program", input({}));
+                const std::string told = allText(w);
+                std::printf("run_program, a switch missing two values:\n%s\n", told.c_str());
+                const std::size_t line = told.find("Warning (it compiles and plays as written): program.fm:");   // one warning
+                const std::size_t lineEnd = line == std::string::npos ? line : told.find('\n', line);
+                const std::string one = line == std::string::npos ? std::string() : told.substr(line, lineEnd - line);
+                P.eq("run.warnings_one_line", !w.isError && has(told, "Compiled in") && has(one, "enumeration values 'SQUARE' and 'NOISE' not "
+                                                                                                  "handled in switch [-Wswitch]")
+                                                  && !has(told, "add missing switch cases") && !has(told, "Notes:") ? 1 : 0, 1);
                 sp.editorPort().setDraft(was);
                 sp.editorPort().run(was.files);
                 sp.settle();

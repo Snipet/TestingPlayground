@@ -18,6 +18,8 @@
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
+//                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
 //   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
@@ -97,6 +99,10 @@
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
 //             accessibility title saying what it means) and its load's text no longer says FROZEN
+//   STOPPED   a program whose process never ends once it plays (its loop budget: Patch.h), run: once blocks play it
+//             stops, the status says so and that the program before plays again, which the processor plays (its
+//             files), and the problems list has the message at process's line; one that writes outside its array (its
+//             bounds checks) the same, the status naming that, the message at the access's line and column
 #include "Probe.h"
 
 #include "editor/DisplayItem.h"
@@ -1551,6 +1557,87 @@ PROBE(gui, dump)
             funkgui::UiPreferences::get().setTheme(0);
         }
         processor.compiler().setFreezing(true);                  // back to its own delay
+    }
+
+    // STOPPED: a program whose process never ends, run while blocks play (Compiler.h, "A program that stops"): it
+    // stops at its first block, the program before plays again, and the status and the problems list say why.
+    {
+        constexpr bool kInstrument = pg::product::kIsInstrument;
+        constexpr int kBlock = 256;
+        const pg::Sources before = port.running();
+        const std::string stopping = std::string("module ") + (kInstrument ? "Voice" : "Effect") + "\n{\n    int spins;\n\n"
+                                   + (kInstrument ? "    void start(float note, float velocity) {}\n\n" : "")
+                                   + "    " + (kInstrument ? "bool" : "void")
+                                   + " process(float* restrict left, float* restrict right, int n)\n    {\n        while (1)\n"
+                                     "            spins = spins + 1;\n    }\n};\n";
+        editor.selectAll();
+        editor.insert(stopping);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        for (int k = 0; k < 400 && !(port.status().stopped && port.running() == before); ++k)
+        {
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+            buffer.clear();
+            processor.processBlock(buffer, midi);
+            processor.settle();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.tick(300);                                           // past a notice an earlier step left (4 s)
+        host.settle();
+        std::printf("status: %s\n", panel.statusText().c_str());
+        for (const pg::ui::Problem& p : panel.problems())
+            std::printf("problem %d:%d %s %s\n", p.line, p.column, p.error ? "error" : "note", p.text.c_str());
+        P.eq("stopped.status", panel.statusText().rfind("STOPPED: A LOOP THAT NEVER ENDS?   THE PROGRAM BEFORE PLAYS AGAIN", 0) == 0 ? 1 : 0, 1);
+        P.eq("stopped.before_plays", port.running() == before ? 1 : 0, 1);
+        P.eq("stopped.listed", panel.problems().empty() ? 0 : 1, 1);
+        P.eq("stopped.line", panel.problems().empty() ? 0 : panel.problems()[0].line, kInstrument ? 7 : 5);
+        const funkgui::PrimList& frame = host.draw();
+        P.ge("stopped.problem_drawn", countTag(frame, pg::ui::kProblemTag), 1.0);
+        P.eq("stopped.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        writePng(P, host, "gui.dump.stopped.png", "stopped");
+
+        // A program that writes outside its array at its first block (its bounds checks, Patch.h): said so.
+        const std::string outside = std::string("module ") + (kInstrument ? "Voice" : "Effect") + "\n{\n    float line[16];\n"
+                                    "    int k;\n\n    void init(float rate) { k = 16; }\n\n"
+                                  + (kInstrument ? "    void start(float note, float velocity) {}\n\n" : "")
+                                  + "    " + (kInstrument ? "bool" : "void")
+                                  + " process(float* restrict left, float* restrict right, int n)\n    {\n        line[k] = 1.0f;\n"
+                                  + (kInstrument ? "        return true;\n" : "") + "    }\n};\n";
+        editor.selectAll();
+        editor.insert(outside);
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        const uint64_t stoppedBefore = port.status().stoppedProgram;
+        for (int k = 0; k < 400 && !(port.status().stopped && port.status().stoppedProgram != stoppedBefore
+                                     && port.running() == before); ++k)
+        {
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 57, static_cast<juce::uint8>(100)), 0);
+            buffer.clear();
+            processor.processBlock(buffer, midi);
+            processor.settle();
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        host.tick(300);
+        host.settle();
+        std::printf("status: %s\n", panel.statusText().c_str());
+        for (const pg::ui::Problem& p : panel.problems())
+            std::printf("problem %d:%d %s %s\n", p.line, p.column, p.error ? "error" : "note", p.text.c_str());
+        P.eq("stopped.bounds_status", panel.statusText().rfind("STOPPED: AN INDEX OUTSIDE ITS ARRAY   THE PROGRAM BEFORE PLAYS AGAIN", 0)
+                                          == 0 ? 1 : 0, 1);
+        P.eq("stopped.bounds_before_plays", port.running() == before ? 1 : 0, 1);
+        P.eq("stopped.bounds_line", panel.problems().empty() ? 0 : panel.problems()[0].line, kInstrument ? 12 : 10);
+        P.eq("stopped.bounds_column", panel.problems().empty() ? 0 : panel.problems()[0].column, 13);
+        P.eq("stopped.bounds_says_it", !panel.problems().empty() && panel.problems()[0].text.find("index 16 out of bounds for 'line'")
+                                                                     != std::string::npos ? 1 : 0, 1);
+        const funkgui::PrimList& bounded = host.draw();
+        P.ge("stopped.bounds_problem_drawn", countTag(bounded, pg::ui::kProblemTag), 1.0);
+        P.eq("stopped.bounds_missing_glyphs", static_cast<int64_t>(bounded.missingGlyphs), 0);
+        writePng(P, host, "gui.dump.stopped.bounds.png", "stopped_bounds");
     }
     return P.finish();
 }

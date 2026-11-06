@@ -15,6 +15,7 @@
 // Every call is safe before allocate (it reads 0 and writes nothing).
 module Delay
 {
+    // A heap block (calloc's) of any length: the plugin's bounds checks do not see it (an array field's they would).
     float* buffer;
     int length;
     int at;

@@ -1,4 +1,4 @@
-// PROBE name=fminus.circuit timeout=300
+// PROBE name=fminus.circuit timeout=600
 //
 // fminus.circuit: circuit netlists in a program (fminus/Circuits.h, Patch.h's "Circuits"): a .cir file the program
 // #includes is the FMinus module FMinus's circuit compiler generates from it. Each library netlist (Library.h's .cir
@@ -62,7 +62,12 @@
 //                one each, eight after it moved while they were free a ramp's worth each, all at 1; a NaN planted in a
 //                carried field is cleared by the circuit's guard and the switch stays at 1
 // and the plugin's self-test (dsp/SelfTester.h, Compiler.h's "The self-test"), a Compiler offering to an Engine played
-// in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline):
+// in blocks of 256, on AutoClipper.h's netlists (no assertion is on time; every wait has a deadline, and a wait for a
+// self-test's work a limit in its work, untilWorked: the CPU the other threads spend, and the probe's deadline):
+//   WAIT         untilWorked itself, first, with nothing else running: work that finishes is waited for; with nothing
+//                running and a poll that spends far more of the waiting thread's CPU than the idle threshold, it gives up
+//                as idle in its window (the poll's own CPU left out); a thread that spins without end spends its CPU
+//                limit; with nothing running and a long idle window, the deadline ends it
 //   SELFTEST     with the tests off (setSelfTesting(false)) a RUN plays the provisional configuration and no test runs;
 //                selfTestNow() runs the test and the refine: the status's revision and program move on (refined, still
 //                the RUN's request), it compiled, the Engine's Meters::program names the refined program, and its note
@@ -113,14 +118,20 @@
 #include <chrono>
 #include <clocale>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>                                     // GetProcessTimes, GetThreadTimes (cpuTimes)
+#endif
 
 namespace pg = playground;
 namespace lg = playground::lang;
@@ -351,6 +362,116 @@ namespace
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         return true;
+    }
+
+    // The CPU time, in seconds, of the process (every thread's, the ended ones' too) and of the calling thread.
+    struct CpuTimes
+    {
+        double process = 0.0, thread = 0.0;
+        double others() const { return process - thread; }      // every thread's but the caller's
+    };
+
+    CpuTimes cpuTimes()
+    {
+        CpuTimes t;
+#if defined(_WIN32)
+        const auto seconds = [](const FILETIME& f) {
+            return static_cast<double>((static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime) * 1e-7;
+        };
+        FILETIME created, exited, kernel, user;
+        if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+            t.process = seconds(kernel) + seconds(user);
+        if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user))
+            t.thread = seconds(kernel) + seconds(user);
+#else
+        const auto seconds = [](clockid_t id) {
+            timespec ts{};
+            clock_gettime(id, &ts);
+            return static_cast<double>(ts.tv_sec) + 1e-9 * static_cast<double>(ts.tv_nsec);
+        };
+        t.process = seconds(CLOCK_PROCESS_CPUTIME_ID);
+        t.thread = seconds(CLOCK_THREAD_CPUTIME_ID);
+#endif
+        return t;
+    }
+
+    // The probe's timeout, its first line's (the least: Windows doubles it), and when its process started: the waits
+    // below give up a minute before CTest would kill the process, so a hang ends as a failed row with its line printed,
+    // never as a bare timeout.
+    constexpr double kTimeout = 600.0;
+    const std::chrono::steady_clock::time_point kStarted = std::chrono::steady_clock::now();
+
+    std::chrono::steady_clock::time_point probeDeadline()
+    {
+        using clock = std::chrono::steady_clock;
+        return kStarted + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(kTimeout - 60.0));
+    }
+
+    // How a wait for work ended: what it waited for held, or it gave up: the work spent its CPU limit (it spins: a hang
+    // that runs), spent next to none for the idle window (a hang that blocks, or work that never started), or the
+    // deadline came.
+    enum class Waited
+    {
+        done, spun, idle, late
+    };
+
+    const char* nameOf(Waited w)
+    {
+        switch (w)
+        {
+            case Waited::done: return "done";
+            case Waited::spun: return "spun: its CPU limit spent";
+            case Waited::idle: return "idle: no work for the idle window";
+            case Waited::late: return "late: the deadline came";
+        }
+        return "?";
+    }
+
+    // Waits until `done` holds while the work it waits for gets done. A self-test runs on threads of its own at the
+    // utility QoS class, which a loaded machine (other builds and suites at once) starves for as long as it likes, so a
+    // wall deadline either fails a test that is only slow or hides a hang behind minutes. What bounds a test is its
+    // work, the CPU the process's other threads spend (the waiting thread's own, a wake every 2 ms that copies a status,
+    // left out: it would pass for work): the wait gives up once they have spent `cpu` seconds since it began (the work
+    // many times over: a test alone takes a few), or under kIdleWork in the last `idle` seconds (nothing runs), or at
+    // `deadline` (the probe's, a minute before its timeout), and says why on a line of its own. Nothing else runs in
+    // the process meanwhile (Live plays only when asked), so the others' CPU is the compiler's and the tests'.
+    constexpr double kIdleWork = 0.1;
+
+    template <typename Done>
+    Waited untilWorked(Done&& done, double cpu = 120.0, double idle = 60.0,
+                       std::chrono::steady_clock::time_point deadline = probeDeadline())
+    {
+        using clock = std::chrono::steady_clock;
+        const auto seconds = [](clock::duration d) { return std::chrono::duration<double>(d).count(); };
+        const clock::time_point start = clock::now();
+        const double cpu0 = cpuTimes().others();
+        clock::time_point mark = start;
+        double cpuAtMark = cpu0;
+        while (!done())
+        {
+            const clock::time_point now = clock::now();
+            const double used = cpuTimes().others();
+            Waited why = Waited::done;
+            if (used - cpu0 > cpu)
+                why = Waited::spun;
+            else if (now > deadline)
+                why = Waited::late;
+            else if (used - cpuAtMark >= kIdleWork)
+            {
+                mark = now;
+                cpuAtMark = used;
+            }
+            else if (seconds(now - mark) > idle)
+                why = Waited::idle;
+            if (why != Waited::done)
+            {
+                std::printf("wait: gave up after %.1f s (%s); the work's CPU %.2f s\n", seconds(now - start), nameOf(why),
+                            std::max(0.0, used - cpu0));
+                return why;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return Waited::done;
     }
 
     // A status of a refined compile: its note of what the self-test chose.
@@ -935,6 +1056,71 @@ namespace
         }
     }
 
+    // WAIT (above): untilWorked, before anything else runs in the process.
+    void waitRows(funkgui::test::Probe& P)
+    {
+        using clock = std::chrono::steady_clock;
+        const auto since = [](clock::time_point t) { return std::chrono::duration<double>(clock::now() - t).count(); };
+        // The calling thread busy for `seconds` of its own CPU.
+        const auto busy = [](double seconds) {
+            const double end = cpuTimes().thread + seconds;
+            while (cpuTimes().thread < end)
+            {
+            }
+        };
+
+        // work that finishes: a thread spends 0.2 s of CPU, then says so
+        {
+            std::atomic<bool> finished{ false };
+            std::thread worker([&] {
+                busy(0.2);
+                finished.store(true);
+            });
+            const Waited w = untilWorked([&] { return finished.load(); }, 60.0, 10.0, clock::now() + std::chrono::seconds(60));
+            worker.join();
+            std::printf("wait: work that finishes: %s\n", nameOf(w));
+            P.eq("wait.done", w == Waited::done ? 1 : 0, 1);
+        }
+        // nothing running, and a poll as costly as a status's copy many times over (3 ms of the waiting thread's CPU a
+        // call): idle once the window passes, its own CPU left out (counted, it would pass for work)
+        {
+            const clock::time_point t0 = clock::now();
+            const double own0 = cpuTimes().thread;
+            const Waited w = untilWorked([&] {
+                busy(0.003);
+                return false;
+            }, 60.0, 2.0, t0 + std::chrono::seconds(30));
+            const double took = since(t0), own = cpuTimes().thread - own0;
+            std::printf("wait: nothing running, a costly poll: %s after %.2f s; the poll's own CPU %.2f s\n", nameOf(w), took, own);
+            P.eq("wait.idle", w == Waited::idle && took < 20.0 ? 1 : 0, 1);
+            P.ge("wait.idle_poll_costly", own, kIdleWork);
+        }
+        // a thread that spins without end: its CPU limit
+        {
+            std::atomic<bool> stop{ false };
+            const double others0 = cpuTimes().others();
+            std::thread spinner([&] {
+                while (!stop.load())
+                {
+                }
+            });
+            const Waited w = untilWorked([] { return false; }, 0.3, 60.0, clock::now() + std::chrono::seconds(60));
+            const double spent = cpuTimes().others() - others0;
+            stop.store(true);
+            spinner.join();
+            std::printf("wait: a thread spinning: %s; its CPU %.2f s\n", nameOf(w), spent);
+            P.eq("wait.spun", w == Waited::spun && spent >= 0.3 ? 1 : 0, 1);
+        }
+        // nothing running and a long idle window: the deadline
+        {
+            const clock::time_point t0 = clock::now();
+            const Waited w = untilWorked([] { return false; }, 60.0, 60.0, t0 + std::chrono::milliseconds(500));
+            const double took = since(t0);
+            std::printf("wait: past its deadline: %s after %.2f s\n", nameOf(w), took);
+            P.eq("wait.late", w == Waited::late && took >= 0.5 && took < 20.0 ? 1 : 0, 1);
+        }
+    }
+
     // SELFTEST, REFRESH and DEDUP (above): the plugin's self-test, a Compiler's.
     void selfTester(funkgui::test::Probe& P)
     {
@@ -1132,7 +1318,7 @@ namespace
             const bool running = store.inFlight(potKey);
             live.compiler->request(pg::singleFile(silentMain()));
             live.compiler->wait();
-            const bool ended = until([&] { return !store.inFlight(potKey); }, 60.0);
+            const bool ended = untilWorked([&] { return !store.inFlight(potKey); }) == Waited::done;
             std::printf("refresh: dropped while testing: started %d, running %d, ended %d, %d test(s), stored %d\n", started ? 1 : 0,
                         running ? 1 : 0, ended ? 1 : 0, live.compiler->selfTests(), store.find(potKey) ? 1 : 0);
             P.eq("refresh.drop_cancels", started && running && ended && live.compiler->selfTests() == 1 && !live.compiler->selfTesting()
@@ -1153,17 +1339,17 @@ namespace
             const pg::Sources edited = clipperFiles(true, "// edited while the self-test runs\n");
             const uint64_t run = live.compiler->request(edited);
             uint64_t landedAtRun = 0;
-            const bool answered = until([&] {
+            const bool answered = untilWorked([&] {
                 if (live.compiler->status().request < run)
                     return false;
                 landedAtRun = store.landed();
                 return true;
-            }, 60.0);
+            }) == Waited::done;
             const pg::CompileStatus b = live.compiler->status();
-            const bool refined = until([&] {
+            const bool refined = untilWorked([&] {
                 const pg::CompileStatus s = live.compiler->status();
                 return s.program > run && chose(s);
-            }, 60.0);
+            }) == Waited::done;
             const pg::CompileStatus s = live.compiler->status();
             std::printf("refresh: a RUN while the test runs: answered first %d (landed %llu then %llu); refined %d: %s", answered ? 1 : 0,
                         static_cast<unsigned long long>(landedAtRun - landed), static_cast<unsigned long long>(store.landed() - landed),
@@ -1182,7 +1368,7 @@ namespace
             const pg::CompileStatus b = y.compiler->compileNow(files);
             x.compiler->setSelfTesting(true);
             y.compiler->setSelfTesting(true);
-            const bool both = until([&] { return chose(x.compiler->status()) && chose(y.compiler->status()); }, 60.0);
+            const bool both = untilWorked([&] { return chose(x.compiler->status()) && chose(y.compiler->status()); }) == Waited::done;
             std::printf("dedup: tests %d and %d; both refined %d\n", x.compiler->selfTests(), y.compiler->selfTests(), both ? 1 : 0);
             P.eq("dedup.both_wanted", a.ok && b.ok && has(a.notes, "provisional: ") && has(b.notes, "provisional: ") ? 1 : 0, 1);
             P.eq("dedup.one_test", x.compiler->selfTests() + y.compiler->selfTests(), 1);
@@ -1243,6 +1429,9 @@ namespace
 
 PROBE(fminus, circuit)
 {
+    // ---- WAIT ---------------------------------------------------------------------------------------------------------
+    waitRows(P);
+
     pg::circuits::answers().clearForTests();
     const std::size_t second = static_cast<std::size_t>(kFs);
     std::vector<const pg::LibraryFile*> netlists;

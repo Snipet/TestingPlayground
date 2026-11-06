@@ -20,7 +20,7 @@
 // render then lasts at least until its end) replaces the held part: the average spectrum and the RMS are over it, the
 // default close-up is at its middle, and the picture shades it (View::windowFrom, windowTo).
 //
-// view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
+// view() is renderSound() then analyse(): a sound recorded instead of rendered (a capture's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the
 // held part its first note-on to its last note-off), an effect's input chosen by Request::signal or its own
 // (Request::input). The render lasts until the scenario's last move or edit and the tail after it, if that is later.
@@ -63,6 +63,8 @@ namespace playground::measure
         std::string title;                        // what played ("Note 48 (C3) at velocity 0.80, held 1.00 s, ...")
         std::string dials;                        // "cutoff 1200, resonance 0.3"
         uint32_t alerts = 0;
+        std::string stopped;                      // a render that stopped (Patch.h, "The loop budget", "Bounds
+                                                  // checks"), in words; "" none
         double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS (the window's)
 
         std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
@@ -99,6 +101,9 @@ namespace playground::measure
         std::string title, dials;
         std::vector<std::pair<std::string, float>> values;   // the dials, plain, by name
         uint32_t alerts = 0;
+        Patch::Method stopCall = Patch::Method::none; // a call that ran past its budget (Session::Render's), and when
+        std::size_t stopAt = 0;
+        Patch::Bounds stopBounds;                 // or the bounds check it failed, if one did
         double cycleHz = 0.0;                     // the close-up shows four cycles of it (0: 10 ms)
         bool harmonics = false;                   // mark cycleHz's harmonics on the spectrum
         bool fromStart = false;                   // the close-up at the start (an impulse's response)

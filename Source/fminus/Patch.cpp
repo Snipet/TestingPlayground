@@ -373,14 +373,83 @@ namespace playground
                  + "\" in a program.fm before it)\n";
         }
 
+        // The plugin's macros (Lang.h's kDefines), as every compile here defines them (Patch.h, "Conditionals and
+        // warnings").
+        std::map<std::string, std::string> defines()
+        {
+            std::map<std::string, std::string> out;
+            for (const auto& [name, value] : lang::hostDefines())
+                out[name] = value;
+            return out;
+        }
+
+        // A program's warnings (FMinus's Program::warnings, a netlist's module's cited at the netlist) as the plugin
+        // shows them: a warning a line, without clang's note after it at its own place ("add missing switch cases"),
+        // which would mark the same word again.
+        std::string warningsOf(const fminus::Program& program, const circuits::Generator& circuits)
+        {
+            const std::string all = circuits.recite(program.warnings());
+            std::string out, lastAt;
+            std::size_t from = 0;
+            while (from < all.size())
+            {
+                std::size_t end = all.find('\n', from);
+                if (end == std::string::npos)
+                    end = all.size();
+                const std::string line = all.substr(from, end - from);
+                from = end + 1;
+                const std::size_t w = line.find(": warning: "), n = line.find(": note: ");
+                if (n != std::string::npos && !lastAt.empty() && line.compare(0, n, lastAt) == 0)
+                    continue;
+                lastAt = w != std::string::npos ? line.substr(0, w) : std::string();
+                if (!line.empty())
+                    out += line + "\n";
+            }
+            return out;
+        }
+
+        // The files FMinus read (`compiled`, of `files`) as it read them: the lines of a group a conditional skipped
+        // emptied, so that the panel's #pragma lines are read only where FMinus reads the program.
+        std::vector<SourceFile> asRead(const std::vector<const SourceFile*>& compiled, const Sources& files)
+        {
+            const std::vector<lang::FileConditionals> cond = lang::conditionals(files, lang::hostDefines());
+            std::vector<SourceFile> out;
+            for (const SourceFile* f : compiled)
+            {
+                SourceFile copy = *f;
+                const std::size_t k = static_cast<std::size_t>(f - files.data());
+                if (k < cond.size() && std::find(cond[k].skipped.begin(), cond[k].skipped.end(), 1) != cond[k].skipped.end())
+                {
+                    std::string text;
+                    std::size_t line = 0, from = 0;
+                    while (from <= f->text.size())
+                    {
+                        const std::size_t end = std::min(f->text.find('\n', from), f->text.size());
+                        if (line >= cond[k].skipped.size() || cond[k].skipped[line] == 0)
+                            text.append(f->text, from, end - from);
+                        if (end < f->text.size())
+                            text += '\n';
+                        from = end + 1;
+                        ++line;
+                    }
+                    copy.text = std::move(text);
+                }
+                out.push_back(std::move(copy));
+            }
+            return out;
+        }
+
         // compile()'s second pass's options but for the #include: the audio thread's denormal mode, and each dial a
         // stream (a float) or a knob. ir() gives FMinus the same, so its text is the one the program's code came from.
         fminus::Program::Options playOptions(const std::string& fileName, const std::array<std::string, kMaxControls>& names,
-                                             const std::array<bool, kMaxControls>& streams)
+                                             const std::array<bool, kMaxControls>& streams, bool loopBudget, bool boundsCheck)
         {
             fminus::Program::Options o;
             o.fileName = fileName;
+            o.defines = defines();
             o.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
+            o.loopBudget = loopBudget;                           // Patch.h, "The loop budget"
+            o.boundsCheck = boundsCheck;                         // Patch.h, "Bounds checks"
             for (std::size_t k = 0; k < names.size(); ++k)
                 if (!names[k].empty() && streams[k])
                     o.parameters[names[k]] = fminus::Program::Binding::stream();
@@ -394,7 +463,11 @@ namespace playground
         {
             fminus::Program::Options o;
             o.fileName = r.files.front().name;
+            o.defines = defines();                               // as compile()'s: the program's own fields and code
             o.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
+            o.loopBudget = r.loopBudget;                         // as compile()'s: the copy keeps the checks
+            o.boundsCheck = false;                               // the build that plays at full speed (Patch.h,
+                                                                 // "Bounds checks"): its code as without the option
             o.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
                                : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
             for (std::size_t k = 0; k < r.names.size(); ++k)
@@ -424,6 +497,7 @@ namespace playground
         Init* sharedInit = nullptr;                // the module Shared's
         Plain* sharedEnd = nullptr;
         std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
+        bool boundsCheck = false;                  // compiled with the bounds checks (the frozen copy never is)
     };
 
     Patch::Patch() : s_(std::make_unique<Compiled>()) {}
@@ -439,14 +513,26 @@ namespace playground
     void Patch::endInstances() noexcept
     {
         const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
+        // Each end within kInitBudget; after one that runs past it (or fails a bounds check), no other; and none at all
+        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget").
+        bool ran = stopped() == Method::none;
+        endsCalled_ = 0;
+        const auto end = [&](auto* fn, void* self) {
+            if (!ran || fn == nullptr)
+                return;
+            s_->program->setLoopBudget(kInitBudget);
+            ++endsCalled_;
+            fn(self);
+            ran = !s_->program->loopBudgetExceeded() && !s_->program->boundsViolation();   // a failed check ends them
+        };
         for (std::size_t i = 0; i < instances_.size(); ++i)
         {
-            if (initialised_[i] && s_->end != nullptr)
-                s_->end(instances_[i]);
+            if (initialised_[i])
+                end(s_->end, instances_[i]);
             initialised_[i] = false;
         }
-        if (sharedInitialised_ && s_->sharedEnd != nullptr)
-            s_->sharedEnd(shared_);
+        if (sharedInitialised_)
+            end(s_->sharedEnd, shared_);
         sharedInitialised_ = false;
     }
 
@@ -468,7 +554,8 @@ namespace playground
         return compile(singleFile(std::string(source), std::string(fileName)), sampleRate);
     }
 
-    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins)
+    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins, bool loopBudget,
+                                 bool boundsCheck)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
@@ -497,6 +584,7 @@ namespace playground
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
+        read.defines = defines();
         read.include = include;
         std::unique_ptr<fminus::Program> first = fminus::Program::compile(source, r.errors, read);
         r.circuitJobs = circuits.jobs();
@@ -514,6 +602,9 @@ namespace playground
             r.compileMs = msSince(t0);
             return r;
         }
+        // FMinus's warnings, of the program as written (pass 2 appends lines that switch on nothing): notes, after the
+        // netlists' (below).
+        const std::string warnings = warningsOf(*first, circuits);
         const fminus::Program::Module* main = first->module(kModule);
         if (main == nullptr)
         {
@@ -523,6 +614,7 @@ namespace playground
             r.errors = file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")" +
                        (have.empty() ? std::string(", and the program has no module") : ", and the program has " + have) +
                        "\n";
+            r.notes += warnings;
             r.compileMs = msSince(t0);
             return r;
         }
@@ -553,6 +645,7 @@ namespace playground
                 }
         if (!r.errors.empty())
         {
+            r.notes += warnings;
             r.compileMs = msSince(t0);
             return r;
         }
@@ -618,7 +711,7 @@ namespace playground
             patch->circuitCalls_.push_back(std::move(call));
         }
         patch->circuitArgs_.assign(mostArgs, 0.0f);
-        fminus::Program::Options build = playOptions(file, names, streams);
+        fminus::Program::Options build = playOptions(file, names, streams, loopBudget, boundsCheck);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
 
@@ -645,6 +738,7 @@ namespace playground
         }
         fminus::Program& program = *patch->s_->program;
         Compiled& s = *patch->s_;
+        s.boundsCheck = boundsCheck;
         s.module = program.module(kModule);
         const auto look = [&](const char* method, auto*& fn) {
             if (!has(method))
@@ -718,6 +812,8 @@ namespace playground
             rc.process = s.process != nullptr;
             rc.bindings = bindings;
             rc.circuitShims = static_cast<int>(bound.size());
+            rc.loopBudget = loopBudget;
+            rc.boundsCheck = boundsCheck;
         }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
@@ -825,7 +921,12 @@ namespace playground
             for (const fminus::Program::Module::Field& f : sharedModule->fields)
                 sharedFields.push_back({ f.name, f.type });
         fields = displayFields(fields, sharedFields);
-        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do.
+        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do, as FMinus
+        // read the files (a skipped group's lines are none).
+        const std::vector<SourceFile> readTexts = asRead(compiled, files);
+        std::vector<const SourceFile*> asFmRead;
+        for (const SourceFile& f : readTexts)
+            asFmRead.push_back(&f);
         const SourceFile* gui = nullptr;
         for (const SourceFile& f : files)
             if (isGuiFile(f.name))
@@ -839,7 +940,7 @@ namespace playground
         if (gui != nullptr)
         {
             std::string ignored;
-            const PanelSpec pragmas = readPanelSpec(compiled, patch->controls_, fields, kInstrument, ignored);
+            const PanelSpec pragmas = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, ignored);
             if (!pragmas.sections.empty() || !pragmas.displays.empty())
                 r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
             std::vector<std::string> fileNames;
@@ -848,7 +949,7 @@ namespace playground
             patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, fileNames, r.notes);
         }
         else
-            patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
+            patch->panel_ = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, r.notes);
         for (const PanelDisplay& d : patch->panel_.displays)
         {
             if (d.tap < 0)
@@ -935,13 +1036,25 @@ namespace playground
         }
         patch->mapFields();
         patch->reset(sampleRate);
+        if (const Method stop = patch->stopped(); stop != Method::none)
+        {
+            // An init (or Shared's) that ran past its budget, or failed a bounds check: the program does not play
+            // (Patch.h, "The loop budget", "Bounds checks").
+            r.errors = stopMessage(files, stop, patch->rate_, &patch->bounds_);
+            r.stopped = stop;
+            r.bounds = patch->bounds_;
+            r.notes = circuits.warnings() + circuits.notes() + warnings + r.notes;
+            r.compileMs = msSince(t0);
+            return r;
+        }
         if (keepIr)
         {
             r.ir.lowered = program.loweredIr();
             r.ir.optimised = program.optimisedIr();
         }
-        // The netlists' warnings and provisional notes first: what they say is about the files the program reads.
-        r.notes = circuits.warnings() + circuits.notes() + r.notes;
+        // The netlists' warnings and provisional notes first, then FMinus's warnings: what they say is about the files
+        // the program reads.
+        r.notes = circuits.warnings() + circuits.notes() + warnings + r.notes;
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
         return r;
@@ -969,7 +1082,24 @@ namespace playground
     {
         const fsdsp::ScopedFtz ftz;                  // init (and end) run in the mode the program is compiled for
         rate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
+        perSample_ = budgetOf(1, rate_) / kBudgetFloor;
         endInstances();
+        // FMinus's record of a failed bounds check emptied first: while it holds one, every call returns partway,
+        // init's too (Patch.h, "Bounds checks").
+        s_->program->clearBoundsViolation();
+        bounds_ = Bounds{};
+        stop_.store(static_cast<uint8_t>(Method::none), std::memory_order_relaxed);
+        initsCalled_ = 0;
+        // Each init within kInitBudget (Patch.h, "The loop budget"): one that runs past it, or fails a bounds check,
+        // stops the Patch there.
+        const auto init = [&](Compiled::Init* fn, void* self, Method call) {
+            if (fn == nullptr)
+                return true;
+            s_->program->setLoopBudget(kInitBudget);
+            ++initsCalled_;
+            fn(self, rate_);
+            return within(*s_, call);
+        };
         // Shared first: the instances' init may read what its init made.
         if (shared_ != nullptr)
         {
@@ -977,8 +1107,8 @@ namespace playground
             setDefaults(shared_, kSharedModule, 0);
             for (const std::size_t at : sharedHostFields_)
                 std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
-            if (s_->sharedInit != nullptr)
-                s_->sharedInit(shared_, rate_);
+            if (!init(s_->sharedInit, shared_, Method::sharedInit))
+                return;                              // no end for it, and the instances not initialised
             sharedInitialised_ = true;
         }
         for (std::size_t i = 0; i < instances_.size(); ++i)
@@ -994,10 +1124,183 @@ namespace playground
                 std::memcpy(static_cast<char*>(p) + at, &shared_, sizeof shared_);
             for (const std::size_t at : hostFields_)
                 std::memcpy(static_cast<char*>(p) + at, &host_, sizeof host_);
-            if (s_->init != nullptr)
-                s_->init(p, rate_);
+            if (!init(s_->init, p, Method::init))
+                return;                              // no end for it, nor for the instances after it
             initialised_[i] = true;
         }
+    }
+
+    // ---- the loop budget ----------------------------------------------------------------------------------------------
+    std::int64_t Patch::budgetOf(int samples, float rate) noexcept
+    {
+        const auto perSample = static_cast<std::int64_t>(kLoopsPerSecond / static_cast<double>(rate > 0.0f ? rate : 48000.0f));
+        return perSample * std::max(samples, kBudgetFloor);
+    }
+
+    std::int64_t Patch::budgetLeft() const noexcept
+    {
+        return code().program->loopBudgetLeft();
+    }
+
+    void Patch::budget(const Compiled& c, int samples) noexcept
+    {
+        lastBudget_ = perSample_ * std::max(samples, kBudgetFloor);
+        c.program->setLoopBudget(lastBudget_);
+    }
+
+    bool Patch::within(const Compiled& c, Method call) noexcept
+    {
+        if (!outOfBounds(c) && !c.program->loopBudgetExceeded())
+            return true;
+        stop_.store(static_cast<uint8_t>(call), std::memory_order_release);   // after bounds_
+        return false;
+    }
+
+    // ---- the bounds checks --------------------------------------------------------------------------------------------
+    namespace
+    {
+        template <std::size_t N>
+        void copyText(char (&to)[N], std::string_view from) noexcept
+        {
+            const std::size_t n = std::min(from.size(), N - 1);
+            std::memcpy(to, from.data(), n);
+            to[n] = '\0';
+        }
+    }
+
+    bool Patch::outOfBounds(const Compiled& c) noexcept
+    {
+        if (!c.boundsCheck)
+            return false;
+        const std::optional<fminus::Program::BoundsViolation> v = c.program->boundsViolation();   // no allocation
+        if (!v)
+            return false;
+        Bounds b;
+        b.failed = true;
+        copyText(b.file, v->file);
+        copyText(b.array, v->array);
+        copyText(b.type, v->type);
+        b.line = v->line;
+        b.column = v->column;
+        b.width = v->width;
+        b.extent = v->extent;
+        b.index = v->index;
+        bounds_ = b;
+        return true;
+    }
+
+    std::string Patch::Bounds::where() const
+    {
+        return std::string(file) + ":" + std::to_string(line) + ":" + std::to_string(column);
+    }
+
+    std::string Patch::Bounds::what() const
+    {
+        // FMinus's own words (BoundsViolation::message), without the place it starts with.
+        fminus::Program::BoundsViolation v;
+        v.file = file;
+        v.line = line;
+        v.column = column;
+        v.array = array;
+        v.type = type;
+        v.extent = extent;
+        v.index = index;
+        v.width = width;
+        std::string words = v.message();
+        const std::string at = where() + ": ";
+        if (words.compare(0, at.size(), at) == 0)
+            words.erase(0, at.size());
+        return words;
+    }
+
+    std::string Patch::callName(Method call)
+    {
+        switch (call)
+        {
+            case Method::init:       return "init()";
+            case Method::end:        return "end()";
+            case Method::process:    return "process()";
+            case Method::start:      return "start()";
+            case Method::stop:       return "stop()";
+            case Method::circuit:    return "a circuit's set()";
+            case Method::sharedInit: return std::string(kSharedModule) + "'s init()";
+            case Method::sharedEnd:  return std::string(kSharedModule) + "'s end()";
+            case Method::none:       break;
+        }
+        return "a call";
+    }
+
+    std::string Patch::stopWhy(Method call, const Bounds* bounds)
+    {
+        if (bounds != nullptr && bounds->failed)
+            return callName(call) + " went outside an array (" + bounds->where() + ": " + bounds->what() + ")";
+        return callName(call) + " ran past its budget (a loop that never ends?)";
+    }
+
+    std::string Patch::stopMessage(const Sources& files, Method call, float rate, const Bounds* bounds)
+    {
+        if (bounds != nullptr && bounds->failed)
+        {
+            // At the access, as FMinus places it (an #include's file by its name): what failed, then what the checks
+            // are.
+            const bool offline = call == Method::init || call == Method::end || call == Method::sharedInit
+                              || call == Method::sharedEnd;
+            const std::string at = bounds->where();
+            return at + ": error: " + callName(call) + " went outside an array: " + bounds->what() + "\n" + at
+                 + ": note: the plugin checks each index into an array the program declares while it plays the program as "
+                   "written (not the frozen copy that plays once the dials hold still), stopped the call before the access, "
+                 + (offline ? "and the program does not play\n" : "and plays the program no more\n");
+        }
+        // The method's line, where the program defines it (Lang's index): the call the plugin made, which a loop in a
+        // function it calls stops too.
+        const bool shared = call == Method::sharedInit || call == Method::sharedEnd;
+        const char* method = call == Method::init || call == Method::sharedInit ? "init"
+                           : call == Method::end || call == Method::sharedEnd   ? "end"
+                           : call == Method::process                          ? "process"
+                           : call == Method::start                            ? "start"
+                           : call == Method::stop                             ? "stop"
+                                                                            : nullptr;
+        std::string at = files.empty() ? std::string(kProgramName) : files.front().name;
+        if (method != nullptr && !files.empty())
+        {
+            Sources read;
+            for (const SourceFile& f : files)
+                if (!isGuiFile(f.name) && !isCircuitFile(f.name))
+                    read.push_back(f);
+            lang::Service service;
+            lang::Options o;
+            o.instrument = kInstrument;
+            service.setOptions(o);
+            service.setFiles(read);
+            const std::string module = shared ? kSharedModule : kModule;
+            for (const lang::Symbol& s : service.symbols())
+                if (s.kind == lang::Kind::method && s.body && s.name == method && s.container == module && s.file >= 0
+                    && s.file < static_cast<int>(service.files().size()))
+                {
+                    at = service.files()[static_cast<std::size_t>(s.file)].name + ":" + std::to_string(s.at.line + 1) + ":"
+                       + std::to_string(s.at.col + 1);
+                    break;
+                }
+        }
+        const bool offline = call == Method::init || call == Method::end || call == Method::sharedInit || call == Method::sharedEnd;
+        const auto grouped = [](std::int64_t v) {
+            std::string digits = std::to_string(v), out;
+            for (std::size_t k = 0; k < digits.size(); ++k)
+            {
+                if (k > 0 && (digits.size() - k) % 3 == 0)
+                    out += ',';
+                out += digits[k];
+            }
+            return out;
+        };
+        const std::string note = offline
+            ? "the plugin stops an init or end past " + grouped(kInitBudget) + " loop iterations (a loop in a function it "
+              "calls counts too), so the program does not play"
+            : "the plugin stops a call past " + grouped(budgetOf(1, rate) / kBudgetFloor) + " loop iterations a sample at "
+              + std::to_string(std::lround(rate)) + " Hz, about what a core runs in real time when an iteration takes a "
+              "cycle (a loop in a function it calls counts too), and plays the program no more";
+        return at + ": error: " + callName(call) + " ran past its budget: a loop that never ends?\n" + at + ": note: "
+             + note + "\n";
     }
 
     void Patch::setHost(const HostBlock& h) noexcept
@@ -1042,31 +1345,42 @@ namespace playground
         put(l.buttons, static_cast<int32_t>(h.buttons));
     }
 
+    // The audio thread's calls, each within its budget (Patch.h, "The loop budget"), none once the Patch has stopped.
     void Patch::process(float* left, float* right, int n) noexcept
     {
         const Compiled& c = code();
-        if (c.process != nullptr && !instances_.empty())
-            c.process(instances_[0], left, right, n);
+        if (c.process == nullptr || instances_.empty() || stopped() != Method::none)
+            return;
+        budget(c, n);
+        c.process(instances_[0], left, right, n);
+        within(c, Method::process);
     }
 
     void Patch::start(int i, float note, float velocity) noexcept
     {
         const Compiled& c = code();
-        if (c.start != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
-            c.start(instances_[static_cast<std::size_t>(i)], note, velocity);
+        if (c.start == nullptr || i < 0 || i >= static_cast<int>(instances_.size()) || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.start(instances_[static_cast<std::size_t>(i)], note, velocity);
+        within(c, Method::start);
     }
 
     void Patch::stop(int i) noexcept
     {
         const Compiled& c = code();
-        if (c.stop != nullptr && i >= 0 && i < static_cast<int>(instances_.size()))
-            c.stop(instances_[static_cast<std::size_t>(i)]);
+        if (c.stop == nullptr || i < 0 || i >= static_cast<int>(instances_.size()) || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.stop(instances_[static_cast<std::size_t>(i)]);
+        within(c, Method::stop);
     }
 
     void Patch::setCircuits(const float* plain, int i) noexcept
     {
         const Compiled& c = code();
-        if (i < 0 || i >= static_cast<int>(instances_.size()) || c.circuits.size() != circuitCalls_.size())
+        if (i < 0 || i >= static_cast<int>(instances_.size()) || c.circuits.size() != circuitCalls_.size()
+            || stopped() != Method::none)
             return;
         void* self = instances_[static_cast<std::size_t>(i)];
         for (std::size_t k = 0; k < circuitCalls_.size(); ++k)
@@ -1074,17 +1388,23 @@ namespace playground
             const CircuitCall& call = circuitCalls_[k];
             for (std::size_t a = 0; a < call.slots.size(); ++a)
                 circuitArgs_[a] = call.slots[a] >= 0 ? plain[call.slots[a]] : call.fixed[a];
-            if (c.circuits[k] != nullptr)
-                c.circuits[k](self, circuitArgs_.data());
+            if (c.circuits[k] == nullptr)
+                continue;
+            budget(c, 0);
+            c.circuits[k](self, circuitArgs_.data());
+            if (!within(c, Method::circuit))
+                return;
         }
     }
 
     bool Patch::render(int i, float* left, float* right, int n) noexcept
     {
         const Compiled& c = code();
-        if (c.render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()))
+        if (c.render == nullptr || i < 0 || i >= static_cast<int>(instances_.size()) || stopped() != Method::none)
             return false;
-        return c.render(instances_[static_cast<std::size_t>(i)], left, right, n);
+        budget(c, n);
+        const bool sounding = c.render(instances_[static_cast<std::size_t>(i)], left, right, n);
+        return within(c, Method::process) && sounding;
     }
 
     // ---- frozen dials ---------------------------------------------------------------------------------------------------
@@ -1168,7 +1488,7 @@ namespace playground
             why = "no program";
             return false;
         }
-        fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams);
+        fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams, r.loopBudget, r.boundsCheck);
         circuits::Generator circuits(r.files, r.circuits);
         o.include = includeOf(r.files, circuits);
         o.keepIr = fminus::Program::KeepIr::Both;
@@ -1539,6 +1859,7 @@ namespace playground
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
+        read.defines = defines();
         read.include = includeOf(files, circuits);
         const std::unique_ptr<fminus::Program> first = fminus::Program::compile(files.front().text, r.errors, read);
         const bool netlistErrors = !circuits.errors().empty();
@@ -1551,6 +1872,8 @@ namespace playground
             return r;
         }
         r.errors = circuits.recite(r.errors) + circuits.errors() + circuits.warnings();
+        if (first)
+            r.errors += warningsOf(*first, circuits);            // FMinus's warnings, as RUN's notes have them
         if (first)
         {
             const fminus::Program::Module* main = first->module(kModule);

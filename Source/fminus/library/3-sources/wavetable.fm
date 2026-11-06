@@ -45,6 +45,7 @@ float wavetableLevel(float step)
 
 module Wavetable
 {
+    // Heap blocks (calloc's), the table as long as its frames make it: the plugin's bounds checks do not see them.
     float* data;                // frames x 21 copies x 2052 samples: a copy's 2048, one before them and three after
     int frames;
     bool owned;

@@ -13,6 +13,7 @@
 //   verb.clear();                  silence
 module Comb
 {
+    // A heap block (calloc's) as long as the rate makes it: the plugin's bounds checks do not see it.
     float* buffer;
     int length;
     int at;
@@ -55,6 +56,7 @@ module Comb
 
 module Allpass
 {
+    // A heap block (calloc's), as Comb's.
     float* buffer;
     int length;
     int at;

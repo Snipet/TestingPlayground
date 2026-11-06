@@ -40,6 +40,8 @@
 //           opening too; files "none" leaves it out; a token of no record is not this instance's
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
+//   STOPPED the journal's words for a run whose program stopped as it played (runWords): what plays now, as get_status
+//           says it (nothing; the program before again; the program before on)
 #include "Probe.h"
 
 #include "Audio.h"
@@ -761,6 +763,29 @@ PROBE(plugin, live)
         desktop.join();
         P.eq("newchat.busy_while_desktop_works", working && busyAfterNew ? 1 : 0, 1);
         P.eq("newchat.idle_after", !a.chatState().busy && !a.mcpWorking() ? 1 : 0, 1);
+    }
+
+    // ---- STOPPED ---------------------------------------------------------------------------------------------------
+    {
+        pg::CompileStatus s;
+        s.revision = 1;
+        s.ok = false;
+        s.stopped = true;
+        s.request = s.stoppedProgram = 7;
+        s.errors = "program.fm:3:10: error: process() ran past its budget: a loop that never ends?\n";
+        s.program = 7;                                   // nothing plays
+        const std::string nothing = pg::runWords(s);
+        s.program = 8;                                   // the program before, compiled again
+        s.restored = pg::singleFile("module Effect {}\n");
+        const std::string again = pg::runWords(s);
+        s.program = 6;                                   // the program before, which never went
+        s.restored.clear();
+        const std::string on = pg::runWords(s);
+        const std::string said = "ran it: it stopped (process() ran past its budget: a loop that never ends?); ";
+        P.eq("stopped.nothing_plays", nothing == said + "nothing plays" ? 1 : 0, 1);
+        P.eq("stopped.plays_again", again == said + "the program before plays again" ? 1 : 0, 1);
+        P.eq("stopped.plays_on", on == said + "the program before plays on" ? 1 : 0, 1);
+        std::printf("stopped: %s | %s | %s\n", nothing.c_str(), again.c_str(), on.c_str());
     }
 
     owned.reset();

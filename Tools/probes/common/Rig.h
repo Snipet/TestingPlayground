@@ -43,10 +43,13 @@ namespace probe
             return load(playground::singleFile(source), errors);
         }
 
-        // The same for a program of several files (Sources.h).
-        bool load(const playground::Sources& files, std::string* errors = nullptr)
+        // The same for a program of several files (Sources.h). `loopBudget` false: without the loop budget (Patch.h),
+        // dsp.budget's measure of what it costs; `boundsCheck` false: without the bounds checks, dsp.bounds's.
+        bool load(const playground::Sources& files, std::string* errors = nullptr, bool loopBudget = true,
+                  bool boundsCheck = true)
         {
-            playground::Patch::Result r = playground::Patch::compile(files, engine_.rate());
+            playground::Patch::Result r = playground::Patch::compile(files, engine_.rate(), false, nullptr, loopBudget,
+                                                                     boundsCheck);
             if (errors != nullptr)
                 *errors = r.errors + r.notes;
             if (!r.patch)

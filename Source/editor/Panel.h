@@ -609,6 +609,8 @@ namespace playground::ui
         bool compiling_ = false;
         bool lastOk_ = true;
         double lastMs_ = 0.0;
+        std::string lastStop_;                       // a program that stopped (Compiler.h): the status line's words,
+        std::string lastStopWhy_;                    // and why (a loop past its budget, an index outside its array)
         uint32_t controlsRevision_ = 0;                  // bumps when the dials' program changes
         std::vector<Problem> problems_;
     };
