@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 
 namespace playground::measure
@@ -26,11 +27,14 @@ namespace playground::measure
             return k.type == ControlType::real ? v : std::round(v);
         }
 
-        // The dials a failing check took from outside itself (not in its `dials`, not moved by its scenario) whose value
-        // in the plugin now (`current`) is off its reference: the default, or the check's snapshot.
+        // The dials a failing check took from the plugin (not in its `dials`, not moved by its scenario) whose value
+        // in the plugin now (`current`) is off its reference: the default, or the check's snapshot. None for a check at
+        // the defaults: the plugin's dials do not reach it.
         std::vector<DialAway> awayOf(const Check& check, const Controls& controls, const std::map<std::string, float>& current)
         {
             std::vector<DialAway> out;
+            if (check.dialsFrom == DialsFrom::defaults)
+                return out;
             for (const Control& k : controls)
             {
                 if (!k.used || check.request.dials.count(k.name) != 0)
@@ -181,10 +185,24 @@ namespace playground::measure
             }
             Session& session = sessionFor(r.rate);
             const Result m = session.measure(r);
+            // A dial it names that the program has not (renamed, removed): rendered without it, the number would be
+            // another sound's, so the check fails for that, whatever the metric gives.
+            std::string missing;
+            for (std::size_t u = 0; u < m.unknown.size(); ++u)
+                missing += (u == 0 ? "'" : u + 1 == m.unknown.size() ? " and '" : ", '") + m.unknown[u] + "'";
             for (const std::size_t j : group)
             {
                 const Goal& g = checks[j].goal;
                 CheckResult& c = out[j];
+                if (!m.unknown.empty())
+                {
+                    c.measured = true;
+                    c.value = std::numeric_limits<double>::quiet_NaN();
+                    c.unknown = m.unknown;
+                    c.text = "it names " + std::string(m.unknown.size() == 1 ? "a dial " : "dials ") + missing
+                           + " the program does not have: change the check or remove it";
+                    continue;
+                }
                 const auto it = m.values.find(g.metric);
                 if (it == m.values.end())
                 {
