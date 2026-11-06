@@ -11,6 +11,8 @@
 //   gui.code.find.png        the find and replace bar, its matches marked
 //   gui.code.paper.png       PAPER: the completion list over the program
 //   gui.code.cir.png         a netlist's tab (screamer.cir) highlighted, a check's squiggle on a broken line
+//   gui.code.conditional.png an #if 0 and an #ifndef DEBUG group dimmed, #ifdef DEBUG's group read, the directives'
+//                            parts, a -Wswitch warning's squiggle and mark after RUN and its row in the problems
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -36,6 +38,12 @@
 //   ORDER     an error with a note before it (FMinus writes the error first): each squiggle's card says its own message
 //   RUN ONLY  a note only RUN gives stays after RUN (no check of what it compiled replaces it); an edit's check takes
 //             it away, and undone (the files RUN compiled) RUN's messages come back
+//   COND      FMinus's conditionals and warnings: an #if 0 group, an #ifndef DEBUG group and a switch under #ifdef
+//             DEBUG that misses an enumeration's constant typed after the main module and RUN: it compiles and plays,
+//             one warning and no error (the status line's count), an amber squiggle and mark on the switch's value and
+//             no note's beside it, the problems list's row a warning; the tab's highlighter dims both skipped groups'
+//             lines (csInactive) and not the group read; hover on DEBUG says the plugin defines it; written to
+//             gui.code.conditional.png; then the program before it again
 //   FIND TABS Escape after the bar was open over two tabs leaves no match marked in either
 //   CIRCUIT   a netlist's tab (the library's screamer.cir, added by LIBRARY with its #include): its own highlighter
 //             (lang::lexCirLine) in the code's palette, SPICE in the status line, no completion (Ctrl-Space) and no
@@ -599,6 +607,89 @@ PROBE(gui, code)
             settleRun(processor, host);
             settleChecks(panel, host);
             P.eq("runonly.restored", notes() == 0 && code.errorCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
+        }
+
+        // ---- COND ---------------------------------------------------------------------------------------------------
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            ed.setCaret({ ed.lineCount() - 1, 0 });
+            ed.insert("\n#if 0\n"
+                      "float aside(float x) { return x * x; }   // set aside: never compiled\n"
+                      "#endif\n"
+                      "enum Wave { SAW, SQUARE, NOISE };\n"
+                      "#ifndef DEBUG\n"
+                      "float plain(float x) { return x; }\n"
+                      "#endif\n"
+                      "float wave(enum Wave w)\n"
+                      "{\n"
+                      "#ifdef DEBUG\n"
+                      "    switch (w)\n"
+                      "    {\n"
+                      "        case SAW: return 1;\n"
+                      "        case SQUARE: return -1;\n"
+                      "    }\n"
+                      "#endif\n"
+                      "    return 0;\n"
+                      "}\n");
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            const int sw = posIn(ed, "    switch (w)").line;
+            bool squiggle = false, mark = false, noteThere = false;
+            for (const funkgui::Decoration& d : ed.decorations())
+            {
+                squiggle = squiggle || (d.kind == funkgui::DecorationKind::warning && d.from.line == sw);
+                noteThere = noteThere || (d.kind == funkgui::DecorationKind::info && d.from.line == sw);
+            }
+            for (const funkgui::LineMark& m : ed.lineMarks())
+                mark = mark || (m.line == sw && m.kind == funkgui::LineMark::Kind::warning);
+            int warnRows = 0, errorRows = 0;
+            for (const pg::ui::Problem& p : panel.problems())
+            {
+                warnRows += p.warning ? 1 : 0;
+                errorRows += p.error ? 1 : 0;
+            }
+            std::printf("cond: status %d, %d error(s), %d warning(s); notes: %s", port.status().ok ? 1 : 0, code.errorCount(),
+                        code.warningCount(), port.status().notes.c_str());
+            P.eq("cond.plays", port.status().ok && port.running()[0].text == ed.text() ? 1 : 0, 1);
+            P.eq("cond.counts", code.warningCount() == 1 && code.errorCount() == 0 ? 1 : 0, 1);
+            P.eq("cond.squiggle_and_mark", squiggle && mark && !noteThere ? 1 : 0, 1);
+            P.eq("cond.problem_row", warnRows == 1 && errorRows == 0 ? 1 : 0, 1);
+            // The tab's highlighter: each line from the first, as the editor runs it.
+            const funkgui::text::Highlighter* hl = ed.highlighter();
+            std::vector<bool> dim(static_cast<std::size_t>(ed.lineCount()), false);
+            uint32_t st = 0;
+            for (int l = 0; l < ed.lineCount() && hl != nullptr; ++l)
+            {
+                std::vector<funkgui::text::Span> spans;
+                st = hl->line(ed.line(l), st, spans);
+                dim[static_cast<std::size_t>(l)] = spans.size() == 1 && spans[0].style == pg::ui::csInactive;
+            }
+            const auto dimAt = [&](std::string_view needle) {
+                const int l = posIn(ed, needle).line;
+                return l >= 0 && dim[static_cast<std::size_t>(l)];
+            };
+            P.eq("cond.dims_skipped", dimAt("float aside(") && dimAt("float plain(") ? 1 : 0, 1);
+            P.eq("cond.reads_debug", !dimAt("    switch (w)") && !dimAt("        case SAW") && !dimAt("enum Wave") ? 1 : 0, 1);
+            const int ifdef = posIn(ed, "#ifdef DEBUG").line;
+            const funkgui::Point at = ed.pointOf({ ifdef, 9 });
+            host.move(at.x + 2.0f, at.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            P.eq("cond.hover_debug", code.hoverText().find("Defined by the plugin") != std::string::npos ? 1 : 0, 1);
+            host.move(10.0f, 10.0f);
+            host.tick(2);
+            ed.setCaret({ posIn(ed, "#if 0").line, 0 });
+            ed.scrollToCaret();
+            host.tick(2);
+            writePng(P, host, "gui.code.conditional.png", "cond");
+            ed.selectAll();
+            ed.insert(withSvf);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            P.eq("cond.restored", code.errorCount() + code.warningCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
         }
 
         // ---- FIND TABS ----------------------------------------------------------------------------------------------

@@ -71,6 +71,21 @@
 //             compiled on a thread of the default stack (as the Compiler's), with no value, and one 63 deep folded; and
 //             Patch::check's messages as RUN's for a switch on a float and a write to a constant table, the program
 //             itself clean
+//   COND      FMinus's conditionals (lang::conditionals, on the plugin's DEBUG), over a program of two files (defs.fm
+//             #defines LEVEL after an #ifndef; program.fm includes it, then reads #ifdef DEBUG, #ifndef DEBUG, #if 0,
+//             an #elif chain on LEVEL and defined(), nested groups and a skipped group's inert conditional, prose and a
+//             block comment hiding an #endif in a skipped group): each conditional directive's flags and each line's,
+//             the macro an included file defines holding after its #include, a file nothing includes read alone, the
+//             same without DEBUG (Options::defines); every example's and library file's directive lines as lexLine
+//             reads them (directiveLines); the index without a skipped group's symbols (a function and a field under
+//             #if 0 neither offered nor hovered, those of the group read both); the highlighter (Conditionals::of):
+//             a skipped line one csInactive span, an inert directive dimmed, `#ifdef` a directive, DEBUG and LEVEL
+//             constants, `defined` a keyword, a number a number, a comment a comment, and a stale snapshot choosing
+//             nothing; hover on DEBUG (the plugin's), LEVEL (its #define, its file and line, the comment above it), a
+//             name no macro is, `defined` and `#ifdef`; go to definition of LEVEL (defs.fm, its #define); completion
+//             after `#` (the directives) and `#ifdef ` (DEBUG, LEVEL); the formatter keeps a skipped group as it is
+//             (prose, the other branch's brace) and formats the rest, stable; Patch::check of the program clean, and of
+//             one whose skipped group holds an error clean too, while the same error in a group read is FMinus's
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -1475,6 +1490,221 @@ PROBE(fminus, lang)
             std::printf("newer: check a write to a constant table: %s", s2.errors.c_str());
             P.eq("newer.check_table_write", s2.errors.find("error: cannot assign to variable 'kTable' with const-qualified type 'const float[4]'")
                                                     != std::string::npos && s2.errors == f2.errors ? 1 : 0, 1);
+        }
+    }
+
+    // ---- COND -------------------------------------------------------------------------------------------------------
+    {
+        const auto has = [](const std::string& text, const char* what) { return text.find(what) != std::string::npos; };
+        const char* kMain = pg::product::kIsInstrument ? "Voice" : "Effect";
+        const std::string defs = "// defs.fm: the program's levels.\n"
+                                 "#ifndef LEVEL\n"
+                                 "// How much the debug build measures.\n"
+                                 "#define LEVEL 2\n"
+                                 "#endif\n";
+        const std::string body =
+            pg::product::kIsInstrument
+                ? "    void start(float note, float velocity) { }\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n            left[i] += 0.0f;\n        return true;\n    }\n"
+                : "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n            left[i] *= 0.5f;\n    }\n";
+        const std::string prog = "#include \"defs.fm\"\n"                       // 0
+                                 "#ifdef DEBUG\n"                                // 1
+                                 "float debugGain(float x) { return x; }\n"      // 2
+                                 "#else\n"                                       // 3
+                                 "float plainGain(float x) { return x; }\n"      // 4
+                                 "#endif\n"                                      // 5
+                                 "#if 0\n"                                       // 6
+                                 "this is prose, not FMinus: it's never read\n"  // 7
+                                 "#ifdef DEBUG\n"                                // 8  inert
+                                 "float asideGain(float x) { return x; }\n"      // 9
+                                 "#endif\n"                                      // 10 inert
+                                 "/* a comment hides\n"                          // 11
+                                 "#endif\n"                                      // 12 in the comment
+                                 "*/\n"                                          // 13
+                                 "#elif defined(DEBUG) && LEVEL >= 2\n"          // 14
+                                 "float levelTwo(float x) { return x; }   // read\n"   // 15
+                                 "#else\n"                                       // 16
+                                 "float levelOne(float x) { return x; }\n"       // 17
+                                 "#endif\n"                                      // 18
+                                 "module " + std::string(kMain) + "\n{\n"       // 19, 20
+                                 "#if LEVEL > 5\n"                               // 21
+                                 "    float hidden;\n"                           // 22
+                                 "#endif\n"                                      // 23
+                                 "    float shown;\n"                            // 24
+                                 + body + "};\n";
+        const auto sources = [&](const std::string& p) {
+            return pg::Sources{ { "program.fm", p }, { "defs.fm", defs }, { "alone.fm", "#ifdef LEVEL\nfloat x;\n#endif\n" } };
+        };
+        const std::vector<lg::FileConditionals> c = lg::conditionals(sources(prog), lg::hostDefines());
+        const auto flags = [&](std::size_t f) {
+            std::string out;
+            for (const lg::Conditional& d : c[f].directives)
+                out += std::to_string(d.line) + (d.inert ? "i" : "") + (d.skipping ? "s" : "") + " ";
+            return out;
+        };
+        const auto lines = [&](std::size_t f) {
+            std::string out;
+            for (const uint8_t k : c[f].skipped)
+                out += k != 0 ? '1' : '0';
+            return out;
+        };
+        std::printf("cond: program directives %s; lines %s; defs %s; alone %s (read %d)\n", flags(0).c_str(), lines(0).c_str(),
+                    flags(1).c_str(), flags(2).c_str(), c[2].read ? 1 : 0);
+        P.eq("cond.directives", flags(0) == "1 3s 5 6s 8is 10is 14 16s 18 21s 23 " ? 1 : 0, 1);
+        P.eq("cond.lines", lines(0).substr(0, 25) == "0000100111111100010000100" ? 1 : 0, 1);
+        P.eq("cond.include_defines", flags(1) == "1 4 " && c[1].read ? 1 : 0, 1);
+        P.eq("cond.unread_alone", flags(2) == "0s 2 " && !c[2].read ? 1 : 0, 1);
+        const std::vector<lg::FileConditionals> without = lg::conditionals(sources(prog), {});
+        std::string w0;
+        for (const lg::Conditional& d : without[0].directives)
+            w0 += std::to_string(d.line) + (d.inert ? "i" : "") + (d.skipping ? "s" : "") + " ";
+        std::printf("cond: without DEBUG %s\n", w0.c_str());
+        P.eq("cond.without_debug", w0 == "1s 3 5 6s 8is 10is 14s 16 18 21s 23 " ? 1 : 0, 1);
+
+        // directiveLines reads what lexLine reads as directives, in every example and library file.
+        int disagree = 0, lexed = 0;
+        const auto agree = [&](const std::string& text) {
+            std::vector<std::pair<int, std::string_view>> mine;
+            lg::directiveLines(text, mine);
+            std::vector<int> theirs;
+            for (const lg::Token& t : lg::lex(text))
+                if (t.kind == lg::Tok::directive)
+                    theirs.push_back(t.line);
+            std::vector<int> ours;
+            for (const auto& [l, d] : mine)
+                ours.push_back(l);
+            disagree += ours == theirs ? 0 : 1;
+            ++lexed;
+        };
+        for (const pg::Example& e : pg::kExamples)
+            agree(e.source);
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            if (!pg::isCircuitFile(f.name))
+                agree(f.source);
+        agree(prog);
+        agree("x /* a\n#if 0 */ y\n#endif\n  # define A 1\n");
+        P.eq("cond.directive_lines_as_lexed", lexed > 10 && disagree == 0 ? 1 : 0, 1);
+
+        // The index: a skipped group's symbols are none.
+        lg::Service n;
+        n.setFiles(sources(prog));
+        const auto named = [&](const char* x) {
+            for (const lg::Symbol& sy : n.symbols())
+                if (sy.name == x)
+                    return true;
+            return false;
+        };
+        P.eq("cond.index_read", named("debugGain") && named("levelTwo") && named("shown") ? 1 : 0, 1);
+        P.eq("cond.index_skipped", !named("plainGain") && !named("asideGain") && !named("levelOne") && !named("hidden") ? 1 : 0, 1);
+        P.eq("cond.service_flags", n.fileConditionals(0).directives.size() == c[0].directives.size() ? 1 : 0, 1);
+        const lg::CompletionList inModule = n.complete(0, posOf(prog, "    float shown;", 4));
+        P.eq("cond.complete_skips", item(inModule, "levelTwo") != nullptr && item(inModule, "levelOne") == nullptr
+                                        && item(inModule, "plainGain") == nullptr ? 1 : 0, 1);
+
+        // The highlighter.
+        {
+            const pg::Sources files = sources(prog);
+            auto snap = std::make_shared<pg::ui::Conditionals>(pg::ui::Conditionals::of(files));
+            const pg::ui::CodeHighlighter hl(std::make_shared<pg::ui::TypeNames>(), snap, "program.fm");
+            const std::vector<std::string_view> ls = lg::splitLines(prog);
+            std::vector<std::vector<funkgui::text::Span>> spans(ls.size());
+            uint32_t st = 0;
+            for (std::size_t k = 0; k < ls.size(); ++k)
+                st = hl.line(ls[k], st, spans[k]);
+            const auto dim = [&](int l) {
+                const auto& sp = spans[static_cast<std::size_t>(l)];
+                return sp.size() == 1 && sp[0].style == pg::ui::csInactive && sp[0].start == 0
+                    && sp[0].end == static_cast<int>(ls[static_cast<std::size_t>(l)].size());
+            };
+            const auto styleAt = [&](int l, std::string_view word) -> int {
+                const std::size_t at = ls[static_cast<std::size_t>(l)].find(word);
+                for (const funkgui::text::Span& sp : spans[static_cast<std::size_t>(l)])
+                    if (at != std::string_view::npos && sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at + word.size()))
+                        return sp.style;
+                return -1;
+            };
+            P.eq("cond.hl_skipped_dim", dim(4) && dim(7) && dim(9) && dim(17) && dim(22) ? 1 : 0, 1);
+            P.eq("cond.hl_inert_dim", dim(8) && dim(10) ? 1 : 0, 1);
+            P.eq("cond.hl_read_not_dim", !dim(2) && !dim(15) && !dim(24) && !dim(1) && !dim(6) ? 1 : 0, 1);
+            P.eq("cond.hl_comment_hides_endif", dim(12) && dim(13) ? 1 : 0, 1);
+            P.eq("cond.hl_directive", styleAt(1, "#ifdef") == pg::ui::csDirective && styleAt(1, "DEBUG") == pg::ui::csConstant ? 1 : 0, 1);
+            P.eq("cond.hl_condition", styleAt(14, "defined") == pg::ui::csKeyword && styleAt(14, "LEVEL") == pg::ui::csConstant
+                                          && styleAt(14, "&&") == pg::ui::csOperator && styleAt(14, "2") == pg::ui::csNumber ? 1 : 0, 1);
+            P.eq("cond.hl_comment", styleAt(15, "// read") == pg::ui::csComment ? 1 : 0, 1);
+            // A snapshot without this file (stale, as just after an edit): nothing dimmed.
+            const pg::ui::CodeHighlighter none(std::make_shared<pg::ui::TypeNames>(), snap, "other.fm");
+            std::vector<funkgui::text::Span> sp;
+            uint32_t s2 = 0;
+            bool anyDim = false;
+            for (const std::string_view l : ls)
+            {
+                sp.clear();
+                s2 = none.line(l, s2, sp);
+                for (const funkgui::text::Span& x : sp)
+                    anyDim = anyDim || x.style == pg::ui::csInactive;
+            }
+            P.eq("cond.hl_stale_nothing", anyDim ? 0 : 1, 1);
+        }
+
+        // Hover, go to definition, completion.
+        {
+            const auto hov = [&](std::string_view needle, int extra, int nth = 0) {
+                return n.hover(0, posOf(prog, needle, extra, nth));
+            };
+            const std::optional<lg::Hover> debug = hov("#ifdef DEBUG", 8);
+            const std::optional<lg::Hover> level = hov("LEVEL >= 2", 1);
+            const std::optional<lg::Hover> none = hov("LEVEL > 5", 1);
+            const std::optional<lg::Hover> defined = hov("defined(DEBUG)", 2);
+            const std::optional<lg::Hover> directive = hov("#ifdef DEBUG", 3);
+            std::printf("cond: hover DEBUG %s | %s\n", debug ? debug->code.c_str() : "-", debug ? debug->doc.c_str() : "-");
+            std::printf("cond: hover LEVEL %s | %s\n", level ? level->code.c_str() : "-", level ? level->doc.c_str() : "-");
+            P.eq("cond.hover_plugin_macro", debug && debug->code == "#define DEBUG 1" && has(debug->doc, "Defined by the plugin") ? 1 : 0, 1);
+            P.eq("cond.hover_program_macro", level && level->code == "#define LEVEL 2" && has(level->doc, "defs.fm:4")
+                                                 && has(level->doc, "How much the debug build measures.") ? 1 : 0, 1);
+            P.eq("cond.hover_macro_value", none && none->code == "#define LEVEL 2" ? 1 : 0, 1);
+            P.eq("cond.hover_defined", defined && defined->code == "defined(NAME)" ? 1 : 0, 1);
+            P.eq("cond.hover_directive", directive && directive->code == "#ifdef NAME" ? 1 : 0, 1);
+            const std::optional<lg::Hover> unknown = n.hover(2, { 0, 8 });
+            P.eq("cond.hover_no_macro", unknown && unknown->code == "LEVEL" && has(unknown->doc, "No macro here") ? 1 : 0, 1);
+            const std::optional<lg::Location> def = n.definition(0, posOf(prog, "LEVEL >= 2", 1));
+            P.eq("cond.definition", def && def->fileName == "defs.fm" && def->at.line == 3 && def->at.col == 8 ? 1 : 0, 1);
+            P.eq("cond.definition_plugin_none", n.definition(0, posOf(prog, "#ifdef DEBUG", 8)) ? 0 : 1, 1);
+            const std::string hashed = replaced(prog, "#if LEVEL > 5\n", "#\n");
+            n.setFiles(sources(hashed));
+            const lg::CompletionList afterHash = n.complete(0, posOf(hashed, "#\n    float hidden", 1));
+            const std::string ifdef = replaced(prog, "#if LEVEL > 5\n", "#ifdef \n");
+            n.setFiles(sources(ifdef));
+            const lg::CompletionList macros = n.complete(0, posOf(ifdef, "#ifdef \n    float hidden", 7));
+            std::printf("cond: after # %s; after #ifdef %s\n", labels(afterHash, 16).c_str(), labels(macros).c_str());
+            P.eq("cond.complete_directives", item(afterHash, "ifdef") && item(afterHash, "endif") && item(afterHash, "define")
+                                                 && item(afterHash, "include") ? 1 : 0, 1);
+            P.eq("cond.complete_macros", item(macros, "DEBUG") && item(macros, "LEVEL") && !item(macros, "shown") ? 1 : 0, 1);
+        }
+
+        // The formatter: a skipped group kept as it is (prose, the other branch's brace), the rest the house style.
+        {
+            const std::string messy = "#ifdef DEBUG\nfloat f(float x) {\n#else\nfloat f(float x, float y)  {\n#endif\nreturn x;\n}\n"
+                                      "#if 0\nprose , with   spaces: it's kept  \n#endif\n";
+            const lg::Formatted fm = lg::format(messy);
+            std::printf("cond: formatted (%s) %s", fm.ok ? "ok" : fm.why.c_str(), fm.text.c_str());
+            P.eq("cond.format_keeps_skipped", fm.ok && fm.text == "#ifdef DEBUG\nfloat f(float x)\n{\n#else\nfloat f(float x, float y)  {\n"
+                                                                 "#endif\n    return x;\n}\n#if 0\nprose , with   spaces: it's kept\n#endif\n"
+                                                  ? 1 : 0, 1);
+            P.eq("cond.format_stable", fm.ok && !lg::format(fm.text).changed ? 1 : 0, 1);
+        }
+
+        // Patch::check: the program clean; an error in a skipped group is none, in a group read FMinus's.
+        {
+            const pg::Patch::Result clean = pg::Patch::check(sources(prog));
+            const pg::Patch::Result aside = pg::Patch::check(sources(replaced(prog, "float levelOne(float x) { return x; }",
+                                                                              "float levelOne(float x) { return y; }")));
+            const pg::Patch::Result read = pg::Patch::check(sources(replaced(prog, "float levelTwo(float x) { return x; }",
+                                                                             "float levelTwo(float x) { return y; }")));
+            std::printf("cond: check %s|%s|%s", clean.errors.c_str(), aside.errors.c_str(), read.errors.c_str());
+            P.eq("cond.check_clean", clean.errors.empty() && aside.errors.empty() ? 1 : 0, 1);
+            P.eq("cond.check_read_error", has(read.errors, "program.fm:16:") && has(read.errors, "undeclared identifier 'y'") ? 1 : 0, 1);
         }
     }
     return P.finish();

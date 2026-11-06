@@ -23,12 +23,22 @@
 //              an included file names that file and its line, after clang's include stack; an #include of a name no
 //              file has is "file not found"; and a method of the wrong type is still the plugin's message, with the
 //              shims after an #include
+//   DEBUG      the plugin defines DEBUG (lang::kDefines) in every build: a program whose #ifdef DEBUG adds a field and
+//              whose #if defined(DEBUG) && LEVEL >= 2 (LEVEL its own #ifndef default) picks a level compiles both ways:
+//              as the plugin builds it (the field in its field map, the debug level out) and with #undef DEBUG at its
+//              top (no field, the other level); its frozen copy (Patch::freeze) keeps the field, the program's layout
+//              (one without DEBUG would not fit its instances); a #pragma panel line in an #if 0 is no panel line; a
+//              name the plugin defines used in code is FMinus's error
+//   WARNINGS   a switch on an enumerated value that misses a constant (no default) compiles and plays, with FMinus's
+//              -Wswitch warning in the notes at its place (clang's note after it left out), and check() says it too
 #include "Probe.h"
 
 #include "Rig.h"
 
 #include "Product.h"
 
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -261,6 +271,71 @@ PROBE(fminus, contract)
         P.eq("include.signature_refused", shim.patch ? 0 : 1, 1);
         P.eq("include.signature_says_how",
              has(shim.errors, (std::string(mod) + "::process: the plugin calls it as `").c_str()) ? 1 : 0, 1);
+    }
+
+    // DEBUG
+    {
+        const std::string source = program("#ifndef LEVEL\n#define LEVEL 2\n#endif\n",
+                                           "    param float gain [[fminus::range(0, 1)]] [[fminus::default(1)]];\n"
+                                           "#ifdef DEBUG\n    float peak;                          // a debug build's\n#endif\n"
+                                           + process("#if defined(DEBUG) && LEVEL >= 2\n            left[i] = 0.25f * gain[i];\n"
+                                                     "#else\n            left[i] = 0.5f * gain[i];\n#endif\n"
+                                                     "#ifdef DEBUG\n            peak = fmaxf(peak, fabsf(left[i]));\n#endif\n"));
+        const auto hasField = [](const pg::Patch::Result& r, const char* name) {
+            if (!r.patch)
+                return false;
+            for (const pg::Patch::Field& f : r.patch->fieldMap())
+                if (f.path == name)
+                    return true;
+            return false;
+        };
+        const auto debug = compile(source);
+        const auto plain = compile("#undef DEBUG\n" + source);
+        const float a = firstSample(source), b = firstSample("#undef DEBUG\n" + source);
+        std::printf("DEBUG: first sample %.6f with DEBUG, %.6f without\n", static_cast<double>(a), static_cast<double>(b));
+        P.eq("debug.compiles", debug.patch && debug.errors.empty() && debug.notes.empty() ? 1 : 0, 1);
+        P.eq("debug.field", hasField(debug, "peak") ? 1 : 0, 1);
+        P.eq("debug.undef_compiles", plain.patch && plain.errors.empty() ? 1 : 0, 1);
+        P.eq("debug.undef_no_field", plain.patch && !hasField(plain, "peak") ? 1 : 0, 1);
+        P.eq("debug.both_ways", a > 0.0f && b > 0.0f && std::fabs(b - 2.0f * a) < 1e-6f ? 1 : 0, 1);
+        // The frozen copy is built with DEBUG too: the program's layout, so it plays through its instances.
+        if (debug.patch)
+        {
+            std::array<float, pg::kMaxControls> values{};
+            values[0] = 1.0f;
+            std::string why;
+            const auto frozen = pg::Patch::freeze(debug.patch->recipe(), values, why);
+            std::printf("DEBUG: frozen %s%s\n", frozen ? "yes" : "no: ", why.c_str());
+            P.eq("debug.frozen_keeps_layout", frozen ? 1 : 0, 1);
+        }
+        else
+            P.eq("debug.frozen_keeps_layout", 0, 1);
+        // A panel line set aside in an #if 0 is none.
+        const auto aside = compile(program("", "    param float gain [[fminus::range(0, 1)]] [[fminus::default(1)]];\n"
+                                               "#if 0\n#pragma panel label gain \"HIDDEN\"\n#endif\n"
+                                               "#pragma panel label gain \"SHOWN\"\n"
+                                               + process("            left[i] = gain[i];\n")));
+        P.eq("debug.panel_line_skipped", aside.patch && aside.patch->panel().labels[0] == "SHOWN" ? 1 : 0, 1);
+        // A macro is read in conditions only: the plugin's DEBUG named in code is FMinus's error.
+        const auto inCode = compile(program("", process("            left[i] = DEBUG;\n")));
+        P.eq("debug.macro_in_code_refused", !inCode.patch && has(inCode.errors, "'DEBUG' is a macro") ? 1 : 0, 1);
+    }
+
+    // WARNINGS
+    {
+        const std::string wave = "enum Wave { SAW, SQUARE, NOISE };\n"
+                                 "float wave(enum Wave w)\n{\n    switch (w)\n    {\n        case SAW: return 1;\n"
+                                 "        case SQUARE: return -1;\n    }\n    return 0;\n}\n";
+        const std::string source = program(wave, process("            left[i] = 0.5f * wave(SAW);\n"));
+        const auto r = compile(source);
+        const std::string at = "program.fm:4:13: warning: enumeration value 'NOISE' not handled in switch [-Wswitch]";
+        P.eq("warnings.compiles", r.patch && r.errors.empty() ? 1 : 0, 1);
+        P.eq("warnings.in_notes", has(r.notes, at) ? 1 : 0, 1);
+        P.eq("warnings.note_left_out", has(r.notes, "add missing switch cases") ? 0 : 1, 1);
+        P.eq("warnings.plays", firstSample(source) > 0.0f ? 1 : 0, 1);
+        const pg::Patch::Result checked = pg::Patch::check(pg::singleFile(source));
+        std::printf("----\ncheck: %s", checked.errors.c_str());
+        P.eq("warnings.check_says", has(checked.errors, at) && !has(checked.errors, ": error:") ? 1 : 0, 1);
     }
     return P.finish();
 }
