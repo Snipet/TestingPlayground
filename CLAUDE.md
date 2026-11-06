@@ -526,9 +526,16 @@ place (its `products/<key>.cmake`, and its names in the docs).
   metric is over its own span and the same at every rate: the held part (`heldSpans`: each note from 50 ms after its
   note-on, half the note when shorter, to its note-off; an effect's signal from 50 ms in to its end), its spectra
   Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid and the
-  partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
-  power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
-  (`pitchOf`, a harmonic sum without one), one click rule (`measure::clicks`) for the click metric, the step lines and
+  partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db; a part shorter than a frame
+  one frame of it), the centroids power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600
+  cents of the expected note (`pitchOf`, a harmonic sum without one), read stretch by stretch (`measure::stretches`:
+  the held part cut where the lowest key held or the pitch wheel changes, each against its own expected pitch, so a
+  phrase's notes and a bend through a note are followed; `pitch_cents` their length-weighted mean, `fundamental_hz`
+  and off_order_db's default base the lowest key's longest stretch's; a stretch whose frame does not part its pitch
+  from 0 Hz and from the key above it, 4 / min(f, gap) seconds, is left out, and with none the pitch is unmeasured,
+  naming the note it takes), inharmonic_db the strongest peak (a local maximum: a level that moves in a frame, a slow
+  attack, widens a harmonic's lobe into a skirt with none) off each stretch's harmonics (unmeasured when its frames'
+  zones leave no room between them: 12 / f0 seconds), one click rule (`measure::clicks`) for the click metric, the step lines and
   trace, the loudness BS.1770's (`loudness`: K-weighting made for the rate from the analog shelf and high-pass its 48 kHz
   coefficients come from, 0.4 s blocks every 0.1 s inside each span, the -70 LUFS and -10 LU gates) and IEC 61672's A
   (`aWeightedPower`, of a stereo spectrum in frames as long as the part, up to 2 s), off_order_db the power farther than
@@ -619,7 +626,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   out, never through a pointer), the alerts a call from `CallInfo` (never `Engine::takeAlerts`); a field runs away
   past 1e6 at a thousand times its size in its instance's first 10 ms of sound (Shared's and an effect's: the
   render's), so a state large from the start is not one, and a click is `measure::clicks`'s (the click metric's rule,
-  so measure_output and trace agree); pass 2 renders again in
+  so measure_output and trace agree; with the effect's test impulse as the input none is looked for, as measure's
+  impulse render marks none: the impulse and its echoes are the response); pass 2 renders again in
   1-sample calls through a window of at most 4096 samples before each problem, and its output must equal pass 1's: when
   it does not, the program keeps state per call, and the result says so. The lines that write a field come from
   `fminus/Lang.h`'s resolution of each assignment (a heuristic). Deterministic but for its time limit (90 s) and a
