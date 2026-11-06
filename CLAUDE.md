@@ -47,7 +47,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | Path | What | Rule |
 | --- | --- | --- |
 | `products/<key>.cmake` | a product's identity: name, kind (`effect.cmake` an effect, `synth.cmake` an instrument), version, company, codes, bundle id, environment and Objective-C prefixes | `scripts/plugin.py` reads and rewrites them; the plugin code stays unique among the user's plugins; nothing else names a product |
-| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.24.0: the TextEditor and its code-editor hooks, resizable Panels, custom shaders, images, several editors in one host, GPU pictures, Windows on Direct3D 11), FMinus (a commit) | move a pin's tag, commit and version together |
+| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.25.0: the TextEditor and its code-editor hooks, resizable Panels, custom shaders, images, several editors in one host, GPU pictures, Windows on Direct3D 11, unchanged frames left undrawn and each editor its own cadence, the TextEditor's kept spans, shader checks off the message thread, custom-shader textures, menus in the canvas's style), FMinus (a commit) | move a pin's tag, commit and version together |
 | `cmake/Probes.cmake` | each product's probe executable and tests (`fp_add_probes`), the lints once (`fp_add_lints`) | test names `<key>:<layer>.<name>`, labels `probe`, `<layer>`, `<key>` |
 | `cmake/Installer.cmake` | the installer (`fp_add_installer`, after every product): its name (the products' names' common start, else the first's; `FP_PROJECT_NAME`, `FP_INSTALLER_NAME`, in the cache for `scripts/package.sh`), the generated `Installer.h`, the payload's `payload.json`, the app (target `Installer`), its payload (`installer_payload`: `cmake/InstallerPayload.cmake` clones every product's bundles and extension into the app, `ditto --clone`, then signs the app again, ad hoc) and its probes (`Installer_probes`: `Tools/probes/installer/`, tests `installer.<name>`, once); on Windows "<Project> Installer.exe" with `payload\` beside it (`InstallerPayload.cmake` copies each product's VST3 bundle, its Standalone's folder and its .mcpb, the build's .pdb, .ilk, .exp and .lib left out), nothing signed, the app and its probes on UTF-8 as their code page (`Source/installer/Utf8.manifest`) | built by every build (the clones cost nothing on APFS); the installer takes the first product's company, version, bundle id (`.installer` after it) and kind's icon |
 | `Source/fsdsp/core/**` | FSynth's DSP core, vendored (`SEED.tsv`) | do not edit casually: `scripts/sync-dsp-core.sh` refuses to overwrite edits |
@@ -314,7 +314,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   runtime's invalid-parameter check, abort and terminate print the stack on stderr, named from the PDB). Windows' heap
   finds what macOS's rounding hides: a probe writes only within the buffers it sized (the last block of a render is
   what is left, never a whole block).
-- **The GPU layer.** FunkGui v0.24.0 draws on Direct3D 11 there (its render view a click-through child window of
+- **The GPU layer.** FunkGui (since v0.24.0) draws on Direct3D 11 there (its render view a click-through child window of
   JUCE's peer; WARP, Windows' own rasteriser, where no GPU starts), so the editor is `gpu/CreateEditorGpu.cpp`'s
   EditorHost as on macOS, and view_panel's pictures are GPU pictures (bgfx headless). Its shaders and the plugin's
   (a .gui file's) are compiled by a `shaderc.exe` built from bgfx.cmake (unless the deps cache holds a stamped one),
@@ -409,6 +409,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `Lang` reads a netlist line by line into the module it generates (its name, header, init, set, tick and clear, never
   step or the fields, which its configuration decides), which the FMinus tabs complete, hover and go to. Never lex a
   netlist with FMinus's lexer, nor format one.
+- **The editors keep each line's colours** (FunkGui's TextEditor since v0.25.0): a highlighter runs once for each line
+  an edit reaches, never per drawn row. What it reads besides the line and its state must say when it changes:
+  `CodeHighlighter` colours the index's module names and constants (`TypeNames`), so `CodeAssist::sync` (called when
+  the files rest, and by every language feature) rehighlights every FMinus tab when those lists change and the Panel
+  draws it (`CodeAssist::highlights`; `gui.code` TYPES). The highlighters allocate nothing per line (a token buffer of
+  their own, names looked up as views).
 - **A netlist's `*@` lines are its schematic's drawing, invisible to the program** (`fminus/CirDoc.h`): FMinus, its
   self-test's key, ngspice and LTspice read them as comments, and every comparison of the draft with what plays goes
   through `cir::sameProgram` (a `.cir` compared without its `*@` lines): the edited light (and the IR view's), CodeAssist's

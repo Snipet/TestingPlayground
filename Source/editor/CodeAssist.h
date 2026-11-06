@@ -97,7 +97,9 @@ namespace playground::ui
         std::vector<std::string> constants;      // sorted
     };
 
-    // FMinus by lang::lexLine, a line at a time (the state: inside a block comment).
+    // FMinus by lang::lexLine, a line at a time (the state: inside a block comment). Its output depends on `types` too:
+    // when they change, every editor it highlights is rehighlighted (CodeAssist::sync; FunkGui's TextEditor keeps each
+    // line's spans). One editor's: its token buffer is scratch, kept with its capacity.
     class CodeHighlighter final : public funkgui::text::Highlighter
     {
     public:
@@ -106,6 +108,7 @@ namespace playground::ui
 
     private:
         std::shared_ptr<const TypeNames> types_;
+        mutable std::vector<lang::Token> toks_;
     };
 
     // A netlist (a .cir file) by lang::lexCirLine, a line at a time (no state: a SPICE line stands alone), in the code's
@@ -115,6 +118,9 @@ namespace playground::ui
     {
     public:
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
+
+    private:
+        mutable std::vector<lang::Token> toks_;
     };
 
     // The highlighter's palette for a theme (GRAPHITE or PAPER): the theme's inks, and a few colours of its own.
@@ -268,6 +274,9 @@ namespace playground::ui
         int findCurrent() const noexcept { return current_; }
         const char* language(int tab) const;             // the status line's: FMinus, SPICE, GUI (LLVM IR: a view)
         lang::Service& service();                        // the index, brought up to date
+        // Bumps each time the index's module names or constants change and the FMinus tabs are highlighted again with
+        // them (their texts and revisions unchanged): the Panel draws again (Panel::needsDraw).
+        uint32_t highlights() const noexcept { return highlights_; }
 
     private:
         struct Diag
@@ -329,6 +338,7 @@ namespace playground::ui
         lang::Service service_;
         uint64_t synced_ = ~uint64_t{ 0 };
         std::shared_ptr<TypeNames> types_ = std::make_shared<TypeNames>();
+        uint32_t highlights_ = 0;
         funkgui::HostServices* host_ = nullptr;
         funkgui::Rect area_{};
         bool themeDark_ = true;

@@ -48,6 +48,10 @@
 //             deleted and undone (the same bytes again) asks for a check, which puts its squiggle back; a RUN in flight
 //             (the netlist included again, Q1 an error) lands its messages on the moved lines after a write gathers
 //             *@ lines from mid-file before .end (cir::lineMap)
+//   TYPES     a module named on a line before it is declared: the line is drawn plain, and after the declaration is
+//             typed (the line itself not edited) it keeps its colour until the index has the name, then is drawn in the
+//             types' colour with no input (CodeAssist::sync rehighlights the editors, whose spans FunkGui keeps); the
+//             Code view's tick, recording and highlighter costs printed
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -70,8 +74,11 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 namespace pg = playground;
 namespace cir = playground::cir;
@@ -811,6 +818,94 @@ PROBE(gui, code)
                     port.status().ok ? "compiled" : "failed");
         P.eq("cirlayout.gathered", wrote && now == mid - 2 && cir::sameNetlist(sent, net.text()) ? 1 : 0, 1);
         P.eq("cirlayout.run_lands_moved", !port.status().ok && landed && !elsewhere ? 1 : 0, 1);
+    }
+    // ---- TYPES ------------------------------------------------------------------------------------------------------
+    // The editor keeps each line's spans (FunkGui's TextEditor): a module declared after a line that names it recolours
+    // that line once the index has it (CodeAssist::sync rehighlights), and the Panel draws it with no input.
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        funkgui::TextEditor& ed = panel.editor();
+        const std::string body = pg::product::kIsInstrument
+            ? "module Voice\n{\n    Thing thing;\n    Zork zork;\n    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n    Thing thing;\n    Zork zork;\n"
+              "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        ed.selectAll();
+        ed.insert("// Types probe.\nmodule Thing\n{\n    float x;\n};\n" + body);
+        settleChecks(panel, host);
+        // The first glyph's colour in [from, to) of a line, as drawn (0: none).
+        const auto inkOf = [&](const funkgui::PrimList& frame, std::string_view word) -> uint32_t {
+            const funkgui::TextPos at = posIn(ed, std::string(word) + " ");
+            if (at.line < 0)
+                return 0;
+            const funkgui::Point a = ed.pointOf(at), b = ed.pointOf({ at.line, at.col + static_cast<int>(word.size()) });
+            for (const funkgui::Prim& p : frame.prims)
+            {
+                if (p.tag != funkgui::tags::editText || static_cast<int>(p.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                    continue;
+                const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+                if (cx >= a.x && cx < b.x && cy >= a.y && cy < a.y + ed.rowHeight())
+                    return p.c0;
+            }
+            return 0;
+        };
+        uint32_t thing = 0, zork = 0;
+        {
+            const funkgui::PrimList& frame = host.draw();
+            thing = inkOf(frame, "Thing");
+            zork = inkOf(frame, "Zork");
+        }
+        P.eq("types.drawn", thing != 0 && zork != 0 ? 1 : 0, 1);
+        P.eq("types.unknown_plain", thing != zork ? 1 : 0, 1);
+        // Zork declared at the end: its line above, unedited, keeps its spans until the index has the name.
+        const uint32_t before = code.highlights();
+        ed.setCaret(ed.endPos());
+        ed.insert("module Zork\n{\n    float y;\n};\n");
+        P.eq("types.stale_until_synced", inkOf(host.draw(), "Zork") == zork ? 1 : 0, 1);
+        for (int k = 0; k < 120 && code.highlights() == before; ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        P.eq("types.rehighlighted", code.highlights() != before ? 1 : 0, 1);
+        P.eq("types.recoloured", inkOf(host.draw(), "Zork") == thing ? 1 : 0, 1);
+
+        // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the
+        // highlighter's lines (each runs once per edited line since FunkGui v0.25.0, not per drawn row).
+        settleChecks(panel, host);
+        ed.selectAll();
+        ed.insert(withSvf);
+        settleChecks(panel, host);
+        constexpr int kFrames = 120;
+        auto t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < kFrames; ++k)
+            host.tick(1, 1.0f / 12.0f);
+        const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kFrames;
+        t0 = std::chrono::steady_clock::now();
+        for (int k = 0; k < kFrames; ++k)
+            (void)host.draw();
+        const double drawMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kFrames;
+        int lines = 0;
+        const pg::ui::CodeHighlighter hl(std::make_shared<pg::ui::TypeNames>());
+        std::vector<funkgui::text::Span> spans;
+        t0 = std::chrono::steady_clock::now();
+        for (int pass = 0; pass < 20; ++pass)
+            for (const pg::LibraryFile& f : pg::kLibrary)
+                for (const std::string_view l : pg::lang::splitLines(f.source))
+                {
+                    spans.clear();
+                    (void)hl.line(l, 0, spans);
+                    ++lines;
+                }
+        const double lineUs = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / lines;
+        std::printf("code view: a tick %.3f ms, a recording %.3f ms; the highlighter %.3f us a line (%d lines)\n", tickMs,
+                    drawMs, lineUs, lines);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();

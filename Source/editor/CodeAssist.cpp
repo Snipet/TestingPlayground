@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <utility>
 
@@ -326,10 +327,15 @@ namespace playground::ui
     }
 
     // ---- the highlighter --------------------------------------------------------------------------------------------
+    // A line's tokens go into toks_, kept with its capacity, and a name is looked up as it is (a view of the line): the
+    // highlighter allocates nothing once its buffer has grown to a line's tokens. FunkGui's TextEditor calls it only for
+    // the lines an edit reached (it keeps every line's spans, v0.25.0), and for every line on rehighlight()
+    // (CodeAssist::sync, when the type names or the constants change).
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
         bool inComment = stateIn != 0;
-        std::vector<lang::Token> toks;
+        std::vector<lang::Token>& toks = toks_;
+        toks.clear();
         lang::lexLine(l, 0, inComment, toks);
         const auto span = [&](int a, int b, uint16_t st) {
             if (b > a)
@@ -362,10 +368,10 @@ namespace playground::ui
                         st = csFunction;
                     else if (prev != nullptr && prev->kind == lang::Tok::keyword && prev->text == "enum")
                         st = csType;                         // an enumeration's tag
-                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), std::string(t.text)))
+                    else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), t.text, std::less<>{}))
                         st = csType;
                     else if (types_ != nullptr
-                             && std::binary_search(types_->constants.begin(), types_->constants.end(), std::string(t.text)))
+                             && std::binary_search(types_->constants.begin(), types_->constants.end(), t.text, std::less<>{}))
                         st = csConstant;
                     break;
                 }
@@ -426,7 +432,8 @@ namespace playground::ui
 
     uint32_t CircuitHighlighter::line(std::string_view l, uint32_t, std::vector<funkgui::text::Span>& out) const
     {
-        std::vector<lang::Token> toks;
+        std::vector<lang::Token>& toks = toks_;          // kept with its capacity, as CodeHighlighter's
+        toks.clear();
         lang::lexCirLine(l, 0, toks);
         for (std::size_t i = 0; i < toks.size(); ++i)
         {
@@ -445,10 +452,13 @@ namespace playground::ui
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {
-                    std::string w(t.text);
-                    for (char& c : w)
-                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                    if (w == "opamp" || w == "ota")
+                    const auto is = [&](std::string_view word) {   // SPICE's case-blind compare, with no copy
+                        return t.text.size() == word.size()
+                               && std::equal(word.begin(), word.end(), t.text.begin(), [](char a, char b) {
+                                      return a == static_cast<char>(std::tolower(static_cast<unsigned char>(b)));
+                                  });
+                    };
+                    if (is("opamp") || is("ota"))
                         st = csType;
                     else if (next != nullptr && next->text == "(")
                         st = csFunction;              // a model's card, D(IS=...), or a solver's steps, omega(2)
@@ -598,8 +608,21 @@ namespace playground::ui
         for (int i = 0; i < tabs_.count(); ++i)
             files.push_back({ tabs_.name(i), tabs_.editor(i).text() });
         service_.setFiles(files);
-        types_->names = service_.typeNames();
-        types_->constants = service_.constantNames();
+        std::vector<std::string> names = service_.typeNames();
+        std::vector<std::string> constants = service_.constantNames();
+        if (names == types_->names && constants == types_->constants)
+            return;
+        types_->names = std::move(names);
+        types_->constants = std::move(constants);
+        // The editors keep each line's spans (FunkGui's TextEditor, v0.25.0) and highlight again only the lines an edit
+        // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too).
+        for (int i = 0; i < tabs_.count(); ++i)
+        {
+            funkgui::TextEditor& e = tabs_.editor(i);
+            if (dynamic_cast<const CodeHighlighter*>(e.highlighter()) != nullptr)
+                e.rehighlight();
+        }
+        ++highlights_;                                   // the Panel draws again (its revision did not move)
     }
 
     lang::Service& CodeAssist::service()
@@ -1302,6 +1325,8 @@ namespace playground::ui
         Sources now = filesOf(tabs_);
         const bool drawingOnly = !(now == asked_) && cir::sameProgram(now, asked_);
         asked_ = std::move(now);
+        if (!drawingOnly)
+            sync();                                      // the index, and the types' colours, follow the rested files
         return !drawingOnly;
     }
 
