@@ -19,6 +19,20 @@
 // non-finite, and one still sounding when prepare() is called. A program swap is apart: the old program's voices fade
 // out without a stop() (that program, its Shared with it, is going).
 //
+// Shared on its own (an instrument's; Patch.h). At every absolute multiple of kGrid samples (counted from prepare(), as
+// the voices' parts are) the Engine calls the program's Shared tick(16) at the start of the part that begins there,
+// after the events at that sample and before the voices' calls, whether or not a voice sounds: so what it computes
+// moves the same however the host splits its blocks (a block that ends mid-tick calls nothing more). A note-on calls
+// Shared's noteOn before its voice's start (a key pressed again while its note is on: its noteOff first), and the
+// note's end calls noteOff before its voice's stop: its note-off, or, while the sustain pedal is down, the pedal's going
+// up; All Notes Off; prepare(), before the voices' stops. So each noteOn gets one noteOff before that key's next noteOn
+// (sharedKeys_: the keys whose note is on for the program's Shared, those let go under the pedal apart). Before each
+// tick and each note hook, the params of Shared named as dials get the dials' values at that sample (a gliding dial's
+// stream there, else its value; for a program that came this block and has had no glides yet, the values its first
+// glides snap to). While a swap's old program goes, its Shared gets none of this; the new one's hears the held keys
+// start again (a noteOn each). A program gone back to (a stop's revert) takes up the keys its Shared had at the swap:
+// those let go since get their noteOff, and the held ones a noteOff and a noteOn as they start again.
+//
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
 // Host block before each call into it (start, stop, process, every part of a block), so a call reads the position of
@@ -411,6 +425,16 @@ namespace playground
         void noteOn(int key, float velocity) noexcept;
         void noteOff(int key) noexcept;
         void allNotesOff() noexcept;
+        // Shared on its own (above): dial c's plain value at the block's sample `at` (-1: as the last block left it), its
+        // target for current_ while `carrying` holds the carry's slots (glideControls'), the program's Shared's params
+        // named as dials set at that sample, and a key's note beginning and ending for its Shared (the hooks, with the
+        // dials before them), every note on ending.
+        float dialAt(int c, int at) const noexcept;
+        float targetOf(int c, uint32_t carrying) const noexcept;
+        void sharedDialsAt(int at) noexcept;
+        void sharedNoteOn(int key, float velocity, int at) noexcept;
+        void sharedNoteOff(int key, int at) noexcept;
+        void sharedKeysOff(int at) noexcept;
         void render(int from, int to) noexcept;       // every voice over [from, to) of the block, into acc
         void renderPart(int from, int to, bool onGrid) noexcept;   // one call a voice; to is a multiple of kGrid?
         int freeInstance(const Patch& p) const noexcept;
@@ -497,6 +521,12 @@ namespace playground
         uint64_t circuitCalls_ = 0;
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
+        // Shared on its own (above): each key's note for the program's Shared (kKeyOff; kKeyOn; kKeyPedal, on and let
+        // go while the pedal is down), and the old program's as the swap left them (what a revert takes up again); the
+        // values setSharedDials passes.
+        static constexpr uint8_t kKeyOff = 0, kKeyOn = 1, kKeyPedal = 2;
+        std::array<uint8_t, 128> sharedKeys_{}, oldSharedKeys_{};
+        std::array<float, kMaxControls> sharedPlain_{};
         std::array<bool, 128> held_{};
         std::array<float, 128> heldVelocity_{};
         uint64_t noteCount_ = 0;

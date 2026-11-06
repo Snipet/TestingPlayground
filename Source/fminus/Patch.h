@@ -28,6 +28,11 @@
 //       void init(float rate);                                  optional: before the main module's instances' init,
 //                                                               off the audio thread (again when the rate changes)
 //       void end();                                             optional: after theirs
+//     and an instrument's, optionally (below, "Shared on its own"), on the audio thread:
+//       void tick(int n);                                       every 16 samples (n = 16), whether or not a voice sounds
+//       void noteOn(float note, float velocity);                a note-on, before its voice's start
+//       void noteOff(float note);                               that note's end, before its voice's stop
+//       param ...;                                              one named as a dial reads that dial (read-only)
 //   The audio thread reads it through those pointers; it is the plugin's to free, never a voice's.
 //
 //   either kind, optionally: module Host, from host.fm, the plugin's own file (#include "host.fm"; hostSource()): one
@@ -105,6 +110,27 @@
 // is bound as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null
 // while it holds still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main
 // module holds, keep their fminus::default (they are set, in every instance, before init runs).
+//
+// Shared on its own (an instrument's). Shared's init runs when the program compiles, before any dial is known, so it sees
+// each dial at its default; and without these hooks Shared moves only when a voice's call moves it. So an instrument's
+// Shared may also have the methods below, each optional, which the Engine calls (Engine.h, "Shared on its own") through
+// a nonblocking shim each, appended as the main module's are, and only when the method is declared as here
+// (lang::sharedHooks: a method of the name declared otherwise is never called, with a note at its place, so a program
+// that has one for its own use plays as it did):
+//   tick(int n)       at every absolute multiple of 16 samples (Engine::kGrid; n is 16), after the events at that sample
+//                     and before the voices' calls from it, whether or not a voice sounds: state that moves between notes
+//                     (a temperature, a display), the same however the host splits its blocks
+//   noteOn(float note, float velocity)   each note-on the Engine plays (the player's, or a held key started again on a
+//                     new program), before its voice's start(), velocity 0 to 1
+//   noteOff(float note)   that note's end, before its voice's stop() where it has one: its note-off, or, the sustain
+//                     pedal down, the pedal's going up; All Notes Off; prepare(). Each noteOn gets one noteOff before that
+//                     key's next noteOn (a key pressed again while its note is on gets its noteOff first)
+// and a param of Shared named as a dial (the main module's parameter, or a circuit's pot or switch) reads that dial:
+// reset() sets it to the dial's default before Shared's init (as the instances' are), and the Engine sets it to the
+// dial's value at the sample (setSharedDials) before each tick and each note hook, from the first block on: a knob's
+// value, never a stream. A param of Shared that no dial is named as keeps its default, with a note. The effect's Shared
+// has none of these, its init and end only. They run in the frozen copy too (it looks their shims up), and stop the
+// Patch as any audio-thread call does.
 //
 // Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
@@ -221,7 +247,8 @@ namespace playground
 
         // ---- the loop budget (above) -------------------------------------------------------------------------------
         // The plugin's calls into a program, by method: which one ran past its budget (stopped()).
-        enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd };
+        enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd, sharedTick,
+                                      sharedNoteOn, sharedNoteOff };
         static constexpr double kLoopsPerSecond = 4'294'967'296.0;        // 2^32: a call's budget a second of samples
         static constexpr int kBudgetFloor = 16;                           // samples: a call's least budget
         static constexpr std::int64_t kInitBudget = std::int64_t{ 1 } << 32;   // each init and end
@@ -355,6 +382,8 @@ namespace playground
             uint64_t program = 0;                      // Patch::program
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
+            bool sharedTick = false, sharedNoteOn = false, sharedNoteOff = false;   // and Shared's (above, "Shared on
+                                                                                   // its own")
             bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
             bool boundsCheck = true;                   // and the bounds checks (compile()'s `boundsCheck`): ir()'s
                                                        // text has them, the frozen copy never
@@ -401,6 +430,20 @@ namespace playground
         void start(int i, float note, float velocity) noexcept;
         void stop(int i) noexcept;
         bool render(int i, float* left, float* right, int n) noexcept;
+
+        // ---- Shared on its own (above; an instrument's) ---------------------------------------------------------------
+        // The hooks it has, declared as above: a tick; a note hook (noteOn or noteOff).
+        bool sharedTicks() const noexcept { return recipe_.sharedTick; }
+        bool sharedNotes() const noexcept { return recipe_.sharedNoteOn || recipe_.sharedNoteOff; }
+        // The dials a param of Shared reads (bit c: control c), and their values into those params: plain[c] for each
+        // (the controls' plain values at the hook's sample). No allocation.
+        uint32_t sharedDials() const noexcept { return sharedDialMask_; }
+        void setSharedDials(const float* plain) noexcept;
+        // The hooks, each within its budget (n samples' for a tick, kBudgetFloor's for a note's); nothing when the
+        // program has none, or has stopped.
+        void sharedTick(int n) noexcept;
+        void sharedNoteOn(float note, float velocity) noexcept;
+        void sharedNoteOff(float note) noexcept;
 
         // The circuits' dials (above, "Circuits"): whether a dial drives a circuit's set(), which controls do (bit c:
         // control c is an argument of a shim), and the shims' calls in instance i, every bound field's set() with each
@@ -524,6 +567,10 @@ namespace playground
             Kind kind = Kind::none;
         };
         std::array<Slot, kMaxControls> slots_{};
+        // Per control, the param of Shared named as its dial (above, "Shared on its own"): its slot in Shared, and the
+        // controls that have one (bit c).
+        std::array<Slot, kMaxControls> sharedSlots_{};
+        uint32_t sharedDialMask_ = 0;
         static void store(void* instance, const Slot& slot, float plain) noexcept;
         // Per shim (setCircuits): each argument's control (-1: none) and the value it has without one.
         struct CircuitCall
