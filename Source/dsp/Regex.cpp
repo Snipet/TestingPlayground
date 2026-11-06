@@ -187,9 +187,11 @@ namespace playground::regex
             std::size_t at = 0;
             bool fold = false, dotNewline = false;    // flags i and s
             int depth = 0;
+            std::size_t quoteEnd = std::string_view::npos;   // in \Q...\E: where its text ends
             std::vector<Node> nodes;
             std::vector<std::vector<Range>> sets;
             std::vector<Regex::Inst> prog;
+            std::size_t work = 0, workCap = 0;        // emit()'s calls, and at most (compile() sets it)
             std::string error;
 
             int fail(std::string why)
@@ -233,6 +235,22 @@ namespace playground::regex
                 return add(std::move(n));
             }
             bool starts(std::string_view s) const { return p.substr(at, s.size()) == s; }
+            bool quoting() const { return quoteEnd != std::string_view::npos; }
+
+            // The next character of a \Q...\E's text as a literal of its own, so that a repetition after \E repeats
+            // its last character alone (RE2's \Qab\E* is ab*); past the last, its \E.
+            int quoted()
+            {
+                std::size_t len = 1;
+                const uint32_t c = decode(p, at, len);
+                at = std::min(at + len, quoteEnd);
+                if (at == quoteEnd)
+                {
+                    at = std::min(quoteEnd + 2, p.size());
+                    quoteEnd = std::string_view::npos;
+                }
+                return literal(c);
+            }
 
             // alternation := concatenation ('|' concatenation)*
             int alternation()
@@ -256,7 +274,7 @@ namespace playground::regex
             int concatenation()
             {
                 std::vector<int> parts;
-                while (error.empty() && at < p.size() && p[at] != '|' && p[at] != ')')
+                while (error.empty() && at < p.size() && (quoting() || (p[at] != '|' && p[at] != ')')))
                     if (const int a = repetition(); a >= 0)
                         parts.push_back(a);
                 if (!error.empty())
@@ -302,7 +320,7 @@ namespace playground::regex
                 if (!error.empty())
                     return -1;
                 std::size_t last = std::string_view::npos;    // where the repetition before this one began
-                while (at < p.size())
+                while (at < p.size() && !quoting())           // within \Q...\E, * is a character
                 {
                     const std::size_t op = at;
                     int min = 0, max = -1;
@@ -349,6 +367,8 @@ namespace playground::regex
 
             int atom()
             {
+                if (quoting())
+                    return quoted();
                 const std::size_t start = at;
                 switch (p[at])
                 {
@@ -587,24 +607,17 @@ namespace playground::regex
                         return assertion(Op::eol);
                     case 'Q':
                     {
-                        // \Q...\E: its text as it is (to \E, or the pattern's end).
+                        // \Q...\E: its text as it is (to \E, or the pattern's end), a character an atom (quoted()). An
+                        // empty one is nothing, as a flag group is.
                         at += 2;
                         const std::size_t end = std::min(p.find("\\E", at), p.size());
-                        std::vector<int> parts;
-                        while (at < end)
+                        if (at == end)
                         {
-                            std::size_t len = 1;
-                            const uint32_t c = decode(p, at, len);
-                            at = std::min(at + len, end);
-                            parts.push_back(literal(c));
+                            at = std::min(end + 2, p.size());
+                            return kNone;
                         }
-                        at = std::min(end + 2, p.size());
-                        if (parts.size() == 1)
-                            return parts.front();
-                        Node n;
-                        n.kind = parts.empty() ? Node::Kind::empty : Node::Kind::concat;
-                        n.kids = std::move(parts);
-                        return add(std::move(n));
+                        quoteEnd = end;
+                        return quoted();
                     }
                     default:
                         break;
@@ -696,6 +709,9 @@ namespace playground::regex
             }
             uint32_t here() const { return static_cast<uint32_t>(prog.size()); }
 
+            // The node's instructions onto prog. Its calls are counted against workCap: a repetition of a node that
+            // writes nothing writes nothing, but one of many parts that write nothing ((?:()()()a){1000}) would still
+            // take a call a part a copy.
             void emit(int i)
             {
                 if (!error.empty())
@@ -704,6 +720,12 @@ namespace playground::regex
                 {
                     fail("the pattern is too large: its repetitions written out make more than " + std::to_string(kMaxProgram)
                          + " instructions");
+                    return;
+                }
+                if (++work > workCap)
+                {
+                    fail("the pattern is too large: its repetitions take too many steps to write out (give them fewer or smaller "
+                         "counts)");
                     return;
                 }
                 const Node& n = nodes[static_cast<std::size_t>(i)];
@@ -744,22 +766,35 @@ namespace playground::regex
                 }
                 case Node::Kind::repeat:
                 {
+                    // An operand that writes nothing (x{0}, (), (?:)) matches the empty string alone, and so does any
+                    // count of it: the repetition writes nothing either (its split taken back), so nested counts of it
+                    // take a call a level, not 1000^depth.
                     const int kid = n.kids.front(), min = n.min, max = n.max;
+                    const auto copy = [&] {
+                        const uint32_t before = here();
+                        emit(kid);
+                        return here() != before;
+                    };
                     if (max < 0)
                     {
                         // x{n,}: n - 1 copies, then x+ (a copy and a split back); x*: a split over a copy and a jump back.
                         for (int k = 0; k + 1 < min && error.empty(); ++k)
-                            emit(kid);
+                            if (!copy())
+                                return;
                         if (min >= 1)
                         {
                             const uint32_t top = here();
-                            emit(kid);
-                            inst(Op::split, top, here() + 1);
+                            if (copy())
+                                inst(Op::split, top, here() + 1);
                         }
                         else
                         {
                             const std::size_t split = inst(Op::split, here() + 1);
-                            emit(kid);
+                            if (!copy())
+                            {
+                                prog.pop_back();
+                                return;
+                            }
                             inst(Op::jump, static_cast<uint32_t>(split));
                             prog[split].b = here();
                         }
@@ -767,12 +802,18 @@ namespace playground::regex
                     }
                     // x{n,m}: n copies, then m - n each behind a split to the end.
                     for (int k = 0; k < min && error.empty(); ++k)
-                        emit(kid);
+                        if (!copy())
+                            return;
                     std::vector<std::size_t> outs;
                     for (int k = min; k < max && error.empty(); ++k)
                     {
                         outs.push_back(inst(Op::split, here() + 1));
-                        emit(kid);
+                        if (!copy())
+                        {
+                            prog.pop_back();
+                            outs.pop_back();
+                            break;
+                        }
                     }
                     for (const std::size_t s : outs)
                         prog[s].b = here();
@@ -799,6 +840,7 @@ namespace playground::regex
             c.fail("unexpected )" + c.where(c.at));
         if (c.error.empty())
         {
+            c.workCap = 4 * kMaxProgram + c.nodes.size();   // a few calls an instruction, past what a pattern needs
             c.emit(root);
             c.inst(Op::match);
             if (c.prog.size() > kMaxProgram + 1)

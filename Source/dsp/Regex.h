@@ -4,18 +4,20 @@
 // steps, whatever the pattern, since nothing backtracks. A pattern such as (a+)+$ that takes a backtracking engine
 // (std::regex's) exponential time on a line of a's takes this one a step a state a character. Each search counts its
 // steps against a budget the caller gives, and stops with `spent` when it runs out, so a search across every file has
-// a bound in time too (the MCP link runs its calls on one worker).
+// a bound in time too (the MCP link runs its calls on one worker). Compiling has one as well: a repetition of what
+// matches the empty string alone writes nothing, and a pattern whose repetitions written out make more than kMaxProgram
+// instructions, or take more than a few calls an instruction to write ((?:()()()a){1000}), is refused as too large.
 //
-// The syntax: literals; . (any character but '\n', with s any); [abc], [^a-z], [[:alpha:]] (alnum, alpha, ascii,
-// blank, cntrl, digit, graph, lower, print, punct, space, upper, word, xdigit; [:^alpha:] its complement); \d \D \w \W
-// \s \S; ^ and $ (the text's start and end, \A and \z too) and \b \B (ASCII's word characters); (...), (?:...),
-// (?P<name>...) and (?<name>...) (groups: nothing is captured); a|b; * + ? {n} {n,} {n,m} (bounds at most 1000, a
-// lazy ? after one accepted: whether a text matches is the same); flags (?i) (?-i) (?i:...) (i: ASCII's letters in
-// either case; s: . takes '\n' too; m and U accepted, changing nothing a search of a line can tell); escapes \t \n \r
-// \f \v \a, \x41, \x{263A}, \Q...\E (literal text) and \ before any punctuation. Characters are UTF-8's code points; a
-// byte that is no part of one is a character of its own. Refused, with words that say so: backreferences, lookahead and
-// lookbehind (they need backtracking), \p's Unicode classes, a repetition of a repetition (a**), an escape it does not
-// know.
+// The syntax: literals; . (any character but '\n', with s any); [abc], [^a-z], [[:alpha:]] (alnum, alpha, ascii, blank,
+// cntrl, digit, graph, lower, print, punct, space, upper, word, xdigit; [:^alpha:] its complement); \d \D \w \W \s \S;
+// ^ and $ (the text's start and end, \A and \z too) and \b \B (ASCII's word characters); (...), (?:...), (?P<name>...)
+// and (?<name>...) (groups: nothing is captured); a|b; * + ? {n} {n,} {n,m} (bounds at most 1000, a lazy ? after one
+// accepted: whether a text matches is the same); flags (?i) (?-i) (?i:...) (i: ASCII's letters in either case; s: .
+// takes '\n' too; m and U accepted, changing nothing a search of a line can tell); escapes \t \n \r \f \v \a, \x41,
+// \x{263A}, \Q...\E (literal text, a character an atom: \Qab\E* is ab*) and \ before any punctuation. Characters are
+// UTF-8's code points; a byte that is no part of one is a character of its own. Refused, with words that say so:
+// backreferences, lookahead and lookbehind (they need backtracking), \p's Unicode classes, a repetition of a repetition
+// (a**), an escape it does not know.
 //
 // Deterministic, and allocation-free while it searches (compile() sizes what search() uses). One thread at a time.
 #pragma once
