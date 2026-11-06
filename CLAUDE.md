@@ -605,13 +605,16 @@ place (its `products/<key>.cmake`, and its names in the docs).
   defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot),
   and one at the defaults says the dials as they are do not affect it. A check whose dials or scenario moves name a
   dial the program lacks FAILs for that, whatever its metric gives (`measure::Result::unknown` into `Goals::evaluate`),
-  and run_program names each check its new declarations left naming a dial the program before had (`orphanLines`).
+  and run_program names each check its new declarations left naming a dial the program before had (`orphanLines`),
+  and apart each from a snapshot that holds one (it does not fail: measured without it, a new dial at its default).
   The session keeps `checks_` in set_checks's own shape (`checkVar`: `dials_from` and the snapshot with each check),
-  and set_checks without `checks` lists them so, numbered (an item's own `dials_from` and snapshot stand for the
-  call's, so a listed check given back is the same check); `mode` merge (each item replaces the check of its `index`,
-  else of its label, case aside, else is added) and remove (by index or label) change them all or not at all, and a
-  label two checks share needs the index. A listing changes nothing: it never sends a turn on. Never let a check nudge
-  without a cap: each nudge is a billed request.
+  and set_checks without `checks` lists them so, numbered, `dials_from` on every one, current too (an item's own
+  `dials_from` and snapshot stand for the call's, so a listed check given back is the same check; the result says
+  how each check it set takes its dials, from the checks, not the call); `mode` merge (each item replaces the check
+  of its `index`, else of its label, case aside, else is added; one replaced under another label is named with both,
+  so a stale index shows) and remove (by index or label; an index whose check has another label than the item's is
+  refused) change them all or not at all, and a label two checks share needs the index. A listing changes nothing:
+  it never sends a turn on. Never let a check nudge without a cap: each nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
   and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined

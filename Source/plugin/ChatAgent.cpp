@@ -351,31 +351,59 @@ namespace playground
         }
 
         // The checks a run's new declarations left naming a dial (in their dials or their scenario's moves) that the
-        // program before had and this one has not, renamed or removed: each fails until it is changed (Goals.h). ""
-        // when none.
+        // program before had and this one has not, renamed or removed: each fails until it is changed (Goals.h). Then
+        // the checks from a snapshot that holds such a dial: they do not fail for it, but measure another sound, the
+        // snapshot's old dial gone and each dial new to the program that the snapshot lacks (and the check does not
+        // fix) at its default. "" when none.
         std::string orphanLines(const std::vector<measure::Check>& checks, const Controls& before, const Controls& now)
         {
             const auto has = [](const Controls& controls, const std::string& name) {
                 return std::any_of(controls.begin(), controls.end(), [&](const Control& k) { return k.used && name == k.name; });
             };
-            std::string out;
+            const auto label = [&](std::size_t i) { return "check " + std::to_string(i + 1) + " (\"" + checks[i].label + "\"): "; };
+            std::string out, shots;
             for (std::size_t i = 0; i < checks.size(); ++i)
             {
+                const measure::Check& c = checks[i];
                 std::set<std::string> names;
-                for (const auto& [n, v] : checks[i].request.dials)
+                for (const auto& [n, v] : c.request.dials)
                     names.insert(n);
-                for (const measure::DialMove& m : checks[i].request.automate)
+                for (const measure::DialMove& m : c.request.automate)
                     names.insert(m.dial);
                 std::string lost;
                 for (const std::string& n : names)
                     if (has(before, n) && !has(now, n))
                         lost += (lost.empty() ? "" : ", ") + n;
                 if (!lost.empty())
-                    out += "check " + std::to_string(i + 1) + " (\"" + checks[i].label + "\"): " + lost + "\n";
+                    out += label(i) + lost + "\n";
+                if (c.dialsFrom != measure::DialsFrom::snapshot)
+                    continue;
+                std::string gone, fresh;
+                int goneCount = 0, freshCount = 0;
+                for (const auto& [n, v] : c.snapshot)
+                    if (has(before, n) && !has(now, n))
+                    {
+                        gone += (gone.empty() ? "" : ", ") + n;
+                        ++goneCount;
+                    }
+                if (gone.empty())
+                    continue;
+                for (const Control& k : now)
+                    if (const std::string n = k.name; k.used && !has(before, n) && c.snapshot.count(n) == 0 && c.request.dials.count(n) == 0)
+                    {
+                        fresh += (fresh.empty() ? "" : ", ") + n;
+                        ++freshCount;
+                    }
+                shots += label(i) + "its snapshot's " + gone + (goneCount == 1 ? " is" : " are") + " gone"
+                       + (fresh.empty() ? "" : ", " + fresh + (freshCount == 1 ? " measures at its default" : " measure at their defaults"))
+                       + "\n";
             }
-            return out.empty() ? out
-                               : "Checks that name a dial the program no longer has (each fails until set_checks changes or "
-                                 "removes it):\n" + out;
+            return (out.empty() ? out
+                                : "Checks that name a dial the program no longer has (each fails until set_checks changes or "
+                                  "removes it):\n" + out)
+                 + (shots.empty() ? shots
+                                  : "Checks from a snapshot that has a dial the program no longer has (measured without it; "
+                                    "set_checks gives one a new snapshot):\n" + shots);
         }
 
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
@@ -598,7 +626,9 @@ namespace playground
 
         // A check as set_checks takes it (an item of its list, with its dials_from and, from a snapshot, the snapshot):
         // what the session keeps (saveState; loadState reads it back) and what set_checks lists. `listing`: without
-        // the render settings only an instrument's schema has (an effect's checks never set them).
+        // the render settings only an instrument's schema has (an effect's checks never set them), and with its
+        // dials_from even when current, so a listed check given back keeps its own whatever the call's says (the
+        // session leaves current out, as it always has).
         juce::var checkVar(const measure::Check& c, bool listing)
         {
             const auto byName = [](const std::map<std::string, float>& m) {
@@ -610,7 +640,7 @@ namespace playground
             juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
                                            { "metric", juce::String(c.goal.metric) } });
             auto* o = v.getDynamicObject();
-            if (c.dialsFrom != measure::DialsFrom::current)
+            if (listing || c.dialsFrom != measure::DialsFrom::current)
                 o->setProperty("dials_from", kDialsFrom[static_cast<int>(c.dialsFrom)]);
             if (c.dialsFrom == measure::DialsFrom::snapshot)
                 o->setProperty("snapshot", byName(c.snapshot));
@@ -647,9 +677,10 @@ namespace playground
         }
 
         // The check of the list a merge or remove item means: the one at its index (1 up) when it gives one, else the
-        // one of its label (case aside). -1 when none has the label; -2, with why, for an index past the list or a
-        // label several checks share.
-        int checkAt(const std::vector<measure::Check>& checks, const juce::var& item, std::string& why)
+        // one labelled `label` (case aside: the item's own, or for merge its metric in its place). The caller weighs a
+        // label that is not the indexed check's (remove refuses it, merge names both). -1 when none has the label (or
+        // the item gives neither); -2, with why, for an index past the list or a label several checks share.
+        int checkAt(const std::vector<measure::Check>& checks, const juce::var& item, const juce::String& label, std::string& why)
         {
             const juce::var index = item.getProperty("index", juce::var());
             if (index.isDouble() || index.isInt() || index.isInt64())
@@ -660,7 +691,8 @@ namespace playground
                 why = "there is no check " + number(n) + " (" + std::to_string(checks.size()) + " are set)";
                 return -2;
             }
-            const juce::String label = item.getProperty("label", juce::var()).toString();
+            if (label.isEmpty())
+                return -1;
             int at = -1, count = 0;
             for (std::size_t i = 0; i < checks.size(); ++i)
                 if (label.equalsIgnoreCase(juce::String::fromUTF8(checks[i].label.c_str())))
@@ -2039,7 +2071,7 @@ namespace playground
             item.getDynamicObject()->setProperty("label", prop("string", "What it checks, in a few words the user reads "
                                                                          "(\"Releases within two seconds\")"));
             addRenderProps(item);
-            item.getDynamicObject()->setProperty("index", prop("integer", "merge, remove: its number, in place of its label"));
+            item.getDynamicObject()->setProperty("index", prop("integer", "merge, remove: its number (remove: its label must match)"));
             juce::var checks = claude::object({ { "type", "array" },
                                                 { "maxItems", kMaxChecks },
                                                 { "items", claude::object({ { "type", "object" },
@@ -4027,13 +4059,22 @@ namespace playground
                     now = currentDials();
                 return now;
             };
-            // An item as a check (replace and merge), or why not. An item's own dials_from (and, from a snapshot, its
-            // snapshot), as the list gives it, stands for the call's: a listed check given back is the same check.
-            const auto checkOf = [&](int i, measure::Check& k) -> std::string {
+            // An item as a check (replace and merge), or why not; `words`, how it takes the dials it does not name. An
+            // item's own dials_from (and, from a snapshot, its snapshot), as the list gives it, stands for the call's: a
+            // listed check given back is the same check (the listing names every check's, current too). `overridden`:
+            // an item's own stood for another the call gave, which the result says.
+            const juce::var callFrom = input.getProperty("dials_from", juce::var());
+            const bool callGave = !(callFrom.isVoid() || callFrom.isUndefined());
+            bool overridden = false;
+            constexpr const char* kWhenMeasured = "as they are when measured";
+            const auto checkOf = [&](int i, measure::Check& k, std::string& words) -> std::string {
                 const juce::var& c = (*arr)[i];
                 k.dialsFrom = from;
-                if (!dialsFromOf(c.getProperty("dials_from", juce::var(juce::String(kDialsFrom[static_cast<int>(from)]))), k.dialsFrom))
-                    return "Check " + std::to_string(i + 1) + ": dials_from is current, snapshot or defaults. Nothing was changed.";
+                if (const juce::var own = c.getProperty("dials_from", juce::var()); !(own.isVoid() || own.isUndefined()))
+                    if (!dialsFromOf(own, k.dialsFrom))
+                        return "Check " + std::to_string(i + 1) + ": dials_from is current, snapshot or defaults. Nothing was changed.";
+                overridden = overridden || (callGave && k.dialsFrom != from);
+                words = k.dialsFrom == measure::DialsFrom::defaults ? "at their defaults" : kWhenMeasured;
                 if (k.dialsFrom == measure::DialsFrom::snapshot)
                 {
                     if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
@@ -4041,9 +4082,13 @@ namespace playground
                         for (const auto& kv : shot->getProperties())
                             if (isNumber(kv.value) || kv.value.isBool())
                                 k.snapshot[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+                        words = "as their snapshot gives them";
                     }
                     else
+                    {
                         k.snapshot = dialsNow();
+                        words = "as they are now";
+                    }
                 }
                 std::string why;
                 if (!goalOf(c, k.goal, why))
@@ -4062,33 +4107,48 @@ namespace playground
             const auto named = [](std::size_t at, const measure::Check& k) {
                 return "check " + std::to_string(at + 1) + " (\"" + k.label + "\")";
             };
+            const auto sameLabel = [](const juce::String& a, const std::string& b) {
+                return a.equalsIgnoreCase(juce::String::fromUTF8(b.c_str()));
+            };
             std::vector<measure::Check> checks;
             std::string did;                                 // merge and remove: what changed, in words
+            std::map<std::size_t, std::string> sources;      // replace, merge: each check set (by its place), its words
             if (mode == "replace")
                 for (int i = 0; i < arr->size(); ++i)
                 {
                     measure::Check k;
-                    if (const std::string why = checkOf(i, k); !why.empty())
+                    std::string words;
+                    if (const std::string why = checkOf(i, k, words); !why.empty())
                         return fail(why);
+                    sources[checks.size()] = words;
                     checks.push_back(std::move(k));
                 }
             else if (mode == "merge")
             {
-                // Each item in turn: it replaces the check of its index or label, or is added at the end.
+                // Each item in turn: it replaces the check of its index or label (its metric when it has none), or is
+                // added at the end. One it replaces under another label is named with both: a stale index shows.
                 checks = was;
                 for (int i = 0; i < arr->size(); ++i)
                 {
+                    const juce::var& item = (*arr)[i];
                     std::string why;
-                    const int at = checkAt(checks, (*arr)[i], why);
+                    const std::string label = str(item, "label");
+                    const int at = checkAt(checks, item, juce::String::fromUTF8((label.empty() ? str(item, "metric") : label).c_str()), why);
                     if (at == -2)
                         return fail("Check " + std::to_string(i + 1) + ": " + why + ". Nothing was changed.");
                     measure::Check k;
-                    if (const std::string bad = checkOf(i, k); !bad.empty())
+                    std::string words;
+                    if (const std::string bad = checkOf(i, k, words); !bad.empty())
                         return fail(bad);
                     if (at < 0 && static_cast<int>(checks.size()) >= kMaxChecks)
                         return fail("At most " + std::to_string(kMaxChecks) + " checks: remove one first. Nothing was changed.");
                     const std::size_t to = at < 0 ? checks.size() : static_cast<std::size_t>(at);
-                    did += (did.empty() ? "" : ", ") + named(to, k) + (at < 0 ? " added" : " replaced");
+                    if (at >= 0 && !sameLabel(juce::String::fromUTF8(k.label.c_str()), checks[to].label))
+                        did += std::string(did.empty() ? "" : ", ") + "check " + std::to_string(to + 1) + " (\"" + checks[to].label
+                             + "\" -> \"" + k.label + "\") replaced";
+                    else
+                        did += (did.empty() ? "" : ", ") + named(to, k) + (at < 0 ? " added" : " replaced");
+                    sources[to] = words;                     // a check merged twice takes the last item's way
                     if (at < 0)
                         checks.push_back(std::move(k));
                     else
@@ -4097,14 +4157,23 @@ namespace playground
             }
             else
             {
-                // The checks the items name, in the list as it was; then those removed.
+                // The checks the items name, in the list as it was; then those removed. An index whose check has
+                // another label than the item gives is refused: the list moved since it was read.
                 std::set<int> gone;
                 for (int i = 0; i < arr->size(); ++i)
                 {
                     std::string why;
-                    const int at = checkAt(was, (*arr)[i], why);
+                    const juce::String label = juce::String::fromUTF8(str((*arr)[i], "label").c_str());
+                    int at = checkAt(was, (*arr)[i], label, why);
                     if (at == -1)
-                        why = "no check is labelled \"" + str((*arr)[i], "label") + "\" (without checks, set_checks lists them)";
+                        why = label.isEmpty() ? std::string("give the check's label or its index")
+                                              : "no check is labelled \"" + label.toStdString() + "\" (without checks, set_checks lists them)";
+                    else if (at >= 0 && label.isNotEmpty() && !sameLabel(label, was[static_cast<std::size_t>(at)].label))
+                    {
+                        why = "check " + std::to_string(at + 1) + " is \"" + was[static_cast<std::size_t>(at)].label + "\", not \""
+                            + label.toStdString() + "\" (without checks, set_checks lists them)";
+                        at = -2;
+                    }
                     if (at < 0)
                         return fail("Check " + std::to_string(i + 1) + ": " + why + ". Nothing was changed.");
                     gone.insert(at);
@@ -4129,9 +4198,34 @@ namespace playground
                 note("cleared the checks");
                 return (did.empty() ? "" : "Removed " + did + ". ") + "The checks are cleared: nothing is measured after a run.";
             }
-            const std::string fromWords = from == measure::DialsFrom::snapshot ? ", the dials they do not name as they are now"
-                                        : from == measure::DialsFrom::defaults ? ", the dials they do not name at their defaults"
-                                                                               : "";
+            // How the checks this call set take the dials they do not name, from each one's own (not the call's, which
+            // an item's own stands for): nothing for the default alone; one way in words, or each with its checks.
+            std::string fromWords;
+            {
+                std::vector<std::string> ways;               // in the order of each one's first check
+                std::map<std::string, std::vector<std::size_t>> by;
+                for (const auto& [at, words] : sources)
+                {
+                    if (by.count(words) == 0)
+                        ways.push_back(words);
+                    by[words].push_back(at);
+                }
+                if (ways.size() > 1 || (ways.size() == 1 && (ways[0] != kWhenMeasured || overridden)))
+                    fromWords = ", the dials they do not name ";
+                if (ways.size() == 1 && !fromWords.empty())
+                    fromWords += ways[0];
+                else if (ways.size() > 1)
+                    for (std::size_t w = 0; w < ways.size(); ++w)
+                    {
+                        const std::vector<std::size_t>& ats = by[ways[w]];
+                        fromWords += (w == 0 ? "" : "; ") + ways[w] + " (check" + (ats.size() == 1 ? " " : "s ");
+                        for (std::size_t a = 0; a < ats.size(); ++a)
+                            fromWords += (a == 0 ? "" : ", ") + std::to_string(ats[a] + 1);
+                        fromWords += ")";
+                    }
+                if (overridden)
+                    fromWords += " (an item's own dials_from stands for the call's)";
+            }
             if (mode == "replace")
             {
                 note("set " + count);
