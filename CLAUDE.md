@@ -602,9 +602,16 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `ChatEntry::Kind::checks` card a turn, brought up to date in place; its Clear calls `ChatPort::clearChecks`. A check
   takes the dials it does not name from the plugin as they are when measured (the default: tune_dials' and set_dial's
   results show in the checks), from its snapshot (set_checks' `dials_from`: the dials when it was set) or the
-  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot).
-  The session keeps `checks_` in set_checks's own shape (`dials_from` and the snapshot with each check). Never let a check nudge without a cap: each nudge is a billed
-  request.
+  defaults (`measure::DialsFrom`); a FAIL line names the dials it took that are off their defaults (or the snapshot),
+  and one at the defaults says the dials as they are do not affect it. A check whose dials or scenario moves name a
+  dial the program lacks FAILs for that, whatever its metric gives (`measure::Result::unknown` into `Goals::evaluate`),
+  and run_program names each check its new declarations left naming a dial the program before had (`orphanLines`).
+  The session keeps `checks_` in set_checks's own shape (`checkVar`: `dials_from` and the snapshot with each check),
+  and set_checks without `checks` lists them so, numbered (an item's own `dials_from` and snapshot stand for the
+  call's, so a listed check given back is the same check); `mode` merge (each item replaces the check of its `index`,
+  else of its label, case aside, else is added) and remove (by index or label) change them all or not at all, and a
+  label two checks share needs the index. A listing changes nothing: it never sends a turn on. Never let a check nudge
+  without a cap: each nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
   and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined

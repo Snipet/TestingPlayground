@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -44,7 +45,8 @@ namespace playground
         constexpr int kMaxChecks = 12;             // set_checks's checks
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
-        // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them.
+        // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them
+        // (set_checks without checks only lists them).
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
                                                    "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
         constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
@@ -348,6 +350,34 @@ namespace playground
             return out.empty() ? out : "What the new declarations did to the dials (each kept in its units):\n" + out;
         }
 
+        // The checks a run's new declarations left naming a dial (in their dials or their scenario's moves) that the
+        // program before had and this one has not, renamed or removed: each fails until it is changed (Goals.h). ""
+        // when none.
+        std::string orphanLines(const std::vector<measure::Check>& checks, const Controls& before, const Controls& now)
+        {
+            const auto has = [](const Controls& controls, const std::string& name) {
+                return std::any_of(controls.begin(), controls.end(), [&](const Control& k) { return k.used && name == k.name; });
+            };
+            std::string out;
+            for (std::size_t i = 0; i < checks.size(); ++i)
+            {
+                std::set<std::string> names;
+                for (const auto& [n, v] : checks[i].request.dials)
+                    names.insert(n);
+                for (const measure::DialMove& m : checks[i].request.automate)
+                    names.insert(m.dial);
+                std::string lost;
+                for (const std::string& n : names)
+                    if (has(before, n) && !has(now, n))
+                        lost += (lost.empty() ? "" : ", ") + n;
+                if (!lost.empty())
+                    out += "check " + std::to_string(i + 1) + " (\"" + checks[i].label + "\"): " + lost + "\n";
+            }
+            return out.empty() ? out
+                               : "Checks that name a dial the program no longer has (each fails until set_checks changes or "
+                                 "removes it):\n" + out;
+        }
+
         // The panel a program's #pragma panel lines made, in a line: its sections in order ("/" where a row starts),
         // their items (a display as its source and kind), then the labels, small dials, styles, options and colours;
         // none without a panel line.
@@ -551,6 +581,99 @@ namespace playground
         std::string dialsFromWords(measure::DialsFrom f)
         {
             return f == measure::DialsFrom::snapshot ? "dials as set" : f == measure::DialsFrom::defaults ? "dials at defaults" : "";
+        }
+
+        // A float as the shortest decimal that reads back as it (0.8f as 0.8, not 0.800000011920929), for JSON.
+        double tidy(float f)
+        {
+            for (int digits = 6; digits < 9; ++digits)
+            {
+                char buf[32];
+                std::snprintf(buf, sizeof buf, "%.*g", digits, static_cast<double>(f));
+                if (const double d = std::strtod(buf, nullptr); static_cast<float>(d) == f)
+                    return d;
+            }
+            return static_cast<double>(f);
+        }
+
+        // A check as set_checks takes it (an item of its list, with its dials_from and, from a snapshot, the snapshot):
+        // what the session keeps (saveState; loadState reads it back) and what set_checks lists. `listing`: without
+        // the render settings only an instrument's schema has (an effect's checks never set them).
+        juce::var checkVar(const measure::Check& c, bool listing)
+        {
+            const auto byName = [](const std::map<std::string, float>& m) {
+                juce::var v = claude::object({});
+                for (const auto& [k, x] : m)
+                    v.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), tidy(x));
+                return v;
+            };
+            juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
+                                           { "metric", juce::String(c.goal.metric) } });
+            auto* o = v.getDynamicObject();
+            if (c.dialsFrom != measure::DialsFrom::current)
+                o->setProperty("dials_from", kDialsFrom[static_cast<int>(c.dialsFrom)]);
+            if (c.dialsFrom == measure::DialsFrom::snapshot)
+                o->setProperty("snapshot", byName(c.snapshot));
+            if (c.goal.hasMin)
+                o->setProperty("min", c.goal.min);
+            if (c.goal.hasMax)
+                o->setProperty("max", c.goal.max);
+            if (c.goal.hasTarget)
+                o->setProperty("target", c.goal.target);
+            if (c.goal.tolerance > 0.0)
+                o->setProperty("tolerance", c.goal.tolerance);
+            const measure::Request& r = c.request;
+            juce::Array<juce::var> notes;
+            for (const int n : r.notes)
+                notes.add(n);
+            if (!notes.isEmpty())
+                o->setProperty("notes", notes);
+            const bool instrument = kInstrument || !listing;
+            if (instrument)
+                o->setProperty("velocity", tidy(r.velocity));
+            o->setProperty("hold_seconds", tidy(r.holdSeconds));
+            o->setProperty("tail_seconds", tidy(r.tailSeconds));
+            o->setProperty("bpm", tidy(r.bpm));
+            if (instrument)
+            {
+                o->setProperty("modwheel", tidy(r.modwheel));
+                o->setProperty("pitchbend", tidy(r.pitchbend));
+            }
+            if (const juce::var sc = scenario::toVar(r); !sc.isVoid())
+                o->setProperty("scenario", sc);
+            if (!r.dials.empty())
+                o->setProperty("dials", byName(r.dials));
+            return v;
+        }
+
+        // The check of the list a merge or remove item means: the one at its index (1 up) when it gives one, else the
+        // one of its label (case aside). -1 when none has the label; -2, with why, for an index past the list or a
+        // label several checks share.
+        int checkAt(const std::vector<measure::Check>& checks, const juce::var& item, std::string& why)
+        {
+            const juce::var index = item.getProperty("index", juce::var());
+            if (index.isDouble() || index.isInt() || index.isInt64())
+            {
+                const double n = static_cast<double>(index);
+                if (n >= 1.0 && n <= static_cast<double>(checks.size()) && n == std::floor(n))
+                    return static_cast<int>(n) - 1;
+                why = "there is no check " + number(n) + " (" + std::to_string(checks.size()) + " are set)";
+                return -2;
+            }
+            const juce::String label = item.getProperty("label", juce::var()).toString();
+            int at = -1, count = 0;
+            for (std::size_t i = 0; i < checks.size(); ++i)
+                if (label.equalsIgnoreCase(juce::String::fromUTF8(checks[i].label.c_str())))
+                {
+                    at = at < 0 ? static_cast<int>(i) : at;
+                    ++count;
+                }
+            if (count > 1)
+            {
+                why = std::to_string(count) + " checks are labelled \"" + label.toStdString() + "\": give the one meant by its index";
+                return -2;
+            }
+            return at;
         }
 
         // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
@@ -1342,50 +1465,7 @@ namespace playground
             // Each check as set_checks takes it, so loadState reads it back the same way.
             juce::Array<juce::var> checks;
             for (const measure::Check& c : checks_)
-            {
-                juce::var v = claude::object({ { "label", juce::String::fromUTF8(c.label.c_str()) },
-                                               { "metric", juce::String(c.goal.metric) } });
-                auto* o = v.getDynamicObject();
-                if (c.dialsFrom != measure::DialsFrom::current)
-                    o->setProperty("dials_from", kDialsFrom[static_cast<int>(c.dialsFrom)]);
-                if (c.dialsFrom == measure::DialsFrom::snapshot)
-                {
-                    juce::var shot = claude::object({});
-                    for (const auto& [k, x] : c.snapshot)
-                        shot.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), x);
-                    o->setProperty("snapshot", shot);
-                }
-                if (c.goal.hasMin)
-                    o->setProperty("min", c.goal.min);
-                if (c.goal.hasMax)
-                    o->setProperty("max", c.goal.max);
-                if (c.goal.hasTarget)
-                    o->setProperty("target", c.goal.target);
-                if (c.goal.tolerance > 0.0)
-                    o->setProperty("tolerance", c.goal.tolerance);
-                const measure::Request& r = c.request;
-                juce::Array<juce::var> notes;
-                for (const int n : r.notes)
-                    notes.add(n);
-                if (!notes.isEmpty())
-                    o->setProperty("notes", notes);
-                o->setProperty("velocity", r.velocity);
-                o->setProperty("hold_seconds", r.holdSeconds);
-                o->setProperty("tail_seconds", r.tailSeconds);
-                o->setProperty("bpm", r.bpm);
-                o->setProperty("modwheel", r.modwheel);
-                o->setProperty("pitchbend", r.pitchbend);
-                if (const juce::var sc = scenario::toVar(r); !sc.isVoid())
-                    o->setProperty("scenario", sc);
-                if (!r.dials.empty())
-                {
-                    juce::var dials = claude::object({});
-                    for (const auto& [k, x] : r.dials)
-                        dials.getDynamicObject()->setProperty(juce::Identifier(juce::String::fromUTF8(k.c_str())), x);
-                    o->setProperty("dials", dials);
-                }
-                checks.add(v);
-            }
+                checks.add(checkVar(c, false));
             state.getDynamicObject()->setProperty("checks", checks);
         }
         return claude::toJson(state);
@@ -1959,29 +2039,35 @@ namespace playground
             item.getDynamicObject()->setProperty("label", prop("string", "What it checks, in a few words the user reads "
                                                                          "(\"Releases within two seconds\")"));
             addRenderProps(item);
+            item.getDynamicObject()->setProperty("index", prop("integer", "merge, remove: its number, in place of its label"));
             juce::var checks = claude::object({ { "type", "array" },
                                                 { "maxItems", kMaxChecks },
                                                 { "items", claude::object({ { "type", "object" },
                                                                             { "properties", item },
-                                                                            { "required", juce::Array<juce::var>{ "label", "metric" } } }) },
-                                                { "description", "The checks, each a metric with min, max or target, "
-                                                                 "and the render it is measured in (measure_output's "
-                                                                 "settings; the defaults when left out). Empty: no "
-                                                                 "checks" } });
+                                                                            { "required", juce::Array<juce::var>{ "label" } } }) },
+                                                { "description", "Each a metric with min, max or target, in a render "
+                                                                 "of its own (measure_output's settings; defaults when "
+                                                                 "left out). Empty: none; left out: lists them" } });
             tools.add(tool("set_checks",
                            "Set the checks this work must pass: what the user asked for, as numbers the plugin "
-                           "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. The list "
-                           "replaces the checks set before; an empty one clears them. The plugin measures them now, "
+                           "measures (the metrics in CHECKING YOUR WORK), each with min, max or a target. Without "
+                           "checks it lists them, each as set_checks takes it. The list replaces the checks set before "
+                           "(an empty one clears them), or merges or removes. The plugin measures them now, "
                            "then as CHECKING YOUR WORK says; its results give the count and each check that fails, "
-                           "naming the dials it took that are off their defaults.",
+                           "naming the dials it took that are off their defaults, or a dial it names that the program lacks.",
                            claude::object({ { "checks", checks },
+                                            { "mode", claude::object({ { "type", "string" },
+                                                                       { "enum", juce::Array<juce::var>{ "replace", "merge", "remove" } },
+                                                                       { "description", "merge: each replaces the check of its "
+                                                                                        "label or index, or is added; remove: "
+                                                                                        "those (default: replace all)" } }) },
                                             { "dials_from", claude::object({ { "type", "string" },
                                                                              { "enum", juce::Array<juce::var>{ kDialsFrom[0], kDialsFrom[1], kDialsFrom[2] } },
                                                                              { "description", "The dials a check does not name: current "
                                                                                               "(the default: as they are when "
                                                                                               "measured), snapshot (as they are "
                                                                                               "now) or defaults" } }) } }),
-                           { "checks" }));
+                           {}));
         }
         {
             juce::var props = claude::object({});
@@ -2686,7 +2772,9 @@ namespace playground
                     continue;
                 }
                 const juce::var result = runTool(use);
-                if (!static_cast<bool>(result.getProperty("is_error", false)))
+                const juce::var asked = use.getProperty("input", juce::var()).getProperty("checks", juce::var());
+                const bool listing = str(use, "name") == "set_checks" && (asked.isVoid() || asked.isUndefined());
+                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing)   // set_checks' list changes nothing
                     for (const char* c : kChangingTools)
                         worked = worked || str(use, "name") == c;
                 results.add(result);
@@ -2970,7 +3058,10 @@ namespace playground
                     return dialText(a.control, v, options[static_cast<std::size_t>(c)]);
             return dialText(a.control, v);
         };
+        // A failing check at the defaults takes none of the plugin's dials: moving them changes nothing it measures.
         const auto awayText = [&](const measure::Check& k, const measure::CheckResult& r) {
+            if (k.dialsFrom == measure::DialsFrom::defaults && r.unknown.empty())
+                return std::string("; the dials as they are now do not affect it");
             if (r.away.empty())
                 return std::string();
             constexpr std::size_t most = 6;
@@ -2981,9 +3072,8 @@ namespace playground
                       + (snapshot ? "then " : "default ") + said(r.away[i], r.away[i].reference) + ")";
             if (r.away.size() > most)
                 list += " and " + std::to_string(r.away.size() - most) + " more";
-            return std::string(k.dialsFrom == measure::DialsFrom::current ? "; it takes the dials as they are now, these off their defaults: "
-                               : snapshot ? "; it takes the dials as they were when set, and these moved since: "
-                                          : "; it takes the dials at their defaults, and these are moved now: ")
+            return std::string(snapshot ? "; it takes the dials as they were when set, and these moved since: "
+                                        : "; it takes the dials as they are now, these off their defaults: ")
                  + list;
         };
         std::vector<ChatCheck> rows;
@@ -3831,10 +3921,16 @@ namespace playground
                      + (dials == 1 ? "" : "s"));
                 const std::string checks = evaluateChecks();
                 const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
+                std::vector<measure::Check> set;
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    set = checks_;
+                }
                 return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\n"
                      + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n"
                              : "Its dials:\n" + dialLines(s.controls, host_)
-                                   + carriedLines(before, beforeOptions, was, s.controls, s.panel.options, host_))
+                                   + carriedLines(before, beforeOptions, was, s.controls, s.panel.options, host_)
+                                   + orphanLines(set, before, s.controls))
                      + panelLine(s.panel, s.controls) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes))
                      + (checks.empty() ? "" : "\n" + checks);
             }
@@ -3890,41 +3986,140 @@ namespace playground
         if (name == "set_checks")
         {
             const juce::var list = input.getProperty("checks", juce::var());
+            const juce::var modeVar = input.getProperty("mode", juce::var());
+            const std::string mode = modeVar.isVoid() || modeVar.isUndefined() ? "replace" : modeVar.toString().toStdString();
+            if (mode != "replace" && mode != "merge" && mode != "remove")
+                return fail("mode is replace, merge or remove. Nothing was changed.");
+            std::vector<measure::Check> was;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                was = checks_;
+            }
+            // Without checks: the list, each check as set_checks takes it (what the session keeps), numbered as merge
+            // and remove take an index.
+            if (list.isVoid() || list.isUndefined())
+            {
+                if (mode != "replace")
+                    return fail("set_checks' " + mode + " needs checks: the ones to " + mode + ". Nothing was changed.");
+                if (was.empty())
+                    return "No checks are set.";
+                std::string out = std::to_string(was.size()) + (was.size() == 1 ? " check is set" : " checks are set")
+                                + ", each as set_checks takes it, numbered as merge and remove take index:\n";
+                for (std::size_t i = 0; i < was.size(); ++i)
+                    out += std::to_string(i + 1) + ". " + claude::toJson(checkVar(was[i], true)) + "\n";
+                return out;
+            }
             const auto* arr = list.getArray();
             if (arr == nullptr)
-                return fail("set_checks needs checks: a list of them (empty to clear them)");
+                return fail("set_checks' checks is a list of them (empty to clear them; left out, it lists them)");
+            if (mode != "replace" && arr->isEmpty())
+                return fail("set_checks' " + mode + " needs checks: the ones to " + mode + ". Nothing was changed.");
             if (arr->size() > kMaxChecks)
                 return fail("At most " + std::to_string(kMaxChecks) + " checks");
             measure::DialsFrom from = measure::DialsFrom::current;
             if (!dialsFromOf(input.getProperty("dials_from", juce::var()), from))
-                return fail("dials_from is current, snapshot or defaults. Nothing was set.");
-            const std::map<std::string, float> snapshot = from == measure::DialsFrom::snapshot ? currentDials()
-                                                                                               : std::map<std::string, float>{};
-            std::vector<measure::Check> checks;
-            for (int i = 0; i < arr->size(); ++i)
-            {
+                return fail("dials_from is current, snapshot or defaults. Nothing was changed.");
+            // The dials now, for a snapshot: read once, when a check needs them.
+            std::map<std::string, float> now;
+            bool read = false;
+            const auto dialsNow = [&]() -> const std::map<std::string, float>& {
+                if (!std::exchange(read, true))
+                    now = currentDials();
+                return now;
+            };
+            // An item as a check (replace and merge), or why not. An item's own dials_from (and, from a snapshot, its
+            // snapshot), as the list gives it, stands for the call's: a listed check given back is the same check.
+            const auto checkOf = [&](int i, measure::Check& k) -> std::string {
                 const juce::var& c = (*arr)[i];
-                measure::Check k;
                 k.dialsFrom = from;
-                k.snapshot = snapshot;
+                if (!dialsFromOf(c.getProperty("dials_from", juce::var(juce::String(kDialsFrom[static_cast<int>(from)]))), k.dialsFrom))
+                    return "Check " + std::to_string(i + 1) + ": dials_from is current, snapshot or defaults. Nothing was changed.";
+                if (k.dialsFrom == measure::DialsFrom::snapshot)
+                {
+                    if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
+                    {
+                        for (const auto& kv : shot->getProperties())
+                            if (isNumber(kv.value) || kv.value.isBool())
+                                k.snapshot[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+                    }
+                    else
+                        k.snapshot = dialsNow();
+                }
                 std::string why;
                 if (!goalOf(c, k.goal, why))
-                    return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
+                    return "Check " + std::to_string(i + 1) + ": " + why + " Nothing was changed.";
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
                 k.request = scenario::renderOf(c, &why);
                 if (!why.empty())
-                    return fail("Check " + std::to_string(i + 1) + ": " + why + " Nothing was set.");
+                    return "Check " + std::to_string(i + 1) + ": " + why + " Nothing was changed.";
                 if (k.request.fromCapture)                   // gone after a reload: it could never pass again
-                    return fail("Check " + std::to_string(i + 1) + ": a check cannot play the recording (\"capture\"), which "
-                                "the plugin does not keep: give it a phrase or an input of its own. Nothing was set.");
-                checks.push_back(std::move(k));
+                    return "Check " + std::to_string(i + 1) + ": a check cannot play the recording (\"capture\"), which "
+                           "the plugin does not keep: give it a phrase or an input of its own. Nothing was changed.";
+                return {};
+            };
+            const auto named = [](std::size_t at, const measure::Check& k) {
+                return "check " + std::to_string(at + 1) + " (\"" + k.label + "\")";
+            };
+            std::vector<measure::Check> checks;
+            std::string did;                                 // merge and remove: what changed, in words
+            if (mode == "replace")
+                for (int i = 0; i < arr->size(); ++i)
+                {
+                    measure::Check k;
+                    if (const std::string why = checkOf(i, k); !why.empty())
+                        return fail(why);
+                    checks.push_back(std::move(k));
+                }
+            else if (mode == "merge")
+            {
+                // Each item in turn: it replaces the check of its index or label, or is added at the end.
+                checks = was;
+                for (int i = 0; i < arr->size(); ++i)
+                {
+                    std::string why;
+                    const int at = checkAt(checks, (*arr)[i], why);
+                    if (at == -2)
+                        return fail("Check " + std::to_string(i + 1) + ": " + why + ". Nothing was changed.");
+                    measure::Check k;
+                    if (const std::string bad = checkOf(i, k); !bad.empty())
+                        return fail(bad);
+                    if (at < 0 && static_cast<int>(checks.size()) >= kMaxChecks)
+                        return fail("At most " + std::to_string(kMaxChecks) + " checks: remove one first. Nothing was changed.");
+                    const std::size_t to = at < 0 ? checks.size() : static_cast<std::size_t>(at);
+                    did += (did.empty() ? "" : ", ") + named(to, k) + (at < 0 ? " added" : " replaced");
+                    if (at < 0)
+                        checks.push_back(std::move(k));
+                    else
+                        checks[to] = std::move(k);
+                }
+            }
+            else
+            {
+                // The checks the items name, in the list as it was; then those removed.
+                std::set<int> gone;
+                for (int i = 0; i < arr->size(); ++i)
+                {
+                    std::string why;
+                    const int at = checkAt(was, (*arr)[i], why);
+                    if (at == -1)
+                        why = "no check is labelled \"" + str((*arr)[i], "label") + "\" (without checks, set_checks lists them)";
+                    if (at < 0)
+                        return fail("Check " + std::to_string(i + 1) + ": " + why + ". Nothing was changed.");
+                    gone.insert(at);
+                }
+                for (std::size_t i = 0; i < was.size(); ++i)
+                    if (gone.count(static_cast<int>(i)) == 0)
+                        checks.push_back(was[i]);
+                    else
+                        did += (did.empty() ? "" : ", ") + named(i, was[i]);
             }
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 checks_ = checks;
             }
+            const std::string count = std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s");
             if (checks.empty())
             {
                 {
@@ -3932,13 +4127,26 @@ namespace playground
                     checksFailing_ = false;
                 }
                 note("cleared the checks");
-                return "The checks are cleared: nothing is measured after a run.";
+                return (did.empty() ? "" : "Removed " + did + ". ") + "The checks are cleared: nothing is measured after a run.";
             }
-            note("set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s"));
-            return "Set " + std::to_string(checks.size()) + " check" + (checks.size() == 1 ? "" : "s")
-                 + (from == measure::DialsFrom::snapshot ? ", the dials they do not name as they are now"
-                    : from == measure::DialsFrom::defaults ? ", the dials they do not name at their defaults" : "")
-                 + ". The plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
+            const std::string fromWords = from == measure::DialsFrom::snapshot ? ", the dials they do not name as they are now"
+                                        : from == measure::DialsFrom::defaults ? ", the dials they do not name at their defaults"
+                                                                               : "";
+            if (mode == "replace")
+            {
+                note("set " + count);
+                return "Set " + count + fromWords
+                     + ". The plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
+            }
+            if (mode == "merge")
+            {
+                note("merged checks (" + count + " now)");
+                return "Merged: " + did + fromWords + ". " + count + (checks.size() == 1 ? " is" : " are")
+                     + " set; the plugin measures them after every run_program and when you end your turn.\n" + evaluateChecks();
+            }
+            const std::size_t removed = was.size() - checks.size();
+            note("removed " + std::to_string(removed) + " check" + (removed == 1 ? "" : "s"));
+            return "Removed " + did + ". " + count + " left.\n" + evaluateChecks();
         }
         if (name == "tune_dials")
         {
