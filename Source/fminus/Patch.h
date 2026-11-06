@@ -123,6 +123,32 @@
 // (no code generated, no instance), with the options compile()'s second pass or freeze() gave it, so the text is the
 // one the code that plays came from. The appended calls are in it too (playground_process, ...).
 //
+// The loop budget (runaway-loop protection). A program that loops for ever holds the thread that calls it: on the audio
+// thread, the host's whole session. So every compile that plays (compile()'s second pass, freeze(), ir() and frozenIr())
+// has FMinus's loop budget (Program::Options::loopBudget; FMinus's docs/extending.md, recipe 29): the code counts its
+// loops' iterations and its recursive calls against a budget the plugin sets before each call, and a call that runs
+// past it returns early, with every function of the program it was in. A call within its budget computes what it
+// would without it, bit for bit (the checks go in after the optimiser has made every decision). The budget is a count,
+// not a clock, set from the call's samples and the rate: kLoopsPerSecond (2^36, about 69 billion: sixteen times what
+// one core runs in a second, since a loop's branch back takes a cycle at least) for the call's samples at the rate,
+// and kBudgetFloor's worth (16 samples) at least, for a call's own setup (start, stop, a circuit's set(), a voice's
+// part of a few samples): at 48 kHz 1,431,655 iterations a sample, 22.9 million for a call of 16 and 733 million for
+// one of 512. So a call stops only after running many times as long as its samples last, which no program that plays
+// in real time does. A parallel region's threads count apart (each takes at most the budget, FMinus's atomic min), so a
+// call with a region may run its threads' count times as long. init and end (each instance's, and Shared's) run off
+// the audio thread with kInitBudget each (2^32, about 4.3 billion: seconds of a core's work). dsp.budget measures what
+// the checks cost (README, "A loop that never ends"); the frozen copy keeps them.
+//
+// A call that runs past its budget stops the Patch (stopped(): the call it was). The instances are left as the stopped
+// call's optimised code left them, which need be no point of the source (a ring's index past its end), so the Patch
+// calls the program no more until reset() makes them as new: every call after a stop does nothing (process leaves the
+// buffers as they are, render returns false and writes nothing, start, stop and setCircuits nothing). The Engine fades
+// it out (Engine.h, "A program that stops") and the Compiler says why (Compiler.h; stopMessage(): the words, at the
+// method's line). An init that runs past it stops the Patch too (the instances after it not initialised, and no end for
+// them): compile() then fails with that message, so a program whose init (or Shared's) never ends does not play, as one
+// that does not compile does not. An end that runs past it returns early (what it had to free stays allocated), and
+// the ends after it are not called.
+//
 // Threads: compile(), freeze(), ir() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
 // whatever thread resets or destroys it.
@@ -169,12 +195,27 @@ namespace playground
             std::string optimised;            // what the JIT made the machine code from
         };
 
+        // ---- the loop budget (above) -------------------------------------------------------------------------------
+        // The plugin's calls into a program, by method: which one ran past its budget (stopped()).
+        enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd };
+        static constexpr double kLoopsPerSecond = 68'719'476'736.0;       // 2^36: a call's budget a second of samples
+        static constexpr int kBudgetFloor = 16;                           // samples: a call's least budget
+        static constexpr std::int64_t kInitBudget = std::int64_t{ 1 } << 32;   // each init and end
+        // A call's budget: `samples` (kBudgetFloor at least) at `rate`.
+        static std::int64_t budgetOf(int samples, float rate) noexcept;
+        // "process()", "Shared's init()", "a circuit's set()": a call as the messages name it.
+        static std::string callName(Method call);
+        // The words for a stop of `call` in the program of `files` at `rate`: an error at the method's line ("program.fm:
+        // 14:10: error: process() ran past its budget: a loop that never ends?"), then a note with the budget's numbers.
+        static std::string stopMessage(const Sources& files, Method call, float rate);
+
         struct Result
         {
             std::unique_ptr<Patch> patch;     // null when the program does not compile or does not fit the plugin
             std::string errors;               // FMinus's messages, one a line ("program.fm:3:12: error: ..."), and
                                               // the plugin's (what the program lacks), empty on success
             std::string notes;                // what the plugin wants known though the program plays (one a line)
+            Method stopped = Method::none;    // an init that ran past its budget (above): `errors` say so
             double compileMs = 0.0;
             Ir ir;                            // the program's IR, when compile() was asked to keep it and it compiled
             // Its netlists' (above, "Circuits"), whether or not the program compiled: the self-tests it wants (none
@@ -187,7 +228,10 @@ namespace playground
         // kind and creates its instances at `sampleRate`: zeroed, their parameters at their defaults, init run.
         // `keepIr`: the program's IR in Result::ir too, both texts (above, "The IR"). `pins`: its netlists generated with
         // these configurations where they name the netlist's key (above, "Circuits"), not with the store's answers.
-        static Result compile(const Sources& files, float sampleRate, bool keepIr = false, const CircuitPins* pins = nullptr);
+        // `loopBudget` false: without the loop budget (above), and its recipe's copies too: dsp.budget's measure of what
+        // the checks cost (the plugin never asks for it).
+        static Result compile(const Sources& files, float sampleRate, bool keepIr = false, const CircuitPins* pins = nullptr,
+                              bool loopBudget = true);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
         // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
@@ -201,9 +245,18 @@ namespace playground
         Patch(const Patch&) = delete;
         Patch& operator=(const Patch&) = delete;
 
-        // Off the audio thread, or while it is stopped: every instance as new (end, zeroed, defaults, init).
+        // Off the audio thread, or while it is stopped: every instance as new (end, zeroed, defaults, init), and the stop
+        // forgotten (an init that runs past its budget stops it again).
         void reset(float sampleRate);
         float rate() const noexcept { return rate_; }
+
+        // The call that ran past its budget since the instances were made new (above, "The loop budget"); Method::none
+        // while none has. Any thread.
+        Method stopped() const noexcept { return static_cast<Method>(stop_.load(std::memory_order_relaxed)); }
+        // The budget the last audio-thread call was given, and what it left (FMinus's loopBudgetLeft: -1 once a call
+        // ran out): what a call took, for dsp.budget. Between calls.
+        std::int64_t lastBudget() const noexcept { return lastBudget_; }
+        std::int64_t budgetLeft() const noexcept;
 
         const Controls& controls() const noexcept { return controls_; }
         // The dials' panel its #pragma panel lines ask for (PanelSpec.h), from the program and the files it includes.
@@ -244,6 +297,7 @@ namespace playground
             uint64_t program = 0;                      // Patch::program
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
+            bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
         };
         Recipe recipe() const;
         // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
@@ -361,6 +415,10 @@ namespace playground
         void mapFields();                              // fields_ and unmapped_, from the compiled program
 
         const Compiled& code() const noexcept { return active_ != nullptr ? *active_ : *s_; }
+        // The loop budget around a call (above): set for `samples` before it, and after it the stop, when it ran out.
+        // True when the call ran within it.
+        void budget(const Compiled& c, int samples) noexcept;
+        bool within(const Compiled& c, Method call) noexcept;
 
         std::unique_ptr<Compiled> s_;
         const Compiled* active_ = nullptr;             // the frozen copy's code in use, or null
@@ -418,6 +476,9 @@ namespace playground
         bool circuitRamps_ = false;
         Sources sources_;
         float rate_ = 48000.0f;
+        std::int64_t perSample_ = 0;                   // the loop budget a sample at rate_ (budgetOf)
+        std::int64_t lastBudget_ = 0;                  // the last audio-thread call's
+        std::atomic<uint8_t> stop_{ 0 };               // stopped()
         uint64_t program_ = 0;
         void* shared_ = nullptr;                       // the module Shared's one instance, or null
         bool sharedInitialised_ = false;
