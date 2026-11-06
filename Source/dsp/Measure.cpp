@@ -322,9 +322,10 @@ namespace playground::measure
         struct Rendered
         {
             Stereo out;
-            double cpuMs = 0.0;                              // the CPU time of the samples timed (render(): timeFrom
-            std::size_t cpuSamples = 0;                      // to timeUntil), and how many they were
+            double cpuMs = 0.0;                              // the CPU time of the calls timed (render(): those that
+            std::size_t cpuSamples = 0;                      // render timeFrom to timeUntil), and their samples
             uint32_t alerts = 0;
+            uint32_t plainAlerts = 0;                        // those by Timeline::plain (when it is set)
             long endedAt = -1;                               // the sample after which no voice was left (-1: never)
             std::vector<int> voicesAt;                       // per timeline event: the voices sounding as a note-on's
                                                              // call started (-1 for the others)
@@ -1578,6 +1579,21 @@ namespace playground::measure
             const std::size_t a = std::min(sampleOf(w.from, rate), length);
             return { a, std::clamp(sampleOf(std::min(w.to, kMaxWindowSeconds), rate), std::min(a + 1, length), length) };
         }
+
+        // Whether a window's span holds less than kMinWindowSeconds (each end rounded to a sample: one short of it
+        // still holds it).
+        [[maybe_unused]] bool tooShort(const Span& s, double rate)
+        {
+            return s.second < s.first + sampleOf(kMinWindowSeconds, rate) - 1;
+        }
+
+        // A timeline's length: `length` when given, else `natural` (what it plays, and the tail) or the window's end when
+        // that is later, the natural length then kept as Timeline::plain.
+        void setLength(Timeline& tl, std::size_t length, std::size_t natural, const Request& req, double rate)
+        {
+            tl.length = length > 0 ? length : std::max(natural, windowEnd(req, rate));
+            tl.plain = length == 0 && tl.length > natural ? natural : 0;
+        }
     }
 
     struct Session::Impl
@@ -1601,20 +1617,22 @@ namespace playground::measure
             if constexpr (kInstrument)
             {
                 noteParts(tl, req, keys, keys != nullptr ? offAt : holdN, rate);
-                tl.length = length > 0 ? length : std::max(lastMoment(tl) + tailN, windowEnd(req, rate));
+                setLength(tl, length, lastMoment(tl) + tailN, req, rate);
             }
             else
             {
                 tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-                tl.length = length > 0 ? length : std::max(std::max(tl.heldUntil, lastMoment(tl)) + tailN, windowEnd(req, rate));
+                setLength(tl, length, std::max(tl.heldUntil, lastMoment(tl)) + tailN, req, rate);
             }
             sortMarks(tl);
             return tl;
         }
 
         // The program as new over `in` (an effect) or the timeline's events (an instrument), as the timeline plans it:
-        // host blocks, each in one call or in those `hooks` ask for; the CPU time of the calls from the one at `timeFrom`
-        // to the one before `timeUntil` (the whole render: 0, and its length or more).
+        // host blocks, each in one call or in those `hooks` ask for, a call ending at Timeline::plain (so the samples
+        // before it are those a render without the window gives, and the alerts by then are kept); the CPU time of the
+        // calls from the first at or after `timeFrom` to the one before `timeUntil`, or of the call that renders both
+        // when none starts between them (the whole render: 0, and its length or more).
         Rendered render(const Dials& dials, const Stereo* in, const Timeline& tl, std::size_t watchFrom, std::size_t timeFrom = 0,
                         std::size_t timeUntil = static_cast<std::size_t>(-1), RenderHooks* hooks = nullptr)
         {
@@ -1652,7 +1670,8 @@ namespace playground::measure
             double t0 = 0.0;
             std::size_t timedFrom = 0;
             bool timing = false;
-            for (std::size_t pos = 0; pos < total;)
+            std::size_t pos = 0;
+            while (pos < total)
             {
                 if (pos >= hostEnd)                              // a host block: the transport, then the dials, once
                 {
@@ -1680,24 +1699,14 @@ namespace playground::measure
                         norm = base;
                     engine.setControls(norm);
                 }
-                if (!timing && r.cpuSamples == 0 && pos >= timeFrom && pos < timeUntil)
-                {
-                    timing = true;
-                    timedFrom = pos;
-                    t0 = threadMs();
-                }
-                else if (timing && pos >= timeUntil)
-                {
-                    timing = false;
-                    r.cpuMs = threadMs() - t0;
-                    r.cpuSamples = pos - timedFrom;
-                }
                 std::size_t n = hostEnd - pos;
                 if (tl.part > 0)                                 // the processor's parts (a recording's)
                     n = std::min(n, static_cast<std::size_t>(tl.part));
                 if (hooks != nullptr)
                     if (const int want = hooks->callLength(pos); want > 0)
                         n = std::min(n, static_cast<std::size_t>(want));
+                if (tl.plain > pos)                              // the window's extra render: from a call of its own
+                    n = std::min(n, tl.plain - pos);
                 block.clear();
                 while (next < tl.events.size() && tl.events[next].first < pos + n)
                 {
@@ -1712,6 +1721,20 @@ namespace playground::measure
                         r.voicesAt[next] = engine.activeVoices();   // as the call starts
                     block.push_back(ev);
                     ++next;
+                }
+                // The timed calls: from the first that starts in [timeFrom, timeUntil), or this one when it renders
+                // past both (no call starts between them), to the first that starts at or after timeUntil.
+                if (!timing && r.cpuSamples == 0 && pos < timeUntil && pos + n > timeFrom && (pos >= timeFrom || pos + n >= timeUntil))
+                {
+                    timing = true;
+                    timedFrom = pos;
+                    t0 = threadMs();
+                }
+                else if (timing && pos >= timeUntil)
+                {
+                    timing = false;
+                    r.cpuMs = threadMs() - t0;
+                    r.cpuSamples = pos - timedFrom;
                 }
                 float* ch[2] = { r.out.l.data() + pos, r.out.r.data() + pos };
                 engine.process(ch, 2, static_cast<int>(n), block);
@@ -1734,11 +1757,13 @@ namespace playground::measure
                     r.mostVoices = std::max(r.mostVoices, engine.activeVoices());
                 if (kInstrument && r.endedAt < 0 && pos > watchFrom && engine.activeVoices() == 0)
                     r.endedAt = static_cast<long>(pos);
+                if (tl.plain > 0 && pos == tl.plain)
+                    r.plainAlerts = r.alerts |= engine.takeAlerts();
             }
             if (timing)
             {
                 r.cpuMs = threadMs() - t0;
-                r.cpuSamples = std::min(total, timeUntil) - timedFrom;
+                r.cpuSamples = pos - timedFrom;
             }
             r.alerts |= engine.takeAlerts();
             engine.collect();
@@ -1842,12 +1867,12 @@ namespace playground::measure
         if constexpr (kInstrument)
         {
             noteParts(tl, req, nullptr, holdN, rate);
-            tl.length = length > 0 ? length : std::max(lastMoment(tl) + tailN, windowEnd(req, rate));
+            setLength(tl, length, lastMoment(tl) + tailN, req, rate);
         }
         else
         {
             tl.heldUntil = req.input != nullptr ? std::min(req.input->l.size(), sampleOf(2.0 * kMaxPlaySeconds, rate)) : holdN;
-            tl.length = length > 0 ? length : std::max(std::max(tl.heldUntil, lastMoment(tl)) + tailN, windowEnd(req, rate));
+            setLength(tl, length, std::max(tl.heldUntil, lastMoment(tl)) + tailN, req, rate);
         }
         sortMarks(tl);
         return tl;
@@ -1914,6 +1939,10 @@ namespace playground::measure
             out += "Window: " + windowText(request.window)
                  + (kInstrument ? " of the render, measured in place of the held part (attack_s and release_s keep the notes')"
                                 : " of the sine's and the noise's renders, measured in place of their held part")
+                 + (kInstrument && plan.plain > 0 ? "; the render goes on to its end, the steps, the decay, the release and the "
+                                                    "alerts measured over the " + seconds(static_cast<double>(plan.plain) / rate)
+                                                    + " it has without it"
+                                                  : std::string())
                  + ".\n";
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         const std::size_t tailN = static_cast<std::size_t>(tail * rate);
@@ -1945,8 +1974,18 @@ namespace playground::measure
             Timeline tl = plan;
             const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
             voiceMarks(tl, r);
-            // How long the render goes on after the last note-off: the tail, or to the window's end when that is later.
-            const double after = windowed ? static_cast<double>(plan.length - std::min(plan.length, heldEnd)) / rate : tail;
+            // The whole render's metrics (the steps, the clicks, the decay, the release, the voices' end, the alerts) over
+            // the length it has without the window (Timeline::plain): a window past it changes none of them.
+            const std::size_t plainN = plan.plain > 0 ? plan.plain : r.out.size();
+            Stereo cut;
+            if (plainN < r.out.size())
+            {
+                cut.l.assign(r.out.l.begin(), r.out.l.begin() + static_cast<std::ptrdiff_t>(plainN));
+                cut.r.assign(r.out.r.begin(), r.out.r.begin() + static_cast<std::ptrdiff_t>(plainN));
+            }
+            const Stereo& whole = plainN < r.out.size() ? cut : r.out;
+            const long endedAt = r.endedAt >= 0 && static_cast<std::size_t>(r.endedAt) <= plainN ? r.endedAt : -1;
+            const uint32_t alerts = plan.plain > 0 ? r.plainAlerts : r.alerts;
 
             if (!phrased)
             {
@@ -1955,11 +1994,11 @@ namespace playground::measure
                     what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ", "
                           + fmt("%.1f Hz", noteHz(n)) + ")";
                 out += (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity " + fmt("%.2f", vel) + ", held "
-                     + seconds(hold) + ", then released for " + seconds(after) + ".\n";
+                     + seconds(hold) + ", then released for " + seconds(tail) + ".\n";
             }
             else
                 out += "Played: from the first note-on (" + seconds(static_cast<double>(from) / rate) + ") to the last note-off ("
-                     + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(after) + " more.\n";
+                     + seconds(static_cast<double>(heldEnd) / rate) + "), then " + seconds(tail) + " more.\n";
 
             // The held part: each note from 50 ms after its note-on to its note-off (Measure.h), the spectra all of it;
             // or the window. The notes' own (the envelope's, the release's reference) stays theirs.
@@ -1970,6 +2009,7 @@ namespace playground::measure
             const std::vector<float> m = mono(r.out, 0, r.out.size());
             const double heldPeak = peak(r.out, win.first, win.second), heldRms = rmsOver(r.out, held);
             const double notesRms = windowed ? rmsOver(r.out, notesHeld) : heldRms;
+            const double notesPeak = windowed ? peak(r.out, from, heldEnd) : heldPeak;
             double corr = 1.0, bal = 0.0;
             stereoOver(r.out, held, corr, bal);
             const double heldDc = dcOver(r.out, held);
@@ -2065,13 +2105,13 @@ namespace playground::measure
             if (need({ "step", "click" }))
             {
                 // The largest step, then the clicks (trace's rule), each with its nearest moment (the click locator).
-                const std::vector<Step> steps = largestSteps(r.out.l, r.out.r, 3, rate);
+                const std::vector<Step> steps = largestSteps(whole.l, whole.r, 3, rate);
                 const double step = steps.empty() ? 0.0 : steps.front().size;
-                const bool click = !clicks(r.out.l, r.out.r, rate).empty();   // any, as trace finds them
+                const bool click = !clicks(whole.l, whole.r, rate).empty();   // any, as trace finds them
                 v["step"] = step;
                 v["click"] = click ? 1.0 : 0.0;
                 out += "Largest step between two samples"
-                     + (heldPeak > 0.0 ? fmt(" (%.0f%% of the held peak)", step / heldPeak * 100.0) : std::string())
+                     + (notesPeak > 0.0 ? fmt(" (%.0f%% of the held peak)", step / notesPeak * 100.0) : std::string())
                      + (steps.size() > 1 ? ", then the clicks: " : ": ") + stepsText(steps, tl, rate)
                      + (click ? "" : "; no click (no step far above those around it)") + ".\n";
                 if (click)
@@ -2099,8 +2139,8 @@ namespace playground::measure
                 const std::size_t w10 = std::max<std::size_t>(1, static_cast<std::size_t>(0.01 * rate));
                 std::size_t loudAt = 0;
                 double loud = 0.0;
-                for (std::size_t i = 0; i + w10 <= r.out.size(); i += w10)
-                    if (const double x = rms(r.out, i, i + w10); x > loud)
+                for (std::size_t i = 0; i + w10 <= whole.size(); i += w10)
+                    if (const double x = rms(whole, i, i + w10); x > loud)
                     {
                         loud = x;
                         loudAt = i;
@@ -2108,7 +2148,7 @@ namespace playground::measure
                 double decay = kInf;
                 if (loud > 1e-9)
                 {
-                    const long fall = fallTime(r.out, loudAt, toDb(loud), 60.0, rate);
+                    const long fall = fallTime(whole, loudAt, toDb(loud), 60.0, rate);
                     if (fall >= 0)
                         decay = static_cast<double>(fall) / rate;
                 }
@@ -2122,21 +2162,21 @@ namespace playground::measure
             }
 
             // The release under the notes' held level, whatever the window.
-            const long fall = fallTime(r.out, heldEnd, toDb(notesRms), 60.0, rate);
+            const long fall = fallTime(whole, heldEnd, toDb(notesRms), 60.0, rate);
             v["release_s"] = notesRms >= 1e-5 && fall >= 0 ? static_cast<double>(fall) / rate : notesRms < 1e-5 ? 0.0 : kInf;
-            v["voice_end_s"] = r.endedAt >= 0 ? static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate : kInf;
+            v["voice_end_s"] = endedAt >= 0 ? static_cast<double>(endedAt - static_cast<long>(heldEnd)) / rate : kInf;
             out += "Release: ";
             if (notesRms < 1e-5)
                 out += "nothing to release.";
             else if (fall < 0)
-                out += "still within 60 dB of the held level " + seconds(after) + " after the note-off.";
+                out += "still within 60 dB of the held level " + seconds(tail) + " after the note-off.";
             else
                 out += "falls 60 dB below the held level " + seconds(static_cast<double>(fall) / rate) + " after the note-off.";
-            if (r.endedAt >= 0)
-                out += " The last voice ended " + seconds(static_cast<double>(r.endedAt - static_cast<long>(heldEnd)) / rate)
+            if (endedAt >= 0)
+                out += " The last voice ended " + seconds(static_cast<double>(endedAt - static_cast<long>(heldEnd)) / rate)
                      + " after it (process returned false).\n";
             else
-                out += " No voice ended within " + seconds(after) + ": process kept returning true (end the release, or give "
+                out += " No voice ended within " + seconds(tail) + ": process kept returning true (end the release, or give "
                        "a longer tail_seconds).\n";
 
             if (notes.size() == 1 && !phrased)
@@ -2179,8 +2219,8 @@ namespace playground::measure
                         warnings.push_back("The chord peaks above 0 dBFS: lower the voice's level.");
                 }
             }
-            v["alerts"] = static_cast<double>(r.alerts & 3u);
-            out += "Alerts: " + alertsText(r.alerts) + ".\n";
+            v["alerts"] = static_cast<double>(alerts & 3u);
+            out += "Alerts: " + alertsText(alerts) + ".\n";
             // The CPU: the notes asked for while held, and sixteen voices at once, measured: sixteen keys from the lowest
             // note up held for 0.15 s, timed after the first 0.03 s, the least of two renders.
             const double heldSeconds = static_cast<double>(r.cpuSamples) / rate;
@@ -2266,12 +2306,16 @@ namespace playground::measure
             };
 
             // A signal's held part: from 50 ms after it starts (half of it when shorter) to its end (Measure.h); or the
-            // window, cut at its end (none when it starts there or after: those metrics are then not measured).
+            // window, cut at its end (too little of it when it starts there or after, or under kMinWindowSeconds before:
+            // those metrics are then not measured).
             const std::size_t settle = std::min(holdN / 2, static_cast<std::size_t>(kSettleSeconds * rate));
             const Span win = windowed ? windowSpan(request.window, holdN, rate) : Span{ 0, holdN };
             const std::vector<Span> held{ windowed ? win : Span{ settle, holdN } };
-            const bool outside = win.first >= win.second;
-            const std::string outsideWhy = "the window starts after the sine and the noise end (hold_seconds, " + seconds(hold) + ")";
+            const bool outside = windowed && (win.first >= win.second || tooShort(win, rate));
+            const std::string outsideWhy = win.first >= win.second
+                                             ? "the window starts after the sine and the noise end (hold_seconds, " + seconds(hold) + ")"
+                                             : "the window holds less than " + seconds(kMinWindowSeconds)
+                                                   + " of the sine and the noise (they end at hold_seconds, " + seconds(hold) + ")";
             const auto unmeasured = [&](std::initializer_list<const char*> names) {
                 for (const char* n : names)
                     res.unmeasured[n] = outsideWhy;
@@ -2420,6 +2464,8 @@ namespace playground::measure
                 out += "Its own input, " + seconds(static_cast<double>(n) / rate);
                 if (a >= b)
                     out += ": the window starts after it ends.\n";
+                else if (windowed && tooShort(part, rate))
+                    out += ": the window holds less than " + seconds(kMinWindowSeconds) + " of it.\n";
                 else
                     out += (windowed ? ", in the window" : "") + std::string(": in peak ") + dbfs(peak(own, a, b)) + ", RMS "
                          + dbfs(inRms) + "; out peak " + dbfs(peak(o, a, b)) + ", RMS " + dbfs(outRms)

@@ -24,11 +24,16 @@
 //            its first second, sixteen harmonics after) measured over 1.5 to 2.5 s reads the bright part (its centroid
 //            within 5 % of the harmonics' power centroid, its RMS and its pitch), where the held part reads the sine;
 //            its render lasts until the window's end; a window inside a held note keeps attack_s, release_s,
-//            voice_end_s and step as they are without it; an effect's fader (0 dB, then -6 dB from 0.5 s) reads -6.0 dB
+//            voice_end_s and step as they are without it, and one past the render's own length (1.5 to 3.5 s, the voice
+//            ending at 3 s) keeps every whole-render metric (attack_s, release_s, voice_end_s, decay_s, step, click,
+//            alerts) and the step line as they are without it; a window between two calls' starts (blocks of 2048)
+//            times the call that renders it; an effect's fader (0 dB, then -6 dB from 0.5 s) reads -6.0 dB
 //            on the sine and the noise over 0.6 to 0.95 s, 0 dB over 0.1 to 0.4 s, its impulse as without a window; one
-//            that starts after hold_seconds leaves the sine's and the noise's metrics unmeasured, saying why, and a
-//            check on it says so; checks alike but for their windows measured apart; view_sound's RMS and spectrum
-//            over the window, its close-up inside it
+//            that starts after hold_seconds, or holds under 0.01 s before it, leaves the sine's and the noise's metrics
+//            unmeasured, saying why, and a check on it says so; checks alike but for their windows measured apart;
+//            view_sound's RMS and spectrum over the window, its close-up inside it; a window shorter than its
+//            spectrum's frame, just before the sound changes (the voice's harmonics at 1 s, the fader's -6 dB at 0.5 s),
+//            reads nothing after it, at 48 and 192 kHz
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
 #include "Probe.h"
@@ -605,6 +610,51 @@ PROBE(dsp, metrics)
         P.near("window.rates_centroid", centroid[1] / centroid[0], 1.0, 0.05);
         P.near("window.rates_rms", level[1] - level[0], 0.0, 0.1);
 
+        const auto lineOf = [](const std::string& report, const std::string& start) {
+            const std::size_t a = report.find(start);
+            return a == std::string::npos ? std::string() : report.substr(a, report.find('\n', a) - a);
+        };
+        for (const double rate : { 48000.0, 192000.0 })
+        {
+            const std::string tag = std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+            // A window past the render's own length (0.7 s): the render goes on to its end, where the voice brightens at
+            // 1 s and ends at 3 s, and the whole render's metrics keep the length they have without it.
+            ms::Request past = r;
+            past.window = { 1.5, 3.5 };
+            const ms::Result own = measured(after, rate, r), longer = measured(after, rate, past);
+            std::printf("a window past the render at %s:\n%s", tag.c_str(), longer.report.c_str());
+            for (const char* m : { "attack_s", "release_s", "voice_end_s", "decay_s", "step", "click", "alerts" })
+                P.eq("window.past_keeps_" + std::string(m) + "_" + tag, at(own.values, m) == at(longer.values, m) ? 1 : 0, 1);
+            const std::string step = lineOf(own.report, "Largest step");
+            P.eq("window.past_step_line_" + tag, !step.empty() && step == lineOf(longer.report, "Largest step") ? 1 : 0, 1);
+            P.eq("window.past_says_" + tag, has(longer.report, "the render goes on to its end, the steps, the decay, the release and "
+                                                               "the alerts measured over the 0.70 s it has without it")
+                                                && has(longer.report, "Release: still within 60 dB of the held level 0.50 s after")
+                                                ? 1 : 0, 1);
+            // A window between two calls' starts (blocks of 2048: 24576 and 26624 at 48 kHz): the call that renders it
+            // is timed, not none.
+            ms::Request between = r;
+            between.block = 2048;
+            between.window = { 0.5125, 0.5225 };
+            const ms::Result timed = measured(after, rate, between);
+            const std::string cpu = lineOf(timed.report, "CPU: ");
+            std::printf("%s (%.4f%%)\n", cpu.c_str(), at(timed.values, "cpu_percent"));
+            P.eq("window.cpu_timed_" + tag, has(cpu, "CPU: the window takes ") && !has(cpu, "for 0.00 s") ? 1 : 0, 1);
+
+            // view_sound over a window shorter than its spectrum's frame (8192 points: 0.17 s at 48 kHz), just before the
+            // voice brightens at 1 s: the sine alone, none of the harmonics after it.
+            ms::ViewRequest before;
+            before.render = r;
+            before.render.tailSeconds = 1.5f;
+            before.render.rate = rate;
+            before.render.window = { 0.95, 0.98 };
+            const ms::View sv = ms::view(after, before);
+            const double pos = std::log(16.0 * noteHz(48) / sv.loHz) / std::log(sv.hiHz / sv.loHz) * static_cast<double>(sv.spectrum.size());
+            const float sixteenth = sv.spectrum[static_cast<std::size_t>(std::clamp(pos, 0.0, static_cast<double>(sv.spectrum.size() - 1)))];
+            std::printf("view_sound over 0.95 to 0.98 s at %s: the 16th harmonic's column %.1f dB\n", tag.c_str(), sixteenth);
+            P.le("window.view_short_before_" + tag, sixteenth, -80.0);
+        }
+
         // A window inside a held note: the notes' own spans as without it.
         ms::Request note;
         note.notes = { 48 };
@@ -671,6 +721,29 @@ PROBE(dsp, metrics)
                                                      && !std::isnan(at(gone.values, "impulse_peak_db")) ? 1 : 0, 1);
             P.eq("window.report_" + tag, has(l.report, "Window: 0.60 to 0.95 s of the sine's and the noise's renders")
                                             && has(l.report, "Sine 220 Hz at -12.0 dBFS for 1.00 s, in the window: ") ? 1 : 0, 1);
+            // One that holds under 0.01 s of them (0.995 s to their end at 1 s): not measured either, saying why.
+            ms::Request edge = r;
+            edge.window = { 0.995, 1.5 };
+            const ms::Result little = measured(fader, rate, edge);
+            const auto why = little.unmeasured.find("noise_gain_db");
+            P.eq("window.short_unmeasured_" + tag, std::isnan(at(little.values, "sine_gain_db")) && std::isnan(at(little.values, "thd_db"))
+                                                      && why != little.unmeasured.end()
+                                                      && has(why->second, "the window holds less than 0.01 s of the sine and the noise "
+                                                                          "(they end at hold_seconds, 1.00 s)")
+                                                      ? 1 : 0, 1);
+            // view_sound's sine over 30 ms (shorter than its spectrum's frame: 0.17 s at 48 kHz) just before the move at
+            // 0.5 s and just after: its spectrum's level 6 dB apart, nothing of the one in the other.
+            ms::ViewRequest shortly;
+            shortly.render = r;
+            shortly.render.rate = rate;
+            shortly.input = ms::ViewInput::sine;
+            shortly.render.window = { 0.45, 0.48 };
+            const ms::View before = ms::view(fader, shortly);
+            shortly.render.window = { 0.6, 0.63 };
+            const ms::View after = ms::view(fader, shortly);
+            std::printf("view_sound's sine over 30 ms at %s: spectrum top %.2f dB before the move, %.2f after\n", tag.c_str(),
+                        before.spectrumTop, after.spectrumTop);
+            P.near("window.view_short_before_" + tag, before.spectrumTop - after.spectrumTop, 6.02, 0.2);
         }
         // view_sound's sine through the fader: the RMS over the window, at -6 dB.
         ms::ViewRequest vr;

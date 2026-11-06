@@ -8,14 +8,15 @@
 //   spectrogram    `rows` rows on a log frequency axis from 20 Hz to 20 kHz (or the Nyquist frequency) by `columns`
 //                  columns in time (a 4096-point Blackman-Harris window about each), in dB under the loudest cell,
 //                  down to -120
-//   the spectrum   the held part's average (Welch: 8192-point Blackman-Harris windows, half overlapped), on the same
-//                  axis, in dB under its loudest; with one note, its harmonics' frequencies, to mark
+//   the spectrum   the held part's average (Welch: 8192-point Blackman-Harris windows, half overlapped; a part shorter
+//                  than one, one window over it alone, nothing from outside it), on the same axis, in dB under its
+//                  loudest; with one note, its harmonics' frequencies, to mark
 //   a close-up     a few cycles of the held sound (four of the lowest note; an effect's: of its sine, or 10 ms), or the
 //                  stretch from..to that the request asks for
 //
-// A request's window (Request::window, Measure.h: seconds of the render, which then lasts at least until its end)
-// replaces the held part: the average spectrum and the RMS are over it, the default close-up is at its middle, and the
-// picture shades it (View::windowFrom, windowTo).
+// A request's window (Request::window, Measure.h: seconds of the render, the tail included, for an effect too, and the
+// render then lasts at least until its end) replaces the held part: the average spectrum and the RMS are over it, the
+// default close-up is at its middle, and the picture shades it (View::windowFrom, windowTo).
 //
 // view() is renderSound() then analyse(): a sound recorded instead of rendered (the capture lane's) is analysed and
 // drawn the same way. A request's scenario (Measure.h) plays as measure_output plays it: an instrument's phrase (the

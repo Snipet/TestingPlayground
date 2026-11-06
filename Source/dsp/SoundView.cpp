@@ -47,10 +47,7 @@ namespace playground::measure
             {
                 // A four-term Blackman-Harris window: its sidelobes under -92 dB, so a pure tone shows as one line.
                 for (std::size_t i = 0; i < size_; ++i)
-                {
-                    const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(size_);
-                    window_[i] = 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
-                }
+                    window_[i] = taper(i, size_);
                 for (std::size_t k = 0; k < twiddle_.size(); ++k)     // e^(-2 pi i k / half), the half-size FFT's
                 {
                     const double a = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(half_);
@@ -75,13 +72,55 @@ namespace playground::measure
             void power(const std::vector<float>& l, const std::vector<float>& r, long centre, std::vector<double>& p)
             {
                 const long from = centre - static_cast<long>(half_);
-                const auto x = [&](std::size_t i) {
-                    const long at = from + static_cast<long>(i);
-                    return at >= 0 && at < static_cast<long>(l.size())
-                               ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
-                                     * window_[i]
-                               : 0.0;
-                };
+                transform(
+                    [&](std::size_t i) {
+                        const long at = from + static_cast<long>(i);
+                        return at >= 0 && at < static_cast<long>(l.size())
+                                   ? 0.5 * (static_cast<double>(l[static_cast<std::size_t>(at)]) + r[static_cast<std::size_t>(at)])
+                                         * window_[i]
+                                   : 0.0;
+                    },
+                    p);
+            }
+
+            // A span shorter than the frame, [from, to), alone: tapered over its own length (the same window, in as many
+            // points), the rest of the frame 0 (measure::spectrum's way), its power scaled by the whole frame's taper
+            // over this one's, squared, so that a tone reads as it does in a whole frame.
+            void powerOver(const std::vector<float>& l, const std::vector<float>& r, std::size_t from, std::size_t to,
+                           std::vector<double>& p)
+            {
+                const std::size_t end = std::min(to, l.size()), n = end > from ? std::min(end - from, size_) : 0;
+                short_.resize(n);
+                double whole = 0.0, part = 0.0;
+                for (const double w : window_)
+                    whole += w;
+                for (std::size_t i = 0; i < n; ++i)
+                {
+                    short_[i] = taper(i, n);
+                    part += short_[i];
+                }
+                transform(
+                    [&](std::size_t i) {
+                        return i < n ? 0.5 * (static_cast<double>(l[from + i]) + r[from + i]) * short_[i] : 0.0;
+                    },
+                    p);
+                const double gain = part > 0.0 ? (whole / part) * (whole / part) : 0.0;
+                for (double& x : p)
+                    x *= gain;
+            }
+
+        private:
+            // A four-term Blackman-Harris window of n points, at point i.
+            static double taper(std::size_t i, std::size_t n)
+            {
+                const double t = 2.0 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(n);
+                return 0.35875 - 0.48829 * std::cos(t) + 0.14128 * std::cos(2.0 * t) - 0.01168 * std::cos(3.0 * t);
+            }
+
+            // The frame x(0) .. x(size - 1) into `p`: bins 0 to size / 2.
+            template <typename X>
+            void transform(const X& x, std::vector<double>& p)
+            {
                 for (std::size_t m = 0; m < half_; ++m)               // in bit-reversed order, for the FFT in place
                     z_[reverse_[m]] = { x(2 * m), x(2 * m + 1) };
                 for (std::size_t len = 2; len <= half_; len <<= 1)
@@ -105,9 +144,8 @@ namespace playground::measure
                 }
             }
 
-        private:
             std::size_t size_, half_;
-            std::vector<double> window_;
+            std::vector<double> window_, short_;
             std::vector<std::complex<double>> z_, twiddle_, split_;
             std::vector<std::size_t> reverse_;
         };
@@ -454,22 +492,28 @@ namespace playground::measure
         }
         normalise(v.cells);
 
-        // The average spectrum of the held part (an impulse's or silence's: all of it), or of the window.
+        // The average spectrum of the held part (an impulse's or silence's: all of it), or of the window: Welch's, or
+        // one frame over it alone when it is shorter than a frame (nothing from outside it).
         {
             constexpr std::size_t kWelch = 8192;
             const std::size_t from = spectrumFrom, to = heldTo;
             std::vector<double> sum(kWelch / 2 + 1, 0.0), p;
             Spectra spectra(kWelch);
             int frames = 0;
-            for (std::size_t a = from; a + kWelch <= to || frames == 0; a += kWelch / 2)
+            if (to < from + kWelch)
             {
-                spectra.power(L, R, static_cast<long>(a + kWelch / 2), p);
-                for (std::size_t k = 0; k < sum.size(); ++k)
-                    sum[k] += p[k];
-                ++frames;
-                if (a + kWelch > to)
-                    break;
+                spectra.powerOver(L, R, from, to, p);
+                sum = p;
+                frames = 1;
             }
+            else
+                for (std::size_t a = from; a + kWelch <= to; a += kWelch / 2)
+                {
+                    spectra.power(L, R, static_cast<long>(a + kWelch / 2), p);
+                    for (std::size_t k = 0; k < sum.size(); ++k)
+                        sum[k] += p[k];
+                    ++frames;
+                }
             const int columns = std::max(32, request.spectrumColumns);
             v.spectrum.assign(static_cast<std::size_t>(columns), 0.0f);
             Axis(rate, kWelch, v.loHz, v.hiHz, columns).place(sum, v.spectrum.data());

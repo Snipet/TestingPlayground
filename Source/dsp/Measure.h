@@ -34,13 +34,15 @@
 //
 // A request's window (Window: the render settings' `window`, from and to in seconds) replaces the held part, for a
 // part of the sound that no note holds (a key that is a control, a sound that goes on after its note-off, the stretch
-// after a dial moves). An instrument's is in seconds of its render, which then lasts at least until the window's end:
-// every metric "while held" and peak_db measure it (the CPU's too), and the others keep their own spans (attack_s
-// from the first note-on over the notes, release_s from the last note-off under the notes' held RMS, the whole
-// render's, the chord's and the sixteen voices' own renders). An effect's is in seconds of the sine's and the noise's
-// renders (each from the program as new, the signal from 0), cut at their end (hold_seconds): their metrics measure
-// it, sine_peak_db too; the impulse's, silence's and the whole renders' keep theirs. A window that holds none of what a
-// metric needs (an effect's that starts after hold_seconds) leaves it unmeasured, saying why (Result::unmeasured).
+// after a dial moves); at least kMinWindowSeconds long (the tools refuse a shorter one). An instrument's is in seconds
+// of its render, which then lasts at least until the window's end: every metric "while held" and peak_db measure it
+// (the CPU's too: the calls that render it), and the others keep their own spans as they are without it (attack_s from
+// the first note-on over the notes, release_s from the last note-off under the notes' held RMS, the whole render's
+// over the length it has without the window (Timeline::plain), the chord's and the sixteen voices' own renders). An
+// effect's is in seconds of the sine's and the noise's renders (each from the program as new, the signal from 0), cut
+// at their end (hold_seconds): their metrics measure it, sine_peak_db too; the impulse's, silence's and the whole
+// renders' keep theirs. A window that holds too little of what a metric needs (an effect's that starts after
+// hold_seconds, or less than kMinWindowSeconds before it) leaves it unmeasured, saying why (Result::unmeasured).
 // view_sound's average spectrum and RMS are over it (SoundView.h).
 //
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
@@ -150,6 +152,8 @@ namespace playground::measure
 
     // The seconds a request's metrics measure, from the render's start (above): none while `to` is not after `from`.
     inline constexpr double kMaxWindowSeconds = 2.0 * kMaxPlaySeconds;   // the moves' end and the longest tail
+    inline constexpr double kMinWindowSeconds = 0.01;                    // the least a window holds (16 samples or more
+                                                                         // at any rate: a spectrum's least frame)
     struct Window
     {
         double from = 0.0, to = 0.0;
@@ -235,6 +239,8 @@ namespace playground::measure
     struct Timeline
     {
         std::size_t length = 0;                   // samples rendered
+        std::size_t plain = 0;                    // the samples it renders without the request's window, when the window
+                                                  // makes it longer (0: length); a call ends there (render())
         std::size_t heldUntil = 0;                // the last note-off (an effect: its input's end)
         std::size_t firstNote = 0;                // the first note-on
         std::vector<std::pair<std::size_t, Event>> events;          // the MIDI, by sample (Event::offset unused)
