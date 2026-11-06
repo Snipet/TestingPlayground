@@ -323,7 +323,9 @@ namespace playground::projectstore
 
         // The folder's project files (*.fmproject, the extension's case aside), each with its time and size. On the Mac
         // read with readdir and one look a file: JUCE's listing asks macOS of every file whether it is hidden, and the
-        // time and the size were a look each, about 50 us a file in all on a busy Mac.
+        // time and the size were a look each, about 50 us a file in all on a busy Mac. On Windows JUCE's listing, whose
+        // entries hold the time and the size from the folder's own records (as look() reads them, the same
+        // conversion), so no look more.
         struct Found
         {
             juce::File file;
@@ -334,9 +336,9 @@ namespace playground::projectstore
         {
             std::vector<Found> out;
 #if defined(_WIN32)
-            for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension))
-                if (Found x{ f, 0, 0, {} }; look(f, x.modified, x.size, x.id))
-                    out.push_back(std::move(x));
+            for (const juce::DirectoryEntry& e :
+                 juce::RangedDirectoryIterator(dir, false, juce::String("*") + kExtension, juce::File::findFiles))
+                out.push_back({ e.getFile(), e.getModificationTime().toMilliseconds(), e.getFileSize(), {} });
 #else
             DIR* d = ::opendir(dir.getFullPathName().toRawUTF8());
             if (d == nullptr)
