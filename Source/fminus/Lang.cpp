@@ -3725,6 +3725,48 @@ namespace playground::lang
         return c;
     }
 
+    // ---- an instrument's Shared hooks -----------------------------------------------------------------------------------
+    std::array<SharedHook, kSharedHooks> sharedHooks(const Service& s)
+    {
+        struct Want
+        {
+            const char* name;
+            const char* declaration;
+            std::vector<std::string> params;     // each parameter's type
+        };
+        const Want wants[kSharedHooks] = {
+            { "tick", "void tick(int n)", { "int" } },
+            { "noteOn", "void noteOn(float note, float velocity)", { "float", "float" } },
+            { "noteOff", "void noteOff(float note)", { "float" } },
+        };
+        // A parameter as declared ("float note"; "float" without a name) without its name.
+        const auto typeOf = [](const std::string& p) {
+            const std::size_t space = p.find_last_of(' ');
+            return space == std::string::npos ? p : p.substr(0, space);
+        };
+        std::array<SharedHook, kSharedHooks> out{};
+        for (int k = 0; k < kSharedHooks; ++k)
+        {
+            const Want& w = wants[k];
+            SharedHook& h = out[static_cast<std::size_t>(k)];
+            h.name = w.name;
+            h.declaration = w.declaration;
+            for (const Symbol& m : s.symbols())
+            {
+                if (m.kind != Kind::method || !m.body || m.container != "Shared" || m.name != w.name)
+                    continue;
+                bool same = m.type == "void" && m.params.size() == w.params.size();
+                for (std::size_t a = 0; same && a < w.params.size(); ++a)
+                    same = typeOf(m.params[a]) == w.params[a];
+                (same ? h.declared : h.otherwise) = true;
+                h.file = m.file;
+                h.at = m.at;
+                break;
+            }
+        }
+        return out;
+    }
+
     // ---- occurrences ------------------------------------------------------------------------------------------------
     std::vector<Range> Service::occurrences(int file, Pos at) const
     {
