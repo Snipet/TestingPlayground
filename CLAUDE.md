@@ -482,10 +482,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   compared as the editor holds them (`TextEditor::sanitise`). The program (the first file) is never deleted from the
   folder's side; a name `validFileName` refuses, a 17th file, an editor's swap file stay there (a note); host.fm and a
   library file an `#include` names that the draft lacks are read-only copies, never taken (host.fm in the draft would
-  shadow the plugin's). One instance a folder (`.fmsync-lock`, flock); the folder is the instance's, so a project
-  opened or a state loaded flows out as any edit (a save not yet taken is then a conflict). The audio thread never
-  sees any of it; the editor reads it through `EditorPort::folder` and `folderRevision`. Probes never launch an app:
-  `openFolder` goes to `Processor::setFolderLauncher`'s hook, and the default refuses under a probe's sandbox.
+  shadow the plugin's); a copy as written is a base, so a draft file of its name (a project's own) is the plugin's
+  change over it, and a draft file that becomes a copy is written over quietly when the folder's is as last agreed.
+  One instance a folder (`.fmsync-lock`, flock); the folder is the instance's, so a project opened or a state loaded
+  flows out as any edit (a save not yet taken is then a conflict). The audio thread never sees any of it; the editor
+  reads it through `EditorPort::folder` and `folderRevision`. Probes never launch an app: `openFolder` goes to
+  `Processor::setFolderLauncher`'s hook, and the default refuses under a probe's sandbox.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
