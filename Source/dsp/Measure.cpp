@@ -233,6 +233,68 @@ namespace playground::measure
             return out;
         }
 
+        // The report's bands (Request::spectrum), `what` the part they are of ("while held", "of the noise"): each band's
+        // level after its centre up to the Nyquist frequency ("31.5: -62.1, 63: -48.0"), or with `in` (an effect's) its
+        // gain, out against in ("none" where nothing goes in); a semitone's an octave a group, after its first note
+        // ("C3 131: -20 -61 -48 ..."), a level in whole dB.
+        std::string bandsLine(Bands kind, const std::string& what, const std::vector<double>& out,
+                              const std::vector<double>* in = nullptr)
+        {
+            const std::vector<Band> bands = bandsOf(kind);
+            const bool semitone = kind == Bands::semitone;
+            const std::string text = std::string(kind == Bands::octave ? "Octave" : kind == Bands::third ? "Third-octave" : "Semitone")
+                                   + " bands " + what + (in != nullptr ? ", out against in" : "")
+                                   + (semitone ? ", a point a MIDI note, an octave a group after its first note" : "") + " ("
+                                   + (semitone ? "" : "Hz: ") + (in != nullptr ? "gain dB" : "dBFS") + "; "
+                                   + fmt("%g s Hann frames): ", kBandSeconds);
+            std::string list;
+            for (std::size_t k = 0; k < bands.size() && k < out.size(); ++k)
+            {
+                if (std::isnan(out[k]))
+                    break;                                   // above the Nyquist frequency
+                const bool none = in != nullptr && !((*in)[k] > -200.0);
+                const double v = in != nullptr ? out[k] - (*in)[k] : out[k];
+                const std::string value = none ? std::string("none") : fmt(semitone && in == nullptr ? "%.0f" : "%.1f", v);
+                if (!semitone)
+                    list += (list.empty() ? "" : ", ") + bandName(bands[k].hz) + ": " + value;
+                else if (k == 0 || bands[k].note % 12 == 0)
+                    list += (list.empty() ? "" : "; ") + noteName(bands[k].note) + " "
+                          + fmt(bands[k].hz < 100.0 ? "%.1f" : "%.0f", bands[k].hz) + ": " + value;
+                else
+                    list += " " + value;
+            }
+            return text + list + ".\n";
+        }
+
+        // A metric's value as the metrics line writes it: a number in its unit ("inf" for one that never came).
+        std::string numberText(const MetricInfo& m, double v)
+        {
+            if (std::isinf(v))
+                return v > 0.0 ? "inf" : "-inf";
+            if (std::isnan(v))
+                return "nan";
+            const std::string unit = m.unit;
+            if (unit == "dBFS" || unit == "dB" || unit == "cents")
+                return fmt("%.1f", v);
+            if (unit == "Hz")
+                return fmt(std::fabs(v) >= 1000.0 ? "%.0f" : "%.1f", v);
+            if (unit == "s")
+                return fmt("%.3f", v);
+            if (unit == "ms")
+                return fmt("%.2f", v);
+            return fmt("%.4g", v);                           // "%" and a ratio or a flag
+        }
+
+        // The values measured, name=value in the metrics' order: the report's last line, in the names checks use.
+        std::string metricsLine(const Metrics& values)
+        {
+            std::string out;
+            for (const MetricInfo& m : metrics())
+                if (const auto it = values.find(m.name); it != values.end())
+                    out += (out.empty() ? "" : " ") + std::string(m.name) + "=" + numberText(m, it->second);
+            return out.empty() ? std::string() : "Metrics: " + out + "\n";
+        }
+
         // ---- the dials -------------------------------------------------------------------------------------------
         struct Dials
         {
@@ -575,61 +637,151 @@ namespace playground::measure
         return joined;
     }
 
+    namespace
+    {
+        // spectrum()'s and stereoSpectrum()'s Welch: with `y` null, x's power; else the mean of x's and y's (the channels
+        // as one FFT's real and imaginary parts: bin k's (|Z_k|^2 + |Z_(n-k)|^2) / 4).
+        Spectrum welch(const std::vector<float>& x, const std::vector<float>* y, double rate, const std::vector<Span>& spans,
+                       Taper taper, double seconds)
+        {
+            constexpr std::size_t kLeast = 16;               // a span shorter than this has no frame
+            Spectrum s;
+            s.rate = rate;
+            const std::size_t frame = std::max<std::size_t>(kLeast, static_cast<std::size_t>(std::llround(seconds * rate)));
+            std::size_t n = 1;
+            while (n < frame)
+                n *= 2;
+            s.hzPerBin = rate / static_cast<double>(n);
+            s.power.assign(n / 2 + 1, 0.0);
+            const std::size_t size = y != nullptr ? std::min(x.size(), y->size()) : x.size();
+            std::size_t shortest = frame;
+            for (const auto& [from, to] : spans)
+                if (const std::size_t end = std::min(to, size); end >= from + kLeast)
+                    shortest = std::min(shortest, end - from);
+            s.resolutionHz = rate / static_cast<double>(shortest);
+            std::vector<std::complex<double>> a(n);
+            std::vector<double> w;
+            double w2 = 0.0, total = 0.0;
+            for (const auto& [from, to] : spans)
+            {
+                const std::size_t end = std::min(to, size);
+                if (end < from + kLeast)
+                    continue;
+                const std::size_t len = end - from, m = std::min(len, frame);
+                // Frames spread evenly from the span's start to its end, at most half a frame apart.
+                const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+                if (w.size() != m)
+                {
+                    w.resize(m);
+                    w2 = 0.0;
+                    for (std::size_t i = 0; i < m; ++i)
+                    {
+                        w[i] = taperAt(taper, i, m);
+                        w2 += w[i] * w[i];
+                    }
+                }
+                const double weight = static_cast<double>(len) / static_cast<double>(count) / w2;
+                for (std::size_t f = 0; f < count; ++f)
+                {
+                    const std::size_t at = from + (count == 1 ? 0 : (len - m) * f / (count - 1));
+                    if (y == nullptr)
+                    {
+                        for (std::size_t i = 0; i < n; ++i)
+                            a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i], 0.0) : std::complex<double>();
+                        fftInPlace(a);
+                        for (std::size_t k = 0; k < s.power.size(); ++k)
+                            s.power[k] += weight * std::norm(a[k]);
+                    }
+                    else
+                    {
+                        for (std::size_t i = 0; i < n; ++i)
+                            a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i],
+                                                                static_cast<double>((*y)[at + i]) * w[i])
+                                         : std::complex<double>();
+                        fftInPlace(a);
+                        for (std::size_t k = 0; k < s.power.size(); ++k)
+                            s.power[k] += weight * 0.25 * (std::norm(a[k]) + std::norm(a[(n - k) % n]));
+                    }
+                    ++s.frames;
+                }
+                total += static_cast<double>(len);
+            }
+            if (total > 0.0)
+                for (double& p : s.power)
+                    p /= total;
+            return s;
+        }
+    }
+
     Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper, double seconds)
     {
-        constexpr std::size_t kLeast = 16;                   // a span shorter than this has no frame
-        Spectrum s;
-        s.rate = rate;
-        const std::size_t frame = std::max<std::size_t>(kLeast, static_cast<std::size_t>(std::llround(seconds * rate)));
-        std::size_t n = 1;
-        while (n < frame)
-            n *= 2;
-        s.hzPerBin = rate / static_cast<double>(n);
-        s.power.assign(n / 2 + 1, 0.0);
-        std::size_t shortest = frame;
-        for (const auto& [from, to] : spans)
-            if (const std::size_t end = std::min(to, x.size()); end >= from + kLeast)
-                shortest = std::min(shortest, end - from);
-        s.resolutionHz = rate / static_cast<double>(shortest);
-        std::vector<std::complex<double>> a(n);
-        std::vector<double> w;
-        double w2 = 0.0, total = 0.0;
-        for (const auto& [from, to] : spans)
-        {
-            const std::size_t end = std::min(to, x.size());
-            if (end < from + kLeast)
-                continue;
-            const std::size_t len = end - from, m = std::min(len, frame);
-            // Frames spread evenly from the span's start to its end, at most half a frame apart.
-            const std::size_t count = len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
-            if (w.size() != m)
-            {
-                w.resize(m);
-                w2 = 0.0;
-                for (std::size_t i = 0; i < m; ++i)
-                {
-                    w[i] = taperAt(taper, i, m);
-                    w2 += w[i] * w[i];
-                }
-            }
-            const double weight = static_cast<double>(len) / static_cast<double>(count) / w2;
-            for (std::size_t f = 0; f < count; ++f)
-            {
-                const std::size_t at = from + (count == 1 ? 0 : (len - m) * f / (count - 1));
-                for (std::size_t i = 0; i < n; ++i)
-                    a[i] = i < m ? std::complex<double>(static_cast<double>(x[at + i]) * w[i], 0.0) : std::complex<double>();
-                fftInPlace(a);
-                for (std::size_t k = 0; k < s.power.size(); ++k)
-                    s.power[k] += weight * std::norm(a[k]);
-                ++s.frames;
-            }
-            total += static_cast<double>(len);
-        }
-        if (total > 0.0)
-            for (double& p : s.power)
-                p /= total;
-        return s;
+        return welch(x, nullptr, rate, spans, taper, seconds);
     }
+
+    Spectrum stereoSpectrum(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                            Taper taper, double seconds)
+    {
+        return welch(l, &r, rate, spans, taper, seconds);
+    }
+
+    double Spectrum::bandPower(double lo, double hi) const
+    {
+        const double nyquist = 0.5 * rate;
+        if (power.size() < 2 || !(hzPerBin > 0.0) || !(lo < nyquist))
+            return std::nan("");
+        // Bin k spans k - 0.5 to k + 0.5 bins (the last, the Nyquist frequency's, half of that), and the band takes its
+        // share; the one-sided bins count twice (Parseval's 2 / n), the Nyquist frequency's half once.
+        const double top = static_cast<double>(power.size() - 1);
+        const double a = lo / hzPerBin, b = std::min(hi, nyquist) / hzPerBin;
+        double sum = 0.0;
+        for (auto k = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(a + 0.5))); k < power.size(); ++k)
+        {
+            const double k0 = static_cast<double>(k) - 0.5, k1 = std::min(static_cast<double>(k) + 0.5, top);
+            if (k0 >= b)
+                break;
+            if (const double share = std::min(k1, b) - std::max(k0, a); share > 0.0)
+                sum += share * power[k];
+        }
+        return sum / top;                                    // 2 / n, n = 2 top
+    }
+
+    std::vector<Band> bandsOf(Bands kind)
+    {
+        // A third's nominal centres (IEC 61260's names) for 1 kHz x 2^(k/3), k = -17 (20 Hz) to 13 (20 kHz).
+        constexpr std::array<double, 31> kThirds{ 20.0,   25.0,   31.5,   40.0,   50.0,   63.0,   80.0,    100.0,   125.0,  160.0, 200.0,
+                                                  250.0,  315.0,  400.0,  500.0,  630.0,  800.0,  1000.0,  1250.0,  1600.0, 2000.0,
+                                                  2500.0, 3150.0, 4000.0, 5000.0, 6300.0, 8000.0, 10000.0, 12500.0, 16000.0, 20000.0 };
+        std::vector<Band> out;
+        const auto add = [&](double nominal, double centre, double half, int note) {
+            out.push_back({ nominal, centre / half, centre * half, note });
+        };
+        if (kind == Bands::octave)
+            for (std::size_t k = 0; k < kOctaveBands.size(); ++k)
+                add(kOctaveBands[k], 1000.0 * std::exp2(static_cast<double>(k) - 5.0), std::numbers::sqrt2, -1);
+        else if (kind == Bands::third)
+            for (std::size_t k = 0; k < kThirds.size(); ++k)
+                add(kThirds[k], 1000.0 * std::exp2((static_cast<double>(k) - 17.0) / 3.0), std::exp2(1.0 / 6.0), -1);
+        else if (kind == Bands::semitone)
+            for (int note = 16; note <= 135; ++note)
+            {
+                const double hz = 440.0 * std::exp2(static_cast<double>(note - 69) / 12.0);
+                add(hz, hz, std::exp2(1.0 / 24.0), note);
+            }
+        return out;
+    }
+
+    std::vector<double> bandLevels(const Spectrum& s, Bands kind)
+    {
+        std::vector<double> out;
+        for (const Band& b : bandsOf(kind))
+        {
+            const double p = s.bandPower(b.lo, b.hi);
+            out.push_back(std::isnan(p) ? p : p > 1e-24 ? 10.0 * std::log10(p) : -240.0);
+        }
+        return out;
+    }
+
+    std::string bandName(double hz) { return hz >= 1000.0 ? fmt("%g", hz / 1000.0) + "k" : fmt("%g", hz); }
 
     double Spectrum::centroid(double lo, double hi) const
     {
@@ -2101,6 +2253,10 @@ namespace playground::measure
                 }
                 out += "\n";
             }
+            // The band levels asked for (Request::spectrum), of both channels over the held part (or the window).
+            if (request.spectrum != Bands::none)
+                out += bandsLine(request.spectrum, windowed ? "in the window" : "while held",
+                                 bandLevels(stereoSpectrum(r.out.l, r.out.r, rate, held), request.spectrum));
 
             if (need({ "step", "click" }))
             {
@@ -2364,7 +2520,7 @@ namespace playground::measure
                         warnings.push_back("Peaks above 0 dBFS from a -12 dBFS sine: the effect adds a lot of gain.");
                 }
             }
-            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" });
+            const bool noiseWanted = need({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" }) || request.spectrum != Bands::none;
             if (noiseWanted && outside)
             {
                 unmeasured({ "noise_gain_db", "centroid_in_hz", "centroid_out_hz" });
@@ -2393,6 +2549,13 @@ namespace playground::measure
                          + dbfs(outRms) + (outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
                          + ", left/right correlation " + fmt("%.2f", corr) + "; spectral centroid " + fmt("%.0f Hz", cin)
                          + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                    // Its band levels asked for (Request::spectrum): the effect's gain in each, out against in.
+                    if (request.spectrum != Bands::none)
+                    {
+                        const std::vector<double> bandsIn = bandLevels(stereoSpectrum(noise.l, noise.r, rate, held), request.spectrum);
+                        out += bandsLine(request.spectrum, windowed ? "of the noise in the window" : "of the noise",
+                                         bandLevels(stereoSpectrum(o.l, o.r, rate, held), request.spectrum), &bandsIn);
+                    }
                 }
             }
             if (everything || need({ "impulse_peak_db", "impulse_delay_ms", "impulse_decay_s" }))
@@ -2471,6 +2634,12 @@ namespace playground::measure
                          + dbfs(inRms) + "; out peak " + dbfs(peak(o, a, b)) + ", RMS " + dbfs(outRms)
                          + (inRms > 1e-9 && outRms > 1e-9 ? fmt(" (gain %+.1f dB)", toDb(outRms / inRms)) : std::string())
                          + "; spectral centroid " + fmt("%.0f Hz", cin) + " in, " + fmt("%.0f Hz", cout) + " out.\n";
+                if (request.spectrum != Bands::none && a < b && !(windowed && tooShort(part, rate)))
+                {
+                    const std::vector<double> bandsIn = bandLevels(stereoSpectrum(own.l, own.r, rate, { part }), request.spectrum);
+                    out += bandsLine(request.spectrum, windowed ? "of its own input in the window" : "of its own input",
+                                     bandLevels(stereoSpectrum(o.l, o.r, rate, { part }), request.spectrum), &bandsIn);
+                }
             }
             if (everything)
             {
@@ -2494,6 +2663,7 @@ namespace playground::measure
         }
         for (const std::string& w : warnings)
             out += "Note: " + w + "\n";
+        out += metricsLine(v);                               // the numbers, by the names checks use
         res.report = std::move(out);
         return res;
     }

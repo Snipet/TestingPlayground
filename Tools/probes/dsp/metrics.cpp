@@ -52,6 +52,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -788,6 +789,205 @@ PROBE(dsp, metrics)
         if constexpr (!kInstrument)
             P.eq("window.check_outside_says_why", res.size() == 3 && !res[2].measured
                                                       && has(res[2].text, "not measured: the window starts after the sine") ? 1 : 0, 1);
+    }
+
+    // ---- BANDS ---------------------------------------------------------------------------------------------------------
+    {
+        // A report's bands line (Request::spectrum) as numbers: an octave's and a third's by name, a semitone's in order.
+        const auto bandsIn = [](const std::string& report, const char* start) {
+            std::vector<std::pair<std::string, double>> out;
+            const std::size_t a = report.find(start);
+            if (a == std::string::npos)
+                return out;
+            const std::size_t open = report.find("): ", a), end = report.find(".\n", a);
+            if (open == std::string::npos || end == std::string::npos)
+                return out;
+            const std::string list = report.substr(open + 3, end - open - 3);
+            for (std::size_t p = 0; p < list.size();)
+            {
+                std::size_t q = list.find_first_of(";,", p);
+                if (q == std::string::npos)
+                    q = list.size();
+                const std::string entry = list.substr(p, q - p);
+                const std::size_t colon = entry.find(": ");
+                if (colon != std::string::npos)
+                {
+                    const std::string name = entry.substr(entry.find_first_not_of(' '), colon - entry.find_first_not_of(' '));
+                    std::size_t v = colon + 2;
+                    while (v < entry.size())
+                    {
+                        const std::size_t w = std::min(entry.find(' ', v), entry.size());
+                        const std::string number = entry.substr(v, w - v);
+                        out.push_back({ out.empty() || v == colon + 2 ? name : std::string(), number == "none" ? std::nan("") : std::strtod(number.c_str(), nullptr) });
+                        v = w + 1;
+                    }
+                }
+                p = q + 1;
+            }
+            return out;
+        };
+        const auto named = [](const std::vector<std::pair<std::string, double>>& bands, const std::string& name) {
+            for (const auto& [n, v] : bands)
+                if (n == name)
+                    return v;
+            return std::nan("");
+        };
+        if constexpr (kInstrument)
+        {
+            // A sine at note 59 (246.9 Hz, inside the 250 Hz third and octave): its band reads its RMS, the same at 48 and
+            // 192 kHz; its semitone point too, the notes beside it far under.
+            const pg::Sources sine = pg::singleFile(kTwoToneVoice);
+            std::array<double, 2> third{}, semitone{};
+            int k = 0;
+            for (const double rate : { 48000.0, 192000.0 })
+            {
+                const std::string tag = std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+                ms::Request r;
+                r.notes = { 59 };
+                r.holdSeconds = 1.0f;
+                r.tailSeconds = 0.2f;
+                r.spectrum = ms::Bands::third;
+                const ms::Result t = measured(sine, rate, r);
+                r.spectrum = ms::Bands::octave;
+                const ms::Result o = measured(sine, rate, r);
+                r.spectrum = ms::Bands::semitone;
+                const ms::Result s = measured(sine, rate, r);
+                const double rms = at(t.values, "rms_db");
+                const auto thirds = bandsIn(t.report, "Third-octave bands while held (Hz: dBFS; 0.4 s Hann frames): ");
+                const auto octaves = bandsIn(o.report, "Octave bands while held (Hz: dBFS; 0.4 s Hann frames): ");
+                const auto notes = bandsIn(s.report, "Semitone bands while held, a point a MIDI note");
+                std::printf("a sine at note 59 at %s: RMS %.2f dBFS; 250 Hz third %.2f, octave %.2f; semitone 58 %.1f, 59 %.2f, 60 "
+                            "%.1f (%zu thirds, %zu octaves, %zu semitones)\n%s%s%s",
+                            tag.c_str(), rms, named(thirds, "250"), named(octaves, "250"),
+                            notes.size() > 44 ? notes[42].second : 0.0, notes.size() > 44 ? notes[43].second : 0.0,
+                            notes.size() > 44 ? notes[44].second : 0.0, thirds.size(), octaves.size(), notes.size(), t.report.c_str(),
+                            o.report.c_str(), s.report.c_str());
+                P.eq("bands.counts_" + tag, thirds.size() == 31 && octaves.size() == 10 && notes.size() == 120 ? 1 : 0, 1);
+                P.near("bands.third_reads_rms_" + tag, named(thirds, "250"), rms, 0.1);
+                P.near("bands.octave_reads_rms_" + tag, named(octaves, "250"), rms, 0.1);
+                // notes[0] is note 16: note 59 is the 44th.
+                const double own = notes.size() == 120 ? notes[43].second : std::nan("");
+                P.near("bands.semitone_reads_rms_" + tag, own, rms, 0.6);   // printed in whole dB
+                P.le("bands.semitone_neighbours_under_" + tag,
+                     notes.size() == 120 ? std::max(notes[42].second, notes[44].second) - own : 0.0, -20.0);
+                P.le("bands.third_others_under_" + tag, std::max(named(thirds, "200"), named(thirds, "315")) - rms, -30.0);
+                third[static_cast<std::size_t>(k)] = named(thirds, "250");
+                semitone[static_cast<std::size_t>(k++)] = own;
+            }
+            P.near("bands.rates_third", third[1] - third[0], 0.0, 0.05);
+            P.near("bands.rates_semitone", semitone[1] - semitone[0], 0.0, 0.1);
+
+            // Eight harmonics: the thirds' power sums to the RMS's; white noise's bands grow with their width (3 dB an
+            // octave: the 8 kHz third 9 dB over the 1 kHz one) at both rates.
+            ms::Request r;
+            r.notes = { 48 };
+            r.holdSeconds = 1.0f;
+            r.tailSeconds = 0.2f;
+            r.spectrum = ms::Bands::third;
+            const ms::Result h = measured(pg::singleFile(kHarmonicVoice), 48000.0, r);
+            double sum = 0.0;
+            for (const auto& [n, v] : bandsIn(h.report, "Third-octave bands while held"))
+                sum += std::pow(10.0, v / 10.0);
+            std::printf("eight harmonics: the thirds sum to %.2f dBFS, its RMS %.2f dBFS\n", 10.0 * std::log10(sum), at(h.values, "rms_db"));
+            P.near("bands.thirds_sum_to_rms", 10.0 * std::log10(sum), at(h.values, "rms_db"), 0.2);
+            const pg::Sources noise = pg::withLibraryIncludes(pg::singleFile(kNoiseVoice));
+            for (const double rate : { 48000.0, 192000.0 })
+            {
+                const auto thirds = bandsIn(measured(noise, rate, r).report, "Third-octave bands while held");
+                std::printf("white noise at %.0f Hz: the 1 kHz third %.2f dBFS, the 8 kHz %.2f\n", rate, named(thirds, "1k"),
+                            named(thirds, "8k"));
+                P.near("bands.noise_widths_" + std::to_string(static_cast<int>(rate / 1000.0)) + "k",
+                       named(thirds, "8k") - named(thirds, "1k"), 9.03, 1.0);
+            }
+        }
+        else
+        {
+            // The fader at half (-6.02 dB) over 0.6 to 0.95 s, a window shorter than a frame: every band of the noise out
+            // against in reads it; the two low-passes at 1.5 kHz pass the low bands and read the same at 48 and 192 kHz up
+            // to 2 kHz (above, the program's one-poles differ: at 48 kHz they bend near the Nyquist frequency).
+            const pg::Sources fader = pg::singleFile(kFaderEffect), dark = pg::singleFile(kDarkEffect);
+            std::array<std::vector<std::pair<std::string, double>>, 2> darkBands;
+            int k = 0;
+            for (const double rate : { 48000.0, 192000.0 })
+            {
+                const std::string tag = std::to_string(static_cast<int>(rate / 1000.0)) + "k";
+                ms::Request r;
+                r.holdSeconds = 1.0f;
+                r.tailSeconds = 0.2f;
+                r.window = { 0.6, 0.95 };
+                int at6 = 0, all = 0;
+                for (const ms::Bands kind : { ms::Bands::octave, ms::Bands::third, ms::Bands::semitone })
+                {
+                    r.spectrum = kind;
+                    const ms::Result f = measured(fader, rate, r);
+                    const char* start = kind == ms::Bands::octave ? "Octave bands of the noise in the window, out against in (Hz: gain dB"
+                                      : kind == ms::Bands::third  ? "Third-octave bands of the noise in the window, out against in (Hz: gain dB"
+                                                                  : "Semitone bands of the noise in the window, out against in, a point";
+                    for (const auto& [n, v] : bandsIn(f.report, start))
+                    {
+                        at6 += std::fabs(v + 6.0206) < 0.051 ? 1 : 0;   // printed to 0.1 dB
+                        ++all;
+                    }
+                }
+                std::printf("the fader at half in the window at %s: %d of %d bands at -6.02 dB\n", tag.c_str(), at6, all);
+                P.eq("bands.fader_gain_" + tag, at6, 161);
+                P.eq("bands.fader_counted_" + tag, all, 161);
+                ms::Request d;
+                d.holdSeconds = 1.0f;
+                d.tailSeconds = 0.2f;
+                d.spectrum = ms::Bands::octave;
+                const ms::Result dr = measured(dark, rate, d);
+                std::printf("two low-passes at 1.5 kHz at %s:\n%s", tag.c_str(), dr.report.c_str());
+                darkBands[static_cast<std::size_t>(k++)] = bandsIn(dr.report, "Octave bands of the noise, out against in (Hz: gain dB");
+                P.near("bands.dark_passes_low_" + tag, named(darkBands[static_cast<std::size_t>(k - 1)], "63"), 0.0, 0.1);
+            }
+            int same = 0;
+            for (const char* band : { "31.5", "63", "125", "250", "500", "1k", "2k" })
+                same += std::fabs(named(darkBands[1], band) - named(darkBands[0], band)) < 0.15 ? 1 : 0;
+            P.eq("bands.dark_rates", same, 7);
+            P.le("bands.dark_cuts_high", named(darkBands[0], "8k"), -20.0);
+        }
+    }
+
+    // ---- LINE: the report ends with the metrics measured, name=value ---------------------------------------------------
+    {
+        ms::Request r;
+        r.holdSeconds = 0.5f;
+        r.tailSeconds = 0.5f;
+        if constexpr (kInstrument)
+            r.notes = { 48 };
+        const ms::Result res = measured(pg::singleFile(kInstrument ? kHarmonicVoice : kDarkEffect), 48000.0, r);
+        const std::size_t a = res.report.rfind("Metrics: ");
+        const std::string line = a == std::string::npos ? std::string() : res.report.substr(a + 9, res.report.size() - a - 10);
+        std::printf("the metrics line: %s\n", line.c_str());
+        P.eq("line.last", a != std::string::npos && res.report.find('\n', a) == res.report.size() - 1 ? 1 : 0, 1);
+        int agree = 0, said = 0;
+        std::string order;
+        for (std::size_t p = 0; p < line.size();)
+        {
+            std::size_t q = line.find(' ', p);
+            if (q == std::string::npos)
+                q = line.size();
+            const std::string entry = line.substr(p, q - p);
+            const std::size_t eq = entry.find('=');
+            if (eq != std::string::npos)
+            {
+                const std::string name = entry.substr(0, eq), text = entry.substr(eq + 1);
+                const double v = text == "inf" ? std::numeric_limits<double>::infinity() : std::strtod(text.c_str(), nullptr);
+                const double want = at(res.values, name.c_str());
+                ++said;
+                agree += (std::isinf(want) && v == want) || std::fabs(v - want) <= std::max(0.051, 1e-3 * std::fabs(want)) ? 1 : 0;
+                order += name + " ";
+            }
+            p = q + 1;
+        }
+        std::string table;
+        for (const ms::MetricInfo& m : ms::metrics())
+            if (res.values.count(m.name) != 0)
+                table += std::string(m.name) + " ";
+        P.eq("line.every_value", said, static_cast<int64_t>(res.values.size()));
+        P.eq("line.values_agree", agree, static_cast<int64_t>(res.values.size()));
+        P.eq("line.metrics_order", order == table ? 1 : 0, 1);
     }
 
     // ---- TERMS ---------------------------------------------------------------------------------------------------------

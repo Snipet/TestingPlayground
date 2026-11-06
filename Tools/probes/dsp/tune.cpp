@@ -310,7 +310,7 @@ namespace
         return g;
     }
 
-    // A report without its CPU line, which differs between renders.
+    // A report without its CPU line and the metrics line's CPU values, which differ between renders.
     std::string withoutCpu(const std::string& r)
     {
         std::string out;
@@ -321,7 +321,21 @@ namespace
             if (b == std::string::npos)
                 b = r.size();
             const std::string line = r.substr(a, b - a);
-            if (line.rfind("CPU:", 0) != 0)
+            if (line.rfind("Metrics: ", 0) == 0)             // the metrics line: its CPU's values left out too
+            {
+                std::string kept;
+                for (std::size_t p = 9; p < line.size();)
+                {
+                    std::size_t q = line.find(' ', p);
+                    if (q == std::string::npos)
+                        q = line.size();
+                    if (line.compare(p, 3, "cpu") != 0)
+                        kept += line.substr(p, q - p) + " ";
+                    p = q + 1;
+                }
+                out += "Metrics: " + kept + "\n";
+            }
+            else if (line.rfind("CPU:", 0) != 0)
                 out += line + "\n";
             a = b + 1;
         }

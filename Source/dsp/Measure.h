@@ -45,6 +45,12 @@
 // hold_seconds, or less than kMinWindowSeconds before it) leaves it unmeasured, saying why (Result::unmeasured).
 // view_sound's average spectrum and RMS are over it (SoundView.h).
 //
+// The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
+// in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
+// thirty-one or a semitone's 120, the averaged spectrum's points), of both channels' power over the held part (or the
+// window) in kBandSeconds Hann frames: an instrument's levels (dBFS), an effect's noise's (and its own input's) gain in
+// each, out against in.
+//
 // Off the audio thread only (it compiles and allocates). Deterministic: the same files and request give the same
 // report and numbers but for the CPU times, which are the rendering thread's own time (not the wall clock's) in the
 // Engine as the audio thread runs it with no editor open (flush-to-zero, no meters), of the program's own code with
@@ -70,6 +76,7 @@
 #include <cstdint>
 #include <utility>
 
+#include <array>
 #include <complex>
 #include <map>
 #include <memory>
@@ -150,6 +157,9 @@ namespace playground::measure
         std::vector<float> l, r;
     };
 
+    // Band levels as data in the report (Request::spectrum; bandsOf, below): an octave's, a third's, a semitone's.
+    enum class Bands : uint8_t { none, octave, third, semitone };
+
     // The seconds a request's metrics measure, from the render's start (above): none while `to` is not after `from`.
     inline constexpr double kMaxWindowSeconds = 2.0 * kMaxPlaySeconds;   // the moves' end and the longest tail
     inline constexpr double kMinWindowSeconds = 0.01;                    // the least a window holds (16 samples or more
@@ -191,6 +201,9 @@ namespace playground::measure
         int signal = -1;                          // an effect's input for view_sound and compare, numbered as SoundView's
                                                   // ViewInput (-1: the tool's own); measure() plays its test signals
         Window window;                            // the metrics' seconds in place of the held part (above)
+        // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of both channels),
+        // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
+        Bands spectrum = Bands::none;
         // A recording replayed (the capture lane's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
         // samples, the transport the host sent at a block's start, the host's blocks as they came (their sizes in
         // order; after the last, `block` each).
@@ -216,7 +229,7 @@ namespace playground::measure
         double captureFrom = 0.0, captureTo = -1.0;
 
         // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario) measured
-        // over the same window, `want` aside.
+        // over the same window, `want` and `spectrum` aside.
         bool sameRender(const Request& o) const;
         // Anything of a scenario beyond the notes held together: a phrase, moves, wheels, host edits, a recording.
         bool scenario() const;
@@ -406,6 +419,9 @@ namespace playground::measure
     inline constexpr double kSpectrumSeconds = 0.1;          // the Hann frames: the centroid, the partials
     inline constexpr double kPitchSeconds = 0.4;             // the Hann frames of the pitch (low close notes part)
     inline constexpr double kPuritySeconds = 0.4;            // the Blackman-Harris frames: inharmonic_db, thd_db
+    inline constexpr double kBandSeconds = 0.4;              // the Hann frames of the band levels (bandLevels): a
+                                                             // main lobe of 5 Hz each side, under a third-octave band
+                                                             // from 25 Hz up
     inline constexpr double kBandLowHz = 20.0, kBandHighHz = 20000.0;   // the band (the Nyquist frequency when lower)
     inline constexpr double kPitchCents = 600.0;             // how far from the expected note the pitch looks
 
@@ -441,9 +457,35 @@ namespace playground::measure
         // The strongest bin's power (0: silent), and a bin's place and log power refined by that parabola.
         double strongest() const;
         void refine(std::size_t bin, double& hz, double& logPower) const;
+        // The mean square in [lo, hi), cut at the Nyquist frequency: each bin's power by the share of its width there (DC
+        // none), so a sine of amplitude a there reads a^2 / 2 and noise its power in the band, whatever the frame. NaN
+        // when lo is at or above the Nyquist frequency.
+        double bandPower(double lo, double hi) const;
     };
     Spectrum spectrum(const std::vector<float>& x, double rate, const std::vector<Span>& spans, Taper taper = Taper::hann,
                       double seconds = kSpectrumSeconds);
+    // The same of both channels: the mean of the left's and the right's power (as rms_db's RMS of both), in one FFT a
+    // frame (the channels its real and imaginary parts); in kBandSeconds frames unless asked.
+    Spectrum stereoSpectrum(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                            Taper taper = Taper::hann, double seconds = kBandSeconds);
+
+    // Fractional-octave bands, each from its centre over 2^(1/2b) to its centre times it (b bands an octave): an
+    // octave's ten and a third's thirty-one, IEC 61260's base-2 bands (1 kHz x 2^(k/b)) from 31.5 Hz to 16 kHz and from
+    // 20 Hz to 20 kHz, each named by its nominal centre; a semitone's 120, centred on the MIDI notes 16 to 135 (A 440:
+    // 20.6 Hz to 19.9 kHz), the averaged spectrum's points.
+    struct Band
+    {
+        double hz = 0.0;                          // its centre: a nominal one for an octave's and a third's (31.5, 63, 125)
+        double lo = 0.0, hi = 0.0;                // its edges
+        int note = -1;                            // a semitone's MIDI note
+    };
+    inline constexpr std::array<double, 10> kOctaveBands{ 31.5, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0 };
+    std::vector<Band> bandsOf(Bands kind);
+    // Each band's level in a spectrum (Spectrum::bandPower), in dBFS (-240: none there; NaN: above the Nyquist frequency):
+    // an instrument's from stereoSpectrum over the held part, compare's and the capture's over what they analyse.
+    std::vector<double> bandLevels(const Spectrum& spectrum, Bands kind);
+    // A band's centre in the bands' lines: "31.5", "250", "1k", "1.25k", "16k".
+    std::string bandName(double hz);
 
     // The pitch near `expectedHz`, in (loHz, hiHz): the strongest partial there (a local maximum within 60 dB of the
     // spectrum's strongest and 10 dB above the median of the range); without one, the f0 there (in steps of a cent)
