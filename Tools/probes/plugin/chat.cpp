@@ -71,7 +71,14 @@
 //            points; the user's view, file views and tab as they were
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
 //            refused; numbers past an int's range clamped or refused), by a text (the lines that hold it with two
-//            around each, groups apart; none); a part read is not the file seen, nor is an edit after it (the next
+//            around each, groups apart; none); SEARCH: a regex (dsp/Regex.h: RE2's syntax over a table of patterns and
+//            lines; backreferences, lookaround, a**, a bound past 1000, a pattern too large, \p and a range backwards
+//            refused in words; (a+)+$, (a|aa)+$ and (a*)*c over 100,000 a's and a b at most a few steps a character,
+//            in under a second, and a pattern of many states stopped at its steps), find with no name in every file
+//            (a pattern: the count in each file, then each one's line count, version and lines; a text found in another
+//            case; none), a pattern in one file, refused ones (a pattern it does not take, saying how to find the text
+//            itself; from with no name; no name and no find), and a pattern of many states over a 30,000-character
+//            line stopped at its 20 million steps, saying where, in one file and in every file; a part read is not the file seen, nor is an edit after it (the next
 //            state sends it, with the user's line and the edit, and names unchanged a file read whole), and an edit of
 //            a file seen is seen; edit_file's miss gives the closest passage, numbered, and what differs (the
 //            characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a passage that
@@ -193,6 +200,7 @@
 #include "plugin/Processor.h"
 
 #include "dsp/Measure.h"
+#include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
 
 #include "Library.h"
@@ -1656,6 +1664,99 @@ PROBE(plugin, chat)
         const std::string none = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "nothing like it" } })));
         P.eq("files.find_none", has(none, "; no line holds \"nothing like it\".") ? 1 : 0, 1);
 
+        // SEARCH: find with regex (dsp/Regex.h), and find with no name, in every file (the tabs' order: each file's line
+        // count, version and lines, two around each), a part read like any. The engine first: RE2's syntax (a table of
+        // patterns and lines), its refusals in words, and its time linear in the text whatever the pattern.
+        {
+            struct Case
+            {
+                const char* pattern;
+                const char* text;
+                bool matches;
+            };
+            const Case cases[] = {
+                { "abc", "xxabcxx", true },          { "abc", "xxabxcx", false },       { "^abc", "xabc", false },
+                { "abc$", "xabc", true },            { "a.c", "a\xcf\x80" "c", true },  { "[^a-c]x", "ax", false },
+                { "\\bgain\\b", "float gain;", true }, { "\\bgain\\b", "gains", false }, { "\\Bain", "gain", true },
+                { "colou?r", "color", true },        { "^a{2,3}$", "aaaa", false },     { "^a{2,}$", "aaaaa", true },
+                { "x{,3}", "x{,3}", true },          { "(?:foo|bar)baz", "xbazbaz", false }, { "(foo|bar)baz", "barbaz", true },
+                { "(?i)GAIN", "gain", true },        { "GAIN", "gain", false },         { "(?i:G)AIN", "gain", false },
+                { "[[:digit:]]+\\.\\d+f", "1.5f", true }, { "\\w+\\s*\\(", "foo (", true }, { "\\Qa.b(\\E", "axb(", false },
+                { "\\Qa.b(\\E", "a.b(", true },      { "\\x{3c0}", "\xcf\x80", true },  { "(?P<n>ab)c", "abc", true },
+                { "[]a]", "]", true },               { "[^\\d]", "5", false },          { "(?i)[^a]", "A", false },
+                { "^$", "", true },                  { "a|", "zzz", true },             { "(a*)*b", "aaab", true },
+            };
+            std::string wrong;
+            for (const Case& c : cases)
+            {
+                pg::regex::Regex re = pg::regex::Regex::compile(c.pattern);
+                std::uint64_t steps = 100000;
+                if (!re.ok() || (re.search(c.text, steps) == pg::regex::Found::yes) != c.matches)
+                    wrong += std::string(" ") + c.pattern + (re.ok() ? "" : " (" + re.error() + ")");
+            }
+            std::printf("regex: %zu cases, wrong:%s\n", std::size(cases), wrong.empty() ? " none" : wrong.c_str());
+            P.eq("files.regex_syntax", wrong.empty() ? 1 : 0, 1);
+            const auto refused = [](const char* pattern) { return pg::regex::Regex::compile(pattern).error(); };
+            P.eq("files.regex_refusals", has(refused("(a)\\1"), "backreferences are not supported") && has(refused("(?=a)"), "lookahead and lookbehind")
+                                             && has(refused("a**"), "bad repetition operator: **") && has(refused("a{1001}"), "at most 1000")
+                                             && has(refused("(a{100}){100}"), "too large") && has(refused("\\p{L}"), "\\p")
+                                             && refused("[z-a]") == "invalid character class range: z-a (at character 2)" ? 1 : 0, 1);
+            // (a+)+$ and (a|aa)+$ on 100,000 a's and a b: exponential for a backtracking engine, here a few steps a
+            // character; a pattern whose states are many stops at its steps.
+            const std::string aaa = std::string(100000, 'a') + "b";
+            bool linear = true;
+            for (const char* pattern : { "(a+)+$", "(a|aa)+$", "(a*)*c" })
+            {
+                pg::regex::Regex re = pg::regex::Regex::compile(pattern);
+                const std::uint64_t budget = 20000000;
+                std::uint64_t steps = budget;
+                const auto t0 = std::chrono::steady_clock::now();
+                const pg::regex::Found f = re.search(aaa, steps);
+                const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                std::printf("regex %s on %zu characters: %s, %llu steps, %.1f ms\n", pattern, aaa.size(), f == pg::regex::Found::no ? "no" : "?",
+                            static_cast<unsigned long long>(budget - steps), ms);
+                linear = linear && f == pg::regex::Found::no && budget - steps <= (aaa.size() + 1) * (2 * re.size() + 1) && ms < 1000.0;
+            }
+            pg::regex::Regex many = pg::regex::Regex::compile("a{0,1000}b");
+            std::uint64_t few = 1000000;
+            P.eq("files.regex_linear", linear && many.search(aaa, few) == pg::regex::Found::spent && few == 0 ? 1 : 0, 1);
+        }
+        {
+            const std::string otherVersion = versionIn(toolText(call("read_file", input({ { "name", "other.fm" }, { "from", 1 } }))));
+            const std::string otherLines = "1\t// other.fm\n2\tfloat other(float x) { return x; }\n";
+            // A pattern in every file: the count in each, then each file's lines.
+            const std::string pattern = "\\bv(7|11)\\(|other\\(";
+            const std::string every = toolText(call("read_file", input({ { "find", juce::String(pattern) }, { "regex", true } })));
+            std::printf("find %s, regex, every file:\n%s", pattern.c_str(), every.c_str());
+            std::string around;
+            for (int n = 5; n <= 12; ++n)
+                around += std::to_string(n) + "\t" + lineOf(n) + "\n";
+            P.eq("files.find_every_file", every == "3 lines match \"" + pattern + "\" (notes.fm 2, other.fm 1; none in the other file), with 2 lines "
+                                                   "around each:\nnotes.fm: 12 lines, version " + version + "; lines 7, 11:\n" + around
+                                                   + "other.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            // A text in every file, in another case when none holds it in its own; none anywhere.
+            const std::string cased = toolText(call("read_file", input({ { "name", "" }, { "find", "OTHER(" } })));
+            P.eq("files.find_every_case", cased == "1 line holds \"OTHER(\" (in another case) (other.fm 1; none in the other 2 files), with 2 lines around "
+                                                   "each:\nother.fm: 2 lines, version " + otherVersion + "; line 2:\n" + otherLines ? 1 : 0, 1);
+            const std::string nowhere = toolText(call("read_file", input({ { "find", "nothing like it" } })));
+            P.eq("files.find_every_none", nowhere == "No line of the 3 files holds \"nothing like it\".\n" ? 1 : 0, 1);
+            // A pattern in one file, as a text's find.
+            const std::string tens = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "x \\* 1[0-2]\\.0f" }, { "regex", true } })));
+            P.eq("files.find_regex", has(tens, "notes.fm: 12 lines, version " + version + "; 3 lines match \"x \\* 1[0-2]\\.0f\" (10, 11, 12), with 2 lines around each:\n8\t" + lineOf(8) + "\n")
+                                         && has(tens, "\n12\t" + lineOf(12) + "\n") && !has(tens, "\n7\t") ? 1 : 0, 1);
+            // Refused: a pattern it does not take (in words, and how to find the text itself); from or lines with no
+            // name; no name and no find.
+            const pg::ChatAgent::McpResult open = call("read_file", input({ { "find", "(v7" }, { "regex", true } }));
+            const pg::ChatAgent::McpResult behind = call("read_file", input({ { "name", "notes.fm" }, { "find", "(?<=x)y" }, { "regex", true } }));
+            const pg::ChatAgent::McpResult ranged = call("read_file", input({ { "find", "v7" }, { "from", 3 } }));
+            const pg::ChatAgent::McpResult nameless = call("read_file", input({ { "lines", 3 } }));
+            P.eq("files.find_refused", open.isError && toolText(open) == "find \"(v7\" is not a regex this search takes: missing ): the ( at character 1 is not "
+                                                                         "closed. (Without regex, find looks for its text as it is.)"
+                                           && behind.isError && has(toolText(behind), "lookahead and lookbehind")
+                                           && ranged.isError && toolText(ranged) == "from and lines read one file: give its name too"
+                                           && nameless.isError && has(toolText(nameless), "read_file needs a name (or find alone") ? 1 : 0, 1);
+        }
+
         // A part read is not the file seen: the user edits both files while the chat's Claude listens; it then reads a
         // part of notes.fm and other.fm whole, and edits notes.fm. The next state sends notes.fm again (the user's line
         // and the edit in it: an edit of a text it had not seen whole marks nothing seen) and names other.fm unchanged.
@@ -2161,6 +2262,23 @@ PROBE(plugin, chat)
             const bool started = fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n";
             keysIn("notes.fm", "cmd+z");
             P.eq("multi.fresh_start_ends_groups", started && fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n" ? 1 : 0, 1);
+        }
+        // A pattern whose states are many, over a long line: the search stops at its steps (a tenth of a second or so),
+        // and says where and what to do, in one file and in every file.
+        {
+            pg::Draft ld;
+            ld.files = { saved.files.front(), { "long.fm", "// " + std::string(30000, 'a') + "\n" } };
+            processor.editorPort().setDraft(ld);
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::string inOne = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "find", "a{1000}b" }, { "regex", true } })));
+            const std::string inAll = toolText(agent.mcpCall("read_file", input({ { "find", "a{1000}b" }, { "regex", true } })));
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("a pattern of many states over 30,000 characters, twice: %.0f ms\n%s%s", ms, inOne.c_str(), inAll.c_str());
+            const std::string costly = "this pattern takes more than 20 million steps over so much text; a simpler one, or ";
+            P.eq("files.find_regex_stops", has(inOne, "; the search stopped at line 1: " + costly + "from and lines, searches the rest.\n")
+                                               && inAll == "No line found yet: the search stopped at long.fm's line 1: " + costly
+                                                             + "a file's name with from and lines, searches the rest.\n"
+                                               && ms < 4000.0 ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);

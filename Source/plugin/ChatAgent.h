@@ -293,8 +293,8 @@ namespace playground
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
-        // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text,
-        // numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several
+        // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text or
+        // match a pattern (regex), in one file or in every file, numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several
         // (`files`: a list, or a unified diff), all or none, in one write that never overwrites what the user typed
         // meanwhile (chatSetDraftIf), and with `expected` only while the file is still that version. Every read and
         // write says the file's version (its text's hash); keepVersion keeps the text of the newest kFileVersions

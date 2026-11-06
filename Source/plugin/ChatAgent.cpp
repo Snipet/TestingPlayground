@@ -1746,15 +1746,19 @@ namespace playground
     {
         juce::Array<juce::var> tools;
         tools.add(tool("read_file",
-                       "Read one of the plugin's files as it is now in the editor. Call this before editing a file you "
+                       "Read one of the plugin's files as it is now in the editor, or search every file (find). Call "
+                       "this before editing a file you "
                        "have not seen in its current form (the user may have typed in it since the last plugin_state). "
                        "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
                        "lines, find) comes with its lines numbered.",
+                       // find with no name searches every file, so nothing is required (ChatFiles.cpp).
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "from", prop("integer", "The first line to read, from 1") },
                                         { "lines", prop("integer", "How many lines (default: to the end)") },
-                                        { "find", prop("string", "A text: the lines that hold it, 2 around each") } }),
-                       { "name" }));
+                                        { "find", prop("string", "A text: the lines that hold it, 2 around each (no name: in "
+                                                                 "every file)") },
+                                        { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
+                       {}));
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
                        "edit_file for a change to part of a file. The editor shows the file and the user can undo the "

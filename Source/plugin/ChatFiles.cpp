@@ -2,8 +2,10 @@
 // MCP's alike.
 //
 // read_file gives a file whole, or a range of its lines (from, lines) or the lines that hold a text (find, two lines
-// around each), numbered; a part read leaves the chat's record of what its Claude saw (markSeen) alone, and an edit
-// marks the file seen only when its Claude had seen the text it edited (carrySeen). edit_file replaces one passage
+// around each), numbered; find with regex is a pattern (dsp/Regex.h: linear time, its steps bounded, kSearchSteps), and
+// find with no name searches every file (Finder, findInEvery); a part read leaves the chat's record of what its Claude
+// saw (markSeen) alone, and an edit marks the file seen only when its Claude had seen the text it edited (carrySeen).
+// edit_file replaces one passage
 // (old_text, new_text) or a list of them (edits), in order, each occurring exactly once in the text the ones before it
 // left (try_edits' rule), all or none: one write, one step the user can undo. A passage that does not occur is answered
 // with the closest one in the file, its lines numbered, and what differs. The write goes through chatSetDraftIf: only
@@ -18,6 +20,7 @@
 // tabs (Panel.cpp's FilesItem::merge).
 #include "plugin/ChatAgent.h"
 
+#include "dsp/Regex.h"
 #include "dsp/TextDiff.h"
 
 #include <algorithm>
@@ -547,17 +550,228 @@ namespace playground
         return version;
     }
 
+    namespace
+    {
+        // ---- find: a text or a pattern, in one file or in every file ---------------------------------------------------
+        constexpr std::uint64_t kSearchSteps = 20'000'000;   // a pattern's search's steps at most, every file's (~0.1 s)
+
+        // The lines that hold find's text (or match its pattern, dsp/Regex.h), as read_file says them: one file's, in a
+        // range of its lines, or every file's. Literal text is matched in its case first, then in any; a pattern too,
+        // compiled as it is and with ignoreCase. A pattern's steps are counted across every line searched (kSearchSteps):
+        // past them the search stops (`stopped`, at the line it reached).
+        struct Finder
+        {
+            std::string want;
+            bool pattern = false;
+            regex::Regex exact, anyCase;
+            std::uint64_t steps = kSearchSteps;
+            bool stopped = false;
+
+            // Whether line `l` holds it; false (and stopped) once the steps are spent.
+            bool holds(std::string_view l, bool inAnyCase)
+            {
+                if (pattern)
+                {
+                    const regex::Found f = (inAnyCase ? anyCase : exact).search(l, steps);
+                    stopped = stopped || f == regex::Found::spent;
+                    return f == regex::Found::yes;
+                }
+                if (!inAnyCase)
+                    return l.find(want) != std::string_view::npos;
+                const auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
+                std::string a(l), b(want);
+                std::transform(a.begin(), a.end(), a.begin(), lower);
+                std::transform(b.begin(), b.end(), b.begin(), lower);
+                return a.find(b) != std::string::npos;
+            }
+
+            // The lines from..to (1-based) that hold it, onto `found`; the line it stopped at, or 0.
+            int scan(const std::vector<std::string_view>& lines, int from, int to, bool inAnyCase, std::vector<int>& found)
+            {
+                for (int n = from; n <= to; ++n)
+                {
+                    if (holds(lines[static_cast<std::size_t>(n - 1)], inAnyCase))
+                        found.push_back(n);
+                    if (stopped)
+                        return n;
+                }
+                return 0;
+            }
+
+            std::string quoted() const { return "\"" + want + "\""; }
+            std::string verb(std::size_t n) const { return pattern ? (n == 1 ? "matches" : "match") : (n == 1 ? "holds" : "hold"); }
+            std::string narrower() const { return pattern ? "a narrower pattern" : "a longer text"; }
+            // Where the steps ran out, and what searches the rest (`named`: the search was of one file).
+            std::string stoppedNote(const std::string& where, bool named) const
+            {
+                return "the search stopped at " + where + ": this pattern takes more than " + std::to_string(kSearchSteps / 1000000)
+                     + " million steps over so much text; a simpler one, or " + (named ? "" : "a file's name with ")
+                     + "from and lines, searches the rest";
+            }
+        };
+
+        // Up to 12 of the line numbers `found` holds, of its first `shown`; ", ..." after them when there are more.
+        std::string someNumbers(const std::vector<int>& found, std::size_t shown)
+        {
+            std::string numbers;
+            for (std::size_t i = 0; i < shown && i < 12; ++i)
+                numbers += (i == 0 ? "" : ", ") + std::to_string(found[i]);
+            if (shown > 12)
+                numbers += ", ...";
+            return numbers;
+        }
+
+        // The first `shown` of the lines `found` holds (1-based, ascending), kContext lines around each, numbered, groups
+        // apart ("--"), onto `out`; false when kMaxOutput cut it.
+        bool aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t shown, std::string& out)
+        {
+            const int count = static_cast<int>(lines.size());
+            int last = 0;                                        // the last line written
+            for (std::size_t i = 0; i < shown; ++i)
+            {
+                const int a = std::max(1, found[i] - kContext), b = std::min(count, found[i] + kContext);
+                if (last > 0 && a > last + 1)
+                    out += "--\n";
+                for (int n = std::max(a, last + 1); n <= b; ++n)
+                {
+                    const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
+                    if (out.size() + l.size() > kMaxOutput)
+                        return false;
+                    out += l;
+                }
+                last = std::max(last, b);
+            }
+            return true;
+        }
+
+        // find with no name: every file's lines that hold it, file by file in the tabs' order (in its case in every file
+        // first, then in any).
+        struct FileHits
+        {
+            const SourceFile* file = nullptr;
+            std::vector<std::string_view> lines;
+            std::vector<int> found;
+        };
+        struct Everywhere
+        {
+            std::vector<FileHits> hits;                          // the files with a line that holds it
+            bool anyCase = false;
+            std::string stoppedAt;                               // where the steps ran out ("engine.fm's line 1200"), or ""
+        };
+
+        Everywhere findInEvery(const Draft& d, Finder& finder)
+        {
+            Everywhere e;
+            for (const bool c : { false, true })
+            {
+                e.hits.clear();
+                for (const SourceFile& f : d.files)
+                {
+                    FileHits h{ &f, linesOf(f.text), {} };
+                    if (const int at = finder.scan(h.lines, 1, static_cast<int>(h.lines.size()), c, h.found); at > 0)
+                        e.stoppedAt = f.name + "'s line " + std::to_string(at);
+                    if (!h.found.empty())
+                        e.hits.push_back(std::move(h));
+                    if (!e.stoppedAt.empty())
+                        break;
+                }
+                if (!e.hits.empty() || !e.stoppedAt.empty())
+                {
+                    e.anyCase = c;
+                    break;
+                }
+            }
+            return e;
+        }
+
+        // Its words: how many lines in each file, then each file's (its line count and version, `versions`, as a read
+        // says them) with kContext lines around each, at most kMaxFound lines shown in all.
+        std::string everywhereText(const Draft& d, const Finder& finder, const Everywhere& e, const std::vector<std::string>& versions)
+        {
+            const std::size_t fileCount = d.files.size();
+            const std::string stopped = e.stoppedAt.empty() ? std::string() : finder.stoppedNote(e.stoppedAt, false);
+            if (e.hits.empty())
+                return (stopped.empty() ? "No line of " + (fileCount == 1 ? d.files.front().name : "the " + std::to_string(fileCount) + " files")
+                                              + " " + finder.verb(1) + " " + finder.quoted()
+                                        : "No line found yet: " + stopped)
+                     + ".\n";
+            std::size_t total = 0;
+            std::string each;
+            for (const FileHits& h : e.hits)
+            {
+                total += h.found.size();
+                each += (each.empty() ? "" : ", ") + h.file->name + " " + std::to_string(h.found.size());
+            }
+            if (const std::size_t none = fileCount - e.hits.size(); none > 0)
+                each += "; none in the other " + (none == 1 ? std::string("file") : std::to_string(none) + " files");
+            std::string out = std::to_string(total) + (total == 1 ? " line " : " lines ") + finder.verb(total) + " " + finder.quoted()
+                            + (e.anyCase ? " (in another case)" : "") + " (" + each + "), with " + std::to_string(kContext)
+                            + " lines around each:\n";
+            std::size_t room = kMaxFound;                        // lines still to show
+            for (std::size_t k = 0; k < e.hits.size() && room > 0; ++k)
+            {
+                const FileHits& h = e.hits[k];
+                const std::size_t shown = std::min(h.found.size(), room);
+                const int count = static_cast<int>(h.lines.size());
+                out += h.file->name + ": " + std::to_string(count) + (count == 1 ? " line" : " lines") + ", version " + versions[k]
+                     + (h.found.size() == 1 ? "; line " : "; lines ") + someNumbers(h.found, shown) + ":\n";
+                if (out.size() > kMaxOutput || !aroundEach(h.lines, h.found, shown, out))
+                    return out + "(cut here: give find " + finder.narrower() + ", or a file's name with from and lines)\n";
+                room -= shown;
+            }
+            if (total > kMaxFound)
+                out += "(and " + std::to_string(total - kMaxFound) + " more lines " + finder.verb(2) + " it: give find "
+                     + finder.narrower() + ", or a file's name)\n";
+            if (!stopped.empty())
+                out += "(" + stopped + ")\n";
+            return out;
+        }
+    }
+
     std::string ChatAgent::readFileText(const juce::var& input, bool& isError)
     {
         const auto fail = [&](std::string why) {
             isError = true;
             return why;
         };
-        const juce::var nameVar = input.getProperty("name", juce::var());
-        if (!nameVar.isString())
-            return fail("read_file needs a name");
-        const std::string file = nameVar.toString().toStdString();
+        const juce::var nameVar = input.getProperty("name", juce::var()), fromVar = input.getProperty("from", juce::var()),
+                        linesVar = input.getProperty("lines", juce::var()), findVar = input.getProperty("find", juce::var());
+        const bool finding = findVar.isString() && findVar.toString().isNotEmpty();
+        // find with no name: every file (a name of "" is none).
+        const bool everyFile = finding && (nameVar.isVoid() || nameVar.isUndefined() || (nameVar.isString() && nameVar.toString().isEmpty()));
+        if (!nameVar.isString() && !everyFile)
+            return fail("read_file needs a name (or find alone, to search every file)");
+        Finder finder;
+        if (finding)
+        {
+            finder.want = findVar.toString().toStdString();
+            finder.pattern = static_cast<bool>(input.getProperty("regex", false));
+            if (finder.pattern)
+            {
+                finder.exact = regex::Regex::compile(finder.want);
+                if (!finder.exact.ok())
+                    return fail("find " + finder.quoted() + " is not a regex this search takes: " + finder.exact.error()
+                                + ". (Without regex, find looks for its text as it is.)");
+                finder.anyCase = regex::Regex::compile(finder.want, true);
+            }
+        }
         const Draft d = host_.chatDraft();
+        if (everyFile)
+        {
+            if (isNumber(fromVar) || isNumber(linesVar))
+                return fail("from and lines read one file: give its name too");
+            setActivity("Searching the files");
+            const Everywhere e = findInEvery(d, finder);
+            std::vector<std::string> versions;                   // each file's with a line found, kept (edit_file's expected)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                for (const FileHits& h : e.hits)
+                    versions.push_back(keepVersion(h.file->name, h.file->text));
+            }
+            return everywhereText(d, finder, e, versions);       // a part read: nothing marked seen
+        }
+
+        const std::string file = nameVar.toString().toStdString();
         const auto f = std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& s) { return s.name == file; });
         if (f == d.files.end())
         {
@@ -570,9 +784,7 @@ namespace playground
         const std::string& t = f->text;
         const std::vector<std::string_view> lines = linesOf(t);
         const int count = static_cast<int>(lines.size());
-        const juce::var fromVar = input.getProperty("from", juce::var()), linesVar = input.getProperty("lines", juce::var()),
-                        findVar = input.getProperty("find", juce::var());
-        const bool part = isNumber(fromVar) || isNumber(linesVar) || (findVar.isString() && findVar.toString().isNotEmpty());
+        const bool part = isNumber(fromVar) || isNumber(linesVar) || finding;
         std::string version;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -604,7 +816,7 @@ namespace playground
                 return fail("lines is how many lines to read, 1 or more");
             to = static_cast<int>(std::min(static_cast<double>(count), static_cast<double>(from) + n - 1.0));
         }
-        if (!(findVar.isString() && findVar.toString().isNotEmpty()))
+        if (!finding)
         {
             std::string out = head + "; lines " + std::to_string(from) + " to " + std::to_string(to) + ":\n";
             for (int n = from; n <= to; ++n)
@@ -616,58 +828,33 @@ namespace playground
             }
             return out;
         }
-        const std::string want = findVar.toString().toStdString();
-        const auto holds = [&](std::string_view l, bool anyCase) {
-            if (!anyCase)
-                return l.find(want) != std::string_view::npos;
-            const auto lower = [](unsigned char c) { return static_cast<char>(std::tolower(c)); };
-            std::string a(l), b(want);
-            std::transform(a.begin(), a.end(), a.begin(), lower);
-            std::transform(b.begin(), b.end(), b.begin(), lower);
-            return a.find(b) != std::string::npos;
-        };
         std::vector<int> found;
         bool anyCase = false;
+        int stoppedAt = 0;
         for (const bool c : { false, true })
         {
-            for (int n = from; n <= to; ++n)
-                if (holds(lines[static_cast<std::size_t>(n - 1)], c))
-                    found.push_back(n);
-            if (!found.empty())
+            stoppedAt = finder.scan(lines, from, to, c, found);
+            if (!found.empty() || stoppedAt > 0)
             {
                 anyCase = c;
                 break;
             }
         }
         const std::string range = from == 1 && to == count ? std::string() : " in lines " + std::to_string(from) + " to " + std::to_string(to);
+        const std::string stopped = stoppedAt > 0 ? finder.stoppedNote("line " + std::to_string(stoppedAt), true) : std::string();
         if (found.empty())
-            return head + "; no line" + range + " holds \"" + want + "\".\n";
+            return head + "; " + (stopped.empty() ? "no line" + range + " " + finder.verb(1) + " " + finder.quoted() : stopped) + ".\n";
         const std::size_t shownCount = std::min(found.size(), kMaxFound);
-        std::string numbers;
-        for (std::size_t i = 0; i < shownCount && i < 12; ++i)
-            numbers += (i == 0 ? "" : ", ") + std::to_string(found[i]);
-        if (shownCount > 12)
-            numbers += ", ...";
-        std::string out = head + "; " + std::to_string(found.size()) + (found.size() == 1 ? " line" : " lines") + range + " hold"
-                        + (found.size() == 1 ? "s" : "") + " \"" + want + "\"" + (anyCase ? " (in another case)" : "") + " (" + numbers
-                        + "), with " + std::to_string(kContext) + " lines around each:\n";
-        int last = 0;                                            // the last line written
-        for (std::size_t i = 0; i < shownCount; ++i)
-        {
-            const int a = std::max(1, found[i] - kContext), b = std::min(count, found[i] + kContext);
-            if (last > 0 && a > last + 1)
-                out += "--\n";
-            for (int n = std::max(a, last + 1); n <= b; ++n)
-            {
-                const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
-                if (out.size() + l.size() > kMaxOutput)
-                    return out + "(cut here: give find a longer text, or from and lines)\n";
-                out += l;
-            }
-            last = std::max(last, b);
-        }
+        std::string out = head + "; " + std::to_string(found.size()) + (found.size() == 1 ? " line" : " lines") + range + " "
+                        + finder.verb(found.size()) + " " + finder.quoted() + (anyCase ? " (in another case)" : "") + " ("
+                        + someNumbers(found, shownCount) + "), with " + std::to_string(kContext) + " lines around each:\n";
+        if (!aroundEach(lines, found, shownCount, out))
+            return out + "(cut here: give find " + finder.narrower() + ", or from and lines)\n";
         if (found.size() > shownCount)
-            out += "(and " + std::to_string(found.size() - shownCount) + " more lines hold it: give find a longer text)\n";
+            out += "(and " + std::to_string(found.size() - shownCount) + " more lines " + finder.verb(2) + " it: give find "
+                 + finder.narrower() + ")\n";
+        if (!stopped.empty())
+            out += "(" + stopped + ")\n";
         return out;
     }
 
