@@ -707,6 +707,7 @@ namespace playground::ui
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout() and scroll (what moved)
+        bool filesPlaced_ = false;                       // the editors given a place once (layout(): kept while hidden)
         double inputAt_ = -1.0e9;                        // the last input's time (the host's clock: kInputHold)
         void noteInput(bool nudge = false);
         bool inputHeld() const;

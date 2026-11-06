@@ -61,6 +61,8 @@ namespace playground::ui
 
         // For probes.
         int blocks() const noexcept { return static_cast<int>(blocks_.size()); }
+        int blockLayouts() const noexcept { return static_cast<int>(layouts_); }   // blocks laid out so far
+        int shows() const noexcept { return shows_; }                                 // show()'s calls so far
         int tiles() const;                                            // the pictures shown in the conversation
         std::optional<funkgui::Point> centreOfSuggestion(int i) const;
         std::optional<funkgui::Point> centreOfAddKey() const;
@@ -225,5 +227,6 @@ namespace playground::ui
         bool hidden_ = false;
         uint64_t content_ = 0;                        // what show() laid out, mixed (drawKey)
         uint32_t layouts_ = 0;                        // blocks laid out so far (Block::laidOut)
+        int shows_ = 0;                               // show()'s calls (probes)
     };
 }

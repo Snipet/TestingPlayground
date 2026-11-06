@@ -1,6 +1,6 @@
 // PROBE name=gui.switch timeout=300
 //
-// gui.switch: what the editor does after input, and what a Code / Panel switch costs, headless over a
+// gui.switch: what the editor does after input and on a switch between the Code and the Panel views, headless over a
 // real Processor. Its large session: a program of about 270 KB (FMinus), a panel.gui with two animated shaders, a long
 // conversation with Claude (about 390 KB of text, 320 blocks), and a projects' folder of about 15 MB (three projects
 // of 18 versions each, about 5 MB apiece). It checks:
@@ -8,6 +8,10 @@
 //            panel keeps the full rate for kInputHold (Panel::wantsFullRate) with nothing moving, and is calm after;
 //            a release and the pointer's exit nudge the host's pump; a hover's moves at 15 a second keep the frames at
 //            60 a second (Tools/probes/common/Cadence.h), where they fell to the calm cadence between moves
+//   SWITCH   the chat as wide in both views (a chat the user widened, which gives way to the explorer in CODE), so a
+//            switch lays out no block of the conversation (ChatView::blockLayouts); the editors keep their place
+//            while the PANEL view hides them (no width set, no line measured again); idle, the chat's look once a
+//            second (the key's state) shows nothing of the conversation again (ChatView::shows)
 // and prints, never checks (TIME), what a switch's frame costs on the message thread (the switch, the frame's tick and
 // its draw, wall clock) in both directions with the explorer's poll due, after a save and another process's write; the
 // conversation alone, shown again and laid out for another width; the store's listing and a project read whole.
@@ -319,6 +323,47 @@ PROBE(gui, switch)
     P.eq("session.interface", panel.hasGui() ? 1 : 0, 1);
     std::printf("session: chat %zu entries, %.0f KB of text\n", processor.chatAgent().chatState().entries.size(),
                 static_cast<double>(panel.transcript().size()) / 1.0e3);
+
+    // ---- SWITCH: the chat as wide in both views, nothing of it laid out again; the editors kept in place ----------------
+    {
+        host.tick(200);
+        const float codeChat = panel.chatCard().w;
+        const funkgui::Rect codeEditor = panel.editor().textArea();
+        const int blocks0 = panel.chatView().blockLayouts();
+        panel.setPanelView(true);
+        host.tick(1);
+        const float panelChat = panel.chatCard().w;
+        const funkgui::Rect hiddenEditor = panel.editor().textArea();
+        panel.setPanelView(false);
+        host.tick(1);
+        for (int k = 0; k < 3; ++k)
+        {
+            panel.setPanelView(true);
+            host.tick(1);
+            panel.setPanelView(false);
+            host.tick(1);
+        }
+        const funkgui::Rect backEditor = panel.editor().textArea();
+        std::printf("switch: the chat %.0f px in CODE (asked 600: it gave way to the explorer), %.0f in PANEL\n", codeChat, panelChat);
+        P.eq("switch.chat_gave_way", codeChat < 600.0f ? 1 : 0, 1);
+        P.eq("switch.chat_width_kept", panelChat == codeChat ? 1 : 0, 1);
+        P.eq("switch.chat_not_laid_out", panel.chatView().blockLayouts() - blocks0, 0);
+        const auto same = [](const funkgui::Rect& a, const funkgui::Rect& b) { return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h; };
+        P.eq("switch.editor_kept_hidden", same(hiddenEditor, codeEditor) ? 1 : 0, 1);
+        P.eq("switch.editor_back", same(backEditor, codeEditor) ? 1 : 0, 1);
+        // The chat's own rules stand in the PANEL view: its least and its most (the CODE view's reach).
+        panel.setPanelView(true);
+        host.tick(1);
+        const pg::ui::columns::Fit f = panel.columnFit();
+        P.eq("switch.chat_reach", f.chatLeast <= panelChat && panelChat <= f.chatMost && f.chatLeast >= pg::ui::columns::kChatMinW
+                                      && f.chatMost <= pg::ui::columns::kChatMaxW ? 1 : 0, 1);
+        panel.setPanelView(false);
+        host.tick(1);
+        // Idle, the chat's look once a second (the key's state) shows nothing of the conversation again.
+        const int shows0 = panel.chatView().shows();
+        host.tick(200);
+        P.eq("switch.idle_shows_nothing", panel.chatView().shows() - shows0, 0);
+    }
 
     // ---- TIME: the switch's frame -------------------------------------------------------------------------------------
     {

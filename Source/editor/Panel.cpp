@@ -3246,6 +3246,19 @@ namespace playground::ui
             asked.explorerWant = explorerWant_;
             asked.chatWant = chatWant_;
             fit_ = columns::fit(asked);
+            // The chat as wide in the PANEL view as in the CODE view, where the explorer can take some of its room (the
+            // give-way order): a switch between them then never changes the conversation's width, which would lay out
+            // every block of it again (ChatView::setBounds; tens to hundreds of ms for a long one, at each switch). Its
+            // edge's reach is the CODE view's too. Not while the editor is in its own window, which has the explorer.
+            if (full() && !out_ && asked.chat && explorerOpen_)
+            {
+                columns::Asked code = asked;
+                code.explorer = true;
+                const columns::Fit c = columns::fit(code);
+                fit_.chat = c.chat;
+                fit_.chatLeast = c.chatLeast;
+                fit_.chatMost = c.chatMost;
+            }
         }
         chatW_ = fit_.chat;
         chatX_ = W - kMargin - chatW_;
@@ -3420,7 +3433,14 @@ namespace playground::ui
         files().setHidden(full());
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(full() || schematic);
         const float editorH = schematic ? std::max(kEditorFloor, panelTop - 8.0f - kEditorY) : std::max(kEditorFloor, problemsY - 8.0f - kEditorY);
-        files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+        // Hidden in the PANEL view, the editors keep the CODE view's place: a width set every switch (the column is
+        // wider without the explorer) would measure every line of every tab's text and of the IR views' again
+        // (TextEditor::setBounds), both ways. Placed once at least, for a panel that opens in the PANEL view.
+        if (!full() || !filesPlaced_)
+        {
+            files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+            filesPlaced_ = true;
+        }
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ inX, problemsY, inW, problemsH });
         int hiddenDials = 0;                             // shown from the fold, but over the editor's floor
@@ -3517,9 +3537,14 @@ namespace playground::ui
         usageY_ = card_.bottom() - kCardPad + 2.0f - kUsageH;
         const float composerY = usageY_ - 4.0f - composerH_;
         in.setBounds({ inX, composerY, inW, composerH_ }, kBarH);
+        const funkgui::Rect viewWas = chatView().bounds();
         chatView().setBounds({ card_.x + 2.0f, headerBottom + 6.0f, card_.w - 4.0f,
                                std::max(40.0f, composerY - 8.0f - (headerBottom + 6.0f)) });
-        reshowChat();                                    // the conversation laid out for its width now
+        // The conversation laid out for its place now, when it moved (refreshChat shows it whenever it changes, folded
+        // or not): a layout that leaves it where it was (a switch of the view) builds nothing of it again.
+        const funkgui::Rect viewIs = chatView().bounds();
+        if (viewIs.x != viewWas.x || viewIs.y != viewWas.y || viewIs.w != viewWas.w || viewIs.h != viewWas.h)
+            reshowChat();
         placeChatBar();
         ++layoutRevision_;
         dirty_ = true;
@@ -5003,9 +5028,11 @@ namespace playground::ui
         const bool stale = chatAt_ < 0.0 || nowSec - chatAt_ >= 1.0 || nowSec < chatAt_;
         if (changed || stale)
         {
+            const bool moved = r != seenChat_;
             seenChat_ = r;
             chatAt_ = nowSec;
             const bool hadKey = chat_.ready();
+            const std::string hadProblem = chat_.keyProblem;
             const bool wasBusy = chat_.busy;
             chat_ = chat.chatState();
             if (chat_.busy && !wasBusy)
@@ -5017,7 +5044,11 @@ namespace playground::ui
                 if (inputItem().stripHeight() != strip)
                     layoutChat();                        // the row of pictures came or went: the box grows or shrinks
             }
-            chatView().show(chat_, emptyChat(chat_));
+            // Shown again when it changed (its revision) or the key's state did, not at each look once a second: that
+            // goes over the whole conversation's text (ChatView::show: every block's key, the transcript), 2 ms for a
+            // long one.
+            if (moved || hadKey != chat_.ready() || hadProblem != chat_.keyProblem)
+                chatView().show(chat_, emptyChat(chat_));
             inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
                                        : chat_.asking ? "Answer above, or write your own answer"
                                        : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"

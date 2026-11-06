@@ -980,6 +980,7 @@ namespace playground::ui
 
     void ChatView::show(const ChatState& state, const Empty& empty)
     {
+        ++shows_;
         const float w = contentWidth();
         const bool wasAtEnd = follow_ || atEnd();
         ready_ = state.ready();
