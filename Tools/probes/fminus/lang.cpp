@@ -357,12 +357,12 @@ namespace
         "const enum Gate : bool { SHUT, OPEN } kGate = OPEN, kIdle = SHUT;\n"
         "enum : int { N = 2 };\n"
         "\n"
-        "module Osc\n"
+        "module Picker\n"
         "{\n"
         "    enum Mode { UP, DOWN } mode, modes[N];\n"
         "    enum Shape shape;\n"
         "\n"
-        "    float tick()\n"
+        "    float pick()\n"
         "    {\n"
         "        enum Step : int { ONE = 1, TWO } step = TWO, other;\n"
         "        other = ONE;\n"
@@ -1587,9 +1587,9 @@ PROBE(fminus, lang)
         P.eq("enums.after_list_constants", kGate != nullptr && kGate->signature == "const enum Gate kGate = OPEN"
                                                && kGate->doc == "The gate's two states." && kIdle != nullptr
                                                && kIdle->signature == "const enum Gate kIdle = SHUT" ? 1 : 0, 1);
-        P.eq("enums.after_list_fields", mode != nullptr && mode->container == "Osc" && mode->type == "enum Mode" && modes != nullptr
+        P.eq("enums.after_list_fields", mode != nullptr && mode->container == "Picker" && mode->type == "enum Mode" && modes != nullptr
                                             && modes->type == "enum Mode[N]" && sym("shape", lg::Kind::field) != nullptr ? 1 : 0, 1);
-        P.eq("enums.after_list_locals", step != nullptr && step->container == "tick" && step->type == "enum Step" && other != nullptr
+        P.eq("enums.after_list_locals", step != nullptr && step->container == "pick" && step->type == "enum Step" && other != nullptr
                                             && !(other->scope.from == other->scope.to) ? 1 : 0, 1);
 
         // the editor's services on them
