@@ -4008,7 +4008,7 @@ namespace playground
             std::string out = "Files: ";
             for (std::size_t i = 0; i < d.files.size(); ++i)
                 out += (i == 0 ? "" : ", ") + d.files[i].name + " (" + std::to_string(lineCount(d.files[i].text))
-                     + " lines" + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
+                     + (lineCount(d.files[i].text) == 1 ? " line" : " lines") + (static_cast<int>(i) == d.active ? ", shown" : "") + ")";
             out += "\nWhat plays: ";
             out += cir::sameProgram(running, d.files) ? "these files\n"
                                                       : "an earlier version (the files were edited since the run)\n";
