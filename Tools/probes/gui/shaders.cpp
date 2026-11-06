@@ -12,7 +12,9 @@
 //   PROMPT    the system prompt's shader example is there, and it builds
 //   BUILD     a program whose panel.gui has a shader of its own file runs with no note; the shader's binary is in the
 //             status's panel, under its bytes' hash; run again, the same (the cache); the renderer checked it on the
-//             compiler's thread (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once
+//             compiler's thread (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once: the
+//             two shaders unregistered before the Panel's two frames and registered after them, the count it reads
+//             moving by one with a set() of a code nobody checked (PROMPT's example)
 //   ERRORS    a shader that does not compile is a note on its own file's line (the name it does not know found in
 //             the file), and the program still plays; a shader of no file, and a fifth one, are notes of the .gui file
 //   PANEL     the Panel registers the built shader with FunkGui (shaders::has) and shows it over its cell; its inputs
@@ -27,7 +29,8 @@
 //             by the GPU, its text saying so; with the GPU forced off (picture::forceSoftRasterForTests), a picture
 //             still, its text saying each shader shows as a striped placeholder, and why
 //   DRAW      a panel whose one shader is still asks for no frame while nothing changes, and for one when the parameter
-//             it reads moves with no input (Panel.h "Unchanged frames")
+//             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's dial
+//             being hidden in the PANEL view (a hidden item's key is not watched)
 #include "Probe.h"
 
 #include "editor/GuiItems.h"
@@ -69,6 +72,11 @@ namespace funkgui::shaders::detail
 namespace
 {
     constexpr bool kInstrument = pg::product::kIsInstrument;
+#if defined(__APPLE__)
+    constexpr bool kMetal = true;                        // FunkGui's renderer runs Metal's compiler (metalCompileCount)
+#else
+    constexpr bool kMetal = false;
+#endif
 
     std::string program()
     {
@@ -245,12 +253,16 @@ PROBE(gui, shaders)
             std::printf("the prompt's example:\n%s", b.error.c_str());
         P.eq("prompt.example_builds", b.ok() ? 1 : 0, 1);
         std::string why;
+        const uint64_t compiledBefore = funkgui::shaders::detail::metalCompileCount();
         const auto t0 = std::chrono::steady_clock::now();   // a code nobody checked: set() runs Metal's compiler here
         const bool taken = b.ok() && funkgui::shaders::set(pg::shaderId(b.binary), b.binary.data(),
                                                            static_cast<uint32_t>(b.binary.size()), why);
         std::printf("shaders::set() of a code not checked before: %.2f ms\n",
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         P.eq("prompt.example_taken", taken ? 1 : 0, 1);
+        // The count BUILD reads moves with such a set(): one compile of Metal's (none off macOS).
+        P.eq("prompt.set_compiles_once", static_cast<int64_t>(funkgui::shaders::detail::metalCompileCount() - compiledBefore),
+             kMetal ? 1 : 0);
         if (!why.empty())
             std::printf("FunkGui: %s\n", why.c_str());
     }
@@ -272,11 +284,22 @@ PROBE(gui, shaders)
                              { "moving.sc", kMoving }, { "broken.sc", kBroken } };
     load(processor, files);
     processor.settle();
+    // still.sc's and moving.sc's ids, as the compile gave them: not registered before the Panel's two frames, and
+    // registered after them, so the count below spans their shaders::set().
+    const auto registered = [&] {
+        const pg::CompileStatus c = port.status();
+        int n = 0;
+        for (const pg::PanelShader& sh : c.panel.shaders)
+            n += sh.id != 0 && funkgui::shaders::has(sh.id) ? 1 : 0;
+        return n;
+    };
+    const int registeredBefore = registered();
     const uint64_t compiledBefore = funkgui::shaders::detail::metalCompileCount();
     const auto registering = std::chrono::steady_clock::now();
     host.tick(2);                                        // the Panel registers them (shaders::set, the message thread)
     const double registerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - registering).count();
     const uint64_t compiledBySet = funkgui::shaders::detail::metalCompileCount() - compiledBefore;
+    const int registeredBySet = registered();
     host.settle(60);
     const pg::CompileStatus s = port.status();
     std::printf("notes:\n%s", s.notes.c_str());
@@ -288,6 +311,8 @@ PROBE(gui, shaders)
     P.eq("build.no_note_for_good_ones", has(s.notes, "still.sc") || has(s.notes, "moving.sc") ? 0 : 1, 1);
     std::printf("Metal compiles in the Panel's shaders::set(): %llu (its two frames %.2f ms)\n",
                 static_cast<unsigned long long>(compiledBySet), registerMs);
+    P.eq("build.unregistered_before", registeredBefore, 0);
+    P.eq("build.registered_in_two_frames", registeredBySet, 2);
     P.eq("build.set_compiles_nothing", static_cast<int64_t>(compiledBySet), 0);   // checked on the compiler's thread
     P.eq("errors.broken_note", has(s.notes, "broken.sc:5:1: note: the shader does not compile:")
                                    && has(s.notes, "undefinedThing") ? 1 : 0, 1);
@@ -473,7 +498,8 @@ PROBE(gui, shaders)
 
     // ---- DRAW ----------------------------------------------------------------------------------------------------------
     // A panel whose only shader is still: quiet while nothing changes, and a frame when the parameter it reads moves
-    // with no input (a host's automation): its inputs are what it draws (Panel.h "Unchanged frames").
+    // with no input (a host's automation): its inputs are what it draws (Panel.h "Unchanged frames"), and what asks:
+    // the parameter's dial is hidden in the PANEL view, and a hidden item's key is not watched.
     {
         const char* const still = "panel { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n";
         load(processor, { { pg::kProgramName, program() }, { "panel.gui", still }, { "still.sc", kStill } });

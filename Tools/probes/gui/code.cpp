@@ -51,14 +51,17 @@
 //   TYPES     a module named on a line before it is declared: the line is drawn plain, and after the declaration is
 //             typed (the line itself not edited) it keeps its colour until the index has the name, then is drawn in the
 //             types' colour with no input (CodeAssist::sync rehighlights the editors, whose spans FunkGui keeps), the
-//             Panel asking for that frame; the Code view's tick, recording and highlighter costs printed; idle, the
-//             Code view asks for no frame
+//             Panel asking for that frame; the same through Claude's write_file while the editor has not the keys
+//             (the check's sync, the files rested, recolours it: no caret rests in it, no pointer hovers it); the Code
+//             view's tick, recording and highlighter costs printed; idle, the Code view asks for no frame
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
+#include "plugin/ChatAgent.h"
+#include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
 
@@ -882,6 +885,42 @@ PROBE(gui, code)
         P.eq("types.rehighlighted", code.highlights() != before ? 1 : 0, 1);
         P.eq("types.draw_asked", asked ? 1 : 0, 1);
         P.eq("types.recoloured", inkOf(host.draw(), "Zork") == thing ? 1 : 0, 1);
+        // Claude's write_file (Claude Desktop's call, merged into the tab) while the editor does not have the keys: no
+        // caret rests in it and no pointer hovers it, so the check's sync, once the files have rested, is what recolours
+        // a module named before its declaration (CodeAssist::takeCheckRequest).
+        {
+            settleChecks(panel, host);
+            host.click(4.0f, static_cast<float>(panel.height()) - 4.0f);   // beside everything: the editor loses the keys
+            settleChecks(panel, host);
+            std::string name;
+            for (const pg::SourceFile& f : port.draft().files)
+                if (f.text.find("// Types probe.") != std::string::npos)
+                    name = f.name;
+            std::string text = ed.text();
+            const std::string field = "    Zork zork;\n";
+            if (const std::size_t at = text.find(field); at != std::string::npos)
+                text.insert(at + field.size(), "    Quux quux;\n");
+            text += "module Quux\n{\n    float z;\n};\n";
+            const uint32_t was = code.highlights();
+            const pg::ChatAgent::McpResult wrote = processor.chatAgent().mcpCall(
+                "write_file", pg::claude::object({ { "name", juce::String(name) }, { "content", juce::String(text) } }));
+            host.tick(1, 1.0f / 12.0f);                  // merged
+            P.eq("types.write_merged", !wrote.isError && !name.empty() && posIn(ed, "Quux quux;").line >= 0 ? 1 : 0, 1);
+            P.eq("types.write_unfocused", ed.focused() ? 0 : 1, 1);
+            P.eq("types.write_stale", inkOf(host.draw(), "Quux") == zork ? 1 : 0, 1);
+            bool drawAsked = false;
+            for (int k = 0; k < 120 && code.highlights() == was; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);
+                if (code.highlights() != was)
+                    drawAsked = panel.needsDraw();
+                else
+                    host.draw();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            P.eq("types.write_rehighlighted", code.highlights() != was && drawAsked ? 1 : 0, 1);
+            P.eq("types.write_recoloured", inkOf(host.draw(), "Quux") == thing ? 1 : 0, 1);
+        }
 
         // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the
         // highlighter's lines (each runs once per edited line since FunkGui v0.25.0, not per drawn row).
