@@ -314,6 +314,21 @@ namespace playground
         return id;
     }
 
+    bool Compiler::withdraw(uint64_t id)
+    {
+        Sources files;                             // let go of outside the lock
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (id == 0 || !hasQueued_ || queuedId_ != id)
+                return false;
+            hasQueued_ = false;
+            files = std::move(queued_);
+            queued_.clear();
+        }
+        idle_.notify_all();                        // wait(), which the request held
+        return true;
+    }
+
     CompileStatus Compiler::compileNow(Sources files, bool carry)
     {
         uint64_t id = 0;
