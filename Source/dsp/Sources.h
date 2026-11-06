@@ -54,6 +54,18 @@ namespace playground
         return ext[0] == '.' && lower(ext[1]) == 'c' && lower(ext[2]) == 'i' && lower(ext[3]) == 'r';
     }
 
+    // Whether `name` is a file of the program's panel alone: its .gui file (fminus/GuiSpec.h), a shader's .sc
+    // (fminus/Shaders.h) or a shader's .sh, which FMinus never reads (unless the program #includes one). A RUN that
+    // changes only such files applies them to the program that plays, without compiling it (Compiler.h, "A panel's
+    // edit").
+    inline bool isPanelFile(std::string_view name)
+    {
+        const auto ends = [name](std::string_view tail) {
+            return name.size() > tail.size() && name.substr(name.size() - tail.size()) == tail;
+        };
+        return ends(".gui") || ends(".sc") || ends(".sh");
+    }
+
     // The configuration a netlist was generated with in a compile, when the netlist leaves it to the self-test
     // (fminus/Circuits.h): its self-test key, and the answer it read (fminus::circuit::Choice::text()), or "" for the
     // provisional configuration. A compile given a program's pins generates its netlists so again, whatever the
