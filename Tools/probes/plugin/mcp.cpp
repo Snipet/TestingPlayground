@@ -6,7 +6,8 @@
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
-//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); read_file's from, lines and
+//            set_checks' the metrics' names, and its dials_from (current, snapshot, defaults); measure_output's,
+//            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; read_file's from, lines and
 //            find, edit_file's edits and expected (only its name required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
@@ -575,6 +576,28 @@ PROBE(plugin, mcp)
         P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
                                            && dialsFrom.hasProperty("description")
                                            && setChecks["inputSchema"]["required"].size() == 1 ? 1 : 0, 1);
+        // The one-shot renders' dials_from (current or defaults): described on measure_output alone, in no check's
+        // render settings (set_checks has its own) and not in tune_dials (it tunes from the dials as they are).
+        {
+            juce::var measureOutput, trace;
+            if (const juce::Array<juce::var>* t = tools.getArray())
+                for (const juce::var& tool : *t)
+                {
+                    if (tool["name"].toString() == "measure_output")
+                        measureOutput = tool["inputSchema"]["properties"]["dials_from"];
+                    else if (tool["name"].toString() == "trace")
+                        trace = tool["inputSchema"]["properties"]["dials_from"];
+                }
+            const juce::var seen = viewSound["inputSchema"]["properties"]["dials_from"];
+            const auto twoWords = [](const juce::var& p) {
+                return p["enum"].size() == 2 && p["enum"][0].toString() == "current" && p["enum"][1].toString() == "defaults";
+            };
+            P.eq("link.render_dials_from", twoWords(measureOutput) && twoWords(seen) && twoWords(trace)
+                                               && measureOutput.hasProperty("description") && !seen.hasProperty("description")
+                                               && !trace.hasProperty("description")
+                                               && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("dials_from")
+                                               && !tuneDials["inputSchema"]["properties"].hasProperty("dials_from") ? 1 : 0, 1);
+        }
         // An instrument's render settings (its notes, velocity and wheels) in an instrument's tools only: measure_output
         // has them in the synth, and no tool of the effect's lists them.
         {

@@ -1845,6 +1845,7 @@ namespace playground
             o->setProperty("bpm", prop("number", "The host's tempo for a program that reads it (host.fm: the host plays "
                                                  "from the song's start); default 120"));
             o->setProperty("try_edits", scenario::trialSchema());
+            o->setProperty("dials_from", scenario::dialsFromSchema(true));
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. Its report gives "
                            "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
@@ -1899,6 +1900,7 @@ namespace playground
             props.getDynamicObject()->setProperty("to_seconds", prop("number", "The close-up's end (at most 2 s after "
                                                                                "its start)"));
             props.getDynamicObject()->setProperty("try_edits", scenario::trialSchema());
+            props.getDynamicObject()->setProperty("dials_from", scenario::dialsFromSchema(true));
             tools.add(tool("view_sound",
                            kInstrument
                                ? "See the sound: a PNG of the program rendered offline as measure_output renders it, "
@@ -3325,8 +3327,11 @@ namespace playground
                                              { "mimeType", juce::String(f.mediaType) } }));
                     out.add(text("(The picture is sent smaller, to fit a tool's result: "
                                  + std::string(f.mediaType == "image/png" ? "a PNG" : "a JPEG") + " of " + std::to_string(f.width) + " x "
-                                 + std::to_string(f.height) + ", from " + std::to_string(f.fromWidth) + " x "
-                                 + std::to_string(f.fromHeight) + ". detail \"high\" sends it whole.)"));
+                                 + std::to_string(f.height)
+                                 + (f.width == f.fromWidth && f.height == f.fromHeight
+                                        ? std::string(", its full size")
+                                        : ", from " + std::to_string(f.fromWidth) + " x " + std::to_string(f.fromHeight))
+                                 + ". detail \"high\" sends it whole.)"));
                 }
                 else if (type == "text")
                     out.add(claude::object({ { "type", "text" }, { "text", b["text"] } }));
@@ -3417,7 +3422,9 @@ namespace playground
             measure::ViewRequest vr = soundpicture::request();
             std::string why;
             vr.render = scenario::renderOf(input, &why);
-            vr.render.current = currentDials();
+            bool defaults = false;
+            if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
+                vr.render.current = currentDials();
             if constexpr (!kInstrument)
             {
                 const std::string in = str(input, "input");
@@ -3465,7 +3472,10 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(d.png.data(), d.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((scenario::trialLine(trials) + d.about).c_str()) } }));
+            content.add(claude::object({ { "type", "text" },
+                                         { "text", juce::String::fromUTF8((scenario::trialLine(trials)
+                                                                           + scenario::dialsLine(defaults && !vr.render.fromCapture)
+                                                                           + d.about).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -3833,7 +3843,9 @@ namespace playground
             setActivity("Measuring the sound");
             std::string why;
             measure::Request req = scenario::renderOf(input, &why);
-            req.current = currentDials();
+            bool defaults = false;
+            if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
+                req.current = currentDials();
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
@@ -3841,7 +3853,7 @@ namespace playground
             const std::string report = measure::run(files, req);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
                                                              : "measured the sound");
-            return scenario::trialLine(trials) + report;
+            return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")
         {

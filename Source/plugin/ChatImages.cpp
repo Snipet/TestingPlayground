@@ -310,22 +310,36 @@ namespace playground::chatimages
         if (picture.size() <= maxBytes || !img.isValid())
             return out;
         out.changed = true;
-        // A PNG's size goes with its area: the side that should fit, a little under.
-        const double s = std::min(0.95, 0.95 * std::sqrt(static_cast<double>(maxBytes) / static_cast<double>(picture.size())));
-        int edge = std::max(64, static_cast<int>(std::lround(std::max(img.getWidth(), img.getHeight()) * s)));
-        juce::Image smaller = within(img, edge);
-        out.data = encode(smaller, true, 0.0f);
-        out.mediaType = "image/png";
-        // A JPEG at that size, then at a lower quality, then smaller again, until it fits.
-        for (int step = 0; out.data.size() > maxBytes && step < 8; ++step)
+        // The largest picture that fits, each format sized from its own bytes: an encoding's size goes with its area,
+        // so the long side that should fit, a little under (and a step down at least). A JPEG first, from the whole
+        // picture: a sound's (a spectrogram's noise) is several times smaller as a JPEG than as a PNG, so sizing it
+        // from the PNG's bytes sent a third of its width. Then a PNG at the size its bytes say, when that is larger
+        // still and fits (a flat picture: a panel's).
+        const int full = std::max(img.getWidth(), img.getHeight());
+        const auto smallerFor = [&](int edge, std::size_t bytes) {
+            const double s = std::min(0.9, 0.95 * std::sqrt(static_cast<double>(maxBytes) / static_cast<double>(bytes)));
+            return std::max(64, static_cast<int>(std::lround(edge * s)));
+        };
+        int edge = full;
+        juce::Image smaller = img;
+        out.data = encode(smaller, false, 0.85f);
+        for (int step = 0; out.data.size() > maxBytes && edge > 64 && step < 12; ++step)
         {
-            if (step >= 2)
+            edge = smallerFor(edge, out.data.size());
+            smaller = within(img, edge);
+            out.data = encode(smaller, false, step < 8 ? 0.85f : 0.7f);   // smaller, then lower in quality too
+        }
+        out.mediaType = "image/jpeg";
+        const int pngEdge = smallerFor(full, picture.size());
+        if (pngEdge > edge || out.data.size() > maxBytes)
+        {
+            juce::Image png = within(img, pngEdge);
+            if (std::vector<uint8_t> data = encode(png, true, 0.0f); data.size() <= maxBytes)
             {
-                edge = std::max(64, edge * 4 / 5);
-                smaller = within(img, edge);
+                out.data = std::move(data);
+                out.mediaType = "image/png";
+                smaller = png;
             }
-            out.data = encode(smaller, false, step == 0 ? 0.85f : 0.7f);
-            out.mediaType = "image/jpeg";
         }
         out.width = smaller.getWidth();
         out.height = smaller.getHeight();

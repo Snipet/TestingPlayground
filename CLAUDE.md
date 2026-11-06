@@ -536,7 +536,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
   a 1120 x 800 PNG on the worker thread with JUCE; it goes in the tool's result like view_panel's (the session keeps
   a line in its place) and its 480 px thumbnail on the tool's entry, which the chat draws under the row (the session
-  keeps the thumbnail).
+  keeps the thumbnail). Through MCP a picture over `kMcpPictureBytes` goes as `chatimages::fit` makes it: the largest
+  that fits of a JPEG and a scaled PNG, each sized from its own bytes (a spectrogram's PNG is several times its
+  JPEG's, so sizing a JPEG from it sent a third of the width).
 - **view_panel** (`editor/Picture.h`, `Picture.cpp`, `PictureDraw.cpp`; `Processor::chatPicture`): the turn's worker
   asks and the message thread draws (`Processor::poll`), as bgfx runs there: a headless Panel at the editor's size, its
   frame through FunkGui's `renderGpuPicture` (v0.23.0, `funkgui/gpu/GpuPicture.h`) where the build has bgfx
@@ -550,11 +552,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `picture::forceSoftRasterForTests`).
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
-  (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels, host edits, the
-  rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before each render; "capture": the
+  (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels (a racing
+  wheel's `buttons` a mask, its 7-bit parts sent in time order where they change, as the wheel sends them), host
+  edits, the rate and the block ("host": `ChatHost::chatHostRate`, `chatHostBlock`, filled in before each render;
+  "capture": the
   user's recording, through `scenario::captured` alone). A render plays host blocks as the processor does (the dials
   and the transport once a block, the events at their samples), so a phrase and the wheels give the same bits at any
   block size, and a moving dial, as in a DAW, does not; `dsp.tune` and `plugin.chatexample` check both at 64 and 333.
+  measure_output, view_sound and trace also take `dials_from` (current or defaults: `scenario::dialsFrom`; not in a
+  check's render settings, which set_checks' own covers, nor tune_dials'), the result's first line saying defaults.
   `try_edits` apply to a copy of the editor's files with edit_file's rule (in measure_output, view_sound and compare's
   b), and the result's first line says nothing changed: these tools stay out of `kChangingTools`. compare
   (`ChatCompare`, `dsp/Compare.h`) renders two sources in two Sessions with one request; its "playing" is the

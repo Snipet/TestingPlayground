@@ -893,7 +893,8 @@ to edit a part's line to move it.
     sweep from 20 Hz to 20 kHz by default; noise, an impulse for a reverb's or a delay's tail, a sine, or silence),
     and its spectrogram shows a filter's cut, what a drive adds and aliasing folding back down; the synth's holds the
     notes, then releases them, its spectrogram shows aliasing as lines folding back down and a click as a thin
-    vertical line, and its spectrum marks the note's harmonics. About 1,200 input tokens a picture.
+    vertical line, and its spectrum marks the note's harmonics. About 1,200 input tokens a picture. Through Claude
+    Desktop, whose tool results are capped, it goes as the largest JPEG that fits (850 to 1,000 px wide).
     `Source/dsp/SoundView.h`, `Source/plugin/SoundPicture.h`.
   - **set_checks**: from your request, Claude sets checks the work must pass, as numbers the plugin measures (the
     effect's gain, distortion (THD+N), brightness in and out, the impulse response's delay and tail and what comes

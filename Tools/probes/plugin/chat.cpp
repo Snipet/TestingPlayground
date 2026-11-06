@@ -97,7 +97,9 @@
 //            names that dial with its value and default; dials_from snapshot measures the dials as they were when set
 //            (the user's move aside), shows so in the card, is saved with its snapshot and loads; defaults measures at
 //            the defaults; a word it does not take is refused; a failing check at the defaults sends the turn on with
-//            words that say each check takes its own dials (not "the dials as they are now")
+//            words that say each check takes its own dials (not "the dials as they are now"); measure_output,
+//            view_sound and trace take the dials as the user has them, or with dials_from defaults at the defaults,
+//            the first line saying so, and refuse snapshot; view_sound's picture through MCP at least 800 px wide
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
 //            set (measured afterwards, it gives the goal); an unknown dial an error result
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
@@ -2113,6 +2115,51 @@ PROBE(plugin, chat)
             P.eq("checkdials.nudge_words", says(nudge, "(From the plugin: your checks, measured on the files as they are now, each with the dials it takes.\n")
                                                && says(nudge, "dials at defaults") ? 1 : 0, 1);
             sa.clearChecks();
+
+            // The one-shot renders' dials_from: measure_output, view_sound and trace take the dials they do not name as
+            // the user has them (the default), or at the program's defaults, the user's move aside and the first line
+            // saying so; a word they do not take (a check's snapshot) refused.
+            setDial(up);
+            const std::string upDials = pg::product::kIsInstrument ? "Dials: level 0, " : "Dials: gain 12.\n";   // the release as set before
+            const std::string defDials = pg::product::kIsInstrument ? "level -20, release 0.5" : "gain 0";
+            const std::string said = "The dials not named are at their defaults.\n";
+            juce::var short_ = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 } });
+            if constexpr (pg::product::kIsInstrument)
+                short_.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const std::string asNow = toolText(sa.mcpCall("measure_output", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "defaults");
+            const std::string atDefaults = toolText(sa.mcpCall("measure_output", short_));
+            const pg::ChatAgent::McpResult seen = sa.mcpCall("view_sound", short_);
+            const std::string looked = toolText(seen);
+            const std::string traced = toolText(sa.mcpCall("trace", short_));
+            short_.getDynamicObject()->setProperty("dials_from", "snapshot");
+            const pg::ChatAgent::McpResult wrong = sa.mcpCall("measure_output", short_);
+            std::printf("measure_output, the user's dials, then dials_from defaults:\n%s\n%s\nview_sound: %s\ntrace: %s\n", asNow.c_str(),
+                        atDefaults.c_str(), looked.c_str(), traced.c_str());
+            P.eq("renderdials.current", has(asNow, upDials) && !has(asNow, said) ? 1 : 0, 1);
+            P.eq("renderdials.defaults", atDefaults.rfind(said, 0) == 0 && has(atDefaults, "Dials: " + defDials + ".\n") ? 1 : 0, 1);
+            P.eq("renderdials.view_sound", has(looked, said) && has(looked, "Dials: " + defDials + ".") ? 1 : 0, 1);
+            P.eq("renderdials.trace", traced.rfind(said, 0) == 0 && has(traced, "; dials " + defDials + ";") ? 1 : 0, 1);
+            P.eq("renderdials.bad_refused", wrong.isError && has(allText(wrong), "dials_from is current") ? 1 : 0, 1);
+            // view_sound's picture through MCP, made to fit a tool's result from a JPEG's own bytes: most of its width
+            // (sized from the PNG's bytes, it was 391 px of 1120).
+            {
+                int width = 0, height = 0;
+                std::string type;
+                for (const juce::var& b : arr(seen.content))
+                    if (str(b, "type") == "image")
+                    {
+                        juce::MemoryOutputStream bytes;
+                        juce::Base64::convertFromBase64(bytes, juce::String(str(b, "data")));
+                        const juce::Image img = juce::ImageFileFormat::loadFrom(bytes.getData(), bytes.getDataSize());
+                        width = img.getWidth();
+                        height = img.getHeight();
+                        type = str(b, "mimeType");
+                        juce::File(juce::String(probe::outPath("plugin.chat.view_sound.mcp.jpg"))).replaceWithData(bytes.getData(), bytes.getDataSize());
+                    }
+                std::printf("view_sound through MCP: %s of %d x %d\n", type.c_str(), width, height);
+                P.ge("renderdials.mcp_picture_width", static_cast<double>(width), 800.0);
+            }
             setDial(was);
         }
 

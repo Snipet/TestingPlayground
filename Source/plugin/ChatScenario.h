@@ -21,6 +21,11 @@
 // captured()), so a check that keeps "host" renders at whatever the host runs at then. toVar() writes it back, for the
 // session. Times stop at 10 s (measure::kMaxPlaySeconds) and the tail follows, as the renders' caps have it.
 //
+// dials_from: current | defaults, measure_output's, view_sound's and trace's: the dials a render does not name as they
+// are in the plugin now (the default; the caller fills Request::current) or at the program's defaults (it leaves it
+// empty). A one-shot render has no later, so set_checks' snapshot is not among them; compare's word is its own (dials:
+// own or current). Not in a check's render settings either: set_checks takes its own, for every check.
+//
 // try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the editor's files, in order, with
 // edit_file's rule (old_text occurs exactly once) and write_file's (a whole file, new or replaced): measure_output,
 // view_sound and compare (its b) render the copy; nothing in the plugin changes, and the result's first line says so.
@@ -63,6 +68,16 @@ namespace playground::scenario
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
                                                const std::map<std::string, float>& current, ChatHost& host,
                                                std::string* errors);
+
+    // ---- dials_from (above) ------------------------------------------------------------------------------------------
+    // Its schema, with its words when `described` (the first tool's: MCP's copy drops them again from the others,
+    // mcp/McpSchema.h), else its two words alone (trace's lean schema).
+    juce::var dialsFromSchema(bool described);
+    // The input's dials_from: `defaults` true when it says defaults; false with why for a word it does not take
+    // (absent: current).
+    bool dialsFrom(const juce::var& input, bool& defaults, std::string& why);
+    // The result's line: "The dials not named are at their defaults.\n" ("" for current).
+    std::string dialsLine(bool defaults);
 
     // ---- try_edits ------------------------------------------------------------------------------------------------
     juce::var trialSchema();

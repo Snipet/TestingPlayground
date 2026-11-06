@@ -433,6 +433,32 @@ namespace playground::scenario
         return out;
     }
 
+    // ---- dials_from ----------------------------------------------------------------------------------------------------
+    juce::var dialsFromSchema(bool described)
+    {
+        juce::var p = claude::object({ { "enum", juce::Array<juce::var>{ "current", "defaults" } } });
+        if (described)
+            p.getDynamicObject()->setProperty("description", "Dials not named: current (the default) or defaults");
+        return p;
+    }
+
+    bool dialsFrom(const juce::var& input, bool& defaults, std::string& why)
+    {
+        defaults = false;
+        const juce::var v = input.getProperty("dials_from", juce::var());
+        if (v.isVoid() || v.isUndefined() || (v.isString() && v.toString() == "current"))
+            return true;
+        if (v.isString() && v.toString() == "defaults")
+        {
+            defaults = true;
+            return true;
+        }
+        why = "dials_from is current (the dials not named as they are now) or defaults (at the program's defaults).";
+        return false;
+    }
+
+    std::string dialsLine(bool defaults) { return defaults ? "The dials not named are at their defaults.\n" : ""; }
+
     // ---- try_edits ------------------------------------------------------------------------------------------------------
     juce::var trialSchema()
     {
