@@ -734,7 +734,7 @@ namespace playground::ui
             if (state_.match)
                 chat::drawIcon(c, chat::Icon::check, box2.centreX(), box2.centreY(), 11.0f, p.onAccent);
             c.text("Match loudness", r.x + 31.0f, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, state_.match ? p.text : p.soft);
-            std::string line;
+            std::string line, shorter;
             funkgui::Col ink = p.soft;
             if (!state_.match)
                 line = "Off: each side at its own level";
@@ -749,11 +749,14 @@ namespace playground::ui
             {
                 const int down = state_.trimDb[0] < state_.trimDb[1] ? 0 : 1;
                 const float by = -state_.trimDb[static_cast<std::size_t>(down)];
-                line = (by > 0.0f ? std::string(letter(down)) + " turned down " + fixed("%.1f dB", by) : std::string("As loud as each other"))
-                     + "   A " + fixed("%.1f", state_.lufs[0]) + ", B " + fixed("%.1f", state_.lufs[1]) + " LUFS";
+                shorter = by > 0.0f ? std::string(letter(down)) + " turned down " + fixed("%.1f dB", by) : std::string("As loud as each other");
+                line = shorter + "   A " + fixed("%.1f", state_.lufs[0]) + ", B " + fixed("%.1f", state_.lufs[1]) + " LUFS";
             }
-            c.text(fitText(c, line, chat::kSmall, std::max(0.0f, box.right() - kPad - (r.right() + 12.0f))).c_str(), r.right() + 12.0f,
-                   c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, ink);
+            const float room = std::max(0.0f, box.right() - kPad - (r.right() + 12.0f));
+            if (!shorter.empty() && c.textWidth(line.c_str(), chat::kSmall) > room)
+                line = shorter;                          // a narrow card: the loudnesses left out
+            c.text(fitText(c, line, chat::kSmall, room).c_str(), r.right() + 12.0f, c.capCentreTop(r.centreY(), chat::kSmall),
+                   chat::kSmall, ink);
         }
 
         // The line at the foot, and the buttons.
