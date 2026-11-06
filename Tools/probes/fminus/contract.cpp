@@ -17,7 +17,10 @@
 //   SHARED     a module Shared is made once for the program: its init runs once, with the rate, before every instance's
 //              init, which reads what it made through the main module's Shared* field; again at a new rate; the audio
 //              thread reads it through the pointer; a Shared nothing points at is a note; a Shared::init of another
-//              type is the plugin's message
+//              type is the plugin's message. An instrument's Shared's hooks (Patch.h, "Shared on its own"): tick, noteOn,
+//              noteOff and a param named as a dial compile with no note and are the Patch's; a tick of another type is
+//              the program's own, with a note at its place; a param no dial is named as is a note. The effect's: none
+//              of them (no note)
 //   INCLUDE    a program of several files (Sources.h): one that includes another compiles and plays what it includes;
 //              the main module may be in an included file; two files that include a third read it once; an error in
 //              an included file names that file and its line, after clang's include stack; an #include of a name no
@@ -220,6 +223,30 @@ PROBE(fminus, contract)
         const pg::Patch::Result wrong = compile(program("module Shared\n{\n    float x;\n    void init() { x = 1; }\n};\n",
                                                         "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
         P.eq("shared.init_signature", !wrong.patch && has(wrong.errors, "Shared::init: the plugin calls it as `void init(float rate)`") ? 1 : 0, 1);
+        // Its hooks (an instrument's only).
+        const std::string hooks = "module Shared\n{\n    param float level;\n    float y;\n    int notes;\n"
+                                  "    void tick(int n) { y += level[0] * (float)n; }\n"
+                                  "    void noteOn(float note, float velocity) { notes += 1; }\n"
+                                  "    void noteOff(float note) { notes -= 1; }\n};\n";
+        const std::string reads = "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    Shared* shared;\n"
+                                  + process("            left[i] = shared->y * 0.0001f;\n");
+        const pg::Patch::Result h = compile(program(hooks, reads));
+        P.eq("shared.hooks_compile", h.patch && h.notes.empty() ? 1 : 0, 1);
+        if constexpr (kInstrument)
+            P.eq("shared.hooks_are_its", h.patch && h.patch->sharedTicks() && h.patch->sharedNotes() && h.patch->sharedDials() == 1u ? 1 : 0, 1);
+        else
+            P.eq("shared.effect_has_none", h.patch && !h.patch->sharedTicks() && !h.patch->sharedNotes() && h.patch->sharedDials() == 0 ? 1 : 0, 1);
+        const pg::Patch::Result other = compile(program("module Shared\n{\n    float x;\n    float tick() { x += 1; return x; }\n"
+                                                        "    param float stray;\n};\n",
+                                                        "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
+        if constexpr (kInstrument)
+        {
+            P.eq("shared.tick_otherwise_note", other.patch && !other.patch->sharedTicks()
+                                                   && has(other.notes, "program.fm:4:11: note: Shared::tick is not declared as the plugin calls it (`void tick(int n)`)") ? 1 : 0, 1);
+            P.eq("shared.stray_param_note", other.patch && has(other.notes, "Shared::stray reads no dial") ? 1 : 0, 1);
+        }
+        else
+            P.eq("shared.effect_no_notes", other.patch && other.notes.empty() ? 1 : 0, 1);
     }
 
     // INCLUDE
