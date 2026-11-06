@@ -238,12 +238,12 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
     }
 
     // The host's move of slot's parameter by a twentieth (its automation: no input to the Panel; a step a dial's pointer
-    // eases over, not one it jumps), the Panel drawn and calm before it: whether it asks for a frame (Panel.h "Unchanged
-    // frames"; false too when the Panel was not calm), and whether the Panel then wants the full rate (a shown knob
-    // moving).
+    // eases over, not one it jumps), the Panel drawn and calm before it: whether the Panel was calm (a row that counts
+    // on no frame asks for this too, or it would pass without a move), whether the move asks for a frame (Panel.h
+    // "Unchanged frames"), and whether the Panel then wants the full rate (a shown knob moving).
     struct HostMove
     {
-        bool asks = false, fullRate = false;
+        bool calm = false, asks = false, fullRate = false;
     };
     HostMove hostMove(pg::Processor& p, pg::ui::Panel& panel, funkgui::HeadlessHost& host, int slot)
     {
@@ -255,6 +255,11 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
             host.tick(1, 1.0f / 12.0f);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
+        // The top bar's CPU figure is read a quarter second at most (Panel::refresh), so it may still show a load from
+        // before the last blocks the probe played; its first read after them would land in the tick checked below, a
+        // change whenever those blocks took another time (often on a loaded machine). A third of a second reads it; no
+        // block plays from here on, so it stands.
+        host.tick(4, 1.0f / 12.0f);
         host.settle();
         host.draw();
         host.tick(1, 1.0f / 12.0f);
@@ -263,7 +268,7 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
         juce::AudioProcessorParameter& param = *p.getParameters()[slot];
         param.setValueNotifyingHost(param.getValue() + (param.getValue() < 0.5f ? 0.05f : -0.05f));
         host.tick(1, 1.0f / 12.0f);
-        return { panel.needsDraw(), panel.wantsFullRate() };
+        return { true, panel.needsDraw(), panel.wantsFullRate() };
     }
 }
 
@@ -431,8 +436,8 @@ PROBE(gui, styles)
         // interface hides keeps the rate up).
         {
             const HostMove m = hostMove(processor, panel, host, cutoff);
-            P.eq("pages.hidden_knob_quiet", !panel.guiControl(cutoff).shown() && !m.asks ? 1 : 0, 1);
-            P.eq("pages.hidden_knob_calm", m.fullRate ? 0 : 1, 1);
+            P.eq("pages.hidden_knob_quiet", !panel.guiControl(cutoff).shown() && m.calm && !m.asks ? 1 : 0, 1);
+            P.eq("pages.hidden_knob_calm", m.calm && !m.fullRate ? 1 : 0, 1);
         }
         const std::vector<std::string> pages = port.guiPages();
         P.eq("pages.kept", !pages.empty() && pages[0] == "MIXER" ? 1 : 0, 1);
