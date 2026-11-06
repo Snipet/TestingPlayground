@@ -165,7 +165,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   functions (process, start, stop) and sets parameters. Never call a program function through another type than its
   declaration's: the appended lines (Patch.cpp) are what make the types right, so a new call needs its own line.
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
-  swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
+  swap is over (and while `holdPending` does not hold it: the A/B's trim, at most a 20 ms ramp), hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
   and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
 - **The dials' carry** (Controls.h's `DialCarry` and `carryValue`, Compiler.h's and Engine.h's "The dials' carry",
   `Processor::apply`): the host's values are normalised, so a run whose declarations change (a range, a taper, an int's
@@ -188,10 +188,19 @@ place (its `products/<key>.cmake`, and its names in the docs).
   each side's own dials land by name when its compile does (`abDialsRequest_`, as a version's do). The matched
   loudness is a gain on the Engine's output only (`trimOutput`: after the recorder, before the bypass, so the meters,
   the scopes and a recording are untrimmed), never above 1, keyed by the program that plays (`Engine::playingProgram`,
-  the side's request id, published before its compile is offered; a refine of a side takes its new id), ramped over
-  20 ms (smootherstep, one tick a sample): the audio thread reads two pairs of atomics and allocates nothing. A
-  program that lands from anything else (a request past the newest known when it began, none of its own) ends it,
-  nothing restored; `endAb` puts back what played before. Nothing of it is in the session. Claude reads it as one line
+  the side's request id, published before its compile is offered; a refine of a side takes its new id once poll()
+  sees it), ramped over 20 ms (smootherstep, one tick a sample): the audio thread reads a small table inside a
+  sequence count (`AbTrims`; moved under the read, the aim stays) and allocates nothing. Never turned up on the way: a
+  program the table does not know keeps the gain that plays while it is on or ending (a side's refine, its old
+  program while its next compiles, one from elsewhere until poll() ends it); a program coming that plays lower waits
+  in the Engine (`Engine::holdPending`, `trimGate`) while the trim comes down to it, and a higher gain waits until the
+  program going out is silent (`Engine::outgoing`); Close's and Keep's compile keeps the trims until it lands (that
+  program at 1). The loudness is measured again once the dials moved and rested 0.5 s (`abFollowDials`; meanwhile it
+  says it is measuring). A program that lands from anything else (a request past the newest known when it began, none
+  of its own, refined or not) ends it, nothing restored, and so does a session loaded (`setStateInformation`: the A/B's
+  waiting request taken back, `Compiler::withdraw`; its program untrimmed at once; poll() ends it); `endAb` puts back
+  what played before. Not in the session itself: a session saved while it is on keeps what played before it began
+  (and those dials while each side has its own: `abKept_`, under `programMutex_`). Claude reads it as one line
   (`ChatHost::chatAb`, under its own mutex: get_status and plugin_state); keeping and switching are the user's.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
