@@ -28,10 +28,13 @@
 // and bgfx_shader.sh, the platform and profile, and shaderc itself (its path, size and modification time: a new shaderc
 // builds again). The disk keeps only builds that compiled, each in a file of its own written under a temporary name and
 // renamed into place, so two instances or two processes writing one never leave half of it; a file that does not read
-// back whole and exactly (its length, its checksum, its key) is ignored and made again. buildAll() runs a panel's builds
-// (four at most) at once, each then checked by the renderer, and shaderc runs at most kShadercAtOnce times at once in
-// the process; the Compiler starts them before FMinus compiles the program (readGuiShaders: the .gui file's shaders,
-// their inputs taken at their word), so a RUN waits for the longer of the two, not for their sum.
+// back whole and exactly (its length, its checksum, its key) is ignored and made again. The process keeps each
+// folder's size as a running total and scans the folder (for the cap, and for temporary files left long ago) only at
+// its first write there, at a write that takes it over the cap and at every 64th (shaderCacheScans): a folder at its
+// cap holds thousands of entries. buildAll() runs a panel's builds (four at most) at once, each then checked by the
+// renderer, and shaderc runs at most kShadercAtOnce times at once in the process; since the Compiler starts them
+// before FMinus compiles the program (above: readGuiShaders, the .gui file's shaders, their inputs taken at their
+// word), a RUN waits for the longer of the two, not for their sum.
 #pragma once
 
 #include <cstddef>
@@ -144,6 +147,9 @@ namespace playground
 
     // The times this process started shaderc (buildShader), for the probes.
     uint64_t shadercRuns();
+    // The times this process scanned a disk cache's folder for its size (a write's: the process's first there, one that
+    // takes it over its cap, and every 64th), for the probes.
+    uint64_t shaderCacheScans();
 
     // A shader binary's id for FunkGui's ShaderLibrary: its bytes' hash, never 0 (the same shader, the same id).
     uint32_t shaderId(const std::vector<uint8_t>& binary);

@@ -191,8 +191,8 @@ namespace playground
         }
 
         // The cache within its cap: the entries used least lately removed (never `keep`, the one just written) until it
-        // holds three quarters of it; a writer's temporary file left long ago removed.
-        void prune(const std::filesystem::path& dir, std::uintmax_t cap, const std::filesystem::path& keep)
+        // holds three quarters of it; a writer's temporary file left long ago removed. The entries' bytes left.
+        std::uintmax_t prune(const std::filesystem::path& dir, std::uintmax_t cap, const std::filesystem::path& keep)
         {
             struct Entry
             {
@@ -227,7 +227,7 @@ namespace playground
                 total += bytes;
             }
             if (total <= cap)
-                return;
+                return total;
             std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.used < b.used; });
             for (const Entry& x : entries)
             {
@@ -237,6 +237,53 @@ namespace playground
                 if (x.path != keep && std::filesystem::remove(x.path, e))
                     total -= x.bytes;
             }
+            return total;
+        }
+
+        // What the process knows of each cache folder it writes: its entries' bytes as the last scan (prune) found
+        // them, with what it has written there since, and its writes since that scan. A write scans the folder only
+        // when it is the process's first there, when it takes the total over the cap, or when it is the
+        // kRescanWrites-th since the last scan (which finds what other processes wrote, and their temporary files left
+        // long ago): a folder at its cap holds thousands of entries, and a scan of them all takes tens of milliseconds,
+        // which a RUN would wait for.
+        constexpr int kRescanWrites = 64;
+        std::atomic<uint64_t> folderScans{ 0 };      // shaderCacheScans()
+
+        struct Folders
+        {
+            struct Tally
+            {
+                std::uintmax_t bytes = 0;
+                int writes = 0;
+                bool scanned = false;
+            };
+            std::mutex mutex;
+            std::map<std::filesystem::path, Tally> tallies;
+        };
+
+        Folders& folders()
+        {
+            static Folders f;
+            return f;
+        }
+
+        // A write of `added` bytes to `dir` (over an entry of `replaced` bytes, 0 for none) counted, and the folder
+        // scanned and brought within `cap` when it is due (above).
+        void tally(const std::filesystem::path& dir, std::uintmax_t cap, const std::filesystem::path& entry,
+                   std::uintmax_t added, std::uintmax_t replaced)
+        {
+            Folders& f = folders();
+            const std::lock_guard<std::mutex> lock(f.mutex);
+            Folders::Tally& t = f.tallies[dir];
+            t.bytes += added;
+            t.bytes = t.bytes > replaced ? t.bytes - replaced : 0;
+            ++t.writes;
+            if (t.scanned && t.bytes <= cap && t.writes < kRescanWrites)
+                return;
+            t.bytes = prune(dir, cap, entry);
+            t.scanned = true;
+            t.writes = 0;
+            folderScans.fetch_add(1, std::memory_order_relaxed);
         }
 
         // `binary` kept as `key`'s entry: written under a name of the writer's own, then renamed over the entry (one
@@ -263,15 +310,22 @@ namespace playground
                 out.close();
                 written = static_cast<bool>(out);
             }
+            std::uintmax_t replaced = 0;             // this key's entry already there (another writer's, a corrupt one)
             if (written)
+            {
+                std::error_code e;
+                replaced = std::filesystem::file_size(entry, e);
+                if (e)
+                    replaced = 0;
                 std::filesystem::rename(temp, entry, ec);
+            }
             if (!written || ec)
             {
                 std::error_code e;
                 std::filesystem::remove(temp, e);
                 return;
             }
-            prune(dir, cap, entry);
+            tally(dir, cap, entry, data.size(), replaced);
         }
 
         bool identifier(const std::string& s)
@@ -760,6 +814,11 @@ namespace playground
     uint64_t shadercRuns()
     {
         return shadercStarts.load(std::memory_order_relaxed);
+    }
+
+    uint64_t shaderCacheScans()
+    {
+        return folderScans.load(std::memory_order_relaxed);
     }
 
     uint32_t shaderId(const std::vector<uint8_t>& binary)

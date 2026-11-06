@@ -42,8 +42,10 @@
 //             empty, garbage, another shader's entry under its name) is ignored, built again right and written again
 //             whole; four threads asking one cache for one new build run shaderc once, four caches (as four processes)
 //             building one at once leave one whole entry, no temporary file; the cap removes the entries used least
-//             lately down to three quarters of it, the newest kept; RUN's early builds take a shader's inputs at their
-//             word (readGuiShaders), and a wrong guess (an input the program lacks) costs a build, never the result
+//             lately down to three quarters of it, the newest kept; the folder scanned at the process's first write
+//             there, not at each (shaderCacheScans), that scan removing a temporary file left long ago and keeping a
+//             new one; RUN's early builds take a shader's inputs at their word (readGuiShaders), and a wrong guess (an
+//             input the program lacks) costs a build, never the result
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -880,6 +882,28 @@ PROBE(gui, shaders)
             pg::ShaderCache firstAgain;
             firstAgain.build("still.sc", saltedStill(100), { "cutoff" }, x);
             P.eq("cache.cap_oldest_gone", static_cast<int64_t>(firstAgain.counts().built), 1);
+        }
+
+        // The folder's size a running total: the process scans a folder at its first write there, not at every write;
+        // that scan removes a writer's temporary file left long ago and keeps one being written.
+        {
+            const std::filesystem::path dir = root / "scans";
+            const pg::ShaderTools x = fresh(dir);
+            std::filesystem::create_directories(dir, ec);
+            const std::filesystem::path stale = dir / "0123456789abcdef.left.tmp";
+            const std::filesystem::path recent = dir / "fedcba9876543210.writing.tmp";
+            writeBytes(stale.string(), "half an entry");
+            writeBytes(recent.string(), "half an entry");
+            const auto hourAgo = std::filesystem::file_time_type::clock::now() - std::chrono::hours(1);
+            std::filesystem::last_write_time(stale, hourAgo, ec);
+            const uint64_t scans = pg::shaderCacheScans();
+            pg::ShaderCache c;
+            for (int k = 0; k < 5; ++k)
+                c.build("still.sc", saltedStill(300 + k), { "cutoff" }, x);
+            P.eq("cache.scans_written", folder(dir).entries, 5);
+            P.eq("cache.scans_first_write_only", static_cast<int64_t>(pg::shaderCacheScans() - scans), 1);
+            P.eq("cache.scans_stale_temp_gone", std::filesystem::exists(stale, ec) ? 0 : 1, 1);
+            P.eq("cache.scans_recent_temp_kept", std::filesystem::exists(recent, ec) ? 1 : 0, 1);
         }
 
         // RUN guesses a shader's inputs from the .gui file before the program says which it has: a guess that is wrong
