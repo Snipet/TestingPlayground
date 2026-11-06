@@ -12,7 +12,8 @@
 // band; inharmonic_db under its -90 dB floor on both sides agrees) and, with `detail`, B's level against A's in 32
 // parts; no null test, gain or lag. An effect's input is then the
 // sweep (20 Hz to 20 kHz, the same at every rate) unless the request names one; the chat's compare refuses noise and
-// the impulse there.
+// the impulse there. Both rates are kMinRateAcross or more (else an error, nothing rendered): 20 Hz to 20 kHz exists
+// on both sides, so the sweep, the metrics' bands (an effect's centroids) and the picture's axis are the same.
 //
 // What it finds, in a few lines: identical bits (over the shorter side when their lengths differ); or how far apart
 // they are (the RMS of A - B against A's, in dB), the peak difference and when, the first and the last sample that
@@ -37,6 +38,9 @@
 
 namespace playground::measure
 {
+    // Two rates' least: each side's Nyquist frequency above 20 kHz.
+    inline constexpr double kMinRateAcross = 40000.0;
+
     struct CompareSide
     {
         Sources files;                            // what is rendered (unless `recorded`)
@@ -47,7 +51,8 @@ namespace playground::measure
 
     struct Comparison
     {
-        std::string error;                        // why nothing was compared ("" when it was): a side did not compile
+        std::string error;                        // why nothing was compared ("" when it was): a side did not compile,
+                                                  // or two rates and one under kMinRateAcross
         bool identical = false;
         double rate = 48000.0;                    // A's
         double rateB = 48000.0;                   // B's: A's, unless it was asked at another (then twoRates())

@@ -281,7 +281,7 @@ namespace playground
         const CompileStatus s = compiler_.compileNow(draft_.files);
         jassert(s.ok);
         seen_ = s.revision;
-        apply(s, true);
+        apply(s, true, true);
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
@@ -707,7 +707,7 @@ namespace playground
     bool Processor::meters(Meters& out) const { return engine_.meters(out); }
     void Processor::scope(bool input, float* out, int n) const { engine_.scope(input, out, n); }
 
-    void Processor::apply(const CompileStatus& s, bool reset)
+    void Processor::apply(const CompileStatus& s, bool reset, bool loaded)
     {
         if (!s.ok)
         {
@@ -736,8 +736,12 @@ namespace playground
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
-            if (!running_.empty() && !cir::sameProgram(running_, s.sources))
-                previous_ = running_;                            // compare's previous_run
+            // compare's previous_run: what a run replaced. A state's program (a host's recall, a project reopened) is
+            // no run's: nothing played before it, though Init played until then.
+            if (loaded)
+                previous_.clear();
+            else if (!running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;
             running_ = s.sources;
         }
         if (reset)
@@ -818,7 +822,7 @@ namespace playground
             const CompileStatus s = compiler_.status();
             seen_ = s.revision;
             const uint64_t run = editorRun_.load();
-            apply(s, run != 0 && s.request == run);
+            apply(s, run != 0 && s.request == run, false);
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
@@ -1068,7 +1072,7 @@ namespace playground
         // The session's program, compiled now, its dials as the session has them.
         const CompileStatus s = compiler_.compileNow(std::move(run));
         seen_ = s.revision;
-        apply(s, false);
+        apply(s, false, true);
         apvts_.replaceState(state);
         journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();

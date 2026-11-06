@@ -4,9 +4,9 @@
 // project's), a preset of it or a dial setting over the editor's files, or the user's recording ("capture",
 // ChatScenario.h); each renders with its own dials (a version's, a preset's) over the plugin's, unless `dials` is
 // "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
-// defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check: Compare.h compares the
-// levels, bands and metrics then, not samples; never a recording, whose events are at its own rate). Its result is at
-// most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
+// defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
+// Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
+// rate). Its result is at most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -117,8 +117,8 @@ namespace playground
                 out.words = "what played before the last run";
                 if (out.files.empty())
                 {
-                    why = "Nothing played before the last run since the plugin opened (previous_run is the program a run "
-                          "replaced: run_program twice to have one).";
+                    why = "Nothing played before the last run: no run has changed the program since the plugin opened or "
+                          "loaded its session (previous_run is the program a run replaced).";
                     return false;
                 }
                 return true;
@@ -254,7 +254,7 @@ namespace playground
                 "user's recording. dials: own (each side's saved values over the plugin's, the default), current (the "
                 "plugin's; a preset's and {dials} still apply) or defaults (each side's own over the program's defaults). "
                 "An effect's input: the scenario's, else noise. try_edits apply to b; detail adds the difference over "
-                "time; picture draws both (about 1,000 tokens). b_rate renders b at another rate (8000 to 192000 Hz; "
+                "time; picture draws both (about 1,000 tokens). b_rate renders b at another rate (40000 to 192000 Hz; "
                 "both \"editor\" at 96000: does it sound the same?), compared by the levels, octave bands and metrics "
                 "(those the rate moves by definition aside), not sample by sample; an effect's input then the sweep; "
                 "never with the recording." },
@@ -299,20 +299,27 @@ namespace playground
             return done(why, true);
         if (a.capture || b.capture)
             req.tailSeconds = 0.0f;                          // as long as the recording, no more
-        // B at another rate (a rate check): never with the recording, whose events and blocks are at its own rate.
+        // B at another rate (a rate check): both rates 40 kHz or more (Compare.h), and never with the recording, whose
+        // events and blocks are at its own rate. b_rate at A's own rate is the ordinary comparison.
         double rateB = req.rate;
         if (const juce::var r = input.getProperty("b_rate", juce::var()); !r.isVoid() && !r.isUndefined())
         {
             if (!(r.isDouble() || r.isInt() || r.isInt64()) || !(static_cast<double>(r) >= scenario::kMinRate)
                 || !(static_cast<double>(r) <= scenario::kMaxRate))
-                return done("b_rate is B's rate in Hz, 8000 to 192000.", true);
+                return done("b_rate is B's rate in Hz, 8000 to 192000 (40000 or more when it differs from A's).", true);
+            rateB = static_cast<double>(r);
+        }
+        if (rateB != req.rate)
+        {
+            if (std::min(rateB, req.rate) < measure::kMinRateAcross)
+                return done("At two rates both are 40000 Hz or more, so that both hold 20 Hz to 20 kHz: A renders at "
+                            + number(req.rate) + " Hz and b_rate is " + number(rateB) + ".", true);
             if (a.capture || b.capture || req.fromCapture)
                 return done("b_rate takes no recording: what played, and its events, are at its own rate (compare two "
                             "programs, or the same one twice, at two rates).", true);
             if (req.signal == static_cast<int>(measure::ViewInput::noise) || req.signal == static_cast<int>(measure::ViewInput::impulse))
                 return done("b_rate takes the sweep (its input at two rates), a sine or silence: white noise's and an "
                             "impulse's level per hertz change with the rate, so every band would differ.", true);
-            rateB = static_cast<double>(r);
         }
         const juce::String which = input.getProperty("dials", juce::var()).toString();
         if (which.isNotEmpty() && which != "own" && which != "current" && which != "defaults")

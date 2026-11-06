@@ -152,7 +152,8 @@ namespace playground
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
         // What played before the last run that changed what plays (a netlist's drawing aside): compare's previous_run.
-        // None before a second program has played since the plugin opened (it is not kept with the session).
+        // None until a run has changed the program since the plugin opened or loaded a state (it is not kept with the
+        // session, and a state's program is no run's).
         virtual Sources chatPrevious() const { return {}; }
         virtual Controls chatDials() const = 0;                     // the running program's
         virtual float chatDialValue(int slot) const = 0;            // plain value

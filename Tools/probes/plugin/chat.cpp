@@ -123,9 +123,10 @@
 //   COMPARE  compare through the agent: the editor against itself with a trial edit that halves the level shows a
 //            gain of 0.5; version:N with no project open says so; dials "current" keeps a {dials} side's own; b_rate
 //            96000: the editor at both rates compared by levels, bands and metrics (they agree), the picture with no
-//            difference line; a rate under 8000 and the effect's noise refused; previous_run: none on a fresh plugin;
+//            difference line; a rate under 8000, two rates with one under 40000 and the effect's noise refused, b_rate
+//            at A's rate (the effect's noise with it) the ordinary comparison; previous_run: none on a fresh plugin;
 //            after the halving edited and run, previous_run against playing a gain of 0.5 (before poll() takes the
-//            run and after), and 2 once run back
+//            run and after), and 2 once run back; none after a state is loaded into a new processor
 //   TRACE    trace through the agent (dsp/Debug.h): the program that sounds has nothing to find; a trial edit that makes
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
@@ -2555,10 +2556,19 @@ PROBE(plugin, chat)
                                                          { "b", "editor" },
                                                          { "b_rate", 96000 },
                                                          { "scenario", input({ { "input", "noise" } }) } }))
+                                           .tool("toolu_y8", "compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 22050 } }))
+                                           .tool("toolu_y9", "compare",
+                                                 pg::product::kIsInstrument
+                                                     ? input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 48000 } })
+                                                     : input({ { "a", "editor" },
+                                                               { "b", "editor" },
+                                                               { "b_rate", 48000 },
+                                                               { "scenario", input({ { "input", "noise" } }) } }))
                                            .end("tool_use")));
             ss->add(fake::Response::ok(fake::Sse().start().text("Compared.").end()));
             const int rt = turn("does it sound the same at 96 kHz?", 2);
             const std::string rateLow = resultText(rt + 1, 1), rateNoise = resultText(rt + 1, 2);
+            const std::string rateUnder = resultText(rt + 1, 3), rateSame = resultText(rt + 1, 4);
             std::string rateWords, rateData;
             const juce::Array<juce::var> rateResults = arr(lastUser(rt + 1).getProperty("content", {}));
             for (const juce::var& b : arr(!rateResults.isEmpty() ? rateResults[0].getProperty("content", {}) : juce::var()))
@@ -2568,7 +2578,8 @@ PROBE(plugin, chat)
                 if (str(b, "type") == "text")
                     rateWords = str(b, "text");
             }
-            std::printf("compare at two rates:\n%s\n%s\n%s\n", rateWords.c_str(), rateLow.c_str(), rateNoise.c_str());
+            std::printf("compare at two rates:\n%s\n%s\n%s\n%s\n", rateWords.c_str(), rateLow.c_str(), rateNoise.c_str(),
+                        rateUnder.c_str());
             P.eq("compare.rates_lines", has(rateWords, ", A at 48000 Hz and B at 96000 Hz, in blocks of ")
                                             && has(rateWords, "\nA renders at 48000 Hz and B at 96000 Hz: compared by what is the same "
                                                               "at every rate (the levels, the octave bands, the metrics), not sample by sample.\n")
@@ -2581,9 +2592,16 @@ PROBE(plugin, chat)
             juce::File(juce::String(probe::outPath("plugin.chat.compare.rates.png"))).replaceWithData(ratePng.getData(), ratePng.getDataSize());
             const juce::Image rateImg = juce::ImageFileFormat::loadFrom(ratePng.getData(), ratePng.getDataSize());
             P.eq("compare.rates_picture", rateImg.getWidth() == 1120 && rateImg.getHeight() == 560 ? 1 : 0, 1);
-            P.eq("compare.rates_low_refused", has(rateLow, "b_rate is B's rate in Hz, 8000 to 192000.") ? 1 : 0, 1);
+            P.eq("compare.rates_low_refused", has(rateLow, "b_rate is B's rate in Hz, 8000 to 192000 (40000 or more when it "
+                                                           "differs from A's).") ? 1 : 0, 1);
             P.eq("compare.rates_noise_refused",
                  pg::product::kIsInstrument || has(rateNoise, "b_rate takes the sweep (its input at two rates)") ? 1 : 0, 1);
+            // Two rates under 40 kHz refused (a side would lack 20 Hz to 20 kHz); b_rate at A's own rate the ordinary
+            // comparison, the effect's noise with it.
+            P.eq("compare.rates_under_40k_refused",
+                 has(rateUnder, "At two rates both are 40000 Hz or more, so that both hold 20 Hz to 20 kHz: A renders at 48000 Hz "
+                                "and b_rate is 22050.") ? 1 : 0, 1);
+            P.eq("compare.rates_same_rate", has(rateSame, "Identical bits") && !has(rateSame, "A renders at") ? 1 : 0, 1);
 
             // previous_run: what played before the last run that changed it. A fresh plugin has none; here, the halving
             // edited and run, previous_run against playing is that halving (before the message thread takes the new
@@ -2591,7 +2609,8 @@ PROBE(plugin, chat)
             {
                 pg::Processor fresh;
                 const pg::ChatAgent::McpResult none = fresh.chatAgent().mcpCall("compare", input({ { "a", "previous_run" }, { "b", "editor" } }));
-                P.eq("compare.previous_none", none.isError && has(allText(none), "Nothing played before the last run since the plugin opened") ? 1 : 0, 1);
+                P.eq("compare.previous_none", none.isError && has(allText(none), "Nothing played before the last run: no run has changed "
+                                                                                 "the program since the plugin opened") ? 1 : 0, 1);
             }
             const juce::var halveFile = input({ { "name", "program.fm" },
                                                 { "old_text", "const float g = expf(0.115129255f * " },
@@ -2614,6 +2633,22 @@ PROBE(plugin, chat)
                                                 && halvedPolled == halvedRun
                                                 ? 1 : 0, 1);
             P.eq("compare.previous_back", has(doubled, "Best fit: B = 2.000 x A (+6.0 dB), no delay") ? 1 : 0, 1);
+            // A state loaded (a host's recall, a project reopened) is no run: nothing played before its program, though a
+            // new processor plays Init until then (this program is not Init).
+            {
+                juce::MemoryBlock state;
+                sp.getStateInformation(state);
+                pg::Processor loaded;
+                loaded.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+                const pg::ChatAgent::McpResult noneLoaded = loaded.chatAgent().mcpCall("compare", previous);
+                const std::string loadedFile = toolText(loaded.chatAgent().mcpCall("read_file", input({ { "name", "program.fm" } })));
+                P.eq("compare.previous_none_loaded",
+                     noneLoaded.isError
+                             && has(allText(noneLoaded), "Nothing played before the last run: no run has changed the program since "
+                                                         "the plugin opened or loaded its session")
+                             && has(loadedFile, "const float g = expf(0.115129255f * ")
+                         ? 1 : 0, 1);
+            }
         }
 
         // ---- TRACE ---------------------------------------------------------------------------------------------------------

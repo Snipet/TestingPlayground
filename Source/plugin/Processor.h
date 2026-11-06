@@ -163,8 +163,9 @@ namespace playground
         void bypassMix(float* const* channels, int numChannels, int numSamples) noexcept;
         void runUnprepared(juce::AudioBuffer<float>& buffer) noexcept;
 
-        // poll()'s work: a finished compile's dials (resetting the renamed ones to their defaults when `reset`).
-        void apply(const CompileStatus& s, bool reset);
+        // poll()'s work: a finished compile's dials (resetting the renamed ones to their defaults when `reset`). `loaded`:
+        // a program no run played (the constructor's Init, a state's), so nothing played before it (chatPrevious).
+        void apply(const CompileStatus& s, bool reset, bool loaded);
         void timerCallback() override;
 
         // EditorPort
@@ -268,7 +269,7 @@ namespace playground
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
         Sources running_;
-        Sources previous_;                                       // what played before running_ (chatPrevious)
+        Sources previous_;                                       // what played before running_ (chatPrevious): a run's
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};

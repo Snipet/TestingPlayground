@@ -287,6 +287,12 @@ namespace playground::measure
         const double rate = sa.request.rate > 1000.0 ? sa.request.rate : 48000.0;
         c.rate = rate;
         c.rateB = sb.request.rate > 1000.0 ? sb.request.rate : rate;
+        if (c.twoRates() && std::min(c.rate, c.rateB) < kMinRateAcross)
+        {
+            c.error = "At two rates both are " + fmt("%g", kMinRateAcross) + " Hz or more (20 Hz to 20 kHz on both sides): A is at "
+                    + fmt("%g", c.rate) + " Hz and B at " + fmt("%g", c.rateB) + " Hz.";
+            return c;
+        }
         // A recording's length sets both sides' (in seconds: each in its own rate's samples).
         const double recorded = sa.recordedL != nullptr   ? static_cast<double>(sa.recordedL->size()) / c.rate
                               : sb.recordedL != nullptr ? static_cast<double>(sb.recordedL->size()) / c.rateB

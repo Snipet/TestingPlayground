@@ -31,7 +31,8 @@
 //   VIEW     view_sound's analysis: a 440 Hz tone (an instrument's note 69; an effect's sine) is the spectrogram's
 //            loudest row and the spectrum's loudest column, within a row; the close-up four of its cycles; the waveform
 //            and the level as rendered; an effect's sweep rises through the rows; the note-off where it was; analyse()
-//            of a render's samples gives the view's own
+//            of a render's samples gives the view's own; the tone at 96 and 192 kHz as at 48 (the spectrum's top within
+//            0.1 dB, its loudest column and the spectrogram's loudest row the same)
 //   SCENARIO a scenario's render (Measure.h): an instrument's phrase (a retrigger, fast notes, a 17th note that
 //            steals, legato) with the wheels, the pedal and a stop, an effect's host edits: the same bits in blocks of 64
 //            and 333, and again; with a dial moving (a float glide, an int step), the same bits again at each block size,
@@ -51,7 +52,7 @@
 //            within 0.2 dB (the synth's to 2 kHz), every metric within its tolerance but those the rate moves by
 //            definition, set aside and named, the detail's parts within 0.2 dB, the effect's input the sweep; one that
 //            counts in samples (compare's: an envelope a step a sample, a delay of 64 samples) not, the metrics that
-//            move named side by side
+//            move named side by side; B at 22050 Hz refused (two rates are 40 kHz or more), both at it compared
 #include "Probe.h"
 
 #include "dsp/Compare.h"
@@ -887,6 +888,29 @@ PROBE(dsp, tune)
         const ms::View again = ms::analyse(sound.l, sound.r, sound.rate, sound.heldUntil, vr, sound.cycleHz, sound.harmonics, sound.fromStart);
         P.eq("view.analyse_is_view", again.cells == v.cells && again.spectrum == v.spectrum && again.levelDb == v.levelDb
                                          && again.zoomFrom == v.zoomFrom && again.harmonics == v.harmonics ? 1 : 0, 1);
+        // The frames fixed in seconds (SoundView.h): the same tone at 96 and 192 kHz shows as at 48 (compare's picture
+        // at two rates draws both on one scale): the spectrum's top on the 48 kHz frame's scale, its loudest column and
+        // the spectrogram's loudest row the same.
+        for (const int k : { 96, 192 })
+        {
+            ms::ViewRequest at = vr;
+            at.render.rate = 1000.0 * k;
+            const ms::View w = ms::view(files(), at);
+            int row = 0;
+            for (int r = 0; r < w.rows; ++r)
+                if (w.cells[static_cast<std::size_t>(r * w.columns + mid)] > w.cells[static_cast<std::size_t>(row * w.columns + mid)])
+                    row = r;
+            std::size_t col = 0;
+            for (std::size_t c = 0; c < w.spectrum.size(); ++c)
+                if (w.spectrum[c] > w.spectrum[col])
+                    col = c;
+            std::printf("view at %d kHz: the spectrum's top %.2f dB (%.2f at 48), its loudest column %zu (%zu), row %d (%d)\n", k,
+                        static_cast<double>(w.spectrumTop), static_cast<double>(v.spectrumTop), col, loudCol, row, loudRow);
+            const std::string at48 = "view.rate" + std::to_string(k) + ".";
+            P.near(at48 + "spectrum_top_db", static_cast<double>(w.spectrumTop), static_cast<double>(v.spectrumTop), 0.1);
+            P.eq(at48 + "spectrum_column", static_cast<int64_t>(col), static_cast<int64_t>(loudCol));
+            P.eq(at48 + "spectrogram_row", row, loudRow);
+        }
     }
 
     // ---- SCENARIO ------------------------------------------------------------------------------------------------------
@@ -1185,6 +1209,19 @@ PROBE(dsp, tune)
             }
         }
         P.eq("rates.samples_line", has(differs.lines, "Metrics beyond their tolerance (A | B): ") ? 1 : 0, 1);
+
+        // Under 40 kHz a side lacks 20 Hz to 20 kHz (an effect's sweep would end lower, its centroids' band too, and the
+        // picture's axes differ): refused, nothing rendered; one rate under it is the ordinary comparison.
+        ms::CompareSide low = a;
+        low.request.rate = 22050.0;
+        const ms::Comparison under = ms::compare(a, low);
+        std::printf("rates, B at 22050 Hz: %s\n", under.error.c_str());
+        P.eq("rates.under_40k_refused", under.error == "At two rates both are 40000 Hz or more (20 Hz to 20 kHz on both sides): A is at "
+                                                       "48000 Hz and B at 22050 Hz."
+                                            && under.a.l.empty() && under.b.l.empty() ? 1 : 0, 1);
+        ms::CompareSide lowA = low;
+        const ms::Comparison oneLow = ms::compare(lowA, low, ms::CompareOptions{ false, false });
+        P.eq("rates.one_rate_under_40k", oneLow.error.empty() && oneLow.identical && !oneLow.twoRates() ? 1 : 0, 1);
     }
     return P.finish();
 }

@@ -569,17 +569,23 @@ namespace playground::soundpicture
                 g.drawText(js(hz >= 1000.0 ? fmt("%.0fk", hz / 1000.0) : fmt("%.0f", hz)), static_cast<int>(x) - 20,
                            kSpecTop2 + kSpecH2 + 2, 40, 14, juce::Justification::centred);
             }
+            // Each column at its own frequency (its view's axis) on A's axis, which B's may not span alike.
             const auto spectrumCurve = [&](const measure::View& v, juce::Colour colour) {
                 juce::Path p;
                 const float shift = v.spectrumTop - top;
+                const double n = static_cast<double>(v.spectrum.size());
+                bool started = false;
                 for (std::size_t c = 0; c < v.spectrum.size(); ++c)
                 {
-                    const float x = static_cast<float>(kLeft) + (static_cast<float>(c) + 0.5f) * kPlotW / static_cast<float>(v.spectrum.size());
-                    const float y = ySpec(v.spectrum[c] + shift);
-                    if (c == 0)
+                    const double hz = v.loHz * std::pow(v.hiHz / v.loHz, (static_cast<double>(c) + 0.5) / n);
+                    if (hz < a.loHz || hz > a.hiHz)
+                        continue;
+                    const float x = xOf(hz), y = ySpec(v.spectrum[c] + shift);
+                    if (!started)
                         p.startNewSubPath(x, y);
                     else
                         p.lineTo(x, y);
+                    started = true;
                 }
                 g.setColour(colour);
                 g.strokePath(p, juce::PathStrokeType(1.3f));
