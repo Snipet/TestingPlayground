@@ -160,9 +160,10 @@ namespace playground::projectstore
 
     std::vector<Entry> list();                           // by name, case aside
     // A project's presets as the listing keeps them (by name): its file read whole only when its size or its time
-    // changed since it was last read (here or by list()), so a project open, whose presets the explorer asks for every
-    // few seconds, costs a look at its file, not a parse of it (an Engine's file is half a MB and more). Nothing, with
-    // why, as load(). parses() counts the files read whole, by any function, for the probes.
+    // changed since it was last read (here or by list(), whatever the case its name is spelt in: the same file by its
+    // device and inode, on Windows by its path case aside), so a project open, whose presets the explorer asks for
+    // every few seconds, costs a look at its file, not a parse of it (an Engine's file is half a MB and more).
+    // Nothing, with why, as load(). parses() counts the files read whole, by any function, for the probes.
     struct PresetSummary
     {
         std::string name;

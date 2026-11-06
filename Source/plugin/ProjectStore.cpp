@@ -31,10 +31,20 @@ namespace playground::projectstore
         constexpr int kFormatVersion = 1;
         constexpr juce::int64 kMaxBytes = 64 * 1024 * 1024;   // a project larger than this is no project
 
+        // A file's identity: its device and inode where a look gives them (POSIX), so that two spellings of one name
+        // (case aside, on a volume that ignores case) are known for one file; none on Windows (0, 0).
+        struct FileId
+        {
+            uint64_t device = 0, inode = 0;
+            bool known() const noexcept { return inode != 0; }
+            friend bool operator==(const FileId&, const FileId&) = default;
+        };
+
         // The listing's cache, and its presets' (presetsOf): a file read again only when its size or its time changes.
         struct Cached
         {
             juce::int64 modified = 0, size = 0;
+            FileId id;
             Entry entry;
             std::vector<PresetSummary> presets;
         };
@@ -284,14 +294,16 @@ namespace playground::projectstore
                              f.getFileName().toStdString(), why);
         }
 
-        // A file's time (ms) and size from one look at it (a stat), or false when it is no file. On Windows, JUCE's two.
-        bool look(const juce::File& f, juce::int64& modified, juce::int64& size)
+        // A file's time (ms), size and identity from one look at it (a stat), or false when it is no file. On Windows,
+        // JUCE's two, and no identity.
+        bool look(const juce::File& f, juce::int64& modified, juce::int64& size, FileId& id)
         {
 #if defined(_WIN32)
             if (!f.existsAsFile())
                 return false;
             modified = f.getLastModificationTime().toMilliseconds();
             size = f.getSize();
+            id = {};
             return true;
 #else
             struct stat st{};
@@ -304,6 +316,7 @@ namespace playground::projectstore
 #endif
             modified = static_cast<juce::int64>(t.tv_sec) * 1000 + static_cast<juce::int64>(t.tv_nsec / 1000000);
             size = static_cast<juce::int64>(st.st_size);
+            id = { static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino) };
             return true;
 #endif
         }
@@ -315,13 +328,14 @@ namespace playground::projectstore
         {
             juce::File file;
             juce::int64 modified = 0, size = 0;
+            FileId id;
         };
         std::vector<Found> projectFiles(const juce::File& dir)
         {
             std::vector<Found> out;
 #if defined(_WIN32)
             for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kExtension))
-                if (Found x{ f }; look(f, x.modified, x.size))
+                if (Found x{ f, 0, 0, {} }; look(f, x.modified, x.size, x.id))
                     out.push_back(std::move(x));
 #else
             DIR* d = ::opendir(dir.getFullPathName().toRawUTF8());
@@ -334,8 +348,8 @@ namespace playground::projectstore
                 if (name.size() <= ext.size()
                     || !sameName(name.substr(name.size() - ext.size()), ext))
                     continue;
-                Found x{ dir.getChildFile(juce::String::fromUTF8(e->d_name)) };
-                if (look(x.file, x.modified, x.size))
+                Found x{ dir.getChildFile(juce::String::fromUTF8(e->d_name)), 0, 0, {} };
+                if (look(x.file, x.modified, x.size, x.id))
                     out.push_back(std::move(x));
             }
             ::closedir(d);
@@ -344,11 +358,12 @@ namespace playground::projectstore
         }
 
         // What the cache keeps of a project read whole: the listing's entry and its presets'.
-        Cached cachedOf(const Project& p, juce::int64 modified, juce::int64 size)
+        Cached cachedOf(const Project& p, juce::int64 modified, juce::int64 size, FileId id)
         {
             Cached c;
             c.modified = modified;
             c.size = size;
+            c.id = id;
             c.entry.name = p.name;
             c.entry.savedMs = p.latest().savedMs;
             c.entry.latest = p.latest().number;
@@ -634,14 +649,18 @@ namespace playground::projectstore
                 const std::string path = f.getFullPathName().toStdString();
                 const juce::int64 modified = found.modified, size = found.size;
                 Cached c;
+                // By its path as listed: the entry's name is the file's, so another spelling's would not do here.
                 if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                {
                     c = it->second;
+                    c.id = found.id;
+                }
                 else
                 {
                     std::optional<Project> p = parse(f, nullptr);
                     if (!p)
                         continue;
-                    c = cachedOf(*p, modified, size);
+                    c = cachedOf(*p, modified, size, found.id);
                 }
                 out.push_back(c.entry);
                 seen.emplace(path, std::move(c));
@@ -673,7 +692,8 @@ namespace playground::projectstore
         }
         const std::string path = f.getFullPathName().toStdString();
         juce::int64 modified = 0, size = 0;
-        if (!look(f, modified, size))
+        FileId id;
+        if (!look(f, modified, size, id))
         {
             fail(why, "there is no project named \"" + std::string(name) + "\"");
             return std::nullopt;
@@ -682,11 +702,18 @@ namespace playground::projectstore
             const std::lock_guard<std::mutex> lock(cacheMutex);
             if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
                 return it->second.presets;
+            // The path built from the name asked spells it as asked, and list() keys the file by its name on disk: on a
+            // volume that ignores case (Shouty.FMPROJECT asked as Shouty), the same file under another spelling. Its
+            // identity says so where a look gives one, else its path, case aside (Windows). The presets are the
+            // file's, whatever its name.
+            for (const auto& [key, c] : cache)
+                if (c.modified == modified && c.size == size && (id.known() ? c.id == id : sameName(key, path)))
+                    return c.presets;
         }
         std::optional<Project> p = parse(f, why);
         if (!p)
             return std::nullopt;
-        Cached c = cachedOf(*p, modified, size);
+        Cached c = cachedOf(*p, modified, size, id);
         std::vector<PresetSummary> out = c.presets;
         const std::lock_guard<std::mutex> lock(cacheMutex);
         cache[path] = std::move(c);

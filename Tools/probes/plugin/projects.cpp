@@ -19,7 +19,8 @@
 //            again, its file is not read (ProjectStore's parses()), the name in another case the same; after a preset
 //            is saved, read once and not again; a preset more written by another (the file rewritten) seen at the next
 //            ask; a change list() read is not read again (one cache); a project that is not there: nothing, and why;
-//            the listing has a file whose extension is in capitals, not a folder named as a project
+//            the listing has a file whose extension is in capitals, not a folder named as a project; that file's
+//            presets, asked by its name spelt as on no file, come from the listing's entry, poll after poll
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
@@ -326,6 +327,15 @@ PROBE(plugin, projects)
             }
             P.eq("poll.list_extension_case", listed ? 1 : 0, 1);
             P.eq("poll.list_no_folder", folderListed ? 0 : 1, 1);
+            // Its presets asked as the explorer asks, poll after poll: the name spelt as no file is (Shouty.fmproject
+            // asked, Shouty.FMPROJECT listed; shouty), the same file, so the listing's entry serves them and the file
+            // is not read again.
+            const int p4 = ps::parses();
+            const auto s1 = ps::presetsOf("Shouty");
+            (void)ps::list();
+            const auto s2 = ps::presetsOf("Shouty");
+            const auto s3 = ps::presetsOf("shouty");
+            P.eq("poll.spelling_served", ps::parses() - p4 == 0 && s1 && s1 == zz && s2 == s1 && s3 == s1 ? 1 : 0, 1);
             shouty.deleteFile();
             folder.deleteRecursively();
         }
