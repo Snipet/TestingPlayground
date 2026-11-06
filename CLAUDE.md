@@ -528,13 +528,20 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Welch's average over all of it in frames fixed in seconds (`measure::spectrum`: 0.1 s Hann for the centroid and the
   partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db), the centroids
   power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600 cents of the expected note
-  (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
-  checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
+  (`pitchOf`, a harmonic sum without one), one click rule (`measure::clicks`) for the click metric, the step lines and
+  trace, the loudness BS.1770's (`loudness`: K-weighting made for the rate from the analog shelf and high-pass its 48 kHz
+  coefficients come from, 0.4 s blocks every 0.1 s inside each span, the -70 LUFS and -10 LU gates) and IEC 61672's A
+  (`aWeightedPower`, of a stereo spectrum in frames as long as the part, up to 2 s), off_order_db the power farther than
+  `kOrderBins` of Blackman-Harris frames as long as the part (up to `kOrderSeconds`) from every multiple of a fixed base
+  (`orders`: `Request::baseHz`, an instrument's base_hz, else the expected pitch; an effect's 220 Hz; analysis only, but
+  `sameRender` tells bases apart), wobble_db each third's share of the power over the spectrum's frames (`wobble`: an
+  effect's gain per bin, out over in, against the bands' mean, so the noise's chance cancels) (`dsp.metrics` checks each
+  at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
   `kMinWindowSeconds`) takes the held part's place: seconds of an instrument's render, which then lasts to its end,
   for the metrics "while held", peak_db and cpu_percent (the calls that render it); attack_s and release_s keep the
   notes', and the whole render's metrics the length it has without the window (`Timeline::plain`, where a call ends);
   seconds of the effect's sine's and noise's renders, cut at hold_seconds. One that holds too little of what a metric
-  needs leaves it out of the values with why (`Result::unmeasured`, a check's NOT MEASURED line; tune_dials leaves
+  needs (as a held part under wobble_db's three frames) leaves it out of the values with why (`Result::unmeasured`, a check's NOT MEASURED line; tune_dials leaves
   such a goal out of its search, and with none left does not search); `sameRender` tells checks apart by it, and the
   session keeps a check's; trace and compare refuse one. Change a definition and its line together. The report's pitch line is a judgement
   on top, the metrics untouched: with the whole report asked, the lowest note and the note a whole tone up (not an
