@@ -844,6 +844,11 @@ PROBE(gui, chat)
         processor.editorPort().setDraft(d);
         processor.editorPort().run(d.files);
         processor.settle();
+        // The sound at its defaults: a run keeps a dial's value in its units, so the level the program before left at
+        // 1 would be 0 dB here (clamped into -40 to 0).
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (const pg::Control k = processor.control(c); k.used)
+                processor.getParameters()[c]->setValueNotifyingHost(pg::normOf(k, k.def));
         juce::Array<juce::var> checks;
         if constexpr (pg::product::kIsInstrument)
         {
