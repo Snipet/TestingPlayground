@@ -3694,7 +3694,16 @@ namespace playground
                     markSeen(file, a.text);
                 }
                 else
+                {
                     out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                    // Every line it changed is listed above: seen as an edit_file is, only if the text it edited was
+                    // (its drawing's *@ lines aside, which no state sends).
+                    if (more == 0)
+                    {
+                        const std::lock_guard<std::mutex> lock(mutex_);
+                        carrySeen(file, before, a.text);
+                    }
+                }
                 note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));
                 return out;
             }

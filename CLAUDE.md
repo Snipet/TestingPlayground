@@ -803,7 +803,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the user's (which the view gives the processor at once) is never overwritten; the commands run once more on the new
   text, and a second clash fails ("pedal.cir changed while drawing: try again"). Its result: what each command did,
   the netlist's lines changed (its `*@` lines aside), `circuits::Generator`'s errors and warnings on the new text, the
-  whole text when at most 4,000 bytes (then seen). `plugin.chat` CIRCUIT plants the gesture through `ChatAgent::setCircuitWriteHookForTests`.
+  whole text when at most 4,000 bytes (then seen); a longer one is seen when the result lists every line changed (60 at
+  most) and the chat's Claude had seen the text it edited (`carrySeen`, as edit_file). `plugin.chat` CIRCUIT plants the
+  gesture through `ChatAgent::setCircuitWriteHookForTests`.
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
@@ -822,8 +824,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   what differs (a line of old_text that may be part of a file's line, its first or last, scores by how much of it that
   line holds). It writes through `chatSetDraftIf` (the text it read, the others left as they are now: what the user
   typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
-  while the file is still that version, else nothing, saying the user changed it and showing the lines changed since
-  (the version is compared, not kept, before that lookup, so the oldest kept is still found). Its `files` does that for
+  while the file is still that version, else nothing, saying whose change it was and showing the lines changed since
+  (the version is compared, not kept, before that lookup, so the oldest kept is still found): Claude's own only when a
+  read or write of Claude's gave the text now after it gave that version (`FileVersion::given`), so the user's undo
+  back to a text Claude saw before is the user's, and what a refusal alone showed counts as no call that gave it. Its `files` does that for
   several files at once (a property, not a tool: the tool budget), in place of `name`: a list of `{name, edits or
   old_text and new_text, expected}` (one sent as a JSON string is read as the list), or a unified diff (its
   `---`/`+++` headers name the files, git's a/ and b/ off; a hunk is an edit whose old lines, context and `-`, are found

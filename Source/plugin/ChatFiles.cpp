@@ -11,8 +11,10 @@
 // with the closest one in the file, its lines numbered, and what differs. The write goes through chatSetDraftIf: only
 // while the file is still the text the tool read, so what the user types meanwhile is never overwritten (the edits are
 // tried once more on the new text). With `expected`, the version Claude read (every read and write says the file's
-// version, its text's hash), it writes only while the file is still that version: otherwise it writes nothing, says the
-// user changed it, and shows the lines that changed since (the newest kFileVersions versions given are kept for that).
+// version, its text's hash), it writes only while the file is still that version: otherwise it writes nothing, says
+// whose change it was (Claude's own when a call of Claude's gave the text there is now after that version, else the
+// user's: an undo back to a text Claude saw before is the user's), and shows the lines that changed since (the newest
+// kFileVersions versions given are kept for that).
 // With `files` it does all of that for several files at once: a list of each file's name, edits and expected, or a
 // unified diff (each hunk's old lines found where a line starts, the occurrence nearest its line when there are
 // several; a line that could be part of the change is never passed over, parseDiff); all or none across them, in one
@@ -539,12 +541,18 @@ namespace playground
         }
     }
 
-    std::string ChatAgent::keepVersion(const std::string& name, const std::string& text)
+    std::string ChatAgent::keepVersion(const std::string& name, const std::string& text, bool refused)
     {
         const std::string version = versionOf(text);
+        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused };
         const auto same = [&](const FileVersion& v) { return v.name == name && v.version == version; };
+        if (const auto was = std::find_if(fileVersions_.begin(), fileVersions_.end(), same); refused && was != fileVersions_.end())
+        {
+            kept.given = was->given;                             // newest again (so kept longest), given as it was
+            kept.asked = was->asked;
+        }
         fileVersions_.erase(std::remove_if(fileVersions_.begin(), fileVersions_.end(), same), fileVersions_.end());
-        fileVersions_.push_back({ name, version, std::make_shared<const std::string>(text) });
+        fileVersions_.push_back(std::move(kept));
         while (fileVersions_.size() > kFileVersions)
             fileVersions_.pop_front();
         return version;
@@ -962,7 +970,9 @@ namespace playground
         };
 
         // The text changed since `version` (the file's lines that changed, against the kept text), refused: the
-        // user's edit, unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit).
+        // user's edit, unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after
+        // it gave `version`. A text Claude saw before `version`, which the user's undo brought back, is the user's; so
+        // is one only a refusal showed (this one keeps it, as given as it was: a second refusal says the same).
         const auto changedSince = [&](const std::string& file, const std::string& version, const std::string& now) {
             std::shared_ptr<const std::string> then;
             std::string nowVersion;
@@ -970,13 +980,20 @@ namespace playground
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 const std::string current = versionOf(now);
+                uint64_t thenGiven = 0;
+                const FileVersion* is = nullptr;
                 for (const FileVersion& v : fileVersions_)
                 {
                     if (v.name == file && v.version == version)
+                    {
                         then = v.text;
-                    known = known || (v.name == file && v.version == current);
+                        thenGiven = v.given;
+                    }
+                    if (v.name == file && v.version == current)
+                        is = &v;
                 }
-                nowVersion = keepVersion(file, now);
+                known = is != nullptr && is->asked && is->given > thenGiven;
+                nowVersion = keepVersion(file, now, true);
             }
             std::string out = file + " changed since version " + version
                             + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")

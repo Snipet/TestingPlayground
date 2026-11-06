@@ -66,7 +66,9 @@
 //            overwritten (the commands run again on the new text), a second fails ("pedal.cir changed while drawing: try
 //            again"); nor is one made in the view no frame has synced yet (the view gives it to the processor at once);
 //            the result holds generate()'s error and warning; a short netlist's result is its whole text, and
-//            seen; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
+//            seen; a long one's (past 4,000 bytes) is seen when the result lists every line it changed and Claude had
+//            seen the text it edited, not with more changed than it lists nor after the user's edit planted between
+//            the read and the write; write_file of a netlist without *@ lines keeps the drawing and says so; view_panel's view
 //            "schematic": a PNG at 100 % with every part labelled, its text giving each part line's place and the pins'
 //            points; the user's view, file views and tab as they were
 //   FILES    read_file by lines (exactly those, numbered, after the line count and version; to the end; past it
@@ -96,7 +98,8 @@
 //            merged as one undo step across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other
 //            redoes both; a tab typed in since keeps its typing and its edit while the other's Cmd-Z undoes its own);
 //            the user's typing planted between the read and the write is kept and the edits run again on it, and with
-//            that file's expected nothing is written to either; a unified diff of two files (git's headers, a hunk
+//            that file's expected nothing is written to either; the user's undo of Claude's edit back to a text it
+//            read before: the edit's version refused as the user's change (twice), never Claude's own; a unified diff of two files (git's headers, a hunk
 //            whose lines occur twice placed by its @@ line, a blank context line whose space was lost, a last line
 //            without its line end) in one step Cmd-Z undoes; a hunk that misses gives the closest passage and changes
 //            nothing; a diff that makes a file is refused; hunks of new lines alone go at the start and after a last
@@ -1605,6 +1608,65 @@ PROBE(plugin, chat)
             if (juce::Base64::convertFromBase64(png, juce::String(data)))
                 juce::File(juce::String(probe::outPath("plugin.chat.view_schematic.png"))).replaceWithData(png.getData(), png.getDataSize());
         }
+        {
+            // A long netlist (past 4,000 bytes: no whole text in the result) is seen after an edit whose every changed
+            // line the result lists, as an edit_file's is, when the chat's Claude had seen the text it edited: the next
+            // state names it unchanged. Not when more lines changed than the result shows, nor when the user's edit
+            // came between the tool's read and its write (the commands ran again on a text Claude never saw).
+            std::string longText = "* long.cir: thirty-one resistors on one net, and a long note\n.input u in\n.output vout a\nR0 in a 1k\n";
+            for (int k = 1; k <= 31; ++k)
+                longText += "R" + std::to_string(k) + " a 0 100k\n";
+            for (int k = 1; k <= 40; ++k)
+                longText += "* the note's line " + std::to_string(k) + ", long enough that the netlist runs well past four thousand bytes\n";
+            longText += ".end\n";
+            pg::Draft ld = processor.editorPort().draft();
+            ld.files.push_back({ "long.cir", longText });
+            processor.editorPort().setDraft(ld);
+            host.tick(2);
+            const auto stateAfter = [&](const char* message) {
+                script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+                agent.send(message);
+                agent.waitIdle();
+                const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+                std::string state;
+                for (const auto& b : arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {})))
+                    if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                        state = str(b, "text");
+                return state;
+            };
+            const auto named = [](const std::string& state) { return has(state, "<file name=\"long.cir\" lines=\""); };
+            const auto whole = [](const std::string& state) { return has(state, "<file name=\"long.cir\">\n"); };
+            const Turn t = drawTurn("toolu_c_long", "long.cir", { "set R1 47k" }, "");
+            const std::string after = stateAfter("and now?");
+            std::printf("a long netlist edited: %s\n", t.result.substr(0, t.result.find('\n')).c_str());
+            P.eq("circuit.long_seen", !t.error && fileText("long.cir").size() > 4000 && has(t.result, " bytes: read_file shows it whole.)")
+                                          && has(t.result, "47k") && !has(t.result, " more)\n") && named(after) && !whole(after) ? 1 : 0, 1);
+            const Turn many = drawTurn("toolu_c_long_many", "long.cir", { "rename a b" }, "");
+            const std::string afterMany = stateAfter("and the net?");
+            std::printf("a long netlist, a net renamed: %s\n", many.result.substr(0, many.result.find('\n')).c_str());
+            P.eq("circuit.long_many_unseen", !many.error && has(many.result, " more)\n") && has(fileText("long.cir"), " b 0 100k")
+                                                 && whole(afterMany) ? 1 : 0, 1);
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                if (attempt != 0)
+                    return;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "long.cir")
+                        f.text.insert(f.text.find(".end"), "* the user's line\n");
+                processor.editorPort().setDraft(d);
+            });
+            const Turn clash = drawTurn("toolu_c_long_clash", "long.cir", { "set R2 47k" }, "");
+            agent.setCircuitWriteHookForTests({});
+            const std::string afterClash = stateAfter("and the user's line?");
+            P.eq("circuit.long_clash_unseen", !clash.error && !has(clash.result, " more)\n") && has(fileText("long.cir"), "* the user's line\n")
+                                                  && whole(afterClash) && has(afterClash, "* the user's line\n") ? 1 : 0, 1);
+            pg::Draft back = processor.editorPort().draft();
+            back.files.erase(std::remove_if(back.files.begin(), back.files.end(), [](const pg::SourceFile& f) { return f.name == "long.cir"; }),
+                             back.files.end());
+            back.active = std::min(back.active, static_cast<int>(back.files.size()) - 1);
+            processor.editorPort().setDraft(back);
+            host.tick(2);
+        }
         processor.editorPort().setDraft(saved);
     }
 
@@ -2084,6 +2146,28 @@ PROBE(plugin, chat)
                                             && has(toolText(guardedBoth), "other.fm changed since version " + otherVersion
                                                                           + " (the user's edit, which is kept): nothing was written to any file.")
                                             && fileText("notes.fm") == notes && fileText("other.fm") == other + "// typed meanwhile\n" ? 1 : 0, 1);
+
+            // The user's undo of Claude's edit, back to a text Claude read before it: an `expected` of the edit's version is
+            // refused as the user's change, never as one of Claude's own calls (the text now is one a read gave, but
+            // before that version); a second refusal the same, though the first showed it.
+            write("other.fm", other);
+            const std::string readFirst = versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "other.fm" } }))));
+            const std::string own = versionIn(toolText(edit(input({ { "name", "other.fm" }, { "old_text", "return x;" }, { "new_text", "return -x;" } }))));
+            keysIn("other.fm", "cmd+z");
+            const bool undoneByUser = fileText("other.fm") == other;
+            const auto afterUndo = [&] {
+                return toolText(edit(input({ { "name", "other.fm" }, { "old_text", "return -x;" }, { "new_text", "return 2.0f * x;" },
+                                             { "expected", juce::String(own) } })));
+            };
+            const std::string firstRefusal = afterUndo(), secondRefusal = afterUndo();
+            std::printf("edit_file with the edit's version, after the user's undo:\n%s\n", firstRefusal.c_str());
+            const auto namesTheUser = [&](const std::string& said) {
+                return has(said, "other.fm changed since version " + own + " (the user's edit, which is kept): nothing was written.")
+                    && has(said, "Its version now: " + readFirst + ".") && !has(said, "your own calls");
+            };
+            P.eq("files.undo_names_the_user", undoneByUser && own.size() == 8 && own != readFirst && namesTheUser(firstRefusal)
+                                                  && fileText("other.fm") == other ? 1 : 0, 1);
+            P.eq("files.undo_again_the_user", namesTheUser(secondRefusal) ? 1 : 0, 1);
 
             // A unified diff of two files: git's headers, a hunk whose context occurs twice (the one nearest its line),
             // a blank context line whose space was lost, a file's last line without a line end; one undo step.

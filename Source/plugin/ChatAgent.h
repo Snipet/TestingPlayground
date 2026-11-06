@@ -298,10 +298,12 @@ namespace playground
         // (`files`: a list, or a unified diff), all or none, in one write that never overwrites what the user typed
         // meanwhile (chatSetDraftIf), and with `expected` only while the file is still that version. Every read and
         // write says the file's version (its text's hash); keepVersion keeps the text of the newest kFileVersions
-        // given (mutex held), so a refused write shows what changed since.
+        // given (mutex held), so a refused write shows what changed since. A refusal's text (`refused`) is kept too, but
+        // counts as no call that gave it: a version kept already keeps when and how it was given, a new one is not
+        // `asked` (so a refusal never makes a change Claude's own).
         std::string readFileText(const juce::var& input, bool& isError);
         std::string editFileText(const juce::var& input, bool& isError);
-        std::string keepVersion(const std::string& name, const std::string& text);
+        std::string keepVersion(const std::string& name, const std::string& text, bool refused = false);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.
         std::string evaluateChecks();
@@ -373,9 +375,12 @@ namespace playground
         {
             std::string name, version;                              // a file, and its text's version as read_file says it
             std::shared_ptr<const std::string> text;
+            uint64_t given = 0;                                     // when it was given last (versionsGiven_ then)
+            bool asked = true;                                      // given by a read or a write, not a refusal alone
         };
         static constexpr std::size_t kFileVersions = 16;
         std::deque<FileVersion> fileVersions_;                      // the newest versions read or written (keepVersion)
+        uint64_t versionsGiven_ = 0;                                // keepVersion's count
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
         std::vector<std::string> requests_;                         // bodies sent (probes)
