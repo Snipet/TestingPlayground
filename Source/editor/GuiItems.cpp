@@ -1831,9 +1831,8 @@ namespace playground::ui
             c.hairlineH(s.x + 1.0f, s.y + s.h * static_cast<float>(k) / 3.5f, s.w - 2.0f, grid);
         if (db == nullptr || n < 2)
             return;
-        constexpr int kMost = 256;                       // DisplayItem::kSpectrumPoints at most: on the stack
-        n = std::min(n, kMost);
-        std::array<float, kMost> xs, ys;
+        n = std::min(n, kSpectrumMostPoints);
+        std::array<float, kSpectrumMostPoints> xs, ys;
         for (int k = 0; k < n; ++k)
         {
             const float t = std::clamp((db[k] + 84.0f) / 84.0f, 0.0f, 1.0f);

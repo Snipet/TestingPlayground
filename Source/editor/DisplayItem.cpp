@@ -489,6 +489,8 @@ namespace playground::ui
                     looks::scope(c, th, d, historyCount_ == 0 ? nullptr : history(), historyCount_);
                 break;
             case DisplayKind::spectrum:
+                // Past drawSpectrum's limit it would draw only the low points, stretched across 20 Hz to 20 kHz.
+                static_assert(kSpectrumPoints <= kSpectrumMostPoints, "drawSpectrum draws kSpectrumMostPoints at most");
                 drawSpectrum(c, th, cell_, label.c_str(), spectrum_.empty() ? nullptr : spectrum_.data(),
                              static_cast<int>(spectrum_.size()), d.color, d.tinted);
                 break;
