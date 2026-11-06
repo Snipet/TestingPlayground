@@ -18,8 +18,9 @@
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
 //     a dial queued for poll()).
-//   - the editor's size, as the user left it (the editor is resizable), its view and its interface's pages, kept in the
-//     session (<EDITOR w=".." h=".." view="panel" chat="closed"> with a <PAGE title=".."/> a tabs element).
+//   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
+//     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
+//     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -63,6 +64,7 @@
 #include <funkgui/params/ParamPort.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -248,6 +250,10 @@ namespace playground
         void setChatOpen(bool open) override { chatOpen_.store(open); }
         bool explorerOpen() const override { return explorerOpen_.load(); }
         void setExplorerOpen(bool open) override { explorerOpen_.store(open); }
+        int explorerWidth() const override { return explorerW_.load(); }
+        void setExplorerWidth(int px) override { explorerW_.store(std::max(0, px)); }
+        int chatWidth() const override { return chatW_.load(); }
+        void setChatWidth(int px) override { chatW_.store(std::max(0, px)); }
         void playNote(int note, float velocity) override;
         void playWheel(bool pitch, float value) override;
         std::vector<std::string> guiPages() const override;
@@ -359,6 +365,7 @@ namespace playground
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         std::atomic<bool> chatOpen_{ true };                         // its chat's column open, in the session
         std::atomic<bool> explorerOpen_{ true };                     // its explorer open, in the session
+        std::atomic<int> explorerW_{ 0 }, chatW_{ 0 };               // the widths its user set (0: none), in the session
         mutable std::mutex pagesMutex_;
         std::vector<std::string> guiPages_;                      // its interface's pages (guiPages), in the session
         std::vector<FileView> fileViews_;                        // its netlists' views (fileViews), in the session

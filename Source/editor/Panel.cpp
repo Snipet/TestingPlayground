@@ -171,7 +171,7 @@ namespace playground::ui
         }
 
         // ---- layout (logical px) ----------------------------------------------------------------------------------
-        constexpr float kMargin = 20.0f;
+        constexpr float kMargin = columns::kMargin;
         // The top bar: the product, the project, the view, the load and the theme. Under it two cards: the program's
         // (its tabs and actions, the editor or the panel, the problems, the dials) and the chat's.
         constexpr float kTopBarY = 10.0f, kTopBarH = 40.0f;
@@ -192,18 +192,11 @@ namespace playground::ui
         constexpr int   kProblemRows = 4;
         constexpr float kFooterH = 30.0f;
         constexpr float kBottomGap = 10.0f;              // over the status bar
-        // The chat's column, at the right.
-        constexpr float kChatShare = 0.32f;              // of the width
-        constexpr float kChatMinW = 330.0f;
-        constexpr float kChatMaxW = 560.0f;
-        constexpr float kChatGap = 12.0f;                // between the two cards
-        constexpr float kChatRailW = 44.0f;              // the chat folded: its rail's width
-        constexpr float kChatRailGap = 12.0f;            // and the gap before it
-        constexpr float kExplorerShare = 0.16f;          // the explorer, open: of the width
-        constexpr float kExplorerMinW = 180.0f;
-        constexpr float kExplorerMaxW = 250.0f;
-        constexpr float kExplorerGap = 12.0f;            // between it and the program's card
-        constexpr float kProgramMinW = 600.0f;           // the program's card keeps this much beside an open explorer
+        // The columns: the explorer at the left, the program's card, the chat at the right (Columns.h: their widths, the
+        // edges the user drags, the gaps).
+        using columns::kChatGap;
+        using columns::kChatRailGap;
+        using columns::kExplorerGap;
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -2680,6 +2673,10 @@ namespace playground::ui
         panelView_ = port_.panelView();
         chatOpen_ = port_.chatOpen();
         explorerOpen_ = port_.explorerOpen();
+        seenExplorerWidth_ = port_.explorerWidth();
+        seenChatWidth_ = port_.chatWidth();
+        explorerWant_ = wantedWidth(seenExplorerWidth_, false);
+        chatWant_ = wantedWidth(seenChatWidth_, true);
         viewItem_ = button(TB::Shape::pill, chat::Icon::code, [] { return std::string("Code"); }, false,
                            [this] { return panelView_ ? TB::Look::ghost : TB::Look::raised; },
                            [this] { setPanelView(false); }, "Code view",
@@ -2919,6 +2916,24 @@ namespace playground::ui
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
 
+        // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
+        // card's width (last of the items: hit first by itemAt, drawn over the cards' edges).
+        {
+            const auto edge = [&](bool chat) {
+                columns::EdgeItem::Hooks h;
+                h.width = [this, chat] { return chat ? fit_.chat : fit_.explorer; };
+                h.least = [this, chat] { return chat ? fit_.chatLeast : fit_.explorerLeast; };
+                h.most = [this, chat] { return chat ? fit_.chatMost : fit_.explorerMost; };
+                h.set = [this, chat](float px, bool keep) { setColumnWidth(chat, px, keep); };
+                h.reset = [this, chat] { setColumnWidth(chat, 0.0f, true); };
+                return add(std::make_unique<columns::EdgeItem>(
+                    idFor(), chat ? -1 : 1, chat ? "Chat width" : "Explorer width",
+                    chat ? "CHAT WIDTH" : "EXPLORER WIDTH", std::move(h)));
+            };
+            explorerEdgeItem_ = edge(false);
+            chatEdgeItem_ = edge(true);
+        }
+
         layout();
 
         // The processor's files and status, and the chat; the netlists' views the session kept.
@@ -3001,20 +3016,23 @@ namespace playground::ui
         const float footerTop = H - kFooterH;
         const float bottom = footerTop - kBottomGap;     // the dials' and the message box's bottom
 
-        // The columns: the chat about a third of the width, or, folded, a rail.
-        chatW_ = chatOpen_ ? std::clamp(std::round(W * kChatShare), kChatMinW, kChatMaxW) : kChatRailW;
-        chatX_ = W - kMargin - chatW_;
-        // The explorer at the left, about a sixth of the width, as far as the program's card keeps kProgramMinW, in the
-        // CODE view only; folded, too narrow a window or the PANEL view: nothing (its button at the left of the program's
-        // card's header). The program's card after it.
-        float explorerW = 0.0f;
-        if (explorerOpen_ && !panelView_)
+        // The columns (Columns.h): the chat at the right, about a third of the width or as wide as its user set it (folded,
+        // a rail); the explorer at the left, about a sixth or its user's width, in the CODE view only; the program's card
+        // between them keeping kProgramMinW (the explorer gives way first, then the chat; then the explorer folds away:
+        // folded, too narrow a window or the PANEL view leave nothing at the left but its button in the program's card's
+        // header).
         {
-            const float room = chatX_ - (chatOpen_ ? kChatGap : kChatRailGap) - kMargin - kExplorerGap - kProgramMinW;
-            const float want = std::clamp(std::round(W * kExplorerShare), kExplorerMinW, kExplorerMaxW);
-            if (room >= kExplorerMinW)
-                explorerW = std::min(want, std::floor(room));
+            columns::Asked asked;
+            asked.window = W;
+            asked.explorer = explorerOpen_ && !panelView_;
+            asked.chat = chatOpen_;
+            asked.explorerWant = explorerWant_;
+            asked.chatWant = chatWant_;
+            fit_ = columns::fit(asked);
         }
+        chatW_ = fit_.chat;
+        chatX_ = W - kMargin - chatW_;
+        const float explorerW = fit_.explorer;
         explorerShown_ = explorerW > 0.0f;
         explorerCard_ = explorerShown_ ? funkgui::Rect{ kMargin, kMainY, explorerW, bottom - kMainY } : funkgui::Rect{};
         leftX_ = kMargin + (explorerShown_ ? explorerW + kExplorerGap : 0.0f);
@@ -3181,6 +3199,10 @@ namespace playground::ui
         programCard_ = { leftX_, kMainY, leftW_, bottom - kMainY };
         layoutChat();
         layoutExplorer();
+        // The edges a user drags: the explorer's right one while it shows, the chat's left one while it is open.
+        static_cast<columns::EdgeItem&>(*items_[static_cast<std::size_t>(explorerEdgeItem_)])
+            .place(explorerCard_.right(), kMainY, bottom, explorerShown_);
+        static_cast<columns::EdgeItem&>(*items_[static_cast<std::size_t>(chatEdgeItem_)]).place(card_.x, kMainY, bottom, chatOpen_);
 
         // The zoom, in the status bar's right corner.
         {
@@ -3526,6 +3548,55 @@ namespace playground::ui
         layout();
         dirty_ = true;
     }
+
+    // ---- the columns' widths (Columns.h) ------------------------------------------------------------------------------
+    float Panel::wantedWidth(int session, bool chat) const
+    {
+        if (session > 0)
+            return static_cast<float>(session);
+        // None set in this instance: this Mac's default (the last width a user set in any instance), else the share.
+        const int most = static_cast<int>(chat ? columns::kChatMaxW : columns::kExplorerMaxW);
+        return static_cast<float>(
+            funkgui::UiPreferences::get().getInt(chat ? columns::kChatWidthKey : columns::kExplorerWidthKey, 0, 0, most));
+    }
+
+    void Panel::setColumnWidth(bool chat, float px, bool keep)
+    {
+        const int w = columns::keptWidth(px, chat);
+        (chat ? chatWant_ : explorerWant_) = static_cast<float>(w);
+        if (keep)
+        {
+            // The session keeps it, and this Mac, as the default for an instance that has set none (0: the share).
+            (chat ? seenChatWidth_ : seenExplorerWidth_) = w;
+            if (chat)
+                port_.setChatWidth(w);
+            else
+                port_.setExplorerWidth(w);
+            funkgui::UiPreferences::get().setInt(chat ? columns::kChatWidthKey : columns::kExplorerWidthKey, w);
+        }
+        layout();
+        dirty_ = true;
+    }
+
+    // The port's widths, when another set them since (a second Panel of this processor, a host loading a session).
+    void Panel::syncColumnWidths()
+    {
+        const int e = port_.explorerWidth(), c = port_.chatWidth();
+        if (e == seenExplorerWidth_ && c == seenChatWidth_)
+            return;
+        if (e != seenExplorerWidth_)
+            explorerWant_ = wantedWidth(e, false);
+        if (c != seenChatWidth_)
+            chatWant_ = wantedWidth(c, true);
+        seenExplorerWidth_ = e;
+        seenChatWidth_ = c;
+        layout();
+    }
+
+    bool Panel::explorerEdgeShown() const { return items_[static_cast<std::size_t>(explorerEdgeItem_)]->shown(); }
+    bool Panel::chatEdgeShown() const { return items_[static_cast<std::size_t>(chatEdgeItem_)]->shown(); }
+    funkgui::Point Panel::centreOfExplorerEdge() const { return centreOf(explorerEdgeItem_); }
+    funkgui::Point Panel::centreOfChatEdge() const { return centreOf(chatEdgeItem_); }
 
     // The card's header (its title, drawn by draw(), and the chevron at its right) and the list under it; not shown, the
     // button at the left of the program's card's header, the status after it.
@@ -4127,6 +4198,7 @@ namespace playground::ui
 
     void Panel::refresh(double nowSec)
     {
+        syncColumnWidths();
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files.
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
         if (mergeDraft())
@@ -5720,6 +5792,9 @@ namespace playground::ui
     {
         if (dialogOpen())
             return -1;                                   // the dialog covers the panel
+        for (const int e : { explorerEdgeItem_, chatEdgeItem_ })   // a band over a card's edge: before the card's items
+            if (e >= 0 && items_[static_cast<std::size_t>(e)]->shown() && items_[static_cast<std::size_t>(e)]->contains(p))
+                return e;
         for (std::size_t i = 0; i < items_.size(); ++i)
             if (items_[i]->shown() && items_[i]->contains(p))
                 return static_cast<int>(i);
@@ -5791,8 +5866,8 @@ namespace playground::ui
             return;
         }
         pressed_ = itemAt(pointer_);
-        if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable())
-            setFocus(pressed_);
+        if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
+            setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
         else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)

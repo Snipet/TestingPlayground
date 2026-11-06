@@ -5,8 +5,11 @@
 // GPU call until bgfx draws them) and records as Canvas::shader draws: the GPU draws them, SoftRaster a placeholder.
 //
 // It is resizable, in both directions, from kMinWidth x kMinHeight (logical px) up: the chat takes about a third of the
-// width at the right (kChatMinW to kChatMaxW), the explorer about a sixth at the left, the editor and the chat's
-// transcript take the height that is left.
+// width at the right, the explorer about a sixth at the left, until the user drags their edges (Columns.h: the
+// explorer's right edge, the chat's left; each within its least and its most, the program's card keeping
+// kProgramMinW, a double-click resetting it; the session keeps the widths, EditorPort::explorerWidth and chatWidth, and
+// this Mac keeps them as the default for new instances); the editor and the chat's transcript take the height that is
+// left.
 //
 //   explorer  at the left, a card like the chat's (Explorer.h): the program's files (a click shows one, a double click
 //             renames it, its cross closes it, the header's + makes one), its LLVM IR (a click opens the IR tab on a
@@ -69,6 +72,7 @@
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
+#include "editor/Columns.h"
 #include "editor/Explorer.h"
 #include "editor/ExportCard.h"
 #include "editor/ProjectBrowser.h"
@@ -340,6 +344,17 @@ namespace playground::ui
         bool chatUnread() const noexcept { return unread_; }   // folded, Claude has written since
         ChatView& chatView();                            // the conversation (its own probe hooks)
         const ChatView& chatView() const;
+        // The columns' widths (Columns.h): the explorer's card (0: away) and the chat's (or its rail) as layout() fit them,
+        // and each edge's reach; the edges a user drags (the explorer's right, the chat's left: shown while the card is),
+        // their middles. The widths asked: the session's (EditorPort::explorerWidth, chatWidth), else this Mac's default,
+        // else 0 (a share of the window).
+        const columns::Fit& columnFit() const noexcept { return fit_; }
+        float explorerWant() const noexcept { return explorerWant_; }
+        float chatWant() const noexcept { return chatWant_; }
+        bool explorerEdgeShown() const;
+        bool chatEdgeShown() const;
+        funkgui::Point centreOfExplorerEdge() const;
+        funkgui::Point centreOfChatEdge() const;
         // The key dialog.
         bool keyDialogOpen() const noexcept { return keyOpen_; }
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
@@ -405,7 +420,7 @@ namespace playground::ui
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
 
-        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none
+        int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge first)
         bool moveFocus(int dir);
         void setFocus(int item);
         void refresh(double nowSec);                     // the port's status, draft and dials, when they changed
@@ -488,6 +503,16 @@ namespace playground::ui
         // them when it changes).
         int explorerItem_ = -1, explorerToggleItem_ = -1;
         bool explorerOpen_ = true;
+        // The columns' widths (Columns.h): the edges' items; the widths asked (0: the share); the port's as this Panel
+        // last saw them (another Panel's drag, a session loaded: refresh() takes them); what layout() fit.
+        int explorerEdgeItem_ = -1, chatEdgeItem_ = -1;
+        float explorerWant_ = 0.0f, chatWant_ = 0.0f;
+        int seenExplorerWidth_ = 0, seenChatWidth_ = 0;
+        columns::Fit fit_;
+        bool isEdge(int item) const noexcept { return item >= 0 && (item == explorerEdgeItem_ || item == chatEdgeItem_); }
+        float wantedWidth(int session, bool chat) const; // the session's width, else this Mac's default, else 0
+        void setColumnWidth(bool chat, float px, bool keep);   // keep: the session and this Mac's default take it
+        void syncColumnWidths();                         // refresh(): the port's widths, when another set them
         bool explorerShown_ = true;                      // open, in the CODE view, and the window has room for it
         void toggleExplorer();
         funkgui::Rect explorerCard_;

@@ -45,6 +45,7 @@ namespace playground
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         const juce::Identifier kChat{ "chat" };                                          // its chat: "closed"
         const juce::Identifier kExplorer{ "explorer" };                                  // its explorer: "closed"
+        const juce::Identifier kExplorerW{ "explorerW" }, kChatW{ "chatW" };             // the widths its user set
         const juce::Identifier kPageTag{ "PAGE" }, kTitle{ "title" };                    // its interface's pages
         // its netlists' views: <FILE name view="schematic" zoom x y><PROBE node/></FILE> (EditorPort::fileViews)
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
@@ -1047,7 +1048,7 @@ namespace playground
         const std::vector<std::string> pages = guiPages();
         const std::vector<FileView> views = fileViews();
         if ((editorW_.load() > 0 && editorH_.load() > 0) || panelView_.load() || !chatOpen_.load() || !explorerOpen_.load()
-            || !pages.empty() || !views.empty())
+            || explorerW_.load() > 0 || chatW_.load() > 0 || !pages.empty() || !views.empty())
         {
             juce::ValueTree editor{ kEditorTag };
             if (editorW_.load() > 0 && editorH_.load() > 0)
@@ -1061,6 +1062,10 @@ namespace playground
                 editor.setProperty(kChat, "closed", nullptr);
             if (!explorerOpen_.load())
                 editor.setProperty(kExplorer, "closed", nullptr);
+            if (explorerW_.load() > 0)
+                editor.setProperty(kExplorerW, explorerW_.load(), nullptr);
+            if (chatW_.load() > 0)
+                editor.setProperty(kChatW, chatW_.load(), nullptr);
             for (const std::string& title : pages)
             {
                 juce::ValueTree page{ kPageTag };
@@ -1146,6 +1151,9 @@ namespace playground
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
         chatOpen_.store(!(editor.isValid() && editor.getProperty(kChat).toString() == "closed"));
         explorerOpen_.store(!(editor.isValid() && editor.getProperty(kExplorer).toString() == "closed"));
+        // The widths its user set (a state from before them has none: the editor's default).
+        explorerW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kExplorerW, 0)), 0, kMaxEditorSide) : 0);
+        chatW_.store(editor.isValid() ? std::clamp(static_cast<int>(editor.getProperty(kChatW, 0)), 0, kMaxEditorSide) : 0);
         {
             std::vector<std::string> pages;
             for (int k = 0; editor.isValid() && k < editor.getNumChildren() && k < 64; ++k)

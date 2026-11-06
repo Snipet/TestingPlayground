@@ -31,6 +31,8 @@
 //                     line of their own, set with setSchematicPins() whenever the view reconciles; in memory only
 //   panelView()       the editor shows the PANEL view (the interface across the left column) rather than the CODE view;
 //                     kept in the session, set with setPanelView()
+//   explorerWidth()   the explorer's and the chat's widths as the user set them (editor/Columns.h), kept in the session;
+//   chatWidth()       0: none set
 //   program()         the compile it came from (CompileStatus::request): the meters' taps are its fields once
 //                     Meters::program says so (until the audio thread takes it, they are the last program's)
 //   meters()          the last block's levels and the program's taps, for the panel's displays (Engine::Meters); false
@@ -61,7 +63,7 @@
 //                     run, and every dial goes to its default once they compile. No project is open after it, no preset
 //                     applied, Claude's checks are cleared and the interface's pages are its first; `what` names them
 //                     in the journal ("the example \"Init\""). The chat's conversation and the editor's own look (its
-//                     size, theme, zoom, view, folds) stay
+//                     size, theme, zoom, view, folds, widths) stay
 //   deleteProject()   its file deleted; deleteVersion() one version (never the only one)
 //   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
@@ -378,6 +380,13 @@ namespace playground
         // open at the left (else folded into a rail), kept in the session.
         virtual bool explorerOpen() const = 0;
         virtual void setExplorerOpen(bool open) = 0;
+        // The explorer's and the chat's widths as the user set them (a drag of the explorer's right edge or the chat's
+        // left edge, their keys: editor/Columns.h), logical px, kept in the session; 0: none set (the editor then takes
+        // this Mac's default for an instance that has set none, else a share of the window).
+        virtual int explorerWidth() const = 0;
+        virtual void setExplorerWidth(int px) = 0;
+        virtual int chatWidth() const = 0;
+        virtual void setChatWidth(int px) = 0;
 
         // The pages the panel's interface shows: each tabs element's chosen page (the tabs in the order the .gui has
         // them), by its title. Kept in the session, so a reopened editor and a reloaded session show them again.
