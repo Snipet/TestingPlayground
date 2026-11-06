@@ -12,13 +12,17 @@
 // and v_uv (0..1 across, y down) and v_px (px from the top left corner), FunkGui's varyings.
 //
 // buildShader() runs bgfx's shaderc on it (about 40 to 60 ms; never on the audio thread) into the binary FunkGui's
-// ShaderLibrary takes, where the Compiler compiles the program: on its own thread for a RUN, on the calling thread for
-// compileNow (the processor's construction, a host's session or preset load: often the message thread). shaderc's
-// errors come back as a note's text on the file's own line. The Compiler then has the renderer check the binary there
-// too (ShaderTools::check: FunkGui's shaders::check, on macOS Metal's own compiler, milliseconds and more), so that the
-// Panel's shaders::set() on the message thread compiles nothing; a binary the renderer refuses is a note too, and not
-// handed on. A state load pays for the check whether or not an editor opens (FunkGui remembers a code it accepted, so
-// another instance's load of the same shader does not compile it again).
+// ShaderLibrary takes; shaderc's errors come back as a note's text on the file's own line. The renderer then checks the
+// binary (ShaderTools::check: FunkGui's shaders::check, on macOS Metal's own compiler, milliseconds and more), so that
+// the Panel's shaders::set() on the message thread compiles nothing; a binary the renderer refuses is a note too, and
+// not handed on. Both run in buildAll(), each shader on a thread of its own but the first, which runs on buildAll's
+// caller. The Compiler calls it twice for a compile: first on a thread it starts before FMinus compiles the program,
+// for the shaders the .gui file names (readGuiShaders); then, once the compile is done and that thread joined, on the
+// thread that compiles (the compiler's own for a RUN; compileNow's caller, often the message thread, for the
+// processor's construction and a host's session or preset load), for the shaders the program has, which come from the
+// cache by then unless the guess at their inputs was wrong. So shaderc and the check run while FMinus compiles, and
+// the thread that compiles waits for what is left. A state load pays for the check whether or not an editor opens
+// (FunkGui remembers a code it accepted, so another instance's load of the same shader does not compile it again).
 //
 // The cache (ShaderCache; shaderCache(), the process's, which every Compiler shares): a build is looked for in memory
 // (the 64 used last), then on disk (ShaderTools::cacheDir, shaderCacheFolder(): kept between sessions, capped at

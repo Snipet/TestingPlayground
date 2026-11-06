@@ -14,8 +14,8 @@
 //             continues too) or a /* */ one, or part of a longer name, they do not; the probe's still shader names
 //             u_time in a comment only, its moving one reads it, and so does the prompt's example
 //   BUILD     a program whose panel.gui has a shader of its own file runs with no note; the shader's binary is in the
-//             status's panel, under its bytes' hash; run again, the same (the cache); the renderer checked it on the
-//             compiler's thread (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once: the
+//             status's panel, under its bytes' hash; run again, the same (the cache); the renderer checked it while the
+//             program compiled (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once: the
 //             two shaders unregistered before the Panel's two frames and registered after them, the count it reads
 //             moving by one with a set() of a code nobody checked (PROMPT's example)
 //   ERRORS    a shader that does not compile is a note on its own file's line (the name it does not know found in
@@ -473,7 +473,7 @@ PROBE(gui, shaders)
                 static_cast<unsigned long long>(compiledBySet), registerMs);
     P.eq("build.unregistered_before", registeredBefore, 0);
     P.eq("build.registered_in_two_frames", registeredBySet, 2);
-    P.eq("build.set_compiles_nothing", static_cast<int64_t>(compiledBySet), 0);   // checked on the compiler's thread
+    P.eq("build.set_compiles_nothing", static_cast<int64_t>(compiledBySet), 0);   // checked while the program compiled
     P.eq("errors.broken_note", has(s.notes, "broken.sc:5:1: note: the shader does not compile:")
                                    && has(s.notes, "undefinedThing") ? 1 : 0, 1);
     P.eq("errors.broken_unbuilt", s.panel.shaders.size() == 3 && s.panel.shaders[2].binary.empty() ? 1 : 0, 1);
