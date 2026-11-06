@@ -4,8 +4,11 @@
 //
 // The folder holds a file a draft file, by its name, and what the program's #includes read that is not one of them,
 // as read-only copies: host.fm, the file the plugin provides, and a library file named by an #include but not added
-// (the plugin compiles only what it has: LIBRARY adds it). A note (ABOUT.md) says so, and .vscode/settings.json makes
-// VS Code open the copies read-only (written once each, when missing). The sync's own files start with a dot: the
+// (the plugin compiles only what it has: LIBRARY adds it). A copy as written is what both sides agreed on: a draft
+// file of its name (a project with its own host.fm or library file) is the plugin's change, written over it, writable;
+// a draft file that becomes a copy is written over quietly when the folder's is as both last agreed (else it is kept
+// in .conflicts/ first). A note (ABOUT.md) says so, and .vscode/settings.json makes VS Code open the copies read-only
+// (written once each, when missing). The sync's own files start with a dot: the
 // manifest (.fmsync: what each file was when both sides last agreed, a hash each, and the copies written), the lock
 // (.fmsync-lock), the temporary files a write renames over its file, and .conflicts/ (below).
 //
@@ -18,8 +21,8 @@
 //   - the draft unchanged since: the folder changed it (a save): its text lands in the draft, every file of one
 //     save in one write, version-guarded (Plugin::setDraftIf: only while the draft is still what the pass read, else
 //     the next pass decides again), so an open editor merges it as one undo step; a new file is appended, a file
-//     renamed keeps its place (its tab), a file deleted goes (never the program, the first: it is written back);
-//     with run on save, the files then run;
+//     renamed (the program too) keeps its place (its tab, still shown if it was), a file deleted goes (never the
+//     program, the first: it is written back); with run on save, the files then run;
 //   - both changed: a conflict. The file is held (neither side written) until the user chooses (resolve), and the
 //     side not kept is kept in the folder's .conflicts/ ("program.folder-20261106-140211.fm"): nothing is lost.
 // The folder's changes are taken only once its listing (each file's name, size and time) has held still for
@@ -101,9 +104,10 @@ namespace playground
         // watcher says something changed, or every kPollSeconds, kWatchedSeconds while watched).
         void pass(double now, bool force = false);
 
-        // A conflict settled: `keepPlugin`, the draft's text is written to the folder (the folder's kept in
+        // A conflict settled: `keepPlugin`, the draft's text is written to the folder (the folder's file kept whole in
         // .conflicts/); else the folder's lands in the draft (the draft's kept there). False, with why, when `file`
-        // is in no conflict or the draft moved meanwhile (try again).
+        // is in no conflict, the draft moved meanwhile (try again), the folder's file could not be kept aside, or the
+        // folder's is to be kept but cannot be taken (over kMaxBytes, unreadable: never taken as a deletion).
         bool resolve(const std::string& file, bool keepPlugin, double now, std::string& why);
 
         void setRunOnSave(bool on);
@@ -151,9 +155,14 @@ namespace playground
         const Seen* seenOf(const std::string& name);   // read when its stat moved
         bool writeFile(const std::string& name, const std::string& text, bool readOnly);
         bool removeFile(const std::string& name);
-        void keepAside(const std::string& name, const std::string& text, const char* side);
-        // host.fm and the library files the #includes read, read only (`provided`: each one's text, by name)
-        void syncCopies(const std::map<std::string, std::string>& provided, const Draft& d, double now);
+        // The side not kept, in .conflicts/ (false: it could not be kept there): a text, or the folder's file whole.
+        std::filesystem::path asideFor(const std::string& name, const char* side);
+        bool keepAside(const std::string& name, const std::string& text, const char* side);
+        bool keepFolderFileAside(const std::string& name);
+        // host.fm and the library files the #includes read, read only (`provided`: each one's text, by name); what
+        // holds that stops one goes to `conditions`
+        void syncCopies(const std::map<std::string, std::string>& provided, const Draft& d, double now,
+                        std::vector<std::string>& conditions);
         // A look's decisions, file by file (`rested`: the plugin's changes may be written; `writeOnly`: only they are,
         // stop()'s). False: the draft moved under a write of the folder's, nothing taken (the next pass decides again).
         bool decide(double now, const Draft& d, bool rested, bool writeOnly);
@@ -178,7 +187,7 @@ namespace playground
         uint64_t draftKey_ = 0;
         uint64_t decidedKey_ = 0;                     // the draft the last decide() reconciled
         double draftAt_ = -1.0e9;                     // when the draft last changed
-        double pendingSince_ = -1.0;                  // a write of the plugin's waiting since (-1: none)
+        double pendingSince_ = -1.0;                  // the draft away from the last decided since (-1: not)
         bool manifestDirty_ = false;
 
         std::set<std::string> conflicts_;

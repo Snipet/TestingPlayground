@@ -7,20 +7,22 @@
 //   START    a folder of the name given, made, holding the draft's files; host.fm, the plugin's, read only; the note
 //            (ABOUT.md), VS Code's settings and the manifest; nothing written into the draft
 //   OUT      an edit of the plugin's waits for the draft to rest, then is written whole (no temporary file left), and
-//            never comes back as an edit of the folder's; typing that never rests is written within kMaxWaitSeconds
+//            never comes back as an edit of the folder's; typing that never rests is written within kMaxWaitSeconds of
+//            its first change, by the timer's own passes (no look forced)
 //   IN       a save in the folder waits for the folder to hold still, then lands in the draft in one write (two files
 //            saved together, still one); with run on save it runs
 //   ATOMIC   a save that renames a temporary file over the file lands; a save in JetBrains' steps (the file moved
 //            aside, the new one renamed in) lands once, and the draft never loses the file meanwhile; a save written
 //            in two parts lands whole, never the half
 //   SWAP     an editor's swap, backup and lock files (.x.swp, x~, #x#, .#x, 4913, x.crswap) are never taken
-//   FOLDER   a new file there is appended to the draft; renamed, it keeps its place; deleted, it goes; the program
-//            deleted there is written back (a note says so); a name the plugin cannot take and a file past 16 are
-//            left there with a note; a .txt is nobody's
+//   FOLDER   a new file there is appended to the draft; renamed, it keeps its place (its tab still shown); deleted,
+//            it goes; the program deleted there is written back (a note says so), renamed there it is renamed in the
+//            draft; a name the plugin cannot take and a file past 16 are left there with a note; a .txt is nobody's
 //   PLUGIN   a file added, renamed and deleted in the draft is so in the folder
 //   CONFLICT both sides changed: the file is held (neither side written), listed; keeping the plugin's writes it there
 //            and keeps the folder's in .conflicts/; keeping the folder's lands it in the draft and keeps the plugin's
-//            there; a conflict both sides end the same by hand is no longer one
+//            there; a conflict both sides end the same by hand is no longer one; one whose folder side grew past 1 MB
+//            is no deletion: keeping the folder's refused, keeping the plugin's keeps the large file aside whole
 //   GUARD    a write of the folder's the version guard refuses (the draft moved) is taken again at the next pass,
 //            nothing lost
 //   INCLUDES a library file an #include names but the draft lacks: a read-only copy; host.fm changed in the folder is
@@ -32,6 +34,9 @@
 //   PROJECT  the draft replaced whole (a project opened): the folder follows (a file gone, a file new); a save in the
 //            folder the sync had not taken by then is a conflict, never overwritten
 //   CRLF     a save with CR LF lands as LF and is not written back
+//   SWITCH   a project with its own host.fm and library file opened over the read-only copies: written there,
+//            writable, no conflict; the project before opened again: the copies written again quietly (nothing kept
+//            aside, no note)
 //   GONE     the folder deleted: made again with the draft's files, the draft untouched
 //   WATCH    (macOS) FSEvents: a save lands well before the look kept for a missed event (kWatchedSeconds)
 //   PORT     the processor: off at first; on, a folder under the projects' Folders/ (the path shown from ~), the
@@ -235,14 +240,22 @@ PROBE(plugin, folder)
     passFor(sync, t, 0.5);
     P.eq("out.own_write_not_read", fake.writes, 0);
     {
-        // Typing that never rests: a change every 100 ms for 2.5 s.
-        std::string lastWritten;
+        // Typing that never rests: a change every 100 ms for 2.5 s, the passes the timer's own (no look forced, the
+        // next look kWatchedSeconds off while watched): written within kMaxWaitSeconds of the first change.
+        const double from = t;
+        double firstWrite = -1.0;
         for (int k = 0; k < 25; ++k)
         {
             fake.set("program.fm", program("float a = " + std::to_string(k) + ".5f;"));
-            passFor(sync, t, 0.1);
+            for (const double end = t + 0.1; t < end; t += 0.05)
+            {
+                sync.pass(t);
+                if (firstWrite < 0.0 && readFile(dir / "program.fm") != typed)
+                    firstWrite = t - from;
+            }
         }
-        P.eq("out.max_wait", readFile(dir / "program.fm") != typed ? 1 : 0, 1);
+        std::printf("out: typing first written after %.2f s\n", firstWrite);
+        P.in("out.max_wait_s", firstWrite, 0.0, pg::FolderSync::kMaxWaitSeconds + 0.1);
         passFor(sync, t, 0.6);
         P.eq("out.rested_last", readFile(dir / "program.fm") == *fake.text("program.fm") ? 1 : 0, 1);
         P.eq("out.typing_not_read", fake.writes, 0);
@@ -316,9 +329,11 @@ PROBE(plugin, folder)
         writeFile(dir / "extra.fm", "// extra\n");
         passFor(sync, t, 0.5);
         P.eq("folder.add", fake.index("extra.fm"), 2);
+        fake.draft.active = 2;                              // its tab shown
         fs::rename(dir / "extra.fm", dir / "more.fm");
         passFor(sync, t, 0.5);
         P.eq("folder.rename_keeps_place", fake.index("more.fm") == 2 && fake.index("extra.fm") < 0 ? 1 : 0, 1);
+        P.eq("folder.rename_keeps_tab", fake.draft.active, 2);
         fs::remove(dir / "more.fm");
         passFor(sync, t, 0.5);
         P.eq("folder.delete", fake.index("more.fm") < 0 && fake.draft.files.size() == 2u ? 1 : 0, 1);
@@ -327,6 +342,13 @@ PROBE(plugin, folder)
         passFor(sync, t, 0.5);
         P.eq("folder.program_stays", fake.index("program.fm") == 0 && readFile(dir / "program.fm") == programText ? 1 : 0, 1);
         P.eq("folder.program_noted", noted(sync.state(""), "the program") ? 1 : 0, 1);
+        // Renamed there, the program is renamed in the draft (in its place), as the plugin itself allows; and back.
+        fs::rename(dir / "program.fm", dir / "main.fm");
+        passFor(sync, t, 0.5);
+        P.eq("folder.program_renamed", fake.index("main.fm") == 0 && fake.index("program.fm") < 0 ? 1 : 0, 1);
+        fs::rename(dir / "main.fm", dir / "program.fm");
+        passFor(sync, t, 0.5);
+        P.eq("folder.program_renamed_back", fake.index("program.fm") == 0 && *fake.text("program.fm") == programText ? 1 : 0, 1);
         const int writes = fake.writes;
         writeFile(dir / "my file.fm", "// a space\n");
         writeFile(dir / "notes.txt", "mine\n");
@@ -382,6 +404,22 @@ PROBE(plugin, folder)
         writeFile(dir / "program.fm", mine2);
         passFor(sync, t, 0.5);
         P.eq("conflict.ended_by_hand", sync.state("").conflicts.empty() ? 1 : 0, 1);
+        // A conflict whose folder side then grows past 1 MB: no deletion. Keeping the folder's is refused (the draft
+        // as it was); keeping the plugin's keeps the large file aside whole before writing over it.
+        const std::string mineLib = "// mine again\n" + std::string(kLib);
+        fake.set("lib.fm", mineLib);
+        writeFile(dir / "lib.fm", "// theirs again\n" + std::string(kLib));
+        passFor(sync, t, 0.8);
+        const std::string large = "// large\n" + std::string(pg::FolderSync::kMaxBytes, '/') + "\n";
+        writeFile(dir / "lib.fm", large);
+        passFor(sync, t, 0.5);
+        const pg::Draft held = fake.draft;
+        P.eq("conflict.large_listed", sync.state("").conflicts.size() == 1u && noted(sync.state(""), "over 1 MB") ? 1 : 0, 1);
+        P.eq("conflict.large_keep_folder_refused", !sync.resolve("lib.fm", false, t, why) && fake.draft == held
+                                                       && sync.state("").conflicts.size() == 1u ? 1 : 0, 1);
+        P.eq("conflict.large_keep_plugin", sync.resolve("lib.fm", true, t, why) && readFile(dir / "lib.fm") == mineLib
+                                               && keptAside(dir, large) ? 1 : 0, 1);
+        passFor(sync, t, 0.5);
     }
 
     // ---- GUARD ---------------------------------------------------------------------------------------------------------
@@ -484,6 +522,48 @@ PROBE(plugin, folder)
         passFor(sync, t, 1.0);
         P.eq("crlf.lf", *fake.text("b.fm") == "// one\n// two\n" ? 1 : 0, 1);
         P.eq("crlf.not_bounced", readFile(dir / "b.fm") == "// one\r\n// two\r\n" ? 1 : 0, 1);
+    }
+
+    // ---- SWITCH (a project with its own file of a copy's name) ---------------------------------------------------------
+    {
+        const pg::Draft before = fake.draft;
+        const std::string lib = pg::kLibrary[0].name, stockLib = pg::kLibrary[0].source;
+        const std::string stockHost(pg::Patch::hostSource());
+        // Project A names the library file without having it: the folder's copies, read only.
+        pg::Draft a;
+        a.files = { { "program.fm", "#include \"" + lib + "\"\n" + program("float s = 1.0f;") } };
+        fake.draft = a;
+        passFor(sync, t, 0.8);
+        P.eq("switch.copies", readFile(dir / lib) == stockLib && readOnly(dir / lib) && readOnly(dir / "host.fm") ? 1 : 0, 1);
+        // Project B has its own, edited: the plugin's change over the copies as written, no conflict.
+        const std::string ownLib = "// mine\n" + stockLib, ownHost = stockHost + "// mine\n";
+        pg::Draft b;
+        b.files = { a.files[0], { lib, ownLib }, { "host.fm", ownHost } };
+        const int writes = fake.writes;
+        fake.draft = b;
+        passFor(sync, t, 0.8);
+        P.eq("switch.own_no_conflict", sync.state("").conflicts.empty() ? 1 : 0, 1);
+        P.eq("switch.own_written", readFile(dir / lib) == ownLib && !readOnly(dir / lib) && readFile(dir / "host.fm") == ownHost
+                                       && !readOnly(dir / "host.fm") ? 1 : 0, 1);
+        P.eq("switch.own_draft_untouched", fake.draft == b && fake.writes == writes ? 1 : 0, 1);
+        // Back to A: the copies written again quietly (nothing kept aside, no note), read only.
+        const auto aside = [&dir] {
+            std::error_code ec;
+            int n = 0;
+            for (fs::directory_iterator it(dir / pg::FolderSync::kConflicts, ec), end; !ec && it != end; it.increment(ec))
+                ++n;
+            return n;
+        };
+        const int asideBefore = aside();
+        fake.draft = a;
+        passFor(sync, t, 0.8);
+        P.eq("switch.back_copies", readFile(dir / lib) == stockLib && readOnly(dir / lib) && readFile(dir / "host.fm") == stockHost
+                                       && readOnly(dir / "host.fm") ? 1 : 0, 1);
+        P.eq("switch.back_quiet", aside() == asideBefore && !noted(sync.state(""), "written again") ? 1 : 0, 1);
+        fake.draft = before;
+        passFor(sync, t, 0.8);
+        P.eq("switch.restored", readFile(dir / "program.fm") == before.files[0].text && !there(dir / lib)
+                                    && sync.state("").conflicts.empty() ? 1 : 0, 1);
     }
 
     // ---- ROOM (16 files at most) ---------------------------------------------------------------------------------------

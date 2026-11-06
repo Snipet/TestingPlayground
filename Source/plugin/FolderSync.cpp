@@ -359,7 +359,7 @@ namespace playground
                 << "This folder holds the program's files of one " << product::kName << " instance, synced both ways.\n\n"
                 << "- A file saved here changes it in the plugin (one undo step there), and an edit in the plugin is written here.\n"
                 << "- A new file here (.fm, .gui, .cir, .sc) becomes one of the program's files; a file renamed or deleted here is\n"
-                << "  renamed or deleted there. The program, the first file, stays: rename or delete it in the plugin.\n"
+                << "  renamed or deleted there. The program, the first file, deleted here is written back: delete it in the plugin.\n"
                 << "- When a file changed on both sides, neither is written: the plugin asks which to keep, and the other is kept\n"
                 << "  in `.conflicts/`.\n"
                 << "- `host.fm` is the plugin's own file, here read only so that `#include \"host.fm\"` resolves; so is a library\n"
@@ -522,8 +522,8 @@ namespace playground
         return !ec;
     }
 
-    // The side not kept, in .conflicts/: "program.folder-20261106-140211.fm".
-    void FolderSync::keepAside(const std::string& name, const std::string& text, const char* side)
+    // The side not kept, in .conflicts/: "program.folder-20261106-140211.fm", a name not taken yet.
+    fs::path FolderSync::asideFor(const std::string& name, const char* side)
     {
         std::error_code ec;
         const fs::path dir = folder_ / kConflicts;
@@ -543,8 +543,21 @@ namespace playground
         std::string file = stem + "." + side + "-" + stamp + ext;
         for (int n = 2; fs::exists(dir / pathOf(file), ec) && n < 100; ++n)
             file = stem + "." + side + "-" + stamp + "-" + std::to_string(n) + ext;
-        std::ofstream out(dir / pathOf(file), std::ios::binary);
+        return dir / pathOf(file);
+    }
+
+    bool FolderSync::keepAside(const std::string& name, const std::string& text, const char* side)
+    {
+        std::ofstream out(asideFor(name, side), std::ios::binary);
         out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        return static_cast<bool>(out);
+    }
+
+    // The folder's file as it is, whatever its size: copied whole.
+    bool FolderSync::keepFolderFileAside(const std::string& name)
+    {
+        std::error_code ec;
+        return fs::copy_file(folder_ / pathOf(name), asideFor(name, "folder"), ec) && !ec;
     }
 
     void FolderSync::note(const std::string& text, double now)
@@ -598,6 +611,10 @@ namespace playground
             draftKey_ = key;
             draftAt_ = now;
         }
+        // kMaxWaitSeconds runs from the draft's first move away from what was last decided, not from the next look
+        // (kWatchedSeconds off while watched): decide() lets it go once nothing waits.
+        if (key != decidedKey_ && pendingSince_ < 0.0)
+            pendingSince_ = now;
         const bool told = watch_ != nullptr && watch_->takeChanged();
         const bool rested = now - draftAt_ >= kRestSeconds
                          || (pendingSince_ >= 0.0 && now - pendingSince_ >= kMaxWaitSeconds);
@@ -663,7 +680,9 @@ namespace playground
             const SourceFile* df = findFile(d.files, n);
             if (df == nullptr && (provided.count(n) > 0 || copies_.count(n) > 0))
             {
-                if (base_.erase(n) > 0)                  // a read-only copy's (syncCopies), no longer a file of the draft
+                // A read-only copy's (syncCopies), no longer a file of the draft. A provided one keeps its base until
+                // syncCopies has looked: the folder's file as both last agreed on is the plugin's to write over.
+                if (provided.count(n) == 0 && base_.erase(n) > 0)
                     manifestDirty_ = true;
                 continue;
             }
@@ -682,8 +701,20 @@ namespace playground
             }
             const uint64_t fx = s != nullptr ? s->hash : 0;
             const auto b = base_.find(n);
-            const bool bh = b != base_.end();
-            const uint64_t bx = bh ? b->second : 0;
+            bool bh = b != base_.end();
+            uint64_t bx = bh ? b->second : 0;
+            // A read-only copy the folder holds as written, and a file of the draft's by its name now (a project with
+            // its own host.fm or library file opened, LIBRARY's file typed in before a look): the copy is what both
+            // last agreed on, so the draft's text is the plugin's change, written over it (writable), never a
+            // conflict. The base is kept: syncCopies forgets the copy this very pass.
+            if (dh && !bh && fh)
+                if (const auto c = copies_.find(n); c != copies_.end() && c->second == fx)
+                {
+                    base_[n] = fx;
+                    manifestDirty_ = true;
+                    bh = true;
+                    bx = fx;
+                }
             if (same(dh, dx, fh, fx))
             {
                 if (dh && (!bh || bx != dx))
@@ -753,6 +784,10 @@ namespace playground
                         return static_cast<int>(i);
                 return -1;
             };
+            // The tab shown stays the file it was, by its name (or its new one, below).
+            std::string shown = d.active >= 0 && d.active < static_cast<int>(d.files.size())
+                                    ? d.files[static_cast<std::size_t>(d.active)].name
+                                    : std::string();
             for (Adopt& a : adopt)
                 if (a.present && indexOf(a.name) >= 0)
                 {
@@ -774,6 +809,8 @@ namespace playground
                     if (!paired[k] && adopt[k].present && indexOf(adopt[k].name) < 0 && adopt[k].hash == was)
                     {
                         next.files[static_cast<std::size_t>(at)].name = adopt[k].name;
+                        if (gone.name == shown)
+                            shown = adopt[k].name;
                         paired[k] = paired[g] = true;
                         landed.push_back(gone.name + " -> " + adopt[k].name);
                         renamed = true;
@@ -805,10 +842,6 @@ namespace playground
                 next.files.push_back({ a.name, a.text });
                 landed.push_back(a.name + " new");
             }
-            // The tab shown stays the file it was, by its name (or its new one).
-            const std::string shown = d.active >= 0 && d.active < static_cast<int>(d.files.size())
-                                          ? d.files[static_cast<std::size_t>(d.active)].name
-                                          : std::string();
             next.active = 0;
             for (std::size_t i = 0; i < next.files.size(); ++i)
                 if (next.files[i].name == shown)
@@ -858,7 +891,7 @@ namespace playground
         else if (!waiting)
             pendingSince_ = -1.0;
 
-        syncCopies(provided, d, now);
+        syncCopies(provided, d, now, conditions);
         std::sort(conditions.begin(), conditions.end());
         if (conditions != conditions_)
         {
@@ -868,12 +901,20 @@ namespace playground
         return true;
     }
 
-    void FolderSync::syncCopies(const std::map<std::string, std::string>& provided, const Draft& d, double now)
+    void FolderSync::syncCopies(const std::map<std::string, std::string>& provided, const Draft& d, double now,
+                                std::vector<std::string>& conditions)
     {
+        const auto forgetBase = [this](const std::string& n) {
+            if (base_.erase(n) > 0)
+                manifestDirty_ = true;
+        };
         for (const auto& [n, text] : provided)
         {
             const uint64_t h = editorHash(text);
-            const Seen* s = listing_.count(n) > 0 ? seenOf(n) : nullptr;
+            const bool listed = listing_.count(n) > 0;
+            const Seen* s = listed ? seenOf(n) : nullptr;
+            if (listed && s == nullptr)
+                continue;                                // unreadable just now: next time
             if (s != nullptr && !s->large && s->hash == h)
             {
                 if (const auto c = copies_.find(n); c == copies_.end() || c->second != h)
@@ -884,21 +925,29 @@ namespace playground
                     copies_[n] = h;
                     manifestDirty_ = true;
                 }
+                forgetBase(n);
                 continue;
             }
-            if (s != nullptr)
+            // A file of the draft's until now (decide() kept its base for this), the folder's as both last agreed on:
+            // the plugin's to write over, quietly, as a file the plugin deletes is removed.
+            const auto b = base_.find(n);
+            const bool agreed = b != base_.end() && s != nullptr && !s->large && s->hash == b->second;
+            if (s != nullptr && !agreed)
             {
-                // A copy changed in the folder (made writable and saved), or a file of the plugin's name the user put
-                // there: kept aside, and the copy written again.
-                std::string raw;
-                bool large = false;
-                if (readAll(folder_ / pathOf(n), raw, kMaxBytes, large))
-                    keepAside(n, raw, "folder");
+                // A copy changed in the folder (made writable and saved), a file of the plugin's name the user put
+                // there, or a save of a draft file's not taken before it became a copy: kept aside whole, and the copy
+                // written again; never written over unkept.
+                if (!keepFolderFileAside(n))
+                {
+                    conditions.push_back(n + ": could not be kept in " + kConflicts + ", not written");
+                    continue;
+                }
                 note(n + (n == "host.fm" ? ": read only, written again" : ": library copy, written again"), now);
             }
             if (writeFile(n, text, true))
             {
                 copies_[n] = h;
+                forgetBase(n);
                 manifestDirty_ = true;
             }
         }
@@ -929,13 +978,20 @@ namespace playground
         }
         const Draft d = plugin_.draft();
         const SourceFile* df = findFile(d.files, file);
+        const fs::path path = folder_ / pathOf(file);
         std::string raw;
         bool large = false;
-        const bool fh = readAll(folder_ / pathOf(file), raw, kMaxBytes, large);
+        const bool fh = readAll(path, raw, kMaxBytes, large);
+        // A file there that cannot be read (over 1 MB, unreadable) is no deletion: never taken, never written over unkept.
+        std::error_code ec;
+        const bool there = fh || fs::exists(path, ec) || ec;
         if (keepPlugin)
         {
-            if (fh)
-                keepAside(file, raw, "folder");
+            if (there && !keepFolderFileAside(file))
+            {
+                why = "could not keep the folder's " + file + " in " + kConflicts;
+                return false;
+            }
             if (df != nullptr)
             {
                 if (!writeFile(file, df->text, false))
@@ -954,6 +1010,11 @@ namespace playground
         }
         else
         {
+            if (there && !fh)
+            {
+                why = file + (large ? " in the folder is over 1 MB: too large to take" : " in the folder could not be read");
+                return false;
+            }
             Draft next = d;
             const auto at = std::find_if(next.files.begin(), next.files.end(), [&](const SourceFile& f) { return f.name == file; });
             if (fh)
