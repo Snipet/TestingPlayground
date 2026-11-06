@@ -155,6 +155,20 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
   swap is over, hand back. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
   and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
+- **The dials' carry** (Controls.h's `DialCarry` and `carryValue`, Compiler.h's and Engine.h's "The dials' carry",
+  `Processor::apply`): the host's values are normalised, so a run whose declarations change (a range, a taper, an int's
+  options) would give an old value another meaning. A dial of the name its slot had keeps its value in its units
+  (clamped; an int or a bool its value's name, `panel.options`), a new one starts at its default, and so from the new
+  program's first block: just before every offer the Compiler asks the processor's carrier (`carryFor`, under
+  `meaningMutex_`) and the carry travels in the Patch (for the audio thread) and the status (for `apply`). The Engine
+  plays a slot's carried value while `setControls`' meaning is the carry's `from` and the slot's value is still
+  `fromNorm`; `apply` writes the carried values (one gesture each; a slot the host or the user moved since left as it
+  is, one that plays its value already not written; only the newest carry writes), then stores `meaningProgram_`
+  (release; `readParameters` reads it before the values): keep that order. A state load carries nothing
+  (`compileNow(files, false)`, `adoptMeaning` after `replaceState`). The carrier never calls the Compiler (a refine
+  asks under its mutex). chatDialValue says the carried value until `apply` has run, so run_program reports what plays.
+  Projects and presets keep a value's name with its number (`projectstore::Dial::label`, an added field). `plugin.state`
+  CARRY and `plugin.projects` LABEL check.
 - Nothing steps: a program swap crossfades (the effect) or fades the old program's voices over 20 ms (the synth: the
   held keys start again on the new one), a steal fades over 2 ms, a real dial glides over 20 ms as a stream, the
   bypass crossfades over 20 ms. The output does not depend on how the host splits its blocks (the examples are checked
