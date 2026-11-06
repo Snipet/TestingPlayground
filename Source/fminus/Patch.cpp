@@ -373,6 +373,72 @@ namespace playground
                  + "\" in a program.fm before it)\n";
         }
 
+        // The plugin's macros (Lang.h's kDefines), as every compile here defines them (Patch.h, "Conditionals and
+        // warnings").
+        std::map<std::string, std::string> defines()
+        {
+            std::map<std::string, std::string> out;
+            for (const auto& [name, value] : lang::hostDefines())
+                out[name] = value;
+            return out;
+        }
+
+        // A program's warnings (FMinus's Program::warnings, a netlist's module's cited at the netlist) as the plugin
+        // shows them: a warning a line, without clang's note after it at its own place ("add missing switch cases"),
+        // which would mark the same word again.
+        std::string warningsOf(const fminus::Program& program, const circuits::Generator& circuits)
+        {
+            const std::string all = circuits.recite(program.warnings());
+            std::string out, lastAt;
+            std::size_t from = 0;
+            while (from < all.size())
+            {
+                std::size_t end = all.find('\n', from);
+                if (end == std::string::npos)
+                    end = all.size();
+                const std::string line = all.substr(from, end - from);
+                from = end + 1;
+                const std::size_t w = line.find(": warning: "), n = line.find(": note: ");
+                if (n != std::string::npos && !lastAt.empty() && line.compare(0, n, lastAt) == 0)
+                    continue;
+                lastAt = w != std::string::npos ? line.substr(0, w) : std::string();
+                if (!line.empty())
+                    out += line + "\n";
+            }
+            return out;
+        }
+
+        // The files FMinus read (`compiled`, of `files`) as it read them: the lines of a group a conditional skipped
+        // emptied, so that the panel's #pragma lines are read only where FMinus reads the program.
+        std::vector<SourceFile> asRead(const std::vector<const SourceFile*>& compiled, const Sources& files)
+        {
+            const std::vector<lang::FileConditionals> cond = lang::conditionals(files, lang::hostDefines());
+            std::vector<SourceFile> out;
+            for (const SourceFile* f : compiled)
+            {
+                SourceFile copy = *f;
+                const std::size_t k = static_cast<std::size_t>(f - files.data());
+                if (k < cond.size() && std::find(cond[k].skipped.begin(), cond[k].skipped.end(), 1) != cond[k].skipped.end())
+                {
+                    std::string text;
+                    std::size_t line = 0, from = 0;
+                    while (from <= f->text.size())
+                    {
+                        const std::size_t end = std::min(f->text.find('\n', from), f->text.size());
+                        if (line >= cond[k].skipped.size() || cond[k].skipped[line] == 0)
+                            text.append(f->text, from, end - from);
+                        if (end < f->text.size())
+                            text += '\n';
+                        from = end + 1;
+                        ++line;
+                    }
+                    copy.text = std::move(text);
+                }
+                out.push_back(std::move(copy));
+            }
+            return out;
+        }
+
         // compile()'s second pass's options but for the #include: the audio thread's denormal mode, and each dial a
         // stream (a float) or a knob. ir() gives FMinus the same, so its text is the one the program's code came from.
         fminus::Program::Options playOptions(const std::string& fileName, const std::array<std::string, kMaxControls>& names,
@@ -380,6 +446,7 @@ namespace playground
         {
             fminus::Program::Options o;
             o.fileName = fileName;
+            o.defines = defines();
             o.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
             for (std::size_t k = 0; k < names.size(); ++k)
                 if (!names[k].empty() && streams[k])
@@ -394,6 +461,7 @@ namespace playground
         {
             fminus::Program::Options o;
             o.fileName = r.files.front().name;
+            o.defines = defines();                               // as compile()'s: the program's own fields and code
             o.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
             o.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
                                : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
@@ -497,6 +565,7 @@ namespace playground
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
+        read.defines = defines();
         read.include = include;
         std::unique_ptr<fminus::Program> first = fminus::Program::compile(source, r.errors, read);
         r.circuitJobs = circuits.jobs();
@@ -514,6 +583,9 @@ namespace playground
             r.compileMs = msSince(t0);
             return r;
         }
+        // FMinus's warnings, of the program as written (pass 2 appends lines that switch on nothing): notes, after the
+        // netlists' (below).
+        const std::string warnings = warningsOf(*first, circuits);
         const fminus::Program::Module* main = first->module(kModule);
         if (main == nullptr)
         {
@@ -523,6 +595,7 @@ namespace playground
             r.errors = file + ": error: the plugin plays a module " + kModule + " (README.md, \"Writing a program\")" +
                        (have.empty() ? std::string(", and the program has no module") : ", and the program has " + have) +
                        "\n";
+            r.notes += warnings;
             r.compileMs = msSince(t0);
             return r;
         }
@@ -553,6 +626,7 @@ namespace playground
                 }
         if (!r.errors.empty())
         {
+            r.notes += warnings;
             r.compileMs = msSince(t0);
             return r;
         }
@@ -825,7 +899,12 @@ namespace playground
             for (const fminus::Program::Module::Field& f : sharedModule->fields)
                 sharedFields.push_back({ f.name, f.type });
         fields = displayFields(fields, sharedFields);
-        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do.
+        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do, as FMinus
+        // read the files (a skipped group's lines are none).
+        const std::vector<SourceFile> readTexts = asRead(compiled, files);
+        std::vector<const SourceFile*> asFmRead;
+        for (const SourceFile& f : readTexts)
+            asFmRead.push_back(&f);
         const SourceFile* gui = nullptr;
         for (const SourceFile& f : files)
             if (isGuiFile(f.name))
@@ -839,7 +918,7 @@ namespace playground
         if (gui != nullptr)
         {
             std::string ignored;
-            const PanelSpec pragmas = readPanelSpec(compiled, patch->controls_, fields, kInstrument, ignored);
+            const PanelSpec pragmas = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, ignored);
             if (!pragmas.sections.empty() || !pragmas.displays.empty())
                 r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
             std::vector<std::string> fileNames;
@@ -848,7 +927,7 @@ namespace playground
             patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, fileNames, r.notes);
         }
         else
-            patch->panel_ = readPanelSpec(compiled, patch->controls_, fields, kInstrument, r.notes);
+            patch->panel_ = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, r.notes);
         for (const PanelDisplay& d : patch->panel_.displays)
         {
             if (d.tap < 0)
@@ -940,8 +1019,9 @@ namespace playground
             r.ir.lowered = program.loweredIr();
             r.ir.optimised = program.optimisedIr();
         }
-        // The netlists' warnings and provisional notes first: what they say is about the files the program reads.
-        r.notes = circuits.warnings() + circuits.notes() + r.notes;
+        // The netlists' warnings and provisional notes first, then FMinus's warnings: what they say is about the files
+        // the program reads.
+        r.notes = circuits.warnings() + circuits.notes() + warnings + r.notes;
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
         return r;
@@ -1539,6 +1619,7 @@ namespace playground
         read.optimisation = 0;
         read.knobVersions = 0;
         read.fileName = file;
+        read.defines = defines();
         read.include = includeOf(files, circuits);
         const std::unique_ptr<fminus::Program> first = fminus::Program::compile(files.front().text, r.errors, read);
         const bool netlistErrors = !circuits.errors().empty();
@@ -1551,6 +1632,8 @@ namespace playground
             return r;
         }
         r.errors = circuits.recite(r.errors) + circuits.errors() + circuits.warnings();
+        if (first)
+            r.errors += warningsOf(*first, circuits);            // FMinus's warnings, as RUN's notes have them
         if (first)
         {
             const fminus::Program::Module* main = first->module(kModule);

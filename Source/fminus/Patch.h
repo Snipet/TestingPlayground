@@ -83,6 +83,18 @@
 // it wrote, its rings, and its stats (read and zeroed). Nothing else writes the probe fields; the field map
 // (fieldMap(), unmapped()) leaves them out.
 //
+// Conditionals and warnings. Every compile here, each pass of compile(), check(), freeze(), ir() and frozenIr(), defines
+// the plugin's macros (lang::kDefines: DEBUG) as FMinus's Program::Options::defines, so a program's #ifdef DEBUG groups
+// are read wherever the plugin builds it, the frozen copy too: it plays through the program's instances, so a field an
+// #ifdef DEBUG declares must be in both, and it must sound and feed the displays as the program does. A group a
+// conditional skips is no part of the program for the plugin either: the panel's #pragma lines are read from the
+// files as FMinus read them (lang::conditionals). FMinus's warnings (Program::warnings: -Wswitch, a switch on an
+// enumerated value that misses some of its constants without a default) are about a program that compiles and plays
+// as written: compile() gives pass 1's in Result::notes (a netlist's module's cited at the netlist, as its errors),
+// check() among its messages, each a "file:line:col: warning: ... [-Wswitch]" line (clang's note after it at its own
+// place left out: it would mark the word again); a program that fails has them among its errors, where FMinus puts
+// them.
+//
 // The methods the audio thread calls (process, start, stop) must not allocate: FMinus refuses a program whose methods
 // could reach calloc, malloc or free from them (init and end may: a delay line's memory). They need no
 // [[clang::nonblocking]] of their own: the plugin calls each through a function of its own with the type it calls it
