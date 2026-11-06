@@ -156,6 +156,23 @@
 // front and back made one, which end would free twice), so what init allocated stays allocated, a leak where the
 // alternative is a crash of the host.
 //
+// Bounds checks (an index outside its array). An index past an array's end reads or writes whatever lies beside it, in
+// the instance or in the host's memory: a write there corrupts the host or crashes it, perhaps much later. So every
+// compile that plays as the program is written (compile()'s second pass: RUN's, a refine's, each tool's render; and
+// ir(), its text) has FMinus's bounds checks (Program::Options::boundsCheck; FMinus's docs/extending.md, recipe 30):
+// every access whose array the compiler sees (a field's, a local's, a constant table's: a[i], m.taps[i], voices[v],
+// a + i) is checked against the array's extent, and a call whose check fails returns early, before the access, with
+// every function of the program it was in. A call within its arrays computes what it would without them, bit for bit.
+// The frozen copy (freeze(), frozenIr()) has none: it is the build that plays once the dials hold still, at full speed,
+// and the freezer compiles it anyway, so the two builds take no compile more than one did (dsp.bounds measures what
+// the checks cost; README, "An index outside its array"). A pointer the program keeps is not checked, its extent being
+// known only as it runs (a heap block from calloc, as delay.fm's line, reverb.fm's and wavetable.fm's table; a host's
+// buffer), nor an FFT's buffers against its plan. A failed check stops the Patch as a call past its budget does
+// (stopped(): the call it was; bounds(): the check, its file, line, column, array, type, extent and index, copied for
+// the Engine to publish), every call after it does nothing until reset(), which empties FMinus's record before any
+// init, and stopMessage() words it at the access ("program.fm:14:33: error: process() went outside an array: index
+// -188 out of bounds for 'line' of type 'float[512]'"). An init's failed check fails the compile; an end's, the ends.
+//
 // Threads: compile(), freeze(), ir() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
 // whatever thread resets or destroys it.
@@ -212,9 +229,32 @@ namespace playground
         static std::int64_t budgetOf(int samples, float rate) noexcept;
         // "process()", "Shared's init()", "a circuit's set()": a call as the messages name it.
         static std::string callName(Method call);
-        // The words for a stop of `call` in the program of `files` at `rate`: an error at the method's line ("program.fm:
-        // 14:10: error: process() ran past its budget: a loop that never ends?"), then a note with the budget's numbers.
-        static std::string stopMessage(const Sources& files, Method call, float rate);
+        // ---- the bounds checks (above) ----------------------------------------------------------------------------
+        // A check that failed (FMinus's Program::BoundsViolation), copied by the thread that made the call: plain data,
+        // its texts cut to their arrays' size, so that it outlives the Patch (Engine::Stopped carries it).
+        struct Bounds
+        {
+            bool failed = false;              // a check failed: the rest says which
+            char file[96]{};                  // the file as FMinus's messages name it: the program's, or an #include's
+            char array[64]{};                 // the array as the source names it ("line", "m.taps", "voices[v].line"),
+                                              // or "" when it has no name
+            char type[48]{};                  // its type: "float[512]"
+            int line = 0, column = 0;         // the access's, from 1 (the column in bytes, as the messages count it)
+            int width = 1;                    // the elements it reaches: 1, a poly_load's lanes, 0 a pointer formed
+            std::int64_t extent = 0;          // the array's elements
+            std::int64_t index = 0;           // the element the access reached, from the array's first
+            std::string where() const;        // "program.fm:14:33"
+            std::string what() const;         // FMinus's words: "index -188 out of bounds for 'line' of type ..."
+        };
+
+        // The words for a stop of `call` in the program of `files` at `rate`: an error at the method's line
+        // ("program.fm:14:10: error: process() ran past its budget: a loop that never ends?"), then a note with the
+        // budget's numbers; with `bounds` that failed, an error at the access ("program.fm:14:33: error: process() went outside an array:
+        // index -188 out of bounds for 'line' of type 'float[512]'"), then a note on the checks.
+        static std::string stopMessage(const Sources& files, Method call, float rate, const Bounds* bounds = nullptr);
+        // What stopped `call`, in a few words: "process() ran past its budget (a loop that never ends?)", or with
+        // `bounds` that failed "process() went outside an array (program.fm:14:33: index -188 out of bounds for ...)".
+        static std::string stopWhy(Method call, const Bounds* bounds = nullptr);
 
         struct Result
         {
@@ -223,6 +263,7 @@ namespace playground
                                               // the plugin's (what the program lacks), empty on success
             std::string notes;                // what the plugin wants known though the program plays (one a line)
             Method stopped = Method::none;    // an init that ran past its budget (above): `errors` say so
+            Bounds bounds;                    // or that failed a bounds check (above): which
             double compileMs = 0.0;
             Ir ir;                            // the program's IR, when compile() was asked to keep it and it compiled
             // Its netlists' (above, "Circuits"), whether or not the program compiled: the self-tests it wants (none
@@ -236,9 +277,10 @@ namespace playground
         // `keepIr`: the program's IR in Result::ir too, both texts (above, "The IR"). `pins`: its netlists generated with
         // these configurations where they name the netlist's key (above, "Circuits"), not with the store's answers.
         // `loopBudget` false: without the loop budget (above), and its recipe's copies too: dsp.budget's measure of what
-        // the checks cost (the plugin never asks for it).
+        // the checks cost (the plugin never asks for it). `boundsCheck` false: without the bounds checks (above), and
+        // its recipe's ir() too: dsp.bounds's measure (the plugin never asks for it either).
         static Result compile(const Sources& files, float sampleRate, bool keepIr = false, const CircuitPins* pins = nullptr,
-                              bool loopBudget = true);
+                              bool loopBudget = true, bool boundsCheck = true);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
         // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
@@ -260,6 +302,11 @@ namespace playground
         // The call that ran past its budget since the instances were made new (above, "The loop budget"); Method::none
         // while none has. Any thread.
         Method stopped() const noexcept { return static_cast<Method>(stop_.load(std::memory_order_relaxed)); }
+        // The bounds check that stopped it (above, "Bounds checks"): `failed` false when none did (a call past its
+        // budget, or no stop). On the thread that made the call, or after it (the Engine publishes it with the stop).
+        const Bounds& bounds() const noexcept { return bounds_; }
+        // Whether it was compiled with the bounds checks (compile()'s `boundsCheck`; its frozen copy never is).
+        bool boundsChecked() const noexcept { return recipe_.boundsCheck; }
         // The budget the last audio-thread call was given, and what it left (FMinus's loopBudgetLeft: -1 once a call
         // ran out): what a call took, for dsp.budget. Between calls.
         std::int64_t lastBudget() const noexcept { return lastBudget_; }
@@ -309,6 +356,8 @@ namespace playground
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
             bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
+            bool boundsCheck = true;                   // and the bounds checks (compile()'s `boundsCheck`): ir()'s
+                                                       // text has them, the frozen copy never
         };
         Recipe recipe() const;
         // The frozen copy of the recipe's program at the dials' plain values (each used control's, Controls.h): off
@@ -426,10 +475,11 @@ namespace playground
         void mapFields();                              // fields_ and unmapped_, from the compiled program
 
         const Compiled& code() const noexcept { return active_ != nullptr ? *active_ : *s_; }
-        // The loop budget around a call (above): set for `samples` before it, and after it the stop, when it ran out.
-        // True when the call ran within it.
+        // The loop budget around a call (above): set for `samples` before it, and after it the stop, when it ran out or
+        // failed a bounds check (above, "Bounds checks": the check copied into bounds_). True when the call ran whole.
         void budget(const Compiled& c, int samples) noexcept;
         bool within(const Compiled& c, Method call) noexcept;
+        bool outOfBounds(const Compiled& c) noexcept;  // a check that failed, copied into bounds_ (false: none)
 
         std::unique_ptr<Compiled> s_;
         const Compiled* active_ = nullptr;             // the frozen copy's code in use, or null
@@ -490,6 +540,7 @@ namespace playground
         std::int64_t perSample_ = 0;                   // the loop budget a sample at rate_ (budgetOf)
         std::int64_t lastBudget_ = 0;                  // the last audio-thread call's
         std::atomic<uint8_t> stop_{ 0 };               // stopped()
+        Bounds bounds_{};                              // bounds(): written before stop_
         int initsCalled_ = 0, endsCalled_ = 0;         // initsCalled(), endsCalled()
         uint64_t program_ = 0;
         void* shared_ = nullptr;                       // the module Shared's one instance, or null

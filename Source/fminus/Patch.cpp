@@ -442,13 +442,14 @@ namespace playground
         // compile()'s second pass's options but for the #include: the audio thread's denormal mode, and each dial a
         // stream (a float) or a knob. ir() gives FMinus the same, so its text is the one the program's code came from.
         fminus::Program::Options playOptions(const std::string& fileName, const std::array<std::string, kMaxControls>& names,
-                                             const std::array<bool, kMaxControls>& streams, bool loopBudget)
+                                             const std::array<bool, kMaxControls>& streams, bool loopBudget, bool boundsCheck)
         {
             fminus::Program::Options o;
             o.fileName = fileName;
             o.defines = defines();
             o.denormals = fminus::Program::Denormals::Flush;     // the audio thread's mode (ScopedNoDenormals)
             o.loopBudget = loopBudget;                           // Patch.h, "The loop budget"
+            o.boundsCheck = boundsCheck;                         // Patch.h, "Bounds checks"
             for (std::size_t k = 0; k < names.size(); ++k)
                 if (!names[k].empty() && streams[k])
                     o.parameters[names[k]] = fminus::Program::Binding::stream();
@@ -465,6 +466,8 @@ namespace playground
             o.defines = defines();                               // as compile()'s: the program's own fields and code
             o.denormals = fminus::Program::Denormals::Flush;     // as compile()'s
             o.loopBudget = r.loopBudget;                         // as compile()'s: the copy keeps the checks
+            o.boundsCheck = false;                               // the build that plays at full speed (Patch.h,
+                                                                 // "Bounds checks"): its code as without the option
             o.math = exactMath ? fminus::Program::Math::Vector   // dsp.freeze's measure of exact math
                                : fminus::Program::Math::Fast;    // the copy's math (Patch.h, "Frozen dials")
             for (std::size_t k = 0; k < r.names.size(); ++k)
@@ -494,6 +497,7 @@ namespace playground
         Init* sharedInit = nullptr;                // the module Shared's
         Plain* sharedEnd = nullptr;
         std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
+        bool boundsCheck = false;                  // compiled with the bounds checks (the frozen copy never is)
     };
 
     Patch::Patch() : s_(std::make_unique<Compiled>()) {}
@@ -509,8 +513,8 @@ namespace playground
     void Patch::endInstances() noexcept
     {
         const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
-        // Each end within kInitBudget; after one that runs past it, no other; and none at all once a call has stopped
-        // the Patch, whose state may be any (Patch.h, "The loop budget").
+        // Each end within kInitBudget; after one that runs past it (or fails a bounds check), no other; and none at all
+        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget").
         bool ran = stopped() == Method::none;
         endsCalled_ = 0;
         const auto end = [&](auto* fn, void* self) {
@@ -519,7 +523,7 @@ namespace playground
             s_->program->setLoopBudget(kInitBudget);
             ++endsCalled_;
             fn(self);
-            ran = !s_->program->loopBudgetExceeded();
+            ran = !s_->program->loopBudgetExceeded() && !s_->program->boundsViolation();   // a failed check ends them
         };
         for (std::size_t i = 0; i < instances_.size(); ++i)
         {
@@ -550,7 +554,8 @@ namespace playground
         return compile(singleFile(std::string(source), std::string(fileName)), sampleRate);
     }
 
-    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins, bool loopBudget)
+    Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins, bool loopBudget,
+                                 bool boundsCheck)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
@@ -706,7 +711,7 @@ namespace playground
             patch->circuitCalls_.push_back(std::move(call));
         }
         patch->circuitArgs_.assign(mostArgs, 0.0f);
-        fminus::Program::Options build = playOptions(file, names, streams, loopBudget);
+        fminus::Program::Options build = playOptions(file, names, streams, loopBudget, boundsCheck);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
 
@@ -733,6 +738,7 @@ namespace playground
         }
         fminus::Program& program = *patch->s_->program;
         Compiled& s = *patch->s_;
+        s.boundsCheck = boundsCheck;
         s.module = program.module(kModule);
         const auto look = [&](const char* method, auto*& fn) {
             if (!has(method))
@@ -807,6 +813,7 @@ namespace playground
             rc.bindings = bindings;
             rc.circuitShims = static_cast<int>(bound.size());
             rc.loopBudget = loopBudget;
+            rc.boundsCheck = boundsCheck;
         }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
@@ -1031,9 +1038,11 @@ namespace playground
         patch->reset(sampleRate);
         if (const Method stop = patch->stopped(); stop != Method::none)
         {
-            // An init (or Shared's) that ran past its budget: the program does not play (Patch.h, "The loop budget").
-            r.errors = stopMessage(files, stop, patch->rate_);
+            // An init (or Shared's) that ran past its budget, or failed a bounds check: the program does not play
+            // (Patch.h, "The loop budget", "Bounds checks").
+            r.errors = stopMessage(files, stop, patch->rate_, &patch->bounds_);
             r.stopped = stop;
+            r.bounds = patch->bounds_;
             r.notes = circuits.warnings() + circuits.notes() + warnings + r.notes;
             r.compileMs = msSince(t0);
             return r;
@@ -1075,19 +1084,21 @@ namespace playground
         rate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
         perSample_ = budgetOf(1, rate_) / kBudgetFloor;
         endInstances();
+        // FMinus's record of a failed bounds check emptied first: while it holds one, every call returns partway,
+        // init's too (Patch.h, "Bounds checks").
+        s_->program->clearBoundsViolation();
+        bounds_ = Bounds{};
         stop_.store(static_cast<uint8_t>(Method::none), std::memory_order_relaxed);
         initsCalled_ = 0;
-        // Each init within kInitBudget (Patch.h, "The loop budget"): one that runs past it stops the Patch there.
+        // Each init within kInitBudget (Patch.h, "The loop budget"): one that runs past it, or fails a bounds check,
+        // stops the Patch there.
         const auto init = [&](Compiled::Init* fn, void* self, Method call) {
             if (fn == nullptr)
                 return true;
             s_->program->setLoopBudget(kInitBudget);
             ++initsCalled_;
             fn(self, rate_);
-            if (!s_->program->loopBudgetExceeded())
-                return true;
-            stop_.store(static_cast<uint8_t>(call), std::memory_order_relaxed);
-            return false;
+            return within(*s_, call);
         };
         // Shared first: the instances' init may read what its init made.
         if (shared_ != nullptr)
@@ -1139,10 +1150,67 @@ namespace playground
 
     bool Patch::within(const Compiled& c, Method call) noexcept
     {
-        if (!c.program->loopBudgetExceeded())
+        if (!outOfBounds(c) && !c.program->loopBudgetExceeded())
             return true;
-        stop_.store(static_cast<uint8_t>(call), std::memory_order_relaxed);
+        stop_.store(static_cast<uint8_t>(call), std::memory_order_release);   // after bounds_
         return false;
+    }
+
+    // ---- the bounds checks --------------------------------------------------------------------------------------------
+    namespace
+    {
+        template <std::size_t N>
+        void copyText(char (&to)[N], std::string_view from) noexcept
+        {
+            const std::size_t n = std::min(from.size(), N - 1);
+            std::memcpy(to, from.data(), n);
+            to[n] = '\0';
+        }
+    }
+
+    bool Patch::outOfBounds(const Compiled& c) noexcept
+    {
+        if (!c.boundsCheck)
+            return false;
+        const std::optional<fminus::Program::BoundsViolation> v = c.program->boundsViolation();   // no allocation
+        if (!v)
+            return false;
+        Bounds b;
+        b.failed = true;
+        copyText(b.file, v->file);
+        copyText(b.array, v->array);
+        copyText(b.type, v->type);
+        b.line = v->line;
+        b.column = v->column;
+        b.width = v->width;
+        b.extent = v->extent;
+        b.index = v->index;
+        bounds_ = b;
+        return true;
+    }
+
+    std::string Patch::Bounds::where() const
+    {
+        return std::string(file) + ":" + std::to_string(line) + ":" + std::to_string(column);
+    }
+
+    std::string Patch::Bounds::what() const
+    {
+        // FMinus's own words (BoundsViolation::message), without the place it starts with.
+        fminus::Program::BoundsViolation v;
+        v.file = file;
+        v.line = line;
+        v.column = column;
+        v.array = array;
+        v.type = type;
+        v.extent = extent;
+        v.index = index;
+        v.width = width;
+        std::string words = v.message();
+        const std::string at = where() + ": ";
+        if (words.compare(0, at.size(), at) == 0)
+            words.erase(0, at.size());
+        return words;
     }
 
     std::string Patch::callName(Method call)
@@ -1162,8 +1230,27 @@ namespace playground
         return "a call";
     }
 
-    std::string Patch::stopMessage(const Sources& files, Method call, float rate)
+    std::string Patch::stopWhy(Method call, const Bounds* bounds)
     {
+        if (bounds != nullptr && bounds->failed)
+            return callName(call) + " went outside an array (" + bounds->where() + ": " + bounds->what() + ")";
+        return callName(call) + " ran past its budget (a loop that never ends?)";
+    }
+
+    std::string Patch::stopMessage(const Sources& files, Method call, float rate, const Bounds* bounds)
+    {
+        if (bounds != nullptr && bounds->failed)
+        {
+            // At the access, as FMinus places it (an #include's file by its name): what failed, then what the checks
+            // are.
+            const bool offline = call == Method::init || call == Method::end || call == Method::sharedInit
+                              || call == Method::sharedEnd;
+            const std::string at = bounds->where();
+            return at + ": error: " + callName(call) + " went outside an array: " + bounds->what() + "\n" + at
+                 + ": note: the plugin checks each index into an array the program declares while it plays the program as "
+                   "written (not the frozen copy that plays once the dials hold still), stopped the call before the access, "
+                 + (offline ? "and the program does not play\n" : "and plays the program no more\n");
+        }
         // The method's line, where the program defines it (Lang's index): the call the plugin made, which a loop in a
         // function it calls stops too.
         const bool shared = call == Method::sharedInit || call == Method::sharedEnd;
@@ -1401,7 +1488,7 @@ namespace playground
             why = "no program";
             return false;
         }
-        fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams, r.loopBudget);
+        fminus::Program::Options o = playOptions(r.files.front().name, r.names, r.streams, r.loopBudget, r.boundsCheck);
         circuits::Generator circuits(r.files, r.circuits);
         o.include = includeOf(r.files, circuits);
         o.keepIr = fminus::Program::KeepIr::Both;
