@@ -547,7 +547,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   after another) starts bgfx once (here the first 40 to 190 ms, by the load, the next about 25), and a host keeps no
   GPU context for a plugin nobody looks at. Never draw one off the message thread. `gui.shaders` PICTURE (against
   SoftRaster's image of the same frame) and `plugin.chat` VIEW check both paths (the fallback through
-  `picture::forceSoftRasterForTests`).
+  `picture::forceSoftRasterForTests`). A state of Claude's choosing (`PictureState`, EditorPort.h; `values`, `at`):
+  `ChatAgent::panelState` reads it on the worker, `at`'s render too (the program that plays, `chatRunning`, in a
+  Session of its own with view_sound's settings, offline: `MomentHooks` cuts the call at its moment and keeps the
+  Session Engine's meters 60 times a second of the render, at most 150, then its scopes and `Engine::dials`), and
+  picturePanel draws it: the dials it sets through ports of the picture's own (`ShownPort`: the user's dials never
+  move), and `Panel::showState`, the frames in place of the Engine's meters (held at the first until `playShown`,
+  then one a tick, the last kept and its readouts made again), the scopes' samples, a field's taps and the levels
+  over them.
+  Values name dials (plain, or an option's name), fields (every display, live= mark and shader input of that source
+  or name) and in and out (dBFS); the text then gives what was drawn, what names nothing, and what each display shown
+  reads. `gui.panel` STATE and `plugin.chat` PANELSTATE check it.
 - **A scenario and trial edits** (`plugin/ChatScenario.h`; `measure::Request`'s scenario, `Timeline`, `RenderHooks`):
   measure_output, view_sound, each check (it keeps its scenario), tune_dials and compare take one `scenario` property
   (its schema one line, its details in the prompt's CHECKING YOUR WORK): a phrase, dial moves, wheels, host edits, the
@@ -721,7 +731,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
     blank panel writes as unit=: as in the plugin, a dial shows a unit from the .gui alone); with no program, the
     fields the displays name are mocked as floats; shaders built with the installed plugin's shaderc (or
     `<prefix>SHADERC`), else a placeholder and a note (and render says so). render's theme is the user's (the
-    product's preferences, read again each time) unless asked.
+    product's preferences, read again each time) unless asked. render's `values` name dials and, as view_panel's do,
+    fields and in and out (`View::setShown`: over the demo meters); the two tools' `values` share their words
+    (`mcp::kPanelValues`), so the server's list gives them once.
   - **The process.** Sandboxes by number: Claude Desktop's conversations share the server, so each open makes one
     (Sandbox #n, in every answer; numbered on from a random start, so a number from before the server started again
     names none) and a call naming its number (`sandbox`) acts on that one, whatever another conversation opened since;
