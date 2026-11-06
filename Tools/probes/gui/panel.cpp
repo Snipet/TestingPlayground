@@ -65,6 +65,11 @@
 //             FFT a source for each new block, none on a frame with no block, both displays the same points; once the
 //             ring holds only silence, no FFT while blocks still come, and the displays still fall 30 dB a second; an
 //             FFT's cost against the old one's, printed
+//   HIDDEN    the meters' reader (Panel.h): a panel the host ticks reads them (the output's level shows); four idle
+//             calls 0.1 s apart with no tick keep it, twelve let it go (the meters' readers one fewer, and the audio
+//             thread measures nothing: the levels read 0 while the sound plays); its next tick takes it again (the
+//             level back at the next block); a calm panel ticked 12 times a second with idle calls 10 a second between
+//             never lets go; a second panel reads too, lets go hidden, and closed then removes nothing more
 #include "Cadence.h"
 #include "Probe.h"
 
@@ -1395,6 +1400,66 @@ PROBE(gui, panel)
                     feed.outSpectrum.computed() - silentBefore, static_cast<double>(top), static_cast<double>(fallen));
         P.eq("spectrum.silence_no_fft", feed.outSpectrum.computed() - silentBefore, 0);
         P.near("spectrum.falls_db_in_half_a_second", static_cast<double>(top - fallen), 15.0, 0.05);
+
+        // ---- HIDDEN ----------------------------------------------------------------------------------------------------
+        // The sound back up; then the host stops ticking the panel (a minimised window) while its idle calls go on.
+        processor.getParameters()[0]->setValueNotifyingHost(1.0f);
+        for (int f = 0; f < 8; ++f)
+        {
+            block();
+            host.tick(1);
+        }
+        pg::Meters m;
+        port.meters(m);
+        const int readers = port.meterReaders();
+        P.eq("hidden.reads_while_ticked", panel.readingMeters() && readers >= 1 ? 1 : 0, 1);
+        P.ge("hidden.levels_while_ticked", static_cast<double>(m.outPeak[0]), 0.01);
+        double t = host.nowSeconds();
+        for (int k = 0; k < 4; ++k)
+            panel.idle(t += 0.1);
+        P.eq("hidden.not_at_once", port.meterReaders(), readers);
+        for (int k = 0; k < 8; ++k)
+            panel.idle(t += 0.1);
+        P.eq("hidden.lets_go", port.meterReaders(), readers - 1);
+        P.eq("hidden.panel_says", panel.readingMeters() ? 0 : 1, 1);
+        for (int f = 0; f < 4; ++f)
+            block();
+        port.meters(m);
+        P.eq("hidden.nothing_measured", m.outPeak[0] == 0.0f && m.outRms[1] == 0.0f ? 1 : 0, 1);
+        host.tick(1);                                    // shown again
+        P.eq("hidden.back_at_its_tick", port.meterReaders() == readers && panel.readingMeters() ? 1 : 0, 1);
+        block();
+        port.meters(m);
+        P.ge("hidden.measured_again", static_cast<double>(m.outPeak[0]), 0.01);
+        // A calm panel ticked about 12 times a second, its idle calls 10 a second between, never lets go (3 s).
+        {
+            bool kept = true;
+            double nextIdle = host.nowSeconds() + 0.05;
+            for (int k = 0; k < 36; ++k)
+            {
+                host.tick(1, 1.0f / 12.0f);              // a tick, then the clock 1/12 s on (and HeadlessHost's idle call)
+                for (; nextIdle < host.nowSeconds(); nextIdle += 0.1)
+                {
+                    panel.idle(nextIdle);
+                    kept = kept && panel.readingMeters();
+                }
+            }
+            P.eq("hidden.calm_keeps_it", kept && port.meterReaders() == readers ? 1 : 0, 1);
+        }
+        // A second panel, hidden and then closed: its reader goes once, never another's.
+        {
+            {
+                pg::ui::Panel other(processor.ports(), port);
+                funkgui::HeadlessHost otherHost(other, 0, 2.0f);
+                otherHost.tick(1);
+                P.eq("hidden.second_reads", port.meterReaders(), readers + 1);
+                double u = otherHost.nowSeconds();
+                for (int k = 0; k < 12; ++k)
+                    other.idle(u += 0.1);
+                P.eq("hidden.second_lets_go", port.meterReaders(), readers);
+            }
+            P.eq("hidden.second_closed", port.meterReaders(), readers);
+        }
     }
     return P.finish();
 }

@@ -37,7 +37,8 @@
 //                     while the audio thread publishes (keep the last)
 //   scope()           the last n samples of the input or the output (Engine::scope)
 //   addMeterReader()  meters() and scope() are measured only while someone reads them (Engine::readers): a Panel adds
-//   removeMeterReader() itself in its constructor and removes itself in its destructor; meterReaders() how many now
+//   removeMeterReader() itself while it is shown (from its making, let go while its window is hidden or minimised,
+//                     Panel.h) and removes itself when it goes; meterReaders() how many now
 //   addProbeOwner()   the schematic's live probes (Engine.h, "Probes"): a Panel that arms one becomes an owner (a
 //   setProbes()       headless picture's Panel never does), sets its ProbeSet (program 0: nothing) and removes itself
 //   removeProbeOwner() when it goes; the newest owner whose set is armed reaches the Engine, so a second Panel that

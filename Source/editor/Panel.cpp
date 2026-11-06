@@ -200,6 +200,10 @@ namespace playground::ui
         constexpr float kChatRailW = 44.0f;              // the chat folded: its rail's width
         constexpr float kChatRailGap = 12.0f;            // and the gap before it
         constexpr double kRedrawEvery = 1.0;             // s: needsDraw()'s safety net (Panel.h "Unchanged frames")
+        // A panel the host no longer ticks (a minimised or hidden window) lets the meters' reader go after this many of
+        // its idle calls (10 a second) and this long with no tick (Panel.h "The meters' reader").
+        constexpr int kHiddenIdles = 5;
+        constexpr double kHiddenAfter = 1.0;             // s
         constexpr float kExplorerShare = 0.16f;          // the explorer, open: of the width
         constexpr float kExplorerMinW = 180.0f;
         constexpr float kExplorerMaxW = 250.0f;
@@ -2728,7 +2732,8 @@ namespace playground::ui
     // order.
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture) : port_(port), ownsProbes_(!picture)
     {
-        port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
+        port_.addMeterReader();                      // the displays read the meters and the scopes while it is shown
+        reading_ = true;
         feed_ = std::make_unique<DisplayFeed>();         // their samples and spectra, sized once
         seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
         title_ = upper(product::kName);
@@ -3403,7 +3408,8 @@ namespace playground::ui
         releasePictures();
         if (probeOwner_ != 0)
             port_.removeProbeOwner(probeOwner_);         // its probes go with it (another Panel's set takes over)
-        port_.removeMeterReader();
+        if (reading_)
+            port_.removeMeterReader();
         if (irViewing_)
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
     }
@@ -5474,6 +5480,14 @@ namespace playground::ui
     // ---- frame --------------------------------------------------------------------------------------------------------
     void Panel::tick(float dt)
     {
+        // Shown (the host ticks it): a reader of the meters, again if it had let them go while hidden.
+        tickedAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;
+        idlesSinceTick_ = 0;
+        if (!reading_)
+        {
+            port_.addMeterReader();
+            reading_ = true;
+        }
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
         if (!panelView_ && files().schematicShown() != layoutSchematic_)
             layout();                                    // a netlist's view came or went: its room
@@ -5610,6 +5624,16 @@ namespace playground::ui
         if (gestures_)
             gestures_->poll(nowSec);                     // closes a wheel gesture after its burst
         refresh(nowSec);                                 // a compile finishing while nothing moves
+        // The host ticks a panel only while its window shows (EditorHost skips a minimised or hidden one) and calls
+        // idle() whatever: idle calls with no tick between them, for long enough, mean no one sees the displays, so the
+        // audio thread need not measure for them (Panel.h "The meters' reader").
+        if (tickedAt_ < 0.0)
+            tickedAt_ = nowSec;                          // never ticked: counted from the first idle call
+        if (reading_ && ++idlesSinceTick_ >= kHiddenIdles && nowSec - tickedAt_ >= kHiddenAfter)
+        {
+            port_.removeMeterReader();
+            reading_ = false;
+        }
     }
 
     bool Panel::wantsFullRate() const

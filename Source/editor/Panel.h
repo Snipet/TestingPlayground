@@ -88,6 +88,14 @@
 // RATE what moves with no input (a knob's, a pad's, an envelope's), gui.shaders DRAW a shader's inputs, gui.panel
 // SETTLE displays that stand still and readouts that change.
 //
+// The meters' reader: the audio thread measures the levels and fills the scopes' rings only while someone reads them
+// (Engine::readers). A Panel is a reader from its making, and while the host ticks it. EditorHost ticks a Panel only
+// while its window shows (a minimised or hidden window is skipped) and calls idle() ten times a second whatever, so a
+// Panel that sees kHiddenIdles idle calls and kHiddenAfter seconds with no tick lets the reader go (its displays then
+// show nothing anyone sees), and takes it again at its next tick: the levels start again from that block and the
+// scopes from silence, as for any reader that comes (Engine.h). HeadlessHost ticks before each idle call, so a probe's
+// Panel stays a reader unless the probe calls idle() alone. gui.panel HIDDEN checks.
+//
 // Message thread only. The ports and the EditorPort belong to the processor and outlive the Panel.
 #pragma once
 
@@ -219,6 +227,8 @@ namespace playground::ui
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
         const DisplayFeed& displayFeed() const noexcept { return *feed_; } // the displays' samples and spectra
+        // A reader of the meters now (EditorPort::addMeterReader; "The meters' reader" above).
+        bool readingMeters() const noexcept { return reading_; }
         // A shown item unsettled at the last tick: the motion part of needsDraw() and wantsFullRate(), without the
         // Panel's own changes (dirty_: a refresh's, the top bar's CPU figure among them, which moves with real time).
         bool moving() const noexcept { return moving_; }
@@ -634,6 +644,11 @@ namespace playground::ui
         uint64_t watched_ = 0, drawnKey_ = 0;
         double drawnAt_ = -1.0e9;
         uint64_t watchKey() const;
+        // The meters' reader (above): held, the last tick's time (the host's clock; -1 before any tick or idle call),
+        // and the idle calls since.
+        bool reading_ = false;
+        double tickedAt_ = -1.0;
+        int idlesSinceTick_ = 0;
         int  pressed_ = -1;                              // the item holding the pointer between down and up
         int  focus_ = -1;
         int  touched_ = -1;                              // the last item used, for the spec line
