@@ -50,8 +50,8 @@ namespace playground::scenario
 {
     // A render's settings from a tool's input (measure_output's, view_sound's, a check's, tune_dials', trace's): the
     // notes, the velocity, the times, the host's tempo, the wheels at the start, the dials asked for, the window
-    // (readWindow) and the scenario (read(): why, when it cannot be), over `request` (trace's source "capture" starts
-    // from the recording).
+    // (readWindow: trace refuses one before it reads them) and the scenario (read(): why, when it cannot be), over
+    // `request` (trace's source "capture" starts from the recording).
     measure::Request renderOf(const juce::var& input, std::string* why = nullptr, measure::Request request = {});
     // The property's schema: one line, details in the guide.
     juce::var schema();
@@ -73,8 +73,9 @@ namespace playground::scenario
 
     // ---- window ------------------------------------------------------------------------------------------------------
     // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <=
-    // kMaxWindowSeconds), which renderOf reads too: absent, nothing; false with why for one it cannot take. measure_output,
-    // view_sound, each check (which keeps it) and tune_dials measure it in place of the held part (Measure.h).
+    // kMaxWindowSeconds, at least kMinWindowSeconds long), which renderOf reads too: absent, nothing; false with why for
+    // one it cannot take. measure_output, view_sound, each check (which keeps it) and tune_dials measure it in place of
+    // the held part (Measure.h); trace and compare take none (they refuse one).
     bool readWindow(const juce::var& input, measure::Window& window, std::string& why);
     // Back as the input has it (void: none), for the session.
     juce::var windowVar(const measure::Window& window);

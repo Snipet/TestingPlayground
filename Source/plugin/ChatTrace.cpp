@@ -97,6 +97,10 @@ namespace playground
             return block;
         };
         setActivity("Tracing the program");
+        // Its render is the whole sound (renderOf would read a window and render on to its end).
+        if (input.hasProperty("window"))
+            return done("trace takes no window: it watches the whole render (measure_output, view_sound, a check and "
+                        "tune_dials measure one).", true);
 
         measure::TraceRequest q;
         if (const juce::var find = input.getProperty("find", juce::var()); !find.isVoid())

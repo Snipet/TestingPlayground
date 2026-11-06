@@ -104,7 +104,8 @@
 //            the defaults (the first line saying so; own lays a {dials} side over the user's), and refuses a word it
 //            does not take; view_sound's picture through MCP at least 800 px wide
 //   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
-//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object); a check with
+//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object, under 0.01 s)
+//            and the least taken; trace and compare refusing one; a check with
 //            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
 //            failing one says so; tune_dials takes one
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
@@ -2223,13 +2224,25 @@ PROBE(plugin, chat)
                 int refused = 0;
                 const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
                                           input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
-                                          input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all") };
+                                          input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all"),
+                                          input({ { "from", 0.5 }, { "to", 0.505 } }) };
                 for (const juce::var& b : unfit)
                 {
                     const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
-                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20") ? 1 : 0;
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20, at "
+                                                            "least 0.01 s long") ? 1 : 0;
                 }
                 P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // The least window, 0.03 - 0.02 rounding under 0.01, is taken.
+                P.eq("window.least_taken", !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.02 }, { "to", 0.03 } }))).isError
+                                               ? 1 : 0, 1);
+                // trace and compare take none: they say so (trace's render would go on to the window's end).
+                const pg::ChatAgent::McpResult windowTrace = sa.mcpCall("trace", input({ { "window", window } }));
+                const pg::ChatAgent::McpResult windowCompare =
+                    sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" }, { "window", window } }));
+                P.eq("window.trace_compare_refuse", windowTrace.isError && has(allText(windowTrace), "trace takes no window")
+                                                        && windowCompare.isError && has(allText(windowCompare), "compare takes no window")
+                                                        ? 1 : 0, 1);
                 // A check keeps its window: its line and the card name it, the session saves it and loads it back.
                 juce::var check = withWindow(window);
                 check.getDynamicObject()->setProperty("label", "Level over the window");

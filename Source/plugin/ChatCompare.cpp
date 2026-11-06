@@ -262,6 +262,9 @@ namespace playground
             return done(why, true);
         if (a.capture && b.capture)
             return done("a and b are both the recording: compare it with a program (editor, playing, version:N, ...).", true);
+        if (input.hasProperty("window"))
+            return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
+                        "tune_dials measure one).", true);
         measure::Request req;
         if (!scenario::read(input, req, &why))
             return done(why, true);

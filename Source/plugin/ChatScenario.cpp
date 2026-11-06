@@ -228,9 +228,11 @@ namespace playground::scenario
             return kv.name.toString() == "from" || kv.name.toString() == "to";
         });
         const double a = isNumber(from) ? static_cast<double>(from) : -1.0, b = isNumber(to) ? static_cast<double>(to) : -1.0;
-        if (!only || !(a >= 0.0) || !(b > a) || !(b <= measure::kMaxWindowSeconds))
+        // At least kMinWindowSeconds long, a rounding's worth under it allowed (0.03 - 0.02 is 0.00999...).
+        if (!only || !(a >= 0.0) || !(b - a >= measure::kMinWindowSeconds - 1e-9) || !(b <= measure::kMaxWindowSeconds))
         {
-            why = "window: {from, to}, seconds of the render, 0 <= from < to <= " + number(measure::kMaxWindowSeconds);
+            why = "window: {from, to}, seconds of the render, 0 <= from < to <= " + number(measure::kMaxWindowSeconds)
+                + ", at least " + number(measure::kMinWindowSeconds) + " s long";
             return false;
         }
         window = { a, b };
