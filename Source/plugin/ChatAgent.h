@@ -156,8 +156,9 @@ namespace playground
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
         // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most): the panel (`name`
-        // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file).
-        virtual PanelPicture chatPicture(PictureView view, const std::string& name) = 0;
+        // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file);
+        // the panel or the editor with `state` drawn in place of what plays (picturePanel: view_panel's values and at).
+        virtual PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) = 0;
         // For the live tools (listen, get_status: any thread, beside a running call; Live.h): what plays now; a tool
         // that listens (the meters and the scopes are measured only while one does, on: true while it listens); what
         // changed since a token (Journal.h; `issue`: the token returned is handed out); the dials' options' names.
@@ -292,6 +293,9 @@ namespace playground
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
+        // view_panel's values and at: the state its picture draws (at's render of the program that plays, offline, to
+        // its moment); "" or why it cannot be.
+        std::string panelState(const juce::var& input, PictureState& state);
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text or
         // match a pattern (regex), in one file or in every file, numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several

@@ -5236,6 +5236,15 @@ namespace playground::ui
     // ---- a .gui file's interface ----------------------------------------------------------------------------------------
     const GuiLayout& Panel::guiLayout() const noexcept { return guiView_->places(); }
 
+    void Panel::showState(ShownState state)
+    {
+        shown_ = std::move(state);
+        showing_ = true;
+        shownPlaying_ = false;
+        shownAt_ = 0;
+        dirty_ = true;
+    }
+
     void Panel::setPanelView(bool on)
     {
         if (on == panelView_)
@@ -5371,15 +5380,55 @@ namespace playground::ui
         // The displays: what the Engine published since the last frame, and the scopes' samples.
         {
             Meters m;
-            if (port_.meters(m))
+            const bool frames = showing_ && !shown_.frames.empty();
+            if (frames)
+            {
+                // A picture's state (showState): its frame, as of this panel's program; the last one's readouts made
+                // again from it.
+                if (shownPlaying_ && shownAt_ + 1 < shown_.frames.size())
+                {
+                    ++shownAt_;
+                    if (shownAt_ + 1 == shown_.frames.size())
+                        for (const int i : itemOfDisplay_)
+                            if (i >= 0)
+                                static_cast<DisplayItem&>(*items_[static_cast<std::size_t>(i)]).readoutNow();
+                }
+                meters_ = shown_.frames[shownAt_];
+                meters_.program = panelProgram_;
+            }
+            else if (port_.meters(m))
                 meters_ = m;
             // The fields are this panel's program's once the audio thread plays it; until then they are another's,
             // and read as 0.
             Meters shown = meters_;
             if (shown.program != panelProgram_)
                 std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
-            updateDisplays(items_, itemOfDisplay_, shown,
-                           [this](bool input, float* out, int n) { port_.scope(input, out, n); }, scopeIn_, scopeOut_, dt);
+            if (showing_)
+            {
+                for (const auto& [tap, v] : shown_.taps)
+                    if (tap >= 0 && tap < kMaxDisplays)
+                        shown.taps[tap] = v;
+                for (int c = 0; c < 2; ++c)
+                {
+                    if (shown_.inLevel >= 0.0f)
+                        shown.inPeak[c] = shown.inRms[c] = shown_.inLevel;
+                    if (shown_.outLevel >= 0.0f)
+                        shown.outPeak[c] = shown.outRms[c] = shown_.outLevel;
+                }
+            }
+            const auto scope = [this, frames](bool input, float* out, int n) {
+                if (!frames)
+                {
+                    port_.scope(input, out, n);
+                    return;
+                }
+                // The state's samples, the newest last (silence before them).
+                const std::vector<float>& s = input ? shown_.scopeIn : shown_.scopeOut;
+                const int have = std::min(n, static_cast<int>(s.size()));
+                std::fill(out, out + (n - have), 0.0f);
+                std::copy(s.end() - have, s.end(), out + (n - have));
+            };
+            updateDisplays(items_, itemOfDisplay_, shown, scope, scopeIn_, scopeOut_, dt);
             // The controls' live= marks (none until the audio thread plays this program) and the shaders' inputs.
             guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_);
         }

@@ -775,13 +775,14 @@ namespace playground
         return projectName_;
     }
 
-    PanelPicture Processor::chatPicture(PictureView view, const std::string& name)
+    PanelPicture Processor::chatPicture(PictureView view, const std::string& name, const PictureState& state)
     {
         std::unique_lock<std::mutex> lock(pictureMutex_);
         pictureAsked_ = true;
         pictureReady_ = false;
         pictureView_ = view;
         picturePage_ = name;
+        pictureState_ = state;
         if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
         {
             pictureAsked_ = false;
@@ -802,11 +803,13 @@ namespace playground
                 pictureAsked_ = false;
                 const PictureView view = pictureView_;
                 const std::string page = picturePage_;
+                const PictureState state = std::move(pictureState_);
+                pictureState_ = {};
                 lock.unlock();
                 PanelPicture p = view == PictureView::schematic
                                      ? pictureSchematic(editorPort(), page)
                                      : picturePanel(ports(), editorPort(), editorW_.load(), editorH_.load(),
-                                                    view == PictureView::window, page);
+                                                    view == PictureView::window, page, state);
                 lock.lock();
                 picture_ = std::move(p);
                 pictureReady_ = true;

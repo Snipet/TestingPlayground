@@ -56,6 +56,13 @@
 //            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
 //            shader shows as a striped placeholder and why; the saved session keeps no picture
+//   PANELSTATE view_panel's values and at, over MCP on a processor of its own playing a program whose fields tell
+//            the time: values draws a Shared field, a dial and the output's level as asked (the text says so, and what
+//            the displays read), names the one that is no dial or field with the panel's fields, refuses a dial's word
+//            it has not, and moves nothing that plays; at renders the program offline to 0.5 s, a scenario's move of
+//            the gain on the way, and draws its fields (the seconds 0.500 in the instance and in Shared, the gain 0.80);
+//            values over at; a moment past the render's end; at without seconds, past 20 s and values not an object
+//            refused with no picture (plugin.chat.view_panel.at.png)
 //   CIRCUIT  edit_circuit through the agent, on the Tube Screamer's netlist (screamer.cir, as pedal.cir) shown in an
 //            editor's Schematic view: each command (add with and without at, place, connect, disconnect, set, rename, delete,
 //            layout) gives apply's exact text, merged into the tab as one undo step, and the parts it changed flash; a
@@ -255,6 +262,42 @@ namespace
                    "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                    "        for (int i = 0; i < n; ++i)\n        {\n"
                    "            left[i] *= level[i];\n            right[i] *= level[i];\n        }\n    }\n};\n";
+    }
+
+    // A program whose fields tell the time (view_panel's at): Shared's clock and the main module's t, the seconds its
+    // instance has played (an instrument's from its note), and g, its gain dial as the last call saw it; a panel of
+    // readouts of them, a scope of t, and a meter of the output.
+    pg::Sources clockProgram()
+    {
+        const std::string shared = "module Shared\n{\n    float clock;\n};\n\n";
+        const std::string fields = "    Shared* shared;\n"
+                                   "    param float gain [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    float inv, t, g, ph, step;\n"
+                                   "    void init(float rate) { inv = 1.0f / rate; step = 220.0f * inv; }\n";
+        const std::string tell = "        t += n * inv;\n        shared->clock = t;\n        g = gain[n - 1];\n";
+        const std::string main =
+            pg::product::kIsInstrument
+                ? "module Voice\n{\n" + fields + "    void start(float note, float v) { t = 0; }\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                  "            const float out = 0.25f * gain[i] * sinf(6.28318531f * ph);\n"
+                  "            ph += step;\n            if (ph >= 1) ph -= 1;\n"
+                  "            left[i] += out;\n            right[i] += out;\n        }\n" + tell + "        return true;\n    }\n};\n"
+                : "module Effect\n{\n" + fields +
+                  "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                  "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n" + tell + "    }\n};\n";
+        const std::string gui = "row gap=10 {\n"
+                                "    section \"STATE\" {\n"
+                                "        knob gain\n"
+                                "        number t label=\"T\" decimals=3\n"
+                                "        number shared->clock label=\"CLOCK\" decimals=3\n"
+                                "        number g label=\"G\" decimals=2\n"
+                                "        scope t label=\"TRACE\" min=0 max=4\n"
+                                "        meter out label=\"OUT\"\n"
+                                "    }\n"
+                                "}\n";
+        return { { pg::kProgramName, shared + main }, { "panel.gui", gui } };
     }
 
     // A program that sounds, with a dial to fix: an instrument's sine with its level (dB) and a release (s, 60 dB); an
@@ -1200,6 +1243,100 @@ PROBE(plugin, chat)
         const std::string saved = agent.saveState();
         P.eq("view.session_no_picture", has(saved, "iVBORw0KGgo") ? 0 : 1, 1);
         P.eq("view.session_line", has(saved, "A picture of the panel or the sound: not kept in the session") && has(saved, "pictures_cut") ? 1 : 0, 1);
+    }
+
+    // ---- PANELSTATE: view_panel's values and at, on a processor of its own --------------------------------------------
+    {
+        pg::Processor sp;                                     // its program and its dials stay out of the rest
+        pg::ChatAgent& sa = sp.chatAgent();
+        {
+            pg::Draft d;
+            d.files = clockProgram();
+            sp.editorPort().setDraft(d);
+            sp.editorPort().run(d.files);
+            sp.settle();
+            const pg::CompileStatus st = sp.editorPort().status();
+            P.eq("panelstate.program_plays", st.ok && sp.editorPort().running() == d.files ? 1 : 0, 1);
+            if (!st.ok)
+                std::printf("%s\n", st.errors.c_str());
+        }
+        // A call of Claude Desktop's (the picture is drawn at the next poll, here): its text, and its PNG's bytes.
+        const auto look = [&](const juce::var& in, std::string& png, bool& error) {
+            pg::ChatAgent::McpResult r;
+            std::atomic<bool> done{ false };
+            std::thread desktop([&] {
+                r = sa.mcpCall("view_panel", in);
+                done.store(true);
+            });
+            for (int k = 0; k < 6000 && !done.load(); ++k)
+            {
+                sp.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            desktop.join();
+            png.clear();
+            for (const juce::var& b : arr(r.content))
+                if (str(b, "type") == "image")
+                    png = str(b, "data");
+            error = r.isError;
+            return toolText(r);
+        };
+        std::string png, plain;
+        bool error = false;
+        const std::string none = look(input({}), plain, error);
+        std::printf("view_panel, as it plays: %s\n", none.c_str());
+        P.eq("panelstate.plain_says_nothing_more", !error && has(none, "the displays show the sound playing now.")
+                                                       && !has(none, "The displays shown read") ? 1 : 0, 1);
+        // values: a field (Shared's), a dial, the output's level and a name that is none; nothing that plays moves.
+        const float gainBefore = sp.getParameters()[0]->getValue();
+        const std::string valued = look(input({ { "values", input({ { "shared->clock", 12 }, { "gain", 0.9 }, { "out", -6 },
+                                                                     { "zzz", 1 } }) } }),
+                                        png, error);
+        std::printf("view_panel, values: %s\n", valued.c_str());
+        P.eq("panelstate.values_png", !error && png.rfind("iVBORw0KGgo", 0) == 0 && png != plain ? 1 : 0, 1);
+        P.eq("panelstate.values_drawn", has(valued, "but shared->clock 12, gain 0.90, out -6 dBFS (as asked).") ? 1 : 0, 1);
+        P.eq("panelstate.values_read", has(valued, "CLOCK 12.000") && has(valued, "OUT -6.0") ? 1 : 0, 1);
+        P.eq("panelstate.values_unknown", has(valued, "No dial or field of the panel is named zzz (its fields: t, shared->clock, g).") ? 1 : 0, 1);
+        P.eq("panelstate.values_nothing_moved", sp.getParameters()[0]->getValue() == gainBefore ? 1 : 0, 1);
+        // A dial by an option it has not: refused in words, the picture drawn all the same.
+        const std::string worded = look(input({ { "values", input({ { "gain", "loud" } }) } }), png, error);
+        P.eq("panelstate.values_dial_takes_a_number", !error && has(worded, "Not drawn: gain takes a number.") && !has(worded, "No dial") ? 1 : 0, 1);
+
+        // at: the program that plays rendered offline to its moment, a dial moving on the way (the scenario); values
+        // over it.
+        juce::var moves = juce::Array<juce::var>{ input({ { "dial", "gain" }, { "at", 0.1 }, { "to", 0.8 } }) };
+        juce::var at = input({ { "seconds", 0.5 }, { "scenario", input({ { "automate", moves } }) } });
+        if constexpr (!pg::product::kIsInstrument)
+            at.getDynamicObject()->setProperty("input", "sine");
+        const std::string moment = look(input({ { "at", at } }), png, error);
+        std::printf("view_panel, at: %s\n", moment.c_str());
+        {
+            juce::MemoryOutputStream out;
+            if (juce::Base64::convertFromBase64(out, juce::String(png)))
+                juce::File(juce::String(probe::outPath("plugin.chat.view_panel.at.png"))).replaceWithData(out.getData(), out.getDataSize());
+        }
+        P.eq("panelstate.at_png", !error && png.rfind("iVBORw0KGgo", 0) == 0 ? 1 : 0, 1);
+        P.eq("panelstate.at_said", has(moment, "the displays and the dials show the state 0.50 s into an offline render of the "
+                                               "program that plays (")
+                                       && has(moment, "nothing that plays changed)") ? 1 : 0, 1);
+        // The fields at 0.5 s: the instance's seconds and Shared's clock (an instrument's from its note at 0), the
+        // gain the move left.
+        P.eq("panelstate.at_fields", has(moment, "T 0.500") && has(moment, "CLOCK 0.500") && has(moment, "G 0.80") ? 1 : 0, 1);
+        P.eq("panelstate.at_nothing_moved", sp.getParameters()[0]->getValue() == gainBefore ? 1 : 0, 1);
+        const std::string over = look(input({ { "at", input({ { "seconds", 1.25 } }) }, { "values", input({ { "t", 7 } }) } }), png, error);
+        std::printf("view_panel, at and values: %s\n", over.c_str());
+        P.eq("panelstate.values_over_at", has(over, "1.25 s into") && has(over, ", and t 7 (as asked).") && has(over, "T 7.000")
+                                              && has(over, "CLOCK 1.250") ? 1 : 0, 1);
+        // A moment past the render's end: it goes on, silent, to it.
+        const std::string later = look(input({ { "at", input({ { "seconds", 4 } }) } }), png, error);
+        P.eq("panelstate.at_past_the_end", !error && has(later, "4.00 s into") && has(later, "T 4.000") ? 1 : 0, 1);
+        // Refused, with no picture: no seconds, too late a moment, values not an object.
+        const std::string noSeconds = look(input({ { "at", input({ { "notes", juce::Array<juce::var>{ 60 } } }) } }), png, error);
+        P.eq("panelstate.at_needs_seconds", error && png.empty() && has(noSeconds, "at needs seconds") ? 1 : 0, 1);
+        look(input({ { "at", input({ { "seconds", 25 } }) } }), png, error);
+        P.eq("panelstate.at_at_most_20", error && png.empty() ? 1 : 0, 1);
+        const std::string notObject = look(input({ { "values", 3 } }), png, error);
+        P.eq("panelstate.values_an_object", error && has(notObject, "values is an object") ? 1 : 0, 1);
     }
 
     // ---- CIRCUIT ---------------------------------------------------------------------------------------------------------

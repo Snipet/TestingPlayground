@@ -100,6 +100,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace funkgui
@@ -317,6 +318,20 @@ namespace playground::ui
         void setOwnsProbes(bool owns) noexcept { ownsProbes_ = owns; }
         bool ownsProbes() const noexcept { return ownsProbes_; }
         int probeOwner() const noexcept { return probeOwner_; }
+        // What a picture's Panel shows in place of what the Engine publishes (view_panel's values and at, Picture.cpp):
+        // `frames` (none: the Engine's meters) at the first until playShown(), then the next one each frame, the last
+        // kept (each display's readout made again from it); the scopes' samples with them (oldest first); and over
+        // either, `taps` (a tap's value) and the audio's levels (linear: peak and RMS; < 0: as they are).
+        struct ShownState
+        {
+            std::vector<Meters> frames;
+            std::vector<float> scopeIn, scopeOut;
+            std::vector<std::pair<int, float>> taps;
+            float inLevel = -1.0f, outLevel = -1.0f;
+        };
+        void showState(ShownState state);
+        void playShown() noexcept { shownPlaying_ = true; }
+        bool shownDone() const noexcept { return shown_.frames.empty() || shownAt_ + 1 >= shown_.frames.size(); }
         // The chat's column: open, or folded into a rail at the right (the editor and the panel take the room). The
         // header's chevron folds it, the rail's button opens it; the session keeps it (EditorPort::chatOpen).
         bool chatOpen() const noexcept { return chatOpen_; }
@@ -452,6 +467,9 @@ namespace playground::ui
         std::vector<int> itemOfDisplay_;                 // display -> item index
         Meters meters_{};                                // the Engine's, as the last frame read them
         std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
+        ShownState shown_;                               // a picture's state (showState), else empty
+        bool showing_ = false, shownPlaying_ = false;
+        std::size_t shownAt_ = 0;                        // the frame shown
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
             projectsItem_ = -1;
         int themeItem_ = -1, zoomItem_ = -1;

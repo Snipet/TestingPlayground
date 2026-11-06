@@ -430,6 +430,101 @@ namespace playground
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
 
+        // An effect's input for a sound's render (view_sound's, view_panel's at): what goes in (a sweep unless said),
+        // and a sine's frequency.
+        void soundInput(const juce::var& input, measure::ViewRequest& vr)
+        {
+            if constexpr (!kInstrument)
+            {
+                const std::string in = input.getProperty("input", juce::var()).toString().toStdString();
+                vr.input = in == "noise"     ? measure::ViewInput::noise
+                         : in == "impulse"   ? measure::ViewInput::impulse
+                         : in == "sine"      ? measure::ViewInput::sine
+                         : in == "silence"   ? measure::ViewInput::silence
+                                             : measure::ViewInput::sweep;
+                const juce::var f = input.getProperty("frequency", juce::var());
+                if (isNumber(f))
+                    vr.frequency = static_cast<float>(static_cast<double>(f));
+            }
+            else
+            {
+                static_cast<void>(input);
+                static_cast<void>(vr);
+            }
+        }
+
+        // view_panel's at: a render watched up to its moment `end` (a sample), offline, in the Session's own Engine:
+        // the meters after the call at or after each of the last frames' times (60 a second, the last at `end`, at
+        // most a field scope's 2.5 s), numbered afresh; at `end`, the scopes and the dials. The Engine measures the
+        // levels and the scopes from its second call on (a reader from the first call's end).
+        class MomentHooks final : public measure::RenderHooks
+        {
+        public:
+            static constexpr std::size_t kFrames = 150;
+
+            MomentHooks(std::size_t end, double rate, const std::atomic<bool>& cancel) : end_(end), cancel_(cancel)
+            {
+                every_ = std::max(1.0, rate / 60.0);
+                count_ = std::min<std::size_t>(kFrames, 1 + static_cast<std::size_t>(static_cast<double>(end) / every_));
+            }
+
+            int callLength(std::size_t at) override
+            {
+                return at < end_ ? static_cast<int>(std::min<std::size_t>(end_ - at, 1u << 20)) : 0;
+            }
+
+            bool afterCall(const measure::CallInfo& call) override
+            {
+                if (!reading_)
+                {
+                    call.engine.addReader();
+                    reading_ = true;
+                }
+                const std::size_t done = call.at + static_cast<std::size_t>(call.length);
+                while (frames.size() < count_ && markOf(frames.size()) <= done)
+                {
+                    Meters m;
+                    if (!call.engine.meters(m) && !frames.empty())
+                        m = frames.back();
+                    m.frame = static_cast<uint32_t>(frames.size() + 1);
+                    frames.push_back(m);
+                }
+                if (done < end_)
+                    return !cancel_.load();
+                reached = true;
+                constexpr int n = PictureState::kScopeSamples;
+                scopeOut.assign(n, 0.0f);
+                call.engine.scope(false, scopeOut.data(), n);
+                if constexpr (!kInstrument)
+                {
+                    scopeIn.assign(n, 0.0f);
+                    call.engine.scope(true, scopeIn.data(), n);
+                }
+                call.engine.dials(dials);
+                call.engine.removeReader();
+                reading_ = false;
+                return false;
+            }
+
+            std::vector<Meters> frames;
+            std::vector<float> scopeIn, scopeOut;
+            DialState dials;
+            bool reached = false;
+
+        private:
+            std::size_t markOf(std::size_t k) const
+            {
+                const double back = static_cast<double>(count_ - 1 - k) * every_;
+                return static_cast<std::size_t>(std::max(0.0, static_cast<double>(end_) - std::round(back)));
+            }
+
+            std::size_t end_;
+            const std::atomic<bool>& cancel_;
+            double every_ = 800.0;
+            std::size_t count_ = 1;
+            bool reading_ = false;
+        };
+
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share).
         void addRenderProps(juce::var& props)
         {
@@ -1871,9 +1966,9 @@ namespace playground
                            props, {}));
         }
         tools.add(tool("view_panel",
-                       "See the plugin's interface: a picture (PNG) of the program's panel as the user sees it in the "
-                       "PANEL view (its panel.gui, or its dials), drawn now from the program that plays, or of a .cir "
-                       "file's schematic. Use it after "
+                       "See the plugin's interface: a picture of the program's panel as the user sees it in the PANEL "
+                       "view (its panel.gui, or its dials), drawn from the program that plays, or of a .cir file's "
+                       "schematic. Use it after "
                        "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
@@ -1884,16 +1979,27 @@ namespace playground
                        "Shaders are drawn as the user's screen draws them (a striped placeholder only where the GPU "
                        "cannot draw the picture, which its text then says) and the displays show the sound playing "
                        "now. A picture costs about 2,000 input tokens: look once or twice for a new interface, not "
-                       "after every small change.",
+                       "after every small change. To see the panel in a state of your choosing (a dashboard in 12th "
+                       "gear at -40 degrees, a warning lit, a meter near the top), values draws dials (in their units, "
+                       "or an int's option by its name) and fields (a display's, a live= mark's or a shader's input, as "
+                       "panel.gui names them: rpm, shared->gear) at the values given, and in and out at a level in "
+                       "dBFS; nothing that plays changes. at draws the state the program that plays reaches at a "
+                       "moment: it renders it offline with view_sound's settings ({seconds, notes, dials, scenario, "
+                       "...}: seconds from the start, at most 20) and draws its displays, its shaders' inputs and its "
+                       "dials as they are then (a field's scope its last 2.5 s, a VU's needle on its way), values over "
+                       "it. With either, the text gives what each display shown reads.",
                        claude::object({ { "view", claude::object({ { "type", "string" },
                                                                    { "enum", juce::Array<juce::var>{ "panel", "window", "schematic" } },
-                                                                   { "description", "panel (the default): the program's "
-                                                                                    "panel; window: the whole editor; "
-                                                                                    "schematic: the drawing of the .cir "
-                                                                                    "file name (default the first .cir)" } }) },
-                                        { "page", prop("string", "A page's title to show (a tabs element's), else the "
-                                                                 "pages the user has") },
-                                        { "name", prop("string", "The file's name") } }),
+                                                                   { "description", "panel (the default), window (the whole "
+                                                                                    "editor) or schematic (the drawing of "
+                                                                                    "the .cir file name, else the first)" } }) },
+                                        { "page", prop("string", "A tabs page to show by its title, else the user's") },
+                                        { "name", prop("string", "The file's name") },
+                                        { "values", claude::object({ { "type", "object" }, { "description", mcp::kPanelValues } }) },
+                                        { "at", claude::object({ { "type", "object" },
+                                                                 { "description", "{seconds, view_sound's settings}: the state "
+                                                                                  "an offline render of what plays reaches "
+                                                                                  "then" } }) } }),
                        {}));
         {
             juce::var props = claude::object({});
@@ -3159,9 +3265,8 @@ namespace playground
                     if (juce::DynamicObject* props = schema["properties"].getDynamicObject())
                         props->setProperty("detail", claude::object({ { "type", "string" },
                                                                       { "enum", juce::Array<juce::var>{ "high" } },
-                                                                      { "description", "high: the picture at its full size, "
-                                                                                       "which may not fit (by default it is "
-                                                                                       "made smaller to fit)" } }));
+                                                                      { "description", "high: the picture whole (else made "
+                                                                                       "smaller to fit)" } }));
                 mcp::dropRepeated(schema, described);
                 out.add(claude::object({ { "name", name },
                                          { "title", title },
@@ -3358,6 +3463,81 @@ namespace playground
         return r;
     }
 
+    // ---- view_panel's state ---------------------------------------------------------------------------------------------
+    std::string ChatAgent::panelState(const juce::var& input, PictureState& state)
+    {
+        state = {};
+        // values: by name, a number (a dial's plain value, a field's, a level's dBFS) or a dial's option by name.
+        const juce::var values = input.getProperty("values", juce::var());
+        if (const juce::DynamicObject* o = values.getDynamicObject())
+            for (const auto& kv : o->getProperties())
+            {
+                PictureValue v;
+                v.name = kv.name.toString().toStdString();
+                if (isNumber(kv.value) || kv.value.isBool())
+                    v.number = static_cast<float>(static_cast<double>(kv.value));
+                else if (kv.value.isString())
+                {
+                    v.text = kv.value.toString().trim().toStdString();
+                    v.isText = true;
+                }
+                else
+                    return "values takes a number for each name (a dial's option may be its name): " + v.name + " has none.";
+                state.values.push_back(std::move(v));
+            }
+        else if (!values.isVoid())
+            return "values is an object: {\"name\": number}.";
+        const juce::var at = input.getProperty("at", juce::var());
+        if (at.isVoid())
+            return {};
+        if (!at.isObject())
+            return "at is an object: {seconds, and view_sound's settings}.";
+        // at: the program that plays, rendered offline with view_sound's settings to its moment.
+        constexpr double kMaxAt = 20.0;
+        const juce::var sec = at.getProperty("seconds", juce::var());
+        const double seconds = isNumber(sec) ? static_cast<double>(sec) : -1.0;
+        if (!(seconds > 0.0) || seconds > kMaxAt)
+            return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
+        const Sources files = host_.chatRunning();
+        if (files.empty())
+            return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
+        measure::ViewRequest vr;
+        std::string why;
+        vr.render = scenario::renderOf(at, &why);
+        vr.render.current = currentDials();
+        soundInput(at, vr);
+        if (why.empty())
+            scenario::resolve(vr.render, host_, why);
+        if (!why.empty())
+            return "at: " + why;
+        setActivity("Rendering the program to its moment");
+        measure::Session session(files, vr.render.rate);
+        if (!session.compiled())
+            return "the program that plays did not compile for the render:\n" + capped(session.errors());
+        // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
+        const std::size_t end = std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(seconds * session.rate())));
+        if (end > session.lengthOf(vr.render))
+            vr.length = end;
+        MomentHooks hooks(end, session.rate(), cancel_);
+        const measure::Sound sound = measure::renderSound(session, vr, &hooks);
+        if (cancel_.load())
+            return "stopped.";
+        if (!hooks.reached || hooks.frames.empty())
+            return "the render ended before its moment.";
+        state.frames = std::move(hooks.frames);
+        state.scopeIn = std::move(hooks.scopeIn);
+        state.scopeOut = std::move(hooks.scopeOut);
+        const Controls& cs = session.controls();
+        for (int c = 0; c < kMaxControls; ++c)
+            if (cs[static_cast<std::size_t>(c)].used)
+                state.dials.emplace_back(cs[static_cast<std::size_t>(c)].name, hooks.dials.plain[static_cast<std::size_t>(c)]);
+        char when[32];
+        std::snprintf(when, sizeof when, "%.2f s", seconds);
+        state.about = std::string(when) + " into an offline render of the program that plays (" + sound.title
+                    + "; nothing that plays changed)";
+        return {};
+    }
+
     // ---- the tools ----------------------------------------------------------------------------------------------------
     juce::var ChatAgent::runTool(const juce::var& use)
     {
@@ -3405,7 +3585,23 @@ namespace playground
             }
             else
                 setActivity("Looking at the panel");
-            const PanelPicture pic = host_.chatPicture(pv, what);
+            // A state of Claude's choosing (values), or the one the program reaches at a moment (at): the panel's.
+            PictureState state;
+            std::string note;
+            if (pv == PictureView::schematic)
+            {
+                if (input.hasProperty("values") || input.hasProperty("at"))
+                    note = " (values and at draw the panel's displays and dials: the schematic shows the netlist as it is.)";
+            }
+            else if (const std::string why = panelState(input, state); !why.empty())
+            {
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + why).c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                return block;
+            }
+            if (state.rendered())
+                setActivity("Looking at the panel");
+            const PanelPicture pic = host_.chatPicture(pv, what, state);
             if (pic.png.empty())
             {
                 block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(("No picture: " + pic.why).c_str()));
@@ -3417,7 +3613,7 @@ namespace playground
                                          { "source", claude::object({ { "type", "base64" },
                                                                       { "media_type", "image/png" },
                                                                       { "data", juce::Base64::toBase64(pic.png.data(), pic.png.size()) } }) } }));
-            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(pic.about.c_str()) } }));
+            content.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8((pic.about + note).c_str()) } }));
             block.getDynamicObject()->setProperty("content", content);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -3435,18 +3631,7 @@ namespace playground
             std::string why;
             vr.render = scenario::renderOf(input, &why);
             vr.render.current = currentDials();
-            if constexpr (!kInstrument)
-            {
-                const std::string in = str(input, "input");
-                vr.input = in == "noise"     ? measure::ViewInput::noise
-                         : in == "impulse"   ? measure::ViewInput::impulse
-                         : in == "sine"      ? measure::ViewInput::sine
-                         : in == "silence"   ? measure::ViewInput::silence
-                                             : measure::ViewInput::sweep;
-                const juce::var f = input.getProperty("frequency", juce::var());
-                if (isNumber(f))
-                    vr.frequency = static_cast<float>(static_cast<double>(f));
-            }
+            soundInput(input, vr);
             const juce::var from = input.getProperty("from_seconds", juce::var()), to = input.getProperty("to_seconds", juce::var());
             if (isNumber(from) && isNumber(to))
             {

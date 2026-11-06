@@ -251,7 +251,7 @@ namespace playground
         void chatSetDial(int slot, float plain) override;
         float chatLoad() const override;
         uint32_t chatAlerts() const override;
-        PanelPicture chatPicture(PictureView view, const std::string& name) override;
+        PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) override;
         // For the live tools (ProcessorLive.cpp; any thread): what plays now, the meters measured while a tool listens,
         // the journal of changes, the dials' options' names.
         void chatLive(LiveRead& io) const override;
@@ -310,6 +310,7 @@ namespace playground
         bool pictureAsked_ = false, pictureReady_ = false;
         PictureView pictureView_ = PictureView::panel;
         std::string picturePage_;                                // its page, or its netlist (a schematic's)
+        PictureState pictureState_;                              // what it draws in place of what plays
         PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
 
