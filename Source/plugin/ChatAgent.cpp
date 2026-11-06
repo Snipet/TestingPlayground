@@ -171,6 +171,47 @@ namespace playground
             return t.substr(0, cut) + "\n(" + std::to_string(lines) + " more lines left out: fix these first)\n";
         }
 
+        // A compile's notes as run_program reports them: its warnings (FMinus's, a netlist's) on one line, each where it
+        // is and what it says, clang's note after one ("add missing switch cases") left out; the other notes as they are.
+        struct Reported
+        {
+            std::string warnings;                // "Warning (it compiles ...): a.fm:7:13: enumeration value ... [-Wswitch]\n"
+            std::string notes;
+            int count = 0;
+        };
+
+        Reported reported(const std::string& notes)
+        {
+            Reported r;
+            std::string list, lastAt;
+            std::size_t from = 0;
+            while (from < notes.size())
+            {
+                std::size_t end = notes.find('\n', from);
+                if (end == std::string::npos)
+                    end = notes.size();
+                const std::string line = notes.substr(from, end - from);
+                from = end + 1;
+                const std::size_t w = line.find(": warning: ");
+                if (w != std::string::npos)
+                {
+                    list += (list.empty() ? "" : "; ") + line.substr(0, w) + ": " + line.substr(w + 11);
+                    lastAt = line.substr(0, w);
+                    ++r.count;
+                    continue;
+                }
+                const std::size_t n = line.find(": note: ");
+                if (n != std::string::npos && !lastAt.empty() && line.substr(0, n) == lastAt)
+                    continue;                    // the warning's own note, at its place
+                lastAt.clear();
+                if (!line.empty())
+                    r.notes += line + "\n";
+            }
+            if (r.count > 0)
+                r.warnings = std::string(r.count == 1 ? "Warning" : "Warnings") + " (it compiles and plays as written): " + list + "\n";
+            return r;
+        }
+
         juce::var text(const std::string& t)
         {
             return claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(t.c_str()) } });
@@ -4210,8 +4251,10 @@ namespace playground
                 int dials = 0;
                 for (const Control& c : s.controls)
                     dials += c.used ? 1 : 0;
+                const Reported told = reported(s.notes);
                 note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
-                     + (dials == 1 ? "" : "s"));
+                     + (dials == 1 ? "" : "s")
+                     + (told.count > 0 ? ", " + std::to_string(told.count) + " warning" + (told.count == 1 ? "" : "s") : ""));
                 const std::string checks = evaluateChecks();
                 const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
                 std::vector<measure::Check> set;
@@ -4224,8 +4267,8 @@ namespace playground
                              : "Its dials:\n" + dialLines(s.controls, host_)
                                    + carriedLines(before, beforeOptions, was, s.controls, s.panel.options, host_)
                                    + orphanLines(set, before, s.controls))
-                     + panelLine(s.panel, s.controls) + (s.notes.empty() ? "" : "Notes:\n" + capped(s.notes))
-                     + (checks.empty() ? "" : "\n" + checks);
+                     + panelLine(s.panel, s.controls) + capped(told.warnings)
+                     + (told.notes.empty() ? "" : "Notes:\n" + capped(told.notes)) + (checks.empty() ? "" : "\n" + checks);
             }
             int errors = 0;
             for (std::size_t p = s.errors.find(": error:"); p != std::string::npos; p = s.errors.find(": error:", p + 1))
