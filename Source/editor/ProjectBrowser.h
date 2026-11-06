@@ -19,6 +19,8 @@
 //   Delete     the chosen project, version or preset (a second click: Delete it)
 //   Import...  a .zip or a .fmpack another playground exported (the Panel's chooser), a project of its own here
 //   Export...  the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h)
+//   A/B...     the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
+//              the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
 //   Close      or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
 //              chosen from, Tab moves to the next list
 // While it is open it takes every pointer event and key. What it did, it says once (takeNotice) for the status line.
@@ -37,6 +39,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace playground::ui
@@ -60,7 +63,7 @@ namespace playground::ui
         // Its places, for the panel's size.
         struct Places
         {
-            funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt;
+            funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
         };
@@ -80,9 +83,11 @@ namespace playground::ui
 
         // What it did last ("SAVED: GLASS BLOOM V3"), once; "" for nothing new.
         std::string takeNotice();
-        // What the Panel does next, once: Import's chooser; EXPORT for that project ("" for none).
+        // What the Panel does next, once: Import's chooser; EXPORT for that project ("" for none); A/B for that project
+        // and version (0: its newest; the project "" for none).
         bool takeImport();
         std::string takeExport();
+        std::pair<std::string, int> takeAb();
         void chooseProjectNamed(const std::string& name, float width, float height);
 
         // For probes.
@@ -131,6 +136,7 @@ namespace playground::ui
         std::string notice_;
         bool import_ = false;
         std::string export_;
+        std::pair<std::string, int> ab_;
         uint32_t revision_ = 0;
     };
 }

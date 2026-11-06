@@ -4577,6 +4577,25 @@ namespace playground::ui
 
     void Panel::refresh(double nowSec)
     {
+        if (ab_.isOpen())
+        {
+            const uint32_t before = ab_.revision();
+            ab_.tick();                                  // the processor's A/B: a compile landed, the loudness measured
+            if (ab_.revision() != before)
+                afterAb(true);
+        }
+        else if (role_ == Role::editor && !dialogOpen() && port_.abRevision() != abSeen_)
+        {
+            // An A/B on while no card shows it (this editor opened while it plays): its card, as it is.
+            abSeen_ = port_.abRevision();
+            if (ab_.attach())
+            {
+                focusBeforeProjects_ = focus_;
+                setFocus(-1);
+                ring_ = false;
+                dirty_ = true;
+            }
+        }
         syncColumnWidths();
         syncCodePanel();
         keepStepDefaults(nowSec, false);
@@ -5406,7 +5425,8 @@ namespace playground::ui
         projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
         const bool importIt = projects_.takeImport();
         const std::string exportIt = projects_.takeExport();
-        if (wasOpen && !projects_.isOpen() && exportIt.empty())
+        const std::pair<std::string, int> abIt = projects_.takeAb();
+        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty())
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
@@ -5417,6 +5437,48 @@ namespace playground::ui
         {
             export_.open(exportIt);
             setFocus(-1);
+        }
+        if (!abIt.first.empty())
+        {
+            if (ab_.open(abIt.first, abIt.second))
+                setFocus(-1);
+            else
+            {
+                notice(upper(ab_.why()));
+                setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+                focusBeforeProjects_ = -1;
+            }
+        }
+        dirty_ = true;
+    }
+
+    void Panel::openAb(const std::string& project, int version)
+    {
+        if (dialogOpen())
+            return;
+        files().endRename();
+        pushEditor();                                    // Current is what the tabs show
+        focusBeforeProjects_ = focus_;
+        if (!ab_.open(project, version))
+        {
+            notice(upper(ab_.why()));
+            focusBeforeProjects_ = -1;
+            return;
+        }
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::afterAb(bool wasOpen)
+    {
+        if (const std::string n = ab_.takeNotice(); !n.empty())
+            notice(n);
+        if (wasOpen && !ab_.isOpen())
+        {
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+            projectsAt_ = -100.0;                        // the explorer reads the project a kept version opened
         }
         dirty_ = true;
     }
@@ -6264,6 +6326,9 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
+        else if (ab_.isOpen())
+            std::snprintf(line, sizeof line, "A/B   A, B OR SPACE SWITCH   UP AND DOWN CHOOSE B, SHIFT A   TAB THE NEXT FILE   "
+                                             "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
         else if (projects_.isOpen())
             std::snprintf(line, sizeof line, "PROJECTS   UP AND DOWN CHOOSE   TAB THE NEXT LIST   RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES");
         else
@@ -6321,6 +6386,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (ab_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kAbTag, false);
+            ab_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (settings_.isOpen())
         {
@@ -6403,6 +6473,11 @@ namespace playground::ui
                 export_.pointerDown(pointer_, width_, height_);
                 afterExport(true);
             }
+            else if (ab_.isOpen())
+            {
+                ab_.pointerDown(pointer_, width_, height_);
+                afterAb(true);
+            }
             else
             {
                 projects_.pointerDown(pointer_, width_, height_);
@@ -6473,7 +6548,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen())
+        if (export_.isOpen() || ab_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -6500,6 +6575,11 @@ namespace playground::ui
         }
         if (export_.isOpen())
             return true;
+        if (ab_.isOpen())
+        {
+            ab_.wheel(e, width_, height_);
+            return true;
+        }
         if (projects_.isOpen())
         {
             projects_.wheel(e, width_, height_);
@@ -6562,6 +6642,12 @@ namespace playground::ui
         {
             export_.key(e, host_, width_, height_);
             afterExport(true);
+            return true;
+        }
+        if (ab_.isOpen())
+        {
+            ab_.key(e, width_, height_);
+            afterAb(true);
             return true;
         }
         if (projects_.isOpen())
@@ -6650,6 +6736,8 @@ namespace playground::ui
         }
         if (export_.isOpen())
             return export_.cursor(pointer_, width_, height_);
+        if (ab_.isOpen())
+            return ab_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
             return projects_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
@@ -6712,6 +6800,11 @@ namespace playground::ui
             export_.accessibility(out, width_, height_);
             return;
         }
+        if (ab_.isOpen())
+        {
+            ab_.accessibility(out, width_, height_);
+            return;
+        }
         if (projects_.isOpen())
         {
             projects_.accessibility(out, width_, height_);
@@ -6736,6 +6829,7 @@ namespace playground::ui
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         static_assert(kMaxDisplays <= 32, "the displays' mask");
@@ -6783,6 +6877,12 @@ namespace playground::ui
         {
             export_.a11yAction(id, a, width_, height_);
             afterExport(true);
+            return;
+        }
+        if (ab_.isOpen())
+        {
+            ab_.a11yAction(id, a, width_, height_);
+            afterAb(true);
             return;
         }
         if (projects_.isOpen())
