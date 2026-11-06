@@ -529,13 +529,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   partials, 0.4 s Hann for the pitch, 0.4 s Blackman-Harris for inharmonic_db and thd_db; a part shorter than a frame
   one frame of it), the centroids power-weighted over 20 Hz to 20 kHz, the pitch the strongest partial within 600
   cents of the expected note (`pitchOf`, a harmonic sum without one), read stretch by stretch (`measure::stretches`:
-  the held part cut where the lowest key held or the pitch wheel changes, each against its own expected pitch, so a
-  phrase's notes and a bend through a note are followed; `pitch_cents` their length-weighted mean, `fundamental_hz`
+  the held part cut where the lowest key held or the pitch wheel changes, by `kSameBendCents` or more; a window's part
+  no key is held over the key sounding there, else the key released last; each against its own expected pitch, so a
+  phrase's notes and a bend through a note are followed; `pitch_cents` the farthest of them, signed, `fundamental_hz`
   and off_order_db's default base the lowest key's longest stretch's; a stretch whose frame does not part its pitch
   from 0 Hz and from the key above it, 4 / min(f, gap) seconds, is left out, and with none the pitch is unmeasured,
-  naming the note it takes), inharmonic_db the strongest peak (a local maximum: a level that moves in a frame, a slow
-  attack, widens a harmonic's lobe into a skirt with none) off each stretch's harmonics (unmeasured when its frames'
-  zones leave no room between them: 12 / f0 seconds), one click rule (`measure::clicks`) for the click metric, the step lines and
+  naming the note it takes, or the wheel when it moves too often), inharmonic_db the strongest peak (a local maximum:
+  a level that moves in a frame, a slow attack, widens a harmonic's lobe into a skirt with none) off each stretch's
+  harmonics (unmeasured when its frames' zones leave no room between them: 12 / f0 seconds), one click rule (`measure::clicks`) for the click metric, the step lines and
   trace, the loudness BS.1770's (`loudness`: K-weighting made for the rate from the analog shelf and high-pass its 48 kHz
   coefficients come from, 0.4 s blocks every 0.1 s inside each span, the -70 LUFS and -10 LU gates) and IEC 61672's A
   (`aWeightedPower`, of a stereo spectrum in frames as long as the part, up to 2 s), off_order_db the power farther than
@@ -553,10 +554,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   needs (as a held part under wobble_db's three frames, or a base under twice off_order_db's zone) leaves it out of the values with why (`Result::unmeasured`, a check's NOT MEASURED line; tune_dials leaves
   such a goal out of its search, and with none left does not search); `sameRender` tells checks apart by it, and the
   session keeps a check's; trace and compare refuse one. Change a definition and its line together. The report's pitch line is a judgement
-  on top, the metrics untouched: with the whole report asked, the lowest note and the note a whole tone up (not an
-  octave: a fixed pitch's second harmonic sits there), each alone (0.6 s, none of the scenario's moves, a single note
-  too), must measure within 50 cents of a whole tone apart, else the line says "Unpitched" with both pitches and the
-  Inharmonic line is left out. Its CPU figures are the rendering thread's own time
+  on top, the metrics untouched: with the whole report asked and the part not silent (a stretch read or none), the
+  lowest note and the note a whole tone up (not an octave: a fixed pitch's second harmonic sits there), each alone
+  (0.6 s, none of the scenario's moves, a single note too), must measure within 50 cents of a whole tone apart, else
+  the line says "Unpitched" with both pitches and the Inharmonic line is left out. Its CPU figures are the rendering thread's own time
   (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an Engine as the audio thread
   runs it with no editor open: an instrument's `cpu_percent` over the held part (or the window), and
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated (in the
