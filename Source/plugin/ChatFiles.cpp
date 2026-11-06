@@ -13,8 +13,9 @@
 // user changed it, and shows the lines that changed since (the newest kFileVersions versions given are kept for that).
 // With `files` it does all of that for several files at once: a list of each file's name, edits and expected, or a
 // unified diff (each hunk's old lines found where a line starts, the occurrence nearest its line when there are
-// several); all or none across them, in one write of the draft (chatSetDraftIf's, of every file it read), which the
-// editor merges as one undo step across their tabs (Panel.cpp's FilesItem::merge).
+// several; a line that could be part of the change is never passed over, parseDiff); all or none across them, in one
+// write of the draft (chatSetDraftIf's, of every file it read), which the editor merges as one undo step across their
+// tabs (Panel.cpp's FilesItem::merge).
 #include "plugin/ChatAgent.h"
 
 #include "dsp/TextDiff.h"
@@ -34,6 +35,7 @@ namespace playground
         constexpr std::size_t kMaxFound = 40;              // find: the lines that hold it, shown at most
         constexpr int kContext = 2;                        // find: lines around each
         constexpr int kMaxEdits = 32;                      // edit_file's edits a call
+        constexpr std::size_t kMaxHunks = 256;             // a diff's hunks a file (each one scan of the file's text)
         constexpr std::size_t kMaxPassage = 30;            // a closest passage's lines shown at most
         constexpr int kChangedLines = 40;                  // a refused write's diff, lines at most
 
@@ -352,20 +354,40 @@ namespace playground
             return true;
         }
 
+        // A line for the words, in backticks: cut past 60 characters, a tab shown as \t.
+        std::string quoted(std::string_view l)
+        {
+            std::string out = "`";
+            for (const char c : l.substr(0, 60))
+                out += c == '\t' ? std::string("\\t") : std::string(1, c);
+            return out + (l.size() > 60 ? "...`" : "`");
+        }
+
         // A unified diff of the program's files (git diff's, diff -u's: each file's --- and +++ lines, then its @@ hunks;
         // what comes between them, git's diff and index lines or words, is passed over) as each file's edits, a hunk an
         // edit. The counts in a hunk's header are not needed (its lines say), a blank line in a hunk is a blank line of
         // context whose space was lost, and blank lines at a hunk's end are dropped (context on both sides alike, so the
-        // change is the same). "" when it reads, else why not.
+        // change is the same). Nothing that could be part of a change is passed over: once a file's header is read, a
+        // context, - or + line outside a hunk is refused (naming the line that ended the hunk before it, such as a context
+        // line that lost its space or was indented with a tab), so is an @@ line that is no hunk's header, and so are git's
+        // lines that make, delete, rename or copy a file. "" when it reads, else why not.
         std::string parseDiff(const std::string& diff, std::vector<FileEdits>& out)
         {
             const std::vector<std::string_view> lines = linesOf(diff);
+            const auto starts = [](std::string_view l, std::string_view s) { return l.substr(0, s.size()) == s; };
+            std::string git;                                     // the file the last "diff --git" line names (b/'s)
+            std::string ended;                                   // why the last hunk ended where it did, when no header ended it
             std::size_t i = 0;
+            // " to <path>" when the line after this one is `s` and a path.
+            const auto then = [&](std::string_view s) {
+                return i + 1 < lines.size() && starts(lines[i + 1], s) ? " to " + diffPath(lines[i + 1].substr(s.size())) : std::string();
+            };
             while (i < lines.size())
             {
+                const std::string_view l = lines[i];
                 if (fileHeader(lines, i))
                 {
-                    const std::string from = diffPath(lines[i].substr(4)), to = diffPath(lines[i + 1].substr(4));
+                    const std::string from = diffPath(l.substr(4)), to = diffPath(lines[i + 1].substr(4));
                     if (to == "/dev/null")
                         return "The diff deletes " + from + ": delete_file does that";
                     if (from == "/dev/null")
@@ -377,20 +399,43 @@ namespace playground
                     if (out.size() >= kMaxFiles)
                         return "The diff names more than " + std::to_string(kMaxFiles) + " files";
                     out.push_back({ to, {}, {} });
+                    ended.clear();
                     i += 2;
                     continue;
                 }
                 int oldStart = 0;
-                if (!hunkHeader(lines[i], oldStart))
+                if (starts(l, "@@") && !hunkHeader(l, oldStart))
+                    return (out.empty() ? std::string() : out.back().name + ": ") + quoted(l)
+                         + " is not a hunk's header (@@ -<line>,<count> +<line>,<count> @@)";
+                if (!starts(l, "@@"))
                 {
-                    ++i;                                       // between the files
+                    // Between the files: git's diff, index and mode lines, or words; never a line of a change, nor git's
+                    // header-only blocks (a file made or deleted empty, renamed or copied whole: no --- and +++ lines).
+                    if (starts(l, "diff --git "))
+                    {
+                        const std::size_t b = l.rfind(" b/");
+                        git = b == std::string_view::npos ? std::string() : diffPath(l.substr(b + 1));
+                        ended.clear();
+                    }
+                    else if (starts(l, "new file mode "))
+                        return "The diff makes a new file" + (git.empty() ? std::string() : ", " + git) + ": write_file does that";
+                    else if (starts(l, "deleted file mode "))
+                        return "The diff deletes " + (git.empty() ? std::string("a file") : git) + ": delete_file does that";
+                    else if (starts(l, "rename from "))
+                        return "The diff renames " + diffPath(l.substr(12)) + then("rename to ") + ": rename_file does that";
+                    else if (starts(l, "copy from "))
+                        return "The diff copies " + diffPath(l.substr(10)) + then("copy to ") + ": write_file makes the copy";
+                    else if (!out.empty() && !l.empty() && (l.front() == ' ' || l.front() == '-' || l.front() == '+'))
+                        return !ended.empty() ? ended
+                                              : out.back().name + ": " + quoted(l) + " comes before the file's first @@ line";
+                    ++i;
                     continue;
                 }
                 if (out.empty())
                     return "The diff's first hunk comes before a file's --- and +++ lines";
                 FileEdits& f = out.back();
-                if (f.edits.size() >= static_cast<std::size_t>(kMaxEdits))
-                    return "The diff has more than " + std::to_string(kMaxEdits) + " hunks for " + f.name;
+                if (f.edits.size() >= kMaxHunks)
+                    return "The diff has more than " + std::to_string(kMaxHunks) + " hunks for " + f.name;
                 std::vector<std::pair<char, std::string_view>> body;   // ' ', '-' or '+', and the line
                 bool oldEnds = true, newEnds = true;                    // each side's last line ends with a line end
                 for (++i; i < lines.size() && !fileHeader(lines, i); ++i)
@@ -409,6 +454,11 @@ namespace playground
                     else
                         break;
                 }
+                // Ended by a line that is no header (the next hunk's, a file's, git's): a change after it is refused.
+                ended = i < lines.size() && !fileHeader(lines, i) && !starts(lines[i], "@@")
+                            ? f.name + " (@@ -" + std::to_string(oldStart) + "): " + quoted(lines[i])
+                                  + " is not a context, - or + line (a context line starts with a space)"
+                            : std::string();
                 while (!body.empty() && body.back().first == '\0')
                     body.pop_back();
                 Edit e;
@@ -630,7 +680,7 @@ namespace playground
         // The files and their edits: one file (name, and old_text and new_text or edits, and expected), or several
         // (files: a list of those, or a unified diff), all or none.
         std::vector<FileEdits> files;
-        const juce::var filesVar = input.getProperty("files", juce::var());
+        juce::var filesVar = input.getProperty("files", juce::var());
         const bool many = !filesVar.isVoid() && !filesVar.isUndefined();
         const auto expectedOf = [](const juce::var& holder, std::string& out) {
             const juce::var v = holder.getProperty("expected", juce::var());
@@ -642,6 +692,16 @@ namespace playground
             for (const char* k : { "name", "old_text", "new_text", "edits", "expected" })
                 if (input.hasProperty(k))
                     return fail("Give files, or name and its edits, not both. Nothing was changed.");
+            // The list written as a string, its JSON (an input streamed eagerly is not checked against the schema): read
+            // as the list. A diff never starts with [.
+            if (filesVar.isString() && filesVar.toString().trimStart().startsWithChar('['))
+            {
+                const juce::var list = juce::JSON::parse(filesVar.toString());
+                if (!list.isArray())
+                    return fail("files is a list of files or a unified diff: this string starts with [ but is no JSON list. Nothing "
+                                "was changed.");
+                filesVar = list;
+            }
             if (filesVar.isString())
             {
                 if (const std::string why = parseDiff(filesVar.toString().toStdString(), files); !why.empty())

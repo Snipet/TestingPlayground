@@ -88,7 +88,15 @@
 //            nothing is written to either; a unified diff of two files (git's headers, a hunk whose lines occur twice
 //            placed by its @@ line, a blank context line whose space was lost, a last line without its line end) in one
 //            step Cmd-Z undoes; a hunk that misses gives the closest passage and changes nothing; a diff that makes a
-//            file is refused; hunks of new lines alone go at the start and after a last line with no line end
+//            file is refused; hunks of new lines alone go at the start and after a last line with no line end; a hunk's
+//            lines occurring three times go to the occurrence nearest its @@ line, and in another file only as the hunk
+//            before moved it; a context line that lost its space or was indented with a tab, before -/+ lines, a bare
+//            @@ line and git's header-only blocks (a rename, an empty file made) are refused, nothing changed; the list
+//            sent as a JSON string is read as the list; 42 hunks for one file go in one call; undo through two
+//            multi-file changes and an edit of one file: Cmd-Z twice undoes both changes in both files, Cmd-Shift-Z and
+//            Cmd-Y redo them though the tab's history went back past them; in a netlist's Schematic view Cmd-Z undoes
+//            the change in both files and the drawing loses its part; a session loaded over two tabs is one step; a
+//            fresh start ends the groups
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why
@@ -1979,6 +1987,180 @@ PROBE(plugin, chat)
             // Hunks of new lines alone (diff -U0's): at the start, and after a last line with no line end.
             const pg::ChatAgent::McpResult added = edit(input({ { "files", "--- twice.fm\n+++ twice.fm\n@@ -0,0 +1 @@\n+// top\n@@ -6,0 +8 @@\n+z = 3;\n" } }));
             P.eq("multi.diff_inserts", !added.isError && fileText("twice.fm") == "// top\n// twice\nx = 1;\ny = 2;\n\nx = 1;\ny = 2;\nz = 3;\n" ? 1 : 0, 1);
+            // A hunk whose old lines occur three times, each with lines after it: the occurrence nearest its @@ line, the
+            // second, alone changes. In another file a first hunk adds 8 lines, so the next hunk's @@ line (the old file's
+            // numbering) finds the second of two occurrences only as the hunk before it moved it.
+            write("rep.fm", "// rep\nx = 1;\ny = 2;\nz = 0;\n// mid\nx = 1;\ny = 2;\nz = 0;\n// late\nx = 1;\ny = 2;\nz = 0;\n");
+            const std::string movedText = "// two\na = 1;\nb = 2;\n// 4\n// 5\n// 6\n// 7\n// 8\n// 9\na = 1;\nb = 2;\n// end\n";
+            write("moved.fm", movedText);
+            std::string addedLines, plus;
+            for (int k = 1; k <= 8; ++k)
+            {
+                addedLines += "// added " + std::to_string(k) + "\n";
+                plus += "+// added " + std::to_string(k) + "\n";
+            }
+            const pg::ChatAgent::McpResult nearest = edit(input({ { "files", juce::String("--- a/rep.fm\n+++ b/rep.fm\n@@ -6,2 +6,2 @@\n x = 1;\n-y = 2;\n+y = 3;\n"
+                                                                                       "--- a/moved.fm\n+++ b/moved.fm\n@@ -1 +1,9 @@\n // two\n" + plus
+                                                                                       + "@@ -10,2 +18,2 @@\n a = 1;\n-b = 2;\n+b = 3;\n") } }));
+            P.eq("multi.diff_nearest", !nearest.isError
+                                           && fileText("rep.fm") == "// rep\nx = 1;\ny = 2;\nz = 0;\n// mid\nx = 1;\ny = 3;\nz = 0;\n// late\nx = 1;\ny = 2;\nz = 0;\n"
+                                           && fileText("moved.fm") == "// two\n" + addedLines + "a = 1;\nb = 2;\n// 4\n// 5\n// 6\n// 7\n// 8\n// 9\na = 1;\nb = 3;\n// end\n"
+                                       ? 1 : 0, 1);
+            // A diff never drops a line that could be part of the change: a context line that lost its space (a "}" in
+            // column 0) or was indented with a tab ends its hunk, and the -/+ lines after it are refused, naming it; an
+            // @@ line that is no hunk's header is refused; so are git's header-only blocks (a rename, an empty file made).
+            const std::string strays = "// strays\nfloat f(float x) {\n    return x;\n}\nfloat g = 1;\n";
+            write("strays.fm", strays);
+            const auto refusedDiff = [&](const std::string& patch, const std::string& because) {
+                const pg::ChatAgent::McpResult r = edit(input({ { "files", juce::String(patch) } }));
+                std::printf("edit_file files, a diff refused:\n%s\n", toolText(r).c_str());
+                return r.isError && has(toolText(r), because + ". Nothing was changed.") && fileText("strays.fm") == strays;
+            };
+            const std::string head = "--- a/strays.fm\n+++ b/strays.fm\n";
+            P.eq("multi.diff_stray_line", refusedDiff(head + "@@ -2,4 +2,4 @@\n float f(float x) {\n-    return x;\n+    return -x;\n}\n-float g = 1;\n+float g = 2;\n",
+                                                  "strays.fm (@@ -2): `}` is not a context, - or + line (a context line starts with a space)")
+                                              && refusedDiff(head + "@@ -2,4 +2,4 @@\n float f(float x) {\n-    return x;\n+    return -x;\n\t}\n-float g = 1;\n+float g = 2;\n",
+                                                         "strays.fm (@@ -2): `\\t}` is not a context, - or + line (a context line starts with a space)")
+                                          ? 1 : 0, 1);
+            P.eq("multi.diff_bare_hunk_header", refusedDiff(head + "@@\n-float g = 1;\n+float g = 2;\n@@ -2,2 +2,2 @@\n float f(float x) {\n-    return x;\n+    return -x;\n",
+                                                        "strays.fm: `@@` is not a hunk's header (@@ -<line>,<count> +<line>,<count> @@)")
+                                                    ? 1 : 0, 1);
+            P.eq("multi.diff_header_only_refused",
+                 refusedDiff("diff --git a/old.fm b/new.fm\nsimilarity index 100%\nrename from old.fm\nrename to new.fm\n" + head + "@@ -5 +5 @@\n-float g = 1;\n+float g = 2;\n",
+                         "The diff renames old.fm to new.fm: rename_file does that")
+                         && refusedDiff(head + "@@ -5 +5 @@\n-float g = 1;\n+float g = 2;\ndiff --git a/empty.fm b/empty.fm\nnew file mode 100644\nindex 0000000..e69de29\n",
+                                    "The diff makes a new file, empty.fm: write_file does that")
+                     ? 1 : 0, 1);
+            // The list written as a string (its JSON): read as the list; a string that starts with [ but is no list is
+            // refused as such, never read as a diff.
+            const pg::ChatAgent::McpResult asString = edit(input({ { "files", "[{\"name\":\"strays.fm\",\"old_text\":\"float g = 1;\",\"new_text\":\"float g = 2;\"}]" } }));
+            const pg::ChatAgent::McpResult badString = edit(input({ { "files", " [{\"name\": \"strays.fm\"" } }));
+            P.eq("multi.list_as_string", !asString.isError && has(toolText(asString), "- strays.fm: 1 edit; now 5 lines") && has(fileText("strays.fm"), "float g = 2;\n")
+                                             && badString.isError
+                                             && has(toolText(badString), "files is a list of files or a unified diff: this string starts with [ but is no JSON list.")
+                                         ? 1 : 0, 1);
+            // A diff of 42 hunks for one file goes in one call (hunks have a cap of their own, past edits' 32).
+            std::string manyBefore, manyAfter, manyDiff = "--- a/many.fm\n+++ b/many.fm\n";
+            for (int k = 1; k <= 50; ++k)
+            {
+                manyBefore += "float m" + std::to_string(k) + " = " + std::to_string(k) + ";\n";
+                manyAfter += "float m" + std::to_string(k) + " = " + (k <= 42 ? "-" : "") + std::to_string(k) + ";\n";
+                if (k <= 42)
+                    manyDiff += "@@ -" + std::to_string(k) + " +" + std::to_string(k) + " @@\n-float m" + std::to_string(k) + " = " + std::to_string(k)
+                              + ";\n+float m" + std::to_string(k) + " = -" + std::to_string(k) + ";\n";
+            }
+            write("many.fm", manyBefore);
+            const pg::ChatAgent::McpResult manyHunks = edit(input({ { "files", juce::String(manyDiff) } }));
+            P.eq("multi.diff_many_hunks", !manyHunks.isError && has(toolText(manyHunks), "- many.fm: 42 hunks; now 50 lines") && fileText("many.fm") == manyAfter ? 1 : 0, 1);
+
+            // Undo through several of Claude's multi-file changes: each one step across its tabs, whatever came between.
+            // Two changes of notes.fm and other.fm, after an edit of notes.fm alone: Cmd-Z twice in notes.fm undoes both
+            // changes in both files; once more, notes.fm's own edit; Cmd-Shift-Z redoes that, and then each change in both
+            // (the second Cmd-Shift-Z finds the first change though notes.fm's history went back past it and came again);
+            // Cmd-Y redoes too.
+            write("notes.fm", notes);
+            write("other.fm", other);
+            std::string ownEdited = notes;
+            ownEdited.replace(ownEdited.find(lineOf(1)), lineOf(1).size(), "float v1(float x) { return 0.0f; }");
+            (void)edit(input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(1)) }, { "new_text", "float v1(float x) { return 0.0f; }" } }));
+            (void)edit(input({ { "files", both } }));
+            std::string firstNotes = ownEdited;
+            firstNotes.replace(firstNotes.find(lineOf(2)), lineOf(2).size(), "float v2(float x) { return -x; }");
+            firstNotes.replace(firstNotes.find(lineOf(9)), lineOf(9).size(), "float v9(float x) { return -x; }");
+            const pg::ChatAgent::McpResult second = edit(input({ { "files", files({ input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(5)) },
+                                                                                            { "new_text", "float v5(float x) { return 5.0f; }" } }),
+                                                                                    input({ { "name", "other.fm" }, { "old_text", "// other.fm" },
+                                                                                            { "new_text", "// the other file" } }) }) } }));
+            std::string secondNotes = firstNotes, secondOther = otherEdited;
+            secondNotes.replace(secondNotes.find(lineOf(5)), lineOf(5).size(), "float v5(float x) { return 5.0f; }");
+            secondOther.replace(0, 11, "// the other file");
+            const bool bothSecond = !second.isError && fileText("notes.fm") == secondNotes && fileText("other.fm") == secondOther;
+            keysIn("notes.fm", "cmd+z");
+            const bool secondUndone = fileText("notes.fm") == firstNotes && fileText("other.fm") == otherEdited;
+            keysIn("notes.fm", "cmd+z");
+            const bool firstUndone = fileText("notes.fm") == ownEdited && fileText("other.fm") == other;
+            P.eq("multi.undo_through_changes", bothSecond && secondUndone && firstUndone ? 1 : 0, 1);
+            keysIn("notes.fm", "cmd+z");
+            const bool ownUndone = fileText("notes.fm") == notes && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool ownRedone = fileText("notes.fm") == ownEdited && fileText("other.fm") == other;
+            keysIn("notes.fm", "cmd+shift+z");
+            const bool firstRedone = fileText("notes.fm") == firstNotes && fileText("other.fm") == otherEdited;
+            keysIn("notes.fm", "cmd+y");
+            P.eq("multi.redo_after_own_steps", ownUndone && ownRedone && firstRedone && fileText("notes.fm") == secondNotes
+                                                   && fileText("other.fm") == secondOther ? 1 : 0, 1);
+
+            // In a netlist's Schematic view: a change of tone.cir (a part added) and notes.fm, then Cmd-Z there undoes
+            // both and the drawing loses the part; Cmd-Shift-Z gives both back, and the part.
+            write("notes.fm", notes);
+            {
+                const funkgui::Point t = panel.centreOfTab(tabOf("tone.cir"));
+                host.click(t.x, t.y);
+                host.tick(1);
+            }
+            panel.setSchematic(true);
+            host.settle();
+            const std::string toneBefore = fileText("tone.cir");
+            const pg::ChatAgent::McpResult drawnEdit = edit(input({ { "files", files({ input({ { "name", "tone.cir" }, { "old_text", "C2     b  0  22n" },
+                                                                                               { "new_text", "C2     b  0  22n\nR9     b  0  1k" } }),
+                                                                                       input({ { "name", "notes.fm" }, { "old_text", juce::String(lineOf(3)) },
+                                                                                               { "new_text", "float v3(float x) { return 3.0f; }" } }) }) } }));
+            pg::ui::SchematicView& sv = panel.schematic();
+            const bool drewR9 = !drawnEdit.isError && panel.schematicShown() && sv.file() == "tone.cir" && sv.drawing().part("R9") >= 0;
+            host.keys("cmd+z");
+            host.tick(2);
+            const bool schematicUndone = fileText("tone.cir") == toneBefore && fileText("notes.fm") == notes && sv.drawing().part("R9") < 0;
+            host.keys("cmd+shift+z");
+            host.tick(2);
+            P.eq("multi.schematic_one_step", drewR9 && schematicUndone && has(fileText("tone.cir"), "\nR9     b  0  1k") && has(fileText("notes.fm"), "return 3.0f;")
+                                                 && sv.drawing().part("R9") >= 0 ? 1 : 0, 1);
+            panel.setSchematic(false);
+            host.settle();
+
+            // A session loaded over two open tabs whose texts it changes (a host's setStateInformation, in a processor of
+            // its own, as a load restores the chat too): one Cmd-Z gives both back.
+            {
+                pg::Processor loader;
+                pg::Draft ld;
+                ld.files = { saved.files.front(), { "notes.fm", notes }, { "other.fm", other } };
+                ld.active = 1;
+                loader.editorPort().setDraft(ld);
+                juce::MemoryBlock session;
+                loader.getStateInformation(session);
+                ld.files[1].text = notesEdited;
+                ld.files[2].text = otherEdited;
+                loader.editorPort().setDraft(ld);
+                pg::ui::Panel lp(loader.ports(), loader.editorPort());
+                funkgui::HeadlessHost lh(lp, 0, 1.0f);
+                lh.settle();
+                const auto loaderText = [&](const std::string& name) {
+                    const pg::Draft now = loader.editorPort().draft();
+                    const pg::SourceFile* f = pg::findFile(now.files, name);
+                    return f == nullptr ? std::string() : f->text;
+                };
+                loader.setStateInformation(session.getData(), static_cast<int>(session.getSize()));
+                for (int k = 0; k < 40 && lp.editor().text() != loaderText(lp.fileName(lp.activeFile())); ++k)
+                {
+                    loader.poll();
+                    lh.tick(1);
+                }
+                const bool loaded = loaderText("notes.fm") == notes && loaderText("other.fm") == other && lp.editor().text() == notes;
+                const funkgui::Rect eb = lp.editor().bounds();
+                lh.click(eb.centreX(), eb.centreY());
+                lh.keys("cmd+z");
+                lh.tick(2);
+                P.eq("multi.session_one_step", loaded && loaderText("notes.fm") == notesEdited && loaderText("other.fm") == otherEdited ? 1 : 0, 1);
+            }
+
+            // A fresh start (an example's) ends every group: after it, Cmd-Z in one of the files changes neither.
+            (void)edit(input({ { "files", both } }));
+            const pg::Sources fresh = { processor.editorPort().draft().files.front(), { "notes.fm", "// fresh notes\n" }, { "other.fm", "// fresh other\n" } };
+            if (!panel.startAfresh(fresh, "a fresh start", "Start afresh"))
+                host.chooseMenuItem(1);
+            settle();
+            const bool started = fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n";
+            keysIn("notes.fm", "cmd+z");
+            P.eq("multi.fresh_start_ends_groups", started && fileText("notes.fm") == "// fresh notes\n" && fileText("other.fm") == "// fresh other\n" ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);

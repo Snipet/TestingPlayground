@@ -820,15 +820,23 @@ place (its `products/<key>.cmake`, and its names in the docs).
   while the file is still that version, else nothing, saying the user changed it and showing the lines changed since
   (the version is compared, not kept, before that lookup, so the oldest kept is still found). Its `files` does that for
   several files at once (a property, not a tool: the tool budget), in place of `name`: a list of `{name, edits or
-  old_text and new_text, expected}`, or a unified diff (its `---`/`+++` headers name the files, git's a/ and b/ off; a
-  hunk is an edit whose old lines, context and `-`, are found where a line starts, the occurrence nearest its `@@` line
-  as the hunks before it moved it, its header's counts unread, a blank line in it a blank context line, and one that
-  creates, deletes or renames a file refused); all or none across the files (one bad edit, one `expected` that no
-  longer holds: nothing written to any), in one `chatSetDraftIf` of every file it read (one change of the draft, so one
-  journal entry and one merge). The editor makes a merge that changed several tabs' texts one undo step across them
-  (`FilesItem`'s undo group, by the tabs' serials: Cmd-Z, Cmd-Shift-Z or Cmd-Y in one of them, while its text is as
-  that step left it, undoes or redoes it in each tab still so; a tab typed in since keeps its own steps and leaves the
-  group; a fresh start or a load ends it), a session loaded over open tabs included.
+  old_text and new_text, expected}` (one sent as a JSON string is read as the list), or a unified diff (its
+  `---`/`+++` headers name the files, git's a/ and b/ off; a hunk is an edit whose old lines, context and `-`, are found
+  where a line starts, the occurrence nearest its `@@` line as the hunks before it moved it, its header's counts
+  unread, a blank line in it a blank context line, at most 256 hunks a file; nothing that could be part of the change
+  is passed over: a context, `-` or `+` line outside a hunk is refused, naming the line that ended the hunk (a context
+  line that lost its space, or indented with a tab), so is an `@@` line that is no hunk's header, and a diff that
+  creates, deletes, renames or copies a file, its git header-only blocks included, is refused, naming the tool that
+  does it); all or none across the files (one bad edit, one `expected` that no longer holds: nothing written to any),
+  in one `chatSetDraftIf` of every file it read (one change of the draft, so one merge, and a journal entry a file).
+  The editor makes a merge that changed several tabs' texts one undo step across them, a session loaded over open
+  tabs included (`FilesItem`'s undo groups, newest last, at most 32: each member a tab's serial and its place in the
+  tab's undo history, which FilesItem counts: a step a merge or Play this circuit makes, each undo and redo of the
+  keys, the Schematic view's buttons and menu (`SchematicView::Hooks::step`) and Play's Undo). Cmd-Z in a tab at a
+  group's step undoes it in each of the group's tabs at it, and Cmd-Shift-Z or Cmd-Y in one with it undone redoes it
+  so, however far the tab went back and came again, so each such change is one step, one after another; a change of a
+  tab's text it did not count (typing, a gesture, Format) takes the tab out of every group, and a new step where it
+  could redo out of the groups whose steps those were; a fresh start or a load ends them all.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 
