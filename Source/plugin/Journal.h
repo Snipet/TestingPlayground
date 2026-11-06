@@ -7,7 +7,9 @@
 // a file, the bypass) while that one is recent and no token has been handed out since it was made, so a knob turned
 // for two seconds is one line ("14:02:31-33 the user moved cutoff 1.20 kHz -> 3.40 kHz") and a reader never misses part
 // of one. A reader gets each dial's moves after its token as one line, its net change (first -> last, at the first
-// move's place, with how many and who): forty-five minutes of play is a line a dial, not a line a move. The lines say
+// move's place, with how many and who): forty-five minutes of play is a line a dial, not a line a move. A change that
+// sets dials without a line for each (dialsNote: a run, a version, a preset, a fresh start, a state loaded) ends those
+// lines: a dial moved before it and after it has a line on either side of it. The lines say
 // who in the third person ("the user", "the host", "the plugin's own chat"): "you" reads as the reader, a Claude. A
 // token is the journal's identity (made at random, so a token of another instance or of before a reload is known as
 // not this one's) and the number of the last change: tokens rather than a cursor here, since one server process may
@@ -58,6 +60,10 @@ namespace playground
         // Anything else, in words ("ran it: it compiled, 9 dials"). With a `key`, it goes into the last change of that
         // key when it may (above), its words replacing that one's.
         void note(Who who, const std::string& words, const std::string& key = {});
+        // A note of a change that may set dials without a line for each (a run that compiled, a version opened, a
+        // preset applied, a fresh start, a state loaded): a dial's moves before it and after it are two lines, one on
+        // either side of it, so that it never reads as if it came after the dial's last value.
+        void dialsNote(Who who, const std::string& words);
         // The bypass's edges: "bypassed", then "bypassed (14:04:10-14:05:01)" once it ends (and, when a token was
         // handed out meanwhile, "un-bypassed" for that token's readers).
         void bypass(bool on);
@@ -79,6 +85,7 @@ namespace playground
             std::string from, to;                     // a dial's values
             int64_t fromMs = 0, toMs = 0;             // when (the wall clock, ms)
             bool open = false;                        // the bypass still on
+            bool setsDials = false;                   // a dialsNote: a dial's moves are not one line across it
             uint64_t ends = 0;                        // an un-bypass: the bypass it ends (a reader of both reads one)
         };
         static constexpr int64_t kMergeMs = 1500;     // a drag's pause at most

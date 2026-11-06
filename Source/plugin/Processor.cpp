@@ -824,7 +824,10 @@ namespace playground
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
-                journal_.note(Journal::Who::user, runWords(s));
+                if (s.ok)
+                    journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
+                else
+                    journal_.note(Journal::Who::user, runWords(s));
             }
             // A version's program (or a preset's): its dials, by name, once it compiled (an older request's result
             // waits for its own).
@@ -1115,7 +1118,7 @@ namespace playground
         seen_ = s.revision;
         apply(s, false);
         apvts_.replaceState(state);
-        journal_.note(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
+        journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
     }
 
@@ -1436,7 +1439,7 @@ namespace playground
         }
         if (!openVersion(*p, *v, why))
             return false;
-        journal_.note(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         return true;
     }
 
@@ -1467,8 +1470,8 @@ namespace playground
         defaultsRequest_ = id;
         editorRun_.store(id);
         userRun_.store(id);
-        journal_.note(Journal::Who::user,
-                      "started afresh from " + what + " (its files only, every dial at its default)");
+        journal_.dialsNote(Journal::Who::user,
+                           "started afresh from " + what + " (its files only, every dial at its default)");
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -1593,7 +1596,7 @@ namespace playground
         else
             setDialsByName(cs, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.note(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        journal_.dialsNote(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectPreset_ = pr->name;
         baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
@@ -1726,7 +1729,12 @@ namespace playground
         compiler_.wait();
         const CompileStatus s = compiler_.status();
         if (!chat_.mcpWorking() && s.request >= id)
-            journal_.note(Journal::Who::chat, runWords(s));
+        {
+            if (s.ok)
+                journal_.dialsNote(Journal::Who::chat, runWords(s));
+            else
+                journal_.note(Journal::Who::chat, runWords(s));
+        }
         return s.request >= id ? s : CompileStatus{};
     }
 

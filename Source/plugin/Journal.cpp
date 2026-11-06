@@ -83,9 +83,14 @@ namespace playground
 
     Journal::Change* Journal::mergeable(const std::string& key, Who who, int64_t windowMs, int64_t now)
     {
+        const bool dial = key.rfind("dial:", 0) == 0;
         for (auto it = changes_.rbegin(); it != changes_.rend(); ++it)
+        {
+            if (dial && it->setsDials)
+                return nullptr;                           // a move after a preset (a run...) is not the one before it
             if (it->key == key)
                 return it->seq > issued_ && it->who == who && now - it->toMs <= windowMs ? &*it : nullptr;
+        }
         return nullptr;
     }
 
@@ -164,6 +169,18 @@ namespace playground
         c.who = who;
         c.key = key;
         c.words = words;
+        c.fromMs = c.toMs = now;
+        add(std::move(c));
+    }
+
+    void Journal::dialsNote(Who who, const std::string& words)
+    {
+        const int64_t now = nowMs();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        Change c;
+        c.who = who;
+        c.words = words;
+        c.setsDials = true;
         c.fromMs = c.toMs = now;
         add(std::move(c));
     }
@@ -277,7 +294,8 @@ namespace playground
         {
             out.complete = from >= dropped_;
             // A line a change, but a dial's moves (its slot and name: another program's dial in that slot is another
-            // dial) go into one, at its first move's place.
+            // dial) go into one, at its first move's place, until a change that sets dials (a preset, a version, a
+            // run...): a move after it starts a line after it.
             std::vector<std::vector<const Change*>> rows;
             std::vector<std::pair<std::string, std::size_t>> dials;   // a dial's key and name -> its row
             for (const Change& c : changes_)
@@ -295,6 +313,8 @@ namespace playground
                     }
                     dials.emplace_back(dial, rows.size());
                 }
+                else if (c.setsDials)
+                    dials.clear();
                 rows.push_back({ &c });
             }
             for (const std::vector<const Change*>& row : rows)

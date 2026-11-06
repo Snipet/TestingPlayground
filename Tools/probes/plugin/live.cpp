@@ -17,8 +17,9 @@
 //           that stops the listen at once (its reply says it stopped early), the readers back to none
 //   SINCE   get_status's dial lines in their units (a frequency in kHz, a scaled percentage with its number, an int by
 //           its option's name) and its token; with since, each in the third person ("the user moved", never "you"): the
-//           editor's drag of a dial, one line in its units; the host's automation, its two moves of a dial as one line
-//           (its net change); a typed edit, and its diff against the file at the token; RUN; a version and a preset
+//           editor's drag of a dial, one line in its units; the host's automation, its two moves of a dial with a run
+//           between them a line each, on either side of the run's; a typed edit, and its diff against the file at the
+//           token; RUN; a version and a preset
 //           saved and the preset applied (its dials no move); the host's bypass and its end, its transport starting, a
 //           new sample rate; the next call with the new token: nothing; another instance's token: the whole state;
 //           another tool's result starts with the hint while changes wait (the first three named with their values,
@@ -28,7 +29,9 @@
 //           dial alone still a move; a bypass ending after a token: that token's reader reads the end, an older
 //           token's one line, never "still"
 //   NET     a dial moved three times (by the user, the host, the user, back where it started): one line, its net
-//           change, at its first move's place
+//           change, at its first move's place; a dial moved, a preset applied that sets it, the dial moved again: a line
+//           on either side of the preset's, the second from the preset's value; files "changed" with a new file of one
+//           line: "1 line"
 //   LAYOUT  a netlist redrawn (its *@ lines alone): listen says the editor's files play, get_status since says "the
 //           user redrew pedal.cir", and with files "changed" that only its drawing changed (no *@ line in the diff); a
 //           netlist line edited beside it: that line's diff alone
@@ -503,13 +506,17 @@ PROBE(plugin, live)
                                && has(hinted, "get_status with since shows them.)") ? 1 : 0, 1);
         // It names the first three, oldest first, with their values and without their times, and how many more there are.
         const std::string hintLine = hinted.substr(0, hinted.find('\n'));
-        P.eq("since.hint_names_three", has(hintLine, " since the last MCP call here: the user moved cutoff 1.00 kHz -> 2.52 kHz; the host moved mix 50 % -> 80 %")
+        P.eq("since.hint_names_three", has(hintLine, " since the last MCP call here: the user moved cutoff 1.00 kHz -> 2.52 kHz; the host moved mix 50 % -> 30 %")
                                            && has(hintLine, "; the user edited program.fm; +") && has(hintLine, " more. get_status with since shows them.)") ? 1 : 0, 1);
         const std::string since = textOf(a.mcpCall("get_status", object({ { "since", juce::String(token) } })));
         std::printf("get_status since:\n%s", since.c_str());
         P.eq("since.drag_one_line", count(since, "the user moved cutoff 1.00 kHz -> 2.52 kHz\n"), 1);
-        // the host's two moves of mix (30 %, then 80 %) as one line, its net change
-        P.eq("since.host_moved", has(since, "the host moved mix 50 % -> 80 %") && count(since, "moved mix ") == 1 ? 1 : 0, 1);
+        // the host's two moves of mix (30 %, then 80 %), a run between them (which may set dials): a line each, on either
+        // side of the run's, never one net change that would read as if the run came after 80 %
+        const std::size_t mixFirst = since.find("the host moved mix 50 % -> 30 %\n"), ranAt = since.find("the user ran it: "),
+                          mixThen = since.find("the host moved mix 30 % -> 80 %\n");
+        P.eq("since.host_moved", mixFirst != std::string::npos && ranAt != std::string::npos && mixThen != std::string::npos
+                                     && mixFirst < ranAt && ranAt < mixThen && count(since, "moved mix ") == 2 ? 1 : 0, 1);
         P.eq("since.net_said", has(since, "oldest first (a dial's moves as one line, its net change):\n") ? 1 : 0, 1);
         P.eq("since.preset_no_move", has(since, "80 % -> 30 %") ? 0 : 1, 1);
         P.eq("since.edited", has(since, "the user edited program.fm\n") ? 1 : 0, 1);
@@ -599,6 +606,38 @@ PROBE(plugin, live)
             P.eq("net.one_line", count(net, "cutoff"), 1);
             P.eq("net.back_where_it_was", cutoffAt != std::string::npos && has(net.substr(cutoffAt), " kHz (3 times)\n") ? 1 : 0, 1);
             P.eq("net.first_move_place", cutoffAt != std::string::npos && mixAt != std::string::npos && cutoffAt < mixAt ? 1 : 0, 1);
+
+            // A preset between two moves of a dial sets it with no line of its own: a line on either side of the
+            // preset's, the second from the preset's value (5 kHz), so that read oldest first the last says where it is.
+            const std::string beforeBetween = tokenOf(net);
+            knob.beginGesture();
+            knob.setValue01(0.25f);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            P.eq("net.preset_between_applied", q.editorPort().applyPreset("Live probe", "Cutoff only", why) ? 1 : 0, 1);
+            q.poll();
+            knob.beginGesture();
+            knob.setValue01(0.35f);
+            q.poll();
+            knob.endGesture();
+            q.poll();
+            const std::string between = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeBetween) } })));
+            std::printf("get_status since, cutoff moved, a preset, cutoff moved again:\n%s", between.c_str());
+            const std::size_t firstAt = between.find("the user moved cutoff "), presetAt = between.find("the user applied preset \"Cutoff only\"");
+            const std::size_t thenAt = presetAt == std::string::npos ? presetAt : between.find("the user moved cutoff 5.00 kHz -> ", presetAt);
+            P.eq("net.preset_between", count(between, "moved cutoff ") == 2 && firstAt != std::string::npos && presetAt != std::string::npos
+                                           && thenAt != std::string::npos && firstAt < presetAt && !has(between, "(2 times)") ? 1 : 0, 1);
+
+            // files "changed" against a token this journal knows: a new file of one line is "1 line"
+            const std::string beforeMemo = tokenOf(between);
+            const pg::Draft withoutMemo = q.editorPort().draft();
+            pg::Draft memo = withoutMemo;
+            memo.files.push_back({ "memo.fm", "// memo\n" });
+            q.editorPort().setDraft(memo);
+            const std::string memoSince = textOf(a.mcpCall("get_status", object({ { "since", juce::String(beforeMemo) }, { "files", "changed" } })));
+            P.eq("net.one_line_file", has(memoSince, "memo.fm: new since then, 1 line (read_file shows it).\n") ? 1 : 0, 1);
+            q.editorPort().setDraft(withoutMemo);
         }
 
         // ---- LAYOUT ----------------------------------------------------------------------------------------------------

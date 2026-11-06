@@ -637,8 +637,8 @@ namespace playground
                     const auto it = was.find(f.name);
                     if (it == was.end())
                     {
-                        part += f.name + ": new since then, " + std::to_string(textdiff::lines(f.text).size())
-                              + " lines (read_file shows it).\n";
+                        part += f.name + ": new since then, " + linesText(textdiff::lines(f.text).size())
+                              + " (read_file shows it).\n";
                         continue;
                     }
                     // a netlist's drawing (its *@ lines, which Claude leaves alone) is no diff: its netlist's lines are
