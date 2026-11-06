@@ -85,7 +85,11 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <chrono>
+#else
 #include <time.h>
+#endif
 
 namespace pg = playground;
 
@@ -340,11 +344,17 @@ panel accent=orange {
     // A point as drawSpectrum draws it: -84 to 0 dB.
     float drawnDb(float db) { return std::clamp(db, -84.0f, 0.0f); }
 
+    // A clock for a printed cost, in seconds: this thread's CPU time (what the work took, however often a busy machine
+    // put the thread aside); on Windows, whose C runtime has no clock_gettime, the steady clock's wall time.
     double threadSeconds()
     {
+#if defined(_WIN32)
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#else
         timespec ts{};
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
         return static_cast<double>(ts.tv_sec) + 1.0e-9 * static_cast<double>(ts.tv_nsec);
+#endif
     }
 }
 
@@ -1136,7 +1146,7 @@ PROBE(gui, panel)
             worstExact = std::max(worstExact, newExact);
         }
         P.le("spectrum.exact_db", worstExact, 0.003);
-        // An FFT's cost, the old against the new (this thread's CPU time; printed, as the machine may be busy).
+        // An FFT's cost, the old against the new (threadSeconds(); printed, as the machine may be busy).
         {
             fill(3, 48000.0, x);
             constexpr int kRuns = 300;
