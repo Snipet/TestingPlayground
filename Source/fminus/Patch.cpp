@@ -509,12 +509,15 @@ namespace playground
     void Patch::endInstances() noexcept
     {
         const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
-        // Each end within kInitBudget; after one that runs past it, no other (Patch.h, "The loop budget").
-        bool ran = true;
+        // Each end within kInitBudget; after one that runs past it, no other; and none at all once a call has stopped
+        // the Patch, whose state may be any (Patch.h, "The loop budget").
+        bool ran = stopped() == Method::none;
+        endsCalled_ = 0;
         const auto end = [&](auto* fn, void* self) {
             if (!ran || fn == nullptr)
                 return;
             s_->program->setLoopBudget(kInitBudget);
+            ++endsCalled_;
             fn(self);
             ran = !s_->program->loopBudgetExceeded();
         };
@@ -1073,11 +1076,13 @@ namespace playground
         perSample_ = budgetOf(1, rate_) / kBudgetFloor;
         endInstances();
         stop_.store(static_cast<uint8_t>(Method::none), std::memory_order_relaxed);
+        initsCalled_ = 0;
         // Each init within kInitBudget (Patch.h, "The loop budget"): one that runs past it stops the Patch there.
         const auto init = [&](Compiled::Init* fn, void* self, Method call) {
             if (fn == nullptr)
                 return true;
             s_->program->setLoopBudget(kInitBudget);
+            ++initsCalled_;
             fn(self, rate_);
             if (!s_->program->loopBudgetExceeded())
                 return true;
@@ -1205,8 +1210,8 @@ namespace playground
             ? "the plugin stops an init or end past " + grouped(kInitBudget) + " loop iterations (a loop in a function it "
               "calls counts too), so the program does not play"
             : "the plugin stops a call past " + grouped(budgetOf(1, rate) / kBudgetFloor) + " loop iterations a sample at "
-              + std::to_string(std::lround(rate)) + " Hz, sixteen times what a core runs in real time (a loop in a "
-              "function it calls counts too), and plays the program no more";
+              + std::to_string(std::lround(rate)) + " Hz, about what a core runs in real time when an iteration takes a "
+              "cycle (a loop in a function it calls counts too), and plays the program no more";
         return at + ": error: " + callName(call) + " ran past its budget: a loop that never ends?\n" + at + ": note: "
              + note + "\n";
     }

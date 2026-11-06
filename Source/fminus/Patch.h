@@ -129,15 +129,19 @@
 // loops' iterations and its recursive calls against a budget the plugin sets before each call, and a call that runs
 // past it returns early, with every function of the program it was in. A call within its budget computes what it
 // would without it, bit for bit (the checks go in after the optimiser has made every decision). The budget is a count,
-// not a clock, set from the call's samples and the rate: kLoopsPerSecond (2^36, about 69 billion: sixteen times what
-// one core runs in a second, since a loop's branch back takes a cycle at least) for the call's samples at the rate,
-// and kBudgetFloor's worth (16 samples) at least, for a call's own setup (start, stop, a circuit's set(), a voice's
-// part of a few samples): at 48 kHz 1,431,655 iterations a sample, 22.9 million for a call of 16 and 733 million for
-// one of 512. So a call stops only after running many times as long as its samples last, which no program that plays
-// in real time does. A parallel region's threads count apart (each takes at most the budget, FMinus's atomic min), so a
-// call with a region may run its threads' count times as long. init and end (each instance's, and Shared's) run off
-// the audio thread with kInitBudget each (2^32, about 4.3 billion: seconds of a core's work). dsp.budget measures what
-// the checks cost (README, "A loop that never ends"); the frozen copy keeps them.
+// not a clock, set from the call's samples and the rate: kLoopsPerSecond (2^32, about 4.3 billion: about what one
+// core runs in a second of loop iterations that take a cycle each, the fewest an iteration takes) for the call's
+// samples at the rate, and kBudgetFloor's worth (16 samples) at least, for a call's own setup (start, stop, a
+// circuit's set(), a voice's part of a few samples): at 48 kHz 89,478 iterations a sample, 1.43 million for a call of
+// 16, 22.9 million for one of 256 and 183 million for one of 2048. So a call stops only after running about as long
+// as its samples last, and as many times longer as its loop's iteration takes cycles, which no program that plays in
+// real time does; and a call stuck in a loop holds the thread that long: a loop of 50 cycles an iteration about a
+// second for a host's block of 1024 at 48 kHz. Only the effect's call grows with the host's block (one a block); the
+// synth's calls are its voices' parts, of 16 samples at most. A parallel region's threads count apart (each takes at
+// most the budget, FMinus's atomic min), so a call with a region may run its threads' count times as long. init and
+// end (each instance's, and Shared's) run off the audio thread with kInitBudget each (2^32: about a second of a
+// core's work). dsp.budget measures what the checks cost (README, "A loop that never ends"); the frozen copy keeps
+// them.
 //
 // A call that runs past its budget stops the Patch (stopped(): the call it was). The instances are left as the stopped
 // call's optimised code left them, which need be no point of the source (a ring's index past its end), so the Patch
@@ -147,7 +151,10 @@
 // method's line). An init that runs past it stops the Patch too (the instances after it not initialised, and no end for
 // them): compile() then fails with that message, so a program whose init (or Shared's) never ends does not play, as one
 // that does not compile does not. An end that runs past it returns early (what it had to free stays allocated), and
-// the ends after it are not called.
+// the ends after it are not called. Nor does a stopped Patch's reset() or destructor call any end, each instance's or
+// Shared's (a voice may have written Shared): a stopped call may have left the pointers end frees any way (a buffer's
+// front and back made one, which end would free twice), so what init allocated stays allocated, a leak where the
+// alternative is a crash of the host.
 //
 // Threads: compile(), freeze(), ir() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
@@ -198,7 +205,7 @@ namespace playground
         // ---- the loop budget (above) -------------------------------------------------------------------------------
         // The plugin's calls into a program, by method: which one ran past its budget (stopped()).
         enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd };
-        static constexpr double kLoopsPerSecond = 68'719'476'736.0;       // 2^36: a call's budget a second of samples
+        static constexpr double kLoopsPerSecond = 4'294'967'296.0;        // 2^32: a call's budget a second of samples
         static constexpr int kBudgetFloor = 16;                           // samples: a call's least budget
         static constexpr std::int64_t kInitBudget = std::int64_t{ 1 } << 32;   // each init and end
         // A call's budget: `samples` (kBudgetFloor at least) at `rate`.
@@ -257,6 +264,10 @@ namespace playground
         // ran out): what a call took, for dsp.budget. Between calls.
         std::int64_t lastBudget() const noexcept { return lastBudget_; }
         std::int64_t budgetLeft() const noexcept;
+        // The inits and ends the last reset() called (compile() makes the instances with one), each instance's and
+        // Shared's: dsp.budget's count of what a stop leaves uncalled.
+        int initsCalled() const noexcept { return initsCalled_; }
+        int endsCalled() const noexcept { return endsCalled_; }
 
         const Controls& controls() const noexcept { return controls_; }
         // The dials' panel its #pragma panel lines ask for (PanelSpec.h), from the program and the files it includes.
@@ -479,6 +490,7 @@ namespace playground
         std::int64_t perSample_ = 0;                   // the loop budget a sample at rate_ (budgetOf)
         std::int64_t lastBudget_ = 0;                  // the last audio-thread call's
         std::atomic<uint8_t> stop_{ 0 };               // stopped()
+        int initsCalled_ = 0, endsCalled_ = 0;         // initsCalled(), endsCalled()
         uint64_t program_ = 0;
         void* shared_ = nullptr;                       // the module Shared's one instance, or null
         bool sharedInitialised_ = false;
