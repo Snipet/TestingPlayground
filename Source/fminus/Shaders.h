@@ -12,10 +12,14 @@
 // and v_uv (0..1 across, y down) and v_px (px from the top left corner), FunkGui's varyings.
 //
 // buildShader() runs bgfx's shaderc on it (Compiler's thread: about 60 ms; never the audio or the message thread) into
-// the binary FunkGui's ShaderLibrary takes. shaderc's errors come back as a note's text on the file's own line.
+// the binary FunkGui's ShaderLibrary takes. shaderc's errors come back as a note's text on the file's own line. The
+// Compiler then has the renderer check the binary there too (ShaderTools::check: FunkGui's shaders::check, on macOS
+// Metal's own compiler, milliseconds and more), so that the Panel's shaders::set() on the message thread compiles
+// nothing; a binary the renderer refuses is a note too, and not handed on.
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -37,6 +41,9 @@ namespace playground
         std::string prelude;                  // funkgui::shaders::fragmentPrelude()
         std::string varyingDef;               // funkgui::shaders::varyingDef()
         std::string bgfxShaderSh;             // funkgui::shaders::bgfxShaderSh()
+        // funkgui::shaders::check (any thread): whether the renderer takes a binary, else why; none: not checked here
+        // (the Panel's shaders::set() checks it).
+        std::function<bool(const std::vector<uint8_t>& binary, std::string& why)> check;
         bool usable() const noexcept { return !shaderc.empty() && !prelude.empty() && !varyingDef.empty(); }
     };
 

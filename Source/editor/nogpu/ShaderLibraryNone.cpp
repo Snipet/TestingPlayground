@@ -16,6 +16,12 @@ namespace funkgui::shaders
         return false;
     }
 
+    bool check(const void*, uint32_t, std::string& why)
+    {
+        why = "this build has no GPU renderer: shaders draw as placeholders";
+        return false;
+    }
+
     void remove(uint32_t) {}
 
     bool has(uint32_t) { return false; }

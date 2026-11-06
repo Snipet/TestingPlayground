@@ -15,7 +15,22 @@ namespace playground
 {
     namespace
     {
-        // The panel's shaders built (their binaries in it), each from its file; a failure appended to `notes`.
+        // The renderer's reason, as one line of a note (Metal's log after FunkGui's sentence, joined and cut).
+        std::string noteLine(const std::string& why)
+        {
+            std::string out;
+            for (const char c : why)
+                out += c == '\n' || c == '\r' || c == '\t' ? ' ' : c;
+            while (out.find("  ") != std::string::npos)
+                out.erase(out.find("  "), 1);
+            if (out.size() > 400)
+                out = out.substr(0, 397) + "...";
+            return out;
+        }
+
+        // The panel's shaders built (their binaries in it), each from its file, and checked by the renderer here, on
+        // the compiler's thread (ShaderTools::check: the Panel's shaders::set() then compiles nothing on the message
+        // thread); a failure appended to `notes`, and the shader left without a binary.
         void buildShaders(PanelSpec& panel, const Sources& files, const ShaderTools& tools, ShaderCache& cache,
                           std::string& notes)
         {
@@ -25,7 +40,15 @@ namespace playground
                 if (f == files.end())
                     continue;                            // GuiSpec said so
                 const ShaderBuild b = cache.build(sh.file, f->text, sh.inputs, tools);
-                if (b.ok())
+                std::string refused;
+                if (b.ok() && tools.check && !tools.check(b.binary, refused))
+                {
+                    const std::string line = sh.file + ":1:1: note: the GPU refused it: "
+                                           + (refused.empty() ? std::string("no reason given") : noteLine(refused)) + "\n";
+                    if (notes.find(line) == std::string::npos)
+                        notes += line;
+                }
+                else if (b.ok())
                 {
                     sh.binary = b.binary;
                     sh.id = shaderId(sh.binary);

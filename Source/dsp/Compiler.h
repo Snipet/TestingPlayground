@@ -23,8 +23,10 @@
 // beside the compiles: a RUN never waits for it.
 //
 // A program that plays and has a .gui file with shaders gets them built too (fminus/Shaders.h: shaderc, with the
-// tools setShaderTools gave; a shader seen before comes from the cache): their binaries go into the status's panel
-// (PanelShader::binary), and a shader that does not compile is a note on its own file's line.
+// tools setShaderTools gave; a shader seen before comes from the cache) and checked by the renderer here, on this
+// thread (ShaderTools::check: on macOS Metal's own compile, which the editor's shaders::set() then skips): their
+// binaries go into the status's panel (PanelShader::binary), and a shader that does not compile, or that the renderer
+// refuses, is a note on its own file's line.
 //
 // The IR (Patch.h, "The IR"; the editor's IR view). While someone looks (setIrWanted: the editor's IR tab is open), a
 // RUN keeps the program's LLVM IR, as lowered and as optimised (Patch::compile's keepIr), and the freezer the frozen

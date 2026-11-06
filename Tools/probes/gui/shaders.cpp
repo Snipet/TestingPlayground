@@ -11,7 +11,8 @@
 // and checks:
 //   PROMPT    the system prompt's shader example is there, and it builds
 //   BUILD     a program whose panel.gui has a shader of its own file runs with no note; the shader's binary is in the
-//             status's panel, under its bytes' hash; run again, the same (the cache)
+//             status's panel, under its bytes' hash; run again, the same (the cache); the renderer checked it on the
+//             compiler's thread (shaders::check), so the Panel's shaders::set() runs Metal's compiler not once
 //   ERRORS    a shader that does not compile is a note on its own file's line (the name it does not know found in
 //             the file), and the program still plays; a shader of no file, and a fifth one, are notes of the .gui file
 //   PANEL     the Panel registers the built shader with FunkGui (shaders::has) and shows it over its cell; its inputs
@@ -54,6 +55,13 @@
 #include <vector>
 
 namespace pg = playground;
+
+// FunkGui's count of the times shaders::check() and set() ran Metal's compiler (its src/gpu/ShaderLibraryDetail.h;
+// 0 off macOS): BUILD checks that the Panel's set() runs none, the compiler's thread having checked the code.
+namespace funkgui::shaders::detail
+{
+    uint64_t metalCompileCount();
+}
 
 namespace
 {
@@ -234,8 +242,12 @@ PROBE(gui, shaders)
             std::printf("the prompt's example:\n%s", b.error.c_str());
         P.eq("prompt.example_builds", b.ok() ? 1 : 0, 1);
         std::string why;
-        P.eq("prompt.example_taken", b.ok() && funkgui::shaders::set(pg::shaderId(b.binary), b.binary.data(),
-                                                                       static_cast<uint32_t>(b.binary.size()), why) ? 1 : 0, 1);
+        const auto t0 = std::chrono::steady_clock::now();   // a code nobody checked: set() runs Metal's compiler here
+        const bool taken = b.ok() && funkgui::shaders::set(pg::shaderId(b.binary), b.binary.data(),
+                                                           static_cast<uint32_t>(b.binary.size()), why);
+        std::printf("shaders::set() of a code not checked before: %.2f ms\n",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        P.eq("prompt.example_taken", taken ? 1 : 0, 1);
         if (!why.empty())
             std::printf("FunkGui: %s\n", why.c_str());
     }
@@ -257,7 +269,11 @@ PROBE(gui, shaders)
                              { "moving.sc", kMoving }, { "broken.sc", kBroken } };
     load(processor, files);
     processor.settle();
-    host.tick(2);
+    const uint64_t compiledBefore = funkgui::shaders::detail::metalCompileCount();
+    const auto registering = std::chrono::steady_clock::now();
+    host.tick(2);                                        // the Panel registers them (shaders::set, the message thread)
+    const double registerMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - registering).count();
+    const uint64_t compiledBySet = funkgui::shaders::detail::metalCompileCount() - compiledBefore;
     host.settle(60);
     const pg::CompileStatus s = port.status();
     std::printf("notes:\n%s", s.notes.c_str());
@@ -267,6 +283,9 @@ PROBE(gui, shaders)
     P.eq("build.binaries", built ? 1 : 0, 1);
     P.eq("build.ids", built && s.panel.shaders[0].id == pg::shaderId(s.panel.shaders[0].binary) && s.panel.shaders[0].id != 0 ? 1 : 0, 1);
     P.eq("build.no_note_for_good_ones", has(s.notes, "still.sc") || has(s.notes, "moving.sc") ? 0 : 1, 1);
+    std::printf("Metal compiles in the Panel's shaders::set(): %llu (its two frames %.2f ms)\n",
+                static_cast<unsigned long long>(compiledBySet), registerMs);
+    P.eq("build.set_compiles_nothing", static_cast<int64_t>(compiledBySet), 0);   // checked on the compiler's thread
     P.eq("errors.broken_note", has(s.notes, "broken.sc:5:1: note: the shader does not compile:")
                                    && has(s.notes, "undefinedThing") ? 1 : 0, 1);
     P.eq("errors.broken_unbuilt", s.panel.shaders.size() == 3 && s.panel.shaders[2].binary.empty() ? 1 : 0, 1);

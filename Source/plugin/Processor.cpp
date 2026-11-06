@@ -85,6 +85,11 @@ namespace playground
             t.platform = "linux";
             t.profile = "spirv";
 #endif
+            // The renderer's own check of a built shader (on macOS Metal's compiler), on the compiler's thread: the
+            // message thread's shaders::set() then finds the code checked and compiles nothing (FunkGui v0.25.0).
+            t.check = [](const std::vector<uint8_t>& binary, std::string& why) {
+                return funkgui::shaders::check(binary.data(), static_cast<uint32_t>(binary.size()), why);
+            };
             return t;
         }
         const juce::Identifier kParamId{ "id" }, kParamValue{ "value" };   // the APVTS's <PARAM id value> children
