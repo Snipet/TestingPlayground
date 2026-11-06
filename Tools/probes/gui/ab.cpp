@@ -20,7 +20,8 @@
 //   ATTACH   another editor made while it plays (the window opened again: here PAPER's) shows its card at once, as it
 //            is, nothing started again
 //   SCROLL   Tab shows the next file; the wheel and End scroll a long diff, Home back
-//   A11Y     the card's items: the versions' rows and chips, the files' tabs, Play A and Play B, Keep B
+//   A11Y     the card's items: the versions' rows and chips, the files' tabs, Play A and Play B, Keep B; its ids in a
+//            range of their own, apart from the other cards' (PROJECTS', EXPORT's, Settings')
 //   KEEP     Keep B: the card closes, the status says so, the editor shows B's files and one Cmd-Z gives the files before
 //            it back (one undo step across the tabs), the project open is that version
 //   ESCAPE   opened again, Escape closes it and what played before plays again
@@ -28,8 +29,10 @@
 #include "Probe.h"
 
 #include "editor/AbCard.h"
+#include "editor/ExportCard.h"
 #include "editor/Panel.h"
 #include "editor/ProjectBrowser.h"
+#include "editor/SettingsCard.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -331,9 +334,18 @@ PROBE(gui, ab)
 
     // ---- A11Y ----------------------------------------------------------------------------------------------------------
     {
-        bool row = false, chip = false, tab = false, playA = false, keepB = false;
+        bool row = false, chip = false, tab = false, playA = false, keepB = false, ownRange = true;
+        // Each card's ids are its base and the 0x10000 after it.
+        const std::vector<uint32_t> bases{ pg::ui::AbCard::kA11yBase, pg::ui::ProjectBrowser::kA11yBase,
+                                           pg::ui::ExportCard::kA11yBase, pg::ui::SettingsCard::kA11yBase };
+        bool apart = true;
+        for (std::size_t i = 0; i < bases.size(); ++i)
+            for (std::size_t j = i + 1; j < bases.size(); ++j)
+                apart = apart && (bases[i] > bases[j] ? bases[i] - bases[j] : bases[j] - bases[i]) >= 0x10000u;
         for (const funkgui::A11yItem& it : host.accessibility())
         {
+            if (it.title == "Keep B" || it.title == "Version 2" || it.title == "gain.fm +1 -1")
+                ownRange = ownRange && it.id >= pg::ui::AbCard::kA11yBase && it.id - pg::ui::AbCard::kA11yBase < 0x10000u;
             row = row || (it.role == funkgui::A11yRole::listItem && it.title == "Version 2" && it.value.rfind("B", 0) == 0);
             chip = chip || (it.role == funkgui::A11yRole::radioButton && it.title == "Current as A" && it.checked);
             tab = tab || (it.role == funkgui::A11yRole::toggleButton && it.title == "gain.fm +1 -1" && it.checked);
@@ -341,6 +353,7 @@ PROBE(gui, ab)
             keepB = keepB || (it.role == funkgui::A11yRole::button && it.title == "Keep B");
         }
         P.eq("a11y.items", row && chip && tab && playA && keepB ? 1 : 0, 1);
+        P.eq("a11y.ids_apart", apart && ownRange ? 1 : 0, 1);
     }
 
     // ---- KEEP ----------------------------------------------------------------------------------------------------------

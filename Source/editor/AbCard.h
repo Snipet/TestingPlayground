@@ -39,7 +39,7 @@ namespace playground::ui
     class AbCard
     {
     public:
-        static constexpr uint32_t kA11yBase = 0x7FFC0000u;   // its accessibility ids, past every item's
+        static constexpr uint32_t kA11yBase = 0x7FFB0000u;   // its accessibility ids, past every item's (and the other cards')
         static constexpr int kContext = 3;                   // lines around a change
         static constexpr int kMaxDiffRows = 6000;            // a file's diff, at most (the rest said in one row)
 
