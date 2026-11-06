@@ -19,6 +19,7 @@
 //   gui.schematic.own.png      a program that calls screamer.cir's set() itself: no knobs, the info strip saying why
 //   gui.schematic.probes.png   Play this circuit's program for diodetone.cir playing (an effect's 1 kHz sine, a synth's
 //                              A4): net a's readout card and two pinned lanes (c, b), each a steady triggered trace
+// (empty.png and dials.png once the check while typing is over: no "Checking..." in a picture, run after run)
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
 //             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
@@ -181,10 +182,10 @@ namespace
             return inc + "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
     }
 
-    // Ticks (and lets the compiler's thread work) until `done`, a second and a half at most.
-    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done)
+    // Ticks (and lets the compiler's thread work) until `done`, a second and a half at most (by default).
+    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done, int tries = 300)
     {
-        for (int k = 0; k < 300; ++k)
+        for (int k = 0; k < tries; ++k)
         {
             host.tick(1);
             if (done())
@@ -192,6 +193,16 @@ namespace
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         return false;
+    }
+
+    // The check while typing over: none due, none on the compiler's thread, its outcome landed and the frame settled
+    // after it, so the status line has no "Checking..." and a picture taken now is the same run after run (ten seconds
+    // at most: the machine may be busy).
+    bool checkSettled(funkgui::HeadlessHost& host, pg::ui::CodeAssist& code)
+    {
+        const bool done = waitFor(host, [&] { return !code.checking() && code.settled(); }, 2000);
+        host.settle();
+        return done && !code.checking();
     }
 
     // A planted netlist: the input u on in, R1 in-a, C1 a-0, R2 a-out, the output vout on out.
@@ -906,6 +917,7 @@ PROBE(gui, schematic)
             host.settle();
             P.eq("empty.start_offered", v.centreOfStart() ? 1 : 0, 1);
             P.eq("empty.hint", v.stripLeft() == "An empty netlist" ? 1 : 0, 1);
+            P.eq("empty.checked", checkSettled(host, panel.codeAssist()) ? 1 : 0, 1);   // the picture the same each run
             writePng(P, host, "gui.schematic.empty.png", "empty");
             const funkgui::Point s = v.centreOfStart().value_or(funkgui::Point{});
             host.click(s.x, s.y);
@@ -1913,6 +1925,7 @@ PROBE(gui, schematic)
                       && v.canvasRect().contains(v.centreOfPart(part).value_or(none));
             P.eq("dials.knobs_on_canvas", inside ? 1 : 0, 1);
         }
+        P.eq("dials.checked", checkSettled(host, panel.codeAssist()) ? 1 : 0, 1);   // the picture the same each run
         writePng(P, host, "gui.schematic.dials.png", "dials");
         frame(v, host);                           // 100 %, the drawing centred: room in the canvas's lower left
         host.settle();
