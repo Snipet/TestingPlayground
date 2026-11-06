@@ -664,7 +664,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   changes, drags merged, under its own mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`; each
   token handed out is a new one), and `since` lists what changed after it, in the third person ("the user moved", "the
   host", "the plugin's own chat": a "you" reads as the Claude reading it), a dial's moves as one line, its net change
-  (first -> last, at its first move's place, with who and how many times), the files as diffs (`dsp/TextDiff.h`)
+  (first -> last, at its first move's place, with who and how many times) up to a change that sets dials with no line
+  of each (`Journal::dialsNote`: a run that compiled, a version opened, a preset applied, a fresh start, a state
+  loaded; a move after it is a line after it, never merged across it), the files as diffs (`dsp/TextDiff.h`)
   against their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). The session keeps those
   tokens with their files' hashes and lines (`ChatAgent::mcpMarksToKeep`, Live.h's `KeptMark`, the state's `<MCP>`):
   in the plugin opened again (a new journal, which knows no token from before) they are `mcpKept_`, and `since` with

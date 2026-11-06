@@ -30,9 +30,9 @@
 //            renders, in the user's theme, what view_panel's picture of it shows, pixel for pixel but the displays and
 //            the live= marks (the sandbox's demo values against the processor's silence), within a small bound
 //            (gui.sandbox.example.png, .example.view.png); reading the instance leaves the plugin's record of what
-//            MCP was told alone (the user's change still starts the next result)
-//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; the
-//            user's change since the last MCP call said first
+//            MCP was told alone (the host's change still starts the next result)
+//   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; a dial
+//            the host moved since the last MCP call said first
 //   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
