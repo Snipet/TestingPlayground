@@ -599,14 +599,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   b), and the result's first line says nothing changed: these tools stay out of `kChangingTools`. compare
   (`ChatCompare`, `dsp/Compare.h`) renders two sources in two Sessions with one request; its "playing" is the
   program's own code, never the frozen copy, and it says so; its "previous_run" is what played before the last run
-  that changed it (`ChatHost::chatPrevious`: the processor's `previous_`, set in `apply` when the sources change, a
-  netlist's drawing aside; before `poll()` takes a run, the `running_` it replaces; in memory only, none until a
-  second program has played). Its `b_rate` renders B at another rate (Comparison::twoRates): no sample lines up with
-  another, so it compares the levels, the octave bands, the metrics and the detail's level per part, never the
+  that changed it (`ChatHost::chatPrevious`: the processor's `previous_`, set in `apply` when a run changes the
+  sources, a netlist's drawing aside; before `poll()` takes a run, the `running_` it replaces; in memory only, none
+  until a run has changed the program since the plugin opened or loaded a state: `apply`'s `loaded`, the
+  constructor's Init and `setStateInformation`'s program, clears it). Its `b_rate` renders B at another rate
+  (Comparison::twoRates), both rates at least 40 kHz (`measure::kMinRateAcross`, else refused: 20 Hz to 20 kHz on
+  both sides, so an effect's sweep, its centroids' band and the picture's axis are the same): no sample lines up
+  with another, so it compares the levels, the octave bands, the metrics and the detail's level per part, never the
   samples, gain or lag; the metrics a rate moves by their definition set aside and named (step; an effect's
   noise_gain_db, noise_lufs and impulse_peak_db: white noise and a one-sample impulse spread over the rate's whole
   band), and inharmonic_db under its -90 dB floor on both sides agreeing; an effect's input the sweep, noise and the
-  impulse refused, and never a recording (its events are at its own rate).
+  impulse refused, and never a recording (its events are at its own rate). A `b_rate` equal to A's rate is the
+  ordinary comparison, none of these refused; the picture places each spectrum column by its own view's frequency.
 - **trace** (`dsp/Debug.h`, `plugin/ChatTrace.cpp`): offline only, in a Session's own Engine, never the one that plays
   (`Engine::playingPatch` and `voices` are offline accessors). Its render is measure_output's (`scenario::renderOf`:
   the notes, the velocity, the times, the host's tempo, the wheels, the dials asked for and the scenario; the same
