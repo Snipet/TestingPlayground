@@ -34,7 +34,7 @@
 //   BACK       the code window's button (or its close: the session in) brings the editor back: the same TextEditor, the
 //              text typed out there and the undo steps made there (Claude's write merged there, the typing), the
 //              explorer and the editor in place, the actions back; the session in
-//   IR         the IR tab open goes out and comes back with the editor; the processor keeps the IR meanwhile
+//   IR         the IR tab opened in the code window (none in the editor's window's copy) comes back with the editor
 //   KEPT       the state carries the window's choice, size and place to another processor; a state from before it has
 //              the editor in; sizes out of range are none; an editor that goes while the editor is out leaves the
 //              session out, and the next one's owner takes the editor out again at its first look, the code window at
