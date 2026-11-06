@@ -184,6 +184,9 @@ namespace playground
         virtual double chatHostRate() const { return 0.0; }
         virtual int chatHostBlock() const { return 0; }
         virtual std::string chatProject() const { return {}; }
+        // The user's A/B listening (EditorPort::ab) in words, one line ("" while there is none): its sides, the one that
+        // plays, the dials, the loudness. Any thread (a copy under its own mutex): get_status and plugin_state say it.
+        virtual std::string chatAb() const { return {}; }
     };
 
     class ChatAgent final : public ChatPort

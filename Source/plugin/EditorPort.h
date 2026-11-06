@@ -83,12 +83,24 @@
 //                     newest only; exportFolder() where a chooser starts (the Desktop)
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
 //                     not opened
+//   ab()              A/B listening (AbState below; editor/AbCard.h): two sides, each the editor's files as they were
+//                     when it began ("Current") or a saved version of a project, played in turn while the host plays
+//                     (each a run of its files: the draft stays as it is), the louder turned down to the quieter's
+//                     loudness. startAb() begins one (A plays first, unless B is what plays already), setAbSides()
+//                     changes its sides, playAb() plays a side, setAbOwnDials() gives each side its own dials (a
+//                     version's saved ones, Current's as they were; each side's moves kept while it lasts) or the same
+//                     dials for both, setAbMatch() turns the matched loudness on or off. keepAb() makes a side current
+//                     (its files the draft: an open editor merges them as one undo step; a version's the project open)
+//                     and ends it; endAb() ends it as it was before: what played then plays again, and its dials
+//                     when each side had its own. A program that runs from elsewhere (Claude's, a session loaded) ends
+//                     it too (AbState::ended says so). abRevision() is ab().revision, cheaply
 //   chat()            the chat with Claude (ChatPort.h)
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
 //   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
 #pragma once
 
+#include <array>
 #include <cctype>
 #include <string_view>
 
@@ -334,6 +346,33 @@ namespace playground
         bool created = false;                    // a new project
     };
 
+    // A/B listening (EditorPort::ab): its two sides and how it plays them.
+    struct AbSide
+    {
+        int version = 0;                         // the version's number in the project; 0: Current, the editor's files
+                                                 // as they were when it began
+        std::string label;                       // "Current", "v3"
+        std::string note;                        // the version's note ("program.fm +12 -3"), or what Current is
+        Sources files;
+    };
+    struct AbState
+    {
+        bool on = false;
+        std::string project;                     // whose versions the sides are ("" for none: Current alone)
+        std::array<AbSide, 2> sides{};           // A and B
+        int playing = -1;                        // the side that plays: 0 A, 1 B; -1 neither yet
+        int pending = -1;                        // the side whose compile is on its way (-1: none)
+        bool ownDials = false;                   // each side its own dials; else the same dials for both
+        bool match = true;                       // the louder side turned down to the quieter's loudness
+        bool measuring = false;                  // the loudness is being measured (offline, off the message thread)
+        std::array<double, 2> lufs{ 0.0, 0.0 };  // each side's loudness as measured (BS.1770, LUFS); NaN until then
+        std::array<float, 2> trimDb{ 0.0f, 0.0f };   // the output's gain while that side plays (<= 0 dB; 0 unmatched)
+        std::string why;                         // one line: a side that does not compile
+        std::string unmatched;                   // why the loudness is not matched, once measured ("" when it is)
+        std::string ended;                       // why it ended when it ended on its own (another program ran), else ""
+        uint64_t revision = 0;                   // bumps whenever any of the above changes
+    };
+
     class EditorPort
     {
     public:
@@ -404,6 +443,17 @@ namespace playground
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
         virtual std::string exportFolder() const = 0;
+        // A/B listening (AbState). Sides are version numbers of `project` (0: Current). False, with why, when a version is
+        // not kept (startAb, setAbSides) or none is on (keepAb).
+        virtual AbState ab() const = 0;
+        virtual uint64_t abRevision() const = 0;         // AbState::revision, without the copy
+        virtual bool startAb(const std::string& project, int a, int b, std::string& why) = 0;
+        virtual bool setAbSides(int a, int b, std::string& why) = 0;
+        virtual void playAb(int side) = 0;
+        virtual void setAbOwnDials(bool own) = 0;
+        virtual void setAbMatch(bool on) = 0;
+        virtual bool keepAb(int side, std::string& why) = 0;
+        virtual void endAb() = 0;
         // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
         // whether Claude Desktop is talking to it now.
         virtual std::string desktopName() const = 0;

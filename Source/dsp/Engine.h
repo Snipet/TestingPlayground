@@ -193,6 +193,9 @@ namespace playground
         std::array<uint8_t, wheelcc::kStateCcs> wheelCcs() const noexcept;
         // At most prepare()'s maxBlockSize samples (the processor cuts a host's larger block); events sorted by offset.
         void process(float* const* channels, int numChannels, int numSamples, std::span<const Event> events) noexcept;
+        // The program that plays (Patch::program; 0 for none), as of the last process call: the audio thread's own (the
+        // processor's A/B trim reads it after each call), or offline.
+        uint64_t playingProgram() const noexcept { return current_ != nullptr ? current_->program() : 0; }
 
         // ---- off the audio thread --------------------------------------------------------------------------------
         void offer(std::unique_ptr<Patch> patch);     // plays from the next block, as above

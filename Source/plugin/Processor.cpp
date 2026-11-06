@@ -372,6 +372,8 @@ namespace playground
         capture_.prepare(engine_.rate(), maxBlock_);             // a recording under way ends here
         wet_.prepare(engine_.rate());                            // fsdsp::kFadeMs, 20 ms
         wetSet_ = false;
+        trimFade_.prepare(engine_.rate());
+        trimSet_ = false;
         weight_.assign(static_cast<std::size_t>(maxBlock_), 0.0f);
         if constexpr (!product::kIsInstrument)
             dry_.assign(static_cast<std::size_t>(kMaxChannels) * static_cast<std::size_t>(maxBlock_), 0.0f);
@@ -419,6 +421,7 @@ namespace playground
             capture_.input(channels.data(), numCh, len);
             engine_.process(channels.data(), numCh, len, std::span<const Event>(events_.data(), numEvents));
             capture_.output(channels.data(), numCh, len);
+            trimOutput(channels.data(), numCh, len);             // the A/B's matched loudness (ProcessorAb.cpp)
             if (!engineOnly)
                 bypassMix(channels.data(), numCh, len);
             numEvents = 0;
@@ -1082,13 +1085,18 @@ namespace playground
             if (s.ok && dialsRequest_ != 0 && s.request == dialsRequest_)
                 given = givenByName(s.controls, s.panel.options, projectDials_);
             else if (s.ok && defaultsRequest_ != 0 && s.request == defaultsRequest_)
+            {
                 for (int c = 0; c < kMaxControls; ++c)
                     if (const Control& k = s.controls[static_cast<std::size_t>(c)]; k.used)
                     {
                         given.plain[static_cast<std::size_t>(c)] = k.def;
                         given.slots |= 1u << c;
                     }
+            }
+            else if (s.ok && abDialsRequest_ != 0 && s.request == abDialsRequest_)
+                given = givenByName(s.controls, s.panel.options, abDials_);   // an A/B side's own (ProcessorAb.cpp)
             apply(s, true, false, given);
+            abLanded(s);
             if (s.request == userRun_.load() && s.request != journaled_)
             {
                 journaled_ = s.request;                          // a refine's status answers it again (Compiler.h)
@@ -1108,7 +1116,13 @@ namespace playground
                     setDialsToDefaults(s.controls);              // the unused slots' too
                 defaultsRequest_ = 0;
             }
+            if (abDialsRequest_ != 0 && s.request >= abDialsRequest_)
+            {
+                abDials_.clear();
+                abDialsRequest_ = 0;
+            }
         }
+        abMatched();                                             // the A/B's loudness, once measured
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
         std::vector<std::pair<int, float>> dials;
         {

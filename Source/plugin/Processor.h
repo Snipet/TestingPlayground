@@ -24,6 +24,9 @@
 //   - the folder (FolderSync.h): the program's files mirrored to a folder under the projects' (Folders/<name>) for VS
 //     Code or any editor, synced both ways on the timer, kept in the session while it is on (<FOLDER name=".."
 //     run="1"/>; a state without one leaves the folder as it is).
+//   - A/B listening (ProcessorAb.cpp; EditorPort::ab): two versions of a project, or the editor's files and a
+//     version, played in turn as runs of their files, the louder turned down on the Engine's output (AbMatch.h measures
+//     them offline), until one is kept (its files the draft) or it ends; never in the session.
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -49,6 +52,7 @@
 // and the probes call themselves; it also clears the alerts after two seconds.
 #pragma once
 
+#include "plugin/AbMatch.h"
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -252,6 +256,15 @@ namespace playground
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
         std::string exportFolder() const override;
+        AbState ab() const override;
+        uint64_t abRevision() const override { return ab_.st.revision; }
+        bool startAb(const std::string& project, int a, int b, std::string& why) override;
+        bool setAbSides(int a, int b, std::string& why) override;
+        void playAb(int side) override;
+        void setAbOwnDials(bool own) override;
+        void setAbMatch(bool on) override;
+        bool keepAb(int side, std::string& why) override;
+        void endAb() override;
         std::string desktopName() const override { return mcp_ != nullptr ? mcp_->name() : std::string(); }
         bool desktopConnected() const override { return mcp_ != nullptr && mcp_->connected(); }
         ChatPort& chat() override { return chat_; }
@@ -317,6 +330,7 @@ namespace playground
         double chatHostRate() const override;
         int chatHostBlock() const override;
         std::string chatProject() const override;
+        std::string chatAb() const override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -342,6 +356,47 @@ namespace playground
         uint64_t dialsRequest_ = 0;
         // A fresh start's compile (startAfresh): every dial to its default when it lands (poll; message thread).
         uint64_t defaultsRequest_ = 0;
+        // A/B listening (ProcessorAb.cpp; EditorPort::ab), the message thread's: what it shows (`st`), each side's dials (its
+        // own, by name: a version's saved ones, Current's as they were, then as the user left them on that side), its
+        // circuits' answers (a version's, restored before it compiles), the request that compiled each side last and the
+        // program that plays it (the trim's key: a refine's when the self-test compiled it again), what played before it
+        // began (its files, program and dials: endAb's), the requests it made (a program that lands from any other ends
+        // it, once its request is past `seenRequest`, the newest known when it began), the side's compile on its way, the
+        // loudness job asked for last.
+        struct AbRun
+        {
+            AbState st;
+            std::array<std::vector<projectstore::Dial>, 2> dials, saved;   // as they play; a version's as saved
+            std::array<std::vector<projectstore::Answer>, 2> answers;
+            std::array<int, 2> active{};                         // each side's tab shown
+            Sources currentFiles;                                // Current: the draft when it began, its tab, its dials
+            int currentActive = 0;
+            std::vector<projectstore::Dial> currentDials;
+            int latest = 0;                                      // the project's newest version then
+            std::array<uint64_t, 2> request{}, program{};
+            Sources beforeFiles;
+            uint64_t beforeProgram = 0;
+            std::vector<projectstore::Dial> beforeDials;
+            std::vector<uint64_t> requests;
+            uint64_t seenRequest = 0;
+            uint64_t pendingRequest = 0;
+            uint64_t job = 0;
+        };
+        AbRun ab_;
+        uint64_t abJobs_ = 0;
+        // A side's dials (its own), for when its compile lands (poll), as a version's are; ends with the next request past it.
+        std::vector<projectstore::Dial> abDials_;
+        uint64_t abDialsRequest_ = 0;
+        ab::Matcher abMatcher_;                                  // the loudness (AbMatch.h), on a thread of its own
+        mutable std::mutex abLineMutex_;
+        std::string abLine_;                                     // the A/B in words, for Claude (chatAb: any thread)
+        void abLanded(const CompileStatus& s);                   // poll(): a compile landed
+        void abMatched();                                        // poll(): the loudness measured, when it is
+        void abMeasure();                                        // the loudness asked for again (both sides' as they play)
+        void abPublish();                                        // the trims to the audio thread, the line for Claude
+        void abStop();                                           // it ends: nothing more measured, the trims away
+        void abPlay(int side, bool journal);
+        bool abSide(const projectstore::Project* p, int version, int k, std::string& why);   // side k read
         void setDialsToDefaults(const Controls& cs);
         std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
@@ -433,6 +488,20 @@ namespace playground
         int maxBlock_ = 1;
         int largestCall_ = 0;
 
+        // A/B listening's matched loudness (ProcessorAb.cpp): the program each side plays and its gain (the message
+        // thread writes the gain, then the program; 0: none), and, the audio thread's, the gain as it ramps from one to
+        // the next over 20 ms (smootherstep, one tick per sample) when the program that plays has another. The Engine's
+        // output only (after the recorder, before the bypass), so the meters, the scopes and a recording are untrimmed.
+        struct AbTrim
+        {
+            std::atomic<uint64_t> program{ 0 };
+            std::atomic<float> gain{ 1.0f };
+        };
+        std::array<AbTrim, 2> abTrim_{};
+        fsdsp::SmoothRamp trimFade_{};
+        float trimFrom_ = 1.0f, trimTo_ = 1.0f, trimNow_ = 1.0f;
+        bool trimSet_ = false;
+        void trimOutput(float* const* channels, int numChannels, int numSamples) noexcept;
         // The bypass: w, the Engine's share of the output, 1 while processing and 0 while bypassed, ramped over 20 ms
         // between them (one tick per sample, so the fade does not depend on how the host splits its blocks).
         fsdsp::SmoothRamp wet_{};
