@@ -2729,6 +2729,7 @@ namespace playground::ui
     Panel::Panel(std::span<funkgui::ParamPort* const> ports, EditorPort& port, bool picture) : port_(port), ownsProbes_(!picture)
     {
         port_.addMeterReader();                      // the displays read the meters and the scopes while it lives
+        feed_ = std::make_unique<DisplayFeed>();         // their samples and spectra, sized once
         seenSettingsAsk_ = port_.settingsAsked();        // the app's requests from now on open SETTINGS
         title_ = upper(product::kName);
         subtitle_ = std::string(product::kIsInstrument ? "Instrument" : "Effect") + "  v" + product::kVersion + "  FMinus";
@@ -5528,7 +5529,7 @@ namespace playground::ui
                 std::fill(out, out + (n - have), 0.0f);
                 std::copy(s.end() - have, s.end(), out + (n - have));
             };
-            updateDisplays(items_, itemOfDisplay_, shown, scope, scopeIn_, scopeOut_, dt);
+            updateDisplays(items_, itemOfDisplay_, shown, scope, *feed_, dt);
             // The controls' live= marks (none until the audio thread plays this program, but a state's taps: drawn as
             // asked) and the shaders' inputs.
             uint32_t stateTaps = 0;

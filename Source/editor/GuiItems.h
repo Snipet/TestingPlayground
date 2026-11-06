@@ -403,7 +403,8 @@ namespace playground::ui
     // a dark ground, dark on a light one) on that ground; with an accent=, that accent.
     funkgui::Theme guiTheme(const funkgui::Theme& th, const GuiTree& gui);
 
-    // An analyser's curve (DisplayItem: a spectrum), `db` across its cell from 20 Hz to 20 kHz, -84 to 0 dB.
+    // An analyser's curve (DisplayItem: a spectrum), `db` across its cell from 20 Hz to 20 kHz, -84 to 0 dB (its first
+    // 256 points at most).
     void drawSpectrum(funkgui::Canvas& c, const funkgui::Theme& th, const funkgui::Rect& cell, const char* label,
                       const float* db, int n, funkgui::Col color, bool tinted);
 }

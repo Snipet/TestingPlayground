@@ -5,9 +5,10 @@
 #include "editor/Looks.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
-#include <complex>
 #include <cstdio>
+#include <cstring>
 #include <numbers>
 
 namespace playground::ui
@@ -84,67 +85,178 @@ namespace playground::ui
             return "";
         }
 
-        // An in-place radix-2 FFT of n (a power of two) complex values.
-        void fft(std::vector<std::complex<float>>& a)
+        // The spectrum's FFT: kScopeSamples real samples as kHalf complex ones (the even samples real, the odd
+        // imaginary), a radix-2 FFT of those, then split into the real signal's bins 0 to kHalf.
+        constexpr int kFftSize = DisplayItem::kScopeSamples;
+        constexpr int kHalf = kFftSize / 2;
+        constexpr int kHalfBits = std::countr_zero(static_cast<unsigned>(kHalf));
+        static_assert(std::has_single_bit(static_cast<unsigned>(kFftSize)) && kHalf >= 8);
+
+        // The tables every Spectrum reads, made once for the process (the size is fixed) and never written after.
+        struct FftTables
         {
-            const std::size_t n = a.size();
-            for (std::size_t i = 1, j = 0; i < n; ++i)
+            std::array<float, kFftSize> window{};       // Hann, as the spectrum always had it: 0 at both ends
+            float norm = 0.0f;                          // 2 / the window's sum: a full-scale sine's bin reads 1
+            std::array<uint16_t, kHalf> reverse{};      // each index's bits reversed (kHalfBits of them)
+            // Each stage's twiddles in a row, e^(-i pi j / h) for j < h: the stage whose butterflies span h at h - 1
+            // (h = 4 .. kHalf / 2; the stages of 1 and 2 need none).
+            std::array<float, kHalf> twRe{}, twIm{};
+            std::array<float, kHalf + 1> splitRe{}, splitIm{};   // e^(-2 pi i k / kFftSize), k = 0 .. kHalf
+        };
+
+        FftTables makeTables()
+        {
+            FftTables t;
+            constexpr double pi = std::numbers::pi;
+            double sum = 0.0;
+            for (int i = 0; i < kFftSize; ++i)
             {
-                std::size_t bit = n >> 1;
-                for (; (j & bit) != 0; bit >>= 1)
-                    j ^= bit;
-                j ^= bit;
-                if (i < j)
-                    std::swap(a[i], a[j]);
+                const double w = 0.5 - 0.5 * std::cos(2.0 * pi * i / (kFftSize - 1));
+                t.window[static_cast<std::size_t>(i)] = static_cast<float>(w);
+                sum += w;
             }
-            for (std::size_t len = 2; len <= n; len <<= 1)
+            t.norm = static_cast<float>(2.0 / sum);
+            for (int i = 0; i < kHalf; ++i)
             {
-                const float ang = -2.0f * std::numbers::pi_v<float> / static_cast<float>(len);
-                const std::complex<float> w(std::cos(ang), std::sin(ang));
-                for (std::size_t i = 0; i < n; i += len)
+                unsigned r = 0;
+                for (int b = 0; b < kHalfBits; ++b)
+                    r |= ((static_cast<unsigned>(i) >> b) & 1u) << (kHalfBits - 1 - b);
+                t.reverse[static_cast<std::size_t>(i)] = static_cast<uint16_t>(r);
+            }
+            for (int h = 4; h < kHalf; h *= 2)
+                for (int j = 0; j < h; ++j)
                 {
-                    std::complex<float> wk(1.0f, 0.0f);
-                    for (std::size_t k = 0; k < len / 2; ++k)
-                    {
-                        const std::complex<float> u = a[i + k], v = a[i + k + len / 2] * wk;
-                        a[i + k] = u + v;
-                        a[i + k + len / 2] = u - v;
-                        wk *= w;
-                    }
+                    t.twRe[static_cast<std::size_t>(h - 1 + j)] = static_cast<float>(std::cos(pi * j / h));
+                    t.twIm[static_cast<std::size_t>(h - 1 + j)] = static_cast<float>(-std::sin(pi * j / h));
+                }
+            for (int k = 0; k <= kHalf; ++k)
+            {
+                t.splitRe[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(2.0 * pi * k / kFftSize));
+                t.splitIm[static_cast<std::size_t>(k)] = static_cast<float>(-std::sin(2.0 * pi * k / kFftSize));
+            }
+            return t;
+        }
+
+        const FftTables& fftTables()
+        {
+            static const FftTables tables = makeTables();
+            return tables;
+        }
+    }
+
+    Spectrum::Spectrum()
+        : last_(static_cast<std::size_t>(kFftSize)), re_(static_cast<std::size_t>(kHalf)),
+          im_(static_cast<std::size_t>(kHalf)), power_(static_cast<std::size_t>(kHalf + 1))
+    {
+        points_.fill(-120.0f);
+    }
+
+    bool Spectrum::update(const float* x, float rate)
+    {
+        // Compared as values (a gain of 0 makes -0 and 0 of a signal's signs: the same silence).
+        if (taken_ && rate == rate_ && std::equal(last_.begin(), last_.end(), x))
+            return false;
+        compute(x, rate);
+        return true;
+    }
+
+    // Each point's share of the bins at `rate`: from 20 Hz to 20 kHz, spaced evenly in octaves, a point's share half a
+    // spacing either side of it (in single precision, as the spectrum always worked them out).
+    void Spectrum::binsFor(float rate)
+    {
+        constexpr int points = DisplayItem::kSpectrumPoints;
+        const float binHz = rate / static_cast<float>(kFftSize);
+        const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));
+        for (int k = 0; k < points; ++k)
+        {
+            const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+            const float lo = hz / half, hi = hz * half;
+            int b0 = static_cast<int>(std::floor(lo / binHz)), b1 = static_cast<int>(std::ceil(hi / binHz));
+            b0 = std::clamp(b0, 1, kHalf);
+            b1 = std::clamp(b1, b0, kHalf);
+            bins_[static_cast<std::size_t>(2 * k)] = static_cast<int16_t>(b0);
+            bins_[static_cast<std::size_t>(2 * k + 1)] = static_cast<int16_t>(b1);
+        }
+        rate_ = rate;
+    }
+
+    void Spectrum::compute(const float* x, float rate)
+    {
+        const FftTables& t = fftTables();
+        std::memcpy(last_.data(), x, sizeof(float) * last_.size());
+        taken_ = true;
+        if (rate != rate_)
+            binsFor(rate);
+        ++computed_;
+        float* const re = re_.data();
+        float* const im = im_.data();
+        // The samples windowed, as kHalf complex ones in bit-reversed order.
+        for (int k = 0; k < kHalf; ++k)
+        {
+            const std::size_t r = t.reverse[static_cast<std::size_t>(k)];
+            re[r] = x[2 * k] * t.window[static_cast<std::size_t>(2 * k)];
+            im[r] = x[2 * k + 1] * t.window[static_cast<std::size_t>(2 * k + 1)];
+        }
+        // Radix-2 butterflies, decimation in time: the stages of 1 and 2 (twiddles 1 and -i), then the tables'.
+        for (int i = 0; i < kHalf; i += 2)
+        {
+            const float ar = re[i], ai = im[i], br = re[i + 1], bi = im[i + 1];
+            re[i] = ar + br, im[i] = ai + bi;
+            re[i + 1] = ar - br, im[i + 1] = ai - bi;
+        }
+        for (int i = 0; i < kHalf; i += 4)
+        {
+            float ar = re[i], ai = im[i], br = re[i + 2], bi = im[i + 2];
+            re[i] = ar + br, im[i] = ai + bi;
+            re[i + 2] = ar - br, im[i + 2] = ai - bi;
+            ar = re[i + 1], ai = im[i + 1], br = im[i + 3], bi = -re[i + 3];   // b times -i
+            re[i + 1] = ar + br, im[i + 1] = ai + bi;
+            re[i + 3] = ar - br, im[i + 3] = ai - bi;
+        }
+        for (int h = 4; h < kHalf; h *= 2)
+        {
+            const float* const wr = t.twRe.data() + (h - 1);
+            const float* const wi = t.twIm.data() + (h - 1);
+            for (int i = 0; i < kHalf; i += 2 * h)
+            {
+                float* const ar = re + i;
+                float* const ai = im + i;
+                float* const br = ar + h;
+                float* const bi = ai + h;
+                for (int j = 0; j < h; ++j)
+                {
+                    const float tr = wr[j] * br[j] - wi[j] * bi[j];
+                    const float ti = wr[j] * bi[j] + wi[j] * br[j];
+                    br[j] = ar[j] - tr;
+                    bi[j] = ai[j] - ti;
+                    ar[j] += tr;
+                    ai[j] += ti;
                 }
             }
         }
-
-        // The last DisplayItem::kScopeSamples samples' levels, dB against a full-scale sine, at `points` frequencies
-        // from 20 Hz to 20 kHz, spaced evenly in octaves: the strongest bin within each point's share of them.
-        std::vector<float> spectrumOf(const float* x, int n, float rate, int points)
+        // The real signal's bins from Z, the complex FFT: X[k] = E[k] + e^(-2 pi i k / N) O[k], where the even samples'
+        // E[k] = (Z[k] + conj Z[kHalf - k]) / 2 and the odd samples' O[k] = (Z[k] - conj Z[kHalf - k]) / 2i; only
+        // their power is kept.
+        float* const power = power_.data();
+        for (int k = 1; k <= kHalf; ++k)
         {
-            std::vector<std::complex<float>> a(static_cast<std::size_t>(n));
-            float windowSum = 0.0f;
-            for (int i = 0; i < n; ++i)
-            {
-                const float w = 0.5f - 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / static_cast<float>(n - 1));
-                windowSum += w;
-                a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0f };
-            }
-            fft(a);
-            const float norm = 2.0f / std::max(windowSum, 1.0f);
-            const float binHz = rate / static_cast<float>(n);
-            std::vector<float> out(static_cast<std::size_t>(points), -120.0f);
-            for (int k = 0; k < points; ++k)
-            {
-                const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
-                const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));   // half a point's share
-                const float lo = hz / half, hi = hz * half;
-                int b0 = static_cast<int>(std::floor(lo / binHz)), b1 = static_cast<int>(std::ceil(hi / binHz));
-                b0 = std::clamp(b0, 1, n / 2);
-                b1 = std::clamp(b1, b0, n / 2);
-                float peak = 0.0f;
-                for (int b = b0; b <= b1; ++b)
-                    peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * norm);
-                out[static_cast<std::size_t>(k)] = dbOf(std::max(peak, 1.0e-6f));
-            }
-            return out;
+            const int a = k & (kHalf - 1), b = (kHalf - k) & (kHalf - 1);
+            const float zr = re[a], zi = im[a], cr = re[b], ci = -im[b];
+            const float er = 0.5f * (zr + cr), ei = 0.5f * (zi + ci);
+            const float orr = 0.5f * (zi - ci), oi = -0.5f * (zr - cr);
+            const float sr = t.splitRe[static_cast<std::size_t>(k)], si = t.splitIm[static_cast<std::size_t>(k)];
+            const float xr = er + (sr * orr - si * oi), xi = ei + (sr * oi + si * orr);
+            power[k] = xr * xr + xi * xi;
+        }
+        // Each point: its strongest bin's power, in dB against a full-scale sine (floored at -120 dB).
+        const float scale = t.norm * t.norm;
+        for (int k = 0; k < DisplayItem::kSpectrumPoints; ++k)
+        {
+            const int b0 = bins_[static_cast<std::size_t>(2 * k)], b1 = bins_[static_cast<std::size_t>(2 * k + 1)];
+            float top = 0.0f;
+            for (int b = b0; b <= b1; ++b)
+                top = std::max(top, power[b]);
+            points_[static_cast<std::size_t>(k)] = 10.0f * std::log10(std::max(top * scale, 1.0e-12f));
         }
     }
 
@@ -205,7 +317,7 @@ namespace playground::ui
         return 0.0f;
     }
 
-    void DisplayItem::update(const Meters& m, const float* scope, float dt)
+    void DisplayItem::update(const Meters& m, const float* scope, const float* spectrum, float dt)
     {
         if (!shown_)
             return;
@@ -270,15 +382,16 @@ namespace playground::ui
                 break;
             case DisplayKind::spectrum:
             {
-                if (scope == nullptr)
+                // Its source's points, the same for every display of it (Spectrum): a peak at once, a fall of 30 dB a
+                // second, each frame whether a block came or not.
+                if (spectrum == nullptr)
                     break;
-                const std::vector<float> next = spectrumOf(scope, kScopeSamples, m.rate > 0.0f ? m.rate : 48000.0f, kSpectrumPoints);
-                if (spectrum_.size() != next.size())
-                    spectrum_.assign(next.size(), -120.0f);
-                for (std::size_t k = 0; k < next.size(); ++k)
+                if (spectrum_.size() != static_cast<std::size_t>(kSpectrumPoints))
+                    spectrum_.assign(static_cast<std::size_t>(kSpectrumPoints), -120.0f);   // its capacity kept
+                for (std::size_t k = 0; k < spectrum_.size(); ++k)
                 {
-                    const float before = spectrum_[k];
-                    spectrum_[k] = next[k] >= before ? next[k] : std::max(next[k], before - 30.0f * step);
+                    const float before = spectrum_[k], next = spectrum[k];
+                    spectrum_[k] = next >= before ? next : std::max(next, before - 30.0f * step);
                     moved = moved || std::fabs(spectrum_[k] - before) > 0.01f;
                 }
                 break;

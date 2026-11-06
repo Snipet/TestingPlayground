@@ -359,28 +359,39 @@ namespace playground::ui
     }
 
     void updateDisplays(GuiView::Items& items, const std::vector<int>& displays, const Meters& shown,
-                        const std::function<void(bool input, float* out, int n)>& scope, std::vector<float>& in,
-                        std::vector<float>& out, float dt)
+                        const std::function<void(bool input, float* out, int n)>& scope, DisplayFeed& feed, float dt)
     {
-        bool readIn = false, readOut = false;
+        // Each source's samples read once, and its spectrum made once (when its samples changed), for all its displays.
+        bool readIn = false, readOut = false, analyseIn = false, analyseOut = false;
         for (const int i : displays)
         {
+            const auto& item = static_cast<const DisplayItem&>(*items[static_cast<std::size_t>(i)]);
             bool input = false;
-            if (static_cast<const DisplayItem&>(*items[static_cast<std::size_t>(i)]).wantsScope(input))
-                (input ? readIn : readOut) = true;
+            if (!item.wantsScope(input))
+                continue;
+            (input ? readIn : readOut) = true;
+            if (item.display().kind == DisplayKind::spectrum)
+                (input ? analyseIn : analyseOut) = true;
         }
         if (readIn || readOut)
-            in.resize(DisplayItem::kScopeSamples), out.resize(DisplayItem::kScopeSamples);
+            feed.in.resize(DisplayItem::kScopeSamples), feed.out.resize(DisplayItem::kScopeSamples);
         if (readIn)
-            scope(true, in.data(), DisplayItem::kScopeSamples);
+            scope(true, feed.in.data(), DisplayItem::kScopeSamples);
         if (readOut)
-            scope(false, out.data(), DisplayItem::kScopeSamples);
+            scope(false, feed.out.data(), DisplayItem::kScopeSamples);
+        const float rate = shown.rate > 0.0f ? shown.rate : 48000.0f;
+        if (analyseIn)
+            feed.inSpectrum.update(feed.in.data(), rate);
+        if (analyseOut)
+            feed.outSpectrum.update(feed.out.data(), rate);
         for (const int i : displays)
         {
             auto& item = static_cast<DisplayItem&>(*items[static_cast<std::size_t>(i)]);
             bool input = false;
             const bool wants = item.wantsScope(input);
-            item.update(shown, wants ? (input ? in.data() : out.data()) : nullptr, dt);
+            const Spectrum& spectrum = input ? feed.inSpectrum : feed.outSpectrum;
+            item.update(shown, wants ? (input ? feed.in.data() : feed.out.data()) : nullptr,
+                        wants && item.display().kind == DisplayKind::spectrum ? spectrum.points() : nullptr, dt);
         }
     }
 }

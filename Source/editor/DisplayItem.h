@@ -9,9 +9,8 @@
 //           with unit=, decimals= or scale=, as a knob's value reads)
 //   scope   the audio's last 21 ms from a rising zero crossing (found between two samples, so a steady tone's trace
 //           stands still); or the field's last 2.5 seconds
-//   spectrum (a .gui file's) the audio's last 2048 samples through a Hann window and an FFT, in dB against a full-
-//           scale sine, at kSpectrumPoints frequencies from 20 Hz to 20 kHz spaced evenly in octaves (each the
-//           strongest bin in its share of them); a peak shows at once and falls 30 dB a second
+//   spectrum (a .gui file's) its source's Spectrum (below: the audio's last 2048 samples through a Hann window and
+//           an FFT, made once for every display of that source); a peak shows at once and falls 30 dB a second
 // It is a readout: no input, no Tab stop; accessibility reads its label and value. settled() once nothing it shows has
 // moved for a moment (Stirred: the audio's blocks may come a frame or two apart), so a silent or steady panel lets the
 // host rest: an audio scope moves when a point of its trace would move by more than half a px (the trace drawn is the
@@ -48,8 +47,9 @@ namespace playground::ui
         const PanelDisplay& display() const noexcept { return display_; }
         bool wantsScope(bool& input) const noexcept;  // an audio scope: which of the Engine's rings it reads
 
-        // A frame: the meters, the scope's samples (kScopeSamples, oldest first, when wantsScope), dt in seconds.
-        void update(const Meters& m, const float* scope, float dt);
+        // A frame: the meters, the scope's samples (kScopeSamples, oldest first, when wantsScope), a spectrum's points
+        // (its source's Spectrum::points(), kSpectrumPoints; null for any other display), dt in seconds.
+        void update(const Meters& m, const float* scope, const float* spectrum, float dt);
 
         // A cell of any size (a .gui file's layout).
         void setRect(const funkgui::Rect& r) { cell_ = r; }
@@ -118,5 +118,47 @@ namespace playground::ui
         bool moving_ = false;                         // at the last update()
         Stirred stir_;                                // moving: kept a moment, as blocks come a frame or two apart
         uint32_t lastFrame_ = 0;
+    };
+
+    // A source's spectrum (the input's or the output's), which every spectrum display of that source shows: its last
+    // DisplayItem::kScopeSamples samples through a Hann window and a real FFT, in dB against a full-scale sine, at
+    // DisplayItem::kSpectrumPoints frequencies from 20 Hz to 20 kHz spaced evenly in octaves, each the strongest bin in
+    // its share of them (the bins' powers compared, one logarithm a point). update() computes it only when the samples
+    // or the rate differ from the last it took: the Engine writes the scope's ring once a block, so a frame with no new
+    // block costs no FFT, and a frame with one costs one however many displays show the source. Its buffers are sized
+    // once (nothing allocated a frame); the window and the twiddles are tables made once for the process, and each
+    // point's bins are worked out again only when the rate changes.
+    class Spectrum
+    {
+    public:
+        Spectrum();
+
+        // The spectrum of `x` (kScopeSamples, oldest first) at `rate`; false when they are those of the last call (the
+        // points as they were).
+        bool update(const float* x, float rate);
+        // The same, whatever the last call took.
+        void compute(const float* x, float rate);
+        const float* points() const noexcept { return points_.data(); }   // kSpectrumPoints, dB
+        int computed() const noexcept { return computed_; }              // FFTs run, for the probes
+
+    private:
+        void binsFor(float rate);
+
+        std::vector<float> last_;                     // the samples it last took
+        bool taken_ = false;
+        float rate_ = 0.0f;                           // the rate bins_ are for
+        std::vector<float> re_, im_;                  // the complex FFT's halves
+        std::vector<float> power_;                    // each bin's power, 0 to kScopeSamples / 2
+        std::array<int16_t, 2 * DisplayItem::kSpectrumPoints> bins_{};   // each point's first and last bin
+        std::array<float, DisplayItem::kSpectrumPoints> points_{};
+        int computed_ = 0;
+    };
+
+    // What updateDisplays (GuiView.h) keeps between frames: each source's samples, read once a frame for every display
+    // of it, and its spectrum.
+    struct DisplayFeed
+    {
+        std::vector<float> in, out;
+        Spectrum inSpectrum, outSpectrum;
     };
 }

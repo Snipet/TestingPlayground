@@ -9,6 +9,8 @@
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
 //   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
+//   gui.panel.spectrum.png  SPECTRUM's panel: two spectra of the output (and the effect's of its input), the effect's
+//                           input noise, the synth's voice a sine
 // and checks:
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
@@ -50,6 +52,14 @@
 //             last (its ring); number displays of the output's peak and of a field that moves each block: a new
 //             readout at each refresh is no motion but the item's draw key, each one recorded (needsDraw), the panel
 //             at the calm rate, 12 a second
+//   SPECTRUM  a spectrum's points (the source's Spectrum: a real FFT, its tables made once) against the complex FFT a
+//             display ran for itself each frame before (oldSpectrum, below), on fixed signals at 44.1, 48 and 96 kHz:
+//             within 0.02 dB at every point as drawn (-84 to 0 dB), and within 0.003 dB of the same in double
+//             precision (exactSpectrum: what differed was the old one's twiddles by recurrence); in a panel showing two
+//             spectra of the output (and the effect's of its input) while audio plays, a block every second frame: one
+//             FFT a source for each new block, none on a frame with no block, both displays the same points; once the
+//             ring holds only silence, no FFT while blocks still come, and the displays still fall 30 dB a second; an
+//             FFT's cost against the old one's, printed
 #include "Cadence.h"
 #include "Probe.h"
 
@@ -69,9 +79,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstdio>
+#include <numbers>
 #include <string>
 #include <vector>
+
+#include <time.h>
 
 namespace pg = playground;
 
@@ -211,6 +225,126 @@ panel accent=orange {
     float hzOfPoint(int k)
     {
         return 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(pg::ui::DisplayItem::kSpectrumPoints - 1));
+    }
+
+    // SPECTRUM's reference: a spectrum display's points as each display computed them for itself every frame before
+    // the source's Spectrum (DisplayItem.h), a complex radix-2 FFT of all its samples, its twiddles by recurrence,
+    // each bin's magnitude, kept here as it was.
+    void oldFft(std::vector<std::complex<float>>& a)
+    {
+        const std::size_t n = a.size();
+        for (std::size_t i = 1, j = 0; i < n; ++i)
+        {
+            std::size_t bit = n >> 1;
+            for (; (j & bit) != 0; bit >>= 1)
+                j ^= bit;
+            j ^= bit;
+            if (i < j)
+                std::swap(a[i], a[j]);
+        }
+        for (std::size_t len = 2; len <= n; len <<= 1)
+        {
+            const float ang = -2.0f * std::numbers::pi_v<float> / static_cast<float>(len);
+            const std::complex<float> w(std::cos(ang), std::sin(ang));
+            for (std::size_t i = 0; i < n; i += len)
+            {
+                std::complex<float> wk(1.0f, 0.0f);
+                for (std::size_t k = 0; k < len / 2; ++k)
+                {
+                    const std::complex<float> u = a[i + k], v = a[i + k + len / 2] * wk;
+                    a[i + k] = u + v;
+                    a[i + k + len / 2] = u - v;
+                    wk *= w;
+                }
+            }
+        }
+    }
+
+    std::vector<float> oldSpectrum(const float* x, int n, float rate, int points)
+    {
+        std::vector<std::complex<float>> a(static_cast<std::size_t>(n));
+        float windowSum = 0.0f;
+        for (int i = 0; i < n; ++i)
+        {
+            const float w = 0.5f - 0.5f * std::cos(2.0f * std::numbers::pi_v<float> * static_cast<float>(i) / static_cast<float>(n - 1));
+            windowSum += w;
+            a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0f };
+        }
+        oldFft(a);
+        const float norm = 2.0f / std::max(windowSum, 1.0f);
+        const float binHz = rate / static_cast<float>(n);
+        std::vector<float> out(static_cast<std::size_t>(points), -120.0f);
+        for (int k = 0; k < points; ++k)
+        {
+            const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+            const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));
+            const float lo = hz / half, hi = hz * half;
+            int b0 = static_cast<int>(std::floor(lo / binHz)), b1 = static_cast<int>(std::ceil(hi / binHz));
+            b0 = std::clamp(b0, 1, n / 2);
+            b1 = std::clamp(b1, b0, n / 2);
+            float peak = 0.0f;
+            for (int b = b0; b <= b1; ++b)
+                peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * norm);
+            out[static_cast<std::size_t>(k)] = 20.0f * std::log10(std::max(peak, 1.0e-6f));
+        }
+        return out;
+    }
+
+    // The same points in double precision, every twiddle exact: what both should be.
+    std::vector<float> exactSpectrum(const float* x, int n, float rate, int points)
+    {
+        std::vector<std::complex<double>> a(static_cast<std::size_t>(n));
+        double windowSum = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double w = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * i / (n - 1));
+            windowSum += w;
+            a[static_cast<std::size_t>(i)] = { x[i] * w, 0.0 };
+        }
+        for (std::size_t i = 1, j = 0; i < a.size(); ++i)
+        {
+            std::size_t bit = a.size() >> 1;
+            for (; (j & bit) != 0; bit >>= 1)
+                j ^= bit;
+            j ^= bit;
+            if (i < j)
+                std::swap(a[i], a[j]);
+        }
+        for (std::size_t len = 2; len <= a.size(); len <<= 1)
+            for (std::size_t i = 0; i < a.size(); i += len)
+                for (std::size_t k = 0; k < len / 2; ++k)
+                {
+                    const double ang = -2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(len);
+                    const std::complex<double> u = a[i + k], v = a[i + k + len / 2] * std::polar(1.0, ang);
+                    a[i + k] = u + v;
+                    a[i + k + len / 2] = u - v;
+                }
+        const std::vector<float> bins = oldSpectrum(x, n, rate, points);   // (only its shape: the bins below)
+        const float binHz = rate / static_cast<float>(n);
+        std::vector<float> out(bins.size(), -120.0f);
+        for (int k = 0; k < points; ++k)
+        {
+            const float hz = 20.0f * std::pow(1000.0f, static_cast<float>(k) / static_cast<float>(points - 1));
+            const float half = std::pow(1000.0f, 0.5f / static_cast<float>(points - 1));
+            int b0 = static_cast<int>(std::floor(hz / half / binHz)), b1 = static_cast<int>(std::ceil(hz * half / binHz));
+            b0 = std::clamp(b0, 1, n / 2);
+            b1 = std::clamp(b1, b0, n / 2);
+            double peak = 0.0;
+            for (int b = b0; b <= b1; ++b)
+                peak = std::max(peak, std::abs(a[static_cast<std::size_t>(b)]) * 2.0 / windowSum);
+            out[static_cast<std::size_t>(k)] = static_cast<float>(20.0 * std::log10(std::max(peak, 1.0e-6)));
+        }
+        return out;
+    }
+
+    // A point as drawSpectrum draws it: -84 to 0 dB.
+    float drawnDb(float db) { return std::clamp(db, -84.0f, 0.0f); }
+
+    double threadSeconds()
+    {
+        timespec ts{};
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+        return static_cast<double>(ts.tv_sec) + 1.0e-9 * static_cast<double>(ts.tv_nsec);
     }
 }
 
@@ -937,6 +1071,206 @@ PROBE(gui, panel)
         P.eq("settle.number_key_follows", keyMissed, 0);
         P.eq("settle.number_frame_recorded", frameMissed, 0);
         P.le("settle.number_frames_per_second", numbers.framesPerSecond(), 12.5);
+    }
+
+    // ---- SPECTRUM ------------------------------------------------------------------------------------------------------
+    // A source's spectrum, made once for all its displays when a new block comes (DisplayItem.h's Spectrum), against
+    // the FFT each display ran for itself every frame before.
+    {
+        constexpr int kN = pg::ui::DisplayItem::kScopeSamples;
+        constexpr int kPoints = pg::ui::DisplayItem::kSpectrumPoints;
+        // Fixed signals of kN samples at a rate: signal s's sample i.
+        const char* const names[] = { "sine_1k", "sine_37hz", "two_tones", "noise", "impulse", "sweep", "sine_19k",
+                                      "square", "silence" };
+        constexpr int kSignals = static_cast<int>(sizeof names / sizeof names[0]);
+        const auto fill = [&](int s, double rate, std::vector<float>& x) {
+            uint32_t noise = 0x2545F491u;
+            constexpr double twoPi = 2.0 * std::numbers::pi;
+            for (int i = 0; i < kN; ++i)
+            {
+                const double t = i / rate;
+                noise = noise * 1664525u + 1013904223u;
+                const double u = static_cast<double>(noise >> 8) / 8388608.0 - 1.0;
+                double v = 0.0;
+                switch (s)
+                {
+                    case 0: v = std::sin(twoPi * 1000.0 * t); break;
+                    case 1: v = 0.1 * std::sin(twoPi * 37.3 * t + 0.3); break;
+                    case 2: v = 0.5 * std::sin(twoPi * 100.0 * t) + 0.01 * std::sin(twoPi * 5000.0 * t + 1.0); break;
+                    case 3: v = 0.1 * u; break;
+                    case 4: v = i == kN / 2 ? 1.0 : 0.0; break;
+                    case 5: v = 0.5 * std::sin(twoPi * 20.0 * (kN / rate) / std::log(1000.0) * (std::pow(1000.0, i / static_cast<double>(kN)) - 1.0)); break;
+                    case 6: v = 0.3 * std::sin(twoPi * 19000.0 * t); break;
+                    case 7: v = std::fmod(220.0 * t, 1.0) < 0.5 ? 0.25 : -0.25; break;
+                    default: v = 0.0; break;
+                }
+                x[static_cast<std::size_t>(i)] = static_cast<float>(v);
+            }
+        };
+        std::vector<float> x(static_cast<std::size_t>(kN));
+        pg::ui::Spectrum analyser;
+        double worstExact = 0.0;
+        for (int s = 0; s < kSignals; ++s)
+        {
+            double most = 0.0, mostUndrawn = 0.0, newExact = 0.0, oldExact = 0.0;
+            for (const double rate : { 44100.0, 48000.0, 96000.0 })
+            {
+                fill(s, rate, x);
+                const std::vector<float> before = oldSpectrum(x.data(), kN, static_cast<float>(rate), kPoints);
+                const std::vector<float> exact = exactSpectrum(x.data(), kN, static_cast<float>(rate), kPoints);
+                analyser.compute(x.data(), static_cast<float>(rate));
+                for (int k = 0; k < kPoints; ++k)
+                {
+                    const float a = before[static_cast<std::size_t>(k)], b = analyser.points()[k];
+                    const float e = exact[static_cast<std::size_t>(k)];
+                    most = std::max(most, static_cast<double>(std::fabs(drawnDb(a) - drawnDb(b))));
+                    mostUndrawn = std::max(mostUndrawn, static_cast<double>(std::fabs(a - b)));
+                    newExact = std::max(newExact, static_cast<double>(std::fabs(drawnDb(b) - drawnDb(e))));
+                    oldExact = std::max(oldExact, static_cast<double>(std::fabs(drawnDb(a) - drawnDb(e))));
+                }
+            }
+            std::printf("spectrum: %-9s at 44.1, 48 and 96 kHz, the most a point differs as drawn: old and new %.5f dB, new "
+                        "and exact %.5f, old and exact %.5f (old and new %.4f under the drawn floor too)\n", names[s], most,
+                        newExact, oldExact, mostUndrawn);
+            P.le(std::string("spectrum.match_") + names[s], most, 0.02);
+            worstExact = std::max(worstExact, newExact);
+        }
+        P.le("spectrum.exact_db", worstExact, 0.003);
+        // An FFT's cost, the old against the new (this thread's CPU time; printed, as the machine may be busy).
+        {
+            fill(3, 48000.0, x);
+            constexpr int kRuns = 300;
+            float sink = 0.0f;
+            const double t0 = threadSeconds();
+            for (int r = 0; r < kRuns; ++r)
+                sink += oldSpectrum(x.data(), kN, 48000.0f, kPoints)[static_cast<std::size_t>(r % kPoints)];
+            const double t1 = threadSeconds();
+            for (int r = 0; r < kRuns; ++r)
+            {
+                analyser.compute(x.data(), 48000.0f);
+                sink += analyser.points()[r % kPoints];
+            }
+            const double t2 = threadSeconds();
+            std::printf("spectrum: one FFT and its points, %.1f us before, %.1f us now (%.1fx)%s\n", 1.0e6 * (t1 - t0) / kRuns,
+                        1.0e6 * (t2 - t1) / kRuns, (t1 - t0) / std::max(t2 - t1, 1.0e-9), sink == 0.0f ? " " : "");
+        }
+
+        // A panel: two spectra of the output (the effect's also one of its input) while the effect's input plays noise
+        // and the synth's voice middle C, at a gain.
+        const std::string params = "    param float gain [[fminus::range(0, 1)]] [[fminus::default(1)]];\n";
+        const std::string main = kInstrument
+                                     ? "module Voice\n{\n" + params + "    float ph;\n    float step;\n"
+                                       "    void start(float n, float v) { step = 440.0f * expf(0.0577622650f * (n - 69)) / 48000; }\n"
+                                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            const float s = 0.25f * gain[i] * sinf(6.28318531f * ph);\n"
+                                       "            ph += step;\n            if (ph >= 1) ph -= 1;\n"
+                                       "            left[i] += s;\n            right[i] += s;\n        }\n"
+                                       "        return true;\n    }\n};\n"
+                                     : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                                       "            left[i] *= gain[i];\n            right[i] *= gain[i];\n        }\n    }\n};\n";
+        const std::string spectraGui = kInstrument
+            ? "panel { row { spectrum out label=\"OUT A\" width=240 height=120; spectrum out label=\"OUT B\" width=240 height=120 }\n"
+              "        row { knob gain } }\n"
+            : "panel { row { spectrum out label=\"OUT A\" width=240 height=120; spectrum out label=\"OUT B\" width=240 height=120;"
+              " spectrum in label=\"IN\" width=240 height=120 }\n        row { knob gain } }\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", spectraGui } });
+        processor.prepareToPlay(48000.0, 512);
+        settleRun(processor, host);
+        panel.setPanelView(true);
+        host.settle();
+        P.eq("spectrum.compiles", port.status().ok && port.status().notes.empty() ? 1 : 0, 1);
+        if (!port.status().notes.empty() || !port.status().errors.empty())
+            std::printf("notes:\n%s%s", port.status().errors.c_str(), port.status().notes.c_str());
+        std::vector<const pg::ui::DisplayItem*> outs;
+        const pg::ui::DisplayItem* ins = nullptr;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (item.shown() && item.display().kind == pg::DisplayKind::spectrum)
+            {
+                if (item.display().source == "in")
+                    ins = &item;
+                else
+                    outs.push_back(&item);
+            }
+        }
+        P.eq("spectrum.shown", outs.size() == 2 && (kInstrument || ins != nullptr) ? 1 : 0, 1);
+        juce::AudioBuffer<float> buffer(2, 512);
+        uint32_t noise = 0x9E3779B9u;
+        bool noted = false;
+        const auto block = [&] {
+            juce::MidiBuffer midi;
+            if (kInstrument && !noted)
+            {
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+                noted = true;
+            }
+            for (int i = 0; i < 512; ++i)
+            {
+                noise = noise * 1664525u + 1013904223u;
+                const float v = kInstrument ? 0.0f : 0.1f * (static_cast<float>(noise >> 8) / 8388608.0f - 1.0f);
+                buffer.setSample(0, i, v);
+                buffer.setSample(1, i, v);
+            }
+            processor.processBlock(buffer, midi);
+        };
+        for (int f = 0; f < 30; ++f)                     // the noise starts and fills the scopes' rings
+        {
+            block();
+            host.tick(1);
+        }
+        // A block every second frame: one FFT a source for each, none on the frames between.
+        const pg::ui::DisplayFeed& feed = panel.displayFeed();
+        const int outBefore = feed.outSpectrum.computed(), inBefore = feed.inSpectrum.computed();
+        int blocks = 0, apart = 0;
+        for (int f = 0; f < 120; ++f)
+        {
+            if (f % 2 == 0)
+            {
+                block();
+                ++blocks;
+            }
+            host.tick(1);
+            if (outs.size() == 2 && outs[0]->spectrum() != outs[1]->spectrum())
+                ++apart;
+        }
+        const int outFfts = feed.outSpectrum.computed() - outBefore, inFfts = feed.inSpectrum.computed() - inBefore;
+        std::printf("spectrum: %d blocks in 120 frames, %d FFTs of the output for its two displays, %d of the input\n",
+                    blocks, outFfts, inFfts);
+        P.eq("spectrum.output_ffts_per_block", outFfts, blocks);
+        P.eq("spectrum.input_ffts_per_block", inFfts, kInstrument ? 0 : blocks);
+        P.eq("spectrum.displays_agree", apart, 0);
+        const auto strongest = [](const pg::ui::DisplayItem* item) {
+            const std::vector<float>& s = item->spectrum();
+            return s.empty() ? -200.0f : *std::max_element(s.begin(), s.end());
+        };
+        if (!outs.empty() && kInstrument)
+            P.near("spectrum.level_db", static_cast<double>(strongest(outs[0])), -12.04, 3.0);   // a sine at 0.25
+        else if (!outs.empty())
+            P.in("spectrum.level_db", static_cast<double>(strongest(outs[0])), -60.0, -25.0);    // noise at 0.1
+        writePng(P, host, "gui.panel.spectrum.png", "spectrum");
+        // Silence: once the rings hold nothing else, blocks still come but no FFT runs, and the displays fall 30 dB a
+        // second all the same.
+        processor.getParameters()[0]->setValueNotifyingHost(0.0f);
+        for (int f = 0; f < 12; ++f)                     // the gain glides to 0 (20 ms), then 2048 samples of silence
+        {
+            block();
+            host.tick(1);
+        }
+        const int silentBefore = feed.outSpectrum.computed();
+        const float top = outs.empty() ? -200.0f : strongest(outs[0]);
+        for (int f = 0; f < 30; ++f)
+        {
+            block();
+            host.tick(1);
+        }
+        const float fallen = outs.empty() ? -200.0f : strongest(outs[0]);
+        std::printf("spectrum: silence, %d FFTs in 30 frames with a block each; the strongest point %.2f dB, then %.2f\n",
+                    feed.outSpectrum.computed() - silentBefore, static_cast<double>(top), static_cast<double>(fallen));
+        P.eq("spectrum.silence_no_fft", feed.outSpectrum.computed() - silentBefore, 0);
+        P.near("spectrum.falls_db_in_half_a_second", static_cast<double>(top - fallen), 15.0, 0.05);
     }
     return P.finish();
 }

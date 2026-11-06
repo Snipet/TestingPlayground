@@ -148,6 +148,7 @@ namespace playground::ui
     class CodeAssist;                                    // the editor's language features (CodeAssist.h)
     class SchematicView;                                 // a netlist's Schematic view (SchematicView.h)
     class DisplayItem;                                   // a program's display (DisplayItem.h)
+    struct DisplayFeed;                                  // the displays' samples and spectra (DisplayItem.h)
     class GuiControlItem;                                // a .gui file's control (GuiItems.h)
     class GuiView;                                       // a .gui file's interface: its items (GuiView.h)
 
@@ -217,6 +218,7 @@ namespace playground::ui
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
+        const DisplayFeed& displayFeed() const noexcept { return *feed_; } // the displays' samples and spectra
         // A shown item unsettled at the last tick: the motion part of needsDraw() and wantsFullRate(), without the
         // Panel's own changes (dirty_: a refresh's, the top bar's CPU figure among them, which moves with real time).
         bool moving() const noexcept { return moving_; }
@@ -494,7 +496,7 @@ namespace playground::ui
         std::vector<int> itemOfSlot_;                    // dial slot -> item index
         std::vector<int> itemOfDisplay_;                 // display -> item index
         Meters meters_{};                                // the Engine's, as the last frame read them
-        std::vector<float> scopeIn_, scopeOut_;          // the scopes' samples, read each frame they show
+        std::unique_ptr<DisplayFeed> feed_;              // the scopes' samples, read each frame they show, and spectra
         ShownState shown_;                               // a picture's state (showState), else empty
         bool showing_ = false, shownPlaying_ = false;
         std::size_t shownAt_ = 0;                        // the frame shown

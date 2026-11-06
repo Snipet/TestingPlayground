@@ -44,6 +44,8 @@
 
 namespace playground::ui
 {
+    struct DisplayFeed;                                    // DisplayItem.h
+
     class GuiView
     {
     public:
@@ -131,9 +133,8 @@ namespace playground::ui
     };
 
     // A frame of the displays `items` (DisplayItem) at `displays`: `shown` and, for an audio scope or spectrum, the last
-    // DisplayItem::kScopeSamples samples `scope` fills (input or output, oldest first), dt seconds. `in` and `out` are
-    // the caller's buffers, kept between frames.
+    // DisplayItem::kScopeSamples samples `scope` fills (input or output, oldest first, read once for every display of
+    // that source), and a spectrum's source's Spectrum, dt seconds. `feed` is the caller's, kept between frames.
     void updateDisplays(GuiView::Items& items, const std::vector<int>& displays, const Meters& shown,
-                        const std::function<void(bool input, float* out, int n)>& scope, std::vector<float>& in,
-                        std::vector<float>& out, float dt);
+                        const std::function<void(bool input, float* out, int n)>& scope, DisplayFeed& feed, float dt);
 }
