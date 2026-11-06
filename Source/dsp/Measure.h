@@ -11,8 +11,9 @@
 //   an instrument  the notes (default one, C3) held for holdSeconds at `velocity`, released, then tailSeconds more:
 //                  the held level (peak, RMS, DC, the stereo correlation and balance), the spectrum's strongest
 //                  partials and its centroid, the pitch (the strongest partial near the expected note; the report names
-//                  the sound unpitched instead when the lowest note and a whole tone up, each alone, do not measure a
-//                  whole tone apart), the largest step between two samples and the clicks (clicks(), trace's rule), the
+//                  the sound unpitched instead when the lowest note and a whole tone up, each alone for 0.6 s with none
+//                  of the scenario's moves, do not measure a whole tone apart, and then gives no Inharmonic words), the
+//                  largest step between two samples and the clicks (clicks(), trace's rule), the
 //                  envelope (when it reaches its loudest, and when it falls 60 dB from there), when the sound falls
 //                  60 dB below its held level after the release and when the last voice ended (process returned
 //                  false), the output guard's alerts, and the CPU time (the notes while held, and sixteen voices at

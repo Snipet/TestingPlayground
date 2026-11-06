@@ -1958,6 +1958,7 @@ namespace playground::measure
             for (const int n : notes)
                 if (n > lowest)
                     hiHz = std::min(hiHz, std::sqrt(expectedHz * noteHz(n) * bend));
+            bool follows = true;                             // the pitch follows the note (below): no line says otherwise
             if (need({ "centroid_hz", "fundamental_hz", "pitch_cents" }))
             {
                 const Spectrum sp = spectrum(m, rate, held);
@@ -1973,14 +1974,16 @@ namespace playground::measure
                     v["pitch_cents"] = 1200.0 * std::log2(pitch.hz / expectedHz);
                     // Whether the pitch follows the note, for the report's words alone (the metrics keep their meaning,
                     // and a check or a tune, which asks for some, renders nothing more): the lowest note and the note a
-                    // whole tone up (down from 126), each alone, held 0.6 s and measured as this (a single note held:
-                    // its own render for the first), must come within 50 cents of a whole tone apart. Not an octave: a
-                    // sound of a pitch of its own has its second harmonic there. A sound whose pitch does not follow
-                    // (noise, most drums, an engine whose pitch is its own) is named unpitched, with both pitches, in
-                    // place of cents from a note it does not play; a phrase or a chord of a pitched sound keeps its line.
+                    // whole tone up (down from 126), each alone, held 0.6 s with none of the scenario's moves, measured
+                    // as this, must come within 50 cents of a whole tone apart. Both alone, a single note held too: its
+                    // own render plays the scenario's wheels and moves for hold_seconds, which a bend or a pitch that
+                    // drifts would part from the other's. Not an octave: a sound of a pitch of its own has its second
+                    // harmonic there. A sound whose pitch does not follow (noise, most drums, an engine whose pitch is
+                    // its own) is named unpitched, with both pitches, in place of cents from a note it does not play
+                    // (and the Inharmonic line, of the note's harmonics, is left out); a phrase or a chord of a pitched
+                    // sound keeps its line.
                     const int other = lowest + 2 <= 127 ? lowest + 2 : lowest - 2;
-                    double baseAt = pitch.hz, otherAt = 0.0;
-                    bool follows = !all;
+                    double baseAt = 0.0, otherAt = 0.0;
                     if (all)
                     {
                         const auto alone = [&](int key) {
@@ -1993,8 +1996,7 @@ namespace playground::measure
                                            hz * std::exp2(-kPitchCents / 1200.0), hz * std::exp2(kPitchCents / 1200.0))
                                 .hz;
                         };
-                        if (notes.size() > 1 || phrased)
-                            baseAt = alone(lowest);
+                        baseAt = alone(lowest);
                         otherAt = alone(other);
                         follows = baseAt > 0.0 && otherAt > 0.0
                                && std::fabs(1200.0 * std::log2(otherAt / baseAt) - 100.0 * static_cast<double>(other - lowest)) <= 50.0;
@@ -2097,7 +2099,7 @@ namespace playground::measure
                     // What is no harmonic of the note: aliasing, unless the sound means it.
                     const Peak odd = inharmonic(spectrum(m, rate, held, Taper::blackmanHarris, kPuritySeconds), expectedHz, kBandHighHz);
                     v["inharmonic_db"] = odd.db;
-                    if (heldRms >= 1e-5)
+                    if (heldRms >= 1e-5 && follows)          // an unpitched sound has no harmonics of the note to judge
                     {
                         out += "Inharmonic: ";
                         if (odd.db < -90.0)

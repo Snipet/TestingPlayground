@@ -523,8 +523,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`pitchOf`, a harmonic sum without one), and one click rule (`measure::clicks`) for the click metric, the step lines and trace (`dsp.metrics`
   checks each at 48 and 192 kHz). Change a definition and its line together. The report's pitch line is a judgement
   on top, the metrics untouched: with the whole report asked, the lowest note and the note a whole tone up (not an
-  octave: a fixed pitch's second harmonic sits there), each alone, must measure within 50 cents of a whole tone apart,
-  else the line says "Unpitched" with both pitches. Its CPU figures are the rendering thread's own time
+  octave: a fixed pitch's second harmonic sits there), each alone (0.6 s, none of the scenario's moves, a single note
+  too), must measure within 50 cents of a whole tone apart, else the line says "Unpitched" with both pitches and the
+  Inharmonic line is left out. Its CPU figures are the rendering thread's own time
   (`CLOCK_THREAD_CPUTIME_ID`, read at a render's few boundaries, never a block's), in an Engine as the audio thread
   runs it with no editor open: an instrument's `cpu_percent` over the held part, and
   `cpu16_percent` measured with sixteen notes held (the least of two short renders), not extrapolated (in the

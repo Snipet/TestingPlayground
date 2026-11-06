@@ -30,7 +30,8 @@
 //            the example's own report is not silent and has no alert; an instrument's Inharmonic line: clean for the
 //            sine voice; at C7 a naive saw's aliases above -40 dB, a wavetable voice's (wavetable.fm, its table built
 //            once in a module Shared) clean; a saw's own edges are no click, a phase that jumps once is; the pitch line
-//            for the sine voice, "Unpitched" (with both pitches) for noise and for a sine of its own pitch; the sixteen
+//            for the sine voice (bent by a scenario's pitch wheel from the start too: the two notes each alone),
+//            "Unpitched" (with both pitches, no Inharmonic line) for noise and for a sine of its own pitch; the sixteen
 //            voices' CPU in words for the sine voice, none for a voice that ends unless it is the newest, and a voice
 //            that keeps the newest four saying four sound;
 //            (the prompt teaches the FFT's builtins and the module Shared too); the Host block (host.fm) as asked:
@@ -609,6 +610,9 @@ PROBE(plugin, chatexample)
             P.eq("measure.noise_unpitched", has(hiss, " Unpitched: its pitch does not follow the note (") && !has(hiss, " Pitch: ") ? 1 : 0, 1);
             P.eq("measure.fixed_unpitched", has(f, " Unpitched: its pitch does not follow the note (200.00 Hz at note 57, 200.00 Hz at "
                                                    "note 59, each alone).") ? 1 : 0, 1);
+            // No Inharmonic line for either: it is of the note's harmonics, which an unpitched sound has none of (its
+            // number, inharmonic_db, as before).
+            P.eq("measure.unpitched_no_inharmonic", !has(hiss, "Inharmonic:") && !has(f, "Inharmonic:") ? 1 : 0, 1);
         }
         // The CPU of sixteen keys at once in words only when more than one voice sounds: a voice that ends at once unless it is
         // the newest (a mono program's token) has none; one that keeps the newest four says so.
@@ -647,6 +651,18 @@ PROBE(plugin, chatexample)
                 std::printf("a sine voice on the pitch wheel:\n%s", w.c_str());
             P.eq("measure.host_line", has(w, "Host: playing from the song's start at 90 BPM, mod wheel 0.50, pitch bend 1.00.") ? 1 : 0, 1);
             P.near("measure.host_bent_hz", firstPartial(w), 220.0 * std::pow(2.0, 2.0 / 12.0), 0.3);
+            // One note bent by a scenario's pitch wheel from the start: still its pitch line, 2 semitones over the note (the
+            // pitch's judgement renders the note and a whole tone up each alone, neither bent, so both measure alike).
+            pg::measure::Request wheel;
+            wheel.notes = { 57 };
+            wheel.wheels.push_back({ pg::measure::Wheel::bend, 0.0, 1.0f });
+            const std::string bw = pg::measure::run(pg::singleFile(bent), wheel);
+            const std::size_t pitchAt = bw.find(" Pitch: "), lineAt = bw.find("Spectrum while held");
+            std::printf("a sine voice bent by the scenario's wheel, its spectrum line: %s\n",
+                        lineAt == std::string::npos ? bw.c_str() : bw.substr(lineAt, bw.find('\n', lineAt) - lineAt).c_str());
+            const std::size_t centsAt = pitchAt == std::string::npos ? std::string::npos : bw.find(" Hz, ", pitchAt);
+            P.near("measure.wheel_bent_cents", centsAt == std::string::npos ? 0.0 : std::atof(bw.c_str() + centsAt + 5), 200.0, 1.0);
+            P.eq("measure.wheel_bent_pitched", pitchAt != std::string::npos && !has(bw, "Unpitched") ? 1 : 0, 1);
             P.eq("measure.host_none_without", has(r, "Host: ") ? 0 : 1, 1);
         }
         // Aliasing at C7 (2093 Hz): a naive saw's shows; a wavetable's, its table built once in Shared, does not.
