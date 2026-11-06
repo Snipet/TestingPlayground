@@ -19,9 +19,10 @@
 //   FIRST    a program that stops at its first block, offered revertible while another plays: the Engine goes back to
 //            that one, which plays on (an effect: the same bits as it alone; an instrument: its held key sounds again),
 //            the stop published as gone back from (settle() then says so); offered otherwise, it stops and fades out.
-//            LATER: one that stops at its third block, the swap still under way (an effect's crossfade turned back from
-//            where it stood, the stopped side's exit under it; an instrument's old voices fading): no step larger than
-//            the signal's, and then the program before alone (an effect: the same bits as it alone)
+//            LATER: one that stops at its fourth block, the swap still under way (an effect's crossfade turned back from
+//            where it stood, the stopped side's exit under it, from its own last samples; an instrument's old voices
+//            fading): no step larger than the signal's, and then the program before alone (an effect: the same bits as
+//            it alone)
 //   GLIDE    an instrument's dial gliding as it goes back: from its start() at the block's start, the glide goes on as
 //            if nothing had stopped (it advances once a block); from a voice's part mid-block, the program gone back to
 //            goes on from the value its instances held since the swap, gliding to the dial's new value from the part's
@@ -126,9 +127,9 @@ namespace
     const char* kSpin = "        while (1)\n            spins = spins + 1;\n";
     const char* kSpinLater = "        count = count + n;\n        if (count > 12000)\n            while (1)\n"
                              "                spins = spins + 1;\n";
-    // One from its 513th sample on (an effect's third block of 256; a voice's 33rd part), and from its 601st.
-    const char* kSpinThird = "        count = count + n;\n        if (count > 512)\n            while (1)\n"
-                             "                spins = spins + 1;\n";
+    // One from its 769th sample on (an effect's fourth block of 256; a voice's 49th part), and from its 601st.
+    const char* kSpinFourth = "        count = count + n;\n        if (count > 768)\n            while (1)\n"
+                              "                spins = spins + 1;\n";
     [[maybe_unused]] const char* kSpinAfter600 = "        count = count + n;\n        if (count > 600)\n            while (1)\n"
                                 "                spins = spins + 1;\n";
 
@@ -612,20 +613,21 @@ PROBE(dsp, budget)
 
     // ---- FIRST, LATER: a program that stops while the swap is under way, gone back from -----------------------------
     {
-        // A, which plays (an effect: a lowpass, its state its own); B: its third block (a voice's 33rd part) never ends
-        // (an effect: its output the input's opposite, so that a side mixed up would step).
+        // A, which plays (an effect: a quiet lowpass, its state its own); B: its fourth block (a voice's 49th part) never
+        // ends (an effect: 0.5 throughout, far from A, so that the stopped side's exit from A's samples would step: its
+        // crossfade turned back at 0.8, the stopped side weighs half in the block after).
         const std::string a = kInstrument ? program("", "")
                                           : "module Effect\n{\n    float zl, zr;\n\n"
                                             "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                                             "        for (int i = 0; i < n; ++i)\n        {\n"
                                             "            zl = zl + 0.2f * (left[i] - zl);\n            zr = zr + 0.2f * (right[i] - zr);\n"
-                                            "            left[i] = zl;\n            right[i] = zr;\n        }\n    }\n};\n";
-        const std::string b = kInstrument ? voice(kSpinField, kSpinThird)
+                                            "            left[i] = 0.1f * zl;\n            right[i] = 0.1f * zr;\n        }\n    }\n};\n";
+        const std::string b = kInstrument ? voice(kSpinField, kSpinFourth)
                                           : "module Effect\n{\n" + std::string(kSpinField)
                                             + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
-                                            + kSpinThird
+                                            + kSpinFourth
                                             + "        for (int i = 0; i < n; ++i)\n        {\n"
-                                              "            left[i] = -0.5f * left[i];\n            right[i] = -0.5f * right[i];\n"
+                                              "            left[i] = 0.5f;\n            right[i] = 0.5f;\n"
                                               "        }\n    }\n};\n";
         pg::Engine engine, alone;
         for (pg::Engine* e : { &engine, &alone })
@@ -649,11 +651,11 @@ PROBE(dsp, budget)
         pg::Engine::Stopped st;
         P.eq("later.stops", engine.lastStop(st) && st.program == 2 && st.call == pg::Patch::Method::process ? 1 : 0, 1);
         P.eq("later.reverted", st.reverted ? 1 : 0, 1);
-        P.eq("later.at_its_513th_sample", static_cast<int64_t>(st.at), static_cast<int64_t>(half + 512));
+        P.eq("later.at_its_769th_sample", static_cast<int64_t>(st.at), static_cast<int64_t>(half + 768));
         P.eq("later.previous_plays", engine.playingPatch() != nullptr ? static_cast<int>(engine.playingPatch()->program()) : 0, 1);
         P.le("later.no_step", maxStepOf(o2, 0, 12 * kBlock), 0.03);
         P.eq("later.finite", probe::allFinite(o2.l) && probe::allFinite(o2.r) ? 1 : 0, 1);
-        const std::size_t after = 8 * kBlock;                // the stop at 512, then 20 ms at most to go back
+        const std::size_t after = 8 * kBlock;                // the stop at 768, then 768 samples to go back
         if constexpr (kInstrument)
             P.ge("later.held_key_sounds_db", probe::rmsDb(o2.l, after, rest.size() - after), -15.0);
         else
