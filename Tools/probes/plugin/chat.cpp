@@ -132,7 +132,8 @@
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
 //            again says them unchanged in a line; one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
-//            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them; the
+//            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
+//            that only sweeps a dial (tune_dials' sweep sets nothing); the
 //            session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
@@ -2896,6 +2897,16 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("That is the one check.").end()));
             const int bl = turn("which checks are set?", 2);
             P.eq("checks.list_no_nudge", ss->postCount() - bl == 2 && has(resultText(bl + 1), "1 check is set") ? 1 : 0, 1);
+            // Nor is one that only sweeps a dial (tune_dials' sweep sets nothing), though one fails.
+            juce::var sweepIn = input({ { "tune", juce::Array<juce::var>{ juce::var(fixDial) } },
+                                        { "sweep", pg::product::kIsInstrument ? juce::Array<juce::var>{ 0.1, 0.3 } : juce::Array<juce::var>{ -8.0, -4.0 } },
+                                        { "goals", juce::Array<juce::var>{ input({ { "metric", pg::product::kIsInstrument ? "rms_db" : "sine_gain_db" } }) } } });
+            if constexpr (pg::product::kIsInstrument)
+                sweepIn.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c7", "tune_dials", sweepIn).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The level follows it.").end()));
+            const int bw = turn("how does that dial change the level?", 2);
+            P.eq("checks.sweep_no_nudge", ss->postCount() - bw == 2 && has(resultText(bw + 1), "No dial was set") ? 1 : 0, 1);
 
             // The session keeps the checks; Clear forgets them.
             const std::string saved = sa.saveState();
