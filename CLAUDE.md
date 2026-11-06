@@ -275,14 +275,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **The loop budget** (Patch.h's "The loop budget", Engine.h's and Compiler.h's "A program that stops"): every compile
   that plays (compile()'s second pass, freeze(), ir(), frozenIr()) has FMinus's `Options::loopBudget`, the frozen copy
   too (it costs 0.2% to 2.7%: `dsp.budget`, README "A loop that never ends"); each call into a program goes through
-  Patch, which sets its budget (`budgetOf`: 2^36 a second of its samples, 16 samples' worth at least; init and end
+  Patch, which sets its budget (`budgetOf`: 2^32 a second of its samples, 16 samples' worth at least; init and end
   2^32) and after it records a stop (`Patch::stopped`), and calls nothing of a stopped Patch until reset() (its state
-  may be any). A new call path into a program goes through Patch too, never around it. The Engine fades a stopped
+  may be any), not even an end: reset() and the destructor call none (a leak of what init allocated, never a double
+  free). A new call path into a program goes through Patch too, never around it. The Engine fades a stopped
   program out over 20 ms from its last samples (`Exit`, `exitVoice`; the effect keeps each block's input for it),
   starts no note on it, goes back to the program it replaced while that one is still there and the program was offered
   `revertible` (the Compiler's RUN, until `settle()`: one exchange of `revertible_` decides who wins), and publishes
-  the stop (`stops()`, `lastStop()`); a RUN's land() waits for the program's first blocks (a block under way counts as
-  busy: a stuck call takes up to its budget), so a stop there fails the RUN as a compile does; a later stop is the
+  the stop (`stops()`, `lastStop()`); an instrument's revert after the block's glides goes on from the dials the old
+  program's instances held since the swap (`heldDials_`), never advances a glide twice; a RUN's land() waits for the
+  program's first blocks (a block under way counts as busy, up to the time the largest call's budget takes at 256
+  cycles an iteration: `firstBlocks`), so a stop there fails the RUN as a compile does; a later stop is the
   compiler thread's (`checkStops`: the status, `stopped`, and `previous_`, the last program of other files that
   played, compiled again with its pins and played). A program that stopped is never gone back to, refined or frozen.
   `dsp.budget` checks it all.
