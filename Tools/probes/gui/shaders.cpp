@@ -29,8 +29,8 @@
 //             by the GPU, its text saying so; with the GPU forced off (picture::forceSoftRasterForTests), a picture
 //             still, its text saying each shader shows as a striped placeholder, and why
 //   DRAW      a panel whose one shader is still asks for no frame while nothing changes, and for one when the parameter
-//             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's dial
-//             being hidden in the PANEL view (a hidden item's key is not watched)
+//             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's knob
+//             being on a page not shown (a hidden item's key is not watched) and its dial hidden in the PANEL view
 #include "Probe.h"
 
 #include "editor/GuiItems.h"
@@ -499,13 +499,18 @@ PROBE(gui, shaders)
     // ---- DRAW ----------------------------------------------------------------------------------------------------------
     // A panel whose only shader is still: quiet while nothing changes, and a frame when the parameter it reads moves
     // with no input (a host's automation): its inputs are what it draws (Panel.h "Unchanged frames"), and what asks:
-    // the parameter's dial is hidden in the PANEL view, and a hidden item's key is not watched.
+    // the parameter's knob is on the page not shown and its dial hidden in the PANEL view, and a hidden item's key is
+    // not watched. (A .gui file that leaves a parameter out shows its knob last: the knobs are named, on page B.)
     {
-        const char* const still = "panel { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n";
+        const char* const still = "panel { tabs {\n"
+                                  "    page \"A\" { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n"
+                                  "    page \"B\" { knob cutoff; knob level }\n"
+                                  "} }\n";
         load(processor, { { pg::kProgramName, program() }, { "panel.gui", still }, { "still.sc", kStill } });
         processor.settle();
         host.tick(2);
         host.settle();
+        P.eq("draw.still_alone", shaderShowing(panel, "still.sc") != nullptr && !panel.guiControl(0).shown() ? 1 : 0, 1);
         host.draw();
         int asked = 0;
         for (int k = 0; k < 11; ++k)
@@ -514,6 +519,7 @@ PROBE(gui, shaders)
             asked += panel.needsDraw() ? 1 : 0;
         }
         P.eq("draw.still_quiet", asked, 0);
+        host.draw();                                     // the safety net's second starts again: the move must ask
         juce::AudioProcessorParameter& cutoff = *processor.getParameters()[0];
         cutoff.setValueNotifyingHost(cutoff.getValue() < 0.5f ? 0.75f : 0.25f);
         host.tick(1, 1.0f / 12.0f);
