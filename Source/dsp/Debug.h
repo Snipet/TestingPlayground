@@ -40,7 +40,9 @@
 // Offline only, off the audio thread: a Session's own Engine, never the one that plays. It reads the instances'
 // memory as FMinus lays it out and never follows a pointer. Deterministic: the same files and request give the same
 // result, but for the time limit (`seconds`) and a cancel, which stop it and say so: what pass 1 rendered is all it
-// looks at, and a problem the calls of one sample did not reach is listed as pass 1 places it, "not traced".
+// looks at, and a problem the calls of one sample did not reach is listed as pass 1 places it, "not traced". Pass 1
+// stops so too once its records of the calls pass 256 MB (a render of up to 300 s: Measure.h, "How long a render may
+// be"; fewer fields watched, or fewer voices, go further).
 #pragma once
 
 #include "dsp/Measure.h"

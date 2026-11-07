@@ -2,6 +2,7 @@
 #include "dsp/Compare.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -155,7 +156,13 @@ namespace playground::measure
                     qa.want.insert(m.name);
                     qb.want.insert(m.name);
                 }
-            const Result ma = sa.measure(qa), mb = sb.measure(qb);
+            const Result ma = sa.measure(qa);
+            const Result mb = ma.cancelled ? Result{} : sb.measure(qb);
+            if (ma.cancelled || mb.cancelled)                // a cancel (CompareOptions::cancel): nothing compared
+            {
+                c.error = (ma.cancelled ? "A's metrics: " + sa.cancelWords() : "B's metrics: " + sb.cancelWords()) + " Nothing was compared.";
+                return;
+            }
             c.metricsMeasured = true;
             for (const MetricInfo& m : metrics())
             {
@@ -198,7 +205,7 @@ namespace playground::measure
 
         // `length` samples (0: as its request plays): a recording's, when the other side is one. An effect's input is the
         // request's, else `input`.
-        Rendered renderSide(const CompareSide& side, double rate, std::size_t length, ViewInput input)
+        Rendered renderSide(const CompareSide& side, double rate, std::size_t length, ViewInput input, const Cancel& cancel)
         {
             Rendered out;
             if (side.recordedL != nullptr)
@@ -217,6 +224,7 @@ namespace playground::measure
                 out.errors = out.session->errors();
                 return out;
             }
+            out.session->setCancel(cancel);
             ViewRequest vr;
             vr.render = side.request;
             vr.render.rate = rate;
@@ -301,7 +309,21 @@ namespace playground::measure
         // An effect's input unless the request names one: noise, or at two rates the sweep (20 Hz to 20 kHz at -12
         // dBFS, the same at every rate; white noise's level per hertz falls as the rate rises).
         const ViewInput input = c.twoRates() ? ViewInput::sweep : ViewInput::noise;
-        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input), rb = renderSide(sb, c.rateB, lengthAt(c.rateB), input);
+        // The cancel, its time limit over both sides from here (each Session counts from its own setCancel).
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto cancelNow = [&] {
+            Cancel k = options.cancel;
+            if (k.seconds > 0.0)
+                k.seconds = std::max(1e-3, k.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            return k;
+        };
+        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input, cancelNow());
+        Rendered rb = ra.sound.cancelled ? Rendered{} : renderSide(sb, c.rateB, lengthAt(c.rateB), input, cancelNow());
+        if (ra.sound.cancelled || rb.sound.cancelled)
+        {
+            c.error = (ra.sound.cancelled ? "A: " + ra.session->cancelWords() : "B: " + rb.session->cancelWords()) + " Nothing was compared.";
+            return c;
+        }
         if (!ra.errors.empty() || !rb.errors.empty())
         {
             c.error = (!ra.errors.empty() ? "A does not compile:\n" + ra.errors : std::string())

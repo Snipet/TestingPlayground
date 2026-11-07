@@ -34,6 +34,8 @@ namespace playground::measure
         constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (doubles: 32 MB)
         constexpr std::size_t kMaxScanned = 2048;          // fields pass 1 reads after each call
         constexpr std::size_t kMaxTracked = 16;            // instances pass 2 keeps
+        constexpr std::size_t kMaxRecordBytes = std::size_t{ 256 } << 20;   // pass 1's records of its calls at most (a long
+                                                                          // render's: Measure.h, kMaxLongSeconds)
         constexpr std::size_t kMaxProblems = 3;
         constexpr std::size_t kMaxListed = 56;             // list: lines of fields
 
@@ -151,7 +153,7 @@ namespace playground::measure
             std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
             double limit = kTraceSeconds;
             const std::function<bool()>* keepGoing = nullptr;
-            bool stopped = false, cancelled = false;
+            bool stopped = false, cancelled = false, full = false;   // full: pass 1's records reached kMaxRecordBytes
             unsigned ticks = 0;
 
             // Every 64th call asks the cancel, then the time.
@@ -166,7 +168,12 @@ namespace playground::measure
                 return !stopped;
             }
 
-            const char* why() const { return cancelled ? "cancelled" : "the time limit"; }
+            const char* why() const
+            {
+                return cancelled ? "cancelled"
+                     : full      ? "the records it keeps of each call reached 256 MB (fewer fields watched, or fewer voices, go further)"
+                                 : "the time limit";
+            }
         };
 
         // ---- the voices a choice puts forward --------------------------------------------------------------------------
@@ -284,6 +291,11 @@ namespace playground::measure
                 scanSlot(-1, ci, true);
                 calls.push_back(r);
                 watchCall(ci, c);
+                if (calls.size() * sizeof(CallRec) + voices.size() * sizeof(Voice) + watched.size() * sizeof(Watch) > kMaxRecordBytes)
+                {
+                    clock_.full = clock_.stopped = true;
+                    return false;
+                }
                 return clock_.ok();
             }
 

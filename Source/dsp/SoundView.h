@@ -107,6 +107,7 @@ namespace playground::measure
         double cycleHz = 0.0;                     // the close-up shows four cycles of it (0: 10 ms)
         bool harmonics = false;                   // mark cycleHz's harmonics on the spectrum
         bool fromStart = false;                   // the close-up at the start (an impulse's response)
+        bool cancelled = false;                   // its render was cancelled (Session::setCancel: Session::cancelWords)
     };
     Sound renderSound(const Sources& files, const ViewRequest& request);
     Sound renderSound(Session& session, const ViewRequest& request);   // one compile, rendered again (at its rate)

@@ -2,6 +2,7 @@
 #include "dsp/Goals.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -136,19 +137,31 @@ namespace playground::measure
     }
 
     std::vector<CheckResult> evaluate(const Sources& files, const std::vector<Check>& checks,
-                                      const std::map<std::string, float>& current, std::string* errors)
+                                      const std::map<std::string, float>& current, std::string* errors, const Cancel* cancel)
     {
         std::vector<CheckResult> out(checks.size());
         if (checks.empty())
             return out;
-        // One compile a sample rate the checks render at (a check's scenario may name one).
+        // One compile a sample rate the checks render at (a check's scenario may name one), each asking the cancel,
+        // its time limit over them all from here.
+        const auto t0 = std::chrono::steady_clock::now();
         std::map<double, std::unique_ptr<Session>> sessions;
         const auto sessionFor = [&](double rate) -> Session& {
             std::unique_ptr<Session>& s = sessions[rate];
             if (!s)
+            {
                 s = std::make_unique<Session>(files, rate);
+                if (cancel != nullptr)
+                {
+                    Cancel k = *cancel;
+                    if (k.seconds > 0.0)
+                        k.seconds = std::max(1e-3, k.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+                    s->setCancel(std::move(k));
+                }
+            }
             return *s;
         };
+        std::string cut;                                     // a render cancelled: it and those after it not measured
         if (Session& first = sessionFor(checks.front().request.rate); !first.compiled())
         {
             for (CheckResult& r : out)
@@ -168,6 +181,11 @@ namespace playground::measure
         {
             if (done[i])
                 continue;
+            if (!cut.empty())
+            {
+                out[i].text = "not measured: " + cut;
+                continue;
+            }
             Request r = checks[i].request;
             r.current = from(checks[i]);
             r.want.clear();
@@ -185,6 +203,13 @@ namespace playground::measure
             }
             Session& session = sessionFor(r.rate);
             const Result m = session.measure(r);
+            if (m.cancelled)
+            {
+                cut = session.cancelWords();
+                for (const std::size_t j : group)
+                    out[j].text = "not measured: " + cut;
+                continue;
+            }
             // A dial it names that the program has not (renamed, removed): rendered without it, the number would be
             // another sound's, so the check fails for that, whatever the metric gives.
             std::string missing;

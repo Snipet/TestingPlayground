@@ -246,8 +246,9 @@ namespace playground::measure
         }
         out.compiled = true;
         const double rate = out.rate;
-        const float hold = std::clamp(request.render.holdSeconds, 0.05f, 10.0f);
-        const float tail = std::clamp(request.render.tailSeconds, 0.0f, 10.0f);
+        const float hold = static_cast<float>(std::clamp(static_cast<double>(request.render.holdSeconds), 0.05,
+                                                         std::min(request.render.longest, kMaxRenderSamples / out.rate - kMaxTailSeconds)));
+        const float tail = static_cast<float>(std::clamp(static_cast<double>(request.render.tailSeconds), 0.0, kMaxTailSeconds));
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         std::size_t total = holdN + static_cast<std::size_t>(tail * rate);
         const double hiHz = std::min(20000.0, 0.5 * rate);
@@ -375,6 +376,7 @@ namespace playground::measure
         out.stopCall = played.stopCall;
         out.stopAt = played.stopAt;
         out.stopBounds = played.stopBounds;
+        out.cancelled = played.cancelled;
         out.l = std::move(played.l);
         out.r = std::move(played.r);
         return out;

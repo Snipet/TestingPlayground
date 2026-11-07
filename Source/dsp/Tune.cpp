@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numeric>
 
 namespace playground::measure
@@ -117,6 +118,13 @@ namespace playground::measure
                 Request r = base;
                 r.dials[name] = v;
                 const Result m = session.measure(r);
+                if (m.cancelled)                         // cut in its render (TuneRequest::cancelled, the time limit)
+                {
+                    out.stopped = true;
+                    out.timedOut = out.timedOut || !(request.cancelled && request.cancelled());
+                    out.cut = session.cancelWords();
+                    break;
+                }
                 TuneResult::SweepRow row;
                 row.value = v;
                 for (const Goal& g : request.goals)
@@ -147,6 +155,11 @@ namespace playground::measure
                     break;
             }
             out.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            if (out.sweep.empty() && !out.cut.empty())
+            {
+                out.error = out.cut + " Nothing was swept.";
+                return;
+            }
 
             // The table: a row a value, a column a goal (its bound or target in the header, met or not in each cell).
             const std::size_t all = request.sweep.size(), done = out.sweep.size();
@@ -244,6 +257,12 @@ namespace playground::measure
             out.error = "It did not compile, so nothing was tuned:\n" + session.errors();
             return out;
         }
+        // Each render asks the cancel, and the time limit, as it goes (a long render: Measure.h).
+        session.setCancel({ request.cancelled,
+                            request.seconds > 0.0
+                                ? std::max(1e-3, request.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count())
+                                : 0.0,
+                            nullptr });
         const Controls& controls = session.controls();
         std::vector<int> slots;
         std::vector<std::string> names;
@@ -334,6 +353,13 @@ namespace playground::measure
             for (std::size_t i = 0; i < n; ++i)
                 r.dials[names[i]] = plainAt(x, i);
             const Result m = session.measure(r);
+            if (m.cancelled)                             // cut in its render: left out, and the search stops
+            {
+                out.stopped = true;
+                out.timedOut = out.timedOut || !(request.cancelled && request.cancelled());
+                out.cut = session.cancelWords();
+                return Point{ x, std::numeric_limits<double>::infinity() };
+            }
             if (out.renders == 0)
                 unmeasured = m.unmeasured;
             double score = 0.0;
@@ -364,6 +390,11 @@ namespace playground::measure
         const auto goOn = [&] { return out.renders < budget && !out.stopped && !allMet; };
 
         const Point start = evaluate(x0);
+        if (out.renders == 0 && !out.cut.empty())        // its first render cut: nothing to start from
+        {
+            out.error = out.cut + " Nothing was tuned.";
+            return out;
+        }
         out.startScore = start.score;
         out.startValues = bestValues;
         for (std::size_t i = 0; i < n; ++i)
@@ -498,6 +529,8 @@ namespace playground::measure
             t += "Not every goal was met within " + std::to_string(budget)
                + " renders: the dials may not reach it (a goal the program cannot give, or one at odds with another), or "
                  "another dial matters. Measure the best, change the program, or tune again with other dials or goals.\n";
+        if (!out.cut.empty())
+            t += "Its last render was cut short, and left out: " + out.cut + "\n";
         out.text = std::move(t);
         return out;
     }

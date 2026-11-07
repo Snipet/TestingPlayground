@@ -37,6 +37,8 @@
 //   GRID    CLICK's phase reset with the phase a double in a 2-D array: the element is the culprit, with the line that
 //           writes it by its two indexes, its values a double's; a double beside it that moves 1e-6 a sample is no
 //           culprit
+//   LONG    CLICK's counter watched over a render of 300 s held (a call that returns numbers: Measure.h, "How long a
+//           render may be"): not stopped, its range whole (0 to 10006), in a time printed and bounded
 #include "Probe.h"
 
 #include "Examples.h"
@@ -45,6 +47,7 @@
 #include "dsp/Debug.h"
 #include "dsp/SoundView.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -1284,6 +1287,27 @@ PROBE(dsp, debug)
     const ms::TraceResult raw = ms::trace(pg::singleFile(clickProgram), rawReq);
     print("RAW", raw);
     P.eq("raw.around", anyHas(raw.lines, "count from 0.100 s (sample 4,796), a sample each: 4797 4798 4799 4800 4801 4802 4803 4804") ? 1 : 0, 1);
+
+    // ---- LONG: a field watched over 300 s ---------------------------------------------------------------------------------
+    {
+        ms::TraceRequest q = clickReq;
+        q.find = ms::TraceFind::none;
+        q.fields = { "count" };
+        q.render.longest = ms::kMaxLongSeconds;
+        q.render.phrase.clear();
+        q.render.holdSeconds = 300.0f;
+        q.render.tailSeconds = 0.1f;
+        if constexpr (kInstrument)
+            q.render.notes = { 48 };
+        const auto t0 = std::chrono::steady_clock::now();
+        const ms::TraceResult r = ms::trace(pg::singleFile(clickProgram), q);
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("trace over 300 s, in %.1f s:\n", took);
+        print("LONG", r);
+        P.eq("long.watched_300s", r.error.empty() && !r.stopped && anyHas(r.lines, "count: min 0, max 10006")
+                                      && static_cast<double>(r.l.size()) >= 300.0 * 48000.0 ? 1 : 0, 1);
+        P.le("long.trace_seconds", took, 90.0);
+    }
 
     // ---- VOICE, SAME ---------------------------------------------------------------------------------------------------
     if constexpr (kInstrument)
