@@ -1,5 +1,5 @@
-# Two plugins (AU, VST3, Standalone on macOS arm64; VST3 and Standalone on Windows x64) from one source tree, on
-# JUCE 8.0.4 and FunkGui, with FSynth's DSP core vendored in Source/fsdsp/core. The products are
+# Two plugins (AU, VST3, Standalone on macOS arm64; VST3 and Standalone on Windows x64 and Linux x86-64) from one
+# source tree, on JUCE 8.0.4 and FunkGui, with FSynth's DSP core vendored in Source/fsdsp/core. The products are
 # products/<key>.cmake: the effect (products/effect.cmake) and the synth (products/synth.cmake). One configure builds
 # every product: the shared sources are compiled once for each, against that product's generated Product.h. Use the
 # presets (CMakePresets.json):
@@ -34,6 +34,11 @@
 # (FunkGui v0.24.0: bgfx on Direct3D 11), or, with FP_WITH_GPU off, on the CPU (Source/editor/nogpu/: FunkGui's
 # SoftRaster in a JUCE component); no AU, no signing. Platform files are named for it: *Win.cpp and *None.cpp beside
 # the macOS *.mm and IOKit sources (Source/plugin/standalone/, Source/installer/: EngineWin.cpp, SystemWin.cpp).
+#
+# Linux (x86-64, clang and lld; the linux-* presets): the VST3, the Standalone, the MCP server and its extension, the
+# GUI sandbox's helper, the headless renderer and the probes; no AU, no installer app. The editor draws on the GPU
+# (FunkGui: bgfx on Vulkan, in an X11 child window of JUCE's peer, XWayland on a Wayland desktop), or with FP_WITH_GPU
+# off on the CPU as on Windows. The Standalone takes Windows' *Win.cpp window and *None.cpp racing wheel.
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -53,8 +58,9 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# The platforms: macOS (arm64, Apple clang) and Windows (x64, clang-cl: FMinus's compiler there).
+# The platforms: macOS (arm64, Apple clang), Windows (x64, clang-cl: FMinus's compiler there) and Linux (x86-64, clang).
 set(FP_WINDOWS OFF)
+set(FP_LINUX OFF)
 if(APPLE)
   if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
     message(FATAL_ERROR "${PROJECT_NAME} builds for arm64 only on macOS: configure with a preset (CMakePresets.json), "
@@ -89,11 +95,26 @@ elseif(WIN32)
   foreach(_lang C CXX)
     string(REPLACE "/Ob1" "/Ob2" CMAKE_${_lang}_FLAGS_RELWITHDEBINFO "${CMAKE_${_lang}_FLAGS_RELWITHDEBINFO}")
   endforeach()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(FP_LINUX ON)
+  if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR NOT CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR "${PROJECT_NAME} builds on Linux with clang (FMinus's compiler): configure with a linux-* "
+                        "preset (CMakePresets.json sets CMAKE_C_COMPILER and CMAKE_CXX_COMPILER to clang and clang++, "
+                        "and links with lld). This is ${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER}).")
+  endif()
+  if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    message(FATAL_ERROR "${PROJECT_NAME} builds for x86-64 on Linux (this is ${CMAKE_SYSTEM_PROCESSOR})")
+  endif()
+  set(FP_ARCH x86_64)
+  # Every static library here ends up in a shared object (the VST3's .so): position-independent code throughout,
+  # FMinus's, FunkGui's and bgfx's included.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 else()
-  message(FATAL_ERROR "${PROJECT_NAME} builds on macOS (arm64) and Windows (x64).")
+  message(FATAL_ERROR "${PROJECT_NAME} builds on macOS (arm64), Windows (x64) and Linux (x86-64).")
 endif()
-# FunkGui's GPU layer (bgfx: Metal on macOS, Direct3D 11 on Windows) and the editor host on it; OFF: the CPU host
-# (Source/editor/nogpu/: SoftRaster, custom shaders as placeholders), which needs neither bgfx nor shaderc.
+# FunkGui's GPU layer (bgfx: Metal on macOS, Direct3D 11 on Windows, Vulkan on X11 on Linux) and the editor host on it;
+# OFF: the CPU host (Source/editor/nogpu/: SoftRaster, custom shaders as placeholders), which needs neither bgfx nor
+# shaderc.
 option(FP_WITH_GPU "FunkGui's GPU layer (bgfx) and FunkGui's EditorHost; OFF: the editor on the CPU" ON)
 # The user's home: the machine caches (~/audio/...) are found under it.
 if(DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
@@ -173,6 +194,12 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 # Windows' system libraries the plugin, the server and the helper call: Winsock (the MCP sockets), CNG (the chat's key
 # file), the shell's folders.
 set(FP_WINDOWS_LIBS ws2_32 bcrypt shell32 ole32)
+# Linux's: OpenSSL's libcrypto (the chat's key file: AES, PBKDF2 and HMAC, as CommonCrypto and CNG give them).
+set(FP_LINUX_LIBS "")
+if(FP_LINUX)
+  find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
+  set(FP_LINUX_LIBS OpenSSL::Crypto)
+endif()
 if(FP_WITH_GPU)
   set(_fp_editor_on "GPU")
 else()
@@ -220,8 +247,8 @@ set(FP_RENDER_SHARED ${FP_SOURCE_ROOT}/plugin/ChatScenario.cpp)
 # Objective-C++.
 file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
                                                   ${FP_SOURCE_ROOT}/plugin/standalone/*.mm)
-# Each platform's own: macOS the window in Objective-C++ and the racing wheel over IOKit; Windows *Win.cpp (JUCE's
-# window with a menu bar) and *None.cpp (no racing wheel).
+# Each platform's own: macOS the window in Objective-C++ and the racing wheel over IOKit; Windows and Linux *Win.cpp
+# (JUCE's window with a menu bar: nothing in it is Windows') and *None.cpp (no racing wheel).
 if(APPLE)
   list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(Win|None)\\.cpp$")
 else()
@@ -351,7 +378,7 @@ function(fp_add_product key)
     if(NOT _text MATCHES "^// ([^:\n]+):")
       message(FATAL_ERROR "${_f}: the first line must be '// <Title>: ...', the title the EXAMPLES menu shows")
     endif()
-    if(FP_WINDOWS)                                         # "RUN (or Cmd-Return)": a Windows keyboard's Ctrl
+    if(NOT APPLE)                                          # "RUN (or Cmd-Return)": a Windows or Linux keyboard's Ctrl
       string(REPLACE "Cmd-" "Ctrl-" _text "${_text}")
     endif()
     string(APPEND FP_FMINUS_EXAMPLE_ROWS "        Example{ \"${CMAKE_MATCH_1}\", R\"fminus(${_text})fminus\" },\n")
@@ -555,7 +582,7 @@ namespace @FP_NAMESPACE@
   if(APPLE)
     set(_fp_formats AU VST3 Standalone)
   else()
-    set(_fp_formats VST3 Standalone)                     # Windows: no AU (JUCE makes the .ico from ICON_BIG)
+    set(_fp_formats VST3 Standalone)                     # Windows, Linux: no AU (Windows: JUCE makes the .ico)
   endif()
   juce_add_plugin(${PRODUCT_NAME}
       ICON_BIG                 ${_fp_logo}/installer-1024.png
@@ -601,6 +628,8 @@ namespace @FP_NAMESPACE@
     target_link_libraries(${PRODUCT_NAME} PRIVATE compression)  # ProjectExport.cpp: a package's xz (libcompression)
   elseif(FP_WINDOWS)
     target_link_libraries(${PRODUCT_NAME} PRIVATE ${FP_WINDOWS_LIBS})
+  elseif(FP_LINUX)
+    target_link_libraries(${PRODUCT_NAME} PRIVATE ${FP_LINUX_LIBS})
   endif()
   funkgui_configure_product(${PRODUCT_NAME} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
                             ENV_PREFIX ${PRODUCT_ENV_PREFIX} PREFS_FOLDER ${PRODUCT_NAME})
@@ -706,10 +735,24 @@ namespace @FP_NAMESPACE@
   endforeach()
   endif()   # APPLE: exports, shaderc, signatures
 
-  # Windows with the GPU layer: shaderc.exe, the pinned bgfx's, where the plugin looks for it (Processor.cpp's
-  # shaderTools): the VST3's Contents/Resources, beside its Contents/x86_64-win, as on macOS, and the Standalone's own
-  # folder, beside its .exe. Copied before the link, once it is built or found.
-  if(FP_WINDOWS AND FP_WITH_GPU)
+  # Linux: the VST3 exports its entry points and nothing else, as on macOS, through a version script (JUCE's three
+  # functions); every other symbol is local, so none of LLVM's is bound to another loaded object's definition, nor
+  # another's to ours. lint.exports checks the built .so.
+  if(FP_LINUX AND TARGET ${PRODUCT_NAME}_VST3)
+    set(_exports ${CMAKE_BINARY_DIR}/exports/${key})
+    file(CONFIGURE OUTPUT ${_exports}-vst3.map
+         CONTENT "{\n  global: GetPluginFactory; ModuleEntry; ModuleExit;\n  local: *;\n};\n")
+    file(CONFIGURE OUTPUT ${_exports}-vst3.txt CONTENT "GetPluginFactory\nModuleEntry\nModuleExit\n")
+    target_link_options(${PRODUCT_NAME}_VST3 PRIVATE "LINKER:--version-script=${_exports}-vst3.map")
+    set_property(TARGET ${PRODUCT_NAME}_VST3 APPEND PROPERTY LINK_DEPENDS ${_exports}-vst3.map)
+    set_property(GLOBAL APPEND PROPERTY FP_EXPORT_BUNDLES "$<TARGET_FILE:${PRODUCT_NAME}_VST3>=${_exports}-vst3.txt")
+  endif()
+
+  # Windows and Linux with the GPU layer: shaderc (shaderc.exe on Windows), the pinned bgfx's, where the plugin looks
+  # for it (Processor.cpp's shaderTools): the VST3's Contents/Resources, beside its Contents/x86_64-win (x86_64-linux),
+  # as on macOS, and the Standalone's own folder, beside its executable. Copied before the link, once it is built or
+  # found.
+  if((FP_WINDOWS OR FP_LINUX) AND FP_WITH_GPU)
     if(FUNKGUI_SHADERC)
       set(_fp_sc "${FUNKGUI_SHADERC}")
     else()
@@ -727,7 +770,7 @@ namespace @FP_NAMESPACE@
         endif()
         add_custom_command(TARGET ${PRODUCT_NAME}_${_fmt} PRE_LINK
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_fp_sc_dir}"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_sc}" "${_fp_sc_dir}/shaderc.exe"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_fp_sc}" "${_fp_sc_dir}/shaderc${CMAKE_EXECUTABLE_SUFFIX}"
             VERBATIM)
       endif()
     endforeach()
@@ -766,7 +809,7 @@ namespace @FP_NAMESPACE@
   endif()
   if(APPLE)
     target_link_options(${FP_RENDER} PRIVATE "LINKER:-dead_strip")
-  else()
+  elseif(FP_WINDOWS)
     target_link_libraries(${FP_RENDER} PRIVATE ${FP_WINDOWS_LIBS})
   endif()
   set_target_properties(${FP_RENDER} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -790,7 +833,7 @@ namespace @FP_NAMESPACE@
   endif()
   if(APPLE)
     target_link_options(${FP_SANDBOX} PRIVATE "LINKER:-dead_strip")
-  else()
+  elseif(FP_WINDOWS)
     target_link_libraries(${FP_SANDBOX} PRIVATE ${FP_WINDOWS_LIBS})
   endif()
   funkgui_configure_product(${FP_SANDBOX} PRODUCT ${PRODUCT_NAME} OBJC_PREFIX ${PRODUCT_OBJC_PREFIX}
@@ -822,6 +865,9 @@ namespace @FP_NAMESPACE@
   set(FP_RENDER_EXE ${FP_RENDER}${CMAKE_EXECUTABLE_SUFFIX})
   if(FP_WINDOWS)
     set(FP_MCP_PLATFORM "win32")
+    set(FP_MCP_MACHINE "computer")
+  elseif(FP_LINUX)
+    set(FP_MCP_PLATFORM "linux")
     set(FP_MCP_MACHINE "computer")
   else()
     set(FP_MCP_PLATFORM "darwin")
@@ -899,8 +945,11 @@ endforeach()
 
 # ---- the installer: one app for every product, the products inside it (cmake/Installer.cmake) -----------------------
 # macOS: "<Project> Installer.app" with its payload inside; Windows: "<Project> Installer.exe" with payload\ beside it.
-include(Installer)
-fp_add_installer()
+# Linux has no installer app (its Engine has no Linux body).
+if(NOT FP_LINUX)
+  include(Installer)
+  fp_add_installer()
+endif()
 
 # ---- the lints, once for every product's bundles (cmake/Probes.cmake) -----------------------------------------------
 fp_add_lints()

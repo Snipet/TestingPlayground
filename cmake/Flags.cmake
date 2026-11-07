@@ -1,10 +1,10 @@
 # cmake/Flags.cmake: the compile flags of our own code (modelled on FSynth's cmake/FsynArch.cmake, simplified).
 #
-#   fp_flags        INTERFACE: the CPU (macOS: -mcpu=apple-m1; Windows: x86-64 with AVX2 and FMA, which fsdsp's x86
-#                   SIMD needs) and the floating-point contract: -fno-math-errno -fno-trapping-math -ffp-contract=off
-#                   (clang-cl takes them through /clang:). Never -ffast-math (JUCE's constexpr infinity() breaks under
-#                   -ffinite-math-only, and the DSP core relies on IEEE arithmetic). Intended FMAs go through
-#                   fsdsp::simd::fma.
+#   fp_flags        INTERFACE: the CPU (macOS: -mcpu=apple-m1; Windows and Linux: x86-64 with AVX2 and FMA, which
+#                   fsdsp's x86 SIMD needs) and the floating-point contract: -fno-math-errno -fno-trapping-math
+#                   -ffp-contract=off (clang-cl takes them through /clang:). Never -ffast-math (JUCE's constexpr
+#                   infinity() breaks under -ffinite-math-only, and the DSP core relies on IEEE arithmetic). Intended
+#                   FMAs go through fsdsp::simd::fma.
 #   fp_lto          INTERFACE: -flto in Release when FP_LTO is on (the DSP library; the plugin takes JUCE's LTO target).
 #   fp_warnings     INTERFACE: FP_WARNING_FLAGS, for targets made only of our sources (the DSP library).
 #   FP_WARNING_FLAGS  JUCE 8.0.4's clang warning list with -Wextra first and -Wno-float-equal last (exact float
@@ -19,6 +19,8 @@ add_library(fp_flags INTERFACE)
 if(FP_WINDOWS)
   target_compile_options(fp_flags INTERFACE /arch:AVX2 /clang:-mavx2 /clang:-mfma /clang:-fno-math-errno
                                             /clang:-fno-trapping-math /clang:-ffp-contract=off)
+elseif(FP_LINUX)
+  target_compile_options(fp_flags INTERFACE -mavx2 -mfma -fno-math-errno -fno-trapping-math -ffp-contract=off)
 else()
   target_compile_options(fp_flags INTERFACE -mcpu=apple-m1 -fno-math-errno -fno-trapping-math -ffp-contract=off)
 endif()
