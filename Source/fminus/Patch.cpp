@@ -65,7 +65,8 @@ namespace playground
 
         // One of the plugin's calls into the program: the method, whether the plugin needs it, how the plugin calls
         // it (as the author would declare it), the line appended to the program for it, and its module (null: the
-        // main one).
+        // main one). The appended function is named playground_<method>, Shared's playground_shared_<method>:
+        // PatchCode.cpp names a profile's functions from that (shimNamed checks each table).
         struct Call
         {
             const char* method;
@@ -93,14 +94,14 @@ namespace playground
             { "tick", false, "void tick(int n)",
               "void playground_shared_tick(Shared* self, int n) [[clang::nonblocking]] { self->tick(n); }", kSharedModule },
             { "noteOn", false, "void noteOn(float note, float velocity)",
-              "void playground_shared_note_on(Shared* self, float note, float velocity) [[clang::nonblocking]] "
+              "void playground_shared_noteOn(Shared* self, float note, float velocity) [[clang::nonblocking]] "
               "{ self->noteOn(note, velocity); }", kSharedModule },
             { "noteOff", false, "void noteOff(float note)",
-              "void playground_shared_note_off(Shared* self, float note) [[clang::nonblocking]] { self->noteOff(note); }",
+              "void playground_shared_noteOff(Shared* self, float note) [[clang::nonblocking]] { self->noteOff(note); }",
               kSharedModule },
         };
-        constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_note_on",
-                                                     "playground_shared_note_off" };
+        constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_noteOn",
+                                                     "playground_shared_noteOff" };
         // A mono instrument's Voice::legato (Patch.h, "Mono"): appended only to a mono program, and only when the program
         // declares it as here.
         constexpr Call kLegatoCall = { "legato", false, "void legato(float note, float velocity)",
@@ -186,6 +187,43 @@ namespace playground
         constexpr std::size_t countOf(const Call (&)[N]) noexcept { return N; }
         static_assert(countOf(kSharedHookCalls) == static_cast<std::size_t>(lang::kSharedHooks)
                       && std::size(kSharedHookShims) == static_cast<std::size_t>(lang::kSharedHooks));
+
+        // Whether a call's appended function is named for its method (Call, above): "playground_" (and "shared_" for
+        // Shared's), the method, then its parameters; and whether `shim` is that function's name.
+        constexpr bool shimNamed(const Call& c, std::string_view shim = {}) noexcept
+        {
+            std::string_view s = c.shim;
+            const std::size_t at = s.find("playground_");
+            if (at == std::string_view::npos)
+                return false;
+            s.remove_prefix(at);
+            const std::size_t open = s.find('(');
+            if (open == std::string_view::npos)
+                return false;
+            std::string_view want = s.substr(0, open);
+            if (!shim.empty() && want != shim)
+                return false;
+            want.remove_prefix(std::string_view("playground_").size());
+            if (c.module != nullptr && std::string_view(c.module) == kSharedModule)
+            {
+                if (want.substr(0, 7) != "shared_")
+                    return false;
+                want.remove_prefix(7);
+            }
+            return want == c.method;
+        }
+        template <std::size_t N>
+        constexpr bool shimsNamed(const Call (&table)[N]) noexcept
+        {
+            for (const Call& c : table)
+                if (!shimNamed(c))
+                    return false;
+            return true;
+        }
+        static_assert(shimsNamed(kSharedCalls) && shimsNamed(kSharedHookCalls) && shimNamed(kLegatoCall)
+                      && shimsNamed(kEffectCalls) && shimsNamed(kVoiceCalls));
+        static_assert(shimNamed(kSharedHookCalls[0], kSharedHookShims[0]) && shimNamed(kSharedHookCalls[1], kSharedHookShims[1])
+                      && shimNamed(kSharedHookCalls[2], kSharedHookShims[2]));
 
         const Call* calls() noexcept { return kInstrument ? kVoiceCalls : kEffectCalls; }
         constexpr std::size_t callCount() noexcept

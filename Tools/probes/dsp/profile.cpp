@@ -29,7 +29,8 @@
 //            says that only this thread is sampled; the heavy program's (no region) says nothing of it
 //   CODE     Patch::codeRanges: sorted, none overlapping, each named; a program with a module Shared names its init
 //            "Shared::init" (the method's own code and the plugin's appended call, at least two ranges), no range
-//            named for the appended call itself ("playground_", the main module's "shared_init")
+//            named for the appended call itself ("playground_", the main module's "shared_init"); an instrument's
+//            Shared hooks named "Shared::noteOn" and "Shared::noteOff" (their appended calls too), none "note_on"
 // Printed: each report's profile line, and cpu_percent with the profile off and on (not asserted: the thread's time,
 // barely touched by the sampler).
 #include "Probe.h"
@@ -235,10 +236,20 @@ module Effect
 )";
     }
 
-    // A light program, with a module Shared (its init named as the method it calls).
+    // A light program, with a module Shared (its init named as the method it calls; an instrument's with its note
+    // hooks too, Patch.h's "Shared on its own").
     std::string lightProgram()
     {
-        const std::string shared = R"(module Shared
+        const std::string shared = kInstrument ? R"(module Shared
+{
+    float gain;
+    int held;
+    void init(float rate) { gain = 0.5f; }
+    void noteOn(float note, float velocity) { held += 1; }
+    void noteOff(float note) { held -= 1; }
+};
+)"
+                                               : R"(module Shared
 {
     float gain;
     void init(float rate) { gain = 0.5f; }
@@ -467,6 +478,20 @@ PROBE(dsp, profile)
         std::printf("Shared::init ranges %d, ranges named for an appended call %d\n", sharedInits, callNames);
         P.ge("code.shared_init_call", sharedInits, 2);
         P.eq("code.no_call_names", callNames, 0);
+        // An instrument's Shared hooks: their appended calls named as the methods they call, Shared::noteOn and
+        // Shared::noteOff, never in the call's own words (Shared::note_on).
+        if constexpr (kInstrument)
+        {
+            int hooks = 0, otherwise = 0;
+            for (const auto& r : lc)
+            {
+                hooks += (r.function == "Shared::noteOn" || r.function == "Shared::noteOff") && r.module == "Shared" ? 1 : 0;
+                otherwise += has(r.function, "note_on") || has(r.function, "note_off") ? 1 : 0;
+            }
+            std::printf("Shared's note hooks: %d ranges, %d named otherwise\n", hooks, otherwise);
+            P.ge("code.shared_hooks", hooks, 2);
+            P.eq("code.shared_hooks_named", otherwise, 0);
+        }
     }
 
     // ---- CALLS -------------------------------------------------------------------------------------------------------
