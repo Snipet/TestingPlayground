@@ -6789,12 +6789,13 @@ namespace playground::ui
                                              "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
         else if (projects_.isOpen())
         {
-            const char* what = projects_.searching()    ? "PROJECTS   TYPE TO SEARCH: NAMES, DESCRIPTIONS, TAGS   RETURN CHOOSES THE FIRST   ESCAPE CLEARS"
-                             : projects_.categoryMode() ? "PROJECTS   TYPE A CATEGORY   RETURN SETS IT   ESCAPE GOES BACK"
-                             : projects_.dragging()     ? "PROJECTS   DROP ONTO A GROUP: ITS CATEGORY (FAVOURITES STARS THEM)"
-                                                        : "PROJECTS   CMD-F SEARCHES   CMD-CLICK CHOOSES MORE   RIGHT-CLICK OR DRAG: THE CATEGORY   "
-                                                          "RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES";
-            std::snprintf(line, sizeof line, "%s", what);
+            const std::string what = upper(shortcutText(   // Ctrl- on Windows
+                projects_.searching()    ? "Projects   type to search: names, descriptions, tags   Return chooses the first   Escape clears"
+                : projects_.categoryMode() ? "Projects   type a category   Return sets it   Escape goes back"
+                : projects_.dragging()     ? "Projects   drop onto a group: its category (Favourites stars them)"
+                                           : "Projects   Cmd-F searches   Cmd-click chooses more   right-click or drag: the category   "
+                                             "Return saves a name typed, else opens   Escape closes"));
+            std::snprintf(line, sizeof line, "%s", what.c_str());
         }
         else
         {

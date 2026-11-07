@@ -720,7 +720,7 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   is a project of its own. The card lists the projects at the left (a click chooses one, a double-click opens its
   newest version) and the chosen project's versions and presets at the right (a double-click opens a version, or
   applies a preset; a click under the presets starts a new one). The projects come in **groups** that fold (a click
-  on a group's header): **Favourites** on top (the projects you star, with the star at a row's right: each stays in
+  on a group's header; a right-click there folds or opens every group): **Favourites** on top (the projects you star, with the star at a row's right: each stays in
   its own group too), **Factory** (below), a group a **category** (the project's info's, as Export keeps it; "Pad"
   and "pad" are one), by name, and **Uncategorised** last. A project's category is set from the **context menu** (a
   right-click: **Category**, the kind's categories and your own, **None**, **New category...**), by **dragging** it
@@ -731,7 +731,8 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   name, description or tags; while it filters, every group with a match shows it; Escape clears it), the **tag**
   filter (a project with that tag, the menu saying how many have each) and the **order** (by name, or the newest save
   first). The stars, the groups folded, the search, the tag and the order are this Mac's: every instance and the
-  explorer show the same, kept in a hidden file in the projects' folder (`.projects-view.json`) as they change.
+  explorer show the same, kept in a hidden file in the projects' folder (`.projects-view.json`) as they change (the search as the card
+  closes; what another instance changed meanwhile stays).
   Categories stay in each project's file (no folders on disk: a project's name is its file's, unique in the one
   folder, so moving files between folders would let two projects share a name and make a category change a move).
   The field names what **Save** saves: a project (a

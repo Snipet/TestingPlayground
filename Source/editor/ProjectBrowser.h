@@ -173,7 +173,7 @@ namespace playground::ui
         void readProjects();                             // this Mac's, then the factory's; arranged
         void arrange();                                  // the groups and the rows, from the projects and the view
         bool filtering() const noexcept { return !view_.search.empty() || !view_.tag.empty(); }
-        void keepView();                                 // the view to the port (this Mac's)
+        void keepView();                                 // what changed of the view to the port's (this Mac's), merged
         bool starredName(const std::string& name) const;
         void star(const std::vector<std::string>& names, bool on);
         void toggleFold(int group);
@@ -204,6 +204,7 @@ namespace playground::ui
         std::vector<projectgroups::Group> groups_;
         std::vector<Row> rows_;
         ProjectsView view_;                              // as the port had it, and as it changed since
+        ProjectsView kept_;                              // as it last read or wrote it (what changed since: view_'s)
         std::vector<std::string> filterFolded_;          // the groups folded while a filter is on
         std::vector<VersionEntry> versions_;
         std::vector<PresetEntry> presets_;

@@ -15,7 +15,8 @@
 //             header folds it (its rows gone, the header there, nothing chosen) and opens it again; the fold kept
 //             (this Mac's view)
 //   FAVOURITE a click on a row's star stars it: FAVOURITES on top holding it, the project in its own group too; a
-//             factory project starred the same; the star again unstars; kept (the view's)
+//             factory project starred the same; the star again unstars; kept (the view's); a star another instance
+//             made while the card is open kept beside one made here
 //   CHOOSE    a click chooses one alone; Cmd-click adds one and takes it out again; Shift-click chooses the rows from
 //             the last one clicked; a click on one of several chosen chooses it alone on release
 //   MENU      a right-click on one of those chosen: a menu for them all ("2 projects"), Add to favourites, Category (the
@@ -341,6 +342,19 @@ PROBE(gui, projects)
     drive.star(b.rowOf("Glass Bloom", true));            // its star in FAVOURITES
     P.eq("fav.unstar", membersOf(b, "favourites") == std::vector<std::string>{ f0 } ? 1 : 0, 1);
     drive.star(b.rowOf("Glass Bloom"));
+    {
+        // Another instance stars one while this card is open: a star here keeps both.
+        std::string why;
+        pg::ProjectsView other = port.projectsView();
+        other.favourites.push_back("Sketch 3");
+        P.eq("fav.another_kept", port.setProjectsView(other, why) ? 1 : 0, 1);
+        drive.star(b.rowOf("Bright Lead"));
+        P.eq("fav.merged", starredNow(port, "Sketch 3") && starredNow(port, "Bright Lead") && starredNow(port, "Glass Bloom")
+                               && b.rowOf("Sketch 3", true) >= 0 ? 1 : 0, 1);
+        drive.star(b.rowOf("Sketch 3"));
+        drive.star(b.rowOf("Bright Lead"));
+        P.eq("fav.unmerged", !starredNow(port, "Sketch 3") && !starredNow(port, "Bright Lead") && starredNow(port, "Glass Bloom") ? 1 : 0, 1);
+    }
 
     // ---- CHOOSE ----------------------------------------------------------------------------------------------------
     drive.clickName("Sketch 1");

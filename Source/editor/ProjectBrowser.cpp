@@ -102,13 +102,36 @@ namespace playground::ui
         ++revision_;
     }
 
+    // What this card changed since it last read or wrote the view, over the view as it is now: another instance's
+    // changes meanwhile (a star, a fold) stay. view_ is then that, as kept.
     void ProjectBrowser::keepView()
     {
-        if (view_ == port_.projectsView())
-            return;
+        const ProjectsView now = port_.projectsView();
+        ProjectsView out = now;
+        for (const std::string& n : kept_.favourites)    // unstarred here
+            if (!has(view_.favourites, n))
+                out.favourites.erase(std::remove_if(out.favourites.begin(), out.favourites.end(), [&](const std::string& x) { return same(x, n); }),
+                                     out.favourites.end());
+        for (const std::string& n : view_.favourites)    // starred here
+            if (!has(kept_.favourites, n) && !has(out.favourites, n))
+                out.favourites.push_back(n);
+        if (view_.folded != kept_.folded)
+            out.folded = view_.folded;
+        if (view_.search != kept_.search)
+            out.search = view_.search;
+        if (view_.tag != kept_.tag)
+            out.tag = view_.tag;
+        if (view_.byDate != kept_.byDate)
+            out.byDate = view_.byDate;
         std::string why;
-        if (!port_.setProjectsView(view_, why))
+        if (out != now && !port_.setProjectsView(out, why))
+        {
             why_ = "Not kept: " + why + ".";
+            return;
+        }
+        view_ = kept_ = out;
+        if (search_.buffer != view_.search)
+            search_.set(view_.search, kMaxSearchLength);
     }
 
     bool ProjectBrowser::starredName(const std::string& name) const { return has(view_.favourites, name); }
@@ -525,7 +548,7 @@ namespace playground::ui
     void ProjectBrowser::open(const std::string& name, bool preset)
     {
         open_ = true;
-        view_ = port_.projectsView();
+        view_ = kept_ = port_.projectsView();
         filterFolded_.clear();
         search_.set(view_.search, kMaxSearchLength);
         searching_ = false;
@@ -1085,7 +1108,7 @@ namespace playground::ui
             why_ = "Not deleted: " + why + ".";
             return;
         }
-        view_ = port_.projectsView();                    // a project deleted is unstarred
+        keepView();                                      // the store unstarred a project deleted: so does the card
         state_ = port_.project();
         if (from == L::projects)
         {
@@ -1757,7 +1780,7 @@ namespace playground::ui
             s.bounds = at.search;
             s.title = "Search projects";
             s.value = search_.buffer;
-            s.help = "Finds projects by name, description and tags; Command-F";
+            s.help = shortcutText("Finds projects by name, description and tags; Cmd-F");
             out.push_back(std::move(s));
             if (!search_.buffer.empty())
             {
@@ -1864,7 +1887,7 @@ namespace playground::ui
             row.role = funkgui::A11yRole::listItem;
             row.title = ownName(e.name);
             row.value = value;
-            row.help = "Chooses it; a double-click opens it; Command-click chooses more; the context menu sets the category";
+            row.help = shortcutText("Chooses it; a double-click opens it; Cmd-click chooses more; the context menu sets the category");
             funkgui::A11yItem s;                         // its star, a toggle in the row
             s.id = kStarId + static_cast<uint32_t>(i);
             s.parent = row.id;
