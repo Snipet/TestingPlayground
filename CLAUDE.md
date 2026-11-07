@@ -174,8 +174,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - The Engine's handovers are two atomic pointers (`pending_`, `retired_`): offer, take at a block's start once the last
   swap is over (and while `holdPending` does not hold it: the A/B's trim, at most a 20 ms ramp), hand back.
   run_function's copy of the state that plays is a third (`snapshot_`): the asker's `Engine::Snapshot`, claimed by an
-  exchange at a block's end and answered in the asker's buffers (memcpy, nothing allocated), or taken back unclaimed. The audio thread never deletes a Patch. `Engine::setControls` and `process` allocate, lock
-  and log nothing; `prepare()` (audio stopped) is the only place that sizes buffers.
+  exchange at a block's end and answered in the asker's buffers (memcpy, nothing allocated; the asker writes them
+  whole before it asks, so no page faults there), or taken back unclaimed. The audio thread never deletes a Patch.
+  `Engine::setControls` and `process` allocate, lock and log nothing; `prepare()` (audio stopped) is the only place
+  that sizes buffers.
 - **The dials' carry** (Controls.h's `DialCarry` and `carryValue`, Compiler.h's and Engine.h's "The dials' carry",
   `Processor::apply`): the host's values are normalised, so a run whose declarations change (a range, a taper, an int's
   options) would give an old value another meaning. A dial of the name its slot had keeps its value in its units
@@ -1172,39 +1174,47 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **run_function** (`plugin/ChatFunction.cpp`, `fminus/PatchCall.cpp`: `Patch::call`, `adopt`, `layout`; FMinus's call
   by signature, `Program::callable` and `call`): one of the program's functions called by name with Claude's arguments
   (a number for a float, a double or a whole one for an int, true or false for a bool, an array or `{extent, values}`
-  for an `int*`, `float*` or `double*`: a buffer of its elements, or of extent, then `Patch::kCallGuard` zeros, given
-  back after the call, and said when the function wrote into those zeros; a module's pointer only as a method's own),
-  checked against the declaration in words of FMinus's form before anything runs, its result or its error in words,
-  and a method's fields that changed (`fieldMap`'s, before and after). Never on the audio thread, and never through a
-  Patch that plays: the loop budget and the bounds record are a Program's, which a call from another thread would
-  share with the audio thread's calls (setLoopBudget is the Program's), so the tool compiles a Patch of its own on its
-  thread (the worker, or the link's), whose call runs within `kInitBudget` (about a second) with the bounds checks, in
-  flush-to-zero; a call that stops (`callStopped_`) leaves its Patch calling no end. A method runs on instance 0 of
-  that compile (the main module's: init run at the host's rate, the dials set by name as they are), on Shared's, on a
-  field the main module holds by value, by its path (`filter.tick`, `osc[2].env.next`, `shared->x.f`), or on an
-  instance of its own (`Svf::tick`: zeroed, its params at their defaults). `on: playing` compiles the program that
-  plays with its pins (`CompileStatus::circuits`) and asks the audio thread for a copy of its state
-  (`ChatHost::chatSnapshot`, `Engine::askSnapshot`: one `Snapshot` at a time, claimed by an exchange at a block's end
-  after `publish`, the effect's instance or the newest sounding voice's (the taps' rule), Shared and Host copied when
-  their sizes are the asker's, at most `kMaxSnapshot` bytes; nothing allocated or locked there, a relaxed load a block
-  while none waits; the asker waits `kSnapshotWaitMs` and takes the ask back with a compare-exchange when no block
-  comes, waiting for `done` when the audio thread claimed it first), compares `Patch::layout`'s hash, and `adopt`s it
-  into its own Patch: every pointer of the copy but the main module's Shared* and Host* (and Shared's Host*, all
-  pointed at its own) must be null, else it is refused (a heap block init made: a call would write what plays), and
-  every parameter's stream is pointed at none. What plays is never written. `plugin.function` checks it; its notes
-  are the debugging part's (read-only to MCP: `kFaces`).
+  for an `int*`, `float*` or `double*`: a buffer of its elements, its extent or the call's largest int argument,
+  whichever is most (FMinus checks no access through a pointer parameter: C's (buffer, n) stays inside it), then as many
+  zeros again (`Patch::kCallGuard` at least), given back after the call, and said when the function wrote into those
+  zeros; an int past `kMaxCallElements` beside an array refused; a module's pointer only as a method's own), checked
+  against the declaration in words of FMinus's form before anything runs, its result or its error in words, and a
+  method's fields that changed (`fieldMap`'s, before and after). Never on the audio thread, and never through a Patch
+  that plays: the loop budget and the bounds record are a Program's, which a call from another thread would share with
+  the audio thread's calls (setLoopBudget is the Program's), so the tool compiles a Patch of its own on its thread (the
+  worker, or the link's), whose call runs within `kInitBudget` (about a second) with the bounds checks, in
+  flush-to-zero; a call that stops (`callStopped_`) leaves its Patch calling no end. A method runs on instance 0 of that
+  compile (the main module's: init run at the host's rate, the dials set by name as they are), on Shared's, on a field
+  the main module holds by value, by its path (`filter.tick`, `osc[2].env.next`, `shared->x.f`), or on an instance of
+  its own (`Svf::tick`: zeroed, its params at their defaults). `on: playing` compiles the program that plays with its
+  pins (`CompileStatus::circuits`, of one status read: its `program`, and its `revision` read again after the files)
+  and, once `Patch::call` has checked the call and only when it runs on the state (its `onState`: a method of instance
+  0, Shared, Host or a field of theirs; a function or an instance of its own asks nothing), asks the audio thread for a
+  copy of its state (`ChatHost::chatSnapshot`, `Engine::askSnapshot`: one `Snapshot` at a time, into buffers the asker
+  wrote whole first, so the audio thread's copy takes no page fault, claimed by an exchange at a block's end after
+  `publish`, the effect's instance or the newest sounding voice's (the taps' rule), Shared and Host copied when their
+  sizes are the asker's, at most `kMaxSnapshot` bytes; nothing allocated or locked there, a relaxed load a block while
+  none waits; the asker waits `kSnapshotWaitMs` and takes the ask back with a compare-exchange when no block comes,
+  waiting for `done` when the audio thread claimed it first), compares `Patch::layout`'s hash and `Snapshot::program`
+  with that status's (a run the audio thread has not taken yet, laid out alike, is another program: refused, call it
+  again), and `adopt`s it into its own Patch: every pointer of the copy but the main module's Shared* and Host* (and
+  Shared's Host*, all pointed at its own) must be null, else it is refused (a heap block init made: a call would write
+  what plays), and every parameter's stream is pointed at none. What plays is never written. `plugin.function` checks
+  it; its notes are the debugging part's (read-only to MCP: `kFaces`).
 - **write_file's files in and out** (`plugin/ChatImport.cpp`): `files` writes several as one change of the draft
   (`chatSetDraft`; a netlist without `*@` lines keeps its drawing, as one written alone), all or none; `from` brings in
   a file or a folder the user named, whole (`~/` the home folder): only the editor's kinds (.fm, .cir, .gui, .sc), each
   text (no NUL, UTF-8), `kMaxImportBytes` (256 KB) at most and a name `validFileName` takes, else nothing comes in; a
   folder's hidden files, its other files and FolderSync's read-only copies (`.fmsync`'s copy lines, and a host.fm or a
   library file of this build's text) are left out and named; CR LF and what the editor does not hold become what
-  `TextEditor::sanitise` makes them, said; added, or replacing the editor's file of that name, the program staying the
-  first; never marked seen (Claude has not read them: the next state sends them), and the user's files only read.
-  `to` writes the editor's files as they are, each through a temporary moved into place, to a new folder of the name
-  given (a name, not a path) in `exportsFolder()`, the user's Music folder's `<Company>/<Name>/Programs` (the probe's
-  sandbox's `programs/` under CTest), a number after a name taken: an export adds a folder, never replacing or
-  deleting a file (a failed one removes only the folder it made). `plugin.import` checks them.
+  `TextEditor::sanitise` makes them, each said (CR LF read as LF; the characters made '?' counted); added, or replacing
+  the editor's file of that name, the program staying the first; never marked seen (Claude has not read them: the next
+  state sends them), and the user's files only read. `to` writes the editor's files as they are, each through a
+  temporary moved into place, to a new folder of the name given (a name, not a path) in `exportsFolder()`, the user's
+  Music folder's `<Company>/<Name>/Programs` (the probe's sandbox's `programs/` under CTest), a number after a name
+  taken: an export adds a folder, never replacing or deleting a file (two names equal but for case, one file on the
+  default APFS, refused before anything is made; a file there already fails it; a failed one removes only the folder it
+  made). `plugin.import` checks them.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 
