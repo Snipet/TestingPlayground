@@ -7,7 +7,7 @@
 // Engine takes them; one beyond measure::kMaxBlock in parts), each played in parts of the processor's `part` and cut at
 // kMaxEventsPerBlock events as Processor::play cuts it; its events at their samples; its transport as the host sent it,
 // a block at a time (none: the Engine's own song position at its start, Engine::setBeat); its dials as the processor
-// sent them, the 32 normalised values where they changed (Request::frames, of the program's dials: another program
+// sent them, the 64 normalised values where they changed (Request::frames, of the program's dials: another program
 // takes them by name); the Engine's clock at its start (the voices' 16-sample grid, Engine::setClock); the wheels and
 // the pedal as they stood, always (the mod and pitch wheels as the request's, pressure and the pedal as events at its
 // first sample, and a racing wheel's control changes there too, those off rest); an effect's input as it reached the

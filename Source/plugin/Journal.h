@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -106,25 +107,28 @@ namespace playground
     // A run's outcome in words, for the journal: "ran it: it compiled, 9 dials".
     std::string runWords(const CompileStatus& s);
 
+    // A dial's port as the editor writes it: a host parameter's (a JuceParamPort), or a panel dial's (Controls.h's
+    // isPanelDial: no host parameter, `inner` the processor's own port), saying when the editor moved it.
     class GesturePort final : public funkgui::ParamPort
     {
     public:
-        explicit GesturePort(juce::RangedAudioParameter& p) : inner_(p) {}
+        explicit GesturePort(juce::RangedAudioParameter& p) : inner_(std::make_unique<funkgui::JuceParamPort>(p)) {}
+        explicit GesturePort(std::unique_ptr<funkgui::ParamPort> inner) : inner_(std::move(inner)) {}
 
-        float value01() const override { return inner_.value01(); }
-        float default01() const override { return inner_.default01(); }
-        int numSteps() const override { return inner_.numSteps(); }
+        float value01() const override { return inner_->value01(); }
+        float default01() const override { return inner_->default01(); }
+        int numSteps() const override { return inner_->numSteps(); }
         void beginGesture() override;
         void setValue01(float v) override;
         void endGesture() override;
-        const char* id() const override { return inner_.id(); }
-        void* native() const override { return inner_.native(); }
+        const char* id() const override { return inner_->id(); }
+        void* native() const override { return inner_->native(); }
 
         // The editor moved it since the last call, or moves it now.
         bool takeMoved() noexcept;
 
     private:
-        funkgui::JuceParamPort inner_;
+        std::unique_ptr<funkgui::ParamPort> inner_;
         int gestures_ = 0;
         bool moved_ = false;
     };

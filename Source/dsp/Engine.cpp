@@ -400,13 +400,13 @@ namespace playground
         const DialCarry& carry = current_->carry();
         if (snap)
             carryOver_ = 0;
-        const uint32_t carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program()
+        const uint64_t carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program()
                                       ? carry.slots & ~carryOver_
                                       : 0u;
         bool streaming = false;
         // The circuit dials (Engine.h): the block's last sample at which a bound value changes (-1: none), and whether
         // a switch did (its ramp's window).
-        const uint32_t bound = current_->circuitSlots();
+        const uint64_t bound = current_->circuitSlots();
         int lastChange = -1;
         bool switched = false;
         for (int c = 0; c < kMaxControls; ++c)
@@ -416,14 +416,14 @@ namespace playground
             streaming_[static_cast<std::size_t>(c)] = false;
             if (!info.used)
                 continue;
-            const bool circuit = ((bound >> c) & 1u) != 0;
+            const bool circuit = (bound & slotBit(c)) != 0;
             float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
-            if (((carrying >> c) & 1u) != 0)
+            if ((carrying & slotBit(c)) != 0)
             {
                 if (norm_[static_cast<std::size_t>(c)] == carry.fromNorm[static_cast<std::size_t>(c)])
                     target = carry.plain[static_cast<std::size_t>(c)];
                 else
-                    carryOver_ |= 1u << c;               // moved since: as the host's value says, from now on
+                    carryOver_ |= slotBit(c);               // moved since: as the host's value says, from now on
             }
             if (snap || info.type != ControlType::real)
             {
@@ -474,7 +474,7 @@ namespace playground
         {
             bool home = true;
             for (int c = 0; c < kMaxControls; ++c)
-                if (((bound >> c) & 1u) != 0 && cs[static_cast<std::size_t>(c)].used && cs[static_cast<std::size_t>(c)].type != ControlType::real)
+                if ((bound & slotBit(c)) != 0 && cs[static_cast<std::size_t>(c)].used && cs[static_cast<std::size_t>(c)].type != ControlType::real)
                     home = home && glide_[static_cast<std::size_t>(c)].cur == cs[static_cast<std::size_t>(c)].def;
             switchGen_ = home ? 0 : ++switchCount_;
         }
@@ -513,10 +513,10 @@ namespace playground
     {
         if (current_ == nullptr)
             return;
-        const uint32_t bound = current_->circuitSlots();
+        const uint64_t bound = current_->circuitSlots();
         const int s = std::clamp(at, 0, std::max(maxBlock_ - 1, 0));
         for (int c = 0; c < kMaxControls; ++c)
-            if (((bound >> c) & 1u) != 0)
+            if ((bound & slotBit(c)) != 0)
                 circuitPlain_[static_cast<std::size_t>(c)] =
                     streaming_[static_cast<std::size_t>(c)] && at >= 0
                         ? streamBuf_[static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_) + static_cast<std::size_t>(s)]

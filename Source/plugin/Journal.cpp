@@ -381,18 +381,18 @@ namespace playground
     {
         ++gestures_;
         moved_ = true;
-        inner_.beginGesture();
+        inner_->beginGesture();
     }
 
     void GesturePort::setValue01(float v)
     {
         moved_ = true;
-        inner_.setValue01(v);
+        inner_->setValue01(v);
     }
 
     void GesturePort::endGesture()
     {
-        inner_.endGesture();
+        inner_->endGesture();
         gestures_ = std::max(0, gestures_ - 1);
     }
 

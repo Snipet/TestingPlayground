@@ -58,6 +58,10 @@ namespace playground
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
         // The folder while it is on (FolderSync.h): <FOLDER name=".." run="1"/> (a state from before it has none)
         const juce::Identifier kFolderTag{ "FOLDER" }, kRunOnSave{ "run" };
+        // The panel's own dials (Controls.h's isPanelDial), the used ones: <PANEL><DIAL slot="32" value="0.5"/></PANEL>,
+        // normalised in the program's controls as the host's <PARAM>s are (a state from before them has none: their
+        // defaults).
+        const juce::Identifier kPanelTag{ "PANEL" }, kDialTag{ "DIAL" }, kSlot{ "slot" };
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
@@ -109,6 +113,30 @@ namespace playground
         constexpr double kAlertMs = 2000.0;                      // how long an alert stays shown
 
         juce::String idOf(int c) { return "p" + juce::String(c + 1); }
+
+        // A panel dial's port (Controls.h's isPanelDial): its value the processor's atomic, written through `write` (the
+        // processor's writeDial, which tells the host its state changed), no host parameter behind it (native: none).
+        class PanelDialPort final : public funkgui::ParamPort
+        {
+        public:
+            PanelDialPort(int slot, const std::atomic<float>& value, std::function<void(int, float)> write)
+                : slot_(slot), value_(value), write_(std::move(write)), id_("d" + std::to_string(slot + 1)) {}
+
+            float value01() const override { return value_.load(std::memory_order_relaxed); }
+            float default01() const override { return 0.5f; }               // as a host parameter's (ControlParameter)
+            int numSteps() const override { return juce::AudioProcessor::getDefaultNumParameterSteps(); }
+            void beginGesture() override {}
+            void setValue01(float v) override { write_(slot_, v); }
+            void endGesture() override {}
+            const char* id() const override { return id_.c_str(); }
+            void* native() const override { return nullptr; }
+
+        private:
+            int slot_;
+            const std::atomic<float>& value_;
+            std::function<void(int, float)> write_;
+            std::string id_;
+        };
 
         juce::ValueTree filesTree(const juce::Identifier& tag, const Sources& files)
         {
@@ -274,7 +302,7 @@ namespace playground
     juce::AudioProcessorValueTreeState::ParameterLayout Processor::createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        for (int c = 0; c < kMaxControls; ++c)
+        for (int c = 0; c < kHostControls; ++c)                  // the panel's own dials are none (Controls.h)
             params.push_back(std::make_unique<ControlParameter>(c, *this));
         return { params.begin(), params.end() };
     }
@@ -286,10 +314,21 @@ namespace playground
         for (int c = 0; c < kMaxControls; ++c)
         {
             const auto i = static_cast<std::size_t>(c);
-            raw_[i] = apvts_.getRawParameterValue(idOf(c));
-            params_[i] = apvts_.getParameter(idOf(c));
-            jassert(raw_[i] != nullptr && params_[i] != nullptr);
-            portStore_.push_back(std::make_unique<GesturePort>(*params_[i]));
+            if (isPanelDial(c))
+            {
+                std::atomic<float>& v = panelValues_[static_cast<std::size_t>(c - kHostControls)];
+                v.store(dialDefault01(c));
+                raw_[i] = &v;
+                portStore_.push_back(std::make_unique<GesturePort>(std::make_unique<PanelDialPort>(
+                    c, v, [this](int slot, float norm) { (void)writeDial(slot, norm); })));
+            }
+            else
+            {
+                raw_[i] = apvts_.getRawParameterValue(idOf(c));
+                params_[i] = apvts_.getParameter(idOf(c));
+                jassert(raw_[i] != nullptr && params_[i] != nullptr);
+                portStore_.push_back(std::make_unique<GesturePort>(*params_[i]));
+            }
             ports_.push_back(portStore_.back().get());
         }
 
@@ -988,7 +1027,7 @@ namespace playground
             k.plain[i] = from.used && sameName(from, to)
                              ? carryValue(from, meaningOptions_[i], to, panel.options[i], plainOf(from, norm))
                              : to.def;                           // a parameter new to the slot: its default
-            k.slots |= 1u << c;
+            k.slots |= slotBit(c);
         }
         return k;
     }
@@ -1013,19 +1052,16 @@ namespace playground
                 continue;
             const float norm = std::clamp(v, 0.0f, 1.0f);
             float plain = 0.0f;
-            if (((given.slots >> c) & 1u) != 0)
+            if ((given.slots & slotBit(c)) != 0)
                 plain = given.plain[i];
-            else if (carrying && ((k.slots >> c) & 1u) != 0 && norm == k.fromNorm[i])
+            else if (carrying && (k.slots & slotBit(c)) != 0 && norm == k.fromNorm[i])
                 plain = k.plain[i];
             else
                 continue;                                        // moved since (the host's, the user's): theirs stands
             if (plainOf(to, norm) == plain)
                 continue;                                        // the host's value plays it already: no gesture
-            juce::RangedAudioParameter& p = *params_[i];
-            ownDials_.fetch_or(1u << c);                         // the run's: no move (syncOwnDials)
-            p.beginChangeGesture();
-            p.setValueNotifyingHost(normOf(to, plain));
-            p.endChangeGesture();
+            ownDials_.fetch_or(slotBit(c));                      // the run's: no move (syncOwnDials)
+            (void)writeDial(c, normOf(to, plain));
         }
         if (!newest)
             return;
@@ -1152,7 +1188,7 @@ namespace playground
                     if (const Control& k = s.controls[static_cast<std::size_t>(c)]; k.used)
                     {
                         given.plain[static_cast<std::size_t>(c)] = k.def;
-                        given.slots |= 1u << c;
+                        given.slots |= slotBit(c);
                     }
             }
             else if (s.ok && abDialsRequest_ != 0 && s.request == abDialsRequest_)
@@ -1220,11 +1256,8 @@ namespace playground
             const Control c = control(slot);
             if (!c.used)
                 continue;
-            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(slot)];
-            ownDials_.fetch_or(1u << slot);                      // journalled when Claude set it (chatSetDial)
-            p.beginChangeGesture();
-            p.setValueNotifyingHost(normOf(c, plain));
-            p.endChangeGesture();
+            ownDials_.fetch_or(slotBit(slot));                   // journalled when Claude set it (chatSetDial)
+            (void)writeDial(slot, normOf(c, plain));
         }
         capture_.housekeep();                                    // frees what the audio thread handed back
         const double now = juce::Time::getMillisecondCounterHiRes();
@@ -1297,13 +1330,31 @@ namespace playground
             for (std::string& k : circuits::keysOf(draft_.files))
                 keys.push_back(std::move(k));
             if (abKept_.on && abKept_.dials)
-                for (int c = 0; c < kMaxControls; ++c)
+                for (int c = 0; c < kHostControls; ++c)
                 {
                     juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(idOf(c)));
                     const float norm = abKept_.norms[static_cast<std::size_t>(c)];
                     if (p.isValid() && std::isfinite(norm))
                         p.setProperty(kParamValue, static_cast<double>(std::clamp(norm, 0.0f, 1.0f)), nullptr);
                 }
+            // The panel's own dials the program uses, beside the host's; while an A/B keeps what played before it, each
+            // one's value then (its program's controls may be other than a side's).
+            const bool abDials = abKept_.on && abKept_.dials;
+            juce::ValueTree panel{ kPanelTag };
+            for (int c = kHostControls; c < kMaxControls; ++c)
+            {
+                const auto i = static_cast<std::size_t>(c);
+                if (!controls_[i].used && !abDials)
+                    continue;
+                const float kept = abDials ? abKept_.norms[i] : raw_[i]->load();
+                const float norm = std::isfinite(kept) ? std::clamp(kept, 0.0f, 1.0f) : raw_[i]->load();
+                juce::ValueTree dial{ kDialTag };
+                dial.setProperty(kSlot, c, nullptr);
+                dial.setProperty(kParamValue, static_cast<double>(norm), nullptr);
+                panel.appendChild(dial, nullptr);
+            }
+            if (panel.getNumChildren() > 0)
+                state.appendChild(panel, nullptr);
         }
         // The self-test's answers for the netlists of the program that plays and of the draft (Answers::of: each once).
         if (const std::vector<std::pair<std::string, std::string>> answers = circuits::answers().of(keys); !answers.empty())
@@ -1430,7 +1481,7 @@ namespace playground
         juce::ValueTree state = juce::ValueTree::fromXml(*xml);
         // A value that is not a finite number (a damaged or crafted state, or one saved after a host wrote a NaN)
         // loads as the middle of the range: a parameter never holds a NaN from a state.
-        for (int c = 0; c < kMaxControls; ++c)
+        for (int c = 0; c < kHostControls; ++c)
         {
             juce::ValueTree p = state.getChildWithProperty(kParamId, juce::var(idOf(c)));
             if (p.isValid() && p.hasProperty(kParamValue)
@@ -1448,6 +1499,22 @@ namespace playground
         draft.active = std::clamp(static_cast<int>(program.getProperty(kActive, 0)), 0,
                                   static_cast<int>(draft.files.size()) - 1);
         state.removeChild(program, nullptr);
+        // The panel's own dials (a state from before them has none: each at its default, below).
+        std::array<float, kPanelControls> panelKept;
+        panelKept.fill(std::numeric_limits<float>::quiet_NaN());
+        if (const juce::ValueTree panel = state.getChildWithName(kPanelTag); panel.isValid())
+        {
+            for (int k = 0; k < panel.getNumChildren() && k < 2 * kPanelControls; ++k)
+                if (const juce::ValueTree dial = panel.getChild(k); dial.hasType(kDialTag))
+                {
+                    const int c = static_cast<int>(dial.getProperty(kSlot, -1));
+                    const double v = static_cast<double>(dial.getProperty(kParamValue, 0.5));
+                    if (isPanelDial(c))
+                        panelKept[static_cast<std::size_t>(c - kHostControls)] =
+                            std::isfinite(v) ? std::clamp(static_cast<float>(v), 0.0f, 1.0f) : 0.5f;   // as a PARAM's
+                }
+            state.removeChild(panel, nullptr);
+        }
         const juce::ValueTree chat = state.getChildWithName(kChatTag);
         if (chat.isValid())
         {
@@ -1580,6 +1647,14 @@ namespace playground
         seen_ = s.revision;
         apply(s, false, true, Given{});
         apvts_.replaceState(state);
+        for (int k = 0; k < kPanelControls; ++k)
+        {
+            // Not a gesture (writeDial): the values come with the session, as the host's parameters' do.
+            const int c = kHostControls + k;
+            const Control& d = s.controls[static_cast<std::size_t>(c)];
+            const float saved = panelKept[static_cast<std::size_t>(k)];
+            panelValues_[static_cast<std::size_t>(k)].store(std::isfinite(saved) ? saved : d.used ? normOf(d, d.def) : dialDefault01(c));
+        }
         adoptMeaning(s);                                         // the values are the session's program's now
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
@@ -1847,7 +1922,7 @@ namespace playground
                 if (!k.used || d.name != k.name)
                     continue;
                 out.plain[static_cast<std::size_t>(c)] = projectstore::valueOf(d, k, options[static_cast<std::size_t>(c)]);
-                out.slots |= 1u << c;
+                out.slots |= slotBit(c);
                 break;
             }
         return out;
@@ -1861,17 +1936,14 @@ namespace playground
         const Given given = givenByName(cs, options, dials);
         for (int c = 0; c < kMaxControls; ++c)
         {
-            if (((given.slots >> c) & 1u) == 0)
+            if ((given.slots & slotBit(c)) == 0)
                 continue;
             const Control& k = cs[static_cast<std::size_t>(c)];
-            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
             const float to = normOf(k, given.plain[static_cast<std::size_t>(c)]);
-            if (p.getValue() == to)
+            if (raw_[static_cast<std::size_t>(c)]->load() == to)
                 continue;
-            ownDials_.fetch_or(1u << c);                         // a version's or a preset's: its line says so
-            p.beginChangeGesture();
-            p.setValueNotifyingHost(to);
-            p.endChangeGesture();
+            ownDials_.fetch_or(slotBit(c));                      // a version's or a preset's: its line says so
+            (void)writeDial(c, to);
         }
     }
 
@@ -1882,15 +1954,40 @@ namespace playground
         for (int c = 0; c < kMaxControls; ++c)
         {
             const Control& k = cs[static_cast<std::size_t>(c)];
-            juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
-            const float to = k.used ? normOf(k, k.def) : p.getDefaultValue();
-            if (p.getValue() == to)
+            const float to = k.used ? normOf(k, k.def) : dialDefault01(c);
+            if (raw_[static_cast<std::size_t>(c)]->load() == to)
                 continue;
-            ownDials_.fetch_or(1u << c);                         // the example's: its line says so
-            p.beginChangeGesture();
-            p.setValueNotifyingHost(to);
-            p.endChangeGesture();
+            ownDials_.fetch_or(slotBit(c));                      // the example's: its line says so
+            (void)writeDial(c, to);
         }
+    }
+
+    bool Processor::writeDial(int c, float norm)
+    {
+        if (c < 0 || c >= kMaxControls || !std::isfinite(norm))
+            return false;
+        norm = std::clamp(norm, 0.0f, 1.0f);
+        if (isPanelDial(c))
+        {
+            std::atomic<float>& v = panelValues_[static_cast<std::size_t>(c - kHostControls)];
+            if (v.load() == norm)
+                return false;
+            v.store(norm);
+            // No parameter moved, but the session did: a host that saves on change (VST3's dirty flag) is told.
+            updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+            return true;
+        }
+        juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+        const bool moved = p.getValue() != norm;
+        p.beginChangeGesture();
+        p.setValueNotifyingHost(norm);
+        p.endChangeGesture();
+        return moved;
+    }
+
+    float Processor::dialDefault01(int c) const
+    {
+        return isPanelDial(c) || c < 0 || c >= kHostControls ? 0.5f : params_[static_cast<std::size_t>(c)]->getDefaultValue();
     }
 
     bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why)
@@ -2302,7 +2399,7 @@ namespace playground
         if (!std::isfinite(norm))
             return c.def;
         // A program compiled whose carry poll() has not written yet: the value it plays (Engine.h, "The dials' carry").
-        if (s.ok && meaning != s.program && meaning == s.carry.from && ((s.carry.slots >> slot) & 1u) != 0
+        if (s.ok && meaning != s.program && meaning == s.carry.from && (s.carry.slots & slotBit(slot)) != 0
             && std::clamp(norm, 0.0f, 1.0f) == s.carry.fromNorm[i])
             return s.carry.plain[i];
         return plainOf(c, norm);

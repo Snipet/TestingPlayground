@@ -7042,13 +7042,12 @@ namespace playground::ui
     {
         // Items come and go with the program's dials, the host's zoom, the files' tabs, the conversation (as it grows and
         // scrolls) and the key dialog, and move with the panel's size.
-        static_assert(kMaxControls <= 32, "the dials' mask");
         uint32_t r = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 1u : 0u;
-        uint32_t dials = 0;                                   // the dials shown, one bit each, mixed in below
+        uint64_t dials = 0;                                   // the dials shown, one bit each, mixed in below
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
-                dials |= 1u << c;
-        r ^= dials * 0x27D4EB2Fu;
+                dials |= slotBit(c);
+        r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
@@ -7061,11 +7060,11 @@ namespace playground::ui
             if (items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]->shown())
                 displays |= 1u << d;
         r ^= displays * 0x9E3779B9u;
-        uint32_t gui = 0;                                     // a .gui interface's controls shown
+        uint64_t gui = 0;                                     // a .gui interface's controls shown
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = guiView_->controlItem(c); i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
-                gui |= 1u << c;
-        r ^= gui * 0x2C1B3C6Du;
+                gui |= slotBit(c);
+        r ^= static_cast<uint32_t>(gui) * 0x2C1B3C6Du ^ static_cast<uint32_t>(gui >> 32) * 0x9E3779B1u;
         // The counters times odd constants: a change in any one of them changes the revision.
         // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
         r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;

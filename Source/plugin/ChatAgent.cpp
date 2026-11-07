@@ -328,7 +328,7 @@ namespace playground
                     range += ")";
                 }
                 out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
-                     + ", now " + said(host.chatDialValue(c)) + "\n";
+                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "") + "\n";
             }
             return out.empty() ? "none\n" : out;
         }

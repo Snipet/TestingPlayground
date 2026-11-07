@@ -101,10 +101,11 @@
 // by, appended to the program and marked nonblocking (compile() below), so FMinus checks the method's types and its
 // effects, and a method of another type is an error, not a crash.
 //
-// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials: a float
-// is bound as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null
-// while it holds still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main
-// module holds, keep their fminus::default (they are set, in every instance, before init runs).
+// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials (the first
+// 32 the host's parameters, the next 32 the panel's own: Controls.h; the Patch treats both alike): a float is bound
+// as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null while it holds
+// still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main module holds,
+// keep their fminus::default (they are set, in every instance, before init runs).
 //
 // The panel. A .gui file (GuiSpec.h), the first one, gives the interface, the tapers, units and scales of the dials, and
 // the taps: where each field a display reads sits (in an instance, or in Shared). What reading it needs of the
@@ -443,7 +444,7 @@ namespace playground
         // argument at plain[c] for its control c (the controls' plain values at the call's sample) or at its default
         // when it has none. No allocation.
         bool circuits() const noexcept { return !circuitCalls_.empty(); }
-        uint32_t circuitSlots() const noexcept { return circuitMask_; }
+        uint64_t circuitSlots() const noexcept { return circuitMask_; }
         bool circuitRamps() const noexcept { return circuitRamps_; }   // a dial drives a switch (its set() ramps)
         void setCircuits(const float* plain, int i) noexcept;
         // The bindings, checked, with their slots (Recipe::bindings): the status's (CompileStatus::circuitDials).
@@ -566,7 +567,7 @@ namespace playground
         };
         std::vector<CircuitCall> circuitCalls_;
         std::vector<float> circuitArgs_;               // the arguments of one call (sized at compile)
-        uint32_t circuitMask_ = 0;
+        uint64_t circuitMask_ = 0;
         bool circuitRamps_ = false;
         Sources sources_;
         float rate_ = 48000.0f;

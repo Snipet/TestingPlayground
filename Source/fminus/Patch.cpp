@@ -279,7 +279,8 @@ namespace playground
                         if (b.slots[static_cast<std::size_t>(a)] < 0)
                             notes += file + ": note: " + b.field + "'s " + (a < static_cast<int>(b.pots.size()) ? "pot " : "switch ")
                                    + b.names[static_cast<std::size_t>(a)] + " has no dial (the plugin has "
-                                   + std::to_string(kMaxControls) + "): it stays at its default\n";
+                                   + std::to_string(kMaxControls) + ": the host's " + std::to_string(kHostControls)
+                                   + " and the panel's " + std::to_string(kPanelControls) + "): it stays at its default\n";
             return d.bindings;
         }
 
@@ -650,7 +651,7 @@ namespace playground
             return r;
         }
 
-        // The dials: the first kMaxControls parameters, a float a stream.
+        // The dials: the first kMaxControls parameters (the host's, then the panel's own: Controls.h), a float a stream.
         auto patch = std::unique_ptr<Patch>(new Patch());
         std::array<std::string, kMaxControls> names{};
         std::array<bool, kMaxControls> streams{};
@@ -661,7 +662,8 @@ namespace playground
             if (k >= static_cast<std::size_t>(kMaxControls))
             {
                 r.notes += file + ": note: " + p.module + "::" + p.name + " has no dial (the plugin has " +
-                           std::to_string(kMaxControls) + "): it stays at its default\n";
+                           std::to_string(kMaxControls) + ": the host's " + std::to_string(kHostControls) + " and the panel's " +
+                           std::to_string(kPanelControls) + "): it stays at its default\n";
                 continue;
             }
             patch->controls_[k] = controlOf(p);
@@ -705,7 +707,7 @@ namespace playground
                     }
                 }
                 if (slot >= 0)
-                    patch->circuitMask_ |= 1u << slot;
+                    patch->circuitMask_ |= slotBit(slot);
             }
             mostArgs = std::max(mostArgs, call.slots.size());
             patch->circuitCalls_.push_back(std::move(call));

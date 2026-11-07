@@ -539,6 +539,8 @@ namespace playground::sandbox
                      + " (the plugin leaves them at their defaults).";
             if (dials_.size() > static_cast<std::size_t>(kMaxControls))
                 out += " Only the first " + std::to_string(kMaxControls) + " are dials.";
+            if (dials_.size() > static_cast<std::size_t>(kHostControls))
+                out += " Those past the " + std::to_string(kHostControls) + "th are the panel's own (no host parameter).";
             out += "\n";
             // The circuits' (Patch.h, "Circuits"), with their defaults as the plugin shows them.
             std::string circuits;
