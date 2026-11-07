@@ -23,6 +23,9 @@
 //   gui.chat.checks.png   Claude's checks card, every check passing, and the picture of the sound it looked at
 //   gui.chat.checks-fail.png  a check that fails, after the turn went on twice
 //   gui.chat.view_sound.png   the picture view_sound gave Claude there (an instrument's saw at A2; an effect's sweep)
+//   gui.chat.chats.png    the header's chats pill naming the chat shown, an older chat opened from its list
+//   gui.chat.rename.png   the rename: the key dialog's box with the chat's name in its field
+//   (the list itself, its menu: gui.menus.chats.png)
 // and checks:
 //   EMPTY    with no key the empty chat has a key button (which opens the key dialog), and no other way in (the
 //            panel speaks of no sign-in), and suggestions
@@ -61,8 +64,12 @@
 //            picture of the sound it looked at (view_sound) under its row, drawn; one fails, the turn goes on, a dial
 //            set and a run fix it: the card brought up to date (every check passing); a check that cannot pass shows
 //            failing; the card's Clear (spoken as a button) forgets the checks and goes
-//   NEW      NEW asks first, then forgets the conversation; a suggestion goes into the message box, unsent; Tab leaves
-//            the message box
+//   NEW      NEW asks nothing and forgets nothing: a new, empty chat, the one before kept in the chat list; a suggestion
+//            goes into the message box, unsent; Tab leaves the message box
+//   CHATS    the header's pill names the chat shown (a combo box to a screen reader); its menu lists the chats, the
+//            newest first, the one shown dotted, then New chat, Rename and Delete; an older one chosen shows (its words
+//            back); Rename opens the dialog with its name, selected: typed over and Return, the chat has that name (the
+//            pill says it); Escape cancels; Delete asks first, then the chat is gone and the newest other one shows
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
 //   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
 //            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
@@ -974,13 +981,17 @@ PROBE(gui, chat)
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------
+    std::string before;                                  // the chat before the new one: its name
     {
+        before = chat(processor).title;
         clickAt(host, panel.centreOfNewChat());
-        P.eq("new.asks", host.pendingMenu() != nullptr ? 1 : 0, 1);
-        host.chooseMenuItem(1);
+        P.eq("new.asks_nothing", host.pendingMenu() != nullptr ? 1 : 0, 0);
         host.tick(2);
         host.settle();
-        P.eq("new.forgotten", chat(processor).entries.empty() ? 1 : 0, 1);
+        P.eq("new.empty", chat(processor).entries.empty() ? 1 : 0, 1);
+        const pg::ChatList list = processor.chatAgent().chatList();
+        P.eq("new.kept_in_list", list.chats.size() >= 2 && list.chats[0].current && list.chats[0].title == "New chat"
+                                     && list.chats[1].title == before && !before.empty() ? 1 : 0, 1);
         bool gone = !pictureIds.empty();
         for (const uint32_t id : pictureIds)
             gone = gone && !funkgui::images::has(id);
@@ -998,6 +1009,96 @@ PROBE(gui, chat)
         host.keys("tab");
         type(host, "z");
         P.eq("new.tab_leaves_box", panel.chatInput().text().empty() && !panel.chatInput().focused() ? 1 : 0, 1);
+    }
+
+    // ---- CHATS ---------------------------------------------------------------------------------------------------------
+    {
+        const auto pill = [&]() -> std::optional<funkgui::A11yItem> {
+            for (const funkgui::A11yItem& a : host.accessibility())
+                if (a.visible && a.title == "Chats")
+                    return a;
+            return std::nullopt;
+        };
+        const auto shown = pill();
+        P.eq("chats.pill", shown && shown->role == funkgui::A11yRole::comboBox && shown->value == "New chat" ? 1 : 0, 1);
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        const funkgui::MenuRequest* m = host.pendingMenu();
+        int radios = 0, commands = 0, olderId = 0;
+        if (m != nullptr)
+            for (const funkgui::MenuItem& it : m->items)
+            {
+                if (it.radio)
+                {
+                    ++radios;
+                    if (it.label == before)
+                        olderId = it.id;
+                }
+                else if (!it.header && !it.separator)
+                    ++commands;
+            }
+        P.eq("chats.menu", m != nullptr && radios >= 2 && commands == 3 && olderId > 0 ? 1 : 0, 1);
+        if (m != nullptr)
+            host.chooseMenuItem(olderId > 0 ? olderId : 1);
+        host.tick(2);
+        host.settle();
+        P.eq("chats.older_shown", chat(processor).title == before && !chat(processor).entries.empty() ? 1 : 0, 1);
+        const auto again = pill();
+        P.eq("chats.pill_follows", again && again->value == before ? 1 : 0, 1);
+        writePng(P, host, "gui.chat.chats.png");
+        // Rename, from the menu: the dialog, the name in it selected; typed over and Return.
+        constexpr int kRename = 100002, kDelete = 100003;
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        if (host.pendingMenu() != nullptr)
+            host.chooseMenuItem(kRename);
+        host.tick(2);
+        P.eq("chats.rename_opens", panel.renameDialogOpen() && !panel.keyDialogOpen() ? 1 : 0, 1);
+        bool named = false;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            named = named || (a.title == "Name" && a.value == before);
+        P.eq("chats.rename_has_name", named ? 1 : 0, 1);
+        host.settle();
+        writePng(P, host, "gui.chat.rename.png");
+        host.keys("escape");
+        host.tick(2);
+        P.eq("chats.rename_escape", !panel.renameDialogOpen() && chat(processor).title == before ? 1 : 0, 1);
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        if (host.pendingMenu() != nullptr)
+            host.chooseMenuItem(kRename);
+        host.tick(2);
+        type(host, "Glass pad talk");
+        bool typed = false;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            typed = typed || (a.title == "Name" && a.value == "Glass pad talk");
+        P.eq("chats.rename_typed_over", typed ? 1 : 0, 1);
+        host.keys("return");
+        host.tick(2);
+        host.settle();
+        P.eq("chats.renamed", !panel.renameDialogOpen() && chat(processor).title == "Glass pad talk" ? 1 : 0, 1);
+        const auto renamed = pill();
+        P.eq("chats.pill_renamed", renamed && renamed->value == "Glass pad talk" ? 1 : 0, 1);
+        // Delete: asked first, then gone; the newest other one shows.
+        const std::string owner = processor.chatAgent().chatOwner();
+        const std::size_t had = pg::chatstore::chatsOf(owner).size();
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        if (host.pendingMenu() != nullptr)
+            host.chooseMenuItem(kDelete);
+        host.tick(1);
+        const funkgui::MenuRequest* ask = host.pendingMenu();
+        P.eq("chats.delete_asks", ask != nullptr && !ask->items.empty() && has(ask->items[0].label, "Glass pad talk") ? 1 : 0, 1);
+        if (ask != nullptr)
+            host.chooseMenuItem(1);
+        host.tick(2);
+        host.settle();
+        const pg::ChatList after = processor.chatAgent().chatList();
+        bool gone = true;
+        for (const pg::ChatListEntry& e : after.chats)
+            gone = gone && e.title != "Glass pad talk";
+        P.eq("chats.deleted", gone && pg::chatstore::chatsOf(owner).size() + 1 == had && chat(processor).title != "Glass pad talk"
+                                  ? 1 : 0, 1);
     }
 
     // ---- SCROLL --------------------------------------------------------------------------------------------------------

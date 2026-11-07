@@ -18,7 +18,7 @@
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
-//   gui.dump.export.png  EXPORT: a project's info typed and chosen
+//   gui.dump.export.png  EXPORT: a project's info typed and chosen, the line that its chats never go with it
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
 //   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
 //                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
@@ -1709,6 +1709,11 @@ PROBE(gui, dump)
                                     && entered.tags == std::vector<std::string>{ "bright", "short" }
                                     && entered.category == pg::ui::ExportCard::categories()[1] && entered.genres.size() == 2 ? 1 : 0, 1);
             writePng(P, host, "gui.dump.export.png", "export");
+            // The card says a project's chats never go with it (drawn, and to a screen reader).
+            bool says = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                says = says || (a.title == "Export My Patch" && a.help.find("chats with Claude never do") != std::string::npos);
+            P.eq("export.says_no_chats", says ? 1 : 0, 1);
             click(card.places(W, H).package);
             const funkgui::FileRequest* asked = host.pendingFiles();
             P.eq("export.asks_where", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::save
