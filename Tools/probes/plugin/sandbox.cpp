@@ -19,7 +19,8 @@
 //            was; a number no sandbox has refused; apply without a number refused
 //   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
-//            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
+//            display can show, an array as its elements (ring[i]), an enumeration's an int as FMinus makes it, Shared's
+//            through its pointer, shared->tone):
 //            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png);
 //            values naming the field the shader reads (an input with no display of its own) changes its colour
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
@@ -515,7 +516,7 @@ PROBE(plugin, sandbox)
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
         P.eq("shader.declared", !r.error && has(r.text, "3 from the program's declarations") && has(r.text, "Shaders: 1 of 1 built") ? 1 : 0, 1);
-        P.eq("shader.fields", has(r.text, "Fields a display may show: ") && has(r.text, "shine (float)") && !has(r.text, "ring") ? 1 : 0, 1);
+        P.eq("shader.fields", has(r.text, "Fields a display may show: ") && has(r.text, "shine (float)") && has(r.text, "ring[i] (float[4])") ? 1 : 0, 1);
         P.eq("shader.enum_field", has(r.text, "stage (int)") ? 1 : 0, 1);
         float mx = 0, my = 0, mw = 0, mh = 0;   // the menu of the enumeration's param laid out, with no note on it
         P.eq("shader.enum_param", rectOf(r.text, "menu shape", mx, my, mw, mh) && !has(r.text, "a menu takes") ? 1 : 0, 1);
