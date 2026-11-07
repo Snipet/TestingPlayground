@@ -994,7 +994,7 @@ namespace playground::lang
                         t.scope = { t.at, *scopeEnd };
                     t.signature = joinTokens(t_, keyword, end);
                     if (t.signature.size() > 160)
-                        t.signature = t.signature.substr(0, 156) + " ...";
+                        t.signature = std::string(headOf(t.signature, 156)) + " ...";
                     t.doc = docFor(tok(i).line);
                     t.body = list;
                     add(t);
@@ -1035,9 +1035,8 @@ namespace playground::lang
                     if (scopeEnd)
                         c.scope = { c.at, *scopeEnd };
                     c.signature = from >= 0 ? c.name + " = " + joinTokens(t_, from, to) : c.name;
-                    if (c.signature.size() > 160)
-                        c.signature = c.signature.substr(0, 156) + " ...";   // an expression as written (when it folds:
-                                                                             // its value, foldValues)
+                    if (c.signature.size() > 160)   // an expression as written (when it folds: its value, foldValues)
+                        c.signature = std::string(headOf(c.signature, 156)) + " ...";
                     c.doc = docFor(name.line);
                     const int index = add(c);
                     f_.pending.push_back({ index, from, to, before });
@@ -1109,7 +1108,7 @@ namespace playground::lang
                     c.at = startOf(name);
                     std::string init = from >= 0 ? joinTokens(t_, from, e) : std::string();
                     if (init.size() > 64)
-                        init = init.substr(0, 60) + " ...";
+                        init = std::string(headOf(init, 60)) + " ...";
                     c.signature = ty + (ty.back() == '*' ? "" : " ") + c.name + extent + (init.empty() ? "" : " = " + init);
                     c.doc = docFor(name.line);
                     add(c);
@@ -1967,7 +1966,7 @@ namespace playground::lang
             const auto cutShort = [&](std::string x) {
                 x = rtrim(std::move(x));
                 if (x.size() + 4 > width)
-                    x = rtrim(x.substr(0, width > 4 ? width - 4 : 0));
+                    x = rtrim(std::string(headOf(x, width > 4 ? width - 4 : 0)));
                 return x + " ...";
             };
             std::vector<std::string> out;
@@ -2261,6 +2260,16 @@ namespace playground::lang
             out.push_back(text.substr(from, nl - from));
             from = nl + 1;
         }
+    }
+
+    std::string_view headOf(std::string_view text, std::size_t bytes) noexcept
+    {
+        if (text.size() <= bytes)
+            return text;
+        // Back to a character's first byte: the bytes kept end where one ends (a continuation byte is 10xxxxxx).
+        while (bytes > 0 && (static_cast<unsigned char>(text[bytes]) & 0xC0u) == 0x80u)
+            --bytes;
+        return text.substr(0, bytes);
     }
 
     void lexLine(std::string_view s, int ln, bool& inComment, std::vector<Token>& out)
@@ -3906,6 +3915,30 @@ namespace playground::lang
                 case Kind::word:
                     h.code = s->signature;
                     break;
+            }
+            // The names its code declares, a local's or a function's and its parameters': none is a constant there,
+            // whatever constant has its name too (the card draws them plain, as the editor draws the uses).
+            if (s->kind == Kind::local || s->kind == Kind::argument || s->kind == Kind::field || s->kind == Kind::param
+                || s->kind == Kind::method || s->kind == Kind::function)
+            {
+                h.plain.push_back(s->name);
+                std::vector<Token> parts;
+                for (const std::string& p : s->params)
+                {
+                    parts.clear();
+                    bool inner = false;
+                    lexLine(p, 0, inner, parts);
+                    std::string_view last;
+                    for (const Token& x : parts)
+                    {
+                        if (x.text == "[")               // its extent's names are uses
+                            break;
+                        if (x.kind == Tok::identifier)
+                            last = x.text;
+                    }
+                    if (!last.empty() && std::find(h.plain.begin(), h.plain.end(), last) == h.plain.end())
+                        h.plain.emplace_back(last);
+                }
             }
             if (s->file >= 0 && s->file != file && s->file < static_cast<int>(m.files.size()))
                 h.doc += (h.doc.empty() ? "" : "\n\n") + std::string("(in ") + m.files[static_cast<std::size_t>(s->file)]->name + ")";

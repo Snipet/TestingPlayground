@@ -115,13 +115,15 @@
 //   SHADOW    a local, an argument and a field named as a constant of the top level (Patch::check clean): the shadows'
 //             names and each use's flag (Service::shadowed); hover says the local; the highlighter with those flags
 //             colours the local, the argument and the field (their declarations and uses) plain and the constant's own
-//             uses as constants, and a highlighter for a tab the flags are not for colours them all as constants; a
-//             program with no shadow has no flag
+//             uses as constants, and a highlighter for a tab the flags are not for colours them all as constants; the
+//             hover card's code: the local's, the argument's and the function's names plain (Hover::plain), the
+//             constant's coloured; a program with no shadow has no flag
 //   PASSES    the constants' folds bounded (lang::kFoldPasses): a chain of 301 constants each naming the one after it
 //             (FMinus's error) folds kFoldPasses of them, a link a pass; 301 in the order the compile reads fold in one
 //   HOVERS    a declaration wider than the card (lang::kHoverWidth): a function of eight parameters on two lines, the
 //             second under its parenthesis, that join back to it; one of forty on kHoverLines lines, the last cut with
-//             " ..."; an unfolded constant of a long expression one line cut with " ..."; a short one as it was
+//             " ..."; an unfolded constant of a long expression one line cut with " ..."; a short one as it was; a cut
+//             never splits a UTF-8 character (lang::headOf; a field's attribute of "µ" cut inside one)
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -2176,6 +2178,32 @@ PROBE(fminus, lang)
         // A tab the flags are not for (as before the index has them): every GAIN a constant, as before shadows were known.
         P.eq("shadow.highlight_without_flags", styleAt(stale, posOf(text, "GAIN * x")) == pg::ui::csConstant
                                                    && styleAt(stale, posOf(text, "GAIN * 2")) == pg::ui::csConstant ? 1 : 0, 1);
+        // The hover card's code (CodeAssist draws it with a highlighter of no tab): the names a declaration declares are
+        // plain there (Hover::plain), the local's, the argument's and the function's parameter's; a constant's are not.
+        const std::optional<lg::Hover> ha = sh.hover(0, posOf(text, "GAIN * 2", 1));
+        const std::optional<lg::Hover> ht = sh.hover(0, posOf(text, "twice(", 1));
+        const auto plainHas = [](const std::optional<lg::Hover>& h, std::string_view name) {
+            return h && std::find(h->plain.begin(), h->plain.end(), name) != h->plain.end();
+        };
+        P.eq("shadow.hover_plain", plainHas(hl, "GAIN") && plainHas(ha, "GAIN") && plainHas(ht, "twice") && plainHas(ht, "GAIN")
+                                       && hc && hc->plain.empty() ? 1 : 0, 1);
+        const auto cardStyle = [&](const std::optional<lg::Hover>& h, bool withPlain) -> int {
+            if (!h)
+                return -1;
+            pg::ui::CodeHighlighter card(names);
+            if (withPlain)
+                card.setPlain(h->plain);
+            std::vector<funkgui::text::Span> spans;
+            (void)card.line(h->code, 0, spans);
+            const std::size_t at = h->code.rfind("GAIN");
+            for (const funkgui::text::Span& sp : spans)
+                if (at != std::string::npos && sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at) + 4)
+                    return sp.style;
+            return pg::ui::csPlain;
+        };
+        std::printf("shadow: the local's card %s, the function's %s\n", hl ? hl->code.c_str() : "-", ht ? ht->code.c_str() : "-");
+        P.eq("shadow.card_plain", cardStyle(hl, true) == pg::ui::csPlain && cardStyle(ht, true) == pg::ui::csPlain
+                                      && cardStyle(hl, false) == pg::ui::csConstant && cardStyle(hc, true) == pg::ui::csConstant ? 1 : 0, 1);
         // No shadow: no flag, and a constant's use costs the highlighter's state nothing.
         lg::Service plain;
         plain.setFiles(pg::singleFile(std::string(pg::kExamples[0].source) + "enum { GAIN = 2 };\nfloat louder(float x)\n{\n    return GAIN * x;\n}\n"));
@@ -2267,6 +2295,41 @@ PROBE(fminus, lang)
                                && hw->code.rfind("WIDE = 1 + 1", 0) == 0 && hw->code.compare(hw->code.size() - 4, 4, " ...") == 0 ? 1 : 0, 1);
         const std::optional<lg::Hover> hx = hs.hover(0, posOf(text, "x;\n}\nfloat many", 0));
         P.eq("hovers.short_kept", hx && hx->code == "float x" ? 1 : 0, 1);
+        // A cut never splits a UTF-8 character (lang::headOf): a field whose attribute's string of forty "µ" (two bytes
+        // each) the card cuts inside one, its line ending at the character before it.
+        const std::string mu = "\xC2\xB5";
+        const auto validUtf8 = [](std::string_view bytes) {
+            for (std::size_t k = 0; k < bytes.size();)
+            {
+                const auto lead = static_cast<unsigned char>(bytes[k]);
+                const std::size_t len = lead < 0x80 ? 1 : (lead & 0xE0) == 0xC0 ? 2 : (lead & 0xF0) == 0xE0 ? 3 : (lead & 0xF8) == 0xF0 ? 4 : 0;
+                if (len == 0 || k + len > bytes.size())
+                    return false;
+                for (std::size_t j = 1; j < len; ++j)
+                    if ((static_cast<unsigned char>(bytes[k + j]) & 0xC0) != 0x80)
+                        return false;
+                k += len;
+            }
+            return true;
+        };
+        P.eq("hovers.head_utf8", lg::headOf("a" + mu + "b", 2) == "a" && lg::headOf("a" + mu + "b", 3) == "a" + mu
+                                     && lg::headOf("a" + mu + "b", 9) == "a" + mu + "b" && lg::headOf(mu, 1).empty() ? 1 : 0, 1);
+        std::string label;
+        for (int k = 0; k < 40; ++k)
+            label += mu;
+        const std::string units = std::string(pg::kExamples[0].source) + "module Units\n{\n    float spans [[ui::label(\"" + label + "\")]];\n};\n";
+        lg::Service us;
+        us.setFiles(pg::singleFile(units));
+        const std::optional<lg::Hover> hu = us.hover(0, posOf(units, "spans [[", 1));
+        const std::vector<std::string> lu = hu ? linesOf(hu->code) : std::vector<std::string>{};
+        std::printf("hovers: units\n%s\n", hu ? hu->code.c_str() : "-");
+        // (the second line under the attribute's `[[`, 25 bytes before the string: of the 68 the cut keeps, kHoverWidth
+        // less " ...", 43 are the string's, 21 "µ" and a byte of the 22nd, which goes)
+        std::string kept;
+        for (int k = 0; k < 21; ++k)
+            kept += mu;
+        P.eq("hovers.cut_utf8", lu.size() == 2 && fits(lu) && validUtf8(hu->code) && lu[0] == "float spans"
+                                    && lu[1] == std::string(12, ' ') + "[[ui::label(\"" + kept + " ..." ? 1 : 0, 1);
     }
     return P.finish();
 }

@@ -143,6 +143,9 @@ namespace playground::lang
     void lexLine(std::string_view line, int lineNo, bool& inComment, std::vector<Token>& out);
     std::vector<Token> lex(std::string_view text);           // every line's, in order
     std::vector<std::string_view> splitLines(std::string_view text);   // at '\n' (one more than the line breaks)
+    // `text`'s first `bytes` bytes, or fewer: a cut never splits a UTF-8 character (a string literal's, an attribute's
+    // "µs"); headOf(s, s.size() - 1) is `s` less its last character.
+    std::string_view headOf(std::string_view text, std::size_t bytes) noexcept;
 
     bool isKeyword(std::string_view word) noexcept;
     bool isTypeWord(std::string_view word) noexcept;
@@ -317,6 +320,9 @@ namespace playground::lang
         Range range{};                           // the word
         std::string code;                        // its declaration, as code (kHoverWidth, kHoverLines)
         std::string doc;
+        std::vector<std::string> plain;          // the names `code` declares that are no constant (a local's, an
+                                                 // argument's, a field's, a function's and its parameters'): the card
+                                                 // draws them plain where a constant has the name too, as the editor does
     };
 
     struct Location
