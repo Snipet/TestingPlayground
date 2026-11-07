@@ -4,7 +4,8 @@
 // over real Processors, and a picture of each menu as it opens, in both themes: the Panel's frame with its trigger
 // pressed and, over it, the menu FunkGui's MenuLook draws for the Panel's request (JUCE's popup menu, shown in a
 // component as fg.menulook shows its own), cut to the two, at 2x, to <build>/probe-out/:
-//   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, model, thinking, zoom, settings (the
+//   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, projects (a project's context menu in
+//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, zoom, settings (the
 //   output's select), panel (a .gui file's menu control) and schematic (a netlist's canvas menu)
 // and checks:
 //   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the output's select, a
@@ -510,6 +511,13 @@ PROBE(gui, menus)
 
     // ---- the editor's own: Examples, Library, Projects, the zoom, the model, the thinking level ------------------------
     {
+        {
+            // A project for PROJECTS' menus, saved into the store (none open): a category and two tags.
+            std::string why;
+            const bool saved = pg::projectstore::saveVersion("Menu Pad", { { "program.fm", "// Menu Pad: a project for the menus\n" } }, 0, {}, {}, &why)
+                            && pg::projectstore::setInfo("Menu Pad", { "A pad for the menus' pictures.", "", "Pad", { "warm", "slow" }, {} }, &why);
+            P.eq("setup.menu_project", saved ? 1 : 0, 1);
+        }
         pg::Processor processor;
         pg::EditorPort& port = processor.editorPort();
         processor.settle();
@@ -597,6 +605,41 @@ PROBE(gui, menus)
                 R.eq("trigger.projects.open_edge", open && open->edge == packed(th.accent) ? 1 : 0, 1);
                 if (open)
                     seen.openFills["projects"] = open->fill;
+                // PROJECTS' own menus: a project's (a right-click's) and the tag filter's dropdown.
+                {
+                    pg::ui::ProjectBrowser& b = panel.projectBrowser();
+                    const auto W = static_cast<float>(panel.width()), H = static_cast<float>(panel.height());
+                    const funkgui::Point row = b.centreOfRow(pg::ui::ProjectBrowser::List::projects, b.rowOf("Menu Pad"), W, H);
+                    funkgui::Mods ctrl;
+                    ctrl.ctrl = true;
+                    host.click(row.x, row.y, ctrl);
+                    host.settle();
+                    if (const funkgui::MenuRequest* m = host.pendingMenu())
+                    {
+                        const auto category = std::find_if(m->items.begin(), m->items.end(), [](const funkgui::MenuItem& i) { return i.label == "Category"; });
+                        R.eq("rows.projects.header", !m->items.empty() && m->items[0].header && m->items[0].label == "Menu Pad" ? 1 : 0, 1);
+                        R.eq("rows.projects.category_submenu", category != m->items.end() && !category->submenu.empty()
+                                                                   && category->submenu.back().label == "New category..." ? 1 : 0, 1);
+                        picture(P, pics, host, panel, *m, "projects", t);
+                        host.cancelMenu();
+                    }
+                    else
+                        R.eq("rows.projects.menu", 0, 1);
+                    host.settle();
+                    const funkgui::Rect tag = b.places(W, H).tag;
+                    host.click(tag.centreX(), tag.centreY());
+                    host.settle();
+                    if (const funkgui::MenuRequest* m = host.pendingMenu())
+                    {
+                        R.eq("rows.projects_tag.any_first", !m->items.empty() && m->items[0].radio && m->items[0].label == "Any tag"
+                                                                && m->selectedId == m->items[0].id ? 1 : 0, 1);
+                        picture(P, pics, host, panel, *m, "projects_tag", t);
+                        host.cancelMenu();
+                    }
+                    else
+                        R.eq("rows.projects_tag.menu", 0, 1);
+                    host.settle();
+                }
                 host.keys("escape");
                 host.settle();
                 closedTrigger(R, host, "projects", seen);

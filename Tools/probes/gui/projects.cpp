@@ -309,9 +309,9 @@ PROBE(gui, projects)
         for (const std::string& k : keys)
             all += k + " | ";
         std::printf("groups: %s\n", all.c_str());
-        std::vector<std::string> byName{ k0, k1, k2 };   // the categories' groups by name
-        std::sort(byName.begin(), byName.end());
-        P.eq("groups.order", keys == std::vector<std::string>{ "factory", byName[0], byName[1], byName[2], "uncategorised" } ? 1 : 0, 1);
+        std::vector<std::string> sorted{ k0, k1, k2 };   // the categories' groups by name
+        std::sort(sorted.begin(), sorted.end());
+        P.eq("groups.order", keys == std::vector<std::string>{ "factory", sorted[0], sorted[1], sorted[2], "uncategorised" } ? 1 : 0, 1);
         P.eq("groups.factory_first", b.headerOf("factory") == 0 && membersOf(b, "factory").size() == factory.size() ? 1 : 0, 1);
         const gr::Group* g2 = groupOf(b, k2);
         P.eq("groups.case_aside", g2 != nullptr && g2->members.size() == 2 && g2->title == c2 ? 1 : 0, 1);
