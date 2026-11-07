@@ -232,6 +232,21 @@ namespace playground::ui
     {
         if (!shown())
             return;
+        drawControl(c, th, focusRing);
+        looks::midiMark(c, th, midiMarkAt(), midiMapped_, midiLearning_);
+    }
+
+    funkgui::Point GuiControlItem::midiMarkAt() const noexcept
+    {
+        const float x = cell_.right() - looks::kMidiMarkInset;
+        if (kind_ != GuiKind::knob)
+            return { x, cell_.y + looks::kMidiMarkInset };
+        const float top = geom_.cy - 0.5f * geom_.d;
+        return { x, cell_.y + std::max(top, geom_.labelTop ? kGuiLabelH + 2.0f : looks::kMidiMarkInset) };
+    }
+
+    void GuiControlItem::drawControl(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const
+    {
         const bool tinted = !color_.empty();
         const Col col = colorOf(color_, th, th.accent);
         const Rect& r = cell_;
@@ -594,6 +609,8 @@ namespace playground::ui
 
     void GuiControlItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h)
     {
+        if (e.popup && dialMenu_ && shown())
+            dialMenu_({ e.x, e.y });                     // MIDI learn's menu, never a write
         if (e.popup || !shown())
             return;
         const funkgui::Point p{ e.x, e.y };
@@ -757,9 +774,15 @@ namespace playground::ui
             case funkgui::A11yAction::increment: g.tap(value_.port(), clamp01(now + value_.step())); break;
             case funkgui::A11yAction::decrement: g.tap(value_.port(), clamp01(now - value_.step())); break;
             case funkgui::A11yAction::setValue:  g.tap(value_.port(), clamp01(static_cast<float>(v))); break;
+            case funkgui::A11yAction::showMenu:
+                if (!clicks() && dialMenu_)
+                {
+                    dialMenu_({ cell_.centreX(), cell_.centreY() });
+                    break;
+                }
+                [[fallthrough]];
             case funkgui::A11yAction::press:
             case funkgui::A11yAction::toggle:
-            case funkgui::A11yAction::showMenu:
                 if (clicks() && !openMenuFromHost(g))
                     g.tap(value_.port(), value_.normOfIndex((value_.index() + 1) % std::max(1, value_.count())));
                 break;
@@ -776,7 +799,8 @@ namespace playground::ui
                         : kind_ == GuiKind::toggle ? "A CLICK FLIPS IT"
                         : kind_ == GuiKind::buttons ? "A CLICK CHOOSES"
                                                     : "DRAG, WHEEL OR ARROWS   SHIFT FINER   DOUBLE-CLICK: DEFAULT";
-        std::snprintf(out, n, "%s   %s   %s   %s", value_.label().c_str(), value_.text().c_str(), upper(c.name).c_str(), how);
+        std::snprintf(out, n, "%s   %s   %s   %s%s", value_.label().c_str(), value_.text().c_str(), upper(c.name).c_str(), how,
+                      midiSpec_.c_str());
     }
 
     // ---- GuiXyItem ------------------------------------------------------------------------------------------------------

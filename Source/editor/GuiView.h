@@ -68,6 +68,7 @@ namespace playground::ui
             std::function<void(int node, int page)> choosePage;      // a tab clicked
             std::function<void(int note, float velocity)> playNote;  // a keyboard's key (velocity 0: let go)
             std::function<void(bool pitch, float value)> playWheel;  // its wheels
+            std::function<void(int slot, funkgui::Point at)> dialMenu;  // a control's right-click (GuiControlItem::setMenu)
         };
 
         // Its items, appended to `items` in this order (the Tab order): kPool tabs, a control a port (kMaxControls at
@@ -81,6 +82,8 @@ namespace playground::ui
         GuiView& operator=(const GuiView&) = delete;
 
         void setControls(const Controls& controls, const PanelSpec& spec);
+        // MIDI learn's on slot's control (GuiControlItem::setMidi).
+        void setMidi(int slot, bool mapped, bool learning, std::string spec);
         void layout(const PanelSpec& spec, const Controls& controls, funkgui::Rect area);
         void clear(const PanelSpec& spec);
         void place(const PanelSpec& spec);

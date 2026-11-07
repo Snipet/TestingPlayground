@@ -257,6 +257,21 @@ namespace playground::ui
         // A section's title, cut into its frame's top edge (DialLayout.h).
         constexpr funkgui::TextStyle kSectionTitle{ 10.0f, 2.4f, 0.10f, false };
 
+        // MIDI learn on a dial (EditorPort::midi): what its footer line says after its own ("" for nothing); its mark is
+        // looks::midiMark's.
+        std::string midiSpec(const std::string& words, bool learning, const std::string& note)
+        {
+            if (learning)
+                return "   LEARNING: MOVE A CONTROL ON A MIDI CONTROLLER" + (note.empty() ? std::string() : "   " + upper(note));
+            return words.empty() ? std::string() : "   MIDI " + upper(words);
+        }
+        void appendSpec(char* out, std::size_t n, const std::string& more)
+        {
+            const std::size_t len = std::strlen(out);
+            if (!more.empty() && len + 1 < n)
+                std::snprintf(out + len, n - len, "%s", more.c_str());
+        }
+
         // ---- a dial over P1..P32, labelled with the running program's parameter (or its #pragma panel label) --------
         class ControlModel final : public funkgui::ValueModel
         {
@@ -358,6 +373,20 @@ namespace playground::ui
         public:
             DialItem(funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id) : model_(port), dial_(model_, g, id) {}
 
+            // What a right-click (or a ctrl-click, or a screen reader's menu action) opens at a point: the Panel's dial
+            // menu (MIDI learn's, and the host's). None: the host's own menu, as FunkGui's Dial opens it.
+            void setMenu(std::function<void(funkgui::Point)> menu) { menu_ = std::move(menu); }
+            // MIDI learn (EditorPort::midi): the control that moves it (in words, "" for none), whether it learns, and
+            // learning's note.
+            void setMidi(const std::string& words, bool learning, const std::string& note)
+            {
+                midiWords_ = words;
+                learning_ = learning;
+                midiNote_ = note;
+            }
+            bool midiMarked() const noexcept { return !midiWords_.empty(); }
+            bool midiLearning() const noexcept { return learning_; }
+
             ControlModel& model() noexcept { return model_; }
             const ControlModel& model() const noexcept { return model_; }
             DialStyle style() const noexcept { return style_; }
@@ -383,6 +412,11 @@ namespace playground::ui
                 hoverRow_ = hovered && style_ == DialStyle::buttons ? rowAt(pointer) : -1;
             }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+            {
+                drawDial(c, th, ring);
+                looks::midiMark(c, th, looks::midiMarkAt(cell_), !midiWords_.empty(), learning_);
+            }
+            void drawDial(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const
             {
                 const bool tinted = !color_.empty();
                 const funkgui::Col col = looks::panelColor(color_, th, th.accent);
@@ -436,6 +470,17 @@ namespace playground::ui
             void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g,
                              funkgui::HostServices& h) override
             {
+                if (e.popup && menu_)
+                {
+                    menu_({ e.x, e.y });                 // a menu, never a write
+                    return;
+                }
+                if (e.popup && style_ != DialStyle::knob && style_ != DialStyle::vintage)
+                {
+                    if (funkgui::ParamPort* p = model_.port())
+                        h.showParamMenu(*p, e.x, e.y);   // the host's menu, never a write
+                    return;
+                }
                 if (style_ == DialStyle::toggle)
                 {
                     g.tap(*model_.port(), model_.normOfIndex(model_.index() == 0 ? model_.count() - 1 : 0));
@@ -492,16 +537,24 @@ namespace playground::ui
             {
                 if (id != dial_.a11yId())
                     return false;
-                dial_.a11yAction(a, v, g);
+                if (a == funkgui::A11yAction::showMenu && menu_)
+                    menu_({ cell_.centreX(), cell_.centreY() });
+                else
+                    dial_.a11yAction(a, v, g);
                 return true;
             }
-            void specLine(char* out, std::size_t n) const override { dial_.specLine(out, n); }
+            void specLine(char* out, std::size_t n) const override
+            {
+                dial_.specLine(out, n);
+                appendSpec(out, n, midiSpec(midiWords_, learning_, midiNote_));
+            }
             bool settled() const override { return dial_.settled(); }
             // The parameter's value as the host has it (automation, Claude, a preset move it with no input here) and
             // the program's control (ControlModel::key), the look and the hover.
             uint64_t drawKey() const override
             {
-                return DrawKey{}.mix(model_.key()).mix(static_cast<int>(style_)).mix(color_).mix(cell_).mix(hovered_).mix(hoverRow_).h;
+                return DrawKey{}.mix(model_.key()).mix(static_cast<int>(style_)).mix(color_).mix(cell_).mix(hovered_).mix(hoverRow_)
+                    .mix(midiWords_).mix(learning_).mix(midiNote_).h;
             }
             funkgui::Point centre() const override
             {
@@ -522,6 +575,9 @@ namespace playground::ui
         private:
             bool clicks() const noexcept { return style_ == DialStyle::toggle || style_ == DialStyle::buttons; }
 
+            std::function<void(funkgui::Point)> menu_;
+            std::string midiWords_, midiNote_;
+            bool learning_ = false;
             ControlModel model_;                         // before dial_, which refers to it
             funkgui::Dial dial_;
             DialStyle style_ = DialStyle::knob;
@@ -2929,8 +2985,11 @@ namespace playground::ui
         }));
         itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
+        {
             itemOfSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<DialItem>(
                 *ports[static_cast<std::size_t>(c)], funkgui::DialGeom{ 0.0f, 0.0f }, idFor()));
+            static_cast<DialItem&>(*items_.back()).setMenu([this, c](funkgui::Point at) { dialMenu(c, at); });
+        }
         // The program's displays (#pragma panel meter, vu, led, number, scope), shown as it has them.
         itemOfDisplay_.assign(static_cast<std::size_t>(kMaxDisplays), -1);
         for (int d = 0; d < kMaxDisplays; ++d)
@@ -2947,6 +3006,7 @@ namespace playground::ui
             hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
             hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
             hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
+            hooks.dialMenu = [this](int slot, funkgui::Point at) { dialMenu(slot, at); };
             guiView_ = std::make_unique<GuiView>(items_, ports, itemOfDisplay_, idFor, std::move(hooks));
         }
 
@@ -3702,6 +3762,109 @@ namespace playground::ui
     // ---- the folder (plugin/FolderSync.h) ----------------------------------------------------------------------------
     // What the port says of the folder, read again when its revision moves; a save that landed and a new conflict say
     // so in the status (not what this Panel found when it was made).
+    // ---- MIDI learn ---------------------------------------------------------------------------------------------------
+    void Panel::syncMidi()
+    {
+        if (const uint64_t r = port_.midiRevision(); r == midiSeen_)
+            return;
+        const midilearn::View v = port_.midi();
+        midiSeen_ = v.revision;
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const auto i = static_cast<std::size_t>(c);
+            const bool learning = v.learning == c;
+            if (const int item = itemOfSlot_[i]; item >= 0)
+                static_cast<DialItem&>(*items_[static_cast<std::size_t>(item)]).setMidi(v.words[i], learning, learning ? v.note : std::string());
+            guiView_->setMidi(c, !v.words[i].empty(), learning, midiSpec(v.words[i], learning, learning ? v.note : std::string()));
+        }
+        dirty_ = true;
+    }
+
+    void Panel::dialMenu(int slot, funkgui::Point at)
+    {
+        if (host_ == nullptr || slot < 0 || slot >= kMaxControls)
+            return;
+        const int item = itemOfSlot_[static_cast<std::size_t>(slot)];
+        funkgui::ParamPort* param = item >= 0 ? static_cast<DialItem&>(*items_[static_cast<std::size_t>(item)]).model().port() : nullptr;
+        // A host's own parameter menu (its automation, its own MIDI learn): a host parameter's, in a host's window (the
+        // Standalone has none to show).
+        const bool hostMenu = param != nullptr && !isPanelDial(slot) && port_.windowButtons().width <= 0.0f;
+        if (!port_.midiLearnable())
+        {
+            if (hostMenu)
+                host_->showParamMenu(*param, at.x, at.y);   // an effect's dials: the host's menu, as before
+            return;
+        }
+        const Control& k = controls_[static_cast<std::size_t>(slot)];
+        if (!k.used)
+            return;
+        const midilearn::View v = port_.midi();
+        const std::string& words = v.words[static_cast<std::size_t>(slot)];
+        const bool learning = v.learning == slot;
+        int mapped = static_cast<int>(v.waiting.size());
+        for (const std::string& w : v.words)
+            mapped += w.empty() ? 0 : 1;
+        enum : int { kLearn = 1, kStop, kForget, kForgetAll, kHost };
+        funkgui::MenuRequest request;
+        funkgui::MenuItem title;
+        title.header = true;
+        title.label = upper(asciiText(k.name)) + "   MIDI";
+        request.items.push_back(title);
+        request.items.push_back(learning ? funkgui::MenuItem{ kStop, "Stop learning" }
+                                         : funkgui::MenuItem{ kLearn, words.empty() ? "Learn MIDI CC" : "Learn another MIDI CC" });
+        request.items.push_back({ kForget, words.empty() ? std::string("Forget MIDI CC") : "Forget " + words, !words.empty() });
+        funkgui::MenuItem gap;
+        gap.separator = true;
+        request.items.push_back(gap);
+        request.items.push_back({ kForgetAll, mapped > 0 ? "Forget every MIDI CC (" + std::to_string(mapped) + ")" : std::string("Forget every MIDI CC"),
+                                  mapped > 0 });
+        if (hostMenu)
+        {
+            request.items.push_back(gap);
+            request.items.push_back({ kHost, "The host's menu..." });
+        }
+        request.anchor = { at.x, at.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this, slot, at, param](int chosen) {
+            switch (chosen)
+            {
+                case kLearn:     (void)port_.learnMidi(slot); break;
+                case kStop:      port_.cancelMidiLearn(); break;
+                case kForget:    (void)port_.forgetMidi(slot); break;
+                case kForgetAll: (void)port_.forgetAllMidi(); break;
+                case kHost:
+                    if (param != nullptr && host_ != nullptr)
+                        host_->showParamMenu(*param, at.x, at.y);
+                    break;
+                default: return;
+            }
+            syncMidi();
+            dirty_ = true;
+        });
+    }
+
+    std::string Panel::dialSpecLine(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        if (item < 0)
+            return {};
+        char line[256] = {};
+        items_[static_cast<std::size_t>(item)]->specLine(line, sizeof line);
+        return line;
+    }
+
+    bool Panel::dialMidiMarked(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        return item >= 0 && static_cast<const DialItem&>(*items_[static_cast<std::size_t>(item)]).midiMarked();
+    }
+
+    bool Panel::dialMidiLearning(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        return item >= 0 && static_cast<const DialItem&>(*items_[static_cast<std::size_t>(item)]).midiLearning();
+    }
+
     void Panel::syncFolder()
     {
         const uint64_t r = port_.folderRevision();
@@ -4858,6 +5021,7 @@ namespace playground::ui
         syncCodePanel();
         keepStepDefaults(nowSec, false);
         syncFolder();
+        syncMidi();
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once

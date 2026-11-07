@@ -291,6 +291,9 @@ namespace playground::ui
         funkgui::Point centreOfNewTab() const;
         funkgui::Point centreOfCloseTab(int i) const;
         std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
+        std::string dialSpecLine(int slot) const;                      // its footer line (the dials', not a .gui's)
+        bool dialMidiMarked(int slot) const;                           // its MIDI mark: a control moves it ...
+        bool dialMidiLearning(int slot) const;                         // ... it learns one
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
@@ -690,6 +693,12 @@ namespace playground::ui
         uint64_t folderSeen_ = 0;
         bool folderKnown_ = false;                       // folderState_ read once (the notices start from it)
         void syncFolder();
+        // MIDI learn (EditorPort::midi; plugin/MidiLearn.h): each dial's mark and footer line, read again when its
+        // revision moves (refresh()); a dial's menu (right-click, ctrl-click, a screen reader's menu action: Learn MIDI
+        // CC, Forget, Forget all, the host's own menu), or in an effect, which learns no MIDI, the host's menu as before.
+        uint64_t midiSeen_ = 0;
+        void syncMidi();
+        void dialMenu(int slot, funkgui::Point at);
         void folderRow(const ExplorerItem::Row& row);
         void chooseConflict(const std::string& file);
         // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
