@@ -23,6 +23,14 @@
 //   REVERB    an impulse's tail falls 60 dB in about 1.3 s at size 0.5 and over 6 s at size 1; the sides are
 //             decorrelated at width 1 and alike at width 0; noise through it comes out within 3 dB of its level; it
 //             stays finite
+//   WAVEGUIDE a pluck's fundamental within half a cent of 110, 440.5, 1234.5 and 3000 Hz (the allpass's fraction tuned
+//             at the pitch), its 8th partial harmonic within half a cent without dispersion, sharp by 1 cent or more at
+//             0.3 and 30 cents or more at 1; the fundamental's T60 within 5 % of decay at damping 0, the 8th partial's
+//             shorter at damping 0.5; a tube's 2nd harmonic 40 dB under its fundamental (odd harmonics only), its 3rd
+//             within 20 dB; a pluck in the middle takes the 2nd harmonic down 15 dB against one near the bridge; a glide
+//             from 220 to 330 Hz (set every 16 samples) lands within a cent; noise in rings at a multiple of the pitch, a
+//             DC input leaves no offset once the loop's decay has passed (without the input's blocker it would build to
+//             0.5 / (1 - gain)); everything finite and under 1 for a pluck at 0.5; every call safe before allocate
 //   OSC       at 440 Hz each wave has its RMS (saw and triangle 0.577, square 1, sine 0.707), no DC, 440 rising zero
 //             crossings a second; a 25 % pulse has no DC; the morph keeps its fundamental between saw and square;
 //             at 3.7 kHz the saw's strongest alias below 16 kHz is at least 10 dB under a naive saw's
@@ -410,6 +418,85 @@ int hashOf(int n)
     return hash(n);
 }
 )FM";
+
+    const char* const kWaveguide = R"FM(#include "waveguide.fm"
+
+// A pluck at hz into y (n samples): decay, damping, dispersion, a tube or a string, where it is plucked.
+void wgPluck(float* y, int n, float hz, float decay, float damping, float dispersion, int tube, float position)
+{
+    Waveguide s;
+    s.allocate(20, 48000);
+    s.tube = tube != 0;
+    s.set(hz, decay, damping, dispersion);
+    s.pluck(position, 1, 0.5f);
+    for (int i = 0; i < n; ++i)
+        y[i] = s.tick(0);
+    s.release();
+}
+
+// A pluck at `from` Hz gliding to `to` over the first half of n samples (set every 16), then held.
+void wgGlide(float* y, int n, float from, float to)
+{
+    Waveguide s;
+    s.allocate(20, 48000);
+    s.set(from, 3, 0.3f, 0);
+    s.pluck(0.3f, 1, 0.5f);
+    for (int at = 0; at < n; at += 16)
+    {
+        const float t = fminf((float)at / (0.5f * (float)n), 1);
+        s.set(from * expf(t * logf(to / from)), 3, 0.3f, 0);
+        for (int i = at; i < at + 16 && i < n; ++i)
+            y[i] = s.tick(0);
+    }
+    s.release();
+}
+
+// x through it all the time (an effect's resonator).
+void wgResonate(float* x, float* y, int n, float hz, float decay)
+{
+    Waveguide s;
+    s.allocate(20, 48000);
+    s.set(hz, decay, 0.3f, 0);
+    for (int i = 0; i < n; ++i)
+        y[i] = s.tick(x[i]);
+    s.release();
+}
+
+float wgUnallocated()
+{
+    Waveguide s;
+    s.set(220, 1, 0.5f, 0.5f);
+    s.pluck(0.3f, 0.5f, 1);
+    s.clear();
+    return s.tick(1) + s.tick(0);
+}
+)FM";
+
+    // The frequency of the strongest component within `span` (a fraction) of `near` in x[from, from + count), to a
+    // thousandth of a hertz: a Hann window's DFT scanned, then a ternary search on its peak.
+    double toneHz(const std::vector<float>& x, double near, double span, std::size_t from, std::size_t count)
+    {
+        const auto mag = [&](double hz) { return probe::toneAmplitudeHann(x, hz, kFs, from, count); };
+        double best = -1.0, at = near;
+        for (int k = -150; k <= 150; ++k)
+            if (const double f = near * (1.0 + span * k / 150.0); mag(f) > best)
+            {
+                best = mag(f);
+                at = f;
+            }
+        double lo = at - near * span / 150.0, hi = at + near * span / 150.0;
+        for (int it = 0; it < 40; ++it)
+        {
+            const double a = lo + (hi - lo) / 3.0, b = hi - (hi - lo) / 3.0;
+            if (mag(a) < mag(b))
+                lo = a;
+            else
+                hi = b;
+        }
+        return 0.5 * (lo + hi);
+    }
+
+    double cents(double hz, double want) { return 1200.0 * std::log2(hz / want); }
 
     // noise.fm's white noise before randf: Park-Miller's generator by Schrage's method (no 64-bit products), the
     // reference the new one's statistics are held to.
@@ -938,6 +1025,117 @@ PROBE(fminus, library)
             reverb(nl.data(), nr.data(), ol.data(), orr.data(), static_cast<int>(m), 0.5f, 0.5f, 1.0f);
             P.near("reverb.noise_level_db", gainDb(nl, ol), 0.0, 3.0);
         }
+    }
+
+    // ---- WAVEGUIDE ---------------------------------------------------------------------------------------------------
+    {
+        std::string errors;
+        const auto p = compileHarness(kWaveguide, errors);
+        P.eq("waveguide.compile", p != nullptr && errors.empty() ? 1 : 0, 1);
+        if (!errors.empty())
+            std::printf("%s", errors.c_str());
+        auto* pluck = function<void(float*, int, float, float, float, float, int, float)>(p.get(), "wgPluck");
+        auto* glide = function<void(float*, int, float, float)>(p.get(), "wgGlide");
+        auto* resonate = function<void(float*, float*, int, float, float)>(p.get(), "wgResonate");
+        auto* unallocated = function<float()>(p.get(), "wgUnallocated");
+        const std::size_t len = static_cast<std::size_t>(0.6 * kFs), from = static_cast<std::size_t>(0.1 * kFs), count = len - from;
+        std::vector<float> y(len);
+        bool finite = true;
+        float loudest = 0.0f;
+        const auto play = [&](float hz, float decay, float damping, float dispersion, int tube, float position) {
+            pluck(y.data(), static_cast<int>(len), hz, decay, damping, dispersion, tube, position);
+            finite = finite && probe::allFinite(y);
+            loudest = std::max(loudest, probe::peak(y));
+        };
+        if (pluck != nullptr)
+        {
+            for (const double hz : { 110.0, 440.5, 1234.5, 3000.0 })
+            {
+                play(static_cast<float>(hz), 3.0f, 0.3f, 0.0f, 0, 0.3f);
+                const double c = cents(toneHz(y, hz, 0.03, from, count), hz);
+                std::printf("waveguide at %g Hz: %+.3f cents\n", hz, c);
+                char key[64];
+                std::snprintf(key, sizeof key, "waveguide.pitch_%g_cents", hz);
+                P.le(key, std::fabs(c), 0.5);
+            }
+            // The 8th partial against 8 times the fundamental: harmonic, then stretched by the dispersion.
+            const auto eighth = [&](float dispersion) {
+                play(220.0f, 3.0f, 0.3f, dispersion, 0, 0.3f);
+                const double f0 = toneHz(y, 220.0, 0.03, from, count);
+                return cents(toneHz(y, 8.0 * f0 * 1.02, 0.05, from, count), 8.0 * f0);
+            };
+            const double none = eighth(0.0f), some = eighth(0.3f), most = eighth(1.0f);
+            std::printf("waveguide's 8th partial at 220 Hz: %+.2f cents (no dispersion), %+.2f (0.3), %+.2f (1)\n", none, some, most);
+            P.le("waveguide.harmonic_8th_cents", std::fabs(none), 0.5);
+            P.ge("waveguide.dispersion_0.3_8th_cents", some, 1.0);
+            P.ge("waveguide.dispersion_1_8th_cents", most, 30.0);
+            // The decay: a partial's level in two 0.1 s frames a second apart (0.4 s for the damped highs).
+            const std::size_t longer = static_cast<std::size_t>(2.0 * kFs), frame = static_cast<std::size_t>(0.1 * kFs);
+            std::vector<float> z(longer);
+            const auto t60 = [&](float damping, double hz, double t1, double t2) {
+                pluck(z.data(), static_cast<int>(longer), 220.0f, 1.5f, damping, 0.0f, 0, 0.3f);
+                const double a = probe::dbFromLin(probe::toneAmplitudeHann(z, hz, kFs, static_cast<std::size_t>(t1 * kFs), frame));
+                const double b = probe::dbFromLin(probe::toneAmplitudeHann(z, hz, kFs, static_cast<std::size_t>(t2 * kFs), frame));
+                return 60.0 * (t2 - t1) / (a - b);
+            };
+            const double plain = t60(0.0f, 220.0, 0.2, 1.2), low = t60(0.5f, 220.0, 0.2, 0.6), high = t60(0.5f, 1760.0, 0.2, 0.6);
+            std::printf("waveguide T60 at 220 Hz, decay 1.5 s: %.3f s (damping 0); damping 0.5: the fundamental %.3f s, the 8th "
+                        "partial %.3f s\n", plain, low, high);
+            P.near("waveguide.t60_s", plain, 1.5, 0.075);
+            P.le("waveguide.damping_highs_shorter", high / low, 0.85);
+            // A tube: odd harmonics.
+            play(220.0f, 3.0f, 0.2f, 0.0f, 1, 0.3f);
+            const double h1 = probe::toneAmplitudeHann(y, 220.0, kFs, from, count);
+            const double h2 = probe::dbFromLin(probe::toneAmplitudeHann(y, 440.0, kFs, from, count) / h1);
+            const double h3 = probe::dbFromLin(probe::toneAmplitudeHann(y, 660.0, kFs, from, count) / h1);
+            std::printf("waveguide's tube at 220 Hz: 2nd harmonic %.1f dB, 3rd %.1f dB\n", h2, h3);
+            P.le("waveguide.tube_no_2nd_db", h2, -40.0);
+            P.ge("waveguide.tube_3rd_db", h3, -20.0);
+            // Where it is plucked: the middle has a node of the 2nd harmonic.
+            const auto second = [&](float position) {
+                play(220.0f, 3.0f, 0.0f, 0.0f, 0, position);
+                return probe::dbFromLin(probe::toneAmplitudeHann(y, 440.0, kFs, from, count)
+                                        / probe::toneAmplitudeHann(y, 220.0, kFs, from, count));
+            };
+            const double middle = second(0.5f), bridge = second(0.13f);
+            std::printf("waveguide's 2nd harmonic: %.1f dB plucked in the middle, %.1f dB near the bridge\n", middle, bridge);
+            P.ge("waveguide.middle_takes_2nd_db", bridge - middle, 15.0);
+            P.eq("waveguide.finite", finite ? 1 : 0, 1);
+            P.le("waveguide.pluck_peak", loudest, 1.0);
+        }
+        if (glide != nullptr)
+        {
+            std::vector<float> g(static_cast<std::size_t>(kFs));
+            glide(g.data(), N, 220.0f, 330.0f);
+            const double c = cents(toneHz(g, 330.0, 0.03, static_cast<std::size_t>(0.6 * kFs), static_cast<std::size_t>(0.4 * kFs)), 330.0);
+            std::printf("waveguide's glide to 330 Hz: %+.3f cents\n", c);
+            P.le("waveguide.glide_cents", std::fabs(c), 1.0);
+            P.eq("waveguide.glide_finite", probe::allFinite(g) ? 1 : 0, 1);
+        }
+        if (resonate != nullptr)
+        {
+            const probe::Stereo noise = probe::noise(n, 0.1);
+            std::vector<float> in = noise.l, out(n);
+            resonate(in.data(), out.data(), N, 220.0f, 0.5f);
+            const std::vector<pg::measure::Peak> peaks = pg::measure::spectrumPeaks(out, kFs, 1);
+            const double strongest = peaks.empty() ? 0.0 : peaks.front().hz;
+            const double multiple = strongest / 220.0;
+            std::printf("waveguide's resonance to noise: strongest at %.1f Hz\n", strongest);
+            P.le("waveguide.resonates_on_pitch", std::fabs(multiple - std::round(multiple)) / std::max(1.0, std::round(multiple)), 0.01);
+            std::vector<float> dc(n, 0.5f);
+            resonate(dc.data(), out.data(), N, 220.0f, 0.5f);
+            double tail = 0.0;
+            for (std::size_t i = n / 2; i < n; ++i)
+                tail += static_cast<double>(out[i]);
+            tail /= static_cast<double>(n - n / 2);
+            // Without the blocker it would build to 0.5 / (1 - gain), 8 here; with it, what the step's edge left dies
+            // away with the loop's decay.
+            std::printf("waveguide with a DC input of 0.5 (decay 0.5 s): %.5f after half a second\n", tail);
+            P.le("waveguide.dc_blocked", std::fabs(tail), 0.01);
+            P.eq("waveguide.resonator_finite", probe::allFinite(out) ? 1 : 0, 1);
+        }
+        if (unallocated != nullptr)
+            P.eq("waveguide.safe_unallocated", unallocated() == 0.0f ? 1 : 0, 1);
     }
 
     // ---- OSC, NOISE ----------------------------------------------------------------------------------------------------
