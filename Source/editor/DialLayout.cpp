@@ -1,6 +1,8 @@
 // Source/editor/DialLayout.cpp: the dials' and displays' places (DialLayout.h).
 #include "editor/DialLayout.h"
 
+#include "editor/Looks.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -94,7 +96,11 @@ namespace playground::ui
                     case DisplayKind::meter:  return { d.audio() ? kMeterW : kMeterMonoW, kDialH, false, false };
                     case DisplayKind::vu:     return { kVuW, kDialH, false, false };
                     case DisplayKind::led:    return { kLedW, kDialH, false, false };
-                    case DisplayKind::number: return { kNumberW, kDialH, false, false };
+                    case DisplayKind::number:   // a unit= or decimals= readout at full size (looks::number's box, the
+                    {                           // cell less 4, keeps 3 each side), as a .gui file's (GuiLayout)
+                        const float rw = d.formatted() && m.readout ? m.readout(looks::readoutSample(d.unit, d.decimals)) + 10.0f : 0.0f;
+                        return { std::max(kNumberW, std::ceil(rw)), kDialH, false, false };
+                    }
                     case DisplayKind::scope:
                     case DisplayKind::spectrum: return { kScopeW, kDialH, false, false };   // (a .gui file's)
                 }

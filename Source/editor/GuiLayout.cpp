@@ -25,18 +25,6 @@ namespace playground::ui
             return out;
         }
 
-        // A formatted number display's widest usual readout, as formatValue writes it (DisplayItem): a sign and four
-        // digits, its decimals, its unit (Hz's as kHz).
-        std::string numberSample(const PanelDisplay& d)
-        {
-            std::string s = "-0000";
-            if (d.decimals > 0)
-                s += "." + std::string(static_cast<std::size_t>(std::min<int>(d.decimals, 4)), '0');
-            if (!d.unit.empty())
-                s += " " + (d.unit == "Hz" ? std::string("kHz") : d.unit);
-            return s;
-        }
-
         bool isContainer(GuiKind k)
         {
             return k == GuiKind::row || k == GuiKind::column || k == GuiKind::grid || k == GuiKind::section
@@ -287,7 +275,7 @@ namespace playground::ui
                             case DisplayKind::led:      return { std::max(40.0f, lw), 80.0f };
                             case DisplayKind::number:   // wide enough for its readout at full size (looks::number's
                             {                           // box, the cell less 4, keeps 3 each side)
-                                const float rw = d.formatted() ? measure_(numberSample(d), looks::kReadout) + 10.0f : 0.0f;
+                                const float rw = d.formatted() ? measure_(looks::readoutSample(d.unit, d.decimals), looks::kReadout) + 10.0f : 0.0f;
                                 return { std::max({ 76.0f, lw, rw }), 80.0f };
                             }
                             case DisplayKind::scope:    return { std::max(150.0f, lw), 80.0f };

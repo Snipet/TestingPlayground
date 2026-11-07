@@ -19,7 +19,8 @@
 //   #pragma panel meter out "OUTPUT"                       LED bars
 //   #pragma panel vu out                                   an analog VU meter, a needle
 //   #pragma panel led gate "GATE"                          a light
-//   #pragma panel number cutoffHz "HZ"                     a readout
+//   #pragma panel number cutoffHz "HZ"                     a readout; a field's unit=, decimals= (0 to 4) and scale= as
+//                                                          a knob's value reads (number speed unit=rpm decimals=0)
 //   #pragma panel scope out                                an oscilloscope
 // Their source: `in` or `out`, the plugin's audio (an effect's input, the output; left and right, in dBFS), or a
 // float, int or bool field that the program writes, shown between a range given after it (default 0 1: #pragma panel
@@ -29,6 +30,8 @@
 // number. A section names a display by its name, the source's unless
 // `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
 // "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
+//
+// A key=value is written with no space around its = (unit="rpm", unit=Hz, decimals=1).
 //
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the

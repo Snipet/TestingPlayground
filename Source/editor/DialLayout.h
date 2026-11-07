@@ -61,6 +61,8 @@ namespace playground::ui
         std::function<float(const std::string&)> title;       // a section's title's width
         std::function<float(const std::string&)> caption;     // a display's label's width (kCaption)
         std::function<float(const std::string&)> micro;       // an option's (kMicro), on buttons
+        std::function<float(const std::string&)> readout;     // a number's readout (looks::kReadout): a formatted one's
+                                                              // cell is as wide as looks::readoutSample needs
     };
 
     // The dials of `controls` (its used slots) and the displays of `spec` in a column `width` wide from `x`, ending at

@@ -3342,6 +3342,9 @@ namespace playground::ui
         measure.micro = [](const std::string& text) {
             return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(text)).c_str(), funkgui::type::kMicro);
         };
+        measure.readout = [](const std::string& text) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), looks::kReadout);
+        };
         // A .gui file's interface (GuiLayout.h) in place of the dials: under the editor as tall as it is (up to the
         // room the editor leaves, scrolling past that), or across the whole column in the PANEL view.
         const bool gui = !panelSpec_.gui.empty();
