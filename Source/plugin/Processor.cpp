@@ -1917,7 +1917,9 @@ namespace playground
         projectDials_ = v.dials;
         for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
             circuits::restore(a.key, a.text);
-        const uint64_t id = compiler_.request(d.files, panelEdits());
+        // The version as it was saved: compiled (its netlists' answers in, its program from its init), never a panel's
+        // edit (Compiler.h).
+        const uint64_t id = compiler_.request(d.files, false);
         dialsRequest_ = id;
         return true;
     }
