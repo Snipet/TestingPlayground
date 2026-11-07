@@ -27,12 +27,16 @@ file(GLOB_RECURSE FP_PROBE_SOURCES CONFIGURE_DEPENDS ${FP_PROBE_ROOT}/*.cpp)
 # Tools/probes/installer/ is the installer's (cmake/Installer.cmake: one executable, no product's): never a product's.
 list(FILTER FP_PROBE_SOURCES EXCLUDE REGEX "/Tools/probes/installer/")
 # Windows: the probes that run the MCP server and the sandbox's helper as POSIX child processes are left out, and,
-# with FP_WITH_GPU off, the one that needs FunkGui's GPU layer (its shaders and GPU pictures). FP_PROBES_SKIPPED names
-# them (the summary prints it).
+# with FP_WITH_GPU off, the one that needs FunkGui's GPU layer (its shaders and GPU pictures); plugin.linux (Linux's own
+# folders, keyring, MCP folder, racing wheel and install script) runs on Linux alone. FP_PROBES_SKIPPED names them (the
+# summary prints it).
 set(FP_PROBES_SKIPPED "")
 set(_fp_skip "")
 if(FP_WINDOWS)
   list(APPEND _fp_skip plugin/mcp plugin/sandbox)
+endif()
+if(NOT FP_LINUX)
+  list(APPEND _fp_skip plugin/linux)
 endif()
 if(NOT FP_WITH_GPU)
   list(APPEND _fp_skip gui/shaders)
