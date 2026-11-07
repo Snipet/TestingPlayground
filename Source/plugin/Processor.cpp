@@ -980,7 +980,10 @@ namespace playground
                 panel_ = s.panel;
                 program_ = s.program;
                 previous_ = running_;
+                previousAssets_ = runningAssets_;
                 running_ = s.restored;
+                runningAssets_ = s.assets;
+                runningSamples_ = s.samples;
             }
             learn_.bind(s.controls);                             // MIDI learn's mappings follow the dials by name
             if (run)
@@ -1019,13 +1022,21 @@ namespace playground
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
-            // compare's previous_run: what a run replaced. A state's program (a host's recall, a project reopened) is
-            // no run's: nothing played before it, though Init played until then.
+            // compare's previous_run: what a run replaced (its files, or the samples it read). A state's program (a
+            // host's recall, a project reopened) is no run's: nothing played before it, though Init played until then.
             if (loaded)
+            {
                 previous_.clear();
-            else if (!edit && !running_.empty() && !cir::sameProgram(running_, s.sources))
+                previousAssets_ = nullptr;
+            }
+            else if (!edit && changesProgram(s))
+            {
                 previous_ = running_;
+                previousAssets_ = runningAssets_;
+            }
             running_ = s.sources;
+            runningAssets_ = s.assets;
+            runningSamples_ = s.samples;
         }
         learn_.bind(s.controls);
         if (run)
@@ -2210,7 +2221,7 @@ namespace playground
         std::vector<midilearn::Mapping> left = learn_.mappings();
         // Its samples (none: none), decoded before it compiles with them (ProcessorAssets.cpp).
         std::vector<std::string> refused;
-        const Assets samples = assetsOfVersion(p, v, refused);
+        const Assets samples = assetsOfVersion(p, v, assetsNow(), refused);
         replaceAssets(samples, Journal::Who::user, "");
         if (!refused.empty())
             journal_.note(Journal::Who::user, "left out of the version's samples: " + refused.front()
@@ -2585,13 +2596,36 @@ namespace playground
         return running_;
     }
 
-    Sources Processor::chatPrevious() const
+    Sources Processor::chatPlaying(Assets& samples) const
+    {
+        const CompileStatus s = compiler_.status();
+        if (s.ok)
+        {
+            samples = s.assets;
+            return s.sources;                                    // as chatRunning
+        }
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        samples = runningAssets_;
+        return running_;
+    }
+
+    bool Processor::changesProgram(const CompileStatus& s) const
+    {
+        return !running_.empty() && (!cir::sameProgram(running_, s.sources) || runningSamples_ != s.samples);
+    }
+
+    Sources Processor::chatPrevious(Assets& samples) const
     {
         const CompileStatus s = compiler_.status();
         const std::lock_guard<std::mutex> lock(programMutex_);
-        if (s.ok && !(s.panelOnly && s.program == program_) && !running_.empty() && !cir::sameProgram(running_, s.sources))
-            return running_;                                     // poll() has not taken the newest yet: it comes after this
-                                                                 // (a panel's edit of a program it has not: its compile)
+        // poll() has not taken the newest yet: it comes after this (a panel's edit of a program it has not: its
+        // compile).
+        if (s.ok && !(s.panelOnly && s.program == program_) && changesProgram(s))
+        {
+            samples = runningAssets_;
+            return running_;
+        }
+        samples = previousAssets_;
         return previous_;
     }
 

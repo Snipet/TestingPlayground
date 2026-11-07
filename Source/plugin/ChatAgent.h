@@ -135,6 +135,12 @@
 #include <thread>
 #include <vector>
 
+namespace playground::projectstore
+{
+    struct Project;
+    struct Version;
+}
+
 namespace playground
 {
     // What Claude's tools act on. Every call may come from the agent's worker thread.
@@ -155,10 +161,30 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
-        // What played before the last run that changed what plays (a netlist's drawing aside): compare's previous_run.
-        // None until a run has changed the program since the plugin opened or loaded a state (it is not kept with the
-        // session, and a state's program is no run's).
-        virtual Sources chatPrevious() const { return {}; }
+        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets), from one
+        // look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
+        virtual Sources chatPlaying(Assets& samples) const
+        {
+            samples = chatAssets();
+            return chatRunning();
+        }
+        // What played before the last run that changed what plays (its files, a netlist's drawing aside, or the samples
+        // its lines read), and in `samples` the samples it compiled with: compare's previous_run. None until a run has
+        // changed the program since the plugin opened or loaded a state (it is not kept with the session, and a state's
+        // program is no run's).
+        virtual Sources chatPrevious(Assets& samples) const
+        {
+            samples = nullptr;
+            return {};
+        }
+        // A project version's samples, decoded (those the samples now hold of the same file shared, not decoded again;
+        // a file it names that cannot be one left out, in words in `refused`): what a render of that version takes.
+        virtual Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                          std::vector<std::string>& refused) const
+        {
+            (void)p, (void)v, (void)refused;
+            return chatAssets();
+        }
         virtual Controls chatDials() const = 0;                     // the running program's
         virtual float chatDialValue(int slot) const = 0;            // plain value
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread

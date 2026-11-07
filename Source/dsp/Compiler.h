@@ -193,6 +193,9 @@ namespace playground
         // The samples `program`'s #pragma sample lines read (Patch.h, "Samples"; Patch::Recipe::samples): each one's file
         // and the hash of the one it read ("" for none of that name).
         std::vector<std::pair<std::string, std::string>> samples;
+        // The samples `program` compiled with (Patch::Recipe::assets; null: none), which a render of it takes: the
+        // processor's set may have changed since.
+        Assets      assets;
         // How the dials of `program` came across from the program before it (above, "The dials' carry"), when it
         // compiled; none (no slots) without a carrier, or for a compileNow told not to.
         DialCarry   carry;

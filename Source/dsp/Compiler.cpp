@@ -252,6 +252,7 @@ namespace playground
             s.circuitDials = b->recipe.bindings;
             s.probes = b->recipe.probes;
             s.samples = b->recipe.samples;
+            s.assets = b->recipe.assets;
             b->patch = std::move(r.patch);
         }
         return b;
@@ -734,6 +735,7 @@ namespace playground
                 s.circuitDials = b->status.circuitDials;
                 s.probes = b->status.probes;
                 s.samples = b->status.samples;
+                s.assets = b->status.assets;
                 lock.unlock();
                 played(std::move(b->recipe), std::move(b->jobs), landed, false);
                 tookProgram(id, fileOf(b->status), b->keepIr, b->ir);
@@ -767,6 +769,7 @@ namespace playground
             s.circuitDials = recipe_.bindings;
             s.probes = recipe_.probes;
             s.samples = recipe_.samples;
+            s.assets = recipe_.assets;
         }
         s.revision = status_.revision + 1;
         status_ = std::move(s);
@@ -1104,6 +1107,7 @@ namespace playground
             out.circuitDials = std::move(s.circuitDials);
             out.probes = std::move(s.probes);
             out.samples = std::move(s.samples);
+            out.assets = std::move(s.assets);
         }
         out.notes += chosen;
         out.refined = true;

@@ -179,9 +179,11 @@ namespace playground
         return tree;
     }
 
+    // Each file in by its name: a second of a name (a damaged or hand-edited state) takes the first's place, as
+    // make()'s caps counted it (assets::with), so a set never holds two of one name.
     Assets Processor::assetsOfState(const juce::ValueTree& state, std::vector<std::string>& refused)
     {
-        auto set = std::make_shared<assets::Set>();
+        Assets set = std::make_shared<const assets::Set>();
         const juce::ValueTree tree = state.getChildWithName(kAssetsTag);
         for (int k = 0; tree.isValid() && k < tree.getNumChildren(); ++k)
             if (const juce::ValueTree t = tree.getChild(k); t.hasType(kAssetTag))
@@ -191,8 +193,8 @@ namespace playground
                 std::string why;
                 if (!bytes)
                     refused.push_back(name + " is damaged in the saved state");
-                else if (const std::shared_ptr<const assets::Asset> a = assetfiles::make(set.get(), name, *bytes, why))
-                    set->items.push_back(a);
+                else if (std::shared_ptr<const assets::Asset> a = assetfiles::make(set.get(), name, *bytes, why))
+                    set = assets::with(set, std::move(a));
                 else
                     refused.push_back(why);
             }
@@ -200,20 +202,36 @@ namespace playground
     }
 
     Assets Processor::assetsOfVersion(const projectstore::Project& p, const projectstore::Version& v,
-                                      std::vector<std::string>& refused)
+                                      const Assets& reuse, std::vector<std::string>& refused)
     {
-        auto set = std::make_shared<assets::Set>();
+        Assets set = std::make_shared<const assets::Set>();
         for (const projectstore::SampleRef& r : v.samples)
         {
             const projectstore::SampleFile* f = p.sample(r.hash);
+            std::shared_ptr<const assets::Asset> same;   // the file `reuse` holds already: its sound, not decoded again
+            if (reuse != nullptr && f != nullptr)
+                for (const std::shared_ptr<const assets::Asset>& a : reuse->items)
+                    if (a->hash() == r.hash && a->bytes() == f->bytes)
+                    {
+                        same = a->name() == r.name ? a : std::make_shared<const assets::Asset>(r.name, *a);
+                        break;
+                    }
             std::string why;
-            if (f == nullptr)
+            if (same != nullptr && assets::refusal(set.get(), r.name, same->bytes().size()).empty())
+                set = assets::with(set, std::move(same));
+            else if (f == nullptr)
                 refused.push_back("\"" + p.name + "\" keeps no file for its sample " + r.name);
-            else if (const std::shared_ptr<const assets::Asset> a = assetfiles::make(set.get(), r.name, f->bytes, why))
-                set->items.push_back(a);
+            else if (std::shared_ptr<const assets::Asset> a = assetfiles::make(set.get(), r.name, f->bytes, why))
+                set = assets::with(set, std::move(a));
             else
                 refused.push_back(why);
         }
         return set;
+    }
+
+    Assets Processor::chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                         std::vector<std::string>& refused) const
+    {
+        return assetsOfVersion(p, v, assetsNow(), refused);
     }
 }

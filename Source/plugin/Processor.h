@@ -352,7 +352,8 @@ namespace playground
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
-        Sources chatPrevious() const override;
+        Sources chatPlaying(Assets& samples) const override;
+        Sources chatPrevious(Assets& samples) const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
         void chatSetDial(int slot, float plain) override;
@@ -376,6 +377,8 @@ namespace playground
         bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why) override;
         bool chatRemoveAsset(const std::string& name, std::string& why) override;
         bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why) override;
+        Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                  std::vector<std::string>& refused) const override;
 
         // The samples (above; dsp/Assets.h): the set as it is, under assetsMutex_ (any thread reads it), replaced whole
         // on the message thread and Claude's worker (the Compiler's with it, journalled as `who`'s: `words`).
@@ -390,18 +393,25 @@ namespace playground
         // then: false, with why.
         bool putAsset(const std::shared_ptr<const assets::Asset>& asset, Journal::Who who, std::string& why);
         bool dropAsset(const std::string& name, Journal::Who who, std::string& why);
-        // What the session keeps of them (<ASSETS>), and the set a state's or a version's make (each file decoded; one
-        // that cannot be is left out, `refused` saying why).
+        // What the session keeps of them (<ASSETS>), and the set a state's or a version's make (each file decoded, but
+        // one `reuse` holds already, which it shares; one that cannot be is left out, `refused` saying why; a second of
+        // a name in place of the first).
         juce::ValueTree assetsState() const;
         static Assets assetsOfState(const juce::ValueTree& state, std::vector<std::string>& refused);
         static Assets assetsOfVersion(const projectstore::Project& p, const projectstore::Version& v,
-                                      std::vector<std::string>& refused);
+                                      const Assets& reuse, std::vector<std::string>& refused);
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
         Sources running_;
         Sources previous_;                                       // what played before running_ (chatPrevious): a run's
+        Assets runningAssets_, previousAssets_;                  // the samples each compiled with (CompileStatus::
+                                                                 // assets)
+        std::vector<std::pair<std::string, std::string>> runningSamples_;   // those running_'s lines read
+        // Whether `s`, a compile's status, plays another program than running_: its files (a netlist's drawing aside),
+        // or the samples its lines read (programMutex_).
+        bool changesProgram(const CompileStatus& s) const;
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};

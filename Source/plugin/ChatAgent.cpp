@@ -3809,7 +3809,8 @@ namespace playground
         const double seconds = isNumber(sec) ? static_cast<double>(sec) : -1.0;
         if (!(seconds > 0.0) || seconds > kMaxAt)
             return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
-        const Sources files = host_.chatRunning();
+        Assets samples;                           // what it compiled with, not the plugin's samples as they are now
+        const Sources files = host_.chatPlaying(samples);
         if (files.empty())
             return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
         measure::ViewRequest vr;
@@ -3822,6 +3823,7 @@ namespace playground
             scenario::resolve(vr.render, host_, why);
         if (!why.empty())
             return "at: " + why;
+        vr.render.assets = samples;
         defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
         measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
