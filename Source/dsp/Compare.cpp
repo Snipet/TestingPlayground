@@ -1,6 +1,8 @@
 // Source/dsp/Compare.cpp: see Compare.h.
 #include "dsp/Compare.h"
 
+#include "dsp/Export.h"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -155,7 +157,13 @@ namespace playground::measure
                     qa.want.insert(m.name);
                     qb.want.insert(m.name);
                 }
-            const Result ma = sa.measure(qa), mb = sb.measure(qb);
+            const Result ma = sa.measure(qa);
+            const Result mb = ma.cancelled ? Result{} : sb.measure(qb);
+            if (ma.cancelled || mb.cancelled)                // a cancel (CompareOptions::cancel): nothing compared
+            {
+                c.error = (ma.cancelled ? sa.cancelWords() : sb.cancelWords()) + " Nothing was compared.";
+                return;
+            }
             c.metricsMeasured = true;
             for (const MetricInfo& m : metrics())
             {
@@ -198,7 +206,7 @@ namespace playground::measure
 
         // `length` samples (0: as its request plays): a recording's, when the other side is one. An effect's input is the
         // request's, else `input`.
-        Rendered renderSide(const CompareSide& side, double rate, std::size_t length, ViewInput input)
+        Rendered renderSide(const CompareSide& side, double rate, std::size_t length, ViewInput input, const Cancel& cancel)
         {
             Rendered out;
             if (side.recordedL != nullptr)
@@ -217,6 +225,7 @@ namespace playground::measure
                 out.errors = out.session->errors();
                 return out;
             }
+            out.session->setCancel(cancel);
             ViewRequest vr;
             vr.render = side.request;
             vr.render.rate = rate;
@@ -301,13 +310,27 @@ namespace playground::measure
         // An effect's input unless the request names one: noise, or at two rates the sweep (20 Hz to 20 kHz at -12
         // dBFS, the same at every rate; white noise's level per hertz falls as the rate rises).
         const ViewInput input = c.twoRates() ? ViewInput::sweep : ViewInput::noise;
-        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input), rb = renderSide(sb, c.rateB, lengthAt(c.rateB), input);
+        // The cancel, its time limit the call's over both sides (Cancel::started), each side's renders named its own.
+        const auto sideCancel = [k = options.cancel.started()](const char* who) {
+            Cancel s = k;
+            s.who = who;
+            return s;
+        };
+        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input, sideCancel("A"));
+        Rendered rb = ra.sound.cancelled ? Rendered{} : renderSide(sb, c.rateB, lengthAt(c.rateB), input, sideCancel("B"));
+        if (ra.sound.cancelled || rb.sound.cancelled)
+        {
+            c.error = (ra.sound.cancelled ? ra.session->cancelWords() : rb.session->cancelWords()) + " Nothing was compared.";
+            return c;
+        }
         if (!ra.errors.empty() || !rb.errors.empty())
         {
             c.error = (!ra.errors.empty() ? "A does not compile:\n" + ra.errors : std::string())
                     + (!rb.errors.empty() ? "B does not compile:\n" + rb.errors : std::string());
             return c;
         }
+        c.hashA = renderHash(ra.sound.l, ra.sound.r);
+        c.hashB = renderHash(rb.sound.l, rb.sound.r);
         if (c.twoRates())
         {
             acrossRates(c, ra, rb, sa, sb, options);

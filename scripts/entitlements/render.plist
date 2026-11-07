@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  scripts/entitlements/render.plist: the hardened runtime's entitlements of the headless renderer (<Name>Render, in
+  each product's extension beside its MCP server), which scripts/package.sh signs it with. The server and the GUI
+  sandbox's helper beside it compile nothing and are signed without.
+
+  allow-unsigned-executable-memory: the renderer compiles the program with FMinus's LLVM JIT, as the Standalone apps do
+  (effect.plist and instrument.plist say why allow-jit alone is not enough).
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

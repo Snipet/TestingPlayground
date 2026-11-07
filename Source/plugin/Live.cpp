@@ -402,9 +402,8 @@ namespace playground
     {
         return definition(
             "get_status",
-            "Read the plugin's state now: files, what plays, the last compile, dials, CPU load, the output guard's alerts, "
-            "and a token: since set to one gives only what changed after it (dials, code as a diff, runs, presets, bypass, "
-            "the host).\n\n"
+            "Read the plugin's state now: files, what plays, the last compile, dials, CPU load, alerts, and a token: since "
+            "set to one gives only what changed after it.\n\n"
             "files: none (the default without since), changed (with since: each file as a diff against its text at "
             "that token), all (each whole). A token of another instance, or of before a reload, gets the whole "
             "state. Your other MCP results start with a line when something changed.",

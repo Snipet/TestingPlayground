@@ -5,13 +5,15 @@
 //
 //   lexLine(), lex()   FMinus's tokens, as its scanner (Lexer.l) reads them: identifiers, its keywords (C's that it
 //                      has: switch, case, default and enum among them; and module, param, parallel, this, restrict,
-//                      sizeof), its type words (float, int, bool, void, float2, float4, float8, poly), numbers (C's:
-//                      1.5f, .5, 2e3, 0x1F, 0x1p-3f), operators (longest first: <<= before <<, the bitwise & | ^ ~
-//                      << >> and their assignments), punctuation, // and /* */ comments (a block comment spans lines:
-//                      lexLine carries the state) and directives (a line whose first non-blank character is #:
-//                      #include "file", #pragma, the conditionals, #define and #undef, one token each). A word after `::` is an identifier, as C23 reads a
-//                      keyword in an attribute (fminus::default). FMinus has no strings: a quote outside a directive,
-//                      and any other character FMinus does not read, is `unknown`.
+//                      sizeof), its type words (float, double, int, bool, void, float2, float4, float8, poly), numbers
+//                      (C's: 1.5f, .5, 2e3, 0x1F, 0x1p-3f), C's string literals ("dB", with their escapes: an
+//                      attribute's argument, the one place FMinus reads one; a line that ends inside one ends it),
+//                      operators (longest first: <<= before <<, the bitwise & | ^ ~ << >> and their assignments),
+//                      punctuation, // and /* */ comments (a block comment spans lines: lexLine carries the state) and
+//                      directives (a line whose first non-blank character is #: #include "file", #pragma, the
+//                      conditionals, #define and #undef, one token each). A word after `::` is an identifier, as C23
+//                      reads a keyword in an attribute (fminus::default). Any other character FMinus does not read is
+//                      `unknown`.
 //   lexCirLine(),      a circuit netlist's tokens (a .cir file, SPICE's: fminus/Circuits.h), on the same kinds: a
 //   lexCir()           comment (a line whose first non-blank character is *, and ; to the line's end), a directive
 //                      (.title, .pot, ...: the word), a keyword (an element's name, the line's first word: R1, Ptone,
@@ -35,6 +37,9 @@
 //     symbols          every declaration: modules, their fields, params and methods, functions, their arguments and
 //                      the locals of their bodies, the constants (C's enumerations, their tags and their constants,
 //                      at the top level, in a module or in a block, and the top level's const tables and scalars),
+//                      arrays of one or two dimensions (`float bank[4][256]`: "float[4][256]"), a field's and a
+//                      param's attributes after its name (`float level [[ui::unit("dB")]]`: Symbol::attributes, which
+//                      the GUI sandbox reads as Patch reads FMinus's: PanelSpec.h's FieldLook),
 //                      each with its type, signature, place, the scope it is seen in and its documentation (the
 //                      comment lines over it, else the one after it on its line; a module's member without either: the
 //                      lines of its module's usage header that name it, `filter.lp` or `host->bpm`). An enumeration
@@ -116,7 +121,7 @@ namespace playground::lang
     };
 
     // ---- the lexer --------------------------------------------------------------------------------------------------
-    enum class Tok : uint8_t { identifier, keyword, type, number, op, punct, comment, directive, unknown };
+    enum class Tok : uint8_t { identifier, keyword, type, number, op, punct, comment, directive, unknown, string };
 
     struct Token
     {
@@ -139,6 +144,9 @@ namespace playground::lang
 
     // `#include "name"` on this line: the name and its columns (inside the quotes); false for any other line.
     bool includeOn(std::string_view line, std::string& name, int& from, int& to);
+    // A string literal's characters (a Tok::string's text, its quotes and all), its escapes resolved as C's (\n, \",
+    // \\, octal and hex bytes, \u and \U as UTF-8); what it cannot read is kept as written.
+    std::string stringValue(std::string_view literal);
 
     // ---- conditional compilation (LangConditionals.cpp) ---------------------------------------------------------------
     // FMinus's conditionals, as its scanner reads them (C's: its recipe 31): #if, #ifdef, #ifndef, #elif, #elifdef,
@@ -224,6 +232,16 @@ namespace playground::lang
     };
     const char* kindName(Kind k) noexcept;                   // "module", "method", ... (completion's detail, tests)
 
+    // An attribute of a field or a param, after its name (`[[ui::unit("dB")]]`), as FMinus passes one to a host
+    // (Program::Attribute): its name with its namespace, and its arguments as text, a string's characters (escapes
+    // resolved) or a number's spelling ("-60").
+    struct Attribute
+    {
+        std::string name;
+        std::vector<std::string> args;
+        friend bool operator==(const Attribute&, const Attribute&) = default;
+    };
+
     struct Symbol
     {
         Kind kind = Kind::local;
@@ -242,6 +260,8 @@ namespace playground::lang
                                                  // with its list (not C23's tag ahead of it, `enum Wave : int;`)
         std::string enumeration;                 // an enumeration constant's tag ("Wave"; "" for an anonymous one)
         std::optional<int64_t> value;            // an enumeration constant's value, when it folds
+        std::vector<Attribute> attributes;       // a field's or a param's, in order (none ignored: FMinus drops a
+                                                 // name without a namespace that is none of C23's, with a warning)
     };
 
     struct Completion

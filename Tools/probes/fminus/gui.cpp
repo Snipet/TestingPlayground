@@ -29,6 +29,10 @@
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
 //             once for every control that names it; a mistake in them is a note on its line and column
+//   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
+//             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
+//             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
+//             unit too long for a display cut where a character starts, with a note on its line
 #include "Probe.h"
 
 #include "fminus/GuiSpec.h"
@@ -500,6 +504,51 @@ panel background=#1d1b19 accent=orange {
         // Labelled as said, else by Shared's field's own name (not "SHARED->LEVEL"), else by `as`'s name.
         P.eq("shared.pragma_labels", pd.size() == 3 && pd[0].label == "N" && pd[1].label == "level" && pd[1].name == "shared->level"
                                          && pd[2].label.empty() && pd[2].name == "lit" ? 1 : 0, 1);
+    }
+
+    // ---- ELEMENTS: a double, an array's element, a field's attributes as a display's defaults ---------------------------
+    {
+        const std::string body = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                 "    double temp [[ui::label(\"TEMP\")]] [[fminus::range(80, 100)]];\n"
+                                 "    float bands [[ui::unit(\"dB\")]][4];\n"
+                                 "    float gr [[ui::unit(\"dB\")]] [[ui::decimals(2)]];\n";
+        const std::string program = kInstrument
+            ? "module Voice\n{\n" + body + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + body + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled c = compile({ { pg::kProgramName, program },
+                                     { "panel.gui", "meter temp\nnumber bands[1]\nnumber gr unit=\"\" decimals=0\n"
+                                                    "number gr label=\"MINE\"\nknob cutoff live=bands[2]\n" } });
+        std::printf("elements: %s", c.notes.c_str());
+        const std::vector<pg::PanelDisplay>& d = c.panel.displays;
+        P.eq("elements.compiles", c.ok ? 1 : 0, 1);
+        P.eq("elements.count", static_cast<int64_t>(d.size()), 5);
+        if (d.size() == 5)
+        {
+            P.eq("elements.double_look", d[0].source == "temp" && d[0].label == "TEMP" && d[0].lo == 80.0f && d[0].hi == 100.0f
+                                             && !d[0].integer && d[0].tap == 0 ? 1 : 0, 1);
+            P.eq("elements.element_unit", d[1].source == "bands[1]" && d[1].unit == "dB" && d[1].tap == 1 ? 1 : 0, 1);
+            P.eq("elements.own_beats_look", d[2].unit.empty() && d[2].decimals == 0 ? 1 : 0, 1);
+            P.eq("elements.number_look", d[3].label == "MINE" && d[3].unit == "dB" && d[3].decimals == 2 ? 1 : 0, 1);
+            P.eq("elements.live_element", d[4].hidden && d[4].source == "bands[2]" ? 1 : 0, 1);
+        }
+        P.eq("elements.no_note", !has(c.notes, "panel.gui:") ? 1 : 0, 1);
+
+        // A field's label and unit too long for a display: cut where a character starts (the last two-byte one left
+        // out whole), with a note on the display's line.
+        const std::string longLabel = "A\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89";   // 15 bytes
+        const std::string longBody = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                     "    float bend [[ui::label(\"" + longLabel + "\")]] [[ui::unit(\"semitones\")]];\n";
+        const std::string longProgram = kInstrument
+            ? "module Voice\n{\n" + longBody + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + longBody + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled cut = compile({ { pg::kProgramName, longProgram }, { "panel.gui", "knob cutoff\nnumber bend\n" } });
+        std::printf("elements cut: %s", cut.notes.c_str());
+        P.eq("elements.long_look_cut", cut.panel.displays.size() == 1 && cut.panel.displays[0].label == longLabel.substr(0, 13)
+                                           && cut.panel.displays[0].unit == "semiton" ? 1 : 0, 1);
+        P.eq("elements.long_look_notes", has(cut.notes, "panel.gui:2:") && has(cut.notes, "(bend's ui::label) is cut to 14 characters")
+                                             && has(cut.notes, "the unit \"semitones\" (bend's ui::unit) is cut to 7 characters") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

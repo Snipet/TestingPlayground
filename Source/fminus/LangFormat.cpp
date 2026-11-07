@@ -776,7 +776,7 @@ namespace playground::lang
                     enumHead_ = EnumHead::none;
                 if (attrClose)
                     prevOperand_ = false;
-                else if (t.kind == Tok::identifier || t.kind == Tok::number)
+                else if (t.kind == Tok::identifier || t.kind == Tok::number || t.kind == Tok::string)
                     prevOperand_ = true;
                 else if (t.kind == Tok::keyword)
                     prevOperand_ = x == "this" || x == "true" || x == "false";

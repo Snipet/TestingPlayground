@@ -228,6 +228,39 @@ namespace playground
         // The compiler's: `program`, offered revertible, plays on, and the Engine never goes back from it now. False
         // when it went back from it already.
         bool settle(uint64_t program) noexcept;
+
+        // run_function's "playing" (the chat's tool; Patch.h, "one function called by name"): a copy of the state that
+        // plays, made by the audio thread at the end of a block (between calls, so never torn), into the asker's
+        // buffers: the instance an effect plays, or an instrument's newest sounding voice's (the taps' rule), and its
+        // program's Shared and Host, each copied only when its size is the buffer's (the asker sized them from a compile
+        // of its own of the same files: Patch::layout, whose hash the copy carries back to be compared). Ask one at a
+        // time and wait for `done`; when no block comes, take the ask back (cancelSnapshot: true when the audio thread
+        // never claimed it; false when it did, and `done` follows within its block). The audio thread allocates and
+        // locks nothing for it: a relaxed load a block while none waits, then an exchange and at most three memcpys of
+        // kMaxSnapshot bytes in all (the asker refuses a larger state), into buffers the asker has written whole before
+        // it asks (a fresh block's pages would fault on the audio thread's first write). `program` says whose state it
+        // is: the asker compares it with the program whose files it compiled. Never written back: the copy is the
+        // asker's.
+        struct Snapshot
+        {
+            enum class Status : uint8_t { waiting, copied, noProgram, noVoice, otherLayout };
+            void* instance = nullptr;
+            void* shared = nullptr;
+            void* host = nullptr;
+            std::size_t instanceBytes = 0, sharedBytes = 0, hostBytes = 0;
+            Status status = Status::waiting;
+            uint64_t program = 0;                     // the program it is of (Patch::program)
+            uint64_t layout = 0;                      // its Patch::layout().hash
+            int key = -1;                             // an instrument's: the voice's key
+            std::atomic<bool> done{ false };
+        };
+        static constexpr std::size_t kMaxSnapshot = std::size_t{ 8 } << 20;
+        void askSnapshot(Snapshot* s) noexcept { snapshot_.store(s, std::memory_order_release); }
+        bool cancelSnapshot(Snapshot* s) noexcept
+        {
+            Snapshot* expected = s;
+            return snapshot_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+        }
         uint64_t revertible() const noexcept { return revertible_.load(std::memory_order_acquire); }
         void offerFrozen(std::unique_ptr<Patch::Frozen> frozen);   // taken at a block's start if it fits (above)
         void collect();                               // destroys the programs (and copies) the audio thread handed back
@@ -428,6 +461,8 @@ namespace playground
         void takeProbes() noexcept;
         void publishProbes(int n) noexcept;
         void blockDone(float share, int n) noexcept;  // the block's BlockStat, into the ring
+        void serveSnapshot() noexcept;                // run_function's copy, when one is asked (above)
+        std::atomic<Snapshot*> snapshot_{ nullptr };
 
         std::atomic<Patch::Frozen*> frozenPending_{ nullptr };
         std::array<std::atomic<Patch::Frozen*>, 4> frozenRetired_{};

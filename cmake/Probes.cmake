@@ -134,8 +134,10 @@ function(fp_add_probes key)
   # At the top of the build tree (build-dev/<Name>_probes), not in JUCE's artefacts folder.
   set_target_properties(${FP_PROBES} PROPERTIES EXCLUDE_FROM_ALL TRUE RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   add_dependencies(probes ${FP_PROBES})                    # `probes` builds every product's (the presets name it)
-  add_dependencies(${FP_PROBES} ${FP_MCP} ${FP_SANDBOX})  # plugin.mcp and plugin.sandbox run the product's MCP server,
-                                                          # and the sandbox's helper beside it
+  add_dependencies(${FP_PROBES} ${FP_MCP} ${FP_SANDBOX} ${FP_RENDER} ${FP_MCP}_mcpb)
+                                                          # plugin.mcp and plugin.sandbox run the product's MCP server and
+                                                          # the sandbox's helper beside it, plugin.render the renderer
+                                                          # (and looks in the extension)
 
   set(_p ${PRODUCT_ENV_PREFIX})
   foreach(_name IN LISTS FP_PROBE_NAMES)
@@ -151,7 +153,7 @@ function(fp_add_probes key)
     set_tests_properties(${_test} PROPERTIES
         LABELS "probe;${_layer};${key}"
         TIMEOUT ${_timeout}
-        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>")
+        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>")
   endforeach()
 endfunction()
 

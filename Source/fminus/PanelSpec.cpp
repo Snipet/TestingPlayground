@@ -35,6 +35,22 @@ namespace playground
         bool digit(char c) { return c >= '0' && c <= '9'; }
         bool space(char c) { return c == ' ' || c == '\t' || c == '\r'; }
 
+        // Past the indexes after a name at `i` ("[2]", "[1][3]": digits in brackets, nothing between), so that an
+        // array's element is one name (displaySource).
+        std::size_t indexesAfter(std::string_view s, std::size_t i)
+        {
+            while (i + 2 < s.size() && s[i] == '[' && digit(s[i + 1]))
+            {
+                std::size_t k = i + 1;
+                while (k < s.size() && digit(s[k]))
+                    ++k;
+                if (k >= s.size() || s[k] != ']')
+                    break;
+                i = k + 1;
+            }
+            return i;
+        }
+
         // The rest of the line after "#pragma panel", when the line is one; else false.
         bool panelLine(std::string_view line, std::string_view& rest)
         {
@@ -96,6 +112,7 @@ namespace playground
                         if (i + 2 < s.size() && s[i] == '-' && s[i + 1] == '>' && nameStart(s[i + 2]))
                             i += 2;                          // shared->level: a field of Shared, one name
                     }
+                    i = indexesAfter(s, i);                  // bands[2], grid[1][3]: an element, one name
                     out.push_back({ Token::Kind::name, std::string(s.substr(start, i - start)), 0.0 });
                 }
                 else if (digit(c) || ((c == '-' || c == '.') && i + 1 < s.size() && (digit(s[i + 1]) || s[i + 1] == '.')))
@@ -278,7 +295,7 @@ namespace playground
                     if (d.label.size() > kMaxDialLabel)
                     {
                         noteAt(l, "the label \"" + d.label + "\" is cut to " + std::to_string(kMaxDialLabel) + " characters");
-                        d.label.resize(kMaxDialLabel);
+                        d.label = cutText(d.label, kMaxDialLabel);
                     }
                 }
                 else if (!extra)
@@ -297,29 +314,55 @@ namespace playground
             }
             if (!d.audio())
             {
-                const auto f = std::find_if(fields.begin(), fields.end(), [&](const PanelField& x) { return x.name == d.source; });
-                if (f == fields.end())
+                const DisplaySource src = displaySource(fields, d.source);
+                if (src.problem == DisplaySource::Problem::noField)
                 {
                     std::string have;
                     for (const PanelField& x : fields)
-                        if (x.type == "float" || x.type == "int" || x.type == "bool")
+                        if (displayable(x.type))
                             have += (have.empty() ? "" : ", ") + x.name;
-                    noteAt(l, "there is no field " + d.source + (d.source.find("->") != std::string::npos ? "" : " in the main module")
-                                  + " (a display shows in, out or a float, int or bool field of the main module, or of Shared "
-                                    "through its pointer" + (have.empty() ? std::string(")") : ": " + have + ")"));
+                    noteAt(l, "there is no field " + src.why + (d.source.find("->") != std::string::npos ? "" : " in the main module")
+                                  + " (a display shows in, out or a float, double, int or bool field of the main module, or "
+                                    "of Shared through its pointer, or an element of an array of them"
+                                  + (have.empty() ? std::string(")") : ": " + have + ")"));
                     continue;
                 }
-                if (f->type.rfind("param", 0) == 0)
+                if (src.problem == DisplaySource::Problem::dial)
                 {
                     noteAt(l, d.source + " is a dial; a display shows a field the program writes, or in or out");
                     continue;
                 }
-                if (f->type != "float" && f->type != "int" && f->type != "bool")
+                if (src.problem != DisplaySource::Problem::none)
                 {
-                    noteAt(l, d.source + " is a " + f->type + "; a display shows a float, int or bool field");
+                    noteAt(l, src.why + "; a display shows a float, double, int or bool field, or an element of an array of "
+                                        "them");
                     continue;
                 }
-                d.integer = f->type != "float";
+                d.integer = src.type == "int" || src.type == "bool";
+                // What the panel line leaves out, its field's attributes give (FieldLook): a range, a label, a number's
+                // unit and places; what the line gives itself beats them. A text too long for the display is cut, as
+                // the line's own is, with a note (the field keeps it whole: trace shows it so).
+                const FieldLook& look = src.field->look;
+                const auto fit = [&](const std::string& said, std::size_t most, const char* which) {
+                    if (said.size() > most)
+                        noteAt(l, std::string("the ") + which + " \"" + said + "\" (" + d.source + "'s ui::" + which + ") is cut to "
+                                      + std::to_string(most) + " characters");
+                    return cutText(said, most);
+                };
+                if (!ranged && look.ranged)
+                {
+                    d.lo = look.lo;
+                    d.hi = look.hi;
+                }
+                if (!labelled && !look.label.empty())
+                    d.label = fit(look.label, kMaxDialLabel, "label");
+                if (d.kind == DisplayKind::number)
+                {
+                    if (d.unit.empty() && !look.unit.empty())
+                        d.unit = fit(look.unit, sizeof(Control::unit) - 1, "unit");
+                    if (d.decimals < 0)
+                        d.decimals = look.decimals;
+                }
             }
             if (displayOf(d.name) >= 0)
             {
@@ -620,6 +663,137 @@ namespace playground
         return source.substr(arrow == std::string::npos ? 0 : arrow + 2, kMaxDialLabel);
     }
 
+    std::string cutText(const std::string& text, std::size_t max)
+    {
+        if (text.size() <= max)
+            return text;
+        std::size_t cut = max;
+        while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80)   // never inside a UTF-8 sequence
+            --cut;
+        return text.substr(0, cut);
+    }
+
+    void readFieldAttribute(FieldLook& look, std::string_view name, const std::vector<std::string>& args)
+    {
+        const auto number = [&](std::size_t k, double& out) {
+            if (k >= args.size() || args[k].empty())
+                return false;
+            // As C writes one: a float's f suffix left out (not a hex integer's F, a digit: 0x1F).
+            std::string text = args[k];
+            const bool hex = text.find("0x") != std::string::npos || text.find("0X") != std::string::npos;
+            if ((text.back() == 'f' || text.back() == 'F') && (!hex || text.find_first_of("pP") != std::string::npos))
+                text.pop_back();
+            char* end = nullptr;
+            const double v = std::strtod(text.c_str(), &end);
+            if (end == nullptr || *end != '\0' || !std::isfinite(v))
+                return false;
+            out = v;
+            return true;
+        };
+        if (name == "ui::unit" && args.size() == 1)
+            look.unit = args[0];                         // whole: a display cuts it (cutText), trace shows it all
+        else if (name == "ui::label" && args.size() == 1)
+            look.label = args[0];
+        else if (name == "ui::decimals" && args.size() == 1)
+        {
+            double v = 0.0;
+            if (number(0, v) && v >= 0.0 && v <= 4.0 && v == std::floor(v))
+                look.decimals = static_cast<int8_t>(v);
+        }
+        else if (name == "fminus::range" && args.size() == 2)
+        {
+            double lo = 0.0, hi = 0.0;
+            if (number(0, lo) && number(1, hi) && hi > lo && std::fabs(lo) <= 1.0e9 && std::fabs(hi) <= 1.0e9)
+            {
+                look.ranged = true;
+                look.lo = static_cast<float>(lo);
+                look.hi = static_cast<float>(hi);
+            }
+        }
+    }
+
+    bool displayable(std::string_view type) noexcept
+    {
+        return type == "float" || type == "double" || type == "int" || type == "bool";
+    }
+
+    DisplaySource displaySource(const std::vector<PanelField>& fields, const std::string& source)
+    {
+        DisplaySource out;
+        // The name, then its indexes: "grid[1][3]" is grid and { 1, 3 }.
+        const std::size_t open = source.find('[');
+        const std::string name = source.substr(0, open);
+        std::vector<std::size_t> at;
+        for (std::size_t k = open; k != std::string::npos && k < source.size();)
+        {
+            const std::size_t close = source.find(']', k);
+            const std::string digits = close == std::string::npos ? std::string() : source.substr(k + 1, close - k - 1);
+            if (digits.empty() || digits.size() > 9 || source[k] != '['
+                || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }))
+            {
+                out.problem = DisplaySource::Problem::index;
+                out.why = source + ": an element's index is a whole number in brackets, grid[1][3]";
+                return out;
+            }
+            at.push_back(static_cast<std::size_t>(std::strtoul(digits.c_str(), nullptr, 10)));
+            k = close + 1;
+        }
+        const auto f = std::find_if(fields.begin(), fields.end(), [&](const PanelField& x) { return x.name == name; });
+        if (f == fields.end())
+        {
+            out.why = name;
+            return out;
+        }
+        out.field = &*f;
+        if (f->type.rfind("param", 0) == 0)
+        {
+            out.problem = DisplaySource::Problem::dial;
+            return out;
+        }
+        // Its type's element and extents: "float[4][16]" is float, { 4, 16 }; an extent that is no number (Lang's
+        // `float x[N]`) 0, unknown, which takes any index.
+        const std::size_t b = f->type.find('[');
+        std::string element = f->type.substr(0, b);
+        while (!element.empty() && element.back() == ' ')
+            element.pop_back();
+        std::vector<std::size_t> extents;
+        for (std::size_t k = b; k != std::string::npos; k = f->type.find('[', k + 1))
+        {
+            char* end = nullptr;
+            const unsigned long n = std::strtoul(f->type.c_str() + k + 1, &end, 10);
+            extents.push_back(end != nullptr && *end == ']' ? static_cast<std::size_t>(n) : 0);
+        }
+        const auto shape = [&] {
+            std::string example = name;
+            for (std::size_t k = 0; k < extents.size(); ++k)
+                example += "[" + std::to_string(k == 0 ? 1 : 3) + "]";
+            return name + " is a " + f->type + ": an element shows, an index a dimension (" + example + ")";
+        };
+        if (!displayable(element) || at.size() != extents.size())
+        {
+            out.problem = DisplaySource::Problem::type;
+            out.why = !displayable(element) ? name + " is a " + f->type
+                    : extents.empty()       ? name + " is a " + f->type + ", no array"
+                                            : shape();
+            return out;
+        }
+        std::size_t index = 0;
+        for (std::size_t k = 0; k < at.size(); ++k)
+        {
+            if (extents[k] != 0 && at[k] >= extents[k])
+            {
+                out.problem = DisplaySource::Problem::index;
+                out.why = source + " is outside " + name + ", a " + f->type;
+                return out;
+            }
+            index = index * (extents[k] != 0 ? extents[k] : 1) + at[k];
+        }
+        out.problem = DisplaySource::Problem::none;
+        out.type = element;
+        out.element = index;
+        return out;
+    }
+
     std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared)
     {
         const auto squeezed = [](std::string t) {
@@ -632,7 +806,7 @@ namespace playground
             return out;
         for (const PanelField& f : shared)
             if (f.type.rfind("param", 0) != 0)          // its params are no dials: left at their defaults
-                out.push_back({ via->name + "->" + f.name, f.type });
+                out.push_back({ via->name + "->" + f.name, f.type, f.look });
         return out;
     }
 }

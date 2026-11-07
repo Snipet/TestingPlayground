@@ -1186,6 +1186,29 @@ namespace
         }
 
         // A part of the guide (mcp/McpGuide.h): from an instance, else cut from the guide.md the last one left.
+        // The headless renderer beside this server (<Name>Render: README, "The headless renderer"), named with its path
+        // at the end of the guide's debugging part, for a client that runs commands on this Mac; "" when it is not there.
+        static std::string rendererNote(const std::string& part)
+        {
+            if (part != "debugging")
+                return {};
+#if defined(_WIN32)
+            const juce::String name = juce::String(pg::product::kName) + "Render.exe";
+#else
+            const juce::String name = juce::String(pg::product::kName) + "Render";
+#endif
+            const juce::File r = juce::File::getSpecialLocation(juce::File::currentExecutableFile).getSiblingFile(name);
+            if (!r.existsAsFile())
+                return {};
+            return "\n\nTHE RENDERER\n" + name.toStdString() + ", beside this server (" + r.getFullPathName().toStdString()
+                 + "), renders and measures a program from a shell with the plugin's own code, the same bits as "
+                   "measure_output and trace's export, with nothing open: the program's files (a folder) and measure_output's "
+                   "JSON in (-r, -d name=value), the report on stdout, a WAV (-w), the fields as a CSV (-f, -c) and the "
+                   "metrics as JSON (-m) out; exit 2 when it does not compile, 3 when it stopped; --help says the rest. Only "
+                   "for a client that runs commands on the user's computer (Claude Desktop does not); it changes nothing in "
+                   "the plugin.\n";
+        }
+
         void guide(const std::string& part, Then then)
         {
             // The part always named: a plugin answers a guide request without one (a 0.2.0 server's) with all of it.
@@ -1193,7 +1216,7 @@ namespace
                     [part, then](Got g, const juce::var& r, const std::string& why) {
                         if (g == Got::result)
                         {
-                            then(textContent(r.toString().toStdString()));
+                            then(textContent(r.toString().toStdString() + rendererNote(part)));
                             return;
                         }
                         if (g == Got::error)
@@ -1215,7 +1238,7 @@ namespace
                                                                           return f != nullptr ? std::string(f->source) : std::string();
                                                                       },
                                                                       found);
-                        then(textContent(text, !found));
+                        then(textContent(found ? text + rendererNote(part) : text, !found));
                     });
         }
 

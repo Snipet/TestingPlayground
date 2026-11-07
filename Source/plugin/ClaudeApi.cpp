@@ -21,14 +21,6 @@ namespace playground::claude
             .toStdString();
     }
 
-    juce::var object(std::initializer_list<std::pair<const char*, juce::var>> fields)
-    {
-        auto* o = new juce::DynamicObject();
-        for (const auto& [k, v] : fields)
-            o->setProperty(k, v);
-        return juce::var(o);
-    }
-
     // ---- the host ------------------------------------------------------------------------------------------------------
     std::string hostName(const std::string& host)
     {

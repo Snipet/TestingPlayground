@@ -14,6 +14,10 @@
 //   RUN      through a Compiler with an audio thread: a RUN whose program writes outside its array at once fails (ok
 //            false, stopped, bounds, the message at the access) and the program before plays on; one that does so once a
 //            dial turns plays, then a status of its own says so (stopped, bounds) and the program before plays again
+//   GRID     2-D arrays, a dimension at a time: a top-level table of 2 x 3 read as kGrid[1][2] (its 6 where C puts it),
+//            and a field of 4 x 16 written through a dial: grid[1][at] at 16 (inside the field, grid[2][0], but past its
+//            row: 'grid[1]' of type 'float[16]', index 16) and grid[at][3] at 16 ('grid' of type 'float[4][16]', index 16)
+//            each stop the program before the write, the message at the access
 //   WORDS    measure_output's report begins with the message and says when; trace's lines and view_sound's words too
 //   FROZEN   the frozen copy has no checks: its IR has no record and no check where the program's has both (and a
 //            compile without the checks neither), and a read one past an array's end that stops the program goes through
@@ -671,6 +675,61 @@ PROBE(dsp, bounds)
                                             "for 'line' of type 'float[16]'\n", 0) == 0 ? 1 : 0, 1);
         P.eq("init.message_does_not_play", r.errors.find("and the program does not play") != std::string::npos ? 1 : 0, 1);
         std::printf("init: %s", r.errors.c_str());
+    }
+
+    // ---- GRID: 2-D arrays, each index against its own dimension -------------------------------------------------------
+    {
+        const std::string table = "const float kGrid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };\n\n";
+        const char* fields = "    param int at [[fminus::range(0, 20)]] [[fminus::default(3)]];\n    float grid[4][16];\n"
+                             "    float got;\n\n";
+        struct Case
+        {
+            const char* name;
+            const char* write;                       // what process does first
+            const char* array;                       // as the stop names it
+            const char* type;
+            int64_t extent;
+        };
+        const Case cases[] = {
+            { "row", "        got = kGrid[1][2];\n        grid[1][at[0]] = 1.0f;\n", "grid[1]", "float[16]", 16 },
+            { "rows", "        got = kGrid[1][2];\n        grid[at[0]][3] = 1.0f;\n", "grid", "float[4][16]", 4 },
+        };
+        for (const Case& c : cases)
+        {
+            const std::string source = table + program(fields, c.write);
+            pg::Engine engine;
+            engine.prepare(kFs, kBlock);
+            std::string errors;
+            engine.offer(compiled(pg::singleFile(source), 1, &errors));
+            engine.prepare(kFs, kBlock);
+            const std::string key = std::string("grid.") + c.name;
+            P.eq(key + ".compiles", engine.playingPatch() != nullptr ? 1 : 0, 1);
+            if (engine.playingPatch() == nullptr)
+            {
+                std::printf("%s", errors.c_str());
+                continue;
+            }
+            const pg::Control dial = engine.playingPatch()->controls()[0];
+            const std::size_t writeAt = 8 * kBlock;
+            const probe::Stereo in = sineIn(second / 4);
+            std::size_t stoppedAt = static_cast<std::size_t>(-1);
+            play(engine, in, pg::normOf(dial, 3.0f), pg::normOf(dial, 3.0f), 0, kInstrument);
+            P.near(key + ".table_read", fieldNow(engine, "got"), 6.0, 0.0);
+            P.eq(key + ".in_range_plays", engine.stops() == 0 ? 1 : 0, 1);
+            engine.restart();
+            play(engine, in, pg::normOf(dial, 3.0f), pg::normOf(dial, 16.0f), writeAt, kInstrument, &stoppedAt);
+            pg::Engine::Stopped st;
+            P.eq(key + ".stops", engine.stops() == 1 && engine.lastStop(st) && st.bounds.failed ? 1 : 0, 1);
+            P.eq(key + ".at_the_write", static_cast<int64_t>(stoppedAt), static_cast<int64_t>(writeAt));
+            P.eq(key + ".array", std::string(st.bounds.array) == c.array ? 1 : 0, 1);
+            P.eq(key + ".type", std::string(st.bounds.type) == c.type ? 1 : 0, 1);
+            P.eq(key + ".extent", st.bounds.extent, c.extent);
+            P.eq(key + ".index", st.bounds.index, int64_t{ 16 });
+            const std::string message = pg::Patch::stopMessage(pg::singleFile(source), st.call, static_cast<float>(kFs), &st.bounds);
+            P.eq(key + ".message", message.find(std::string(": error: process() went outside an array: index 16 out of bounds for '")
+                                                + c.array + "' of type '" + c.type + "'\n") != std::string::npos ? 1 : 0, 1);
+            std::printf("grid %s: %s", c.name, message.c_str());
+        }
     }
 
     // ---- RUN: through a Compiler, its audio thread running ----------------------------------------------------------

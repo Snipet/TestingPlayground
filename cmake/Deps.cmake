@@ -60,7 +60,7 @@ set(FP_BGFX_SUB_SHAS     bgfx=c7684e20da1e385edc439ef39cdb42b8c661016f
 set(FP_FUNKGUI_TAG       v0.25.0)
 set(FP_FUNKGUI_SHA       5706b341aa94530edec2d3942b39af2e5cf73d45)
 set(FP_FUNKGUI_VERSION   0.25.0)
-set(FP_FMINUS_SHA        28b2e473e47b28c3fb216b271d74405377791b0a)   # no tags: a commit (conditionals, warnings, checks)
+set(FP_FMINUS_SHA        3ed1ba62b01f31b4e5d29aded72d06face71d8b6)   # no tags: a commit (double, 2-D arrays, field attributes, calls by name, code ranges)
 set(FP_FMINUS_LLVM       23.1.3)                                     # the LLVM that commit pins (cmake/FMinusPins.cmake)
 
 # ---- helpers ---------------------------------------------------------------------------------------------------------

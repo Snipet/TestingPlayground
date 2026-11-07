@@ -102,9 +102,45 @@ if(_cirBad)
                       "only fminus/CirDoc.h, fminus/CirLayout.h, fminus/Lang.h, dsp/Sources.h and the standard "
                       "library:\n  ${_msg}")
 endif()
+# Source/render/** (the headless renderer, CMakeLists.txt's FP_RENDER_SHARED) renders with the DSP library and reads the
+# tools' JSON with Source/plugin/ChatScenario.cpp, which it compiles too: of the plugin it includes
+# plugin/ChatScenario.h alone, of JUCE juce_core alone, nothing of the editor or of FunkGui. ChatScenario.cpp in turn
+# includes of the plugin its own header and plugin/ClaudeApi.h (for its inline JSON helper) alone, so what reaches the
+# processor (the host's rate, the recording) stays in ChatCaptured.cpp; a link that needed more would fail anyway, and
+# this names the line.
+file(GLOB_RECURSE _render ${FP_SOURCE_DIR}/Source/render/*)
+list(APPEND _render ${FP_SOURCE_DIR}/Source/plugin/ChatScenario.cpp)
+set(_renderBad "")
+foreach(_f IN LISTS _render)
+  if(NOT _f MATCHES "\\.(h|hpp|cpp|cc|mm|inl)$")
+    continue()
+  endif()
+  if(_f MATCHES "/plugin/ChatScenario\\.cpp$")
+    set(_allowed "plugin/(ChatScenario|ClaudeApi)\\.h")
+  else()
+    set(_allowed "plugin/ChatScenario\\.h")
+  endif()
+  file(STRINGS ${_f} _lines REGEX "^[ \t]*#[ \t]*include[ \t]*[<\"]((\\.\\./)*(plugin|editor)/|funkgui/|juce_|JuceHeader)")
+  foreach(_l IN LISTS _lines)
+    if(_l MATCHES "[<\"](${_allowed}|juce_core/juce_core\\.h)[>\"]")
+      continue()
+    endif()
+    file(RELATIVE_PATH _rel ${FP_SOURCE_DIR} ${_f})
+    string(STRIP "${_l}" _l)
+    list(APPEND _renderBad "${_rel}: ${_l}")
+  endforeach()
+endforeach()
+if(_renderBad)
+  list(JOIN _renderBad "\n  " _msg)
+  message(FATAL_ERROR "lint.layers: the headless renderer (Source/render, and the plugin/ChatScenario.cpp it compiles) "
+                      "holds no processor, editor or FunkGui code, and of JUCE juce_core alone:\n  ${_msg}")
+endif()
+
 list(LENGTH _files _n)
 list(LENGTH _sandbox _ns)
 list(LENGTH _cir _nc)
+list(LENGTH _render _nr)
 message(STATUS "lint.layers: ${_n} files under Source/dsp, Source/fsdsp and Source/fminus, no JUCE/FunkGui/plugin/"
                "editor include; ${_ns} under Source/sandbox, no plugin, audio or compiler include; FMinus through "
-               "fminus/FMinus.h and fminus/Circuit.h only; ${_nc} of the schematic's model, FMinus-free")
+               "fminus/FMinus.h and fminus/Circuit.h only; ${_nc} of the schematic's model, FMinus-free; ${_nr} of the "
+               "renderer's, no processor, editor or FunkGui include")

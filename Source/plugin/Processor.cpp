@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 #include <utility>
 
 namespace playground
@@ -1050,6 +1051,36 @@ namespace playground
         // it announced.
         const int seen = largestHostBlock_.load(std::memory_order_relaxed);
         return seen > 0 ? seen : getBlockSize();
+    }
+
+    // run_function's "playing" (ChatAgent.h, Engine::Snapshot): asked of the audio thread, which copies at its next
+    // block's end; taken back when no block comes in time (a host that has stopped the plugin's audio).
+    bool Processor::chatSnapshot(Engine::Snapshot& s, std::string& why)
+    {
+        const auto waitFor = [&s](int ms) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            while (!s.done.load(std::memory_order_acquire))
+            {
+                if (std::chrono::steady_clock::now() >= until)
+                    return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return true;
+        };
+        engine_.askSnapshot(&s);
+        if (waitFor(kSnapshotWaitMs))
+            return true;
+        if (engine_.cancelSnapshot(&s))
+        {
+            why = "no audio went through the plugin for " + std::to_string(kSnapshotWaitMs) + " ms (its host has stopped "
+                  "it, or nothing plays it), so nothing that plays could be copied";
+            return false;
+        }
+        // Claimed as it was taken back: the copy ends within that block.
+        if (waitFor(10000))
+            return true;
+        why = "the audio thread did not finish the copy";
+        return false;
     }
 
     std::string Processor::chatProject() const

@@ -36,13 +36,22 @@
 //   raw values evenly over the render, or (with `around`) a sample each around that moment, from a pass in calls of one
 //   sample.
 // list: the field map, a line a field (an array's elements as one), and what it leaves out.
+// export (TraceRequest::exporting): pass 1's render kept whole for the caller to write (TraceResult::l, r; an effect's
+//   input as it went in: inL, inR), and with `every` the watched fields as a log (TraceResult::log, Export.h's FieldLog:
+//   a row after the call that reaches each multiple of `every` samples, as the voice chosen plays it, the voices'
+//   mean with all); find looks for nothing unless asked. Every result names pass 1's render hash (Export.h), of what it
+//   rendered: an instrument's is measure_output's (the same render, the same bits, the voices on the absolute grid); an
+//   effect's, of the sweep or the scenario's input, is view_sound's but where the program keeps state per call.
 //
 // Offline only, off the audio thread: a Session's own Engine, never the one that plays. It reads the instances'
 // memory as FMinus lays it out and never follows a pointer. Deterministic: the same files and request give the same
 // result, but for the time limit (`seconds`) and a cancel, which stop it and say so: what pass 1 rendered is all it
-// looks at, and a problem the calls of one sample did not reach is listed as pass 1 places it, "not traced".
+// looks at, and a problem the calls of one sample did not reach is listed as pass 1 places it, "not traced". Pass 1
+// stops so too once its records of the calls pass 256 MB (a render of up to 300 s: Measure.h, "How long a render may
+// be"; fewer fields watched, or fewer voices, go further).
 #pragma once
 
+#include "dsp/Export.h"
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
 
@@ -74,6 +83,8 @@ namespace playground::measure
         double seconds = kTraceSeconds;           // the time limit
         std::function<bool()> keepGoing;          // false stops it (a cancel)
         CircuitPins pins;                         // the netlists' configurations (a recording's: Session's `pins`)
+        bool exporting = false;                   // an export (above): the input kept too; find none unless asked
+        std::size_t every = 0;                    // the field log's rows every this many samples (0: no log)
     };
 
     struct TraceCulprit
@@ -103,12 +114,19 @@ namespace playground::measure
         std::vector<std::string> watched;         // the paths watched
         bool splitDiffers = false;                // pass 2's output differed from pass 1's
         std::size_t splitAt = 0;                  // where first
-        bool stopped = false;                     // the time limit or a cancel cut it short
+        bool stopped = false;                     // the time limit or a cancel cut it short (either pass)
+        bool stoppedFirst = false;                // in pass 1: what it rendered (l, r, the hash, the log) is the part
+                                                  // before the stop; a stop in pass 2 alone leaves pass 1's render whole
+        std::vector<std::string> unmatched;       // the fields' patterns that matched no field (the lines say so)
+        std::size_t more = 0;                     // the fields matched past kMaxTraceWatched, not watched (the lines say so)
         std::vector<std::string> fromStart;       // fields already non-finite before the first call
         Patch::Method stopCall = Patch::Method::none; // pass 1's render stopped (Patch.h, "The loop budget"): the call, and
         std::size_t stopAt = 0;                   // the sample its call's block or part began at (the lines say so)
         Patch::Bounds stopBounds;                 // the bounds check it failed, if one did (Patch.h, "Bounds checks")
-        std::vector<float> l, r;                  // what pass 1 rendered (in its calls of 16 samples), for a probe to compare
+        std::vector<float> l, r;                  // what pass 1 rendered (in its calls of 16 samples): an export's, a probe's
+        std::vector<float> inL, inR;              // an export's effect: its input as it went in (inR empty: inL on both)
+        std::string hash;                         // pass 1's render hash (Export.h: 64 hex digits)
+        FieldLog log;                             // an export's field log (TraceRequest::every)
     };
 
     TraceResult trace(const Sources& files, const TraceRequest& request);

@@ -26,7 +26,9 @@
 // dials for goals by rendering offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity
 // counting them, the stop button or the time limit ending the search with the best so far) and sets the best values
 // as set_dial does; its sweep renders one dial at given values instead, a table of the goals' metrics, and sets
-// nothing.
+// nothing. The tools that return numbers alone render up to 300 s, a picture's 10 (dsp/Measure.h, "How long a render
+// may be"), and every render stops as it goes at the stop button, an MCP cancel or kRenderSeconds (renderCancel),
+// its result saying how far it got.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
@@ -187,6 +189,16 @@ namespace playground
         // The user's A/B listening (EditorPort::ab) in words, one line ("" while there is none): its sides, the one that
         // plays, the dials, the loudness. Any thread (a copy under its own mutex): get_status and plugin_state say it.
         virtual std::string chatAb() const { return {}; }
+        // run_function's "playing" (ChatFunction.cpp): the state that plays, copied by the audio thread at a block's end
+        // into `s`'s buffers (Engine::Snapshot); waits for a block (kSnapshotWaitMs at most) and takes the ask back when
+        // none comes, false then, with why. Never the audio thread's; nothing of what plays is written.
+        static constexpr int kSnapshotWaitMs = 500;
+        virtual bool chatSnapshot(Engine::Snapshot& s, std::string& why)
+        {
+            (void)s;
+            why = "this host gives no copy of what plays";
+            return false;
+        }
     };
 
     class ChatAgent final : public ChatPort
@@ -245,6 +257,7 @@ namespace playground
         static juce::var toolDefinitions();
         static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
         static juce::var traceDefinition();                         // trace's (ChatTrace.cpp)
+        static juce::var functionDefinition();                      // run_function's (ChatFunction.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
         // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
@@ -318,6 +331,14 @@ namespace playground
         // given (mutex held), so a refused write shows what changed since. A refusal's text (`refused`) is kept too, but
         // counts as no call that gave it: a version kept already keeps when and how it was given, a new one is not
         // `asked` (so a refusal never makes a change Claude's own).
+        // run_function (ChatFunction.cpp): one of the program's functions called by name, in a compile of its own on
+        // this thread (Patch::call), on a fresh instance of the editor's files or a copy of the state that plays
+        // (ChatHost::chatSnapshot); its result or what went wrong, in words.
+        std::string runFunction(const juce::var& input, bool& isError);
+        // write_file (ChatImport.cpp): a file written whole; several as one change (files); a file or a folder on this
+        // Mac the user named brought in (from: its program files, text, checked, all or none); the editor's files out to
+        // a folder of their own on this Mac (to), adding files only.
+        std::string writeFileText(const juce::var& input, bool& isError);
         std::string readFileText(const juce::var& input, bool& isError);
         std::string editFileText(const juce::var& input, bool& isError);
         std::string keepVersion(const std::string& name, const std::string& text, bool refused = false);
@@ -360,6 +381,10 @@ namespace playground
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
         void setActivity(std::string activity);
+        // A render's cancel, for the tools that render (Measure.h's Cancel): the chat's stop and an MCP cancel
+        // (cancel_), measure::kRenderSeconds at most, and a long render's progress in the activity ("Measuring the
+        // sound: 84 of 300 s") a few times a second.
+        measure::Cancel renderCancel(std::string doing);
         void startWorker();
         void joinWorker();
 

@@ -192,6 +192,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -437,26 +438,33 @@ namespace playground
         bool probeArmed(int c, int e, int i) const noexcept;
 
         // The field display t (PanelDisplay::tap) shows: its value in instance i (a field of Shared's: in its one
-        // Shared, whatever i is, -1 too), as a float (an int's number, a bool's 0 or 1); 0 for an instance's field with
-        // no instance i. After a block, on the audio thread.
+        // Shared, whatever i is, -1 too), as a float (a double's rounded, an int's number, a bool's 0 or 1; an array's
+        // element when the display names one, PanelSpec.h's displaySource); 0 for an instance's field with no instance
+        // i, and for a value that is not finite. After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
 
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
         // scalar fields as paths, in declaration order: "phase", a held module's "filter.ic2", an array's elements (of
-        // at most 16) "osc[1].phase", a vector's lanes "v.x" (float8 and poly float: "v.s5"), the module Shared's through
-        // the main module's Shared* field "shared->gain" and Host's through its Host* "host->bpm". Parameters (the
-        // dials) are left out, and pointers never followed.
+        // at most 16) "osc[1].phase", a 2-D array's (the whole grid, 16 elements at most) "gain[1][3]", a vector's lanes
+        // "v.x" (float8 and poly float: "v.s5"), the module Shared's through the main module's Shared* field
+        // "shared->gain" and Host's through its Host* "host->bpm"; a float, a double (8 bytes, read as one), an int or a
+        // bool each. Parameters (the dials) are left out, and pointers never followed; a larger array is left out
+        // (unmapped(), with its shape). Each keeps what its declaration's attributes say (PanelSpec.h's FieldLook: a
+        // unit, a label, a range), which trace's lines show.
         struct Field
         {
-            enum class Type : uint8_t { real, integer, boolean };
+            enum class Type : uint8_t { real, integer, boolean, real64 };   // real64: a double
             enum class Home : uint8_t { instance, shared, host };   // each instance's, or the one Shared's or Host's
             std::string path;
             std::string module, name;                  // the module that declares it and its name there: "Svf", "ic2"
             std::size_t offset = 0;                    // in bytes, from its home's address
             Type type = Type::real;
             Home home = Home::instance;
+            FieldLook look = {};                       // its declaration's attributes (PanelSpec.h)
+            // A number, not a whole one: a float or a double (trace's runaways, clicks and steps are of these).
+            bool real() const noexcept { return type == Type::real || type == Type::real64; }
         };
         const std::vector<Field>& fieldMap() const noexcept { return fields_; }
         // What the map leaves out, a line each ("buffer: float *, a pointer, not followed").
@@ -465,6 +473,104 @@ namespace playground
         // A field's value as it is (a NaN or an infinity kept, where tap gives 0; an int's number, a bool's 0 or 1), in
         // instance i (a Shared or Host field: its one).
         double read(const Field& f, int i) const noexcept;
+
+        // ---- one function called by name (run_function; PatchCall.cpp) ------------------------------------------------
+        // Off the audio thread, on a Patch of the caller's own: a compile of its own, never the one that plays, since the
+        // loop budget and the bounds record are a Program's, which a call from another thread would share with the
+        // audio thread's (FMinus's docs/extending.md, recipe 36). `name` is a function ("softclip"), a method
+        // ("Voice::level", on instance 0; "Shared::build", on the one Shared; "Svf::tick", on an Svf of its own, zeroed,
+        // its params at their defaults) or a method of a field the main module holds by value, by its path
+        // ("filter.tick", "osc[2].env.next"; "shared->table.read" through Shared). Each argument is checked against its
+        // parameter as declared (a float, a double, an int (whole), a bool, or for an int*, float* or double* an array;
+        // a module's instance only as a method's own). FMinus checks no access through a pointer parameter, so an
+        // array's buffer covers C's idiom (buffer, n): its elements, `extent` or the call's largest int argument,
+        // whichever is most, then as many zeros again (kCallGuard at least), so that a function told a length, or
+        // reading a little past what it was given, stays in a buffer of its own; a call that takes an array and an int
+        // past kMaxCallElements is refused. `onState`, when given, is called once the call is checked and before it
+        // runs, and only when it runs on the state (a method of instance 0, of Shared or Host, or of a field they
+        // hold): "" to run it, else why not (`error`, and nothing runs); run_function's "playing" adopts its copy
+        // there, so a call that is wrong anyway asks the audio thread for nothing. FMinus's call() runs it in the
+        // programs' mode (flush to zero) within kInitBudget, and a bounds check or the budget that stops it is said in
+        // FMinus's words. What a method changed in the fields (fieldMap's paths of its instance, and of Shared and
+        // Host) is listed. A call that stopped leaves the Patch so that its destructor calls no end (its state may be
+        // any), as a stopped audio-thread call does.
+        struct CallArg
+        {
+            enum class Kind : uint8_t { number, boolean, array };
+            Kind kind = Kind::number;
+            double number = 0.0;                       // a number's, or a boolean's 0 or 1
+            std::vector<double> elements;              // an array's
+            std::size_t extent = 0;                    // an array's buffer: its elements at least
+        };
+        struct CallOutcome
+        {
+            bool ran = false;                          // it was called (it returned, or the budget or a check stopped it)
+            bool stopped = false;                      // the loop budget or a bounds check stopped it
+            std::string error;                         // why it did not run, or what stopped it ("" when it returned)
+            std::string signature;                     // as declared, a method's `this` left out
+            // What it ran on: its arguments alone (a function), the main module's instance 0, the one Shared, a field
+            // the main module (or Shared) holds (`on`: its path), or an instance of its own (`on`: its module).
+            enum class On : uint8_t { function, main, shared, field, own };
+            On where = On::function;
+            std::string on;
+            bool returned = false;                     // it returns a value (not void)
+            std::string value;                         // that value, as text (a float's 9 digits, a double's 17)
+            struct Array
+            {
+                std::string name, type;                // the parameter's
+                std::vector<double> elements;          // after the call: as many as were given (or extent)
+                bool written = false;                  // the function may write it (not a const pointer)
+                bool past = false;                     // it wrote past them, into the zeros after
+            };
+            std::vector<Array> arrays;                 // each array argument, in order
+            std::vector<std::string> changed;          // a method's fields it changed, "phase: 0 -> 0.0125"
+            std::size_t moreChanged = 0;               // and how many more
+        };
+        static constexpr std::size_t kCallGuard = 1024;            // zeros after an array's elements, at least
+        static constexpr std::size_t kMaxCallElements = 1u << 20;  // an array's elements (or a length beside one) at most
+        static constexpr std::size_t kMaxChanged = 16;             // fields changed listed at most
+        CallOutcome call(const std::string& name, const std::vector<CallArg>& args,
+                         const std::function<std::string()>& onState = {});
+
+        // run_function's "playing": the state that plays, copied by the audio thread (Engine::Snapshot) and put into a
+        // Patch of the caller's own, compiled from the same files with the same pins, so laid out alike (layout(): the
+        // sizes, and a hash of every module's fields and offsets, which the Engine's copy carries to be compared).
+        // adopt() takes the copy into instance 0, Shared and Host (each as large as this Patch's), points the main
+        // module's Shared* and Host* fields (and Shared's Host*) at this Patch's own, and the dials' streams at none;
+        // it refuses ("" when it took it) a copy any of whose other pointers is not null: it would point at memory of
+        // the program that plays (a heap block init made, Shared's table), which a call on the copy would then write
+        // from this thread. Nothing of the program that plays is touched.
+        struct Layout
+        {
+            std::size_t instance = 0, shared = 0, host = 0;   // bytes: the main module's instance, Shared's, Host's
+            std::size_t instanceAlign = 16, sharedAlign = 16, hostAlign = 16;
+            uint64_t hash = 0;
+        };
+        Layout layout() const noexcept;
+        std::string adopt(const void* instance, const void* shared, const void* host);
+        // The one Shared and the one Host (null: none), for the Engine's copy, between calls.
+        const void* sharedInstance() const noexcept { return shared_; }
+        const void* hostInstance() const noexcept { return host_; }
+
+        // ---- where the code is (measure_output's profile: dsp/Profile.h; PatchCode.cpp) -------------------------------
+        // The program's own machine code (never the frozen copy's), from FMinus's Program::codeRanges (its recipe 37):
+        // the ranges sorted by address, none overlapping another, each the bytes [address, address + size). `function`
+        // is what the program calls it ("Svf::tick", "softclip"; the plugin's appended calls the method they call,
+        // "Voice::process"; a circuit dial's shim "the circuit dials' set()"; FMinus's own "FMinus's math"), `module`
+        // a method's ("Svf"; "" otherwise) and `inlined` the program's functions the optimiser folded into it, whose
+        // time is this code's (an appended call's own method left out); `parallel` a parallel region's body, which
+        // the pool's threads run as well as the caller's (FMinus's Kind::Parallel; `function` the one it is in). Off
+        // the audio thread (it allocates); empty, with why, when the code does not link. The code stays where it says
+        // while the Patch lives.
+        struct CodeRange
+        {
+            std::uintptr_t address = 0;
+            std::size_t size = 0;
+            std::string function, module;
+            std::vector<std::string> inlined;
+            bool parallel = false;
+        };
+        std::vector<CodeRange> codeRanges(std::string& errors) const;
 
     private:
         struct Compiled;                               // the Program and the function pointers
@@ -492,8 +598,8 @@ namespace playground
         PanelSpec panel_;
         struct Tap
         {
-            enum class Type : uint8_t { real, integer, boolean };
-            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes
+            enum class Type : uint8_t { real, integer, boolean, real64 };
+            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes: an array's element's
             Type type = Type::real;
             bool shared = false;                       // a field of the module Shared ("shared->level")
         };
@@ -560,6 +666,12 @@ namespace playground
         std::size_t hostSize_ = 0, hostAlign_ = 16;
         std::vector<std::size_t> hostFields_, sharedHostFields_;
         HostLayout hostLayout_;
+        // run_function (PatchCall.cpp): the program's modules' layout hashed (layout()), whether a call by name
+        // stopped (then no end runs: endInstances), and the Program itself (fminusProgram).
+        uint64_t layoutHash_ = 0;
+        bool callStopped_ = false;
+        fminus::Program& fminusProgram() const noexcept;
+        static uint64_t hashLayout(const fminus::Program& program);
     };
 
     inline void Patch::store(void* instance, const Slot& slot, float plain) noexcept
