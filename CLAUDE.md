@@ -747,19 +747,35 @@ place (its `products/<key>.cmake`, and its names in the docs).
     `instance-<id>` (`instanceId_`, kept in the session's `<CHAT instance>`). Opening a version of another project
     (`openVersion`: PROJECTS, a preset of another project, A/B's Keep), a fresh start (EXAMPLES, RANDOM) and deleting
     the open project are `open` (the chat shown is kept with its owner; the new owner's newest shows, else a new one);
-    a save is `carry` (from the instance the chat moves, from another project a copy goes). A switch asked from a
-    turn's own thread (a future tool that opens a project) waits for the turn's end (`pendingOwner_`), never joins
-    the worker from itself. Deleting a project deletes its chats (the Projects card says so) unless a Finder copy
-    holds its id.
+    a save is `carry` (from the instance the chat moves, from another project a copy goes), or `move` when the
+    project the chat was with has no file any more (deleted, or a new file made in its name's place: the save's id,
+    `Saved::id`, tells, and `chatOwnerNow` looks the project up again). An `open` asked from a turn's own thread (a
+    future tool that opens a project) waits for the turn's end (`pendingOwner_`), never joins the worker from itself;
+    a `carry` runs at once. A switch stops the turn and joins it on the message thread, so nothing a turn does waits
+    for the message thread past `ChatAgent::stopping()` (`chatPicture`, view_panel's wait for `poll()`). Deleting a
+    project deletes its chats (the Projects card says so) unless a Finder copy holds its id.
+  - **One instance, one id.** No two live processors of a process hold one instance id (`heldIds`), and a state's
+    `<CHAT instance>` is taken only when it is this instance's own, or when its chats are there to find (`hasChats`)
+    and no other live processor holds it: a state copied into several instances (a track duplicated, a template, a
+    default preset) gives each its own chats while no project is open. A copy of a live instance's state shows the
+    chat it names as a new chat of its own (`restoreChat`'s `from`); a state whose instance kept nothing here (a
+    template from an instance that never chatted, another Mac's) gets a new id. An instance's chat is the one its
+    session names, else a new one, never another of its chats (a project's is its newest).
   - **When it is written.** `ChatAgent::keep` (`saveState(true)`: the panel's pictures kept, so a chat opened again
-    keeps its thinking) at a turn's end, at `getStateInformation`, before another chat shows, on a new chat and when
-    the agent goes; only when it changed and holds more than the chat's notes; one writer at a time (`storeMutex_`,
-    never under `mutex_`; a switch stops and joins the worker before it takes it). A chat file another writer changed
-    since it was read here (two instances with one chat) is a conflict: this one is kept under a new id.
+    keeps its thinking) at a turn's end, at `getStateInformation` (`keepIdle`: not while a turn runs, as a host may
+    ask at every change), before another chat shows, on a new chat and when the agent goes; only when it changed and
+    holds more than the chat's notes; one writer at a time (`storeMutex_`, never under `mutex_`; a switch stops and
+    joins the worker before it takes it). A chat file another writer changed since it was read here (two instances
+    with one chat) is a conflict: this one is kept under a new id. A project's chat whose folder is gone since it was
+    kept here (the project deleted in another instance) is not written back. A write that fails (or is held back so)
+    says so in the chat once, is tried again at every keep, and says so again once it is kept: the session no longer
+    holds the chat.
   - **The session** keeps `<CHAT instance owner chat>` and never a word of the conversation. A session from before
-    (`<CHAT json>`) is adopted (`adoptChat`: its id `sessionChatId(json)`, and the instance's too when the session has
-    none, so loading it again finds the same chat), and the next save leaves it out. A reference that resolves to
-    nothing here (another Mac) shows the owner's newest chat, else a new one.
+    (`<CHAT json>`) is adopted when it holds more than the chat's notes (`ChatAgent::adoptable`; every untouched
+    instance's empty conversation was alike, and so was a lone note): its id `sessionChatId(json)`, and the instance's
+    too when the chat is the instance's, so loading it again finds the same chat; else a new instance id and a new
+    chat. The next save leaves it out. A reference that resolves to nothing here (another Mac) shows the project's
+    newest chat, else a new one.
   - **What can carry a chat off this Mac, and what holds it back** (a change to any of these keeps the rule):
     1. the DAW session, a host's presets (.aupreset, .vstpreset), its undo history, a copy and paste of the plugin, the
        Standalone's settings file (`filterState`): all `getStateInformation`, which holds references only (an older

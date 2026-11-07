@@ -1357,21 +1357,23 @@ those lines alone, or to edit a part's line to move it.
   runs out of room. An answer cut off at its limit goes on by itself, Claude told why; a second one in a row ends the
   turn (send "continue" to go on). At **Thinking: Max** (and XHigh) Claude thinks the longest, so a hard design is
   more likely to reach the limit: **High** leaves it more room to write.
-- **Chats, kept on this Mac only**: a project has its own chats, as many as you like. Opening a project brings back its
-  latest chat; opening another keeps this one with its project; saving your work as a project takes the chat along (a
-  chat from before any project moves to it; a chat of another project is copied, that project keeping its own). With
-  no project open, the chat is this plugin's own (the instance in your DAW session). The **chat list** (the pill in the
-  header) lists the project's chats, the newest first, each with when it last changed: click one to go back to it;
-  **New chat**, **Rename this chat...** (its name in the list; empty, it is named after your first message again) and
-  **Delete this chat...** (it asks first; it cannot be undone). The chats live in `~/Library/Application
-  Support/Funk/Playground/chats/` (`%APPDATA%\Funk\Playground\chats\` on Windows), a folder a project, encrypted
-  with a key made from this Mac and your account (as the API key is): a copy of the folder, a backup or another Mac
-  cannot read them. Nothing of a chat goes into your DAW session (it keeps only which chat it was), a project's file,
-  an export (.zip or .fmpack: the Export card and the zip's README say so) or anything Claude Desktop is given, so a
-  session or a project you share carries no conversation. A project renamed in the Finder keeps its chats (each
-  project file holds an id of its own; an imported copy or a copy made in the Finder gets a new one), and deleting a
-  project deletes its chats. A session saved by an earlier version, whose conversation is inside it, gives it to this
-  Mac's chats when it opens; the next save of the session leaves it out.
+- **Chats, kept on this Mac only**: a project has its own chats, as many as you like. Opening a project brings back
+  its latest chat; opening another keeps this one with its project; saving your work as a project takes the chat along
+  (a chat from before any project moves to it; a chat of another project is copied, that project keeping its own).
+  With no project open, the chat is this plugin's own (the instance in your DAW session); a track duplicated gets
+  chats of its own (a copy of the chat it had). The **chat list** (the pill in the header) lists the project's chats,
+  the newest first, each with when it last changed: click one to go back to it; **New chat**, **Rename this chat...**
+  (its name in the list; empty, it is named after your first message again) and **Delete this chat...** (it asks
+  first; it cannot be undone). The chats live in `~/Library/Application Support/Funk/Playground/chats/`
+  (`%APPDATA%\Funk\Playground\chats\` on Windows), a folder a project, encrypted with a key made from this Mac and
+  your account (as the API key is): a copy of the folder, a backup or another Mac cannot read them. Nothing of a chat
+  goes into your DAW session (it keeps only which chat it was), a project's file, an export (.zip or .fmpack: the
+  Export card and the zip's README say so) or anything Claude Desktop is given, so a session or a project you share
+  carries no conversation. A project renamed in the Finder keeps its chats (each project file holds an id of its own;
+  an imported copy or a copy made in the Finder gets a new one), and deleting a project deletes its chats. A session
+  saved by an earlier version, whose conversation is inside it, gives it to this Mac's chats when it opens; the next
+  save of the session leaves it out. Should a chat ever fail to be written (a full disk), the chat says so, and
+  says when it is kept again.
 - **Network**: the chat is the only part of the plugin that uses the network, and only when you send a message: HTTPS
   to `api.anthropic.com` (the Messages API, streamed, and the models list once per key), the one way a chat leaves
   this Mac (it is what the chat is for). Requests are billed to your key. A turn goes on while the editor is closed.
