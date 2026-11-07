@@ -1289,6 +1289,26 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   again as the spring is). A row of the table is the whole fix when one is wrong. The lights' report (`f8 12`, the
   mask, `00 00 00 01`: hid-lg4ff's command, its last byte the one in doubt) was written from memory and is checked on
   no wheel yet: `WheelMap.h`'s `kLightsLast` is the place to change it.
+
+  On Linux the kernel's own driver, hid-lg4ff, drives the wheel: it switches a G29 out of its compatibility mode by
+  itself (where it was told not to, the app writes "native" to its `alternate_modes` file), and the app
+  (`plugin/WheelEvdev.h`) reads the wheel's input device (`/dev/input/event…`, never grabbed: a game may read it too),
+  sets the range through hid-lg4ff's `range` file (only when it is not 900 already: the kernel sets 900 as it takes the
+  wheel), the spring as force feedback's autocentre on the input device, and the shift lights through hid-lg4ff's LED
+  files (`…::RPM1` to `::RPM5`, bit 0 the first). A wheel plugged in or out while the app runs is seen at once. The
+  input device is yours while you sit at your desktop (systemd-logind gives a joystick to the user at the seat); the
+  `range`, `alternate_modes` and LED files are root's, so without a udev rule the lights stay dark (the card says so),
+  as does a range another program left at other than 900. A rule that gives them to you, in
+  `/etc/udev/rules.d/99-g29.rules` (then `sudo udevadm control --reload` and plug the wheel in again; written for this
+  README, not tried on a wheel):
+
+  ```
+  ACTION=="bind", SUBSYSTEM=="hid", DRIVER=="logitech", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c24f|c294", \
+    RUN+="/bin/sh -c 'chmod 0666 /sys%p/range /sys%p/alternate_modes /sys%p/leds/*/brightness'"
+  ```
+
+  A wheel whose input device the app may not open at all is listed, the card saying so. `evtest` (its own package)
+  shows what the wheel sends there; wheel-dump is macOS's.
 - The theme (the top bar's moon or sun: Graphite or Paper) and the zoom (the status bar's pill) are machine-wide
   preferences, each product's own.
 
@@ -1989,12 +2009,33 @@ headless renderer) and the probes. What differs from macOS:
   Windows. That choice is the build's, not made at run time: on a machine where Vulkan does not start (no driver, an
   old GPU), the GPU build shows FunkGui's notice in place of the editor, and a build with `-DFP_WITH_GPU=OFF` is the one
   to use there.
-- **No AU, no installer app, no signing**: copy the VST3 yourself (below). The Standalone keeps the desktop's own title
-  bar and has a menu bar in the window, as on Windows; there is no racing wheel in the Standalone (a wheel's MIDI from
-  any MIDI input still reaches the synth).
-- **The chat's key** is encrypted as on macOS, with OpenSSL's libcrypto, and **the chat connects** through libcurl
-  (HTTPS with the system's certificates; JUCE's own Linux client speaks plain HTTP alone), so the plugin needs the
-  system's `libcurl`. **Pictures the chat reads**: PNG, JPEG and GIF; a project's `.fmpack` is written with zlib (and an
+- **No AU, no installer app, no signing**: a package of both products, a `.tar.gz` with an install script, installs
+  them for you (below). The Standalone keeps the desktop's own title bar and has a menu bar in the window, as on
+  Windows; the synth's reads a Logitech G29 through the kernel's own driver ("A racing wheel").
+- **The chat's key** goes to your desktop's keyring when one runs (the Secret Service: GNOME Keyring, KDE's KWallet,
+  KeePassXC), through libsecret, which the plugin loads when it first needs it (nothing links it: without `libsecret`
+  installed, or without a keyring, the file below); the keyring's own window lists it as "Funk Playground: Anthropic
+  API key" (another provider's: "Funk Playground: API key for <its server>"). Where none runs (a bare window manager, a
+  machine with no desktop) the key goes to a file as on macOS, encrypted with OpenSSL's libcrypto under a key of this
+  machine's (`/etc/machine-id`) and your account; a key saved so moves into the keyring the first time it is read with
+  one running. The chats stay files everywhere, encrypted the same way. **The chat connects** through libcurl (HTTPS
+  with the system's certificates; JUCE's own Linux client speaks plain HTTP alone), so the plugin needs the system's
+  `libcurl`.
+- **Folders**, as the XDG base directories name them: the projects in `~/.local/share/Funk/<name>/`
+  (`$XDG_DATA_HOME`), the chats and the chat's settings in `~/.local/share/Funk/Playground/`, the shaders' cache in
+  `~/.cache/Funk/<name>/Shaders` (`$XDG_CACHE_HOME`), the MCP sockets in `$XDG_RUNTIME_DIR/Funk-<name>-mcp/` (without
+  one, in `/tmp/funk-<your uid>/`, which must be a folder of yours that no one else may write into: else there is no
+  MCP), and a shader build's temporary folder in `$XDG_RUNTIME_DIR` (unless `$TMPDIR` is set); exports and renders in
+  your Music folder (`XDG_MUSIC_DIR`), the Standalone's settings in `~/.config/<Name>.settings` (JUCE's).
+- **Claude from outside the plugin.** Anthropic offers Claude Desktop for macOS and Windows (no Linux build of its own
+  when this was written), so on Linux the plugin is reached from **Claude Code** or another MCP client: each product's
+  MCP server (`<Name>MCP`, which the package installs in `~/.local/lib/Funk/<Name>/server/`) is a stdio server, added
+  once, for example `claude mcp add --scope user testingplayground --
+  ~/.local/lib/Funk/TestingPlayground/server/TestingPlaygroundMCP` (the install script prints both products' lines);
+  it reaches every open instance through their sockets, as Claude Desktop does on a Mac, and its GUI sandbox's helper
+  and headless renderer beside it. The extension, `<Name>.mcpb` (`"platforms": ["linux"]`), is in the package for a
+  Claude Desktop that runs on Linux (community repackagings of the Windows app exist; not tried). The plugin's panel
+  says Claude Desktop where it means the MCP client. **Pictures the chat reads**: PNG, JPEG and GIF; a project's `.fmpack` is written with zlib (and an
   xz one from macOS is refused). **measure_output's profile** is not there yet (it says so), and the FOLDER sync looks
   at the folder every half second (no file-system watcher). **Show in File Manager** and **Open in VS Code** hand the
   folder to `xdg-open` (from `xdg-utils`).
@@ -2003,7 +2044,8 @@ Requirements (Arch Linux's packages; other distributions have the same under the
 cmake ninja git python`; JUCE's `alsa-lib freetype2 fontconfig libx11 libxext libxrandr libxinerama libxcursor
 libxrender libxcomposite`; FunkGui's `glib2 vulkan-icd-loader vulkan-headers` and a Vulkan driver, and bgfx's OpenGL
 (`libglvnd mesa`: bgfx.cmake asks for it on Linux even when it draws with Vulkan); `openssl` (the chat's key) and `curl`
-(the chat's connection); `xdg-utils` to open the FOLDER. FMinus first, once: clone it to `~/audio/libraries/FMinus` and
+(the chat's connection); `xdg-utils` to open the FOLDER; `libsecret` (optional: the chat's key in your keyring).
+FMinus first, once: clone it to `~/audio/libraries/FMinus` and
 run its own `CC=clang CXX=clang++ cmake --workflow --preset dev` there, which builds its LLVM, Bison and Flex into its
 `.deps` folder (the long step: about half an hour on eight cores); this build reads them from there
 (`-DFP_FMINUS_DEPS_DIR=<folder>` names another). JUCE, bgfx.cmake and
@@ -2017,9 +2059,25 @@ build-linux-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPla
 ```
 
 `linux-effect-verify` and `linux-synth-verify` build and test one product; `linux-release-build` makes the Release build
-(LTO) in `build-linux-release`. Install by hand: copy the folder
-`build-linux-release/<Name>_artefacts/Release/VST3/<Name>.vst3` whole into `~/.vst3/`, and run the Standalone from
-`build-linux-release/<Name>_artefacts/Release/Standalone/` (its `shaderc` and `licences/` beside it). The probes' GUI
+(LTO) in `build-linux-release`. To install it, make the package and run its script:
+
+```sh
+cmake --workflow --preset linux-release-build   # Release with LTO, both products (build-linux-release/)
+scripts/package-linux.sh                        # build-linux-release/dist/TestingPlayground-<version>-linux-x86_64.tar.gz
+tar xzf TestingPlayground-<version>-linux-x86_64.tar.gz
+cd TestingPlayground-<version>-linux-x86_64 && ./install.sh     # --dry-run, --uninstall, --help; a product's name alone
+```
+
+The package holds each product's VST3, its Standalone (with its `shaderc` and `licences/`), its MCP server with the GUI
+sandbox's helper and the headless renderer, its extension and its icon, and `install.sh` (`scripts/linux-install.sh`),
+which installs them for you alone, with no root and no password: the VST3 in `~/.vst3/` (where every Linux host looks),
+the rest in `~/.local/lib/Funk/<Name>/`, links to the Standalone and the renderer in `~/.local/bin/`, and a menu entry
+(`~/.local/share/applications/<bundle id>.desktop`) with its icon. A part is copied beside its place under a hidden
+name, then renamed into place, and what was there goes to your Trash (`~/.local/share/Trash`, as file managers keep
+it): nothing is deleted, and a failure leaves the old copy whole. A place that is a link (a plugin folder on another
+disk), and a launcher or menu entry it did not make, are left alone and said so. `./install.sh --uninstall` moves
+what it installed to the Trash. Its last lines are the `claude mcp add` commands for Claude Code. `--build` runs the
+release build first; `--build-dir build-linux-dev` packages a dev build. The probes' GUI
 tests need an X display with a window manager (your desktop session; on a headless machine Xvfb with one, such as
 openbox); `-DFP_PROBE_TIMEOUT_SCALE=<n>` multiplies every probe's timeout, for a slow machine. Not every probe passes
 there yet: the rows that want a GPU picture, a few that assume macOS, the chats' conflicts, and the FOLDER's saves of
@@ -2185,6 +2243,7 @@ a probe would find the user's own folders.
 | `plugin.reload` | a panel's edit (a Run of the interface's files alone) on two processors playing one program with a phase of its own, one edited, the other its twin, their dials off their defaults: a `.gui` edit while it sounds (a label, a unit, a display of another field ahead of the meter, whose field so moves) applied with no compile (the same program, nothing offered), the output the twin's bit for bit, no voice fading, the dials' values kept, the new panel and both displays' fields read from the next block, each frame naming the tap table it was read by; what a panel reads of a frame of another table (the old panel its last fields, the new one none); a `.sc` edit, the shader built again, the same samples; a `taper=` compiling (the program starting again: the synth's voice fading, the output no longer the twin's), and an option renamed, the same files again, a `.gui` removed and back, a comment in the program each compiling; run_program's words for a panel's edit and its line on a panel taller than the PANEL view (853 x 612 at the default size: by how much, what is out of view), none for one that fits; the editor's status line, PANEL UPDATED, to `plugin.reload.panel_updated.png`; an edit run before the message thread took the compile it edits (that compile's carry written, previous_run what played before it, a dial moved then keeping its value across the next compile); an edit while the audio thread plays (its table read before its status is out); a project version opened and a Run during an A/B each compiling |
 | `plugin.state` | the session round-trips (a program of two files, the draft's three files and its tab, the dials, the output bit for bit); a run moves a renamed parameter's dial to its default and keeps a kept one's; a run whose declarations change keeps each dial's value in its units from the new program's first block, before the host's parameter is written (a log range widened, a dial made log, an option inserted before the one chosen, a range that clamps; two dials that swap places at their defaults), the host's parameters then written one gesture each (none when nothing changed; only the newest of two runs before them, carried from what the values still mean; once, a status applied again leaving an undo as it is), a value the host writes meanwhile left as it is, and run_program's report of each; a state load carrying nothing (a run of its declarations after it writes nothing); a session whose program does not compile leaves the last one playing; one without a program plays the first example; one saved before files loads as one file; a program of sixteen files (the most) runs, saved and loaded bit for bit, twenty files load the first sixteen, and a seventeenth is refused by write_file and add_library_file, naming the cap; one with too many files or bad names loads tidied; a NaN dial loads as 0.5; a refined circuit's self-test answer kept in the session and restored before its compile (no test wanted, no note, the saved processor's bits), a foreign or damaged one not; the netlists' views (Netlist or Schematic, zoom, pan, pinned probes) kept and read back, a state from before them loading as it did; PANEL, the panel's own dials (a program of 40): the host's 32 parameters beside the panel's 64 ports (a panel dial's with no host parameter behind it), run_program's "panel only", a turn through its port and set_dial playing with no host parameter written, the session keeping all 32 (`<PANEL>`, the unused too, as the APVTS keeps every `<PARAM>`) and a fresh processor loading them, a session from before them playing their defaults, a run that widens a range keeping the value in its units; a session saved during an A/B (no dials of the sides' own) while B, a version of 34 dials, plays: A's 40th dial loaded as it was, not at its default |
 | `plugin.wheel` | a Logitech G29 made MIDI (`plugin/WheelMap.h`), with made-up HID values (the device code is the Standalone's and needs the wheel): the modes told apart as hid-lg4ff does (its own 0xC24F; 0xC294 a G29's compatibility mode by its bcdDevice, another wheel's not; 0xC260 PS4); hid-lg4ff's bytes (the switch to its own mode, 900 degrees, the spring, the spring off, the shift lights' report); a program's `shiftLights` as the lights' mask (an int's low five bits, a float's floor(5 v) lit from bit 0, past 1 all five, below 0 or NaN none); a fresh map's first flush the whole state, then nothing without a change; the steering's 16 bits as 14 (full right, the centre's MSB alone, a few steps' LSB alone, full left, a 10-bit range's middle), a change under 3 steps waiting until it grows (across an MSB too) and one to rest always sent, the pedals the right way round (their maximum released) with their first 1 % released, the shifter's gears and reverse, the buttons' bits and the d-pad's, an element of no row refused; the start key's note-on after the controls, nothing while held, its note-off; rest() back to rest and nothing more; resend() the whole state, the start key's note-off when it is up, no second note-on; a signed 16-bit maximum read as 65535; the instrument: those messages through `Processor::processBlock` into the Engine's Host block, a source of MSBs alone read as 7 bits, the values staying, the start key starting a voice and letting go of its key; the effect's Host block at rest; a scenario's racing wheel (`ChatScenario`: read, refused past its range or by an unknown name, written back) read by a voice at its times, its marks named; its buttons, a mask listed out of order and played in time order, each 7 bits' control change sent only when they change (as the wheel sends them), read as `host->buttons` at their times, the same bits in blocks of 333, a mark a move naming the buttons down, a fraction and a 25th bit refused, bit 17 playing the start key's note 36 after the control changes while it is down (a second voice; measure_output's report then a phrase's); `plugin/WheelDriver.h` over fake devices that record what they are sent: on, off, unplugged and quit, the range then the spring (none when the range fails), the spring released on every way out that has a device and its failure on the card, the first flush taking only values a report carried, the rate (a report's values together, 8 ms between flushes), a PS4 G29 and other devices sent nothing, the compatibility mode switched once each "on" (the entry listed while it re-enumerates; back in that mode, gone for 8 s or its report refused: the card's line of what to do), macOS refusing the manager, resend; the shift lights while read (looked at every 25 ms, sent only when they change, none sent for a program that asks none, a mask dropped turned off once, off after the spring when switched off and on quit, none sent to an unplugged wheel and none assumed lit when it comes back, a failing report on the card and tried again only when the mask changes) |
+| `plugin.linux` | Linux's own pieces (on Linux alone), in folders of the probe's own with made-up devices: the XDG folders (the projects', the chats', the shaders' cache under `$XDG_DATA_HOME` and `$XDG_CACHE_HOME` or the home's defaults, a relative one ignored; `$XDG_RUNTIME_DIR` only when it is the user's alone, a link or 0755 refused; a shader build's temporary folder in `$TMPDIR`, else there, else the system's; nothing written); the MCP folder (`$XDG_RUNTIME_DIR`'s, else `$TMPDIR`'s `funk-<uid>`, made 0700, one that is a link or that others may write into refused) and a socket there taking a connection; the chat's keys with a keyring of the probe's own (saved there and no file, read back, bound to the provider's server, forgotten in both places; no keyring: the file, moved into the keyring when one is there; refused: the file; asked once for two looks; a keyring that fails to read said), the desktop's keyring with no session bus (not available, said why, the file) and through libsecret with a bus address that leads nowhere (each call its error, the file), the machine's key; the racing wheel over evdev and sysfs with a made-up sysfs tree and nodes (the G29 found among other devices; hid-input's codes; a range of 900 left alone, the spring as force feedback's autocentre, its events the messages a Map makes of the same values, the start key, the lights' LED files, SYN_DROPPED, off, unplugged, plugged in again, a range written, a range and lights it may not write said, a node it may not open listed and read once it may, the compatibility mode switched through `alternate_modes`, the spring off at the end); the package's `install.sh` for a home whose path holds spaces, quotes, a backtick and `$(...)` (every part in place, the menu entry's Exec read back, nothing run from a path, Claude Code's command; again: the old copies in the Trash with their paths; a stopped run's staging copy to the Trash; a dry run changing nothing; a link and a launcher not its own left alone; uninstall to the Trash, then nothing found) |
 | `plugin.chatstore` | the key on disk, in a folder of the probe's own: a key's shape; saved, the file is the format above with no 12 characters of the key in it, 0600 in a 0700 folder, and loads back; saved twice it differs (fresh salt and IV); one byte changed anywhere, or the file cut short, and it does not load; forgotten, it is gone; the model, level and fast mode round-trip, a damaged chat.json loads as none; what an earlier build kept of a sign-in (its token's file, chat.json's two fields) deleted, the choice and the key kept, nothing made when there is none, a damaged file no trouble |
 | `plugin.chats` | the chats on this Mac, in folders of the probe's own, over processors whose chat talks to a scripted API: a chat's two files sealed (FPC1), 0600 in 0700 folders, no word of it in clear, loading back, one byte changed refused, another writer's change a conflict that writes nothing, an owner or an id that is no folder's name refused; a project's id made at its first save, kept by the next and across a rename in the Finder (found by it), a Finder copy given its own when opened, a project from before ids given one; a chat in one project, another opened (a new chat), the first again (its words, its history, its thinking sent unchanged in the next request); a chat with no project going with the project it is saved as, and copied to one saved from a project; the list (a new chat first, the newest first, renamed, another opened, the name cleared, deleted); the session holding no word of a chat and no `json`, the same chat in another processor, none on another Mac, a renamed project found by its id; a session from before migrated once (sealed, the next session without it); an export and an import holding no chat and no id (the zip's README saying so); a deleted project's chats gone; get_status holding none |
 | `plugin.providers` | the chat with other providers over a real processor against recorded servers (no network): a server's address made canonical (http only on this Mac or the local network), a provider's key sealed and bound to its server (never in clear, never read for another, an Anthropic key refused for another provider); OpenRouter's models (tools only, newest first, pictures and context said; none chosen for you: a turn asks for one, sending nothing), a turn to its `/chat/completions` with its key as a Bearer token alone, the full prompt first, the tools as functions, none of Anthropic's fields, a reasoning shown and not kept, a tool call in pieces run and answered by an id made here, the footer's tokens; a model its list says takes no pictures given lines of text, said once; OpenAI's own list its chat models with tools (none the Responses API alone serves); Ollama, chosen after a Stop, with its list read, no key, the prompt's short form, calls sent whole run, a server that cut the conversation noted once; a model that refuses a picture asked again without it and marked; an answer cut at its length going on; checks that cannot pass sending the turn on twice; Gemini's models, its request (`x-goog-api-key`, systemInstruction, contents, functionDeclarations with JSON Schema), a call with its thought signature sent back on its functionCall, its result a functionResponse, its own schema subset after a 400 and from then on (an enum with no type a STRING: the projects tool's action, compare's dials, measure_output's spectrum, run_function's on; an array whose items are left open, run_function's args and write_file's files, one of strings, each a JSON value, read back before the tool runs: a write_file of files on it writes them), a key it calls not valid said; a new processor on the provider chosen last; Anthropic again as before, the history without another provider's signature in the builder's request and in the planner's; the errors naming the provider; a turn with no model whose list could not be read saying why (a server not running, a key refused) and sending nothing; a redirect never followed (the fake's, and the real transport against two servers of the probe's own on 127.0.0.1); a model the server says cannot chat with tools taken off the menu; the real transport against the probe's own server: an https:// address spoken to in TLS, a 429's body whole with its retry-after, a stream stopped by cancel within half a second, and on Linux (libcurl) a 200's body reaching the chat piece by piece as it comes |
@@ -2294,14 +2353,17 @@ Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events
                          Standalone's audio and MIDI devices as the Settings card sees them (plain data, its actions);
                          WheelMap (a Logitech G29's HID values made MIDI: its modes, hid-lg4ff's commands, the table
                          of its elements) and WheelDriver (the Standalone's wheel as decisions: what is read, switched,
-                         set and sent, and the card's line), no JUCE, no IOKit; MidiLearn (the dials' MIDI learn: the
+                         set and sent, and the card's line), no JUCE, no IOKit; WheelEvdev (Linux: the wheel through
+                         the kernel's evdev node and hid-lg4ff's sysfs files, WheelDriver's transport there);
+                         MidiLearn (the dials' MIDI learn: the
                          mappings, learning, the control changes the audio thread notes; no JUCE); AssetFiles (a
                          sample's file decoded by JUCE's WAV, AIFF and FLAC readers, read from disk, as base64) and
                          ProcessorAssets.cpp (the samples: added, removed, kept in the session and the projects);
                          the chat: ChatAgent (the conversation, its turns and Claude's tools), ChatPrompt.cpp (Claude's
                          instructions: the panel, the library, a program built from it), ClaudeApi (the Messages API
                          over HTTPS, to Anthropic),
-                         ChatStore (the key, encrypted), ChatPort.h (what the editor reaches of it),
+                         ChatStore (the key, encrypted), SecretStore (Linux: the desktop's keyring through
+                         libsecret, for the keys), ChatPort.h (what the editor reaches of it),
                          SoundPicture (view_sound's picture, drawn with JUCE);
                          ChatScenario (the render tools' scenario and trial edits), ChatCompare (compare),
                          ChatTrace (trace), ChatFunction (run_function), ChatImport (write_file: files in and out),
@@ -2322,7 +2384,7 @@ Source/plugin/           the JUCE AudioProcessor: an instrument's MIDI to events
                          the app, its window, the devices and the state through StandalonePluginHolder), Devices
                          (the DevicePort over the holder's AudioDeviceManager and its input's mute, saved on change),
                          RacingWheel (a Logitech G29 over IOKit's HID manager, WheelDriver's transport: a MIDI
-                         input of the synth's)
+                         input of the synth's; RacingWheelLinux.cpp, WheelEvdev on JUCE's message loop)
                          and NativeWindow.mm (the Mac window's look, its buttons over the top bar, its drag, the menu
                          bar)
 Source/mcp/              <Name>MCP, each product's MCP server Claude Desktop starts (Main.cpp: JSON-RPC on stdio, one
@@ -2392,7 +2454,8 @@ Tools/wheel-dump/        wheel-dump, a developer's tool (outside `all`, never in
 scripts/                 plugin.py (the products' identities: info, add, rename, codesign, notarize), test.sh,
                          import-factory.py (the factory projects from a projects folder and a name map),
                          sync-dsp-core.sh, install.sh, package.sh (the installer .pkg; --installer: the installer
-                         app's disk image), entitlements/ (the Standalones' hardened runtime, by kind)
+                         app's disk image), entitlements/ (the Standalones' hardened runtime, by kind),
+                         package-linux.sh (the Linux package, a .tar.gz) and linux-install.sh (its install.sh)
 cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in,
                          Installer.cmake (the installer, its payload, its probes) and InstallerPayload.cmake (the
                          payload put in the app), the lints
