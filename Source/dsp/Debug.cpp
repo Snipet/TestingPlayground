@@ -31,9 +31,11 @@ namespace playground::measure
         constexpr double kFirstSeconds = 0.01;
         constexpr std::size_t kAfter = 64;                 // pass 2's window goes on past the problem's call
         constexpr long kNear = 32;                         // samples: the events near a problem
-        constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (floats)
+        constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (doubles: 32 MB)
         constexpr std::size_t kMaxScanned = 2048;          // fields pass 1 reads after each call
         constexpr std::size_t kMaxTracked = 16;            // instances pass 2 keeps
+        constexpr std::size_t kMaxRecordBytes = std::size_t{ 256 } << 20;   // pass 1's records of its calls at most (a long
+                                                                          // render's: Measure.h, kMaxLongSeconds)
         constexpr std::size_t kMaxProblems = 3;
         constexpr std::size_t kMaxListed = 56;             // list: lines of fields
 
@@ -117,12 +119,32 @@ namespace playground::measure
 
         bool finite(double v) noexcept { return std::isfinite(v); }
 
-        // A field's value as text: an int's or a bool's whole.
+        // A field's value as text: an int's or a bool's whole; a double's to 12 digits, the precision it is kept for.
         std::string val(const Patch::Field& f, double v)
         {
-            if (f.type != Patch::Field::Type::real && std::isfinite(v))
+            if (!f.real() && std::isfinite(v))
                 return fmt("%.0f", v);
+            if (f.type == Patch::Field::Type::real64 && std::isfinite(v))
+                return fmt("%.12g", v);
             return num(v);
+        }
+
+        // A mean of a field's values (voices pooled, a call's): a double's to its 12 digits, any other's as a number
+        // (an int's mean need not be whole).
+        std::string meanVal(const Patch::Field& f, double v) { return f.type == Patch::Field::Type::real64 ? val(f, v) : num(v); }
+
+        // What a field's attributes say (PanelSpec.h's FieldLook), as trace's lines add it after its path:
+        // ` ("LEVEL", dB, -60 to 0)`, "" for none.
+        std::string lookWords(const Field& f)
+        {
+            std::vector<std::string> parts;
+            if (!f.look.label.empty())
+                parts.push_back("\"" + f.look.label + "\"");
+            if (!f.look.unit.empty())
+                parts.push_back(f.look.unit);
+            if (f.look.ranged)
+                parts.push_back(num(f.look.lo) + " to " + num(f.look.hi));
+            return parts.empty() ? std::string() : " (" + joined(parts, ", ") + ")";
         }
 
         // ---- the time limit and the cancel --------------------------------------------------------------------------
@@ -131,7 +153,7 @@ namespace playground::measure
             std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
             double limit = kTraceSeconds;
             const std::function<bool()>* keepGoing = nullptr;
-            bool stopped = false, cancelled = false;
+            bool stopped = false, cancelled = false, full = false;   // full: pass 1's records reached kMaxRecordBytes
             unsigned ticks = 0;
 
             // Every 64th call asks the cancel, then the time.
@@ -146,7 +168,12 @@ namespace playground::measure
                 return !stopped;
             }
 
-            const char* why() const { return cancelled ? "cancelled" : "the time limit"; }
+            const char* why() const
+            {
+                return cancelled ? "cancelled"
+                     : full      ? "the records it keeps of each call reached 256 MB (fewer fields watched, or fewer voices, go further)"
+                                 : "the time limit";
+            }
         };
 
         // ---- the voices a choice puts forward --------------------------------------------------------------------------
@@ -264,6 +291,11 @@ namespace playground::measure
                 scanSlot(-1, ci, true);
                 calls.push_back(r);
                 watchCall(ci, c);
+                if (calls.size() * sizeof(CallRec) + voices.size() * sizeof(Voice) + watched.size() * sizeof(Watch) > kMaxRecordBytes)
+                {
+                    clock_.full = clock_.stopped = true;
+                    return false;
+                }
                 return clock_.ok();
             }
 
@@ -275,7 +307,7 @@ namespace playground::measure
                 if (field >= scanOf_.size() || scanOf_[field] < 0 || s >= slots_ || from_[s] == kStart || lastAt_ < from_[s] + first_)
                     return false;
                 const double a = std::fabs(v);
-                return std::isfinite(v) && map_[field].type == Field::Type::real && a > kBig
+                return std::isfinite(v) && map_[field].real() && a > kBig
                     && a >= kGrowth * size_[s * scan_.size() + static_cast<std::size_t>(scanOf_[field])];
             }
 
@@ -286,8 +318,8 @@ namespace playground::measure
             // such a field's later moments are not looked at.
             std::vector<Transition> startBad;
             std::vector<char> moved;                       // per scanned field: not 0 in a voice that sounded
-            // The watch, a call each: the value (the mean of every voice's, with all), its range, how many voices
-            // had one, and whether one was non-finite.
+            // The watch, a call each: the value (the mean of every voice's, with all; with none finite, the last
+            // non-finite one), its range, how many voices had one, and whether one was non-finite.
             struct Watch
             {
                 double v = 0.0, lo = 0.0, hi = 0.0;
@@ -328,7 +360,7 @@ namespace playground::measure
                             record(ci == kStart ? startBad : bad, { ci, slot, scan_[k], v });
                         }
                     }
-                    else if (f.type == Field::Type::real)
+                    else if (f.real())
                     {
                         double& size = size_[s * scan_.size() + k];
                         if (first)
@@ -362,12 +394,13 @@ namespace playground::measure
                 {
                     const Field& f = map_[watch_[w]];
                     Watch out;
-                    double sum = 0.0;
+                    double sum = 0.0, badValue = 0.0;
                     const auto take = [&](int slot) {
                         const double v = patch_.read(f, slot);
                         if (!finite(v))
                         {
                             out.bad = true;
+                            badValue = v;
                             return;
                         }
                         out.lo = out.count == 0 ? v : std::min(out.lo, v);
@@ -388,7 +421,7 @@ namespace playground::measure
                     else
                         for (const int slot : picked_)
                             take(slot);
-                    out.v = out.count > 0 ? sum / out.count : 0.0;
+                    out.v = out.count > 0 ? sum / out.count : out.bad ? badValue : 0.0;
                     watched.push_back(out);
                 }
             }
@@ -429,7 +462,7 @@ namespace playground::measure
                   const std::vector<float>& r, Clock& clock)
                 : pairs(std::move(kept)), w0(from), w1(to), patch_(patch), refL_(l), refR_(r), clock_(clock)
             {
-                values.assign((w1 - w0) * pairs.size(), 0.0f);
+                values.assign((w1 - w0) * pairs.size(), 0.0);
                 alerts.assign(w1 - w0, 0);
                 voiceAt.assign(w1 - w0, {});
             }
@@ -465,7 +498,7 @@ namespace playground::measure
                     if constexpr (kInstrument)
                         c.engine.voices(voiceAt[s]);
                     for (std::size_t t = 0; t < pairs.size(); ++t)
-                        values[s * pairs.size() + t] = static_cast<float>(patch_.read(patch_.fieldMap()[pairs[t].field], pairs[t].slot));
+                        values[s * pairs.size() + t] = patch_.read(patch_.fieldMap()[pairs[t].field], pairs[t].slot);
                     reached = c.at + 1;
                 }
                 else if (c.length == 0 && c.at >= w0 && c.at < w1)
@@ -482,7 +515,7 @@ namespace playground::measure
             // whose voice the Engine drops whole (16 samples), where pass 2 drops it at the sample. Before w0 the two
             // passes make the same calls.
             std::size_t checkUntil = static_cast<std::size_t>(-1);
-            std::vector<float> values;
+            std::vector<double> values;                    // samples x pairs, as read (a double's whole)
             std::vector<uint32_t> alerts;
             std::vector<std::vector<Voice>> voiceAt;
             bool differs = false;
@@ -538,7 +571,7 @@ namespace playground::measure
                         if (ts[i].kind != lang::Tok::identifier || ts[i].text != name)
                             continue;
                         std::size_t j = i + 1;
-                        if (text(ts, j) == "[")                // an element: past its index
+                        while (text(ts, j) == "[")             // an element: past its indexes, one a dimension
                         {
                             int depth = 0;
                             for (; j < ts.size(); ++j)
@@ -1231,7 +1264,7 @@ namespace playground::measure
                                 const Field& fd = x.map[p.pairs[t].field];
                                 if (t == t0 || p.pairs[t].slot != p.pairs[t0].slot || fd.path.compare(0, prefix.size(), prefix) != 0
                                     || fd.path.find_first_of(".[", prefix.size()) != std::string::npos
-                                    || (fd.type == Field::Type::real) != reals || !finite(p.value(S - 1, t)))
+                                    || fd.real() != reals || !finite(p.value(S - 1, t)))
                                     continue;
                                 fields.push_back(fd.path.substr(prefix.size()) + " " + val(fd, p.value(S - 1, t)));
                             }
@@ -1244,7 +1277,7 @@ namespace playground::measure
                     double best = 10.0;
                     for (std::size_t t = 0; t < T; ++t)
                     {
-                        if ((p.pairs[t].slot != voiceSlot && p.pairs[t].slot >= 0) || x.map[p.pairs[t].field].type != Field::Type::real || wentBad(t))
+                        if ((p.pairs[t].slot != voiceSlot && p.pairs[t].slot >= 0) || !x.map[p.pairs[t].field].real() || wentBad(t))
                             continue;
                         const double v = p.value(S - 1, t);
                         if (!finite(v) || std::fabs(v) < 1e-3 || std::fabs(v) > kBig)
@@ -1259,7 +1292,7 @@ namespace playground::measure
                         if (const double ratio = std::fabs(v) / (usual + 1e-12); ratio > best)
                         {
                             best = ratio;
-                            precursor = x.map[p.pairs[t].field].path + " was " + num(v) + " (usually about " + num(usual) + ")";
+                            precursor = x.map[p.pairs[t].field].path + " was " + val(x.map[p.pairs[t].field], v) + " (usually about " + num(usual) + ")";
                         }
                     }
                 }
@@ -1345,7 +1378,7 @@ namespace playground::measure
                         const double step = std::fabs(b - a), usual = median(steps);
                         if (step < 10.0 * usual)
                             continue;
-                        const bool real = x.map[p.pairs[t].field].type == Field::Type::real;
+                        const bool real = x.map[p.pairs[t].field].real();
                         cands.push_back({ t, step, usual, step / std::max({ usual, 1e-6 * std::max(top, std::fabs(b)), 1e-12 }), real });
                     }
                 std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
@@ -1397,7 +1430,7 @@ namespace playground::measure
                     }
                 const std::vector<std::string> near = nearEvents(x, p, S);
                 const bool ended = std::any_of(near.begin(), near.end(), [](const std::string& e) { return e.find("ends, its process") != std::string::npos; });
-                if (f.kind == TraceFind::click && ended && (cs.empty() || !cs[0].field || cs[0].field->type != Field::Type::real))
+                if (f.kind == TraceFind::click && ended && (cs.empty() || !cs[0].field || !cs[0].field->real()))
                     pr.verdict = "a voice stops at once there: its process returned false while it still sounded; let it fade "
                                  "to silence (a release) before it returns false.";
                 else if (f.kind == TraceFind::click && started >= 0)
@@ -1427,7 +1460,7 @@ namespace playground::measure
                     pr.verdict = ended ? "the voice ends while its key is held: its process returned false (it said it was silent for good)."
                                : cs.empty() ? "no field steps with it: what feeds the output stops (a gain, a gate, a "
                                                        "buffer, a condition that holds)."
-                                                     : cs[0].path + " steps to " + num(cs[0].after.empty() ? 0.0 : cs[0].after[0])
+                                                     : cs[0].path + " steps to " + val(*cs[0].field, cs[0].after.empty() ? 0.0 : cs[0].after[0])
                                                            + " there" + (cs[0].writes.empty() ? std::string() : " (" + joined(cs[0].writes) + ")") + ".";
                 else
                     pr.verdict = "a mean offset of " + num(f.dc) + " (" + fmt("%.1f dBFS", 20.0 * std::log10(std::max(std::fabs(f.dc), 1e-12)))
@@ -1563,14 +1596,14 @@ namespace playground::measure
                     ++n;
                 }
                 const Field& f = x.map[watch[w]];
-                std::string line = f.path + ": ";
+                std::string line = f.path + lookWords(f) + ": ";
                 if (n == 0 && badFrom < 0)
                 {
                     line += kInstrument ? "no value (no voice of that choice sounded)" : "no value";
                     out.push_back(line);
                     continue;
                 }
-                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + num(n > 0 ? sum / static_cast<double>(n) : 0.0) + ", first "
+                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + meanVal(f, n > 0 ? sum / static_cast<double>(n) : 0.0) + ", first "
                       + val(f, first) + ", last " + val(f, last);
                 line += badFrom < 0 ? std::string("; never non-finite") : "; non-finite from " + seconds(static_cast<double>(badFrom) / x.rate);
                 if (p.jumpSize[w] > 0.0)
@@ -1582,7 +1615,10 @@ namespace playground::measure
         }
 
         // ---- list -------------------------------------------------------------------------------------------------------
-        const char* typeWord(Field::Type t) { return t == Field::Type::real ? "float" : t == Field::Type::integer ? "int" : "bool"; }
+        const char* typeWord(Field::Type t)
+        {
+            return t == Field::Type::real ? "float" : t == Field::Type::real64 ? "double" : t == Field::Type::integer ? "int" : "bool";
+        }
 
         std::vector<std::string> listLines(const Patch& patch)
         {
@@ -1629,7 +1665,7 @@ namespace playground::measure
                     path = path.substr(0, at) + "[" + std::to_string(lo) + ".." + std::to_string(hi) + "]" + path.substr(close + 1);
                 }
                 if (shown < kMaxListed)
-                    out.push_back(path + " " + typeWord(map[i].type));
+                    out.push_back(path + " " + typeWord(map[i].type) + lookWords(map[i]));
                 ++shown;
                 i = j;
             }
@@ -1745,8 +1781,8 @@ namespace playground::measure
         for (std::size_t k = 0; k < map.size() && scan.size() < kMaxScanned; ++k)
             if (map[k].home != Field::Home::host)
                 scan.push_back(k);
-        std::vector<std::string> unmatched;
-        std::size_t more = 0;
+        std::vector<std::string>& unmatched = out.unmatched;
+        std::vector<std::size_t> past;                       // matched past kMaxTraceWatched, each field once
         for (std::size_t i = 0; i < q.fields.size() && i < kMaxTracePatterns; ++i)
         {
             bool any = false;
@@ -1754,17 +1790,15 @@ namespace playground::measure
                 if (tracePathMatches(q.fields[i], map[k].path))
                 {
                     any = true;
-                    if (std::find(watch.begin(), watch.end(), k) != watch.end())
+                    if (std::find(watch.begin(), watch.end(), k) != watch.end() || std::find(past.begin(), past.end(), k) != past.end())
                         continue;
-                    if (watch.size() < kMaxTraceWatched)
-                        watch.push_back(k);
-                    else
-                        ++more;
+                    (watch.size() < kMaxTraceWatched ? watch : past).push_back(k);
                 }
             if (!any)
                 unmatched.push_back(q.fields[i]);
         }
-        const TraceFind find = q.find == TraceFind::none && q.fields.empty() ? TraceFind::any : q.find;
+        const std::size_t more = out.more = past.size();
+        const TraceFind find = q.find == TraceFind::none && q.fields.empty() && !q.exporting ? TraceFind::any : q.find;
         for (const std::size_t k : watch)
             out.watched.push_back(map[k].path);
 
@@ -1774,6 +1808,7 @@ namespace playground::measure
         ViewRequest vr;
         vr.render = q.render;
         vr.input = static_cast<ViewInput>(std::clamp(q.input, 0, static_cast<int>(ViewInput::silence)));
+        vr.keepInput = q.exporting && !kInstrument;
         const int watchVoice = q.voiceGiven ? q.voice : kTraceNewest;
         Pass1 p1(*patch, scan, watch, watchVoice, static_cast<std::size_t>(kFirstSeconds * rate), clock);
         Sound sound = renderSound(session, vr, &p1);
@@ -1785,7 +1820,10 @@ namespace playground::measure
             const std::size_t done = p1.calls.empty() ? 0 : p1.calls.back().at + static_cast<std::size_t>(p1.calls.back().length);
             sound.l.resize(std::min(done, sound.l.size()));
             sound.r.resize(std::min(done, sound.r.size()));
+            sound.inL.resize(std::min(done, sound.inL.size()));
+            sound.inR.resize(std::min(done, sound.inR.size()));
         }
+        out.hash = renderHash(sound.l, sound.r);
         std::size_t readable = 0;
         for (const Field& f : map)
             readable += f.home != Field::Home::host ? 1 : 0;
@@ -1795,6 +1833,7 @@ namespace playground::measure
         if (stoppedFirst)
             out.lines.push_back("(Stopped after " + seconds(static_cast<double>(sound.l.size()) / rate) + " of it: " + clock.why()
                                 + "; what follows is about that part.)");
+        out.lines.push_back(hashLine(out.hash, stoppedFirst ? "the part rendered" : "the render"));
         if (sound.stopCall != Patch::Method::none)
         {
             // A call that ran past its loop budget, or failed a bounds check (Patch.h): the program played no more from
@@ -2019,7 +2058,7 @@ namespace playground::measure
                                 if (p.pairs[t].field == watch[w]
                                     && (p.pairs[t].slot < 0 || (!picked.empty() && p.pairs[t].slot == picked.front())))
                                 {
-                                    v = num(p.value(s, t));
+                                    v = val(map[watch[w]], p.value(s, t));
                                     break;
                                 }
                             vals.push_back(v);
@@ -2038,7 +2077,7 @@ namespace playground::measure
                     {
                         const std::size_t c = points > 1 ? k * (calls - 1) / (points - 1) : 0;
                         const Pass1::Watch& v = p1.watched[c * W + w];
-                        vals.push_back(v.bad ? std::string("nan") : v.count == 0 ? std::string("-") : num(v.v));
+                        vals.push_back(v.bad ? std::string("nan") : v.count == 0 ? std::string("-") : meanVal(map[watch[w]], v.v));
                     }
                     const double step = points > 1 ? static_cast<double>(p1.calls.back().at) / rate / static_cast<double>(points - 1) : 0.0;
                     out.lines.push_back("  " + map[watch[w]].path + " every " + seconds(step) + " from 0: " + joined(vals, " "));
@@ -2046,10 +2085,43 @@ namespace playground::measure
             }
         }
         out.stopped = clock.stopped;
+        out.stoppedFirst = stoppedFirst;
         if (clock.stopped && !stoppedFirst)
             out.lines.push_back(std::string("(Stopped in the calls of 1 sample: ") + clock.why() + "; what they did not reach says so.)");
+        // The export's field log: a row after the call that reaches each multiple of `every` (its own end the row's
+        // sample), the voice chosen's value as the watch has it.
+        if (q.every > 0 && !watch.empty())
+        {
+            FieldLog& log = out.log;
+            const std::size_t W = watch.size();
+            for (const std::size_t k : watch)
+            {
+                log.columns.push_back(map[k].path);
+                log.kinds.push_back(map[k].type == Field::Type::real     ? FieldLog::Kind::real
+                                    : map[k].type == Field::Type::real64 ? FieldLog::Kind::real64
+                                                                         : FieldLog::Kind::whole);
+            }
+            std::size_t next = q.every;
+            for (std::size_t c = 0; c < p1.calls.size(); ++c)
+            {
+                const std::size_t end = p1.calls[c].at + static_cast<std::size_t>(p1.calls[c].length);
+                if (end < next)
+                    continue;
+                log.at.push_back(end);
+                for (std::size_t w = 0; w < W; ++w)
+                {
+                    const Pass1::Watch& v = p1.watched[c * W + w];
+                    log.values.push_back(!v.bad ? v.v : v.count == 0 ? v.v : std::numeric_limits<double>::quiet_NaN());
+                    log.none.push_back(v.count == 0 && !v.bad ? 1 : 0);
+                }
+                while (next <= end)
+                    next += q.every;
+            }
+        }
         out.l = std::move(sound.l);                       // nothing reads `sound` after this
         out.r = std::move(sound.r);
+        out.inL = std::move(sound.inL);
+        out.inR = std::move(sound.inR);
         return out;
     }
 }

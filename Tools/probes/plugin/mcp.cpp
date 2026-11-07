@@ -49,11 +49,12 @@
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
 //            few words on the first of the chat's alone: the instructions say how to name one) and a title in words,
-//            the ones that only look marked read-only, the annotations without a title or a read-only tool's
-//            destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
+//            the ones that only look marked read-only (trace not: its export writes files, adding and never replacing,
+//            so destructiveHint false), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
 //            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
-//            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
+//            get_status and write_file routed to it, playground_guide (its start, a part, and the debugging part naming the
+//            headless renderer beside the server with its path); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
 //            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
 //            tool and carrying the plugin's state
@@ -757,9 +758,8 @@ PROBE(plugin, mcp)
             }
         const juce::String circuitLead = editCircuit["description"].toString();
         std::printf("edit_circuit: %s\nview_panel: %s\n", circuitLead.toRawUTF8(), viewPanel["description"].toString().toRawUTF8());
-        P.eq("link.edit_circuit_lead", circuitLead == "Change a .cir netlist the way the schematic editor does: add, place, connect, "
-                                                      "disconnect, set, rename, delete and lay out parts, one command a line in ops, "
-                                                      "applied together as one step the user can undo." ? 1 : 0, 1);
+        P.eq("link.edit_circuit_lead", circuitLead == "Change a .cir netlist's parts and wires as the schematic editor does, one "
+                                                      "command a line in ops, as one step the user can undo." ? 1 : 0, 1);
         P.eq("link.edit_circuit_schema", static_cast<int>(editCircuit["inputSchema"]["properties"]["ops"]["maxItems"]) == 64
                                              && editCircuit["inputSchema"]["properties"]["ops"].hasProperty("description")
                                              && !editCircuit["inputSchema"]["properties"]["name"].hasProperty("description")
@@ -778,7 +778,7 @@ PROBE(plugin, mcp)
     P.eq("link.guide_unnamed_whole", unnamed == pg::ChatAgent::mcpGuide() && unnamed != guide ? 1 : 0, 1);
 
     // ---- GUIDE -----------------------------------------------------------------------------------------------------------
-    std::string interfacePart;
+    std::string interfacePart, debuggingPart;
     {
         int id = 100;
         const auto part = [&](const std::string& name) { return ask(*a, r, id++, "guide", object({ { "part", juce::String(name) } })); };
@@ -850,6 +850,7 @@ PROBE(plugin, mcp)
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");
         const std::string debugging = text("debugging"), circuits = text("circuits");
+        debuggingPart = debugging;
         std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu, "
                     "circuits %zu bytes\n", large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(),
                     projects.size(), circuits.size());
@@ -1120,7 +1121,7 @@ PROBE(plugin, mcp)
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
-            juce::var measure, write, del;
+            juce::var measure, write, del, trace;
             bool titled = true, lean = true;
             if (const juce::Array<juce::var>* t = list.getArray())
                 for (const juce::var& tool : *t)
@@ -1138,11 +1139,18 @@ PROBE(plugin, mcp)
                         write = tool;
                     if (tool["name"].toString() == "delete_file")
                         del = tool;
+                    if (tool["name"].toString() == "trace")
+                        trace = tool;
                 }
             P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
                                       && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
             P.eq("server.annotations", lean && !static_cast<bool>(write["annotations"]["destructiveHint"])
                                            && static_cast<bool>(del["annotations"]["destructiveHint"]) ? 1 : 0, 1);
+            // trace writes files when asked (its export), adding them and never replacing one: not read-only, not
+            // destructive.
+            P.eq("server.trace_writes", trace.isObject() && !trace["annotations"].hasProperty("readOnlyHint")
+                                            && trace["annotations"].hasProperty("destructiveHint")
+                                            && !static_cast<bool>(trace["annotations"]["destructiveHint"]) ? 1 : 0, 1);
         }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());
@@ -1154,6 +1162,20 @@ PROBE(plugin, mcp)
         P.eq("server.guide", firstText(rep["result"]) == guide ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "interface" } }) } }));
         P.eq("server.guide_part", firstText(rep["result"]) == interfacePart ? 1 : 0, 1);
+        // The debugging part names the headless renderer beside the server, with its path (Main.cpp's rendererNote).
+        rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "debugging" } }) } }));
+        {
+            const std::string said = firstText(rep["result"]);
+#if defined(_WIN32)
+            const juce::String exe = ".exe";     // as Main.cpp's rendererNote names it
+#else
+            const juce::String exe;
+#endif
+            const std::string renderer = juce::File(juce::String::fromUTF8(serverPath)).getSiblingFile(juce::String(pg::product::kName) + "Render" + exe)
+                                             .getFullPathName().toStdString();
+            P.eq("server.guide_renderer", said.rfind(debuggingPart, 0) == 0 && has(said, "\n\nTHE RENDERER\n")
+                                              && has(said, "(" + renderer + "), renders and measures") ? 1 : 0, 1);
+        }
         P.eq("server.connected", a->editorPort().desktopConnected() && a->editorPort().desktopName() == first ? 1 : 0, 1);
         rep = s.request({ a.get() }, "prompts/list", {});
         bool fixListed = false;

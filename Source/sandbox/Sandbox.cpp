@@ -453,7 +453,15 @@ namespace playground::sandbox
         else
             for (const std::string& f : fieldsNamed(files_[static_cast<std::size_t>(gui_)].text))
             {
-                fields_.push_back({ f, "float" });
+                // A float, or an array of them when it is named with indexes ("bands[2]"): of an extent unknown
+                // here (displaySource takes any index then), its name once.
+                const std::size_t open = f.find('[');
+                const std::string name = f.substr(0, open);
+                std::string type = "float";
+                for (std::size_t k = open; k != std::string::npos; k = f.find('[', k + 1))
+                    type += "[?]";
+                if (std::none_of(fields_.begin(), fields_.end(), [&](const PanelField& x) { return x.name == name; }))
+                    fields_.push_back({ name, type });
                 mockedFields_.push_back(f);
             }
         controls_ = controlsOf(dials_);
@@ -567,11 +575,19 @@ namespace playground::sandbox
         }
         if (!declared_.module.empty())
         {
-            // Those GuiSpec takes (a float, int or bool field: fieldOk), not a module's instance, a pointer or an array.
+            // Those GuiSpec takes (a float, double, int or bool field, or an array's element: fieldOk), not a module's
+            // instance or a pointer.
             std::string f;
             for (const PanelField& x : declared_.fields)
-                if (x.type == "float" || x.type == "int" || x.type == "bool")
-                    f += (f.empty() ? "" : ", ") + x.name + " (" + x.type + ")";
+            {
+                const std::size_t open = x.type.find('[');
+                if (!displayable(x.type.substr(0, open)) || x.type.rfind("param", 0) == 0)
+                    continue;
+                std::string shown = x.name;
+                for (std::size_t k = open; k != std::string::npos; k = x.type.find('[', k + 1))
+                    shown += "[i]";
+                f += (f.empty() ? "" : ", ") + shown + " (" + x.type + ")";
+            }
             if (!f.empty())
                 out += "Fields a display may show: " + f + ".\n";
         }

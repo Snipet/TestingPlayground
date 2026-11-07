@@ -1,17 +1,32 @@
-// Source/plugin/ChatTrace.cpp: the chat's trace (ChatAgent.h), read-only: where a problem in the sound starts, or what
-// the program's fields do, in an offline render (dsp/Debug.h). Its source is the editor's files (with try_edits), the
-// program that plays (its own code, never the frozen copy) or the user's recording (ChatScenario.h's captured()); its
-// render measure_output's (scenario::renderOf: the notes, the times, the dials, the wheels, the scenario). find's
-// result is at most twenty lines.
+// Source/plugin/ChatTrace.cpp: the chat's trace (ChatAgent.h), which changes nothing in the plugin: where a problem in
+// the sound starts, or what the program's fields do, in an offline render (dsp/Debug.h). Its source is the editor's
+// files (with try_edits), the program that plays (its own code, never the frozen copy) or the user's recording
+// (ChatScenario.h's captured()); its render measure_output's (scenario::renderOf: the notes, the times, the dials, the
+// wheels, the scenario). find's result is at most twenty lines.
+//
+// Its `export` writes the render as files on this Mac (dsp/Export.h): a WAV (float32, or 24-bit PCM), an effect's input
+// beside it, and with fields a CSV of them; the result names each file whole, its path one the user can open (the MCP
+// server runs here too), and gives a short CSV inline for a client that cannot open them (a cloud session). The folder
+// is rendersFolder() (the user's Music folder, <Company>/<Name>/Renders; a probe's sandbox under CTest), whose files
+// are the user's: an export only adds files, never replacing or deleting one (a stem, the name given or the time's,
+// takes a number after it while a file it would write is there), so the tool is no read-only one but no
+// destructive one either (ChatAgent.cpp's kFaces); an export that would take the folder past kMaxFolderBytes, or the
+// disk past kKeepFree, is refused in words, and a trace cancelled writes nothing. Never of the user's recording
+// (Capture.h: it is never written anywhere): a render that reads it is refused.
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
 
 #include "dsp/Debug.h"
+#include "dsp/Export.h"
 
 #include "Product.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <functional>
+#include <memory>
 
 namespace playground
 {
@@ -31,6 +46,206 @@ namespace playground
         };
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
+
+        // ---- the export --------------------------------------------------------------------------------------------
+        constexpr int64_t kMaxFolderBytes = int64_t{ 2 } << 30;    // the renders folder at most (refused past it)
+        constexpr int64_t kKeepFree = int64_t{ 1 } << 30;          // the disk keeps this much free
+        constexpr std::size_t kInlineBytes = 6000;                 // the short CSV's bytes at most (rows dropped evenly;
+                                                                   // its rows: ChatScenario.h's ExportAsk)
+
+        std::string sizeText(int64_t bytes)
+        {
+            char b[32];
+            if (bytes < 1000)
+                std::snprintf(b, sizeof b, "%lld bytes", static_cast<long long>(bytes));
+            else if (bytes < 1000000)
+                std::snprintf(b, sizeof b, "%.0f KB", static_cast<double>(bytes) / 1e3);
+            else if (bytes < 1000000000)
+                std::snprintf(b, sizeof b, "%.1f MB", static_cast<double>(bytes) / 1e6);
+            else
+                std::snprintf(b, sizeof b, "%.2f GB", static_cast<double>(bytes) / 1e9);
+            return b;
+        }
+
+        std::string grouped(std::size_t n)
+        {
+            std::string d = std::to_string(n), out;
+            for (std::size_t i = 0; i < d.size(); ++i)
+            {
+                if (i > 0 && (d.size() - i) % 3 == 0)
+                    out += ',';
+                out += d[i];
+            }
+            return out;
+        }
+
+        std::string secondsText(double s)
+        {
+            char b[32];
+            std::snprintf(b, sizeof b, s < 10.0 ? "%.2f s" : "%.1f s", s);
+            return b;
+        }
+
+        // A file written whole through a temporary beside it, then moved into place (a failed write leaves no part).
+        bool writeFile(const juce::File& target, const std::function<bool(const measure::Sink&)>& body, std::string& why)
+        {
+            juce::TemporaryFile temp(target);
+            {
+                std::unique_ptr<juce::FileOutputStream> out = temp.getFile().createOutputStream();
+                if (out == nullptr || !out->openedOk())
+                {
+                    why = "could not write " + target.getFullPathName().toStdString();
+                    return false;
+                }
+                const measure::Sink sink = [&out](const void* data, std::size_t bytes) { return out->write(data, bytes); };
+                if (!body(sink) || (out->flush(), out->getStatus().failed()))
+                {
+                    why = "writing " + target.getFileName().toStdString() + " failed (" + out->getStatus().getErrorMessage().toStdString()
+                        + "; is the disk full?)";
+                    return false;
+                }
+            }
+            if (!temp.overwriteTargetFileWithTemporary())
+            {
+                why = "could not move " + target.getFileName().toStdString() + " into place";
+                return false;
+            }
+            return true;
+        }
+    }
+
+    namespace
+    {
+        // The renders folder (above): the user's Music folder's <Company>/<Name>/Renders; a probe's sandbox's renders/.
+        juce::File rendersFolder()
+        {
+            // A probe's sandbox (CTest sets <ENV_PREFIX>PREFS_DIR for each, cmake/Probes.cmake): never the user's folder.
+            const std::string sandbox = std::string(product::kEnvPrefix) + "PREFS_DIR";
+            if (const char* dir = std::getenv(sandbox.c_str()); dir != nullptr && *dir != '\0')
+                return juce::File(juce::String::fromUTF8(dir)).getChildFile("renders");
+            return juce::File::getSpecialLocation(juce::File::userMusicDirectory)
+                .getChildFile(product::kCompany)
+                .getChildFile(product::kName)
+                .getChildFile("Renders");
+        }
+
+        // The files of an export (above) in the renders folder, and the result's lines naming them; the short CSV into
+        // `inlineCsv`; "" and why when nothing could be written.
+        std::string exportFiles(const measure::TraceResult& r, const scenario::ExportAsk& ask, std::size_t every,
+                                const measure::TraceRequest& q, std::string& inlineCsv, std::string& why)
+        {
+            const double rate = q.render.rate > 0.0 ? q.render.rate : 48000.0;
+            const juce::File dir = rendersFolder();
+            if (!dir.isDirectory() && !dir.createDirectory().wasOk())
+            {
+                why = "could not make the folder " + dir.getFullPathName().toStdString() + ".";
+                return {};
+            }
+            const std::size_t frames = r.l.size();
+            const bool input = !product::kIsInstrument && !r.inL.empty();
+            const bool csv = r.log.rows() > 0;
+            // What it writes, at most (the CSV's rows at about 24 bytes and 18 a column), against the folder and the disk.
+            const int64_t wavSize = static_cast<int64_t>(measure::wavBytes(frames, ask.wav));
+            const int64_t needs = wavSize * (input ? 2 : 1)
+                                + (csv ? static_cast<int64_t>(r.log.rows() * (24 + 18 * r.log.columns.size())) : 0);
+            int64_t held = 0;
+            for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(dir, false, "*", juce::File::findFiles))
+                held += e.getFileSize();
+            if (held + needs > kMaxFolderBytes)
+            {
+                why = "the renders folder (" + dir.getFullPathName().toStdString() + ") holds " + sizeText(held) + " and this needs "
+                    + sizeText(needs) + ", past its " + sizeText(kMaxFolderBytes) + ": the user can delete what they no longer need "
+                      "there (nothing is deleted for them), or ask for a shorter render.";
+                return {};
+            }
+            if (const int64_t spare = dir.getBytesFreeOnVolume(); spare > 0 && spare - needs < kKeepFree)
+            {
+                why = "the disk has " + sizeText(spare) + " free and this needs " + sizeText(needs) + ", leaving under "
+                    + sizeText(kKeepFree) + ".";
+                return {};
+            }
+
+            // The stem: the name given, else the time's; a number after it while any of the files it would write is
+            // there (an export adds files, never replacing one: an effect's "pad" after "pad input" is "pad 2", whose
+            // input would be that one's WAV, and its "pad input" after "pad" is "pad input 2").
+            const std::string base = !ask.name.empty() ? ask.name
+                                                       : "render " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H.%M.%S").toStdString();
+            const auto taken = [&dir](const std::string& s) {
+                return dir.getChildFile(s + ".wav").exists() || dir.getChildFile(s + ".csv").exists()
+                    || (!product::kIsInstrument && dir.getChildFile(s + " input.wav").exists());
+            };
+            std::string stem = base;
+            for (int k = 2; taken(stem); ++k)
+                stem = base + " " + std::to_string(k);
+            const juce::File wavFile = dir.getChildFile(stem + ".wav"), inFile = dir.getChildFile(stem + " input.wav"),
+                             csvFile = dir.getChildFile(stem + ".csv");
+
+            const bool fl = ask.wav == measure::WavFormat::float32;
+            measure::WavWritten w;
+            if (!writeFile(wavFile, [&](const measure::Sink& sink) { return (w = measure::writeWav(sink, r.l, r.r, rate, ask.wav)).ok; }, why))
+                return {};
+            measure::WavWritten wi;
+            if (input && !writeFile(inFile, [&](const measure::Sink& sink) { return (wi = measure::writeWav(sink, r.inL, r.inR, rate, ask.wav)).ok; }, why))
+                return {};
+            std::size_t csvBytes = 0;
+            if (csv && !writeFile(csvFile, [&](const measure::Sink& sink) { return (csvBytes = measure::writeCsv(sink, r.log, rate)) > 0; }, why))
+                return {};
+
+            const std::string format = fl ? "float32" : "24-bit PCM";
+            const auto clipped = [&](const measure::WavWritten& x) {
+                return fl || x.clipped == 0 ? std::string()
+                                            : ", " + grouped(x.clipped) + " samples past full scale clipped (float32 keeps them)";
+            };
+            // Pass 1's render cut short (TraceResult::stoppedFirst: the time limit, or its records full); a stop in the
+            // calls of 1 sample after it leaves the render whole.
+            const std::string part = r.stoppedFirst ? "; up to where trace stopped" : "";
+            std::string out = "Exported on this Mac (the user can open these) to " + dir.getFullPathName().toStdString()
+                            + (stem != base && !ask.name.empty() ? " (\"" + base + "\" was taken, and nothing is replaced)" : "") + ":\n";
+            out += "- " + wavFile.getFileName().toStdString() + ": the render, " + secondsText(static_cast<double>(frames) / rate)
+                 + " at " + std::to_string(std::llround(rate)) + " Hz, stereo " + format + ", " + sizeText(static_cast<int64_t>(w.bytes))
+                 + clipped(w) + (fl ? "; its data's SHA-256 is the render hash" : "") + part + ".\n";
+            if (input)
+                out += "- " + inFile.getFileName().toStdString() + ": the input as it went in, " + format + ", "
+                     + sizeText(static_cast<int64_t>(wi.bytes)) + clipped(wi) + ".\n";
+            if (csv)
+            {
+                const std::string whose = !product::kIsInstrument ? std::string()
+                                        : !q.voiceGiven || q.voice == measure::kTraceNewest ? "; the newest voice that sounds, empty where none does"
+                                        : q.voice == measure::kTraceAll ? "; the mean of the voices sounding, empty where none does"
+                                                                        : "; note " + std::to_string(q.voice) + "'s voice, empty where none sounds";
+                std::string cols;
+                for (const std::string& c : r.log.columns)
+                    cols += (cols.empty() ? "" : ", ") + c;
+                out += "- " + csvFile.getFileName().toStdString() + ": time_s, sample, then " + cols + whose + "; a row every "
+                     + std::to_string(every) + " samples (" + secondsText(static_cast<double>(every) / rate) + "), "
+                     + grouped(r.log.rows()) + " rows, " + sizeText(static_cast<int64_t>(csvBytes)) + part + ".\n";
+                // The short CSV: its rows evenly, the first and the last among them, 6 digits; fewer while it passes
+                // kInlineBytes.
+                if (ask.rows > 0)
+                {
+                    std::string text;
+                    std::vector<std::size_t> picks;
+                    for (std::size_t want = static_cast<std::size_t>(ask.rows); want >= 2 || text.empty(); want = want * 3 / 4)
+                    {
+                        picks = measure::evenRows(r.log.rows(), want);
+                        text.clear();
+                        measure::writeCsv([&text](const void* d, std::size_t n) {
+                            text.append(static_cast<const char*>(d), n);
+                            return true;
+                        }, r.log, rate, picks, 6);
+                        if (text.size() <= kInlineBytes || want < 2)
+                            break;
+                    }
+                    inlineCsv = "The CSV inline (" + std::to_string(picks.size()) + " of its " + grouped(r.log.rows())
+                              + " rows, evenly, to 6 digits):\n" + text;
+                }
+            }
+            else if (!q.fields.empty())
+                out += r.log.columns.empty() ? "(No CSV: no field named matched.)\n"
+                                             : "(No CSV: the render, " + grouped(frames) + " samples, is shorter than a row's "
+                                                   + grouped(every) + ".)\n";
+            return out;
+        }
     }
 
     juce::var ChatAgent::traceDefinition()
@@ -49,7 +264,8 @@ namespace playground
                                            { "dials_from", scenario::dialsFromSchema(false) },
                                            { "points", typed("integer") },
                                            { "around", typed("number") },
-                                           { "detail", typed("boolean") } });
+                                           { "detail", typed("boolean") },
+                                           { "export", juce::var(new juce::DynamicObject()) } });   // true or an object
         auto* o = props.getDynamicObject();
         if constexpr (product::kIsInstrument)
             for (const char* k : { "velocity", "modwheel", "pitchbend" })
@@ -63,8 +279,10 @@ namespace playground
             { { "name", "trace" },
               { "description",
                 juce::String("Find where a problem in the sound starts (the moment, the voice, the first field to go bad and the lines "
-                "that write it), or watch the program's fields, in an offline render.\n\n"
-                "It changes nothing. find: nan, click, runaway, silence, dc or any (the default without fields): each "
+                "that write it), or watch the program's fields, in an offline render; export writes it as a WAV, the fields as "
+                "a CSV.\n\n"
+                "It changes nothing in the plugin. find: nan, click, runaway, silence, dc or any (the default without "
+                "fields or export): each "
                 "problem's moment, voice and note, the events within 32 samples, up to 3 culprit fields (the first to go "
                 "non-finite, or past 1e6 at a thousand times its size in its first 10 ms; at a step, those that jump 10 "
                 "times their usual step) with their values around it "
@@ -75,7 +293,16 @@ namespace playground
                 "(the default), playing (its own code, not the frozen copy) or capture (the user's recording, replayed "
                 "through the program that played it; scenario from and to: a part of it). It renders in calls of 16 samples, "
                 "then of 1 sample before each problem, and says when the output depends on how the calls are split. detail: "
-                "more of each. The render as measure_output's: ")
+                "more of each. Its Render hash line: SHA-256 of the render's float32 samples, L R interleaved (the reports' "
+                "lines, as measure_output's: an instrument's the same render as this one). export (true, or {wav, every, rows, "
+                "name}) writes the render to files on the user's Mac and gives each one's path (one the user can open): a WAV "
+                "(wav: float32, the default, whose data hashes to the render hash; or 24, 24-bit PCM, clipped at full scale), "
+                "an effect's input beside it, and with fields a CSV of them (time_s, sample, a column a field, as voice "
+                "chooses; a row every `every` samples, a multiple of 16, default about 1 ms), up to 300 s of render; then the "
+                "CSV's rows evenly, at most 64 (rows, default 32), inline, for a client that cannot open the files. name: the "
+                "files' name (a number after it when taken: it never replaces a file). Never of the user's recording. The "
+                "render as "
+                "measure_output's: ")
                     + (product::kIsInstrument ? "notes, velocity, the wheels, " : "")
                     + "hold_seconds, tail_seconds, bpm, dials, dials_from, scenario and try_edits (an effect plays the "
                       "scenario's input, else the sweep)." },
@@ -87,8 +314,10 @@ namespace playground
     {
         const juce::var input = use.getProperty("input", juce::var());
         juce::var block = claude::object({ { "type", "tool_result" }, { "tool_use_id", use.getProperty("id", "") } });
-        const auto done = [&](const std::string& text, bool error) {
-            const std::string t = text.size() > kMaxOutput ? text.substr(0, kMaxOutput) + "\n(cut)" : text;
+        // `tail` (an export's short CSV, kInlineBytes at most) goes after the cut, whole.
+        const auto done = [&](const std::string& text, bool error, const std::string& tail = {}) {
+            const std::string t = (text.size() > kMaxOutput ? text.substr(0, kMaxOutput) + (tail.empty() ? "\n(cut)" : "\n(cut)\n") : text)
+                                + tail;
             block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(t.c_str()));
             if (error)
                 block.getDynamicObject()->setProperty("is_error", true);
@@ -116,30 +345,17 @@ namespace playground
             if (!known)
                 return done("find is one of nan, click, runaway, silence, dc or any.", true);
         }
-        if (const juce::var fields = input.getProperty("fields", juce::var()); !fields.isVoid())
-        {
-            const juce::Array<juce::var>* list = fields.getArray();
-            if (list == nullptr || list->size() > static_cast<int>(measure::kMaxTracePatterns))
-                return done("fields is a list of at most 8 paths or globs (\"filter.*\", \"osc[1].phase\"); list: true names "
-                            "the program's fields.", true);
-            for (const juce::var& f : *list)
-                if (f.isString() && f.toString().isNotEmpty())
-                    q.fields.push_back(f.toString().toStdString());
-        }
+        if (std::string bad; !scenario::watchOf(input, q, bad))
+            return done(bad, true);
         q.list = static_cast<bool>(input.getProperty("list", false));
         q.detail = static_cast<bool>(input.getProperty("detail", false));
-        if (const juce::var voice = input.getProperty("voice", juce::var()); !voice.isVoid())
+        scenario::ExportAsk ask;
         {
-            const juce::String v = voice.toString();
-            q.voiceGiven = true;
-            if (v == "newest")
-                q.voice = measure::kTraceNewest;
-            else if (v == "all")
-                q.voice = measure::kTraceAll;
-            else if ((isNumber(voice) || v.containsOnly("0123456789")) && v.isNotEmpty() && v.getIntValue() >= 0 && v.getIntValue() <= 127)
-                q.voice = v.getIntValue();
-            else
-                return done("voice is newest, all or a MIDI note (0 to 127).", true);
+            std::string bad;
+            if (!scenario::exportOf(input, ask, bad))
+                return done(bad, true);
+            if (ask.on && q.list)
+                return done("list names the fields and renders nothing to export: ask for one or the other.", true);
         }
         if (const juce::var points = input.getProperty("points", juce::var()); isNumber(points))
             q.points = std::clamp(static_cast<int>(std::lround(static_cast<double>(points))), 0, static_cast<int>(measure::kMaxTracePoints));
@@ -175,11 +391,15 @@ namespace playground
         // (source "capture"): the scenario is it (from, to: a part of it), replayed through the program that played it,
         // as it played (ChatScenario.h); read once, here, for the files and the render alike.
         {
-            measure::Request base;
+            measure::Request base = scenario::forNumbers();   // up to 300 s (Measure.h, "How long a render may be")
             base.fromCapture = source == "capture";
             q.render = scenario::renderOf(input, &why, base);
             if (!why.empty())
                 return done(why, true);
+            // The user's recording is never written anywhere (Capture.h), nor what it plays through the program.
+            if (ask.on && q.render.fromCapture)
+                return done("export writes no render of the user's recording: it stays in the plugin's memory (trace it "
+                            "without export, or export a render of the editor's files with a scenario of your own).", true);
         }
         if (q.render.fromCapture)
         {
@@ -214,6 +434,14 @@ namespace playground
         if (!scenario::tryEdits(input, files, trials, why))
             return done(why, true);
         q.keepGoing = [this] { return !cancel_.load(); };
+        // An export (above): the fields every `every` samples, a multiple of 16 (pass 1's calls), about 1 ms by default.
+        std::size_t every = 0;
+        if (ask.on)
+        {
+            q.exporting = true;
+            every = scenario::everyOf(ask.every, q.render.rate);
+            q.every = q.fields.empty() ? 0 : every;
+        }
 
         const measure::TraceResult r = measure::trace(files, q);
         if (!r.error.empty())
@@ -221,8 +449,19 @@ namespace playground
         std::string out = scenario::trialLine(trials) + scenario::dialsLine(defaults && !q.render.fromCapture)
                         + "Traced offline (nothing that plays changed): " + words
                         + (trials > 0 ? ", with the trial edits" : "") + ".\n";
+        std::string tail;                                   // the short CSV, after trace's own lines
+        if (ask.on && cancel_.load())                       // stopped (the stop button, Desktop's cancel): no file
+            out += "Cancelled, so nothing was exported: no file was written.\n";
+        else if (ask.on)
+        {
+            std::string why2;
+            const std::string written = exportFiles(r, ask, every, q, tail, why2);
+            if (!why2.empty())
+                return done(out + "The export failed: " + why2 + "\n", true);
+            out += written;
+        }
         for (const std::string& line : r.lines)
             out += line + "\n";
-        return done(out, false);
+        return done(out, false, tail);
     }
 }

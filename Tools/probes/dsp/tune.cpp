@@ -53,6 +53,20 @@
 //            definition, set aside and named, the detail's parts within 0.2 dB, the effect's input the sweep; one that
 //            counts in samples (compare's: an envelope a step a sample, a delay of 64 samples) not, the metrics that
 //            move named side by side; B at 22050 Hz refused (two rates are 40 kHz or more), both at it compared
+//   LONG     a render that returns numbers (Request::longest kMaxLongSeconds): 300 s held, measured, every metric as
+//            a 1 s render's (an instrument's level, attack and release, its pitch; an effect's gains and its clean THD),
+//            in a time printed and bounded; the same request with a picture's cap renders 10 s; its length as
+//            renderSeconds says; at 192 kHz its times cut to 145 s (longestAt: kMaxRenderSamples less a whole tail), one
+//            within it never re-timed, latestTime naming its last time; an effect's render with its own input as long
+//            as its test signals when they are longer. Cancelled halfway (Session::setCancel, from its progress):
+//            nothing measured, the report saying how far it got (150 s of the note held's 301.5 s; the effect's sine's
+//            300 s) and back within a second; the cut sticks until the next setCancel, which measures again; a time
+//            limit stops it saying so, naming the call's whole limit (its start shared), and when it lands in a short
+//            render after a long one, the one that spent it (the report keeping no line of what was measured before
+//            the cut); run() says it was cancelled; tune_dials cancelled in its first render tunes nothing, saying how
+//            far, and a sweep cut in its second value's render keeps the first row; compare cancelled compares
+//            nothing, naming the side; a check cancelled is not measured, saying so, and one after it in a render of
+//            its own is not measured either, through the cut
 #include "Probe.h"
 
 #include "dsp/Compare.h"
@@ -64,10 +78,12 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -1220,8 +1236,203 @@ PROBE(dsp, tune)
                                                        "48000 Hz and B at 22050 Hz."
                                             && under.a.l.empty() && under.b.l.empty() ? 1 : 0, 1);
         ms::CompareSide lowA = low;
-        const ms::Comparison oneLow = ms::compare(lowA, low, ms::CompareOptions{ false, false });
+        const ms::Comparison oneLow = ms::compare(lowA, low, ms::CompareOptions{ false, false, {} });
         P.eq("rates.one_rate_under_40k", oneLow.error.empty() && oneLow.identical && !oneLow.twoRates() ? 1 : 0, 1);
+    }
+
+    // ---- LONG ----------------------------------------------------------------------------------------------------------
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+        const auto has = [](const std::string& t, const std::string& w) { return t.find(w) != std::string::npos; };
+        ms::Request longer = base;
+        longer.longest = ms::kMaxLongSeconds;
+        longer.holdSeconds = 300.0f;
+        longer.dials = kInstrument ? std::map<std::string, float>{ { "release", 0.5f } }   // its attack 5 ms: the same level
+                                   : std::map<std::string, float>{ { "gain", 6.0f } };       // held 1 s or 300 s
+        ms::Request shorter = longer;
+        shorter.holdSeconds = 1.0f;
+        const auto t0 = Clock::now();
+        const ms::Result m = session.measure(longer);
+        const double took = since(t0);
+        const ms::Result s = session.measure(shorter);
+        std::printf("a render of 300 s held, measured in %.1f s:\n%s", took, m.report.c_str());
+        P.eq("long.measured", !m.cancelled && has(m.report, kInstrument ? "held 300.00 s, then released for 1.50 s" : "for 300.00 s")
+                                  && !has(m.report, "Cancelled") ? 1 : 0, 1);
+        P.eq("long.every_metric", m.values.size() == s.values.size() ? 1 : 0, 1);
+        if constexpr (kInstrument)
+        {
+            P.near("long.rms_as_short", at(m.values, "rms_db"), at(s.values, "rms_db"), 0.05);
+            P.near("long.fundamental_hz", at(m.values, "fundamental_hz"), 220.0, 1.0);
+            P.near("long.attack_s", at(m.values, "attack_s"), at(s.values, "attack_s"), 1e-3);
+            P.near("long.release_s", at(m.values, "release_s"), 0.5, 0.03);
+        }
+        else
+        {
+            P.near("long.sine_gain_db", at(m.values, "sine_gain_db"), 6.0, 0.05);
+            P.near("long.noise_gain_db", at(m.values, "noise_gain_db"), 6.0, 0.1);
+            P.le("long.clean_thd", at(m.values, "thd_db"), -80.0);
+        }
+        P.le("long.seconds", took, 90.0);
+        // A picture's cap (the default) renders 10 s of it; the numbers' its 300 s and the tail; 192 kHz holds 155 s.
+        ms::Request capped = longer;
+        capped.longest = ms::kMaxPlaySeconds;
+        P.eq("long.picture_cap", static_cast<int64_t>(session.lengthOf(capped)), static_cast<int64_t>(11.5 * 48000.0));
+        P.eq("long.length", static_cast<int64_t>(session.lengthOf(longer)), static_cast<int64_t>(301.5 * 48000.0));
+        P.near("long.render_seconds", ms::renderSeconds(longer), 301.5, 1e-9);
+        ms::Session high(files(), 192000.0);
+        // At 192 kHz its times are cut to what kMaxRenderSamples holds less a whole tail: 145 s, and its tail (the
+        // plugin refuses it: ChatScenario.h's fits); one that ends by 145 s is never re-timed.
+        P.near("long.longest_at", ms::longestAt(ms::kMaxLongSeconds, 192000.0), 145.0, 1e-9);
+        P.near("long.longest_at_96k", ms::longestAt(ms::kMaxLongSeconds, 96000.0), 300.0, 1e-9);
+        P.eq("long.samples_cap", static_cast<int64_t>(high.lengthOf(longer)),
+             static_cast<int64_t>((ms::kMaxRenderSamples / 192000.0 - ms::kMaxTailSeconds + 1.5) * 192000.0));
+        ms::Request within = longer;
+        within.holdSeconds = 145.0f;
+        P.eq("long.within_not_retimed", static_cast<int64_t>(high.lengthOf(within)), static_cast<int64_t>(146.5 * 192000.0));
+        P.near("long.latest_time", ms::latestTime(longer), 300.0, 1e-9);
+        if constexpr (!kInstrument)
+        {
+            // Its own input, shorter than the test signals that still play for hold_seconds: as long as they are.
+            auto own = std::make_shared<ms::Input>();
+            own->l.assign(static_cast<std::size_t>(2.0 * 48000.0), 0.0f);
+            own->r = own->l;
+            ms::Request withInput = longer;
+            withInput.input = own;
+            P.near("long.input_and_hold", ms::renderSeconds(withInput), 301.5, 1e-9);
+        }
+
+        // A cancel: asked, a time limit and the progress (its start and its record of what was spent left to setCancel).
+        const auto cancelOf = [](std::function<bool()> asked, double seconds, std::function<void(double, double)> progress) {
+            ms::Cancel k;
+            k.asked = std::move(asked);
+            k.seconds = seconds;
+            k.progress = std::move(progress);
+            return k;
+        };
+        // Cancelled halfway, from its progress: nothing measured, how far it got, back at once.
+        ms::Session cut(files());
+        bool stop = false;
+        Clock::time_point askedAt = Clock::now();
+        cut.setCancel(cancelOf([&] { return stop; }, 0.0, [&](double done, double length) {
+            if (!stop && done >= 0.5 * length)
+            {
+                stop = true;
+                askedAt = Clock::now();
+            }
+        }));
+        const ms::Result c = cut.measure(longer);
+        const double back = since(askedAt);
+        std::printf("cancelled halfway (back %.3f s after):\n%s", back, c.report.c_str());
+        P.eq("long.cancelled", c.cancelled && c.values.empty() && cut.cancelled() ? 1 : 0, 1);
+        P.eq("long.cancel_words", has(c.report, kInstrument ? "Cancelled 150.87 s into the render of the note held (301.50 s long), "
+                                                            : "Cancelled 150.02 s into the sine's render (300.00 s long), ")
+                                      && has(c.report, " after it began, about ") && has(c.report, " s of sound a second. Nothing was measured.\n")
+                                      && !has(c.report, "Metrics:") ? 1 : 0, 1);
+        P.le("long.cancel_at_once", back, 1.0);
+        P.eq("long.cancel_sticks", cut.measure(shorter).cancelled ? 1 : 0, 1);
+        cut.setCancel({});
+        const ms::Result cleared = cut.measure(shorter);
+        P.eq("long.cancel_cleared", !cleared.cancelled && cleared.values.size() == s.values.size() ? 1 : 0, 1);
+        cut.setCancel(cancelOf(nullptr, 0.02, nullptr));
+        const ms::Result late = cut.measure(longer);
+        std::printf("a time limit of 0.02 s: %s", late.report.c_str());
+        P.eq("long.time_limit", late.cancelled && has(late.report, "Stopped at the time limit (0.02 s): ") && has(late.report, " had reached ")
+                                    && has(late.report, "; a shorter render fits. Nothing was measured.\n") ? 1 : 0, 1);
+        // The limit lands in a short render after a long one: the words name the call's whole limit, and the render
+        // that spent it (its last check sleeps past the limit, so the render after it is cut as it starts).
+        {
+            bool slept = false, last = false;
+            ms::Session spent(files());
+            spent.setCancel(cancelOf(
+                [&] {
+                    if (last && !slept)
+                    {
+                        slept = true;
+                        std::this_thread::sleep_for(std::chrono::milliseconds(700));
+                    }
+                    return false;
+                },
+                0.5, [&](double done, double length) { last = length - done <= static_cast<double>(ms::kCancelSamples) / 48000.0; }));
+            const ms::Result after = spent.measure(shorter);
+            std::printf("a time limit of 0.5 s, spent by the render before: %s", after.report.c_str());
+            P.eq("long.time_limit_spent", after.cancelled && has(after.report, "Stopped at the time limit (0.5 s) 0.00 s into ")
+                                              && has(after.report, kInstrument ? ": the render before it, the render of the note held (2.50 s long), took "
+                                                                               : ": the render before it, the sine's render (1.00 s long), took ")
+                                              && has(after.report, "; a shorter render fits. Nothing was measured.\n")
+                                              && !has(after.report, kInstrument ? "Held: peak" : "Sine 220 Hz at -12.0 dBFS for 1.00 s: out")
+                                              ? 1 : 0, 1);
+            // Spent by several renders before it (another Session's, sharing the call's start and record): how many,
+            // how long they took, and the longest.
+            ms::Cancel many = cancelOf(nullptr, 1.0, nullptr);
+            many.start = Clock::now() - std::chrono::seconds(3);
+            many.spent = std::make_shared<ms::Cancel::Spent>();
+            many.spent->renders = 3;
+            many.spent->sound = 7.5;
+            many.spent->longest = "the render of the scenario";
+            many.spent->longestLength = 2.5;
+            many.spent->longestSeconds = 1.2;
+            ms::Session third(files());
+            third.setCancel(many);
+            const ms::Result m3 = third.measure(shorter);
+            std::printf("a time limit of 1 s, spent by three renders before: %s", m3.report.c_str());
+            P.eq("long.time_limit_renders", m3.cancelled && has(m3.report, "Stopped at the time limit (1 s) 0.00 s into ")
+                                                && has(m3.report, ": the 3 renders before it took ")
+                                                && has(m3.report, ", the longest the render of the scenario (2.50 s long) taking 1.2 s; "
+                                                                  "fewer or shorter renders fit. Nothing was measured.\n") ? 1 : 0, 1);
+        }
+        bool was = false;
+        ms::run(files(), longer, cancelOf([] { return true; }, 0.0, nullptr), &was);
+        P.eq("long.run_cancelled", was ? 1 : 0, 1);
+
+        // tune_dials, compare and the checks, cancelled.
+        const ms::Goal level = target(kInstrument ? "rms_db" : "sine_gain_db", kInstrument ? -30.0 : 0.0, 0.25);
+        ms::TuneRequest tq;
+        tq.render = shorter;
+        tq.dials = { kInstrument ? "level" : "gain" };
+        tq.goals = { level };
+        tq.cancelled = [] { return true; };
+        const ms::TuneResult tr = ms::tune(files(), tq);
+        std::printf("tune cancelled: %s\n", tr.error.c_str());
+        P.eq("long.tune_cancelled", tr.renders == 0 && has(tr.error, "Cancelled 0.00 s into the ") && has(tr.error, " Nothing was tuned.") ? 1 : 0, 1);
+        bool second = false;
+        ms::TuneRequest sq = tq;
+        sq.sweep = kInstrument ? std::vector<float>{ -30.0f, -20.0f, -10.0f } : std::vector<float>{ -6.0f, 0.0f, 6.0f };
+        sq.cancelled = [&] { return second; };
+        sq.progress = [&](int, int) {
+            second = true;                               // the next render is cut as it starts
+            return true;
+        };
+        const ms::TuneResult sr = ms::tune(files(), sq);
+        P.eq("long.sweep_cut_row_left_out", sr.error.empty() && sr.sweep.size() == 1 && sr.stopped && has(sr.cut, "Cancelled 0.00 s into ")
+                                                && has(sr.text, "stopped by the user after 1 of 3") ? 1 : 0, 1);
+        ms::CompareSide side;
+        side.files = files();
+        side.request = shorter;
+        ms::CompareOptions co;
+        co.cancel.asked = [] { return true; };
+        const ms::Comparison cc = ms::compare(side, side, co);
+        std::printf("compare cancelled: %s\n", cc.error.c_str());
+        P.eq("long.compare_cancelled", has(cc.error, "Cancelled 0.00 s into A's render (") && has(cc.error, " Nothing was compared.") ? 1 : 0, 1);
+        // The call's time limit, begun before it (Cancel::start), named whole however little of it is left.
+        ms::CompareOptions over;
+        over.cancel.seconds = 50.0;
+        over.cancel.start = Clock::now() - std::chrono::seconds(100);
+        const ms::Comparison co2 = ms::compare(side, side, over);
+        P.eq("long.compare_limit_whole", has(co2.error, "Stopped at the time limit (50 s): A's render had reached 0.00 s of its ")
+                                             && has(co2.error, " Nothing was compared.") ? 1 : 0, 1);
+        ms::Check check;
+        check.goal = level;
+        check.request = shorter;
+        ms::Check other = check;                         // a render of its own, in a Session of its own (its rate): not
+        other.request.holdSeconds = 0.5f;                // measured through the first's cut, whose words it shares
+        other.request.rate = 96000.0;
+        const ms::Cancel always = cancelOf([] { return true; }, 0.0, nullptr);
+        const std::vector<ms::CheckResult> ev = ms::evaluate(files(), { check, check, other }, {}, nullptr, &always);
+        std::printf("checks cancelled: %s | %s\n", ev.size() == 3 ? ev[0].text.c_str() : "", ev.size() == 3 ? ev[2].text.c_str() : "");
+        P.eq("long.check_cancelled", ev.size() == 3 && !ev[0].measured && has(ev[0].text, "not measured: Cancelled 0.00 s into ")
+                                         && !ev[1].measured && ev[1].text == ev[0].text && !ev[2].measured && ev[2].text == ev[0].text
+                                         ? 1 : 0, 1);
     }
     return P.finish();
 }

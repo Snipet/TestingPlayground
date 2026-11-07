@@ -392,6 +392,7 @@ namespace playground
         int chatHostBlock() const override;
         std::string chatProject() const override;
         std::string chatAb() const override;
+        bool chatSnapshot(Engine::Snapshot& s, std::string& why) override;
         std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
         midilearn::View chatMidi() const override { return learn_.view(); }
         Assets chatAssets() const override { return assetsNow(); }

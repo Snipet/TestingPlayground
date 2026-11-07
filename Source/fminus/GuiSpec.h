@@ -61,9 +61,10 @@
 // An element's own properties come last, so they win; a class's or the defaults' property an element does not take is
 // left out without a note.
 //
-// Displays, of `in` or `out` (the plugin's audio: an effect's input, the output) or a float, int or bool field the
-// program writes: the main module's (an instrument's from its newest sounding voice), or the module Shared's through
-// the main module's Shared* field, `shared->level` (its one Shared, whether a voice sounds or not), with label= (else
+// Displays, of `in` or `out` (the plugin's audio: an effect's input, the output) or a float, double, int or bool field
+// the program writes: the main module's (an instrument's from its newest sounding voice), or the module Shared's through
+// the main module's Shared* field, `shared->level` (its one Shared, whether a voice sounds or not), or one element of an
+// array of them, an index a dimension (`bands[2]`, `grid[1][3]`: PanelSpec.h's displaySource), with label= (else
 // the source's name; Shared's field's own, LEVEL), color=, and min= max= for a field (0 and 1 when unsaid):
 //   meter out   vu out   led gate   number cutoffHz   scope out   spectrum out
 // scope and spectrum (an analyser of in or out) take width= and height=. A number shows an int's or a bool's field as

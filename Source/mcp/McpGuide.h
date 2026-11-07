@@ -259,8 +259,9 @@ namespace playground::mcp::guide
                    "- \"library\": the ready-made building blocks (" + categories + "), a line each. Read it before you "
                    "build, and use them rather than writing your own; then \"library:<file>\" gives a block's usage (its "
                    "header), \"library:<file>:code\" its whole code without adding anything to the user's editor.\n"
-                   "- \"debugging\": listen, capture, trace and compare in full (what plays now in the user's song, "
-                   "recording what they play, where a problem starts, two versions against each other). Read it before you "
+                   "- \"debugging\": listen, capture, trace, compare and run_function in full (what plays now in the user's "
+                   "song, recording what they play, where a problem starts, two versions against each other, one function "
+                   "called). Read it before you "
                    "first use one of them: when the user says something sounds wrong, or a measurement shows a problem.\n"
                    "- \"examples\": this plugin's examples (its EXAMPLES menu), whole.\n"
                    "- \"projects\": RANDOM, and the user's projects and presets: read it before you save, open or apply "
@@ -289,8 +290,9 @@ namespace playground::mcp::guide
                    "The tools for a problem the user hears: listen (what plays now in their song, live), capture (a recording "
                    "of what they play, kept in the plugin's memory, which then replays as a scenario), trace (where a problem "
                    "starts in the program: the moment, the voice, the field and its lines) and compare (two versions rendered "
-                   "alike). CHECKING YOUR WORK, in \"start\", says what each is for; here is what their short descriptions "
-                   "leave out.\n"
+                   "alike); and run_function, which calls one of the program's functions by name, alone, to see what it "
+                   "returns. CHECKING YOUR WORK, in \"start\", says what the first four are for; here is what their short "
+                   "descriptions leave out.\n"
                  + notes(g, c.notes, "debugging");
         if (n == "examples")
             return g.substr(c.examples, c.projects - c.examples);

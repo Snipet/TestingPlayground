@@ -23,13 +23,16 @@
 //                                                          a knob's value reads (number speed unit=rpm decimals=0)
 //   #pragma panel scope out                                an oscilloscope
 // Their source: `in` or `out`, the plugin's audio (an effect's input, the output; left and right, in dBFS), or a
-// float, int or bool field that the program writes, shown between a range given after it (default 0 1: #pragma panel
-// meter gr 0 24 "GR"): the main module's (`gr`, `env`; an instrument's from its newest sounding voice, 0 while none
-// sounds), or the module Shared's through the main module's Shared* field (`shared->level`: its one Shared, whether a
-// voice sounds or not). A field's scope is its trace over the last seconds; an int's or a bool's readout a whole
-// number. A section names a display by its name, the source's unless
-// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
-// "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
+// float, double, int or bool field that the program writes, shown between a range given after it (default 0 1, or the
+// field's fminus::range: #pragma panel meter gr 0 24 "GR"): the main module's (`gr`, `env`; an instrument's from its
+// newest sounding voice, 0 while none sounds), or the module Shared's through the main module's Shared* field
+// (`shared->level`: its one Shared, whether a voice sounds or not), or one element of an array field of either, an
+// index a dimension (`bands[2]`, `grid[1][3]`: displaySource below). A field's scope is its trace over the last
+// seconds; an int's or a bool's readout a whole number. A field's attributes give its displays what the panel line
+// leaves out (FieldLook below: a label, a range; a number's unit and places). A section names a display by its name,
+// the source's unless `as` gives another, which a second display of one source needs: #pragma panel scope out as wave
+// "SCOPE". Without a "label", the line's or its field's ui::label, it shows that name (a display of Shared's without
+// `as`: its field's own, LEVEL).
 //
 // A key=value is written with no space around its = (unit="rpm", unit=Hz, decimals=1).
 //
@@ -48,6 +51,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace playground
@@ -216,20 +220,77 @@ namespace playground
         bool operator==(const PanelSpec&) const = default;
     };
 
-    // A field of the main module, as FMinus describes it ("float", "int", "bool", "float[16]", "param float", ...).
+    // What a field's attributes say about showing it. FMinus passes a field's attributes on to the plugin (written after
+    // its name, C23's way: `float level [[ui::unit("dB")]] [[ui::label("LEVEL")]] [[fminus::range(-60, 0)]];`), and
+    // the plugin reads four, the last of a name counting; the others are the program's own, and left alone:
+    //   ui::unit("dB")          its unit: a number display's readout ("-12.0 dB") when the panel gives none, and
+    //                           trace's lines
+    //   ui::label("LEVEL")      a display's label when the panel gives none (a #pragma panel line's "label", a .gui
+    //                           file's label=), and trace's lines
+    //   ui::decimals(1)         a number display's places, 0 to 4, when its decimals= gives none
+    //   fminus::range(lo, hi)   what a display spans when the panel gives no range (else 0 to 1), and trace's lines
+    // The text is kept whole (trace shows it so); a display that takes a label or a unit cuts it as it cuts its own
+    // (kMaxDialLabel, and a unit's 7 bytes: cutText), with a note on the display's line.
+    // Patch reads them from FMinus's Program::Module::Field::attributes, the GUI sandbox from Lang's (Symbol::attributes).
+    struct FieldLook
+    {
+        std::string unit, label;
+        int8_t decimals = -1;
+        bool ranged = false;
+        float lo = 0.0f, hi = 1.0f;
+        bool any() const noexcept { return !unit.empty() || !label.empty() || decimals >= 0 || ranged; }
+        bool operator==(const FieldLook&) const = default;
+    };
+    // One attribute (its name with its namespace, its arguments as text: a string's characters, a number's spelling)
+    // into `look`, when it is one of the four above; anything else, or an argument that does not fit, leaves it as it was.
+    void readFieldAttribute(FieldLook& look, std::string_view name, const std::vector<std::string>& args);
+
+    // A field of the main module, as FMinus describes it ("float", "double", "int", "bool", "float[16]",
+    // "float[4][16]", "param float", ...), and what its attributes say about showing it.
     struct PanelField
     {
         std::string name, type;
+        FieldLook look = {};
     };
+
+    // The types a display reads: float, double, int and bool.
+    bool displayable(std::string_view type) noexcept;
 
     // The fields a display may name: the main module's `fields`, then the module Shared's `shared` (not its params)
     // through the main module's first Shared* field, each as "<that field>-><its name>" ("shared->level"), as the
-    // field map names them (Patch.h); no Shared* field, none of them. A display takes a float, int or bool of these.
+    // field map names them (Patch.h); no Shared* field, none of them. A display takes a float, double, int or bool of
+    // these, or an element of an array of them (displaySource).
     std::vector<PanelField> displayFields(const std::vector<PanelField>& fields, const std::vector<PanelField>& shared);
+
+    // What a display (a live= mark, a shader's input) of `source` reads among `fields` (displayFields'): a field of a
+    // type it reads by its name ("gr", "shared->level"), or one element of an array of them by a constant index a
+    // dimension ("bands[2]", "grid[1][3]", each inside its extent: C's row-major order, as FMinus lays it out). An
+    // extent that is no number (Lang's `float x[N]`, the sandbox's) takes any index.
+    struct DisplaySource
+    {
+        enum class Problem : uint8_t
+        {
+            none,                                           // it reads `field`'s element `element`, of `type`
+            noField,                                        // no field has its name (`why`: the name)
+            dial,                                           // the field is a parameter
+            type,                                           // a type no display reads, or an array named without its
+                                                            // indexes (or a scalar with some): `why` says which
+            index,                                          // an index that is no number, or outside its extent: `why`
+        };
+        Problem problem = Problem::noField;
+        const PanelField* field = nullptr;                  // the field of its name (null: none)
+        std::string type;                                   // the value's: "float", "double", "int" or "bool"
+        std::size_t element = 0;                            // its index among the array's elements (0: no array)
+        std::string why;
+    };
+    DisplaySource displaySource(const std::vector<PanelField>& fields, const std::string& source);
 
     // The label a display of `source` takes when it is given none: the source ("out", "env"), or Shared's field's own
     // name ("shared->level": "level"), kMaxDialLabel characters at most.
     std::string sourceLabel(const std::string& source);
+
+    // `text` cut to at most `max` bytes, never inside a UTF-8 sequence (a character that does not fit is left out whole).
+    std::string cutText(const std::string& text, std::size_t max);
 
     // The colours a panel line may name.
     inline constexpr const char* kPanelColors[] = { "red",  "orange", "yellow", "green", "teal",

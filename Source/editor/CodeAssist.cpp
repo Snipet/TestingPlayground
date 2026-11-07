@@ -411,6 +411,7 @@ namespace playground::ui
                 case lang::Tok::number:    st = csNumber; break;
                 case lang::Tok::op:        st = csOperator; break;
                 case lang::Tok::punct:     st = csPunct; break;
+                case lang::Tok::string:    st = csString; break;
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {
@@ -454,6 +455,7 @@ namespace playground::ui
                                 case lang::Tok::keyword:   ps = csKeyword; break;
                                 case lang::Tok::identifier:
                                 case lang::Tok::type:      ps = p.text == "defined" ? csKeyword : csConstant; break;
+                                case lang::Tok::string:    ps = csString; break;
                                 case lang::Tok::directive:
                                 case lang::Tok::unknown:   ps = csPlain; break;
                             }
@@ -503,7 +505,7 @@ namespace playground::ui
                 }
             }
             if (attr)
-                st = t.kind == lang::Tok::comment ? csComment : csAttribute;
+                st = t.kind == lang::Tok::comment ? csComment : t.kind == lang::Tok::string ? csString : csAttribute;
             span(t.col, t.col + t.len, st);
             if (attr && t.text == "]" && prev != nullptr && prev->text == "]")
                 attr = false;
@@ -532,6 +534,7 @@ namespace playground::ui
                 case lang::Tok::op:        st = csOperator; break;
                 case lang::Tok::punct:     st = csPunct; break;
                 case lang::Tok::type:
+                case lang::Tok::string:                       // none in a netlist
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {

@@ -5,7 +5,8 @@
 // The search runs over the tuned dials' normalised ranges (a dial with a log taper is searched in its own steps): the
 // dials as they are first, then a few points spread over the ranges (a Halton sequence, the same every time), then
 // Nelder-Mead from the best, started again from the best when it settles while a goal is unmet, until every goal is met,
-// the budget of renders is spent, `progress` says stop, or the time limit passes (`seconds`, wall-clock). The score is
+// the budget of renders is spent, `progress` says stop, or the time limit passes (`seconds`, wall-clock), each also
+// asked within a render (`cancelled`, Measure.h's Session::setCancel: the render cut is left out). The score is
 // the goals' penalties, weighted (Goals.h). A goal whose metric the render leaves unmeasured (Result::unmeasured: a
 // window that holds none of it, which no dial changes) is left out of the score and named in the outcome; with every
 // goal so, it does not search (an error that says why). Deterministic: the same files and request give the same dials
@@ -51,6 +52,9 @@ namespace playground::measure
         // After each render (renders so far, the budget): false stops the search, which keeps the best so far.
         std::function<bool(int, int)> progress;
         double seconds = 0.0;                     // wall-clock time at most (0: no limit); past it, the best so far
+        // Asked during each render too (Measure.h's Cancel, with the time limit): true stops it there, and the search;
+        // the render cut is left out (TuneResult::cut), and when it is the first, nothing is tuned (an error).
+        std::function<bool()> cancelled;
     };
 
     struct TuneResult
@@ -60,6 +64,7 @@ namespace playground::measure
         double seconds = 0.0;
         bool stopped = false;                     // progress said stop, or the time limit passed
         bool timedOut = false;                    // the time limit passed
+        std::string cut;                          // a render cut short as it went (Session::cancelWords), left out
         std::map<std::string, float> start, best; // the tuned dials' plain values, by name as the program spells it
         Metrics startValues, bestValues;          // the goals' metrics there
         double startScore = 0.0, bestScore = 0.0;

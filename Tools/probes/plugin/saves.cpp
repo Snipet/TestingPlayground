@@ -522,7 +522,7 @@ PROBE(plugin, saves)
                 projectsSent = projectsSent || x["name"].toString() == "projects";
             }
         std::printf("chat: %d tools sent%s\n", toolsSent, projectsSent ? ", projects among them" : "");
-        P.eq("chat.tool_sent", projectsSent && toolsSent == 22 ? 1 : 0, 1);
+        P.eq("chat.tool_sent", projectsSent && toolsSent == 23 ? 1 : 0, 1);
         const Result list = resultOf(last, "toolu_p1"), ver = resultOf(last, "toolu_p2"), pre = resultOf(last, "toolu_p3");
         std::printf("chat: %s\n      %s\n      %s\n", list.text.substr(0, list.text.find('\n')).c_str(), ver.text.c_str(), pre.text.c_str());
         P.eq("chat.results", !list.error && !ver.error && !pre.error && has(list.text, "Open: \"Glass Song\", version 2 of 2")

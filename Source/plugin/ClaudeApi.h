@@ -141,8 +141,15 @@ namespace playground::claude
     // Just the message of an error response's body ("" when it has none).
     std::string errorMessage(const std::string& body);
 
-    // JSON helpers on juce::var.
+    // JSON helpers on juce::var. object() is inline: the request reading (ChatScenario.cpp), which the headless renderer
+    // (Source/render) compiles too, needs it without this file's client.
     juce::var parseJson(const std::string& text);
     std::string toJson(const juce::var& v);
-    juce::var object(std::initializer_list<std::pair<const char*, juce::var>> fields);
+    inline juce::var object(std::initializer_list<std::pair<const char*, juce::var>> fields)
+    {
+        auto* o = new juce::DynamicObject();
+        for (const auto& [k, v] : fields)
+            o->setProperty(k, v);
+        return juce::var(o);
+    }
 }
