@@ -226,18 +226,27 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `kTouchMs` after its last control change, every one ended in the destructor), an int's or a bool's value on one of
   its values. So a learned control is the user's in the journal, undoable in the host, and the host's automation and
   the control take turns as for any touch (the last writer wins: a touch writes nothing until its control moves
-  again). `GesturePort`'s gestures nest (the hand and a control at once: one host gesture, first begin to last end).
-  The racing wheel's controls (`wheelcc`, any channel) and the channel mode messages are never learned (`refusal`, in
-  words; learning goes on). Kept in the session (`<MIDI><MAP dial channel cc fine/>`; a state without it has none, so
-  a session load replaces them) and with each project version (ProjectStore.h's `midi`, written only when there are
-  some: opening a version that has some makes them the mappings, one with none leaves them; other mappings than the
-  latest's make saving add a version, "MIDI map" in its note). The editor (`Panel::dialMenu`, `syncMidi`): a dial's
-  right-click, ctrl-click or screen reader's menu action (a `.gui` file's control's too, `GuiView::Hooks::dialMenu`;
-  none in the GUI sandbox) opens Learn MIDI CC / Stop learning, Forget, Forget every MIDI CC and the host's own menu
-  (a host parameter's, in a host), never a write; `looks::midiMark` draws the dot (a control moves it) or the ring (it
-  learns) at the cell's top right, and the footer's line names the control or says it is learning (and why a control
-  was refused). Claude reads them in the dial lines ("moved by MIDI CC 74 on channel 1") and get_status's MIDI lines
-  (a dial learning, mappings waiting): no tool's schema or guide text changes. `plugin.midi` and `gui.midi` check.
+  again). `GesturePort`'s gestures nest (the hand and a control at once: one host gesture, first begin to last end),
+  and `writeDial`'s own (set_dial, the carry, a version's or an example's dials) nest in them too, through
+  `beginOwnGesture`, which leaves the journal's attribution as it was: never call the parameter's begin/end directly.
+  The channel mode messages are never learned, nor the racing wheel's controls (`wheelcc`) on channel 1 while the
+  Standalone's wheel is on (`Learn::setWheel`, from `Processor::syncWheel`: the `DevicePort`'s wheel entry, read again
+  when its serial moves; the wheel resends them on every device change); elsewhere they are learned as any
+  (`refusal`, in words; learning goes on), and they still reach the Host block's wheel fields from any channel. Kept in
+  the session (`<MIDI><MAP dial channel cc fine/>`; a state without it has none, so a session load replaces them) and
+  with each project version (ProjectStore.h's `midi`, written only when there are some: opening a version that has some
+  makes them the mappings, one with none leaves them; other mappings than the latest's make saving add a version,
+  "MIDI map" in its note, unless they are those a version with none left, untouched since, and the latest has none:
+  `midiOpened_`, `VersionMidi::inherited`). The editor (`Panel::dialMenu`, `syncMidi`): a dial's right-click,
+  ctrl-click or screen reader's menu action (a `.gui` file's knob's, slider's, switch's or buttons', alike, never a
+  dropdown's, whose menu action opens its list: `GuiView::Hooks::dialMenu`; none in the GUI sandbox) opens Learn MIDI
+  CC / Stop learning, Forget, Forget every MIDI CC and the host's own menu (a host parameter's, in a host), never a
+  write; `looks::midiMark` draws the dot (a control moves it) or the ring (it learns) at the cell's top right, and the
+  footer's line names the control or says it is learning (and why a control was refused). Claude reads them in the
+  dial lines ("moved by MIDI CC 74 on channel 1": matched by the dial's name, `View::forDial`, as a compile `apply`
+  has not taken yet may have moved the slots `words` are by) and get_status's MIDI lines (a dial learning, mappings
+  waiting for a dial of the listed controls): no tool's schema changes, and the guide's "projects" part (the chat's
+  prompt too) gained one sentence. `plugin.midi` and `gui.midi` check.
 - **A panel's edit** (Compiler.h's "A panel's edit", `Compiler::editPanel`; Patch.h's "The panel"): a RUN whose
   files differ from the recipe's (what plays) only in the panel's files (`isPanelFile`, Sources.h: `.gui`, `.sc`,
   `.sh`) is applied to the program that plays with no compile and nothing offered: no crossfade and no fade (the same
