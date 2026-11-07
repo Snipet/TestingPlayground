@@ -2673,8 +2673,8 @@ the synth's examples for it to change, and its icon (it keeps the kind of the pr
 kind's, `Assets/logo/<kind>/`, and `swift Tools/logo/logo.swift` writes its extension's icon from the same mark). It
 refuses a plugin code another product here or another of your plugins already uses (any project in `~/audio/plugins`):
 two plugins with one code hide each other in a host. `scripts/plugin.py rename --product effect --name ...` gives a
-product a new identity in place (its file, and its names in the docs); an installed product renamed is a new plugin to
-hosts, with new folders.
+product a new identity in place (its file, and its names in the docs, but not in CHANGELOG.md, whose history keeps the
+old names); an installed product renamed is a new plugin to hosts, with new folders.
 
 ## Update the DSP core
 

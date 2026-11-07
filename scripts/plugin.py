@@ -24,8 +24,9 @@ CMakeLists.txt builds every products/<key>.cmake it finds.
 What a rename changes: products/<key>.cmake is rewritten with the new identity (name, codes, bundle id, FunkGui
 prefixes); the old name (as written, in upper case and in lower case), bundle id and environment prefix are replaced in
 the docs and scripts (README.md, CLAUDE.md, scripts/ and the like) where they stand as whole words; products/, the
-shared code (Source/, Tools/) and SEED.tsv are never rewritten. Read README.md and CLAUDE.md after a rename: where they
-name the repository rather than the product, put the old name back. A rename changes what users have: hosts find a plugin by its codes, and the product
+shared code (Source/, Tools/), SEED.tsv and CHANGELOG.md (a history keeps the names things had) are never rewritten.
+Read README.md and CLAUDE.md after a rename: where they name the repository rather than the product (its URL, its
+history), put the old name back. A rename changes what users have: hosts find a plugin by its codes, and the product
 keeps its projects, preferences and sockets in folders named after it, so an installed product renamed is a new one.
 
 The plugin code must differ from every other plugin's: add and rename refuse a code used by another product here or
@@ -57,8 +58,9 @@ EXAMPLES_DIR = Path("Source") / "fminus" / "examples"
 ICON_DIR = Path("Source") / "mcp"
 
 # Never rewritten: the product files (written whole), the shared code (Source/, Tools/: every product's, reached by a
-# product's identity only through its generated header) and SEED.tsv (the vendored core's sha256).
-REWRITE_EXCLUDES = ("products/", "Source/", "Tools/", "SEED.tsv")
+# product's identity only through its generated header), SEED.tsv (the vendored core's sha256) and CHANGELOG.md (a
+# history: it keeps the names things had then, and its links name the repository, not a product).
+REWRITE_EXCLUDES = ("products/", "Source/", "Tools/", "SEED.tsv", "CHANGELOG.md")
 TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".m", ".mm", ".cmake", ".in", ".txt",
                  ".md", ".py", ".sh", ".json", ".plist", ".xml", ".tsv", ".def", ".gitignore"}
 # Where the user's plugins live: a new plugin code must differ from every project's there. $FUNK_PLUGIN_DIRS (folders
