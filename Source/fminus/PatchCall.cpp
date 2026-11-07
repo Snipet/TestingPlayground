@@ -307,7 +307,8 @@ namespace playground
     }
 
     // ---- the call -----------------------------------------------------------------------------------------------------
-    Patch::CallOutcome Patch::call(const std::string& name, const std::vector<CallArg>& args)
+    Patch::CallOutcome Patch::call(const std::string& name, const std::vector<CallArg>& args,
+                                   const std::function<std::string()>& onState)
     {
         CallOutcome out;
         fminus::Program& p = fminusProgram();
@@ -524,6 +525,29 @@ namespace playground
                       + std::to_string(args.size()) + ": " + out.signature;
             return out;
         }
+        // FMinus checks no access through a pointer parameter (its extent is the caller's to know), so each array's
+        // buffer covers C's idiom (buffer, n): as many elements as the largest int argument too, and as many zeros
+        // again after them. A length past what run_function passes, beside an array, is refused: past its buffer, a
+        // write would reach the plugin's own memory, and a read memory that may be none.
+        std::size_t length = 0;
+        bool arrays = false;
+        for (std::size_t j = 0; j < args.size(); ++j)
+        {
+            const fminus::Program::Callable::Param& q = c->parameters[first + j];
+            arrays = arrays || (q.kind == Kind::Pointer && q.module == nullptr && q.element != Kind::Void);
+            const CallArg& a = args[j];
+            if (q.kind == Kind::Int && a.kind == CallArg::Kind::number && a.number >= 0.0 && a.number <= 2147483647.0
+                && a.number == std::trunc(a.number))
+                length = std::max(length, static_cast<std::size_t>(a.number));   // (one that is no int: refused below)
+        }
+        if (arrays && length > kMaxCallElements)
+        {
+            out.error = "'" + c->name + "' takes an array, and an int argument of " + std::to_string(length) + " beside it is past "
+                      "the " + std::to_string(kMaxCallElements) + " elements an array of run_function's holds: as a length, the "
+                      "function would run past its buffer";
+            return out;
+        }
+
         std::vector<Value> values;
         std::vector<Buffer> buffers;
         buffers.reserve(args.size());
@@ -566,7 +590,8 @@ namespace playground
                               + " run_function passes";
                     return out;
                 }
-                b.size = b.shown + kCallGuard;
+                const std::size_t covered = std::max(b.shown, length);
+                b.size = covered + std::max(covered, kCallGuard);
                 b.block = std::make_unique<Block>(alignof(double), b.size * elementBytes(q.element));
                 if (b.block->p == nullptr)
                 {
@@ -642,6 +667,16 @@ namespace playground
                     break;
             }
         }
+
+        // Checked: what it runs on is the state's (the main module's instance 0, Shared, Host, a field of theirs),
+        // which the caller may make ready now (run_function's "playing": the copy of what plays adopted).
+        if (onState && (out.where == CallOutcome::On::main || out.where == CallOutcome::On::shared
+                        || out.where == CallOutcome::On::field))
+            if (std::string why = onState(); !why.empty())
+            {
+                out.error = std::move(why);
+                return out;
+            }
 
         // The fields as they were (instance 0's, Shared's, Host's), to say what a method changed.
         std::vector<double> before(fields_.size());

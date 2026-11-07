@@ -192,6 +192,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -480,13 +481,19 @@ namespace playground
         // ("Voice::level", on instance 0; "Shared::build", on the one Shared; "Svf::tick", on an Svf of its own, zeroed,
         // its params at their defaults) or a method of a field the main module holds by value, by its path
         // ("filter.tick", "osc[2].env.next"; "shared->table.read" through Shared). Each argument is checked against its
-        // parameter as declared (a float, a double, an int (whole), a bool, or for an int*, float* or double* an array:
-        // a buffer of its elements, or of `extent` when that is more, then kCallGuard zeros, so that a function that
-        // reads a little past what it was given reads zeros there; a module's instance only as a method's own); FMinus's
-        // call() runs it in the programs' mode (flush to zero) within kInitBudget, and a bounds check or the budget that
-        // stops it is said in FMinus's words. What a method changed in the fields (fieldMap's paths of its instance, and
-        // of Shared and Host) is listed. A call that stopped leaves the Patch so that its destructor calls no end (its
-        // state may be any), as a stopped audio-thread call does.
+        // parameter as declared (a float, a double, an int (whole), a bool, or for an int*, float* or double* an array;
+        // a module's instance only as a method's own). FMinus checks no access through a pointer parameter, so an
+        // array's buffer covers C's idiom (buffer, n): its elements, `extent` or the call's largest int argument,
+        // whichever is most, then as many zeros again (kCallGuard at least), so that a function told a length, or
+        // reading a little past what it was given, stays in a buffer of its own; a call that takes an array and an int
+        // past kMaxCallElements is refused. `onState`, when given, is called once the call is checked and before it
+        // runs, and only when it runs on the state (a method of instance 0, of Shared or Host, or of a field they
+        // hold): "" to run it, else why not (`error`, and nothing runs); run_function's "playing" adopts its copy
+        // there, so a call that is wrong anyway asks the audio thread for nothing. FMinus's call() runs it in the
+        // programs' mode (flush to zero) within kInitBudget, and a bounds check or the budget that stops it is said in
+        // FMinus's words. What a method changed in the fields (fieldMap's paths of its instance, and of Shared and
+        // Host) is listed. A call that stopped leaves the Patch so that its destructor calls no end (its state may be
+        // any), as a stopped audio-thread call does.
         struct CallArg
         {
             enum class Kind : uint8_t { number, boolean, array };
@@ -519,10 +526,11 @@ namespace playground
             std::vector<std::string> changed;          // a method's fields it changed, "phase: 0 -> 0.0125"
             std::size_t moreChanged = 0;               // and how many more
         };
-        static constexpr std::size_t kCallGuard = 1024;            // zeros after an array's elements
-        static constexpr std::size_t kMaxCallElements = 1u << 20;  // an array's buffer at most
+        static constexpr std::size_t kCallGuard = 1024;            // zeros after an array's elements, at least
+        static constexpr std::size_t kMaxCallElements = 1u << 20;  // an array's elements (or a length beside one) at most
         static constexpr std::size_t kMaxChanged = 16;             // fields changed listed at most
-        CallOutcome call(const std::string& name, const std::vector<CallArg>& args);
+        CallOutcome call(const std::string& name, const std::vector<CallArg>& args,
+                         const std::function<std::string()>& onState = {});
 
         // run_function's "playing": the state that plays, copied by the audio thread (Engine::Snapshot) and put into a
         // Patch of the caller's own, compiled from the same files with the same pins, so laid out alike (layout(): the

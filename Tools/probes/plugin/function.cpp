@@ -5,23 +5,27 @@
 // held):
 //   CALL     a function of each scalar type, bit for bit as written (a float's tanhf, an int, a double's 17 digits, a
 //            bool); arrays: one written in place and given back, a buffer of {extent} filled, a const one read, one
-//            written past what it was given (said so); a method on a fresh instance of the editor's files (init run at
-//            the host's rate, the dials as they are: an int dial set to 5 reads 5), a field's method by its path (and an
-//            array's element), the fields it changed (counter.n: 0 -> 1), another module's on an instance of its own;
-//            the processor's program untouched (its state counts on)
+//            written past what it was given (said so), one of a single element written at the length given beside it
+//            (its buffer that long: the write landed in it, said so); a method on a fresh instance of the editor's
+//            files (init run at the host's rate, the dials as they are: an int dial set to 5 reads 5), a field's method
+//            by its path (and an array's element), the fields it changed (counter.n: 0 -> 1), another module's on an
+//            instance of its own; the processor's program untouched (its state counts on)
 //   STOP     a runaway method stopped by the loop budget within seconds, in words, an error; an index past an array
 //            stopped by the bounds check, the access named
 //   REFUSE   a signature mismatch (the count, a bool for a float, 1.5 for an int, a number for an array, an array for a
 //            float), a name the program lacks, a method named as a function (its module named), the plugin's own
 //            playground_process, a path through a field that is no module, an index past an array of modules, a
-//            pointer to a module, args that are no list, on that is neither word: nothing called; editor files that
-//            do not compile: their errors
+//            pointer to a module, args that are no list, on that is neither word, a length past what an array holds
+//            beside an array: nothing called; editor files that do not compile: their errors
 //   PLAYING  on: playing, a copy of the state that plays made by the audio thread at a block's end: the effect's sample
 //            count (or the held voice's, its note named) larger on a later call; a method that zeroes it run on a copy,
 //            and the state that plays counts on (never written); Shared reached through the copy's own Shared (its
 //            pointer repointed), and Shared's own method by shared-> (and Shared:: on a fresh one); a program whose init
 //            allocated a block (a pointer not null) refused, saying why; an instrument with no voice sounding refused; a
-//            host that has stopped calling the plugin: refused after the wait, nothing copied
+//            host that has stopped calling the plugin: refused after the wait, nothing copied, while a function runs
+//            (no copy asked) and a call with a wrong count says so (checked before a copy is asked); a newer run
+//            offered while the swap to the last one is under way (blocks of 16 samples, slowly): the copy is of the
+//            program before, refused, and once the newest plays, its own code on its own state
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
@@ -108,7 +112,8 @@ namespace
                "void scale(float* x, int n, float k) { for (int i = 0; i < n; ++i) x[i] = x[i] * k; }\n"
                "void ramp(float* out, int n) { for (int i = 0; i < n; ++i) out[i] = i; }\n"
                "void spill(float* x) { for (int i = 0; i < 6; ++i) x[i] = 1; }\n"
-               "float sum(const float* x, int n) { float s = 0; for (int i = 0; i < n; ++i) s = s + x[i]; return s; }\n\n"
+               "float sum(const float* x, int n) { float s = 0; for (int i = 0; i < n; ++i) s = s + x[i]; return s; }\n"
+               "void last(float* x, int n) { x[n - 1] = 1; }\n\n"
              + mainModule("    param int steps [[fminus::range(0, 8)]] [[fminus::default(3)]];\n"
                           "    Counter counter;\n    Counter many[3];\n    float rate;\n    int count;\n    int spins;\n"
                           "    float taps[4];\n"
@@ -137,6 +142,12 @@ namespace
                           "    int seen() { return count; }\n");
     }
 
+    // One of a few versions of a program, all laid out alike: only what version() returns differs.
+    std::string versionProgram(int v)
+    {
+        return mainModule("    int count;\n    int version() { return " + std::to_string(v) + "; }\n");
+    }
+
     bool load(pg::Processor& p, const std::string& text)
     {
         pg::Draft d;
@@ -147,17 +158,22 @@ namespace
         return p.editorPort().status().ok;
     }
 
-    // A host that plays the processor on a thread of its own, as fast as a block a millisecond: an instrument's note
-    // held from its first block (while `note`; else every note let go there).
+    // A host that plays the processor on a thread of its own, as fast as a block a millisecond (or blocks of `size`
+    // samples, one each `pauseMs`): an instrument's note held from its first block (while `note`; else every note let
+    // go there).
     struct Host
     {
         pg::Processor& p;
         bool note;
+        int size, pauseMs;
         std::atomic<bool> stop{ false };
         std::atomic<int> blocks{ 0 };
         std::thread thread;
 
-        Host(pg::Processor& proc, bool n) : p(proc), note(n) { thread = std::thread([this] { run(); }); }
+        Host(pg::Processor& proc, bool n, int blockSize = kBlock, int pause = 1) : p(proc), note(n), size(blockSize), pauseMs(pause)
+        {
+            thread = std::thread([this] { run(); });
+        }
         ~Host() { end(); }
         Host(const Host&) = delete;
         Host& operator=(const Host&) = delete;
@@ -171,7 +187,7 @@ namespace
 
         void run()
         {
-            juce::AudioBuffer<float> buffer(2, kBlock);
+            juce::AudioBuffer<float> buffer(2, size);
             for (int b = 0; !stop.load(); ++b)
             {
                 buffer.clear();
@@ -181,7 +197,7 @@ namespace
                                        : juce::MidiMessage::allNotesOff(1), 0);
                 p.processBlock(buffer, midi);
                 blocks.store(b + 1);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::milliseconds(pauseMs));
             }
         }
 
@@ -241,6 +257,11 @@ PROBE(plugin, function)
         P.eq("call.const_array", has(t, "Returned 3.") && has(t, "x (const float *): [1, 2, 0, 0]") ? 1 : 0, 1);
         t = call(object({ { "name", "spill" }, { "args", list({ list({ 0, 0 }) }) } }));
         P.eq("call.past", has(t, "[1, 1]") && has(t, "It wrote past the 2 elements given") ? 1 : 0, 1);
+        // C's (buffer, n) with a buffer of one: the buffer is n long, so x[n - 1] lands in it (and is seen there), far past
+        // the 1,024 zeros after the one element.
+        t = call(object({ { "name", "last" }, { "args", list({ list({ 0 }), 5000 }) } }), &error);
+        P.eq("call.length_covered", !error && has(t, "x (float *), after the call: [0]") && has(t, "It wrote past the 1 elements given")
+                                        ? 1 : 0, 1);
 
         t = call(object({ { "name", kMain + "::getRate" } }));
         P.eq("call.method_fresh", returned(t) == kFs && has(t, "on a fresh " + kWord + " of the editor's files") && has(t, "init(48000) run")
@@ -293,6 +314,8 @@ PROBE(plugin, function)
         refused("refuse.plugin_own", object({ { "name", "playground_process" } }), "the plugin's own calls");
         refused("refuse.not_module", object({ { "name", "rate.tick" } }), "'rate' is a float, not a module");
         refused("refuse.index_past", object({ { "name", "many[3].bump" } }), "index 3 is past 'many'");
+        refused("refuse.length_past", object({ { "name", "ramp" }, { "args", list({ list({ 0 }), 2000000 }) } }),
+                "an int argument of 2000000 beside it is past the 1048576 elements");
         bool error = false;
         std::string t = call(object({ { "name", "shape" }, { "args", 0.5 } }), &error);
         P.eq("refuse.args_not_list", error && has(t, "args is a list") ? 1 : 0, 1);
@@ -329,6 +352,12 @@ PROBE(plugin, function)
         still.end();
         t = call(object({ { "name", kMain + "::seen" }, { "on", "playing" } }), &error);
         P.eq("playing.not_processing", error && has(t, "no audio went through the plugin") ? 1 : 0, 1);
+        // What needs no copy asks for none: a function runs on its arguments in the program that plays, and a call that
+        // is wrong anyway says what is wrong.
+        t = call(object({ { "name", "twice" }, { "args", list({ 7 }) }, { "on", "playing" } }), &error);
+        P.eq("playing.function_no_copy", !error && has(t, "Returned 14.") && has(t, "in the program that plays") ? 1 : 0, 1);
+        t = call(object({ { "name", "shape" }, { "args", list({ 0.5 }) }, { "on", "playing" } }), &error);
+        P.eq("playing.checked_first", error && has(t, "'shape' takes 2 arguments, not 1") ? 1 : 0, 1);
     }
     {
         P.eq("playing.shared_compiles", load(p, sharedProgram()) ? 1 : 0, 1);
@@ -351,6 +380,28 @@ PROBE(plugin, function)
         P.eq("playing.heap_refused", error && has(t, "its field buffer (float *) points at memory of the program that plays") ? 1 : 0, 1);
         t = call(object({ { "name", kMain + "::seen" } }), &error);
         P.eq("playing.heap_fresh", !error && has(t, "Returned 0.") ? 1 : 0, 1);
+    }
+    {
+        // A run the audio thread has not taken yet: the copy is of the program before it, laid out alike, and refused.
+        P.eq("playing.versions_compile", load(p, versionProgram(1)) ? 1 : 0, 1);
+        {
+            Host warm(p, true);
+            warm.waitBlocks(10);                    // version 1 plays (an instrument's note held, its voice sounding on)
+        }
+        P.eq("playing.version2_compiles", load(p, versionProgram(2)) ? 1 : 0, 1);
+        // Blocks of 16 samples, one each 40 ms: the first takes version 2, and the swap from version 1 (20 ms, 960
+        // samples: 60 blocks) lasts 2.4 s, while a program offered waits.
+        Host slow(p, true, 16, 40);
+        slow.waitBlocks(2);
+        P.eq("playing.version3_compiles", load(p, versionProgram(3)) ? 1 : 0, 1);
+        bool error = false;
+        std::string t = call(object({ { "name", kMain + "::version" }, { "on", "playing" } }), &error);
+        P.eq("playing.other_program", error && has(t, "changed as it was copied") ? 1 : 0, 1);
+        slow.end();
+        Host fast(p, true);
+        fast.waitBlocks(40);                         // the swap over, version 3 taken
+        t = call(object({ { "name", kMain + "::version" }, { "on", "playing" } }), &error);
+        P.eq("playing.newest_program", !error && has(t, "Returned 3.") ? 1 : 0, 1);
     }
     if constexpr (kInstrument)
     {

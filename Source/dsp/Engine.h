@@ -237,7 +237,10 @@ namespace playground
         // time and wait for `done`; when no block comes, take the ask back (cancelSnapshot: true when the audio thread
         // never claimed it; false when it did, and `done` follows within its block). The audio thread allocates and
         // locks nothing for it: a relaxed load a block while none waits, then an exchange and at most three memcpys of
-        // kMaxSnapshot bytes in all (the asker refuses a larger state). Never written back: the copy is the asker's.
+        // kMaxSnapshot bytes in all (the asker refuses a larger state), into buffers the asker has written whole before
+        // it asks (a fresh block's pages would fault on the audio thread's first write). `program` says whose state it
+        // is: the asker compares it with the program whose files it compiled. Never written back: the copy is the
+        // asker's.
         struct Snapshot
         {
             enum class Status : uint8_t { waiting, copied, noProgram, noVoice, otherLayout };

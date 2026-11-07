@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <functional>
 #include <memory>
 #if defined(_WIN32)
 #include <malloc.h>                                  // _aligned_malloc
@@ -121,7 +123,9 @@ namespace playground
             return out + "]";
         }
 
-        // An aligned block for the copy of the state that plays (Engine::Snapshot's buffers), freed with it.
+        // An aligned block for the copy of the state that plays (Engine::Snapshot's buffers), freed with it. Written
+        // whole here, on the asker's thread: a large block comes from the kernel untouched, and the audio thread's copy
+        // into it would otherwise take its page faults.
         struct Aligned
         {
             void* p = nullptr;
@@ -136,6 +140,8 @@ namespace playground
 #else
                 p = std::aligned_alloc(a, n);
 #endif
+                if (p != nullptr)
+                    std::memset(p, 0, n);
             }
             ~Aligned()
             {
@@ -165,8 +171,8 @@ namespace playground
                 "instance of its own, zeroed, its params at their defaults). args: its arguments in order, as declared: a "
                 "number for a float, a double or an int (whole), true or false for a bool, and for an int*, float* or double* "
                 "an array, [0.5, 1] or {extent: 512, values: [1]} (the values first, then zeros), which the result gives back "
-                "as the function left it. Pass a buffer's length too, as C does: past it the function reads 1,024 zeros, then "
-                "memory not its own. on: fresh (the default: the editor's files compiled now, a new instance, the dials as "
+                "as the function left it. Pass a buffer's length too, as C does: each array then holds at least that many "
+                "elements, then zeros. on: fresh (the default: the editor's files compiled now, a new instance, the dials as "
                 "they are, init run) or playing (the program that plays, on a copy of its state the audio thread makes at a "
                 "block's end: the effect's instance, or the newest sounding voice's, with Shared and Host; what plays is never "
                 "written). playing is refused while no voice sounds, and when the state holds a pointer that is not null (a "
@@ -223,15 +229,23 @@ namespace playground
         setActivity("Calling " + name);
 
         // The files: the editor's, or what plays (with the configuration its netlists were generated with, so that the
-        // compile is laid out as the program that plays is).
+        // compile is laid out as the program that plays is), all of one compile's status: `program`, what the copy
+        // must be of.
+        const std::string changed = "The program that plays changed as it was copied (a newer run was on its way in, or its "
+                                    "state is laid out otherwise): call it again.";
         Sources files;
         CircuitPins pins;
+        uint64_t program = 0;
         if (playing)
         {
+            const CompileStatus st = host_.chatLastStatus();
             files = host_.chatRunning();
             if (files.empty())
                 return fail("Nothing plays yet: run_program plays the editor's files (or call it on: fresh).");
-            pins = host_.chatLastStatus().circuits;
+            if (host_.chatLastStatus().revision != st.revision)
+                return fail(changed);
+            pins = st.circuits;
+            program = st.program;
         }
         else
             files = host_.chatDraft().files;
@@ -243,49 +257,57 @@ namespace playground
                         "was called:\n" + compiled.errors.substr(0, kMaxOutput));
         Patch& patch = *compiled.patch;
 
-        std::string where;
+        // What a method runs on: with on: playing, a copy of the state that plays, asked of the audio thread only once
+        // the call is checked and runs on that state (Patch::call's onState): a function, an instance of its own or a
+        // call that is wrong anyway costs the audio thread nothing.
+        std::string where, refusal;
+        std::function<std::string()> onState;
         if (playing)
         {
-            // A copy of the state that plays, made by the audio thread at a block's end (Engine::Snapshot).
-            const Patch::Layout l = patch.layout();
-            if (l.instance + l.shared + l.host > Engine::kMaxSnapshot)
-                return fail("The state that plays is " + std::to_string((l.instance + l.shared + l.host) >> 10) + " KB, past the "
-                            + std::to_string(Engine::kMaxSnapshot >> 20) + " MB the audio thread copies: call it on: fresh.");
-            Aligned instance(l.instanceAlign, l.instance), shared(l.sharedAlign, l.shared), hostBlock(l.hostAlign, l.host);
-            if (instance.p == nullptr || (l.shared > 0 && shared.p == nullptr) || (l.host > 0 && hostBlock.p == nullptr))
-                return fail("No memory for a copy of the state that plays.");
-            Engine::Snapshot s;
-            s.instance = instance.p;
-            s.shared = shared.p;
-            s.host = hostBlock.p;
-            s.instanceBytes = l.instance;
-            s.sharedBytes = l.shared;
-            s.hostBytes = l.host;
-            std::string why;
-            if (!host_.chatSnapshot(s, why))
-                return fail("Nothing was called: " + why + ". on: fresh runs it on a new instance.");
-            switch (s.status)
-            {
-                case Engine::Snapshot::Status::copied:
-                    break;
-                case Engine::Snapshot::Status::noProgram:
-                    return fail("Nothing plays now, so there is no state to copy: on: fresh runs it on a new instance.");
-                case Engine::Snapshot::Status::noVoice:
-                    return fail("No voice sounds now, so there is no voice's state to copy: hold a note and call it again, or "
-                                "on: fresh.");
-                case Engine::Snapshot::Status::otherLayout:
-                case Engine::Snapshot::Status::waiting:
-                    return fail("The program that plays changed as it was copied (its state is laid out otherwise): call it "
-                                "again.");
-            }
-            if (s.layout != l.hash)
-                return fail("The program that plays changed as it was copied (its state is laid out otherwise): call it again.");
-            if (const std::string refused = patch.adopt(s.instance, s.shared, s.host); !refused.empty())
-                return fail("Not on a copy of what plays: " + refused + ". on: fresh runs it on a new instance.");
-            where = kInstrument ? "a copy of the voice playing note " + std::to_string(s.key) + " (the newest sounding), made by "
-                                  "the audio thread at a block's end"
-                                : std::string("a copy of the effect's state, made by the audio thread at a block's end");
-            where += " (the program that plays, compiled again for the call; what plays is untouched)";
+            onState = [&]() -> std::string {
+                // A copy of the state that plays, made by the audio thread at a block's end (Engine::Snapshot).
+                const Patch::Layout l = patch.layout();
+                if (l.instance + l.shared + l.host > Engine::kMaxSnapshot)
+                    return refusal = "The state that plays is " + std::to_string((l.instance + l.shared + l.host) >> 10) + " KB, past "
+                                     "the " + std::to_string(Engine::kMaxSnapshot >> 20) + " MB the audio thread copies: call it on: fresh.";
+                Aligned instance(l.instanceAlign, l.instance), shared(l.sharedAlign, l.shared), hostBlock(l.hostAlign, l.host);
+                if (instance.p == nullptr || (l.shared > 0 && shared.p == nullptr) || (l.host > 0 && hostBlock.p == nullptr))
+                    return refusal = "No memory for a copy of the state that plays.";
+                Engine::Snapshot s;
+                s.instance = instance.p;
+                s.shared = shared.p;
+                s.host = hostBlock.p;
+                s.instanceBytes = l.instance;
+                s.sharedBytes = l.shared;
+                s.hostBytes = l.host;
+                std::string why;
+                if (!host_.chatSnapshot(s, why))
+                    return refusal = "Nothing was called: " + why + ". on: fresh runs it on a new instance.";
+                switch (s.status)
+                {
+                    case Engine::Snapshot::Status::copied:
+                        break;
+                    case Engine::Snapshot::Status::noProgram:
+                        return refusal = "Nothing plays now, so there is no state to copy: on: fresh runs it on a new instance.";
+                    case Engine::Snapshot::Status::noVoice:
+                        return refusal = "No voice sounds now, so there is no voice's state to copy: hold a note and call it "
+                                         "again, or on: fresh.";
+                    case Engine::Snapshot::Status::otherLayout:
+                    case Engine::Snapshot::Status::waiting:
+                        return refusal = changed;
+                }
+                // Of the program whose files were compiled here (a run the audio thread has not taken yet, or one it
+                // took since, is another program, though laid out alike: its state under this code fits neither).
+                if (s.layout != l.hash || s.program != program)
+                    return refusal = changed;
+                if (const std::string refused = patch.adopt(s.instance, s.shared, s.host); !refused.empty())
+                    return refusal = "Not on a copy of what plays: " + refused + ". on: fresh runs it on a new instance.";
+                where = kInstrument ? "a copy of the voice playing note " + std::to_string(s.key) + " (the newest sounding), made "
+                                      "by the audio thread at a block's end"
+                                    : std::string("a copy of the effect's state, made by the audio thread at a block's end");
+                where += " (the program that plays, compiled again for the call; what plays is untouched)";
+                return {};
+            };
         }
         else
         {
@@ -306,7 +328,9 @@ namespace playground
                   + ") run)";
         }
 
-        const Patch::CallOutcome o = patch.call(name, args);
+        const Patch::CallOutcome o = patch.call(name, args, onState);
+        if (!refusal.empty())
+            return fail(refusal);
         std::string text;
         using On = Patch::CallOutcome::On;
         const std::string ranOn = o.where == On::function ? std::string("a function: on its arguments, in ")
