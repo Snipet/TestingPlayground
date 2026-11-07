@@ -725,19 +725,25 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's `at`, compare's picture), `kMaxLongSeconds` (300 s) for a call that returns numbers alone
   (measure_output, a check, tune_dials, compare without its picture, trace: `scenario::forNumbers`, set before the
   rest is read), the tail `kMaxTailSeconds` (10 s) after either, a window both (`Request::endSeconds`); past its cap
-  a value is refused in words that name it (a picture's naming the tools that take 300 s), and `scenario::resolve`
-  refuses a render over `kMaxRenderSamples` a channel at its rate (310 s up to 96 kHz, 155 s at 192 kHz:
-  `measure::renderSeconds`, without a compile); a Session clamps them all. A Session's renders are cancelled as they
-  go (`Session::setCancel`: the chat's `cancel_`, which the stop button and `mcpCancel` set, and `kRenderSeconds`,
-  170 s of the clock, under the MCP deadline: `ChatAgent::renderCancel`, which also puts a long render's progress in
-  the activity): each asks every `kCancelSamples` samples, and once one is cut every render after it is cut at once
-  until the next setCancel; measure() then measures nothing and its report says what was rendering, how far it got,
-  after how long and how fast (`Session::cancelWords`; `Result::cancelled`), as compare's error, a check's "not
-  measured" and tune_dials' (its cut render left out; its first: nothing tuned) do. The analysis after a render is not
-  asked: a cancel there lands at the next render or the end. The render stays on its caller's thread (the agent's
-  worker, the link's one worker): the call's answer is its numbers, and the calls are the chat's one at a time
-  (`busy_`); the live tools answer meanwhile. trace keeps its own clock (90 s) and stops pass 1 once its records pass
-  256 MB. `dsp.tune` LONG and `plugin.chat` LONG check it.
+  a value is refused in words that name it (a picture's naming the tools that take 300 s); and `scenario::fits`
+  (resolve's last step, and compare's for B at its `b_rate`) refuses, at its rate, times past `measure::longestAt`
+  (`kMaxRenderSamples` less a whole tail: 145 s at 192 kHz, `measure::latestTime`) and a render past
+  `kMaxRenderSamples` a channel (310 s up to 96 kHz, 155 s at 192 kHz: `measure::renderSeconds`, an effect's test
+  signals beside its own input, without a compile). A Session clamps to the same, so it never re-times a request the
+  tools take. A Session's renders are cancelled as they go (`Session::setCancel`: the chat's `cancel_`, which the
+  stop button and `mcpCancel` set, and `kRenderSeconds`, 170 s of the clock from the call's start, under the MCP
+  deadline: `ChatAgent::renderCancel`, which also puts a long render's progress in the activity; `Cancel::start` and
+  `Cancel::spent` are shared by the Sessions a call renders in, compare's sides (`Cancel::who`) and the checks' rates,
+  and tune_dials' limit is its own `seconds` from its start): each asks every `kCancelSamples` samples, and once one
+  is cut every render after it is cut at once until the next setCancel; measure() then measures nothing and its
+  report says what was rendering, how far it got, after how long and how fast (`Session::cancelWords`, the limit
+  named whole, and the render that spent it when the limit lands in a short one after it; `Result::cancelled`; no
+  line of what was measured before the cut), as compare's error, a check's "not measured" and tune_dials' (its cut
+  render left out; its first: nothing tuned) do. The analysis after a render is not asked: a cancel there lands at
+  the next render or the end. The render stays on its caller's thread (the agent's worker, the link's one worker):
+  the call's answer is its numbers, and the calls are the chat's one at a time (`busy_`); the live tools answer
+  meanwhile. trace keeps its own clock (90 s) and stops pass 1 once its records pass 256 MB. `dsp.tune` LONG and
+  `plugin.chat` LONG check it.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
