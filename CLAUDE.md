@@ -720,6 +720,24 @@ place (its `products/<key>.cmake`, and its names in the docs).
   moved a dial). A `Session` compiles once and renders as often as asked, each render after
   `Engine::restart` (offline only: prepare() and `Patch::reset`), so it gives what a fresh compile gives; `dsp.tune`
   checks that, and the numbers.
+- **Long renders and the cancel** (Measure.h, "How long a render may be"): a request's `longest` bounds its times
+  (hold_seconds and the scenario's): `kMaxPlaySeconds` (10 s, the default) for a picture's render (view_sound,
+  view_panel's `at`, compare's picture), `kMaxLongSeconds` (300 s) for a call that returns numbers alone
+  (measure_output, a check, tune_dials, compare without its picture, trace: `scenario::forNumbers`, set before the
+  rest is read), the tail `kMaxTailSeconds` (10 s) after either, a window both (`Request::endSeconds`); past its cap
+  a value is refused in words that name it (a picture's naming the tools that take 300 s), and `scenario::resolve`
+  refuses a render over `kMaxRenderSamples` a channel at its rate (310 s up to 96 kHz, 155 s at 192 kHz:
+  `measure::renderSeconds`, without a compile); a Session clamps them all. A Session's renders are cancelled as they
+  go (`Session::setCancel`: the chat's `cancel_`, which the stop button and `mcpCancel` set, and `kRenderSeconds`,
+  170 s of the clock, under the MCP deadline: `ChatAgent::renderCancel`, which also puts a long render's progress in
+  the activity): each asks every `kCancelSamples` samples, and once one is cut every render after it is cut at once
+  until the next setCancel; measure() then measures nothing and its report says what was rendering, how far it got,
+  after how long and how fast (`Session::cancelWords`; `Result::cancelled`), as compare's error, a check's "not
+  measured" and tune_dials' (its cut render left out; its first: nothing tuned) do. The analysis after a render is not
+  asked: a cancel there lands at the next render or the end. The render stays on its caller's thread (the agent's
+  worker, the link's one worker): the call's answer is its numbers, and the calls are the chat's one at a time
+  (`busy_`); the live tools answer meanwhile. trace keeps its own clock (90 s) and stops pass 1 once its records pass
+  256 MB. `dsp.tune` LONG and `plugin.chat` LONG check it.
 - **view_sound** (`dsp/SoundView.h`, `plugin/SoundPicture.h`): the render (the effect's with an input: a sweep, noise,
   an impulse, a sine or silence; the synth's the notes held, then released) analysed (the waveform's extent and level
   per column, a Blackman-Harris spectrogram on a log axis, the held part's average spectrum, a close-up) and drawn as
@@ -884,7 +902,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   for the other to read, and the link always stops at once. Keep it so: no blocking `send` on either side. Mixed
   versions: a `guide` request naming no part (a 0.2.0 server's) gets the whole guide; the server always names one.
   A cancel stops the call running (`ChatAgent::mcpCancel`, by the call's number: it sets `cancel_`, which tune's
-  progress reads, and a tune cancelled so applies nothing) or drops one waiting; a connection closing cancels its
+  progress and every render read as it goes (`Session::setCancel`, above), and a tune cancelled so applies nothing)
+  or drops one waiting; a connection closing cancels its
   calls, and the link going (the plugin closing) cancels and waits for the one running.
 - **A live tool** (`ChatAgent::mcpLive`, one line a tool: get_status, listen, and capture's status and stop without a
   picture) runs on the link's poll thread (listen on a thread of its own: `mcpLiveWaits`, below) while a call may be
@@ -1010,7 +1029,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **tune_dials** (`dsp/Tune.h`): Nelder-Mead over the named float dials' normalised ranges, from the dials as they
   are and a Halton spread, restarted when it settles with a goal unmet, until every goal is met, the budget (150, at
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)
-  or the stop button cancels; deterministic but for the time limit. The best values go on the dials through
+  or the stop button cancels, each also within a render (`TuneRequest::cancelled`, the render cut left out);
+  deterministic but for the time limit. The best values go on the dials through
   `chatSetDial`, unless Claude Desktop cancelled the call (`mcpCancel`): then the dials stay exactly as they were.
   Its `sweep` (`TuneRequest::sweep`, at most `kMaxSweep`, 32) searches nothing and sets nothing: the one dial named
   (of any type; a value outside its range, or an int's or a bool's not whole, refused) at each value in turn, the
