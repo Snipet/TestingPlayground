@@ -4004,15 +4004,23 @@ namespace playground::ui
         dirty_ = true;
     }
 
-    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant)
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant, bool explorerOpen, float explorerWant)
     {
-        // layout()'s arithmetic in the PANEL view (full()): no explorer, the chat (or its rail) at the right.
+        // layout()'s arithmetic in the PANEL view (full()): no explorer, the chat (or its rail) at the right, as wide
+        // as the CODE view has it when the explorer is open there.
         columns::Asked asked;
         asked.window = W;
         asked.explorer = false;
         asked.chat = chatOpen;
         asked.chatWant = chatWant;
-        const columns::Fit fit = columns::fit(asked);
+        asked.explorerWant = explorerWant;
+        columns::Fit fit = columns::fit(asked);
+        if (chatOpen && explorerOpen)
+        {
+            columns::Asked code = asked;
+            code.explorer = true;
+            fit.chat = columns::fit(code).chat;
+        }
         const float leftX = kMargin;
         const float leftW = W - kMargin - fit.chat - (chatOpen ? kChatGap : kChatRailGap) - leftX;
         const float inBottom = H - kFooterH - kBottomGap - kInset;

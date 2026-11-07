@@ -245,18 +245,21 @@ namespace playground
         out.fonts = funkgui::FontService::get().atlas().baked();   // made at the first call (the message thread's)
         out.chatWidth = funkgui::UiPreferences::get().getInt(ui::columns::kChatWidthKey, 0, 0,
                                                              static_cast<int>(ui::columns::kChatMaxW));
+        out.explorerWidth = funkgui::UiPreferences::get().getInt(ui::columns::kExplorerWidthKey, 0, 0,
+                                                                 static_cast<int>(ui::columns::kExplorerMaxW));
         return out;
     }
 
     std::string panelFitLine(const PanelSpec& spec, const Controls& controls, int width, int height, bool chatOpen,
-                             int chatWidth)
+                             int chatWidth, bool explorerOpen, int explorerWidth)
     {
         if (spec.gui.empty())
             return {};
         const bool sized = width > 0 && height > 0;
         const float w = static_cast<float>(std::max(sized ? width : ui::kDefaultWidth, ui::kMinWidth));
         const float h = static_cast<float>(std::max(sized ? height : ui::kDefaultHeight, ui::kMinHeight));
-        const funkgui::Rect area = ui::panelViewArea(w, h, chatOpen, static_cast<float>(std::max(0, chatWidth)));
+        const funkgui::Rect area = ui::panelViewArea(w, h, chatOpen, static_cast<float>(std::max(0, chatWidth)),
+                                                     explorerOpen, static_cast<float>(std::max(0, explorerWidth)));
         const ui::GuiMeasure measure = [](const std::string& text, const funkgui::TextStyle& st) {
             return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), st);
         };

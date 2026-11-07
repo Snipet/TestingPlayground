@@ -293,8 +293,8 @@ namespace playground
         CodeWindow codeWindow() const override;
         void setCodeWindow(const CodeWindow& window) override;
         void addCodeWindow() override { ++codeWindows_; }
-        void removeCodeWindow() override { codeWindows_ = std::max(0, codeWindows_ - 1); }
-        bool codeWindowOpen() const override { return codeWindows_ > 0; }
+        void removeCodeWindow() override { codeWindows_.store(std::max(0, codeWindows_.load() - 1)); }
+        bool codeWindowOpen() const override { return codeWindows_.load() > 0; }
         FolderState folder() const override;
         uint64_t folderRevision() const override { return folder_.revision(); }
         bool setFolderSync(bool on, std::string& why) override;
@@ -501,9 +501,10 @@ namespace playground
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
         // The panel's fit (chatPanelFit, EditorPort.h's panelFitReady): the font made (on the message thread, poll()'s
-        // once a program with a .gui file compiled, or a fit asked there), and this Mac's chat width as poll() read it.
+        // once a program with a .gui file compiled, or a fit asked there), and this Mac's chat and explorer widths as
+        // poll() read them.
         std::atomic<bool> fitFonts_{ false };
-        std::atomic<int> fitChatWidth_{ 0 };
+        std::atomic<int> fitChatWidth_{ 0 }, fitExplorerWidth_{ 0 };
         void readyFit();                                         // message thread
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         std::atomic<bool> codePanelHidden_{ false };                 // its CODE view's panel hidden under the code,
@@ -524,8 +525,9 @@ namespace playground
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
-        int codeWindows_ = 0;                                    // the editors whose code is in a code window now
-                                                                 // (message thread; never in the session)
+        std::atomic<int> codeWindows_{ 0 };                      // the editors whose code is in a code window now
+                                                                 // (set on the message thread, read by chatPanelFit
+                                                                 // on any; never in the session)
         // The probes' owners (EditorPort::addProbeOwner; message thread): each one's set, the oldest first. The newest
         // whose set is armed reaches the Engine (sendProbes), none: an empty set.
         struct ProbeOwner

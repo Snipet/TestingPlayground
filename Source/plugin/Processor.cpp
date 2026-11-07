@@ -1100,6 +1100,7 @@ namespace playground
     {
         const PanelFitReady r = panelFitReady();
         fitChatWidth_.store(r.chatWidth);
+        fitExplorerWidth_.store(r.explorerWidth);
         fitFonts_.store(r.fonts, std::memory_order_release);
     }
 
@@ -1117,9 +1118,12 @@ namespace playground
             if (!fitFonts_.load(std::memory_order_acquire))
                 return {};
         }
-        const int chat = chatW_.load();
+        // The explorer as the CODE view has it (it can narrow the chat, which the PANEL view keeps), none while the
+        // code is in its own window.
+        const int chat = chatW_.load(), explorer = explorerW_.load();
         return panelFitLine(panel, controls, editorW_.load(), editorH_.load(), chatOpen_.load(),
-                            chat > 0 ? chat : fitChatWidth_.load());
+                            chat > 0 ? chat : fitChatWidth_.load(), explorerOpen_.load() && !codeWindowOpen(),
+                            explorer > 0 ? explorer : fitExplorerWidth_.load());
     }
 
     std::string Processor::chatProject() const

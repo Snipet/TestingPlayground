@@ -837,14 +837,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   JPEG's, so sizing a JPEG from it sent a third of the width).
 - **run_program's panel line** (`ChatHost::chatPanelFit`, EditorPort.h's `panelFitLine`, editor/Picture.cpp): after a
   run that plays a .gui file, one line when its interface is larger than the PANEL view at the editor's size (the
-  session's, else the default; the chat open or not, at its width), "" when it fits: the check gui_sandbox's report
-  makes (editor/GuiLayout.h's `guiFit`, `guiFitLine`, `guiNodeName`, in `FP_SANDBOX_SHARED`: how far the content
-  reaches past the area and the elements not wholly in view at no scroll, four named), the area by the Panel's own
-  arithmetic (`ui::panelViewArea`, which `gui.panel` VIEW holds to a laid-out Panel's, the chat open and folded; 853 x
-  612 at the default size, the sandbox's area). It lays out on the agent's worker, measuring text with FunkGui's
-  font, which is the message thread's to make: `poll()` makes it once a program with a .gui file compiled
-  (`readyFit`, `panelFitReady`, which also reads this Mac's chat width there), a call on the message thread makes it
-  itself, and another waits a quarter second for it, then says nothing. `plugin.reload` FIT checks it.
+  session's, else the default; the chat open or not, at its width, and as narrow as the CODE view's explorer leaves it),
+  "" when it fits: the check gui_sandbox's report makes (editor/GuiLayout.h's `guiFit`, `guiFitLine`, `guiNodeName`, in
+  `FP_SANDBOX_SHARED`: how far the content reaches past the area and the elements not wholly in view at no scroll, four
+  named), the area by the Panel's own arithmetic (`ui::panelViewArea`, which `gui.panel` VIEW holds to a laid-out
+  Panel's, the chat open and folded, and at 1200 px, where the explorer narrows it; 853 x 612 at the default size, the
+  sandbox's area). It lays out on the agent's worker, measuring text with FunkGui's font, which is the message thread's
+  to make: `poll()` makes it once a program with a .gui file compiled (`readyFit`, `panelFitReady`, which also reads
+  this Mac's chat and explorer widths there), a call on the message thread makes it itself, and another waits a quarter
+  second for it, then says nothing. `plugin.reload` FIT checks it.
 - **view_panel** (`editor/Picture.h`, `Picture.cpp`, `PictureDraw.cpp`; `Processor::chatPicture`): the turn's worker
   asks and the message thread draws (`Processor::poll`), as bgfx runs there: a headless Panel at the editor's size, its
   frame through FunkGui's `renderGpuPicture` (v0.23.0, `funkgui/gpu/GpuPicture.h`) where the build has bgfx

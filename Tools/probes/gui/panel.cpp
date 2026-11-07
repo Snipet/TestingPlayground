@@ -19,7 +19,8 @@
 //             inside its area, in the left column, none overlapping another; the area under the problems list
 //   VIEW      the toolbar's PANEL cell shows the PANEL view: the tabs, the editor and the problems go, the interface
 //             starts under the toolbar and fits, in the area panelViewArea computes (the panel's fit, run_program's
-//             line, lays it out there), the chat open and folded; the processor keeps the choice, and its state
+//             line, lays it out there), the chat open and folded, and in a window where the CODE view's explorer
+//             narrows the chat (which the PANEL view keeps); the processor keeps the choice, and its state
 //             carries it to another processor; CODE brings the editor back
 //   CONTROLS  a drag up on the large knob raises its parameter by a quarter for 50 px, and a double-click returns it to
 //             its default; the knob's log taper puts 632 Hz at its middle (the host's text says so); a click on a
@@ -499,17 +500,29 @@ PROBE(gui, panel)
         P.eq("view.fits", L->maxScrollY == 0.0f && L->maxScrollX == 0.0f ? 1 : 0, 1);
         // Where the panel's fit (run_program's line) lays it out: the same area, by panelViewArea's arithmetic.
         {
-            const funkgui::Rect a = pg::ui::panelViewArea(static_cast<float>(pg::ui::kDefaultWidth),
-                                                          static_cast<float>(pg::ui::kDefaultHeight), port.chatOpen(),
-                                                          panel.chatWant());
+            const float defW = static_cast<float>(pg::ui::kDefaultWidth), defH = static_cast<float>(pg::ui::kDefaultHeight);
+            const funkgui::Rect a = pg::ui::panelViewArea(defW, defH, port.chatOpen(), panel.chatWant(), port.explorerOpen(),
+                                                          panel.explorerWant());
             P.eq("view.area_as_fit_says", sameRect(a, L->area) ? 1 : 0, 1);
             panel.setChatOpen(false);                // the chat folded to its rail: the area wider
             host.settle();
-            const funkgui::Rect folded = pg::ui::panelViewArea(static_cast<float>(pg::ui::kDefaultWidth),
-                                                               static_cast<float>(pg::ui::kDefaultHeight), false,
-                                                               panel.chatWant());
+            const funkgui::Rect folded = pg::ui::panelViewArea(defW, defH, false, panel.chatWant(), port.explorerOpen(),
+                                                               panel.explorerWant());
             P.eq("view.area_as_fit_says_folded", sameRect(folded, panel.guiLayout().area) && folded.w > a.w ? 1 : 0, 1);
             panel.setChatOpen(true);
+            host.settle();
+            // A window where the CODE view's explorer narrows the chat (Columns.h's give-way order: at 1200 px the
+            // chat 356 px, not 384): the PANEL view keeps the chat's CODE width, and the fit's area follows it.
+            constexpr int kNarrowed = 1200;
+            host.resize(kNarrowed, pg::ui::kDefaultHeight);
+            host.settle();
+            const float narrowW = static_cast<float>(kNarrowed);
+            const funkgui::Rect narrowed = pg::ui::panelViewArea(narrowW, defH, true, panel.chatWant(), port.explorerOpen(),
+                                                                 panel.explorerWant());
+            const funkgui::Rect alone = pg::ui::panelViewArea(narrowW, defH, true, panel.chatWant(), false, panel.explorerWant());
+            P.eq("view.area_as_fit_says_explorer",
+                 port.explorerOpen() && sameRect(narrowed, panel.guiLayout().area) && narrowed.w > alone.w ? 1 : 0, 1);
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
             host.settle();
             L = &panel.guiLayout();
         }

@@ -187,8 +187,11 @@ namespace playground::ui
 
     // Where the PANEL view puts a .gui file's interface in an editor W x H (logical px) whose chat is open (else its
     // rail) and `chatWant` px wide (0: its share), as layout() does: the program's card across the window but the chat's
-    // column, from the tabs' line to over the status bar. The panel's fit (EditorPort.h's panelFitLine) lays it out there.
-    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant);
+    // column, from the tabs' line to over the status bar. With the explorer open (`explorerOpen`, `explorerWant` px
+    // wide, 0: its share) the chat is as wide as the CODE view leaves it beside the explorer, narrower in some windows
+    // (layout(): a switch never lays the conversation out again); pass false while the code is in its own window, which
+    // has the explorer. The panel's fit (EditorPort.h's panelFitLine) lays it out there.
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant, bool explorerOpen, float explorerWant);
 
     // The panel's own primitive tags, for probes that find what they check by tag.
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
