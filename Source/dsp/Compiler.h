@@ -113,7 +113,9 @@
 //   - both the files that play and the new ones have a .gui file, the same first one (a .gui added, removed or renamed
 //     changes where the panel comes from: the #pragma panel lines);
 //   - the .gui file leaves each dial's declaration as it plays: its type, range, default and taper (a taper= changes
-//     what a value means: the carry's), and an int's or a bool's option names (a value keeps its name across a run).
+//     what a value means: the carry's), and an int's or a bool's option names (a value keeps its name across a run);
+//   - each sample the program's #pragma sample lines read is the one the samples set now has of its name (none, or the
+//     same file: Recipe::samples), so a sample added, replaced or removed since compiles it.
 // request(files, false) never applies one (the A/B's sides and its end, a recording's restart, a fresh start, a project
 // version opened: each wants the program compiled, as it was saved), nor does compileNow.
 //
@@ -188,6 +190,12 @@ namespace playground
         // netlist's module, its elements' paths and the netlist's nodes (name, line, readable, why, dc), what the
         // schematic's probes resolve a net against by name (a ProbeSet's circuit is the index).
         std::vector<circuits::Probed> probes;
+        // The samples `program`'s #pragma sample lines read (Patch.h, "Samples"; Patch::Recipe::samples): each one's file
+        // and the hash of the one it read ("" for none of that name).
+        std::vector<std::pair<std::string, std::string>> samples;
+        // The samples `program` compiled with (Patch::Recipe::assets; null: none), which a render of it takes: the
+        // processor's set may have changed since.
+        Assets      assets;
         // How the dials of `program` came across from the program before it (above, "The dials' carry"), when it
         // compiled; none (no slots) without a carrier, or for a compileNow told not to.
         DialCarry   carry;
@@ -238,6 +246,10 @@ namespace playground
 
         // What building a .gui file's shaders needs (the plugin's shaderc and FunkGui's texts); none until it is set.
         void setShaderTools(ShaderTools tools);
+        // The program's samples (dsp/Assets.h; Patch.h, "Samples"), which a RUN and compileNow compile with from now: the
+        // set as it is when the compile starts. A refine and a program played again after a stop compile with the ones
+        // their program had (Patch::Recipe::assets). Any thread.
+        void setAssets(Assets assets);
 
         // `panelEdits` false: compiled whatever changed (above, "A panel's edit").
         uint64_t request(Sources files, bool panelEdits = true);
@@ -296,7 +308,7 @@ namespace playground
         // `files` compiled at `rate` as program `id` (CompileStatus::request and program, Patch::program: Meters::program
         // names it), not offered; `pins`, the configurations of its netlists (a program played again after a stop).
         static std::unique_ptr<Built> build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
-                                            ShaderCache& cache, bool keepIr, const CircuitPins* pins = nullptr);
+                                            ShaderCache& cache, bool keepIr, const CircuitPins* pins, const Assets& assets);
 
         void run();
         void freezer();                        // the freezer's thread
@@ -313,7 +325,7 @@ namespace playground
         bool audioIdle() const;
         // A panel's edit (above): `files` applied as RUN `id` to the program that plays, its status published; false,
         // and nothing done, when they are not one (the caller compiles them).
-        bool editPanel(const Sources& files, uint64_t id, const ShaderTools& tools);
+        bool editPanel(const Sources& files, uint64_t id, const ShaderTools& tools, const Assets& assets);
         // The Engine's stops of the program that plays since last looked at (above): the status, and the program
         // before it played again. Under mutex_ (let go while it compiles).
         void checkStops(std::unique_lock<std::mutex>& lock);
@@ -349,6 +361,7 @@ namespace playground
         Engine& engine_;
         mutable std::mutex mutex_;
         ShaderTools tools_;                    // mutex_
+        Assets assets_;                        // mutex_: a RUN's and compileNow's samples (setAssets)
         DialCarrier carrier_;                  // mutex_
         ShaderCache& shaders_ = shaderCache();   // the process's (Shaders.h)
         std::condition_variable wake_, idle_;

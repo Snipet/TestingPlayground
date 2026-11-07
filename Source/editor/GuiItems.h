@@ -92,11 +92,27 @@ namespace playground::ui
 
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
-        uint64_t drawKey() const override                // its value (a host's automation too), its live= mark, its menu
-        {
+        uint64_t drawKey() const override                // its value (a host's automation too), its live= mark, its menu,
+        {                                                // its MIDI mark
             return DrawKey{}.mix(value_.value01()).mix(live01_).mix(hovered_).mix(hoverButton_).mix(dragging_)
-                .mix(menuOpenNow()).h;
+                .mix(menuOpenNow()).mix(midiMapped_).mix(midiLearning_).mix(midiSpec_).h;
         }
+        // MIDI learn (the plugin's editor, editor/Panel.cpp; none in the GUI sandbox): what a right-click, a ctrl-click
+        // and a screen reader's menu action open at a point, alike, on a knob, a slider, a switch or buttons (none:
+        // nothing, as before; never on a dropdown, whose menu action opens its own list as its press does), its mark
+        // (looks::midiMark: a MIDI control moves it, it learns one) and what its footer line says after its own.
+        void setMenu(std::function<void(funkgui::Point)> menu) { dialMenu_ = std::move(menu); }
+        void setMidi(bool mapped, bool learning, std::string spec)
+        {
+            midiMapped_ = mapped;
+            midiLearning_ = learning;
+            midiSpec_ = std::move(spec);
+        }
+        bool midiMarked() const noexcept { return midiMapped_; }
+        bool midiLearning() const noexcept { return midiLearning_; }
+        // Where its mark goes: a knob's at its cell's right edge level with its face's top (under a label on top), clear
+        // of the face; another kind's at its cell's top right.
+        funkgui::Point midiMarkAt() const noexcept;
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h) override;
@@ -121,6 +137,8 @@ namespace playground::ui
 
     private:
         bool clicks() const noexcept { return kind_ == GuiKind::toggle || kind_ == GuiKind::buttons || kind_ == GuiKind::menu; }
+        bool dialMenuHere() const noexcept { return dialMenu_ && kind_ != GuiKind::menu && shown(); }   // setMenu's
+        void drawControl(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const;
         void drawKnob(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void drawSlider(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void openMenu(funkgui::GestureController& g, funkgui::HostServices& h);
@@ -133,6 +151,9 @@ namespace playground::ui
         std::function<funkgui::Theme()> menuTheme_;
         std::function<bool(const funkgui::Rect&)> menuOpen_;
         std::function<funkgui::HostServices*()> menuHost_;
+        std::function<void(funkgui::Point)> dialMenu_;
+        bool midiMapped_ = false, midiLearning_ = false;
+        std::string midiSpec_;
         GuiKind kind_ = GuiKind::knob;
         GuiSize size_ = GuiSize::medium;
         bool vertical_ = true, vintage_ = false;

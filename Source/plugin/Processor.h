@@ -32,6 +32,17 @@
 //     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
 //     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
 //     put back, and a session loaded ends it.
+//   - the samples (dsp/Assets.h; EditorPort::assets, the explorer's ASSETS): audio files a program reads as tables
+//     (#pragma sample), decoded when added (AssetFiles.h, on the message thread or Claude's worker), never on the audio
+//     thread; the set the Compiler and every tool's render compile with. Kept in the session as each file was added
+//     (<ASSETS><ASSET name=".." data="base64"/></ASSETS>; a state without them has none) and with each project version
+//     saved (ProjectStore.h: opening a version makes its samples the plugin's); a fresh start (EXAMPLES, RANDOM) keeps
+//     them, as the user's material for the next program.
+//   - MIDI learn (MidiLearn.h; the instrument's): a dial learns a MIDI controller's control, which then moves it
+//     through its port as the editor's hand does (a host gesture a touch). The audio thread notes the control changes
+//     (learn_), the message thread writes them (pollMidi, on a timer of its own while there is anything to listen for).
+//     The mappings are kept in the session (<MIDI><MAP dial=".." channel=".." cc=".." fine="1"/></MIDI>; a state
+//     without them has none) and with each project version saved (ProjectStore.h).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -58,12 +69,14 @@
 #pragma once
 
 #include "plugin/AbMatch.h"
+#include "plugin/AssetFiles.h"
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
+#include "plugin/MidiLearn.h"
 #include "plugin/ProjectStore.h"
 
 #include "dsp/Compiler.h"
@@ -176,6 +189,11 @@ namespace playground
         Control control(int c) const;
         std::vector<std::string> controlOptions(int c) const;   // its values' names (#pragma panel options), maybe none
 
+        // MIDI learn (MidiLearn.h): the control changes noted since, learned and written as the dials' gestures, a
+        // touch's gesture ended kTouchMs after its last. `nowMs` a clock in ms: its timer's, a probe's own. Message thread.
+        void pollMidi(double nowMs);
+        uint64_t midiGestures() const noexcept { return midiGestures_; }   // the slots in a gesture of MIDI's (probes)
+
     private:
         static BusesProperties buses();                          // the kind's buses (product::kIsInstrument)
         juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -277,6 +295,9 @@ namespace playground
         void endAb() override;
         std::string desktopName() const override { return mcp_ != nullptr ? mcp_->name() : std::string(); }
         bool desktopConnected() const override { return mcp_ != nullptr && mcp_->connected(); }
+        DesktopState desktop() const override;
+        bool setDesktopName(const std::string& name, std::string& why) override;
+        void chooseDesktop(const std::string& id, bool on) override;
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }
@@ -314,6 +335,17 @@ namespace playground
         void dragWindow(int clicks) override;
         DevicePort* devices() override { return windowHooks_.devices; }
         uint64_t settingsAsked() const override { return settingsAsked_; }
+        bool midiLearnable() const override;
+        midilearn::View midi() const override { return learn_.view(); }
+        uint64_t midiRevision() const override { return learn_.revision(); }
+        bool learnMidi(int slot) override;
+        void cancelMidiLearn() override;
+        bool forgetMidi(int slot) override;
+        int forgetAllMidi() override;
+        std::vector<AssetEntry> assets() const override;
+        uint64_t assetsRevision() const override { return assetsRevision_.load(); }
+        int addAssets(const std::vector<std::string>& paths, std::string& why) override;
+        bool removeAsset(const std::string& name, std::string& why) override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -323,7 +355,8 @@ namespace playground
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
-        Sources chatPrevious() const override;
+        Sources chatPlaying(Assets& samples) const override;
+        Sources chatPrevious(Assets& samples) const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
         void chatSetDial(int slot, float plain) override;
@@ -342,12 +375,46 @@ namespace playground
         std::string chatProject() const override;
         std::string chatAb() const override;
         std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
+        midilearn::View chatMidi() const override { return learn_.view(); }
+        Assets chatAssets() const override { return assetsNow(); }
+        bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why) override;
+        bool chatRemoveAsset(const std::string& name, std::string& why) override;
+        bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why) override;
+        Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                  std::vector<std::string>& refused) const override;
+
+        // The samples (above; dsp/Assets.h): the set as it is, under assetsMutex_ (any thread reads it), replaced whole
+        // on the message thread and Claude's worker (the Compiler's with it, journalled as `who`'s: `words`).
+        mutable std::mutex assetsMutex_;
+        Assets assets_;
+        mutable std::map<std::string, std::string> base64_;     // each file's base64 by its hash (assetsState: a host
+                                                                // may save its state often), the set's only
+        std::atomic<uint64_t> assetsRevision_{ 1 };
+        Assets assetsNow() const;
+        void replaceAssets(Assets next, Journal::Who who, const std::string& words);
+        // A decoded sample into the set (in place of one of its name), its caps checked again against the set as it is
+        // then: false, with why.
+        bool putAsset(const std::shared_ptr<const assets::Asset>& asset, Journal::Who who, std::string& why);
+        bool dropAsset(const std::string& name, Journal::Who who, std::string& why);
+        // What the session keeps of them (<ASSETS>), and the set a state's or a version's make (each file decoded, but
+        // one `reuse` holds already, which it shares; one that cannot be is left out, `refused` saying why; a second of
+        // a name in place of the first).
+        juce::ValueTree assetsState() const;
+        static Assets assetsOfState(const juce::ValueTree& state, std::vector<std::string>& refused);
+        static Assets assetsOfVersion(const projectstore::Project& p, const projectstore::Version& v,
+                                      const Assets& reuse, std::vector<std::string>& refused);
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
         mutable std::mutex programMutex_;
         Sources running_;
         Sources previous_;                                       // what played before running_ (chatPrevious): a run's
+        Assets runningAssets_, previousAssets_;                  // the samples each compiled with (CompileStatus::
+                                                                 // assets)
+        std::vector<std::pair<std::string, std::string>> runningSamples_;   // those running_'s lines read
+        // Whether `s`, a compile's status, plays another program than running_: its files (a netlist's drawing aside),
+        // or the samples its lines read (programMutex_).
+        bool changesProgram(const CompileStatus& s) const;
         Draft draft_;
         uint64_t draftRevision_ = 1;
         Controls controls_{};
@@ -361,7 +428,11 @@ namespace playground
         mutable int projectLatest_ = 0;                          // its newest, as last read
         std::string projectPreset_;
         Sources projectFiles_;
+        Assets projectAssets_;                                   // its samples, as projectFiles_ (project().edited)
         std::vector<projectstore::Dial> baseDials_;
+        // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
+        // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).
+        std::optional<std::vector<midilearn::Mapping>> midiOpened_;
         // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();
@@ -550,6 +621,24 @@ namespace playground
         std::array<Event, kUiNotes> uiNotes_{};
         std::atomic<uint32_t> uiNoteHead_{ 0 }, uiNoteTail_{ 0 };   // written: head by the writer, tail by the reader
         void pushUiEvent(const Event& e);                         // into that ring (the writer's side)
+        // MIDI learn (MidiLearn.h): the mappings, learning and the control changes noted (the audio thread's side, in
+        // hostBlock); the slots in a gesture of MIDI's (pollMidi's, message thread), and its timer, which runs while
+        // there is anything to listen for or a gesture to end (poll() starts it, pollMidi stops it).
+        midilearn::Learn learn_;
+        uint64_t midiGestures_ = 0;
+        void midiControls(const juce::MidiBuffer& midi) noexcept;   // the audio thread: control changes to learn_
+        void endMidiGestures();
+        void syncWheel();                                        // learn_.setWheel from the Standalone's devices
+        bool wheelKnown_ = false;                                // ... read at their serial wheelSerial_
+        uint64_t wheelSerial_ = 0;
+        struct MidiTimer final : juce::Timer
+        {
+            explicit MidiTimer(Processor& p) : owner(p) {}
+            void timerCallback() override { owner.pollMidi(juce::Time::getMillisecondCounterHiRes()); }
+            Processor& owner;
+        };
+        MidiTimer midiTimer_{ *this };
+        static constexpr int kMidiHz = 60;
         bool prepared_ = false;
         int maxBlock_ = 1;
         int largestCall_ = 0;

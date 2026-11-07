@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -307,6 +308,7 @@ namespace playground
         {
             std::string out;
             const std::array<std::vector<std::string>, kMaxControls> options = host.chatDialOptions();
+            const midilearn::View midi = host.chatMidi();
             for (int c = 0; c < kMaxControls; ++c)
             {
                 const Control& k = controls[static_cast<std::size_t>(c)];
@@ -327,10 +329,59 @@ namespace playground
                         range += (i == 0 ? "" : " ") + names[i];
                     range += ")";
                 }
+                // A dial's MIDI control by its name in `controls` (a compile apply() has not taken yet may have put
+                // it in another slot than the mappings were bound to: MidiLearn.h's View).
+                const midilearn::Mapping* m = midi.forDial(std::string_view(k.name, strnlen(k.name, sizeof k.name)));
                 out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
-                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "") + "\n";
+                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "")
+                     + (m == nullptr ? std::string() : ", moved by MIDI " + midilearn::describe(*m)) + "\n";
             }
             return out.empty() ? "none\n" : out;
+        }
+
+        // MIDI learn's state beyond the dial lines (plugin/MidiLearn.h), "" when there is none to say: a dial learning
+        // (and a control it refused), mappings whose dial `controls` (the dial lines') have none of.
+        std::string midiLines(const Controls& controls, const ChatHost& host)
+        {
+            const midilearn::View midi = host.chatMidi();
+            std::string out;
+            if (midi.learning >= 0)
+                out += "MIDI learn: " + midi.learningDial + " waits for the user to move a control on a MIDI controller"
+                     + (midi.note.empty() ? std::string() : " (" + midi.note + ")") + "\n";
+            std::string waiting;
+            for (const midilearn::Mapping& m : midi.mappings)
+                if (std::none_of(controls.begin(), controls.end(), [&](const Control& k) {
+                        return k.used && std::string_view(k.name, strnlen(k.name, sizeof k.name)) == m.dial;
+                    }))
+                    waiting += (waiting.empty() ? " " : ", ") + m.dial + " (" + midilearn::describe(m) + ")";
+            if (!waiting.empty())
+                out += "MIDI mappings waiting for a dial of their name:" + waiting + "\n";
+            return out;
+        }
+
+        // The samples (dsp/Assets.h; ChatHost::chatAssets), a line, "" when there are none and no #pragma sample line of
+        // the program that plays names one: each one's name, length, channels, rate and size, and whether the program
+        // that plays reads it; then the names its lines read that the samples lack.
+        std::string samplesLine(const ChatHost& host)
+        {
+            const Assets now = host.chatAssets();
+            const CompileStatus s = host.chatLastStatus();
+            std::string out;
+            if (now != nullptr)
+                for (const std::shared_ptr<const assets::Asset>& a : now->items)
+                {
+                    const bool read = std::any_of(s.samples.begin(), s.samples.end(),
+                                                  [&](const auto& u) { return u.first == a->name() && u.second == a->hash(); });
+                    out += (out.empty() ? "" : ", ") + a->name() + " (" + a->describe() + (read ? "; the program reads it" : "") + ")";
+                }
+            std::string missing;
+            for (const auto& [file, hash] : s.samples)
+                if (hash.empty())
+                    missing += (missing.empty() ? "" : ", ") + file;
+            if (out.empty() && missing.empty())
+                return {};
+            return "Samples: " + (out.empty() ? std::string("none") : out)
+                 + (missing.empty() ? std::string() : "; named by #pragma sample but not there: " + missing) + "\n";
         }
 
         // The dials' declarations (each used one's name, type, range, taper, default, unit, scale and options' names),
@@ -2003,6 +2054,8 @@ namespace playground
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
         const std::string ab = host_.chatAb();
+        const Controls controls = host_.chatDials();
+        const std::string dials = dialLines(controls, host_);
         std::string tail = "What plays: "
                          + std::string(cir::sameProgram(running, d.files) ? "these files"
                                        : !ab.empty()                       ? "a side of the user's A/B listening (below)"
@@ -2010,7 +2063,8 @@ namespace playground
                                                                              "were edited since the last run)")
                          + (ab.empty() ? std::string() : "\n" + ab)
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
-                         + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
+                         + dials + midiLines(controls, host_) + samplesLine(host_)
+                         + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
@@ -2074,8 +2128,11 @@ namespace playground
                        claude::object({ { "name", prop("string", "The file's name: letters, digits, _, - and ., not "
                                                                   "starting with '.', such as program.fm or "
                                                                   "filters.fm") },
-                                        { "content", prop("string", "The file's whole text") } }),
-                       { "name", "content" }));
+                                        { "content", prop("string", "The file's whole text") },
+                                        { "path", prop("string", "In place of content: a WAV, AIFF or FLAC on this "
+                                                                 "computer, added as the sample name (delete_file and "
+                                                                 "rename_file take a sample too)") } }),
+                       { "name" }));
         {
             // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
             // unified diff of them (ChatFiles.cpp); name is then left out, so none is required. Its two forms as anyOf,
@@ -3486,6 +3543,12 @@ namespace playground
             "idle minutes, and comes back on the next call with the panel as it was.";
     }
 
+    std::string ChatAgent::mcpTitle(const std::string& name)
+    {
+        const Face* f = faceOf(juce::String::fromUTF8(name.c_str()));
+        return f != nullptr ? std::string(f->title) : name;
+    }
+
     juce::var ChatAgent::mcpTools()
     {
         // MCP's copy of the schemas (mcp/McpSchema.h): a property's words given once unless they hold a number (the
@@ -3752,7 +3815,8 @@ namespace playground
         const double seconds = isNumber(sec) ? static_cast<double>(sec) : -1.0;
         if (!(seconds > 0.0) || seconds > kMaxAt)
             return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
-        const Sources files = host_.chatRunning();
+        Assets samples;                           // what it compiled with, not the plugin's samples as they are now
+        const Sources files = host_.chatPlaying(samples);
         if (files.empty())
             return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
         measure::ViewRequest vr;
@@ -3765,9 +3829,10 @@ namespace playground
             scenario::resolve(vr.render, host_, why);
         if (!why.empty())
             return "at: " + why;
+        vr.render.assets = samples;
         defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
-        measure::Session session(files, vr.render.rate);
+        measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
         if (!session.compiled())
             return "the program that plays did not compile for the render:\n" + capped(session.errors());
         // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
@@ -3986,9 +4051,23 @@ namespace playground
             return readFileText(input, isError);           // ChatFiles.cpp
         if (name == "write_file")
         {
-            std::string file, content;
+            std::string file, content, path;
+            // A sample (dsp/Assets.h): the audio file at path, decoded here, on this thread (ChatHost::chatAddAsset).
+            if (stringArg("path", path) && !path.empty())
+            {
+                (void)stringArg("name", file);
+                std::string done, why;
+                setActivity("Adding a sample");
+                if (!host_.chatAddAsset(path, file, done, why))
+                    return fail(why);
+                note(std::string(1, static_cast<char>(std::tolower(static_cast<unsigned char>(done.front())))) + done.substr(1));
+                return done + ". #pragma sample <field> \"<its name>\" reads it into a Sample field (sample.fm); "
+                              "run_program to hear it.";
+            }
             if (!stringArg("name", file) || !stringArg("content", content))
-                return fail("write_file needs a name and the content");
+                return fail("write_file needs a name and the content (or a path, for a sample)");
+            if (assets::isAudioName(file))
+                return fail(file + " names an audio file: give its path (path) to add it as a sample, not its content");
             if (!validFileName(file))
                 return fail("'" + file + "' cannot name a file: use letters, digits, _, - and ., not starting with "
                             "'.', at most " + std::to_string(kMaxNameLength) + " characters");
@@ -4165,6 +4244,14 @@ namespace playground
                 return fail("rename_file needs name and new_name");
             Draft d = host_.chatDraft();
             const int i = findFile(d, file);
+            if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
+            {
+                std::string why;
+                if (!host_.chatRenameAsset(file, to, why))
+                    return fail(why);
+                note("renamed the sample " + file + " to " + to);
+                return "Renamed the sample " + file + " to " + to + ". #pragma sample lines naming " + file + " still name it.";
+            }
             if (i < 0)
                 return fail("There is no file " + file + ". The files: " + names(d));
             if (!validFileName(to))
@@ -4192,6 +4279,14 @@ namespace playground
                 return fail("delete_file needs a name");
             Draft d = host_.chatDraft();
             const int i = findFile(d, file);
+            if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
+            {
+                std::string why;
+                if (!host_.chatRemoveAsset(file, why))
+                    return fail(why);
+                note("deleted the sample " + file);
+                return "Deleted the sample " + file + ".";
+            }
             if (i < 0)
                 return fail("There is no file " + file);
             if (i == 0)
@@ -4742,7 +4837,8 @@ namespace playground
             if (!ab.empty())
                 out += ab + "\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
-            out += "Dials:\n" + dialLines(host_.chatDials(), host_);
+            const Controls controls = host_.chatDials();
+            out += "Dials:\n" + dialLines(controls, host_) + midiLines(controls, host_) + samplesLine(host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "
                    "(the busiest recent block)\n";
             const uint32_t a = host_.chatAlerts();

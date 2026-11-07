@@ -127,6 +127,12 @@ namespace playground
         // The editor moved it since the last call, or moves it now.
         bool takeMoved() noexcept;
 
+        // A gesture of the processor's own (Processor::writeDial: Claude's set_dial, the dials' carry, a version's or
+        // an example's dials), nested in any open one as beginGesture's is (the editor's drag, a MIDI touch: the host
+        // sees one gesture, and its end is the last end's), but not the editor's move: the journal's attribution
+        // (takeMoved) stays as it was. Ended by endGesture.
+        void beginOwnGesture();
+
     private:
         std::unique_ptr<funkgui::ParamPort> inner_;
         int gestures_ = 0;

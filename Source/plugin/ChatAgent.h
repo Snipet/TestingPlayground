@@ -135,6 +135,12 @@
 #include <thread>
 #include <vector>
 
+namespace playground::projectstore
+{
+    struct Project;
+    struct Version;
+}
+
 namespace playground
 {
     // What Claude's tools act on. Every call may come from the agent's worker thread.
@@ -155,10 +161,30 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
-        // What played before the last run that changed what plays (a netlist's drawing aside): compare's previous_run.
-        // None until a run has changed the program since the plugin opened or loaded a state (it is not kept with the
-        // session, and a state's program is no run's).
-        virtual Sources chatPrevious() const { return {}; }
+        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets), from one
+        // look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
+        virtual Sources chatPlaying(Assets& samples) const
+        {
+            samples = chatAssets();
+            return chatRunning();
+        }
+        // What played before the last run that changed what plays (its files, a netlist's drawing aside, or the samples
+        // its lines read), and in `samples` the samples it compiled with: compare's previous_run. None until a run has
+        // changed the program since the plugin opened or loaded a state (it is not kept with the session, and a state's
+        // program is no run's).
+        virtual Sources chatPrevious(Assets& samples) const
+        {
+            samples = nullptr;
+            return {};
+        }
+        // A project version's samples, decoded (those the samples now hold of the same file shared, not decoded again;
+        // a file it names that cannot be one left out, in words in `refused`): what a render of that version takes.
+        virtual Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                          std::vector<std::string>& refused) const
+        {
+            (void)p, (void)v, (void)refused;
+            return chatAssets();
+        }
         virtual Controls chatDials() const = 0;                     // the running program's
         virtual float chatDialValue(int slot) const = 0;            // plain value
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread
@@ -190,6 +216,34 @@ namespace playground
         // run_program's line on a .gui file's layout (EditorPort.h's panelFitLine): its content larger than the PANEL view
         // at the editor's size, in words; "" when it fits, or when it cannot be said now. The worker's.
         virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
+        // MIDI learn (plugin/MidiLearn.h): the mappings and the dial learning. Any thread (under its own mutex): the dial
+        // lines and get_status say them, matched to the controls they list by name (its `words` are by the slots of
+        // the program apply() took, which a compile apply() has not taken yet may have moved).
+        virtual midilearn::View chatMidi() const { return {}; }
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS), which its #pragma sample lines read: every render
+        // of a tool compiles with them (scenario::resolve). Any thread (a copy under its own mutex). chatAddAsset adds
+        // the audio file at `path` (a WAV, AIFF or FLAC on this computer) as `name` (its own name tidied when ""),
+        // decoded on the calling thread; chatRemoveAsset and chatRenameAsset act on one by name. False, with why in
+        // words (the caps, a file that is none of those), when it cannot; `done` says what was done.
+        virtual Assets chatAssets() const { return {}; }
+        virtual bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why)
+        {
+            (void)path, (void)name, (void)done;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRemoveAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why)
+        {
+            (void)name, (void)to;
+            why = "this plugin keeps no samples";
+            return false;
+        }
     };
 
     class ChatAgent final : public ChatPort
@@ -284,6 +338,8 @@ namespace playground
         // Of the live calls, those that take seconds (listen): the link runs each on a thread of its own, so its poll
         // thread stays free (McpLink.h). One line a tool.
         static bool mcpLiveWaits(const std::string& name);
+        // A tool's title in words, as Claude Desktop shows it ("Measure the sound"; the name itself for one with none).
+        static std::string mcpTitle(const std::string& name);
         McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
         void mcpCancel(uint64_t call);
         // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status

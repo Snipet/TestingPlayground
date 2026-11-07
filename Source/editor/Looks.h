@@ -54,6 +54,19 @@ namespace playground::ui::looks
     // A focus ring around a cell, the panel's (square).
     void focusRing(funkgui::Canvas& c, const funkgui::Theme& th, const funkgui::Rect& cell);
 
+    // MIDI learn's mark on a dial (the plugin's editor: plugin/MidiLearn.h), at `at`: a dot while a MIDI control moves
+    // the dial, a ring while it learns one; nothing else. A dial's cell (DialLayout.h) has it at its right edge, just
+    // under its label's line (midiMarkAt), clear of a knob's marks, a fader's ticks and a switch's plate in every style
+    // and size, and of the label however long; a .gui file's control places its own (GuiControlItem::midiMarkAt).
+    inline constexpr float kMidiMarkR = 3.0f;          // the dot's radius (the ring's 1 px more)
+    inline constexpr float kMidiMarkInset = 6.0f;      // its centre from the cell's right edge
+    inline constexpr float kMidiMarkTop = 17.0f;       // ... and from its top
+    inline funkgui::Point midiMarkAt(const funkgui::Rect& cell)
+    {
+        return { cell.right() - kMidiMarkInset, cell.y + kMidiMarkTop };
+    }
+    void midiMark(funkgui::Canvas& c, const funkgui::Theme& th, funkgui::Point at, bool mapped, bool learning);
+
     struct Display
     {
         funkgui::Rect cell;

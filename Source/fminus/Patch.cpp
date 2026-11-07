@@ -107,9 +107,9 @@ namespace playground
                                        "void playground_legato(Voice* self, float note, float velocity) [[clang::nonblocking]] "
                                        "{ self->legato(note, velocity); }" };
 
-        // A #pragma mono line (Patch.h, "Mono"): its words after "mono" (a // comment ends them) into `words`; false for
-        // any other line.
-        bool monoLine(std::string_view line, std::vector<std::string>& words)
+        // A `#pragma <name>` line: its words after the name (a // comment ends them) into `words`; false for any other
+        // line. A #pragma mono line's (Patch.h, "Mono"), a #pragma sample line's ("Samples").
+        bool pragmaLine(std::string_view line, std::string_view name, std::vector<std::string>& words)
         {
             const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
             const auto nameChar = [](char c) {
@@ -134,7 +134,7 @@ namespace playground
             if (!word("pragma"))
                 return false;
             skip();
-            if (!word("mono"))
+            if (!word(name))
                 return false;
             words.clear();
             while (true)
@@ -147,6 +147,19 @@ namespace playground
                     ++i;
                 words.emplace_back(line.substr(from, i - from));
             }
+        }
+
+        bool monoLine(std::string_view line, std::vector<std::string>& words)
+        {
+            return pragmaLine(line, "mono", words);
+        }
+
+        // A word without the quotes around it ("kick.wav" for "\"kick.wav\"").
+        std::string unquoted(std::string w)
+        {
+            if (w.size() >= 2 && w.front() == '"' && w.back() == '"')
+                return w.substr(1, w.size() - 2);
+            return w;
         }
 
         // A field's type as FMinus writes it ("Shared *") without its spaces.
@@ -626,7 +639,7 @@ namespace playground
     }
 
     Patch::Result Patch::compile(const Sources& files, float sampleRate, bool keepIr, const CircuitPins* pins, bool loopBudget,
-                                 bool boundsCheck)
+                                 bool boundsCheck, const Assets& assets)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Result r;
@@ -1019,6 +1032,107 @@ namespace playground
             rc.circuitShims = static_cast<int>(bound.size());
             rc.loopBudget = loopBudget;
             rc.boundsCheck = boundsCheck;
+            rc.assets = assets;
+        }
+        // Samples (Patch.h): each #pragma sample line of the files FMinus read, as it read them, and the fields it fills,
+        // the main module's and Shared's; reset() writes them before init.
+        for (const SourceFile& f : asRead(compiled, files))
+        {
+            if (isCircuitFile(f.name))
+                continue;
+            std::string_view text = f.text;
+            std::vector<std::string> words;
+            for (int no = 1; !text.empty(); ++no)
+            {
+                const std::size_t end = text.find('\n');
+                const std::string_view line = text.substr(0, end);
+                text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+                if (!pragmaLine(line, "sample", words))
+                    continue;
+                const std::string at = f.name + ":" + std::to_string(no) + ":1: note: #pragma sample: ";
+                if (words.size() < 2)
+                {
+                    r.notes += at + "it names a field and a sample (`#pragma sample kick \"kick.wav\"`), so it is left out\n";
+                    continue;
+                }
+                const std::string field = words[0], name = unquoted(words[1]);
+                if (words.size() > 2)
+                    r.notes += at + "what follows " + words[1] + " is left out\n";
+                if (std::any_of(patch->samples_.begin(), patch->samples_.end(), [&](const SampleUse& u) { return u.field == field; }))
+                {
+                    r.notes += at + "an earlier line fills " + field + ", so this one is left out\n";
+                    continue;
+                }
+                SampleUse use;
+                use.field = field;
+                std::string why;
+                for (const bool shared : { false, true })
+                {
+                    const fminus::Program::Module* home = shared ? program.module(kSharedModule) : s.module;
+                    if (home == nullptr)
+                        continue;
+                    const auto x = std::find_if(home->fields.begin(), home->fields.end(),
+                                                [&](const fminus::Program::Module::Field& y) { return y.name == field; });
+                    if (x == home->fields.end())
+                        continue;
+                    const fminus::Program::Module* m = x->type.rfind("param ", 0) == 0 ? nullptr : program.module(x->type);
+                    if (m == nullptr)
+                    {
+                        why = field + " is "
+                            + (x->type.rfind("param ", 0) == 0 ? std::string("a dial") : "of type " + x->type)
+                            + ": a sample's field is a Sample (sample.fm), or a module of your own with `const float* "
+                              "data` and `int frames`";
+                        continue;
+                    }
+                    SamplePlace place;
+                    place.shared = shared;
+                    bool writable = false;
+                    for (const fminus::Program::Module::Field& y : m->fields)
+                    {
+                        const std::string type = squeezed(y.type);
+                        const std::size_t o = x->offset + y.offset;
+                        // const alone: the sound is one buffer every instance, the next RUN's program (Asset::at's
+                        // copies) and the tools' renders share, and FMinus refuses a write through a const float*.
+                        if (y.name == "data" && type == "constfloat*" && y.size == sizeof(void*))
+                            place.data = o;
+                        else if (y.name == "data" && type == "float*")
+                            writable = true;
+                        else if (y.name == "frames" && type == "int" && y.size == sizeof(int32_t))
+                            place.frames = o;
+                        else if (y.name == "channels" && type == "int" && y.size == sizeof(int32_t))
+                            place.channels = o;
+                        else if (y.name == "rate" && type == "float" && y.size == sizeof(float))
+                            place.rate = o;
+                    }
+                    if (place.data == SamplePlace::kNone && writable)
+                    {
+                        why = field + "'s " + m->name + " has `float* data`: data must be `const float* data`, as the "
+                              "sound is shared, read only";
+                        continue;
+                    }
+                    if (place.data == SamplePlace::kNone || place.frames == SamplePlace::kNone)
+                    {
+                        why = field + "'s " + m->name + " has no `const float* data` and `int frames`: a sample's "
+                              "field is a Sample (sample.fm), or a module of your own with both";
+                        continue;
+                    }
+                    use.places.push_back(place);
+                }
+                if (use.places.empty())
+                {
+                    r.notes += at + (why.empty() ? std::string("neither ") + kModule + " nor Shared has a field " + field
+                                                       + " (`Sample " + field + ";`, sample.fm)"
+                                                 : why)
+                             + ", so it is left out\n";
+                    continue;
+                }
+                use.asset = assets != nullptr ? assets->find(name) : nullptr;
+                if (use.asset == nullptr)
+                    r.notes += at + "the program's samples (the explorer's ASSETS) have no " + name + ", so " + field
+                             + " stays empty (frames 0)\n";
+                patch->recipe_.samples.emplace_back(name, use.asset != nullptr ? use.asset->hash() : std::string());
+                patch->samples_.push_back(std::move(use));
+            }
         }
 
         // The instances: aligned, zeroed, their parameters at their defaults, init run.
@@ -1379,6 +1493,7 @@ namespace playground
         rate_ = sampleRate > 0.0f ? sampleRate : 48000.0f;
         perSample_ = budgetOf(1, rate_) / kBudgetFloor;
         endInstances();
+        samplesAt(rate_);                            // before any instance reads one: resampled here, never in a call
         // FMinus's record of a failed bounds check emptied first: while it holds one, every call returns partway,
         // init's too (Patch.h, "Bounds checks").
         s_->program->clearBoundsViolation();
@@ -1405,6 +1520,7 @@ namespace playground
                     store(shared_, sharedSlots_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
             for (const std::size_t at : sharedHostFields_)
                 std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
+            fillSamples(shared_, true);
             if (!init(s_->sharedInit, shared_, Method::sharedInit))
                 return;                              // no end for it, and the instances not initialised
             sharedInitialised_ = true;
@@ -1422,10 +1538,50 @@ namespace playground
                 std::memcpy(static_cast<char*>(p) + at, &shared_, sizeof shared_);
             for (const std::size_t at : hostFields_)
                 std::memcpy(static_cast<char*>(p) + at, &host_, sizeof host_);
+            fillSamples(p, false);
             if (!init(s_->init, p, Method::init))
                 return;                              // no end for it, nor for the instances after it
             initialised_[i] = true;
         }
+    }
+
+    // ---- samples ------------------------------------------------------------------------------------------------------
+    void Patch::samplesAt(float rate)
+    {
+        for (SampleUse& u : samples_)
+            if (u.asset != nullptr && (u.sound == nullptr || u.sound->rate != static_cast<double>(rate)))
+                u.sound = u.asset->at(static_cast<double>(rate));
+    }
+
+    void Patch::fillSamples(void* at, bool shared) const noexcept
+    {
+        char* base = static_cast<char*>(at);
+        for (const SampleUse& u : samples_)
+            for (const SamplePlace& p : u.places)
+            {
+                if (p.shared != shared)
+                    continue;
+                const assets::Audio* a = u.sound.get();
+                const bool sounds = a != nullptr && a->frames > 0;
+                const float* data = sounds ? a->data.data() : nullptr;
+                const int32_t frames = sounds ? a->frames : 0;
+                const int32_t channels = sounds ? a->channels : 0;
+                const float rate = rate_;
+                std::memcpy(base + p.data, &data, sizeof data);
+                std::memcpy(base + p.frames, &frames, sizeof frames);
+                if (p.channels != SamplePlace::kNone)
+                    std::memcpy(base + p.channels, &channels, sizeof channels);
+                if (p.rate != SamplePlace::kNone)
+                    std::memcpy(base + p.rate, &rate, sizeof rate);
+            }
+    }
+
+    const assets::Audio* Patch::sample(std::string_view field) const noexcept
+    {
+        for (const SampleUse& u : samples_)
+            if (u.field == field)
+                return u.sound.get();
+        return nullptr;
     }
 
     // ---- the loop budget ----------------------------------------------------------------------------------------------

@@ -64,7 +64,29 @@
 //   MATCH    a second processor, on the track "Bass Line" with the project "Moog Bass": `instance` reaches it by its
 //            name, by "2", by its track's name in another case, by part of its project's; a word matching nothing
 //            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
-//   GONE     a processor gone, its socket goes; the server, asked again, finds the one left; the server gone, the
+//   TARGET   Claude Desktop's target (mcp/McpTarget.h): two open and none chosen, a call naming none is refused with
+//            both described, never guessed (though the server's calls went to the second just before), and
+//            list_instances says none is; the second chosen in its plugin (EditorPort::chooseDesktop), such calls go
+//            to it, list_instances says so, one naming the first goes there; each plugin's EditorPort::desktop shows it
+//            (the second the target, chosen; the first another's, by the second's name, its track and project, while
+//            connected); the first chosen in its own plugin, the choice moves; the second chosen from the first's
+//            list of the others; the choice cleared, refused again; a choice whose token is not its instance's card's
+//            (the number since taken again) is none: refused, list_instances saying none is the target; a choice that
+//            cannot be written (the folder read-only) not shown as made; a socket nothing listens on (a crash) and its
+//            card, removed by the server, which lists neither. In folders of their own: a card whose process is gone is
+//            not listed, nor chosen, while the same card with a live process is; target.json rewritten 300 times while
+//            a thread looks for it, never missing (renamed over, never deleted first)
+//   RENAME   the second named "Bass" (trimmed): the host told its state changed, once (not again for the same name
+//            nor for one refused); its link, its port and list_instances say "Bass (Synth 2)", `instance` reaches it
+//            as "bass", "2", "Synth 2" and "Bass (Synth 2)", and by words naming its number ("moog synth 2" while the
+//            first's track is "Moog Line"), the first's list of the others shows the name; another's number's name, a
+//            number alone and a name too long refused, the name kept; its state in a third processor names that one
+//            "Bass" too (the host not told), and "Bass" then asks which, never guessed; that state in a processor
+//            whose link cannot listen keeps the name in its own state; "" (or its number's name) gives it its
+//            number's name back. The indicator: a tune acting on the first while a read runs beside it (WAVE), then
+//            ended; the second's last call, a write, ended
+//   GONE     a processor gone, its socket, its card and the choice of it go, and a call naming none goes to the one
+//            left (the only one open); the server, asked again, finds the one left; the server gone, the
 //            processor no longer counts as connected; with none open, a call says to open the plugin, the tools
 //            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them (host.fm
 //            among them)
@@ -74,6 +96,7 @@
 #include "fminus/Patch.h"
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
+#include "mcp/McpTarget.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/McpLink.h"
@@ -969,11 +992,16 @@ PROBE(plugin, mcp)
         const juce::var status = w.wait(202, 10000), info2 = w.wait(203, 10000);
         P.eq("live.beside_a_call", tuning && w.position(201) < 0 && !static_cast<bool>(status["result"]["isError"])
                                        && has(firstText(status["result"]), "Dials:") && info2["result"]["name"].toString() == juce::String(first) ? 1 : 0, 1);
+        // What the plugin shows meanwhile: the tune acting on it now (the read beside it, ended, is not what it shows).
+        const pg::DesktopState acting = a->editorPort().desktop();
+        P.eq("indicator.running", tuning && acting.running && acting.doing == "Tune the dials" && acting.ago < 60.0 ? 1 : 0, 1);
         w.send(204, "cancel", object({ { "id", 201 } }));
         const juce::var cancelled = w.wait(204, 5000), tuned = w.wait(201, 30000);
         std::printf("cancelled tune: %s\n", firstText(tuned["result"]).c_str());
         waitIdle(*a, 10000);
         P.eq("cancel.answered", static_cast<bool>(cancelled["result"]["cancelled"]) ? 1 : 0, 1);
+        const pg::DesktopState ended = a->editorPort().desktop();
+        P.eq("indicator.ended", !ended.running && ended.doing == "Tune the dials" && ended.ago >= 0.0 && ended.ago < 60.0 ? 1 : 0, 1);
         P.eq("cancel.dials_kept", has(firstText(tuned["result"]), "Claude Desktop stopped this call") && dialNow(*a, "0.25") ? 1 : 0, 1);
 
         // A call waiting behind a running one, cancelled: answered at once, never run.
@@ -1074,12 +1102,13 @@ PROBE(plugin, mcp)
                 if (tool["name"].toString() != "list_instances" && tool["name"].toString() != "playground_guide"
                     && tool["name"].toString() != "gui_sandbox")   // the server's own (plugin.sandbox)
                 {
-                    // `instance` on each, its words short (the instructions say how to name one) and on the first
-                    // of the plugin's tools alone (dropRepeated's rule, as the server runs it over the whole list)
+                    // `instance` on each, its words short (the instructions and list_instances say how to name one
+                    // and what the target is) and on the first of the plugin's tools alone (dropRepeated's rule, as
+                    // the server runs it over the whole list)
                     const juce::var instance = tool["inputSchema"]["properties"]["instance"];
                     instanceArg = instanceArg && instance["type"].toString() == "string"
                                && (pluginTools == 0 ? instance["description"].toString()
-                                                          == juce::String(kInstrument ? "Which synth" : "Which effect") + ", when several are open"
+                                                          == juce::String(kInstrument ? "Which synth" : "Which effect") + " (else the target)"
                                                     : !instance.hasProperty("description"));
                     ++pluginTools;
                 }
@@ -1282,10 +1311,245 @@ PROBE(plugin, mcp)
             }
         }
 
+        // ---- TARGET: Claude Desktop's target, the user's choice in a plugin (Use with Claude Desktop) ---------------
+        const std::string bid = b->mcpLink() != nullptr ? b->mcpLink()->id() : "2";
+        const auto untilBoth = [&](const std::function<bool()>& ok) {
+            for (int k = 0; k < 400 && !ok(); ++k)
+            {
+                a->poll();
+                b->poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            return ok();
+        };
+        const auto writeNone = [&](const char* file) {
+            return s.request({ a.get(), b.get() }, "tools/call",
+                             object({ { "name", "write_file" }, { "arguments", object({ { "name", file }, { "content", "// a file\n" } }) } }))["result"];
+        };
+        const auto listed = [&] {
+            return firstText(s.request({ a.get(), b.get() }, "tools/call",
+                                       object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"]);
+        };
+        {
+            // Two open, none chosen: refused, never guessed (this server's calls went to the second just before).
+            juce::var t = writeNone("unaimed.fm");
+            std::printf("none chosen: %s\n", firstText(t).c_str());
+            P.eq("target.ambiguous_refused", static_cast<bool>(t["isError"]) && has(firstText(t), "chosen none") && has(firstText(t), first)
+                                                 && has(firstText(t), second) && has(firstText(t), "Use with Claude Desktop")
+                                                 && !hasFile(*a, "unaimed.fm") && !hasFile(*b, "unaimed.fm") ? 1 : 0, 1);
+            P.eq("target.listed_none", has(listed(), "None is the target") ? 1 : 0, 1);
+            // The user chooses the second in its plugin: calls without `instance` go there; one naming the first, there.
+            b->editorPort().chooseDesktop(bid, true);
+            t = writeNone("aimed.fm");
+            P.eq("target.chosen", !static_cast<bool>(t["isError"]) && hasFile(*b, "aimed.fm") && !hasFile(*a, "aimed.fm") ? 1 : 0, 1);
+            const std::string l = listed();
+            std::printf("list_instances, one chosen: %s", l.c_str());
+            P.eq("target.listed", has(l, second + " on the track \"Bass Line\"") && has(l, "(the target, which the user chose)")
+                                      && has(l, "Calls without `instance` go to the target") ? 1 : 0, 1);
+            t = writeTo("1", "named.fm");
+            P.eq("target.named_wins", hasFile(*a, "named.fm") && !hasFile(*b, "named.fm") ? 1 : 0, 1);
+            // Each plugin shows it: the second the target, chosen; the first another's, the second's name, both open.
+            const bool seen = untilBoth([&] { return a->editorPort().desktop().targetName == second; });
+            const pg::DesktopState ad = a->editorPort().desktop(), bd = b->editorPort().desktop();
+            std::printf("first sees: target %d, chosen %d, target's name %s, others %zu; second: target %d, chosen %d\n", ad.target ? 1 : 0,
+                        ad.chosen ? 1 : 0, ad.targetName.c_str(), ad.others.size(), bd.target ? 1 : 0, bd.chosen ? 1 : 0);
+            P.eq("target.shown", seen && bd.target && bd.chosen && bd.targetName.empty() && !ad.target && !ad.chosen && ad.connected
+                                     && ad.others.size() == 1 && ad.others[0].target && ad.others[0].track == "Bass Line"
+                                     && ad.others[0].project == "Moog Bass" && bd.others.size() == 1 && bd.others[0].name == first
+                                     && !bd.others[0].target ? 1 : 0, 1);
+            // The first chosen in its own plugin: the choice moves (one target, never two).
+            a->editorPort().chooseDesktop(a->mcpLink()->id(), true);
+            t = writeNone("moved.fm");
+            const bool moved = untilBoth([&] { return !b->editorPort().desktop().target && b->editorPort().desktop().targetName == first; });
+            P.eq("target.moved", hasFile(*a, "moved.fm") && !hasFile(*b, "moved.fm") && moved && a->editorPort().desktop().chosen ? 1 : 0, 1);
+            // The second chosen from the first's list of the others.
+            a->editorPort().chooseDesktop(bid, true);
+            t = writeNone("from_list.fm");
+            P.eq("target.from_others", hasFile(*b, "from_list.fm") && !hasFile(*a, "from_list.fm") ? 1 : 0, 1);
+            // Cleared: none chosen, two open, refused again.
+            b->editorPort().chooseDesktop(bid, false);
+            t = writeNone("cleared.fm");
+            P.eq("target.cleared", static_cast<bool>(t["isError"]) && !hasFile(*a, "cleared.fm") && !hasFile(*b, "cleared.fm")
+                                       && !b->editorPort().desktop().chosen ? 1 : 0, 1);
+            // A choice naming the first by a token that is not its card's (the choice of one gone, whose number the first
+            // took again): none, so refused, and list_instances says none is the target.
+            const std::string aid = a->mcpLink()->id();
+            const std::optional<pg::mcp::target::Card> aCard = pg::mcp::target::readCard(dir, aid);
+            const std::string staleToken = "00000000feedface";
+            const bool staleWritten = pg::mcp::target::writeTarget(dir, { aid, staleToken });
+            t = writeNone("stale.fm");
+            P.eq("target.stale_token", staleWritten && aCard && aCard->token != staleToken && pg::mcp::target::chosen(dir).empty()
+                                           && static_cast<bool>(t["isError"]) && has(firstText(t), "chosen none")
+                                           && !hasFile(*a, "stale.fm") && !hasFile(*b, "stale.fm")
+                                           && has(listed(), "None is the target") ? 1 : 0, 1);
+            pg::mcp::target::clearTarget(dir);
+            // A choice that cannot be written (the folder read-only for a moment): not shown as made.
+            chmod(dir.c_str(), 0500);
+            a->editorPort().chooseDesktop(aid, true);
+            const bool shownUnwritten = a->editorPort().desktop().chosen;
+            chmod(dir.c_str(), 0700);
+            P.eq("target.write_failed", !shownUnwritten && !folder.getChildFile(pg::mcp::target::kTargetFile).exists() ? 1 : 0, 1);
+            // A socket nothing listens on (its instance crashed) beside its card: the server, refused, removes both and
+            // lists neither.
+            const int crashed = pg::mcp::listenAt(dir + "/9.sock");
+            if (crashed >= 0)
+                close(crashed);                          // its file stays, refusing
+            const bool ghostWritten = pg::mcp::target::writeCard(dir, { "0123456789abcdef", "9", "Ghost", "", "", pg::mcp::processId() });
+            const std::string afterCrash = listed();
+            P.eq("target.refused_removed", crashed >= 0 && ghostWritten && !has(afterCrash, "Ghost")
+                                               && afterCrash.rfind(std::string("2 ") + (kInstrument ? "synths" : "effects") + " are open", 0) == 0
+                                               && !pg::mcp::pathExists(dir + "/9.sock") && !folder.getChildFile("9.json").exists() ? 1 : 0, 1);
+        }
+        {
+            // In a folder of its own: a card whose process is gone (a crash) is not listed, nor chosen, though its socket
+            // is there; the same card with a live process is.
+            const std::string ghostDir = dir + "-ghost";
+            mkdir(ghostDir.c_str(), 0700);
+            const int listening = pg::mcp::listenAt(ghostDir + "/9.sock");
+            const pid_t gone = fork();
+            if (gone == 0)
+                _exit(0);
+            int status = 0;
+            const bool reaped = gone > 0 && waitpid(gone, &status, 0) == gone;
+            pg::mcp::target::Card ghost{ "0123456789abcdef", "9", "Ghost", "", "", static_cast<int>(gone) };
+            const bool written = pg::mcp::target::writeCard(ghostDir, ghost) && pg::mcp::target::writeTarget(ghostDir, { "9", ghost.token });
+            const bool hidden = pg::mcp::target::cards(ghostDir).empty() && pg::mcp::target::chosen(ghostDir).empty();
+            ghost.pid = pg::mcp::processId();
+            pg::mcp::target::writeCard(ghostDir, ghost);
+            const bool alive = pg::mcp::target::cards(ghostDir).size() == 1 && pg::mcp::target::chosen(ghostDir) == "9";
+            P.eq("target.dead_pid", listening >= 0 && reaped && written && hidden && alive ? 1 : 0, 1);
+            if (listening >= 0)
+                close(listening);
+            juce::File(juce::String::fromUTF8(ghostDir.c_str())).deleteRecursively();
+        }
+        {
+            // In a folder of its own: target.json rewritten while a thread looks for it, never missing.
+            const std::string atomicDir = dir + "-atomic";
+            mkdir(atomicDir.c_str(), 0700);
+            bool written = pg::mcp::target::writeTarget(atomicDir, { "1", "aaaaaaaaaaaaaaaa" });
+            std::atomic<bool> stop{ false };
+            std::atomic<int> looks{ 0 }, missing{ 0 };
+            std::thread looker([&] {
+                const std::string path = atomicDir + "/" + pg::mcp::target::kTargetFile;
+                while (!stop.load())
+                {
+                    missing += pg::mcp::pathExists(path) ? 0 : 1;
+                    ++looks;
+                }
+            });
+            for (int k = 0; k < 300; ++k)
+                written = pg::mcp::target::writeTarget(atomicDir, { std::to_string(k % 9 + 1), "aaaaaaaaaaaaaaaa" }) && written;
+            stop.store(true);
+            looker.join();
+            std::printf("target.json rewritten 300 times: %d looks, %d found none\n", looks.load(), missing.load());
+            P.eq("target.atomic", written && looks.load() > 0 && missing.load() == 0 ? 1 : 0, 1);
+            juce::File(juce::String::fromUTF8(atomicDir.c_str())).deleteRecursively();
+        }
+
+        // ---- RENAME: the user's name for an instance --------------------------------------------------------------------
+        {
+            // The host's view of the session: told when its state changed (a rename), as for a panel dial.
+            struct Told final : juce::AudioProcessorListener
+            {
+                int changed = 0;
+                void audioProcessorParameterChanged(juce::AudioProcessor*, int, float) override {}
+                void audioProcessorChanged(juce::AudioProcessor*, const ChangeDetails& d) override { changed += d.nonParameterStateChanged ? 1 : 0; }
+            };
+            Told told;
+            b->addListener(&told);
+            std::string why;
+            const bool renamed = b->editorPort().setDesktopName("  Bass ", why);
+            const int toldOnce = told.changed;
+            const bool again = b->editorPort().setDesktopName("Bass", why);
+            std::string refusedWhy;
+            const bool refusedOne = b->editorPort().setDesktopName(first, refusedWhy);
+            b->removeListener(&told);
+            P.eq("rename.host_told", toldOnce == 1 && again && !refusedOne && told.changed == 1 ? 1 : 0, 1);
+            const pg::DesktopState bd = b->editorPort().desktop();
+            P.eq("rename.named", renamed && b->mcpLink()->name() == "Bass" && bd.name == "Bass" && bd.number == second ? 1 : 0, 1);
+            // Claude Desktop reaches it by its name, and still by its number and its number's name.
+            writeTo("bass", "by_new_name.fm");
+            writeTo("2", "by_number_still.fm");
+            writeTo(second.c_str(), "by_number_name_still.fm");
+            P.eq("rename.reached", hasFile(*b, "by_new_name.fm") && hasFile(*b, "by_number_still.fm") && hasFile(*b, "by_number_name_still.fm")
+                                       && !hasFile(*a, "by_new_name.fm") ? 1 : 0, 1);
+            // As list_instances writes it, and by words naming its number: "moog synth 2" ties on "moog" with the first
+            // (its track "Moog Line" for now) but for the "2".
+            {
+                juce::AudioProcessor::TrackProperties moog;
+                moog.name = "Moog Line";
+                a->updateTrackProperties(moog);
+                const juce::var described = writeTo(("Bass (" + second + ")").c_str(), "as_listed.fm");
+                const juce::var worded = writeTo((std::string("moog ") + (kInstrument ? "synth" : "effect") + " 2").c_str(), "by_words.fm");
+                std::printf("by words naming its number: %s\n", firstText(worded).substr(0, 120).c_str());
+                P.eq("rename.reached_as_listed", !static_cast<bool>(described["isError"]) && hasFile(*b, "as_listed.fm") && !hasFile(*a, "as_listed.fm")
+                                                     && !static_cast<bool>(worded["isError"]) && hasFile(*b, "by_words.fm")
+                                                     && !hasFile(*a, "by_words.fm") ? 1 : 0, 1);
+                a->updateTrackProperties(juce::AudioProcessor::TrackProperties{});
+            }
+            P.eq("rename.listed", has(listed(), "Bass (" + second + ") on the track") ? 1 : 0, 1);
+            P.eq("rename.others_see", untilBoth([&] {
+                     const pg::DesktopState ad = a->editorPort().desktop();
+                     return ad.others.size() == 1 && ad.others[0].name == "Bass";
+                 }) ? 1 : 0, 1);
+            // Refused: another's number's name, a number alone, a name too long; the name stays.
+            std::string w1, w2, w3;
+            const bool refused = !b->editorPort().setDesktopName(first, w1) && !b->editorPort().setDesktopName("7", w2)
+                              && !b->editorPort().setDesktopName(std::string(40, 'x'), w3);
+            std::printf("names refused: %s | %s | %s\n", w1.c_str(), w2.c_str(), w3.c_str());
+            P.eq("rename.refused", refused && has(w1, "number") && !w2.empty() && !w3.empty() && b->mcpLink()->name() == "Bass" ? 1 : 0, 1);
+            // Kept with the session: its state in another processor (the third) names that one so; two named alike are
+            // then asked about, never guessed.
+            juce::MemoryBlock state;
+            b->getStateInformation(state);
+            auto c = std::make_unique<pg::Processor>();
+            Told restored;
+            c->addListener(&restored);
+            c->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+            c->removeListener(&restored);
+            P.eq("rename.kept", c->editorPort().desktop().name == "Bass" && c->mcpLink() != nullptr && c->mcpLink()->id() == "3"
+                                    && restored.changed == 0 ? 1 : 0, 1);
+            {
+                // A processor whose link cannot listen (its folder no folder: a file): the name it is given by a session
+                // is still its state's (its name to Claude Desktop "" meanwhile), so a save there loses nothing.
+                setenv(var.c_str(), (dir + "/tools.json").c_str(), 1);
+                auto deaf = std::make_unique<pg::Processor>();
+                setenv(var.c_str(), dir.c_str(), 1);
+                deaf->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+                juce::MemoryBlock again2;
+                deaf->getStateInformation(again2);
+                const std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(again2.getData(), static_cast<int>(again2.getSize()));
+                const bool unlinked = deaf->mcpLink() != nullptr && !deaf->mcpLink()->listening();
+                P.eq("rename.kept_unlinked", unlinked && deaf->editorPort().desktopName().empty() && xml != nullptr
+                                                 && xml->toString().contains("desktopName=\"Bass\"") ? 1 : 0, 1);
+            }
+            const juce::var twice = s.request({ a.get(), b.get(), c.get() }, "tools/call",
+                                              object({ { "name", "write_file" },
+                                                       { "arguments", object({ { "name", "twice.fm" }, { "content", "// a file\n" }, { "instance", "Bass" } }) } }))["result"];
+            P.eq("rename.alike_asks", static_cast<bool>(twice["isError"]) && has(firstText(twice), "More than one") && !hasFile(*b, "twice.fm")
+                                          && !hasFile(*c, "twice.fm") ? 1 : 0, 1);
+            c.reset();
+            // Its number's name again ("" or that name itself).
+            P.eq("rename.back", b->editorPort().setDesktopName("", why) && b->mcpLink()->name() == second && !b->mcpLink()->named()
+                                    && b->editorPort().setDesktopName("Bass", why) && b->editorPort().setDesktopName(second, why)
+                                    && !b->mcpLink()->named() ? 1 : 0, 1);
+            // What it did here: the last call, ended.
+            const pg::DesktopState after = b->editorPort().desktop();
+            P.eq("indicator.last_call", !after.running && after.doing == "Write a file" && after.ago < 60.0 ? 1 : 0, 1);
+        }
+
         // ---- GONE ------------------------------------------------------------------------------------------------------
+        b->editorPort().chooseDesktop(bid, true);        // the choice goes with the instance
         const std::string bsock = b->mcpLink() != nullptr ? b->mcpLink()->socketPath() : "";
         b.reset();
         P.eq("gone.socket", !juce::File(juce::String::fromUTF8(bsock.c_str())).exists() ? 1 : 0, 1);
+        {
+            const juce::var t = s.request({ a.get() }, "tools/call",
+                                          object({ { "name", "write_file" }, { "arguments", object({ { "name", "alone.fm" }, { "content", "// a file\n" } }) } }))["result"];
+            P.eq("target.gone_with_it", !folder.getChildFile(pg::mcp::target::kTargetFile).exists()
+                                            && !folder.getChildFile(bid + ".json").exists() ? 1 : 0, 1);
+            P.eq("target.only_one_open", !static_cast<bool>(t["isError"]) && hasFile(*a, "alone.fm") ? 1 : 0, 1);
+        }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         P.eq("gone.one_left", firstText(rep["result"]).rfind(std::string("1 ") + (kInstrument ? "synth" : "effect") + " is open", 0) == 0 ? 1 : 0, 1);
         a.reset();

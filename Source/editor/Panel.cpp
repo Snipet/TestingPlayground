@@ -156,6 +156,22 @@ namespace playground::ui
     {
         // The FOLDER section's rows (Explorer.h): what each does (ExplorerItem::Row::index).
         constexpr int kFolderOn = 0, kFolderCode = 1, kFolderShow = 2, kFolderRun = 3, kFolderConflict = 4;
+        // The CLAUDE DESKTOP section's rows: its name, Use with Claude Desktop, the last call, another instance open.
+        constexpr int kDesktopName = 0, kDesktopUse = 1, kDesktopLast = 2, kDesktopOther = 3;
+        const char* const kDesktopThing = product::kIsInstrument ? "synth" : "effect";
+
+        // When Claude Desktop's last call here was, in words that change at most once a minute (the explorer's rows are
+        // made again when they do): "now" while it runs.
+        std::string agoText(bool running, double seconds)
+        {
+            if (running)
+                return "now";
+            if (seconds < 60.0)
+                return "just now";
+            if (seconds < 3600.0)
+                return std::to_string(static_cast<int>(seconds / 60.0)) + " min ago";
+            return std::to_string(static_cast<int>(seconds / 3600.0)) + " h ago";
+        }
 #if defined(_WIN32)
         constexpr const char* kShowFolder = "Show in Explorer";
 #else
@@ -256,6 +272,21 @@ namespace playground::ui
 
         // A section's title, cut into its frame's top edge (DialLayout.h).
         constexpr funkgui::TextStyle kSectionTitle{ 10.0f, 2.4f, 0.10f, false };
+
+        // MIDI learn on a dial (EditorPort::midi): what its footer line says after its own ("" for nothing); its mark is
+        // looks::midiMark's.
+        std::string midiSpec(const std::string& words, bool learning, const std::string& note)
+        {
+            if (learning)
+                return "   LEARNING: MOVE A CONTROL ON A MIDI CONTROLLER" + (note.empty() ? std::string() : "   " + upper(note));
+            return words.empty() ? std::string() : "   MIDI " + upper(words);
+        }
+        void appendSpec(char* out, std::size_t n, const std::string& more)
+        {
+            const std::size_t len = std::strlen(out);
+            if (!more.empty() && len + 1 < n)
+                std::snprintf(out + len, n - len, "%s", more.c_str());
+        }
 
         // ---- a dial over P1..P32, labelled with the running program's parameter (or its #pragma panel label) --------
         class ControlModel final : public funkgui::ValueModel
@@ -358,6 +389,20 @@ namespace playground::ui
         public:
             DialItem(funkgui::ParamPort& port, funkgui::DialGeom g, uint32_t id) : model_(port), dial_(model_, g, id) {}
 
+            // What a right-click (or a ctrl-click, or a screen reader's menu action) opens at a point: the Panel's dial
+            // menu (MIDI learn's, and the host's). None: the host's own menu, as FunkGui's Dial opens it.
+            void setMenu(std::function<void(funkgui::Point)> menu) { menu_ = std::move(menu); }
+            // MIDI learn (EditorPort::midi): the control that moves it (in words, "" for none), whether it learns, and
+            // learning's note.
+            void setMidi(const std::string& words, bool learning, const std::string& note)
+            {
+                midiWords_ = words;
+                learning_ = learning;
+                midiNote_ = note;
+            }
+            bool midiMarked() const noexcept { return !midiWords_.empty(); }
+            bool midiLearning() const noexcept { return learning_; }
+
             ControlModel& model() noexcept { return model_; }
             const ControlModel& model() const noexcept { return model_; }
             DialStyle style() const noexcept { return style_; }
@@ -383,6 +428,11 @@ namespace playground::ui
                 hoverRow_ = hovered && style_ == DialStyle::buttons ? rowAt(pointer) : -1;
             }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
+            {
+                drawDial(c, th, ring);
+                looks::midiMark(c, th, looks::midiMarkAt(cell_), !midiWords_.empty(), learning_);
+            }
+            void drawDial(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const
             {
                 const bool tinted = !color_.empty();
                 const funkgui::Col col = looks::panelColor(color_, th, th.accent);
@@ -436,6 +486,17 @@ namespace playground::ui
             void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g,
                              funkgui::HostServices& h) override
             {
+                if (e.popup && menu_)
+                {
+                    menu_({ e.x, e.y });                 // a menu, never a write
+                    return;
+                }
+                if (e.popup && style_ != DialStyle::knob && style_ != DialStyle::vintage)
+                {
+                    if (funkgui::ParamPort* p = model_.port())
+                        h.showParamMenu(*p, e.x, e.y);   // the host's menu, never a write
+                    return;
+                }
                 if (style_ == DialStyle::toggle)
                 {
                     g.tap(*model_.port(), model_.normOfIndex(model_.index() == 0 ? model_.count() - 1 : 0));
@@ -492,16 +553,24 @@ namespace playground::ui
             {
                 if (id != dial_.a11yId())
                     return false;
-                dial_.a11yAction(a, v, g);
+                if (a == funkgui::A11yAction::showMenu && menu_)
+                    menu_({ cell_.centreX(), cell_.centreY() });
+                else
+                    dial_.a11yAction(a, v, g);
                 return true;
             }
-            void specLine(char* out, std::size_t n) const override { dial_.specLine(out, n); }
+            void specLine(char* out, std::size_t n) const override
+            {
+                dial_.specLine(out, n);
+                appendSpec(out, n, midiSpec(midiWords_, learning_, midiNote_));
+            }
             bool settled() const override { return dial_.settled(); }
             // The parameter's value as the host has it (automation, Claude, a preset move it with no input here) and
             // the program's control (ControlModel::key), the look and the hover.
             uint64_t drawKey() const override
             {
-                return DrawKey{}.mix(model_.key()).mix(static_cast<int>(style_)).mix(color_).mix(cell_).mix(hovered_).mix(hoverRow_).h;
+                return DrawKey{}.mix(model_.key()).mix(static_cast<int>(style_)).mix(color_).mix(cell_).mix(hovered_).mix(hoverRow_)
+                    .mix(midiWords_).mix(learning_).mix(midiNote_).h;
             }
             funkgui::Point centre() const override
             {
@@ -522,6 +591,9 @@ namespace playground::ui
         private:
             bool clicks() const noexcept { return style_ == DialStyle::toggle || style_ == DialStyle::buttons; }
 
+            std::function<void(funkgui::Point)> menu_;
+            std::string midiWords_, midiNote_;
+            bool learning_ = false;
             ControlModel model_;                         // before dial_, which refers to it
             funkgui::Dial dial_;
             DialStyle style_ = DialStyle::knob;
@@ -2929,8 +3001,11 @@ namespace playground::ui
         }));
         itemOfSlot_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
+        {
             itemOfSlot_[static_cast<std::size_t>(c)] = add(std::make_unique<DialItem>(
                 *ports[static_cast<std::size_t>(c)], funkgui::DialGeom{ 0.0f, 0.0f }, idFor()));
+            static_cast<DialItem&>(*items_.back()).setMenu([this, c](funkgui::Point at) { dialMenu(c, at); });
+        }
         // The program's displays (#pragma panel meter, vu, led, number, scope), shown as it has them.
         itemOfDisplay_.assign(static_cast<std::size_t>(kMaxDisplays), -1);
         for (int d = 0; d < kMaxDisplays; ++d)
@@ -2947,6 +3022,7 @@ namespace playground::ui
             hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
             hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
             hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
+            hooks.dialMenu = [this](int slot, funkgui::Point at) { dialMenu(slot, at); };
             guiView_ = std::make_unique<GuiView>(items_, ports, itemOfDisplay_, idFor, std::move(hooks));
         }
 
@@ -2993,6 +3069,13 @@ namespace playground::ui
             hooks.close = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) {
                 if (s == ExplorerItem::Section::files)
                     closeFile(r.index);
+                else if (s == ExplorerItem::Section::assets)
+                {
+                    std::string why;
+                    notice(port_.removeAsset(r.key, why) ? "SAMPLE REMOVED: " + upper(r.key) : "NOT REMOVED: " + upper(why));
+                    explorerStale_ = true;
+                    dirty_ = true;
+                }
             };
             hooks.action = [this](ExplorerItem::Section s) {
                 if (s == ExplorerItem::Section::files)
@@ -3003,6 +3086,8 @@ namespace playground::ui
                 }
                 else if (s == ExplorerItem::Section::presets)
                     openProjects(true);
+                else if (s == ExplorerItem::Section::assets)
+                    openSamples();
                 else if (s == ExplorerItem::Section::projects)
                     openProjects(false);
                 else if (s == ExplorerItem::Section::folder)
@@ -3149,6 +3234,30 @@ namespace playground::ui
             sp.a11yTitle = "Settings: the audio input is muted, to avoid a feedback loop";
             sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
+        // Claude Desktop's badge in the chat's header, while it is connected and its calls go to another instance (or to
+        // none: several open, none chosen): a click makes this one its target. The chat folded, a mark on its rail says
+        // it instead (its footer line the badge's words), and does the same.
+        {
+            const auto act = [this] {
+                port_.chooseDesktop(desktopState_.id, true);
+                notice("CLAUDE DESKTOP: ITS CALLS COME HERE NOW");
+                syncDesktop();
+                dirty_ = true;
+            };
+            const auto footer = [this] {
+                return desktopState_.targetName.empty()
+                         ? std::string("CLAUDE DESKTOP   SEVERAL OPEN, NONE CHOSEN: IT ASKS WHICH   A CLICK SENDS ITS CALLS HERE")
+                         : "CLAUDE DESKTOP   ITS CALLS GO TO " + upper(desktopState_.targetName) + "   A CLICK SENDS THEM HERE";
+            };
+            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::bubble; }, [this] { return desktopBadge_; }, false,
+                              [] { return B::Look::outlined; }, {}, act, "Claude Desktop's target", {});
+            sp.specNow = footer;
+            desktopItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
+            B::Spec mark = spec(B::Shape::square, [] { return chat::Icon::alert; }, {}, false, [] { return B::Look::outlined; }, {},
+                                act, "Claude Desktop's target", {});
+            mark.specNow = footer;
+            desktopMarkItem_ = add(std::make_unique<B>(idFor(), std::move(mark)));
         }
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
@@ -3589,7 +3698,7 @@ namespace playground::ui
         const float hy = card_.y + kCardPad;
         // Folded: every item of the chat hidden but the rail's button, at its top. The code window has no chat at all.
         const bool open = chatOpen_ && hasChat();
-        for (const int i : { newChatItem_, keyItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_, sendItem_ })
+        for (const int i : { newChatItem_, keyItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_, sendItem_, desktopItem_ })
             static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]).setHidden(!open);
         chatView().setHidden(!open);
         inputItem().setHidden(!open);
@@ -3599,6 +3708,7 @@ namespace playground::ui
         {
             toggle.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f, kIconButton, kIconButton });
             headerY_ = hy;
+            placeDesktopBadge();                         // its mark on the rail
             ++layoutRevision_;
             dirty_ = true;
             return;
@@ -3611,6 +3721,7 @@ namespace playground::ui
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
             .setBounds({ fx - 2.0f * kIconButton - 8.0f, hy, kIconButton, kIconButton });
         headerY_ = hy;
+        placeDesktopBadge();
         const float headerBottom = hy + kIconButton;
 
         InputItem& in = inputItem();
@@ -3697,6 +3808,107 @@ namespace playground::ui
             port_.removeCodeWindow();                    // its code window has gone first (the session keeps it out)
         if (irViewing_)
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
+    }
+
+    // ---- MIDI learn ---------------------------------------------------------------------------------------------------
+    void Panel::syncMidi()
+    {
+        if (const uint64_t r = port_.midiRevision(); r == midiSeen_)
+            return;
+        const midilearn::View v = port_.midi();
+        midiSeen_ = v.revision;
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const auto i = static_cast<std::size_t>(c);
+            const bool learning = v.learning == c;
+            if (const int item = itemOfSlot_[i]; item >= 0)
+                static_cast<DialItem&>(*items_[static_cast<std::size_t>(item)]).setMidi(v.words[i], learning, learning ? v.note : std::string());
+            guiView_->setMidi(c, !v.words[i].empty(), learning, midiSpec(v.words[i], learning, learning ? v.note : std::string()));
+        }
+        dirty_ = true;
+    }
+
+    void Panel::dialMenu(int slot, funkgui::Point at)
+    {
+        if (host_ == nullptr || slot < 0 || slot >= kMaxControls)
+            return;
+        const int item = itemOfSlot_[static_cast<std::size_t>(slot)];
+        funkgui::ParamPort* param = item >= 0 ? static_cast<DialItem&>(*items_[static_cast<std::size_t>(item)]).model().port() : nullptr;
+        // A host's own parameter menu (its automation, its own MIDI learn): a host parameter's, in a host's window (the
+        // Standalone has none to show).
+        const bool hostMenu = param != nullptr && !isPanelDial(slot) && port_.windowButtons().width <= 0.0f;
+        if (!port_.midiLearnable())
+        {
+            if (hostMenu)
+                host_->showParamMenu(*param, at.x, at.y);   // an effect's dials: the host's menu, as before
+            return;
+        }
+        const Control& k = controls_[static_cast<std::size_t>(slot)];
+        if (!k.used)
+            return;
+        const midilearn::View v = port_.midi();
+        const std::string& words = v.words[static_cast<std::size_t>(slot)];
+        const bool learning = v.learning == slot;
+        const int mapped = static_cast<int>(v.mappings.size());
+        enum : int { kLearn = 1, kStop, kForget, kForgetAll, kHost };
+        funkgui::MenuRequest request;
+        funkgui::MenuItem title;
+        title.header = true;
+        title.label = upper(asciiText(k.name)) + "   MIDI";
+        request.items.push_back(title);
+        request.items.push_back(learning ? funkgui::MenuItem{ kStop, "Stop learning" }
+                                         : funkgui::MenuItem{ kLearn, words.empty() ? "Learn MIDI CC" : "Learn another MIDI CC" });
+        request.items.push_back({ kForget, words.empty() ? std::string("Forget MIDI CC") : "Forget " + words, !words.empty() });
+        funkgui::MenuItem gap;
+        gap.separator = true;
+        request.items.push_back(gap);
+        request.items.push_back({ kForgetAll, mapped > 0 ? "Forget every MIDI CC (" + std::to_string(mapped) + ")" : std::string("Forget every MIDI CC"),
+                                  mapped > 0 });
+        if (hostMenu)
+        {
+            request.items.push_back(gap);
+            request.items.push_back({ kHost, "The host's menu..." });
+        }
+        request.anchor = { at.x, at.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this, slot, at, param](int chosen) {
+            switch (chosen)
+            {
+                case kLearn:     (void)port_.learnMidi(slot); break;
+                case kStop:      port_.cancelMidiLearn(); break;
+                case kForget:    (void)port_.forgetMidi(slot); break;
+                case kForgetAll: (void)port_.forgetAllMidi(); break;
+                case kHost:
+                    if (param != nullptr && host_ != nullptr)
+                        host_->showParamMenu(*param, at.x, at.y);
+                    break;
+                default: return;
+            }
+            syncMidi();
+            dirty_ = true;
+        });
+    }
+
+    std::string Panel::dialSpecLine(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        if (item < 0)
+            return {};
+        char line[256] = {};
+        items_[static_cast<std::size_t>(item)]->specLine(line, sizeof line);
+        return line;
+    }
+
+    bool Panel::dialMidiMarked(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        return item >= 0 && static_cast<const DialItem&>(*items_[static_cast<std::size_t>(item)]).midiMarked();
+    }
+
+    bool Panel::dialMidiLearning(int slot) const
+    {
+        const int item = slot >= 0 && slot < kMaxControls ? itemOfSlot_[static_cast<std::size_t>(slot)] : -1;
+        return item >= 0 && static_cast<const DialItem&>(*items_[static_cast<std::size_t>(item)]).midiLearning();
     }
 
     // ---- the folder (plugin/FolderSync.h) ----------------------------------------------------------------------------
@@ -3862,8 +4074,35 @@ namespace playground::ui
     {
         if (dialogOpen())
             return false;
-        return std::any_of(paths.begin(), paths.end(),
-                           [this](const std::string& p) { return (chatOpen_ && hasChat() && isPictureName(p)) || isProjectFile(p); });
+        return std::any_of(paths.begin(), paths.end(), [this](const std::string& p) {
+            return (chatOpen_ && hasChat() && isPictureName(p)) || isProjectFile(p) || isAudioPath(p);
+        });
+    }
+
+    // The ASSETS header's +: audio files to add as samples (EditorPort::addAssets), decoded on this thread.
+    void Panel::openSamples()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::FileRequest request;
+        request.mode = funkgui::FileRequest::Mode::openMany;
+        request.title = "Add samples";
+        request.pattern = "*.wav;*.wave;*.aif;*.aiff;*.flac";
+        host_->chooseFiles(request, [this](const std::vector<std::string>& paths) { addSamples(paths); });
+    }
+
+    void Panel::addSamples(const std::vector<std::string>& paths)
+    {
+        if (paths.empty())
+            return;
+        std::string why;
+        const int added = port_.addAssets(paths, why);
+        if (!why.empty())
+            notice((added > 0 ? "ADDED " + std::to_string(added) + "; NOT ADDED: " : std::string("NOT ADDED: ")) + upper(why));
+        else
+            notice(added == 1 ? std::string("SAMPLE ADDED: #PRAGMA SAMPLE READS IT") : "SAMPLES ADDED: " + std::to_string(added));
+        explorerStale_ = true;
+        dirty_ = true;
     }
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
@@ -3898,12 +4137,15 @@ namespace playground::ui
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
-        std::vector<std::string> projects;
+        std::vector<std::string> projects, samples;
         for (const std::string& p : paths)
             if (isProjectFile(p))
                 projects.push_back(p);
+            else if (isAudioPath(p))
+                samples.push_back(p);
         if (!projects.empty())
             importFiles(projects);                       // anywhere on the panel
+        addSamples(samples);                             // anywhere too: the explorer's ASSETS
         if (!onChat)
             return;
         std::vector<std::string> pictures;
@@ -4177,7 +4419,8 @@ namespace playground::ui
             key.mix(files().name(i)).mix(i == files().active()).mix(erred(files().name(i)));
         const bool frozenPlays = port_.frozen();
         key.mix(files().count()).mix(files().irOpen()).mix(files().irShown()).mix(files().irView()).mix(frozenPlays)
-            .mix(st.name).mix(st.preset).mix(listsRevision_).mix(folderSeen_);
+            .mix(st.name).mix(st.preset).mix(listsRevision_).mix(folderSeen_).mix(port_.assetsRevision())
+            .mix(port_.statusRevision()).mix(desktopRevision_);
         if (!explorerStale_ && key.h == explorerKey_)
             return;
         explorerKey_ = key.h;
@@ -4209,6 +4452,29 @@ namespace playground::ui
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            // The samples (dsp/Assets.h): a row each, ticked when the program that plays reads it; + adds files.
+            ExplorerItem::Group g;
+            g.section = S::assets;
+            g.title = "ASSETS";
+            g.action = chat::Icon::plus;
+            g.actionTitle = "Add a sample";
+            g.empty = "Samples: + or drop a WAV, AIFF or FLAC";
+            for (const AssetEntry& e : port_.assets())
+            {
+                ExplorerItem::Row r;
+                r.label = e.name;
+                r.detail = e.detail.substr(0, e.detail.find(','));   // its length; the rest under the pointer
+                r.icon = chat::Icon::wave;
+                r.marked = e.used;
+                r.closable = true;
+                r.key = e.name;
+                r.help = "A sample, " + e.detail + (e.used ? "; the program reads it" : "; #pragma sample reads it");
+                r.spec = upper(e.name) + "   " + upper(e.detail) + (e.used ? "   THE PROGRAM READS IT" : "   #PRAGMA SAMPLE READS IT");
+                g.rows.push_back(std::move(r));
             }
             groups.push_back(std::move(g));
         }
@@ -4278,6 +4544,83 @@ namespace playground::ui
                     e.heading = true;
                     e.spec = "FOLDER   " + upper(n);
                     g.rows.push_back(std::move(e));
+                }
+            }
+            groups.push_back(std::move(g));
+        }
+        if (desktopState_.linked)
+        {
+            // Claude Desktop (EditorPort::desktop): this instance's name, Use with Claude Desktop (ticked while it is the
+            // target), what Claude Desktop's last call here did and when, and the others open.
+            const DesktopState& d = desktopState_;
+            const std::string thing = kDesktopThing, Thing = upper(thing);
+            ExplorerItem::Group g;
+            g.section = S::desktop;
+            g.title = "CLAUDE DESKTOP";
+            g.counted = false;
+            ExplorerItem::Row name;
+            name.label = d.name;
+            name.detail = d.name != d.number ? d.number : "this " + thing;
+            name.icon = chat::Icon::pencil;
+            name.index = kDesktopName;
+            name.help = "This " + thing + "'s name to Claude Desktop" + (d.name != d.number ? " (and " + d.number + ")" : std::string())
+                      + ": a click renames it";
+            name.spec = "NAME   CLAUDE DESKTOP KNOWS THIS " + Thing + " AS " + upper(d.name)
+                      + (d.name != d.number ? " (AND " + upper(d.number) + ")" : std::string()) + "   A CLICK RENAMES IT";
+            g.rows.push_back(std::move(name));
+            ExplorerItem::Row use;
+            use.label = "Use with Claude Desktop";
+            use.detail = d.target && !d.chosen ? "only one open" : std::string();
+            use.icon = chat::Icon::bubble;
+            use.marked = d.target;
+            use.index = kDesktopUse;
+            use.help = d.chosen   ? "Claude Desktop's calls go to this " + thing + ", as you chose: a click clears the choice"
+                     : d.target   ? "Claude Desktop's calls go to this " + thing + ", the only one open: a click keeps it so"
+                     : d.targetName.empty() ? "Several are open and none is chosen: a click sends Claude Desktop's calls here"
+                                            : "Claude Desktop's calls go to " + d.targetName + ": a click sends them here";
+            use.spec = d.chosen ? "CLAUDE DESKTOP   ITS CALLS GO TO THIS " + Thing + "   A CLICK CLEARS THE CHOICE"
+                     : d.target ? "CLAUDE DESKTOP   ITS CALLS GO TO THIS " + Thing + ", THE ONLY ONE OPEN   A CLICK KEEPS IT SO"
+                     : d.targetName.empty() ? "CLAUDE DESKTOP   SEVERAL OPEN, NONE CHOSEN: IT ASKS WHICH   A CLICK SENDS ITS CALLS HERE"
+                                            : "CLAUDE DESKTOP   ITS CALLS GO TO " + upper(d.targetName) + "   A CLICK SENDS THEM HERE";
+            g.rows.push_back(std::move(use));
+            if (!d.doing.empty())
+            {
+                // The live line: lit while a call acts here; a click opens the chat, where what it did shows.
+                ExplorerItem::Row last;
+                last.label = d.doing;
+                last.detail = desktopAgo_;
+                last.icon = chat::Icon::bolt;
+                last.active = d.running;
+                last.index = kDesktopLast;
+                last.help = std::string(d.running ? "Claude Desktop is acting on this " : "Claude Desktop's last call to this ") + thing + ": "
+                          + d.doing + ", " + desktopAgo_ + "; a click opens the chat, where it shows";
+                last.spec = std::string(d.running ? "CLAUDE DESKTOP NOW   " : "CLAUDE DESKTOP'S LAST CALL   ") + upper(d.doing) + ", "
+                          + upper(desktopAgo_) + "   A CLICK OPENS THE CHAT, WHERE IT SHOWS";
+                g.rows.push_back(std::move(last));
+            }
+            if (!d.others.empty())
+            {
+                ExplorerItem::Row also;
+                also.label = "ALSO OPEN";
+                also.heading = true;
+                g.rows.push_back(std::move(also));
+                for (const DesktopPeer& o : d.others)
+                {
+                    ExplorerItem::Row r;
+                    r.label = o.name;
+                    r.detail = !o.track.empty() ? o.track : o.project;
+                    r.icon = chat::Icon::window;
+                    r.marked = o.target;
+                    r.index = kDesktopOther;
+                    r.key = o.id;
+                    const std::string where = (o.track.empty() ? std::string() : ", on " + o.track)
+                                            + (o.project.empty() ? std::string() : ", " + o.project);
+                    r.help = "Another " + thing + " open" + where + (o.target ? "; Claude Desktop's target: a click clears the choice"
+                                                                          : ": a click makes it Claude Desktop's target");
+                    r.spec = upper(o.name) + (o.track.empty() ? std::string() : "   ON " + upper(o.track))
+                           + (o.project.empty() ? std::string() : "   " + upper(o.project))
+                           + (o.target ? "   CLAUDE DESKTOP'S TARGET: A CLICK CLEARS THE CHOICE" : "   A CLICK MAKES IT CLAUDE DESKTOP'S TARGET");
+                    g.rows.push_back(std::move(r));
                 }
             }
             groups.push_back(std::move(g));
@@ -4424,6 +4767,12 @@ namespace playground::ui
                 break;
             case S::folder:
                 folderRow(row);
+                break;
+            case S::assets:
+                notice(upper(row.key) + ": #PRAGMA SAMPLE <FIELD> \"" + upper(row.key) + "\" READS IT (SAMPLE.FM)");
+                break;
+            case S::desktop:
+                desktopRow(row);
                 break;
         }
         explorerStale_ = true;                           // what it shows may have changed (a tab, a tick)
@@ -4858,6 +5207,7 @@ namespace playground::ui
         syncCodePanel();
         keepStepDefaults(nowSec, false);
         syncFolder();
+        syncMidi();
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
@@ -5193,14 +5543,130 @@ namespace playground::ui
             activity_ = a;
             dirty_ = true;
         }
-        // Claude Desktop's name for this instance, while it talks to it (the chat card's subtitle says so).
-        const std::string desktop = port_.desktopConnected() ? port_.desktopName() : std::string();
-        if (desktop != desktop_)
+        syncDesktop();
+    }
+
+    // Claude Desktop as this instance's plugin shows it (EditorPort::desktop, a copy each refresh): the chat header's
+    // subtitle and badge, and the explorer's rows when what they show changed.
+    void Panel::syncDesktop()
+    {
+        desktopState_ = port_.desktop();
+        const DesktopState& d = desktopState_;
+        desktopAgo_ = d.doing.empty() ? std::string() : agoText(d.running, d.ago);
+        const std::string sub = !d.linked                 ? std::string()
+                              : d.running                 ? "Claude Desktop: " + d.doing
+                              : d.connected && d.target   ? "Claude Desktop calls this " + d.name
+                                                          : std::string();
+        const std::string badge = d.linked && d.connected && !d.target
+                                    ? (d.targetName.empty() ? std::string("Desktop: none chosen") : "Desktop uses " + d.targetName)
+                                    : std::string();
+        if (sub != desktop_ || badge != desktopBadge_)
         {
-            desktop_ = desktop;
+            const bool placed = badge != desktopBadge_;
+            desktop_ = sub;
+            desktopBadge_ = badge;
+            if (placed)
+                placeDesktopBadge();
             dirty_ = true;
             ++chatA11y_;
         }
+        std::string seen = d.name + '|' + d.number + '|' + (d.chosen ? "c" : "") + (d.target ? "t" : "") + (d.running ? "r" : "") + '|'
+                         + d.targetName + '|' + d.doing + '|' + desktopAgo_;
+        for (const DesktopPeer& o : d.others)
+            seen += '|' + o.id + ':' + o.name + ':' + o.track + ':' + o.project + (o.target ? ":t" : "");
+        if (seen != desktopSeen_)
+        {
+            desktopSeen_ = std::move(seen);
+            ++desktopRevision_;
+            dirty_ = true;
+        }
+    }
+
+    // The badge at the left of the header's buttons, as wide as its label where there is room after the title; the chat
+    // folded, its mark on the rail, under the rail's button and its light.
+    void Panel::placeDesktopBadge()
+    {
+        if (desktopItem_ < 0 || desktopMarkItem_ < 0 || newChatItem_ < 0)
+            return;
+        auto& badge = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]);
+        const funkgui::Rect newChat = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds();
+        const float right = newChat.x - 8.0f;
+        const float room = right - (card_.x + kCardPad + 96.0f);   // after "Claude" and its light
+        const float w = std::min(badge.preferredWidth(), room);
+        const bool shown = chatOpen_ && hasChat() && !desktopBadge_.empty() && room >= 90.0f;
+        badge.setHidden(!shown);
+        badge.setBounds({ right - w, headerY_ + std::floor(0.5f * (kIconButton - kPillH)), w, kPillH });
+        auto& mark = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopMarkItem_)]);
+        mark.setHidden(chatOpen_ || !hasChat() || desktopBadge_.empty());
+        mark.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f + 2.0f * kIconButton, kIconButton, kIconButton });
+        // Either gone once clicked (this one the target now) or with the fold: the focus to the chat's own button.
+        if ((focus_ == desktopItem_ || focus_ == desktopMarkItem_) && !items_[static_cast<std::size_t>(focus_)]->shown())
+            setFocus(chatToggleItem_);
+        ++layoutRevision_;
+        dirty_ = true;
+    }
+
+    std::optional<funkgui::Point> Panel::centreOfDesktopBadge() const
+    {
+        if (desktopItem_ < 0 || !items_[static_cast<std::size_t>(desktopItem_)]->shown())
+            return std::nullopt;
+        const funkgui::Rect r = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]).bounds();
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    std::optional<funkgui::Point> Panel::centreOfDesktopMark() const
+    {
+        if (desktopMarkItem_ < 0 || !items_[static_cast<std::size_t>(desktopMarkItem_)]->shown())
+            return std::nullopt;
+        const funkgui::Rect r = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopMarkItem_)]).bounds();
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    // A row of the explorer's CLAUDE DESKTOP: rename, choose or clear the target, open the chat.
+    void Panel::desktopRow(const ExplorerItem::Row& row)
+    {
+        const DesktopState& d = desktopState_;
+        switch (row.index)
+        {
+            case kDesktopName:
+                name_.open();
+                focusBeforeName_ = focus_;
+                setFocus(-1);
+                ring_ = false;
+                break;
+            case kDesktopUse:
+                port_.chooseDesktop(d.id, !d.chosen);
+                notice(d.chosen ? std::string("CLAUDE DESKTOP: NONE CHOSEN") : "CLAUDE DESKTOP: ITS CALLS COME HERE NOW");
+                break;
+            case kDesktopLast:
+                setChatOpen(true);
+                break;
+            case kDesktopOther:
+                for (const DesktopPeer& o : d.others)
+                    if (o.id == row.key)
+                    {
+                        port_.chooseDesktop(o.id, !o.target);
+                        notice(o.target ? std::string("CLAUDE DESKTOP: NONE CHOSEN") : "CLAUDE DESKTOP: ITS CALLS GO TO " + upper(o.name));
+                    }
+                break;
+            default:
+                break;
+        }
+        syncDesktop();
+        dirty_ = true;
+    }
+
+    void Panel::afterName(bool wasOpen)
+    {
+        if (const std::string n = name_.takeNotice(); !n.empty())
+            notice(n);
+        if (wasOpen && !name_.isOpen())
+        {
+            setFocus(focusBeforeName_ >= 0 ? focusBeforeName_ : editorItem_);
+            focusBeforeName_ = -1;
+            syncDesktop();
+        }
+        dirty_ = true;
     }
 
     void Panel::reshowChat()
@@ -6438,6 +6904,7 @@ namespace playground::ui
             .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
+            .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_)
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
             .mix(layoutRevision_).mix(buttonsRoom_);
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
@@ -6628,11 +7095,14 @@ namespace playground::ui
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
             c.text("Claude", tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
-            const float subRoom = card_.right() - kCardPad - 3.0f * kIconButton - 16.0f - sub;
-            const std::string kind = !desktop_.empty()             ? "Claude Desktop calls this " + desktop_
+            const bool badge = desktopItem_ >= 0 && items_[static_cast<std::size_t>(desktopItem_)]->shown();
+            const float subRoom = (badge ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]).bounds().x - 10.0f
+                                         : card_.right() - kCardPad - 3.0f * kIconButton - 16.0f)
+                                - sub;
+            const std::string kind = !desktop_.empty()             ? desktop_
                                    : product::kIsInstrument          ? "builds and edits your synth"
                                                                      : "builds and edits your effect";
-            if (subRoom > 60.0f)
+            if (subRoom > 60.0f && !(badge && desktop_.empty()))   // the badge says what matters then
                 c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
             const funkgui::Rect box = inputItem().box();
             c.text(fitText(c, activity_, chat::kSmall, box.w - 8.0f).c_str(), box.x + 6.0f,
@@ -6701,6 +7171,8 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
         else if (export_.isOpen())
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
+        else if (name_.isOpen())
+            std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
         else if (ab_.isOpen())
             std::snprintf(line, sizeof line, "A/B   A, B OR SPACE SWITCH   UP AND DOWN CHOOSE B, SHIFT A   TAB THE NEXT FILE   "
                                              "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
@@ -6761,6 +7233,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kExportTag, false);
             export_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (name_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kNameTag, false);
+            name_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (ab_.isOpen())
         {
@@ -6852,6 +7329,11 @@ namespace playground::ui
                 export_.pointerDown(pointer_, width_, height_);
                 afterExport(true);
             }
+            else if (name_.isOpen())
+            {
+                name_.pointerDown(pointer_, width_, height_);
+                afterName(true);
+            }
             else if (ab_.isOpen())
             {
                 ab_.pointerDown(pointer_, width_, height_);
@@ -6933,7 +7415,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen() || ab_.isOpen())
+        if (export_.isOpen() || ab_.isOpen() || name_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -6959,7 +7441,7 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen())
+        if (export_.isOpen() || name_.isOpen())
             return true;
         if (ab_.isOpen())
         {
@@ -7029,6 +7511,12 @@ namespace playground::ui
         {
             export_.key(e, host_, width_, height_);
             afterExport(true);
+            return true;
+        }
+        if (name_.isOpen())
+        {
+            name_.key(e, host_, width_, height_);
+            afterName(true);
             return true;
         }
         if (ab_.isOpen())
@@ -7123,6 +7611,8 @@ namespace playground::ui
         }
         if (export_.isOpen())
             return export_.cursor(pointer_, width_, height_);
+        if (name_.isOpen())
+            return name_.cursor(pointer_, width_, height_);
         if (ab_.isOpen())
             return ab_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
@@ -7187,6 +7677,11 @@ namespace playground::ui
             export_.accessibility(out, width_, height_);
             return;
         }
+        if (name_.isOpen())
+        {
+            name_.accessibility(out, width_, height_);
+            return;
+        }
         if (ab_.isOpen())
         {
             ab_.accessibility(out, width_, height_);
@@ -7215,6 +7710,7 @@ namespace playground::ui
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
+        r ^= (name_.isOpen() ? 0x2545F491u : 0u) ^ (name_.revision() * 0x61C88647u);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
@@ -7264,6 +7760,12 @@ namespace playground::ui
         {
             export_.a11yAction(id, a, width_, height_);
             afterExport(true);
+            return;
+        }
+        if (name_.isOpen())
+        {
+            name_.a11yAction(id, a, width_, height_);
+            afterName(true);
             return;
         }
         if (ab_.isOpen())

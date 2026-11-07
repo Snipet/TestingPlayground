@@ -9,7 +9,9 @@
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
 //                     "dials": [ { "name": "cutoff", "value": 900 }, { "name": "drive", "value": 2, "label": "PITCH" }, ... ],
-//                     "circuits": [ { "key": "0123456789abcdef", "text": "fminus-circuit-choice 1 ..." } ] },
+//                     "circuits": [ { "key": "0123456789abcdef", "text": "fminus-circuit-choice 1 ..." } ],
+//                     "midi": [ { "dial": "cutoff", "channel": 1, "cc": 74 }, { "dial": "drive", "channel": 1, "cc": 2,
+//                                 "fine": true } ] },
 //                   ... ],                                                                     oldest first
 //     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
 //     "info":     { "description": "...", "author": "...", "category": "Pad", "tags": [ "warm" ], "genres": [ ... ] } }
@@ -18,6 +20,20 @@
 // self-test's answers for its netlists (fminus/Circuits.h: a netlist's key and fminus::circuit::Choice::text()), so a
 // version opened plays its refined configuration from its first block instead of a provisional one until the test is
 // run again; saving the same program again with answers its latest version lacks adds them to that version.
+//
+// A version's "midi" (optional, written only when there are some: an older project has none, and an older build reads
+// past it) are MIDI learn's mappings when it was saved (plugin/MidiLearn.h: a dial by name, a channel, a control, 14
+// bits or 7): opening the version makes them the mappings, and a version with none leaves the mappings as they are.
+// Mappings other than the latest's are a change: saving adds a version ("MIDI map" in its note), unless they are ones a
+// version with none left as they were (VersionMidi::inherited) and the latest has none either.
+//
+// A version's "samples" (optional, written only when there are some: an older project has none, and an older build
+// reads past them) are the samples it plays (dsp/Assets.h: the explorer's ASSETS, what its #pragma sample lines read),
+// each by its name and its file's hash; the files are the project's "sampleFiles", each once whichever versions name
+// it (its hash and its bytes as base64), so a hundred versions of one drum kit keep one copy of each hit. A save keeps
+// only the files its kept versions name; a project's files are kMaxSampleBytes at most in all (a save past it is
+// refused, in words). Opening a version makes its samples the plugin's (none: none); samples other than the latest's
+// are a change ("kick.wav new", "snare.wav changed", "hat.wav gone" in the note).
 //
 // The dials by parameter name, in the program's own units, so a version's or a preset's values land in whichever
 // slots its program's parameters take, and a preset saved with one version applies to the next. An int's or a bool's
@@ -42,6 +58,9 @@
 // or reads whole, it keeps there as it is), and the Reader below.
 #pragma once
 
+#include "plugin/MidiLearn.h"
+
+#include "dsp/Assets.h"
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
 
@@ -96,6 +115,23 @@ namespace playground::projectstore
     };
     inline constexpr std::size_t kMaxAnswers = 16;       // a version's, at most
 
+    // A sample a version plays (above): its name and its file's hash (assets::hashOf); the file is the project's.
+    struct SampleRef
+    {
+        std::string name;
+        std::string hash;
+        friend bool operator==(const SampleRef&, const SampleRef&) = default;
+    };
+    // A sample file a project keeps (above), once: its hash and its bytes as added.
+    struct SampleFile
+    {
+        std::string hash;
+        std::string bytes;
+    };
+    inline constexpr std::size_t kMaxSampleBytes = std::size_t{ 64 } << 20;   // a project's sample files, in all: 64 MB
+    // The samples of a set as a version names them, by name.
+    std::vector<SampleRef> refsOf(const assets::Set* samples);
+
     struct Version
     {
         int number = 0;
@@ -105,6 +141,8 @@ namespace playground::projectstore
         int active = 0;                                  // the tab shown
         std::vector<Dial> dials;
         std::vector<Answer> circuits;                    // the self-test's answers for its netlists (may be none)
+        std::vector<midilearn::Mapping> midi;            // MIDI learn's mappings (may be none)
+        std::vector<SampleRef> samples;                  // the samples it plays (may be none), by name
     };
 
     struct Preset
@@ -140,10 +178,12 @@ namespace playground::projectstore
         std::vector<Version> versions;                   // oldest first, never empty
         std::vector<Preset> presets;                     // by name, case aside
         Info info;
+        std::vector<SampleFile> samples;                 // the files its versions' samples name, each once
 
         const Version& latest() const { return versions.back(); }
         const Version* version(int number) const;        // none when it is not kept
         const Preset* preset(std::string_view wanted) const;   // case aside
+        const SampleFile* sample(std::string_view hash) const;   // none when it keeps no file of that hash
     };
 
     struct Entry
@@ -224,12 +264,23 @@ namespace playground::projectstore
         bool unchanged = false;                          // the files, the tab and the dials were the latest's: none added
         bool created = false;                            // a new project
     };
+    // MIDI learn's mappings for a new version (Version::midi). `inherited`: they came from before the version open now,
+    // which had none (opening it left them), and are as they were when it opened: while the project's latest version
+    // has none either, they are no change of their own (saving that version as it was adds no version), though a
+    // version saved for another change keeps them.
+    struct VersionMidi
+    {
+        std::vector<midilearn::Mapping> mappings;
+        bool inherited = false;
+    };
     // A new version of the project `name` (tidied; a new project when there is none), its note what changed since the
     // latest, with the self-test's answers for its netlists (`circuits`: at most kMaxAnswers kept; when the files, the
-    // tab and the dials are the latest's, answers it lacks are added to it and no version is). Nothing, with why, when
-    // it cannot be written.
+    // tab, the dials, MIDI learn's mappings and the samples are the latest's, answers it lacks are added to it and no
+    // version is), and the samples it plays (`samples`: their files kept in the project, above). Nothing, with why, when
+    // it cannot be written (or the project's sample files would pass kMaxSampleBytes).
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits = {}, std::string* why = nullptr);
+                                     const std::vector<Answer>& circuits = {}, const VersionMidi& midi = {},
+                                     const assets::Set* samples = nullptr, std::string* why = nullptr);
     // A preset of the project (over one of that name, case aside, which takes the new name's case).
     bool savePreset(std::string_view project, std::string_view preset, const std::vector<Dial>& dials, int from,
                     std::string* why = nullptr);
@@ -252,6 +303,12 @@ namespace playground::projectstore
     std::optional<std::string> add(Project p, std::string* why = nullptr);
 
     // What changed from `before` (none: "first save") to the files and dials given: each file added, removed or edited
-    // ("program.fm +12 -3": its lines added and taken away, whatever their order), and how many dials moved.
-    std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials);
+    // ("program.fm +12 -3": its lines added and taken away, whatever their order), each sample given added, changed or
+    // gone ("kick.wav new"), how many dials moved, and, given MIDI learn's mappings, "MIDI map" when they are not
+    // `before`'s.
+    std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials,
+                               const std::vector<midilearn::Mapping>* midi = nullptr,
+                               const std::vector<SampleRef>* samples = nullptr);
+    // Why a project's sample files do not fit (kMaxSampleBytes), in words; "" when they do.
+    std::string samplesRefusal(const Project& p);
 }

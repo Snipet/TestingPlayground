@@ -43,8 +43,12 @@ namespace playground::ui
             tabs_.push_back(add(std::make_unique<GuiTabsItem>(idFor(), hooks.choosePage)));
         controls_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
+        {
             controls_[static_cast<std::size_t>(c)] = add(std::make_unique<GuiControlItem>(
                 *ports[static_cast<std::size_t>(c)], idFor(), hooks.menuTheme, hooks.menuOpen, hooks.menuHost));
+            if (hooks.dialMenu)
+                control(c).setMenu([menu = hooks.dialMenu, c](funkgui::Point at) { menu(c, at); });
+        }
         for (int k = 0; k < kPool; ++k)
             pads_.push_back(add(std::make_unique<GuiXyItem>(idFor())));
         for (int k = 0; k < kPool; ++k)
@@ -54,6 +58,12 @@ namespace playground::ui
         for (int k = 0; k < kShaders; ++k)
             shaders_.push_back(add(std::make_unique<GuiShaderItem>(idFor())));
         shaderNode_.assign(shaders_.size(), -1);
+    }
+
+    void GuiView::setMidi(int slot, bool mapped, bool learning, std::string spec)
+    {
+        if (controlItem(slot) >= 0)
+            control(slot).setMidi(mapped, learning, std::move(spec));
     }
 
     GuiControlItem& GuiView::control(int slot)

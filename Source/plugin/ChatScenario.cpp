@@ -399,6 +399,7 @@ namespace playground::scenario
 
     bool resolve(measure::Request& r, ChatHost& host, std::string& why, const Captured* recording)
     {
+        r.assets = host.chatAssets();                        // the program's samples, whatever renders it
         if (r.hostRate)
             if (const double rate = host.chatHostRate(); rate > 1000.0)
                 r.rate = std::clamp(rate, kMinRate, kMaxRate);

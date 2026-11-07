@@ -239,7 +239,7 @@ namespace playground::capture
                      "recorder knew it).";
             return f;
         }
-        measure::Session session(*r.files, t.rate, r.pins);
+        measure::Session session(*r.files, t.rate, r.pins, r.request.assets);
         if (!session.compiled())
         {
             const std::string e = session.errors();

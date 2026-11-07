@@ -104,6 +104,10 @@
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
 //   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
+//   midi()            MIDI learn (MidiLearn.h): each dial's MIDI control, the dial learning and learning's note
+//                     (midiRevision() moves when any changes); learnMidi() a dial learns the next control moved,
+//                     cancelMidiLearn(), forgetMidi() a dial's control, forgetAllMidi() every one. The instrument's
+//                     alone: midiLearnable() is false in an effect, which gets no MIDI
 #pragma once
 
 #include <array>
@@ -112,7 +116,9 @@
 
 #include "plugin/ChatPort.h"
 #include "plugin/DevicePort.h"
+#include "plugin/MidiLearn.h"
 
+#include "dsp/Assets.h"
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
@@ -290,7 +296,7 @@ namespace playground
         int version = 0;                         // the version opened or saved last (0: none kept)
         int latest = 0;                          // the project's newest
         std::string preset;                      // the preset applied last ("" for none)
-        bool edited = false;                     // the editor's files differ from that version's
+        bool edited = false;                     // the editor's files (or the samples) differ from that version's
         bool changed = false;                    // the editor's files differ from those last opened, saved or loaded
                                                  // (a version, an example, the session, a new instance's Init), with a
                                                  // project open or not: what loading another would lose
@@ -362,6 +368,36 @@ namespace playground
     struct WindowButtons
     {
         float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
+    };
+
+    // Claude Desktop and this instance (EditorPort::desktop; plugin/McpLink.h, mcp/McpTarget.h), as the explorer's
+    // CLAUDE DESKTOP section and the chat's header show it.
+    struct DesktopPeer
+    {
+        std::string id, name, track, project;    // another instance open: its number, its name ("Synth 1", or the user's)
+        bool target = false;                     // Claude Desktop's target
+        friend bool operator==(const DesktopPeer&, const DesktopPeer&) = default;
+    };
+    struct DesktopState
+    {
+        bool linked = false;                     // it has its socket (else nothing below means anything)
+        std::string id, name, number;            // "2"; its name to Claude Desktop ("Bass", else "Synth 2"); "Synth 2"
+        bool connected = false;                  // Claude Desktop's server talks to it now
+        bool chosen = false;                     // the user chose it as Claude Desktop's target (here or in another)
+        bool target = false;                     // it is the target: chosen, or the only one open with none chosen
+        std::string targetName;                  // the target's name when another one is ("" for none)
+        std::vector<DesktopPeer> others;         // the other instances open, by number
+        std::string doing;                       // the last call's title in words ("Measure the sound"; "" none yet)
+        bool running = false;                    // a call of Claude Desktop's acts on it now
+        double ago = 0.0;                        // seconds since that call began (running) or ended
+    };
+
+    // A sample as the explorer lists it (EditorPort::assets).
+    struct AssetEntry
+    {
+        std::string name;                        // "kick.wav"
+        std::string detail;                      // "0.42 s, mono, 44.1 kHz, 37 KB"
+        bool used = false;                       // a #pragma sample line of the program that plays reads it
     };
 
     struct SavedVersion
@@ -486,10 +522,16 @@ namespace playground
         virtual void setAbMatch(bool on) = 0;
         virtual bool keepAb(int side, std::string& why) = 0;
         virtual void endAb() = 0;
-        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
-        // whether Claude Desktop is talking to it now.
+        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Bass", else "Synth 2"; "" when there is no
+        // link), and whether Claude Desktop is talking to it now; all of it, with the target and the others open
+        // (desktop(), any thread: a copy). The user's name for it ("" its number's again; kept with the session; false,
+        // with why, for one it cannot take: mcp::target::nameRefusal), and the user's choice of Claude Desktop's target
+        // (`id`, this one's or another open's; `on` false clears it when it is that one).
         virtual std::string desktopName() const = 0;
         virtual bool desktopConnected() const = 0;
+        virtual DesktopState desktop() const = 0;
+        virtual bool setDesktopName(const std::string& name, std::string& why) = 0;
+        virtual void chooseDesktop(const std::string& id, bool on) = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;
@@ -607,5 +649,43 @@ namespace playground
         //                    found when it was made)
         virtual DevicePort* devices() { return nullptr; }
         virtual uint64_t settingsAsked() const { return 0; }
+
+        // MIDI learn (above; plugin/MidiLearn.h). learnMidi: false when the slot has no dial (or nothing learns here);
+        // forgetMidi: false when the dial had no control; forgetAllMidi: how many went.
+        virtual bool midiLearnable() const { return false; }
+        virtual midilearn::View midi() const { return {}; }
+        virtual uint64_t midiRevision() const { return 0; }
+        virtual bool learnMidi(int slot) { (void)slot; return false; }
+        virtual void cancelMidiLearn() {}
+        virtual bool forgetMidi(int slot) { (void)slot; return false; }
+        virtual int forgetAllMidi() { return 0; }
+
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS): audio files a program reads as tables (`#pragma
+        // sample`), kept with the session and with each project version. assets() lists them in the order they were
+        // added; addAssets decodes the files at `paths` (WAV, AIFF, FLAC: a file of a name the samples have replaces it)
+        // on the calling thread, the message thread, and says in words what it refused (`why`: the caps, a file that is
+        // none of those; the others added still): how many it added; removeAsset takes one away. A program plays a
+        // changed sample from its next RUN.
+        virtual std::vector<AssetEntry> assets() const { return {}; }
+        virtual uint64_t assetsRevision() const { return 0; }
+        virtual int addAssets(const std::vector<std::string>& paths, std::string& why)
+        {
+            (void)paths;
+            why = "no samples here";
+            return 0;
+        }
+        virtual bool removeAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "no samples here";
+            return false;
+        }
     };
+
+    // Whether a path names an audio file a sample may be made of (dsp/Assets.h: .wav, .aif, .aiff, .flac): what a drop
+    // on the panel adds to the samples.
+    inline bool isAudioPath(std::string_view path)
+    {
+        return assets::isAudioName(path);
+    }
 }

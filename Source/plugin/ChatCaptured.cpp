@@ -50,6 +50,7 @@ namespace playground::scenario
             why = "the recording: " + why;
             return false;
         }
+        replay.request.assets = host.chatAssets();           // the samples as they are (a take keeps none of its own)
 
         // How closely a replay gives what played: tested once a take (the whole of it), then kept with it.
         std::string fidelity = reply.replay;
@@ -57,6 +58,7 @@ namespace playground::scenario
         {
             capture::Replay whole;
             std::string unused;
+            whole.request.assets = host.chatAssets();
             fidelity = capture::replayOf(t, 0.0, -1.0, whole, unused) ? capture::nullTest(t, whole).line
                                                                      : "Replay: nothing to replay.";
             capture::Options keep;

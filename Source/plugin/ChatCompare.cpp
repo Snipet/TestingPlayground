@@ -6,7 +6,9 @@
 // "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
 // defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
 // Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
-// rate). Its result is at most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
+// rate). Each side renders with its own samples (dsp/Assets.h): what plays and previous_run the ones they compiled
+// with, a version its own (as opening it makes them), the others the plugin's as they are. Its result is at most
+// twelve lines, and a picture when asked (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -46,6 +48,10 @@ namespace playground
             std::map<std::string, float> dials;   // its own (a version's, a preset's, those given)
             bool given = false;                   // its dials are what it is ({dials}, preset:): "current" keeps them
             bool playing = false, capture = false;
+            // The samples it compiled with or keeps (what plays, previous_run, a version), in place of the plugin's
+            // as they are now (scenario::resolve's): `own`.
+            Assets samples;
+            bool own = false;
         };
 
         // The project's kept versions, the newest first (at most twelve), for an error.
@@ -101,7 +107,8 @@ namespace playground
             }
             if (s == "playing")
             {
-                out.files = host.chatRunning();
+                out.files = host.chatPlaying(out.samples);
+                out.own = true;
                 out.playing = true;
                 out.words = "the program that plays";
                 if (out.files.empty())
@@ -113,7 +120,8 @@ namespace playground
             }
             if (s == "previous_run")
             {
-                out.files = host.chatPrevious();
+                out.files = host.chatPrevious(out.samples);
+                out.own = true;
                 out.words = "what played before the last run";
                 if (out.files.empty())
                 {
@@ -152,8 +160,12 @@ namespace playground
                 }
                 out.files = ver->files;
                 out.dials = dialsOf(ver->dials);
+                std::vector<std::string> refused;           // its own samples, as opening it would make them
+                out.samples = host.chatVersionSamples(*p, *ver, refused);
+                out.own = true;
                 out.words = "version " + std::to_string(ver->number) + " of " + p->name + " (" + dateOf(ver->savedMs) + ", "
-                          + ver->note + ")";
+                          + ver->note + ")"
+                          + (refused.empty() ? std::string() : "; left out of its samples: " + refused.front());
                 return true;
             };
             if (s.rfind("version:", 0) == 0)
@@ -332,6 +344,8 @@ namespace playground
         {
             side->files = from->files;
             side->request = req;
+            if (from->own)
+                side->request.assets = from->samples;
             side->request.current = now;                 // none: the dials no side sets at the program's defaults
             if (!current || from->given)                 // over the scenario's (a recording's, at its start)
                 for (const auto& [name, x] : from->dials)

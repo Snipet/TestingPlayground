@@ -225,12 +225,29 @@
 // init, and stopMessage() words it at the access ("program.fm:14:33: error: process() went outside an array: index
 // -188 out of bounds for 'line' of type 'float[512]'"). An init's failed check fails the compile; an end's, the ends.
 //
+// Samples (dsp/Assets.h: the audio files the user added, the explorer's ASSETS). A line `#pragma sample <field>
+// "<file>"` (the quotes optional), read from the files FMinus read as it read them (a skipped group has none), fills
+// the field of that name of the main module (in every instance) and of Shared, whichever have it, with the sample of
+// that name: a field whose type is a module with `const float* data` and `int frames`, and optionally `int channels`
+// and `float rate` (the library's Sample, sample.fm, is one), written after the defaults and before init (reset()): data
+// the sound at the rate the Patch plays at (Asset::at: resampled once a rate, off the audio thread), planar, channel c's
+// frame i at data[c * frames + i]; frames each channel's, channels 1 or 2, rate the Patch's. The Patch holds the
+// sound while it lives (a reset at another rate takes that rate's), so the audio thread only reads it; nothing checks
+// the pointer's bounds (a host's buffer: FMinus's checks do not see it), so a program reads within frames. data is
+// const alone (FMinus refuses a write through it): the sound is one buffer that every instance, the next compile at
+// that rate and the tools' renders share, so a `float* data` makes no sample's field. A file the program's samples
+// lack, or a field that is not there or of another type (a `float* data` too), is a note, and the field stays empty
+// (frames 0, data null): the program plays, silent where it reads the sample. The recipe keeps the samples (Recipe::
+// assets) and what each line read (Recipe::samples: the file and its hash, "" for none), so a refine compiles with the
+// same ones, and a panel's edit is one only while the samples it read are the same (Compiler.h).
+//
 // Threads: compile(), freeze(), ir() and reset() run off the audio thread (or while it is stopped), the calls marked
 // noexcept on it. init and end run in flush-to-zero (fsdsp::ScopedFtz), the mode the program is compiled for, on
 // whatever thread resets or destroys it.
 // The audio thread never destroys a Patch; the Engine hands it back (Engine.h).
 #pragma once
 
+#include "dsp/Assets.h"
 #include "dsp/Controls.h"
 #include "dsp/Events.h"
 #include "fminus/Circuits.h"
@@ -352,9 +369,10 @@ namespace playground
         // these configurations where they name the netlist's key (above, "Circuits"), not with the store's answers.
         // `loopBudget` false: without the loop budget (above), and its recipe's copies too: dsp.budget's measure of what
         // the checks cost (the plugin never asks for it). `boundsCheck` false: without the bounds checks (above), and
-        // its recipe's ir() too: dsp.bounds's measure (the plugin never asks for it either).
+        // its recipe's ir() too: dsp.bounds's measure (the plugin never asks for it either). `assets`: the samples its
+        // #pragma sample lines read (above, "Samples"; none: every one missing).
         static Result compile(const Sources& files, float sampleRate, bool keepIr = false, const CircuitPins* pins = nullptr,
-                              bool loopBudget = true, bool boundsCheck = true);
+                              bool loopBudget = true, bool boundsCheck = true, const Assets& assets = nullptr);
         // A program of one file.
         static Result compile(std::string_view source, float sampleRate, std::string_view fileName = kProgramName);
         // The editor's check while typing (Compiler::check): what compile() would say of `files`, but faster and
@@ -440,6 +458,9 @@ namespace playground
             bool sharedTick = false, sharedNoteOn = false, sharedNoteOff = false;   // and Shared's (above, "Shared on
                                                                                    // its own")
             bool legato = false;                       // a mono program's Voice::legato (above, "Mono")
+            Assets assets;                             // the samples it was compiled with (above, "Samples")
+            std::vector<std::pair<std::string, std::string>> samples;   // each #pragma sample's file and the hash of
+                                                                         // the one it read ("" for none), in order
             bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
             bool boundsCheck = true;                   // and the bounds checks (compile()'s `boundsCheck`): ir()'s
                                                        // text has them, the frozen copy never
@@ -560,6 +581,11 @@ namespace playground
         static constexpr const char* kLightsField = "shiftLights";
         const Tap* lightsTap() const noexcept { return hasLights_ ? &lights_ : nullptr; }
 
+        // ---- samples (above) ---------------------------------------------------------------------------------------
+        // The sound field `field` holds now (the rate it is at, its frames), null when no #pragma sample filled it.
+        // Off the audio thread (probes).
+        const assets::Audio* sample(std::string_view field) const noexcept;
+
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
         // scalar fields as paths, in declaration order: "phase", a held module's "filter.ic2", an array's elements (of
@@ -591,6 +617,24 @@ namespace playground
         void freeInstances() noexcept;
         void setDefaults(void* instance, std::string_view moduleName, int depth) const;
         void mapFields();                              // fields_ and unmapped_, from the compiled program
+        // Each #pragma sample's sound at the Patch's rate (reset()'s), then written into an instance (or Shared): its
+        // fields' places, a sample's data, frames, channels and rate (kNone: the module lacks it).
+        struct SamplePlace
+        {
+            static constexpr std::size_t kNone = static_cast<std::size_t>(-1);
+            bool shared = false;                       // Shared's field, else every instance's
+            std::size_t data = kNone, frames = kNone, channels = kNone, rate = kNone;
+        };
+        struct SampleUse
+        {
+            std::string field;
+            std::shared_ptr<const assets::Asset> asset;     // null: the program's samples have none of its name
+            std::shared_ptr<const assets::Audio> sound;     // asset's at rate_
+            std::vector<SamplePlace> places;
+        };
+        std::vector<SampleUse> samples_;
+        void samplesAt(float rate);                    // each sound at that rate (resampled where it must be)
+        void fillSamples(void* at, bool shared) const noexcept;
 
         const Compiled& code() const noexcept { return active_ != nullptr ? *active_ : *s_; }
         // The loop budget around a call (above): set for `samples` before it, and after it the stop, when it ran out or
