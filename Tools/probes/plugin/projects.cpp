@@ -17,10 +17,16 @@
 //            with no project open is refused; a name taken is replaced (case aside)
 //   POLL     a project's presets as the explorer asks for them (ProjectStore's presetsOf): as load() has them; asked
 //            again, its file is not read (ProjectStore's parses()), the name in another case the same; after a preset
-//            is saved, read once and not again; a preset more written by another (the file rewritten) seen at the next
-//            ask; a change list() read is not read again (one cache); a project that is not there: nothing, and why;
-//            the listing has a file whose extension is in capitals, not a folder named as a project; that file's
-//            presets, asked by its name spelt as on no file, come from the listing's entry, poll after poll
+//            is saved, not read at all (the save kept what it wrote in the cache); a preset more written by another
+//            (the file rewritten) seen at the next ask, read once; a change list() read is not read again (one cache);
+//            a project that is not there: nothing, and why; the listing has a file whose extension is in capitals, not
+//            a folder named as a project; that file's presets, asked by its name spelt as on no file, come from the
+//            listing's entry, poll after poll; every write of the store (a version saved, unchanged too, a preset
+//            saved or removed, a version removed, the info set, a project added) leaves the cache as the file is, and
+//            so does a load(); a damaged file is read once, not at every listing
+//   CACHED   the explorer's own poll (listCached, presetsCached, the Reader): a file another wrote is not read by
+//            the listing but listed as it was and handed to the Reader, which reads it once on its thread (its
+//            revision moves) and the next listing has it; a project never read is listed once the Reader has read it
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
@@ -62,9 +68,12 @@
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <juce_core/juce_core.h>
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -304,7 +313,7 @@ PROBE(plugin, projects)
         const int p1 = ps::parses();
         const auto warm = ps::presetsOf("Glass Bloom");
         const auto warmAgain = ps::presetsOf("Glass Bloom");
-        P.eq("poll.change_read_once", ps::parses() - p1, 1);
+        P.eq("poll.save_kept", ps::parses() - p1, 0);
         P.eq("poll.change_listed", same(warm, ps::load("Glass Bloom")) && warm->size() == first->size() + 1
                                        && warmAgain == warm ? 1 : 0, 1);
         // Written by another (a preset more in its JSON, the file rewritten in place): seen at the next ask.
@@ -354,6 +363,115 @@ PROBE(plugin, projects)
             P.eq("poll.spelling_served", ps::parses() - p4 == 0 && s1 && s1 == zz && s2 == s1 && s3 == s1 ? 1 : 0, 1);
             shouty.deleteFile();
             folder.deleteRecursively();
+        }
+        // Every write of the store leaves the cache as the file now is, and so does a load(): the listing and the
+        // presets after it read no file whole.
+        {
+            const auto kept = [&](const std::string& row, auto&& write) {
+                (void)ps::list();
+                P.eq(row + "_written", write() ? 1 : 0, 1);
+                const int parsesBefore = ps::parses();
+                (void)ps::list();
+                (void)ps::presetsOf("Glass Bloom");
+                P.eq(row, ps::parses() - parsesBefore, 0);
+            };
+            const std::optional<ps::Project> gb = ps::load("Glass Bloom");
+            pg::Sources keptFiles = gb ? gb->latest().files : pg::Sources{};
+            if (!keptFiles.empty())
+                keptFiles[0].text += "\n// kept\n";
+            const std::vector<ps::Dial> keptDials = gb ? gb->latest().dials : std::vector<ps::Dial>{};
+            int added = 0;
+            kept("poll.kept_version", [&] {
+                const auto r = ps::saveVersion("Glass Bloom", keptFiles, 0, keptDials);
+                added = r ? r->number : 0;
+                return r.has_value() && !r->unchanged;
+            });
+            kept("poll.kept_unchanged", [&] { return ps::saveVersion("Glass Bloom", keptFiles, 0, keptDials).has_value(); });
+            kept("poll.kept_preset", [&] { return ps::savePreset("Glass Bloom", "Kept", { { "level", 0.4f } }, added); });
+            kept("poll.kept_preset_removed", [&] { return ps::removePreset("Glass Bloom", "Kept"); });
+            kept("poll.kept_version_removed", [&] { return ps::removeVersion("Glass Bloom", added); });
+            const ps::Info info = ps::load("Glass Bloom") ? ps::load("Glass Bloom")->info : ps::Info{};
+            kept("poll.kept_info", [&] { return ps::setInfo("Glass Bloom", info); });
+            std::string copy;
+            kept("poll.kept_added", [&] {
+                const std::optional<std::string> n = gb ? ps::add(*gb) : std::nullopt;
+                copy = n.value_or("");
+                return n.has_value();
+            });
+            P.eq("poll.kept_added_removed", !copy.empty() && ps::remove(copy) ? 1 : 0, 1);
+            rewrite(dir, "Glass Bloom", "Glass Bloom", addPreset("Loaded"));
+            kept("poll.kept_load", [&] { return ps::load("Glass Bloom").has_value(); });
+            P.eq("poll.kept_load_tidy", ps::removePreset("Glass Bloom", "Loaded") ? 1 : 0, 1);
+            // A damaged file: read once, not at every listing (and never listed).
+            const juce::File damaged = dir.getChildFile("Damaged.fmproject");
+            damaged.replaceWithText("{ not a project");
+            const int d0 = ps::parses();
+            (void)ps::list();
+            (void)ps::list();
+            bool shown = false;
+            for (const ps::Entry& e : ps::list())
+                shown = shown || e.name == "Damaged";
+            P.eq("poll.damaged_read_once", ps::parses() - d0, 1);
+            P.eq("poll.damaged_not_listed", shown ? 0 : 1, 1);
+            damaged.deleteFile();
+        }
+
+        // CACHED: the explorer's poll. A file another wrote is listed as it was, read on the Reader's thread once.
+        {
+            const std::shared_ptr<ps::Reader> reader = ps::reader();
+            const auto waitReader = [&] {
+                for (int k = 0; k < 2000 && !reader->idle(); ++k)
+                    juce::Thread::sleep(5);
+                return reader->idle();
+            };
+            const auto presetsOfEntry = [](const std::vector<ps::Entry>& list, const std::string& name) {
+                for (const ps::Entry& e : list)
+                    if (e.name == name)
+                        return static_cast<int>(e.presets.size());
+                return -1;
+            };
+            (void)ps::list();
+            std::vector<std::string> unread;
+            const std::vector<ps::Entry> held0 = ps::listCached(unread);
+            P.eq("cached.all_held", unread.empty() && presetsOfEntry(held0, "Glass Bloom") >= 0 ? 1 : 0, 1);
+            rewrite(dir, "Glass Bloom", "Glass Bloom", addPreset("Other"));
+            const int c0 = ps::parses(), r0 = ps::readerParses();
+            const uint64_t rev0 = reader->revision();
+            unread.clear();
+            const std::vector<ps::Entry> stale = ps::listCached(unread);
+            std::vector<std::string> unreadPresets;
+            const auto stalePresets = ps::presetsCached("Glass Bloom", unreadPresets);
+            P.eq("cached.not_read_here", ps::parses() - c0, 0);
+            P.eq("cached.listed_as_was", presetsOfEntry(stale, "Glass Bloom") == presetsOfEntry(held0, "Glass Bloom")
+                                             && stalePresets && static_cast<int>(stalePresets->size()) == presetsOfEntry(held0, "Glass Bloom")
+                                             ? 1 : 0, 1);
+            P.eq("cached.handed_on", unread.size() == 1 && unreadPresets == unread ? 1 : 0, 1);
+            reader->request(unread);
+            reader->request(unreadPresets);              // the same file: read once
+            P.eq("cached.reader_done", waitReader() ? 1 : 0, 1);
+            P.eq("cached.read_once_there", ps::parses() - c0 == 1 && ps::readerParses() - r0 == 1 ? 1 : 0, 1);
+            P.eq("cached.revision", reader->revision() == rev0 + 1 ? 1 : 0, 1);
+            unread.clear();
+            const std::vector<ps::Entry> fresh = ps::listCached(unread);
+            unreadPresets.clear();
+            const auto freshPresets = ps::presetsCached("Glass Bloom", unreadPresets);
+            P.eq("cached.then_listed", unread.empty() && unreadPresets.empty()
+                                           && presetsOfEntry(fresh, "Glass Bloom") == presetsOfEntry(held0, "Glass Bloom") + 1
+                                           && freshPresets && freshPresets->size() == static_cast<std::size_t>(presetsOfEntry(fresh, "Glass Bloom"))
+                                           ? 1 : 0, 1);
+            // A project no one read yet (another wrote it): not listed until the Reader has read it.
+            const juce::File newcomer = dir.getChildFile("Newcomer.fmproject");
+            dir.getChildFile("Glass Bloom.fmproject").copyFileTo(newcomer);
+            unread.clear();
+            const std::vector<ps::Entry> newcomer0 = ps::listCached(unread);
+            P.eq("cached.new_not_yet", presetsOfEntry(newcomer0, "Newcomer") < 0 && unread.size() == 1 ? 1 : 0, 1);
+            reader->request(unread);
+            P.eq("cached.new_reader_done", waitReader() ? 1 : 0, 1);
+            unread.clear();
+            const std::vector<ps::Entry> second = ps::listCached(unread);
+            P.eq("cached.new_listed", presetsOfEntry(second, "Newcomer") >= 0 && unread.empty() ? 1 : 0, 1);
+            newcomer.deleteFile();
+            P.eq("cached.tidy", ps::removePreset("Glass Bloom", "Other") ? 1 : 0, 1);
         }
         // Back as it was (the presets above as saved): Zed and Zz go.
         P.eq("poll.tidy", ps::removePreset("Glass Bloom", "Zed") && ps::removePreset("Glass Bloom", "Zz")

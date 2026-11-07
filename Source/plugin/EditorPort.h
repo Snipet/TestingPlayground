@@ -63,6 +63,11 @@
 //   project()         the project open (the one opened or saved last; none at first), its version, the preset applied,
 //                     and whether the editor's files and the dials have changed since; kept in the session
 //   versions()        a project's versions, the newest first; presets() its presets, by name
+//   projectsPolled()  projects() and presets() as the explorer polls them on the message thread every few seconds
+//   presetsPolled()   (Panel::syncExplorer): no project's file is read whole there. One the store's cache does not hold
+//   projectsRead()    as it is now (another process wrote it, or none read it yet) is read on the store's own thread
+//                     (projectstore::Reader) and listed as the cache last held it until then (one never read: not yet);
+//                     projectsRead() moves when that thread has read one, and the explorer then polls again
 //   saveVersion()     the editor's files (the draft) and the dials as they are now, by name, as a new version of the
 //                     project `name` (a new project when there is none): it is then the project open. No new version
 //                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot
@@ -450,6 +455,9 @@ namespace playground
         virtual ProjectState project() const = 0;
         virtual std::vector<VersionEntry> versions(const std::string& project) const = 0;
         virtual std::vector<PresetEntry> presets(const std::string& project) const = 0;
+        virtual std::vector<ProjectEntry> projectsPolled() const = 0;
+        virtual std::vector<PresetEntry> presetsPolled(const std::string& project) const = 0;
+        virtual uint64_t projectsRead() const = 0;
         virtual bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) = 0;
         virtual bool openProject(const std::string& name, int version, std::string& why) = 0;
         virtual void startAfresh(const Sources& files, const std::string& what) = 0;

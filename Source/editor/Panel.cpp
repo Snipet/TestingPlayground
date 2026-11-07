@@ -210,6 +210,10 @@ namespace playground::ui
         // its idle calls (10 a second) and this long with no tick (Panel.h "The meters' reader").
         constexpr int kHiddenIdles = 5;
         constexpr double kHiddenAfter = 1.0;             // s
+        // The explorer's projects and presets are polled this often while it shows (s), and a poll that fell due while
+        // it was away comes this long after it shows again, not on that frame (Panel::syncExplorer).
+        constexpr double kProjectsPoll = 3.0;
+        constexpr double kPollAfterShow = 0.25;
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -3290,6 +3294,19 @@ namespace playground::ui
             asked.explorerWant = explorerWant_;
             asked.chatWant = chatWant_;
             fit_ = columns::fit(asked);
+            // The chat as wide in the PANEL view as in the CODE view, where the explorer can take some of its room (the
+            // give-way order): a switch between them then never changes the conversation's width, which would lay out
+            // every block of it again (ChatView::setBounds; tens to hundreds of ms for a long one, at each switch). Its
+            // edge's reach is the CODE view's too. Not while the editor is in its own window, which has the explorer.
+            if (full() && !out_ && asked.chat && explorerOpen_)
+            {
+                columns::Asked code = asked;
+                code.explorer = true;
+                const columns::Fit c = columns::fit(code);
+                fit_.chat = c.chat;
+                fit_.chatLeast = c.chatLeast;
+                fit_.chatMost = c.chatMost;
+            }
         }
         chatW_ = fit_.chat;
         chatX_ = W - kMargin - chatW_;
@@ -3494,7 +3511,14 @@ namespace playground::ui
         files().setHidden(full());
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(full() || schematic);
         const float editorH = schematic ? std::max(kEditorFloor, panelTop - 8.0f - kEditorY) : std::max(kEditorFloor, problemsY - 8.0f - kEditorY);
-        files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+        // Hidden in the PANEL view, the editors keep the CODE view's place: a width set every switch (the column is
+        // wider without the explorer) would measure every line of every tab's text and of the IR views' again
+        // (TextEditor::setBounds), both ways. Placed once at least, for a panel that opens in the PANEL view.
+        if (!full() || !filesPlaced_)
+        {
+            files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+            filesPlaced_ = true;
+        }
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ inX, problemsY, inW, problemsH });
         int hiddenDials = 0;                             // shown from the fold, but over the editor's floor
@@ -3595,9 +3619,14 @@ namespace playground::ui
         usageY_ = card_.bottom() - kCardPad + 2.0f - kUsageH;
         const float composerY = usageY_ - 4.0f - composerH_;
         in.setBounds({ inX, composerY, inW, composerH_ }, kBarH);
+        const funkgui::Rect viewWas = chatView().bounds();
         chatView().setBounds({ card_.x + 2.0f, headerBottom + 6.0f, card_.w - 4.0f,
                                std::max(40.0f, composerY - 8.0f - (headerBottom + 6.0f)) });
-        reshowChat();                                    // the conversation laid out for its width now
+        // The conversation laid out for its place now, when it moved (refreshChat shows it whenever it changes, folded
+        // or not): a layout that leaves it where it was (a switch of the view) builds nothing of it again.
+        const funkgui::Rect viewIs = chatView().bounds();
+        if (viewIs.x != viewWas.x || viewIs.y != viewWas.y || viewIs.w != viewWas.w || viewIs.h != viewWas.h)
+            reshowChat();
         placeChatBar();
         ++layoutRevision_;
         dirty_ = true;
@@ -3839,6 +3868,7 @@ namespace playground::ui
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
     {
+        noteInput();
         dropActive_ = true;
         dropHover_ = card_.contains({ x, y });
         dirty_ = true;
@@ -3846,6 +3876,7 @@ namespace playground::ui
 
     void Panel::filesDragMove(float x, float y)
     {
+        noteInput();
         const bool over = card_.contains({ x, y });
         if (over != dropHover_)
         {
@@ -3856,12 +3887,14 @@ namespace playground::ui
 
     void Panel::filesDragExit()
     {
+        noteInput();
         dropActive_ = dropHover_ = false;
         dirty_ = true;
     }
 
     void Panel::filesDropped(const std::vector<std::string>& paths)
     {
+        noteInput();
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
@@ -4094,17 +4127,32 @@ namespace playground::ui
     void Panel::syncExplorer()
     {
         if (!explorerShown_ || explorerItem_ < 0)
-            return;
-        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
-        const ProjectState st = port_.project();
-        // The projects and the open one's presets, every 3 s (the presets' file is read only when it changed:
-        // ProjectStore's presetsOf): a revision when they differ from what the rows show.
-        if (projectsAt_ < 0.0 || now - projectsAt_ > 3.0 || presetsOf_ != st.name)
         {
-            std::vector<ProjectEntry> projects = port_.projects();
+            explorerAway_ = true;
+            return;
+        }
+        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
+        if (explorerAway_)
+        {
+            // Shown again (the CODE view, the explorer opened, a wider window): its rows as they were on this frame,
+            // which lays the panel out already; a poll that fell due while it was away comes kPollAfterShow later.
+            explorerAway_ = false;
+            if (projectsAt_ >= 0.0)
+                projectsAt_ = std::max(projectsAt_, now + kPollAfterShow - kProjectsPoll);
+        }
+        const ProjectState st = port_.project();
+        // The projects and the open one's presets, every kProjectsPoll s, and at once when the store's Reader has read a
+        // file since (EditorPort::projectsPolled: no project's file is read whole here; one the store does not hold as
+        // it is now is read on its thread, listed as it was until then): a revision when they differ from what the rows
+        // show.
+        const uint64_t read = port_.projectsRead();
+        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
+        {
+            projectsReadSeen_ = read;
+            std::vector<ProjectEntry> projects = port_.projectsPolled();
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
             if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name)
                 ++listsRevision_;
             projectList_ = std::move(projects);
@@ -5093,9 +5141,11 @@ namespace playground::ui
         const bool stale = chatAt_ < 0.0 || nowSec - chatAt_ >= 1.0 || nowSec < chatAt_;
         if (changed || stale)
         {
+            const bool moved = r != seenChat_;
             seenChat_ = r;
             chatAt_ = nowSec;
             const bool hadKey = chat_.ready();
+            const std::string hadProblem = chat_.keyProblem;
             const bool wasBusy = chat_.busy;
             chat_ = chat.chatState();
             if (chat_.busy && !wasBusy)
@@ -5107,7 +5157,11 @@ namespace playground::ui
                 if (inputItem().stripHeight() != strip)
                     layoutChat();                        // the row of pictures came or went: the box grows or shrinks
             }
-            chatView().show(chat_, emptyChat(chat_));
+            // Shown again when it changed (its revision) or the key's state did, not at each look once a second: that
+            // goes over the whole conversation's text (ChatView::show: every block's key, the transcript), 2 ms for a
+            // long one.
+            if (moved || hadKey != chat_.ready() || hadProblem != chat_.keyProblem)
+                chatView().show(chat_, emptyChat(chat_));
             inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
                                        : chat_.asking ? "Answer above, or write your own answer"
                                        : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
@@ -6423,9 +6477,26 @@ namespace playground::ui
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_ || compiling_)
+        if (dirty_ || compiling_ || inputHeld())
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
+    }
+
+    // Input (Panel.h "Unchanged frames", kInputHold): the time of the last, which holds the full rate. `nudge`: tell the
+    // host's pump now too, for the events FunkGui's EditorHost does not nudge it on (a release, the pointer leaving),
+    // so the frame that draws them runs at the next display tick.
+    void Panel::noteInput(bool nudge)
+    {
+        if (host_ == nullptr)
+            return;
+        inputAt_ = host_->nowSeconds();
+        if (nudge)
+            host_->nudgeFullRate();
+    }
+
+    bool Panel::inputHeld() const
+    {
+        return host_ != nullptr && host_->nowSeconds() - inputAt_ < kInputHold;
     }
 
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
@@ -6714,6 +6785,7 @@ namespace playground::ui
 
     void Panel::pointerMove(const funkgui::PointerEvent& e)
     {
+        noteInput();
         const int before = hasPointer_ ? itemAt(pointer_) : -1;
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
@@ -6727,6 +6799,7 @@ namespace playground::ui
 
     void Panel::pointerExit()
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no exit
         if (hasPointer_)
             if (const int before = itemAt(pointer_); before >= 0)
                 items_[static_cast<std::size_t>(before)]->pointerExit();
@@ -6742,6 +6815,7 @@ namespace playground::ui
 
     void Panel::pointerDown(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
@@ -6823,6 +6897,7 @@ namespace playground::ui
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         pointer_ = { e.x, e.y };
         if (pressed_ >= 0 && gestures_)
@@ -6832,6 +6907,7 @@ namespace playground::ui
 
     void Panel::pointerUp(const funkgui::PointerEvent& e)
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no release
         dirty_ = true;                                   // input: drawn at the next frame
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerUp(e, *gestures_);
@@ -6841,6 +6917,7 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
@@ -6867,6 +6944,7 @@ namespace playground::ui
 
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {
@@ -6926,6 +7004,7 @@ namespace playground::ui
 
     bool Panel::key(const funkgui::KeyEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {
