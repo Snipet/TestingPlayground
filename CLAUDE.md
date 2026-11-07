@@ -2,7 +2,7 @@
 
 Two playgrounds for writing DSP while the plugin runs, built from one source tree: the effect, TestingPlayground
 (`products/effect.cmake`), and the synth, TestingPlaygroundSynth (`products/synth.cmake`). Each is a plugin (AU, VST3,
-Standalone; macOS arm64; and VST3, Standalone on Windows x64: "Windows" below) on JUCE 8.0.4 whose FunkGui editor is a text field holding an FMinus program (the effect's
+Standalone; macOS arm64; and VST3, Standalone on Windows x64 and Linux x86-64: "Windows" and "Linux" below) on JUCE 8.0.4 whose FunkGui editor is a text field holding an FMinus program (the effect's
 main module is `Effect`, one instance; the synth's `Voice`, one instance a note), which the plugin compiles (RUN,
 Cmd-Return) and plays, its parameters becoming the dials. Made from FunkPluginTemplate. Change the panel, the examples
 and the plumbing freely; keep the rules below. README.md is the user's guide (writing a program, the editor, the
@@ -62,7 +62,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | `Source/installer/**` | the installer, one app for every product ("<Project> Installer": `cmake/Installer.cmake` works the name out from the products' names, and nothing here names a product): `Engine` (no GUI, juce_core: the payload (payload.json and the bundles beside it, the build's), what is installed where in both scopes with its version, the plan (install, upgrade, downgrade, rebuild (the CDHash, else the bytes), same, blocked and why), installing (ditto into a staging folder beside the target, then one rename: `renamex_np`'s RENAME_SWAP over an old copy, which goes to the Trash), uninstalling (to the Trash), the "All users" script, the notes on running apps and hosts, the log; `Engine.cpp` what both platforms share, `EngineMac.cpp` and `EngineWin.cpp` each one's own (`EnginePlatform.h`: a path's kind and owner, renames, versions, places, hosts; "All users")), `System.cpp` (`MacSystem`: ditto, pgrep, killall, the Trash, osascript), `SystemWin.cpp` (`WinSystem`: robocopy, the process list, the Recycle Bin, UAC through PowerShell), `Panel` (its window: a FunkGui Panel in ChatStyle's look, Welcome, Choose, Installing, Done, Uninstall; runs on a thread of its own), `App.cpp` (the app: an `EditorHost` over a processor that is none, in `plugin/standalone/NativeWindow.mm`'s window; on Windows JUCE's window with Windows' title bar, the Panel in FunkGui's `EditorHost` (Direct3D 11), or in `editor/nogpu/SoftEditorHost` with `FP_WITH_GPU` off; the theme from the system's appearance, held in memory) | the rules under "The installer" below; it includes from `editor/` only its JUCE-free, product-free headers (`ChatStyle.h`, `LogoMark.h`, `Theme.h`'s kind colours) and, with `FP_WITH_GPU` off, the product-free `nogpu/SoftEditorHost` |
 | `Source/sandbox/**` | `<Name>GuiSandbox`, the GUI sandbox's helper, which the server starts on demand (`Main.cpp`: JSON lines on its stdin and stdout, one request at a time, `SandboxProtocol.h`; its main thread JUCE's message thread); `Sandbox` (the document: the .gui and the program files beside it, read never compiled, GuiSpec's notes, the layout report (its fit the check run_program makes: GuiLayout.h's `guiFit`), the render), `Dials` (the dials from the program's declarations through `Lang`, its circuits' after them as the plugin makes them (`lang::circuitDials`), or Claude's list, mocked), `View` (a `funkgui::Panel` of the area's size holding the editor's `GuiView`, its dials mock ports, its displays demo meters) | the editor's .gui code and the .gui and program reading by name (CMakeLists.txt's `FP_SANDBOX_SHARED`) and FunkGui: no plugin, audio or compiler code, no FMinus (`fminus/Circuit.h` and `fminus/Circuits.h` neither) or LLVM (`lint.layers`) |
 | `Source/render/**` | `<Name>Render` (TestingPlaygroundRender, TestingPlaygroundSynthRender), the headless renderer (README, "The headless renderer"; `Main.cpp`): a program's files (a folder or the files) and the tools' JSON in (read by `plugin/ChatScenario.cpp`'s readers, which it compiles: `renderOf`, `dialsFrom`, `spectrumOf`, `profileOf`, `watchOf`, `exportOf`, `tryEdits`, `fits`; no plugin, so "host" is the defaults, and "capture" and a program that reads samples refused), measure_output's report and metrics (`measure::Session::measure`) and trace's export (`measure::trace`, `exporting`: the WAV, the CSV) out, the same bits as the tools; exit 0 rendered, 1 a usage, input or output error, 2 not compiled, 3 stopped (a loop past its budget, a failed bounds check, an init's: `Session::initStopped`); in each product's extension beside the server (`server/<Name>Render`), signed with `scripts/entitlements/render.plist`; `plugin.render` runs it against the tools | juce_core and the DSP library: no processor, editor or FunkGui (`lint.layers`: of the plugin `plugin/ChatScenario.h` alone, and `ChatScenario.cpp` itself includes of the plugin only its header and `ClaudeApi.h`, whose `object` is inline); a reader the renderer needs goes into `ChatScenario.cpp`, shared with the tool that takes it, never a copy; what needs the processor goes into `ChatCaptured.cpp` |
-| `Source/editor/nogpu/**` | the editor's host on the CPU, for a build with `FP_WITH_GPU` off (an option, on by default on both platforms): `SoftEditorHost` (EditorHost's rules over FunkGui's SoftRaster in a JUCE component), its factory `CreateEditorSoft.cpp` (in place of `gpu/CreateEditorGpu.cpp`), `ShaderLibraryNone.cpp` (`funkgui/gpu/ShaderLibrary.h` with no renderer: the plugin, the probes and the sandbox's helper take it, `FP_NOGPU_SHARED`) | below, "Windows" |
+| `Source/editor/nogpu/**` | the editor's host on the CPU, for a build with `FP_WITH_GPU` off (an option, on by default on every platform): `SoftEditorHost` (EditorHost's rules over FunkGui's SoftRaster in a JUCE component), its factory `CreateEditorSoft.cpp` (in place of `gpu/CreateEditorGpu.cpp`), `ShaderLibraryNone.cpp` (`funkgui/gpu/ShaderLibrary.h` with no renderer: the plugin, the probes and the sandbox's helper take it, `FP_NOGPU_SHARED`) | below, "Windows" |
 | `Tools/wheel-dump/` | wheel-dump, a developer's tool: a connected G29's HID elements and live values beside `WheelMap.h`'s table, the MIDI it would make, `--leds` its shift lights tried (README, "A racing wheel") | a CMake target outside `all` (`--target wheel-dump`), never installed nor run by a test; it shares `WheelMap.cpp`, so a table row it shows wrong is fixed there |
 | `Tools/logo/logo.swift` | the mark ("Caret": a wave written up to the editor's caret), its one source: the construction in its header (the 3-4-5 arcs, the effect's processed trough, the optical corrections, the hinting of every size, the colours) and every number, and what writes every asset from them: `Assets/logo/`, `Source/mcp/icon-<key>.png` and `Source/editor/LogoMark.h`; it reads `products/*.cmake` and the instrument's accent in `Theme.h` | `swift Tools/logo/logo.swift` after any change (it needs JetBrains Mono: a build's FunkGui checkout, or `--font <ttf>`; `--out <dir>` writes elsewhere, `--preview <dir>` adds enlargements); the same bytes run after run; look at `Assets/logo/sheet.png` and `construction.png`; never edit its outputs by hand |
 | `Assets/logo/**` | its outputs: `<kind>/` (`effect`, `instrument`: a product's `PRODUCT_KIND`) the app icon (`icon.iconset`, 16 to 1024 px: every size from 64 up on the pixel grid (the crest, the trough, the floor and the stem on whole px), 32 hinted on its own grid, 16 set pixel by pixel; `icon.icns`; `icon.svg`; `installer-1024.png`, the master an installer takes), `extension-512.png`, the mark's SVGs (`mark-graphite`, `mark-paper`, `mark-flat`) and lockups; `readme-*.png` (the README's header: both marks), `construction.png`, `sheet.png` (the top bar's tiles in FunkGui's own pixels: logo.swift mirrors its rasteriser) | generated, committed. CMakeLists.txt gives JUCE `installer-1024.png` as ICON_BIG and puts `icon.icns` over the Icon.icns JUCE makes, in every bundle (the Standalone's `CFBundleIconFile`; the About box shows it) |
@@ -76,7 +76,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Build and test
 
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
-  build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" above).
+  build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" below).
+- Linux: `cmake --workflow --preset linux-verify` (or `linux-effect-verify`, `linux-synth-verify`; the release build
+  `linux-release-build`), in `build-linux-<preset>`, with clang and lld, the GUI probes on an X display ("Linux"
+  below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
   renderer and probes, and the installer) and run every test in `build-dev`: each of the 70 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
@@ -646,6 +649,47 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **The DSP core's x86 bodies.** fsdsp's `Simd.h` (the u32x4 ops), `BusSum.h` and `FastMath.h` (`signMask`) carry
   SSE4.1 / AVX2 + FMA bodies beside NEON's, added here for Windows (their SEED.tsv hashes no longer match: carry the
   change to FSynth, then sync). The x86 build compiles with `-mavx2 -mfma` (`cmake/Flags.cmake`).
+
+## Linux
+
+- **What builds.** On Linux x86-64 (a CPU with AVX2 and FMA, as on Windows), with clang and lld (the `linux-*` presets):
+  each product's VST3 (`<Name>.vst3/Contents/x86_64-linux/<Name>.so`), Standalone, MCP server and extension
+  (`"platforms": ["linux"]`), the sandbox's helper, the headless renderer and the probes. No AU, no installer app
+  (CMakeLists.txt calls no `fp_add_installer` there: its Engine has macOS and Windows bodies), nothing signed.
+  `FP_LINUX` (CMakeLists.txt) chooses; `-Werror` and LTO are on, as on macOS; every static library is
+  position-independent (`CMAKE_POSITION_INDEPENDENT_CODE`), FMinus's, FunkGui's and bgfx's too, since each ends up in
+  the VST3's shared object. `FP_LINUX_LIBS` (OpenSSL's libcrypto) is linked where the code calls it. Clang refuses JUCE
+  8.0.4's `AudioPluginInstance` layout constructor: `cmake/Deps.cmake` adds `-fdelayed-template-parsing`, as FunkGui
+  does.
+- **Exports.** The VST3 exports `GetPluginFactory`, `ModuleEntry` and `ModuleExit` and nothing else, through a version
+  script (`<build>/exports/<key>-vst3.map`): no symbol of LLVM's is bound to another loaded object's, nor another's to
+  ours. `lint.exports` checks the built `.so` (`nm -D --defined-only`).
+- **The GPU layer.** FunkGui draws with bgfx on Vulkan, in an X11 child window of JUCE's peer (XWayland on a Wayland
+  desktop; Mesa's lavapipe where no GPU driver is), so the editor is `gpu/CreateEditorGpu.cpp`'s EditorHost as on macOS.
+  Its shaders and a `.gui` file's are SPIR-V, compiled by the Linux shaderc the deps cache holds stamped (else built
+  from bgfx.cmake); CMakeLists.txt copies it into the VST3's `Contents/Resources` and beside the Standalone's
+  executable, where `Processor.cpp`'s `shaderTools` looks. With `FP_WITH_GPU` off, `editor/nogpu/SoftEditorHost` as on
+  Windows.
+- **Platform code** takes the POSIX branches macOS takes, and the other side of `#if defined(__APPLE__)` where a pair
+  names the Mac alone: the Standalone takes Windows' `NativeWindowWin.cpp` (JUCE's window and title bar, a JUCE menu bar
+  in the window: nothing in it is Windows') and `RacingWheelNone.cpp`; `ChatStore`'s crypto is OpenSSL's libcrypto
+  (AES-256-CBC, PBKDF2 and HMAC with SHA-256, `RAND_bytes`: the same FPK1 file); `kThisMachine` is "this computer" and
+  `shortcutText` gives "Ctrl-" (JUCE's command key is Ctrl there), and the examples' "Cmd-Return" is "Ctrl-Return" as
+  CMake writes Examples.h; the profile has no sampler (`profile::available()` is false), `FolderSync` no watcher (it
+  looks every half second), the chat's pictures are JUCE's decoders' (PNG, JPEG, GIF), and an `.fmpack` is written with
+  zlib (an xz one from macOS is refused). The MCP server starts the sandbox's helper with its two pipes and stderr alone
+  (glibc's `posix_spawn_file_actions_addclosefrom_np`, as `POSIX_SPAWN_CLOEXEC_DEFAULT` does on macOS).
+- **Types.** `int64_t` is `long` on Linux (`long long` on macOS and Windows), so a `juce::var` converts to it
+  ambiguously: read a number from one as `juce::int64` (`static_cast<juce::int64>(v)`), and print a 64-bit value with a
+  cast to `long long` or `unsigned long long` for `%lld` and `%llu`, as the code does everywhere.
+- **The probes there** are every probe, `plugin.mcp` and `plugin.sandbox` too (POSIX child processes; `plugin.sandbox`
+  finds the helper's processes through `/proc`), and `lint.exports` and `lint.layers`. Not every row passes there yet:
+  those that want a GPU picture (FunkGui reads no frame back from Vulkan, so view_panel's and the sandbox's pictures
+  are SoftRaster's: `gui.shaders`, `plugin.sandbox`, `plugin.chat`, `plugin.mcp`), those that assume macOS
+  (`gui.shaders`' `text.spirv` sets SPIR-V against the panel's Metal; `gui.folder`'s Finder and VS Code), two rows of
+  `gui.explorer` and `gui.folder`'s, and the conflicts of `plugin.folder` and `plugin.chats`. The GUI probes need an X
+  display with a window manager: JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which
+  on a bare X server nothing has made, and the X error ends the process.
 
 ## The installer
 

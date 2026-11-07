@@ -6,8 +6,8 @@
 
 # TestingPlayground
 
-Two plugins (AU, VST3 and Standalone on macOS on Apple silicon; VST3 and Standalone on Windows x64, newer: "Windows"
-below) whose DSP you write while they run, built from one
+Two plugins (AU, VST3 and Standalone on macOS on Apple silicon; VST3 and Standalone on Windows x64 and on Linux
+x86-64, newer: "Windows" and "Linux" below) whose DSP you write while they run, built from one
 source tree: **TestingPlayground**, an effect, and **TestingPlaygroundSynth**, an instrument. The editor of each is a
 text field holding an [FMinus](https://github.com/Snipet/FMinus) program; the plugin compiles it when you press RUN
 (or Cmd-Return), and the next block plays it: the effect's crossfaded from the last, the synth's with the keys you
@@ -1973,6 +1973,49 @@ Windows build (POSIX child processes the probes drive), `gui.shaders` too in a b
 permission rows of `plugin.chatstore` (Windows has no POSIX modes). Each probe's timeout is doubled there
 (`-DFP_PROBE_TIMEOUT_SCALE=<n>` sets another factor), and a probe that crashes prints its stack, named from its PDB,
 before it ends.
+
+### Linux
+
+The same two products build on Linux, x86-64 (a processor with AVX2 and FMA: any Intel or AMD of the last ten years or
+so): each one's VST3 and Standalone, its MCP server and extension (`<Name>.mcpb`, with the GUI sandbox's helper and the
+headless renderer) and the probes. What differs from macOS:
+
+- **The editor draws on the GPU** with Vulkan (FunkGui's Linux layer: an X11 window inside JUCE's, which a Wayland
+  desktop runs through XWayland), a `.gui` file's shaders included, compiled to SPIR-V by the `shaderc` the build puts
+  in the VST3's `Contents/Resources` and beside the Standalone. It needs a Vulkan driver: Mesa's (`vulkan-radeon`,
+  `vulkan-intel`), NVIDIA's, or Mesa's software one, lavapipe (`vulkan-swrast`), on a machine without. The chat's
+  pictures of the panel (and the GUI sandbox's) are drawn on the CPU there, a shader as its striped placeholder: FunkGui
+  reads no frame back from Vulkan. Configured with `-DFP_WITH_GPU=OFF`, the editor draws on the CPU instead, as on
+  Windows.
+- **No AU, no installer app, no signing**: copy the VST3 yourself (below). The Standalone keeps the desktop's own title
+  bar and has a menu bar in the window, as on Windows; there is no racing wheel in the Standalone (a wheel's MIDI from
+  any MIDI input still reaches the synth).
+- **The chat's key** is encrypted as on macOS, with OpenSSL's libcrypto. **Pictures the chat reads**: PNG, JPEG and GIF;
+  a project's `.fmpack` is written with zlib (and an xz one from macOS is refused). **measure_output's profile** is not
+  there yet (it says so), and the FOLDER sync looks at the folder every half second (no file-system watcher).
+
+Requirements (Arch Linux's packages; other distributions have the same under their own names): `base-devel clang lld
+cmake ninja git python`; JUCE's `alsa-lib freetype2 fontconfig libx11 libxext libxrandr libxinerama libxcursor
+libxrender libxcomposite`; FunkGui's `glib2 vulkan-icd-loader vulkan-headers` and a Vulkan driver; `openssl` (the chat's
+key). FMinus first, once: clone it to `~/audio/libraries/FMinus` and run its own `CC=clang CXX=clang++ cmake --workflow
+--preset dev` there, which builds its LLVM, Bison and Flex into its `.deps` folder (the long step: about half an hour on
+eight cores); this build reads them from there (`-DFP_FMINUS_DEPS_DIR=<folder>` names another). JUCE, bgfx.cmake and
+FunkGui come from `~/audio/.deps` and `~/audio/libraries/FunkGui` as on macOS, else from GitHub; shaderc is built from
+bgfx.cmake on the first configure of a build folder (about 2,000 CPU-seconds) unless `~/audio/.deps/tools/shaderc-<bgfx
+tag>/shaderc` and its stamp are there. Then:
+
+```sh
+cmake --workflow --preset linux-verify    # configure, build, run every test (build-linux-dev/), in your desktop session
+build-linux-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPlayground
+```
+
+`linux-effect-verify` and `linux-synth-verify` build and test one product; `linux-release-build` makes the Release build
+(LTO) in `build-linux-release`. Install by hand: copy the folder
+`build-linux-release/<Name>_artefacts/Release/VST3/<Name>.vst3` whole into `~/.vst3/`, and run the Standalone from
+`build-linux-release/<Name>_artefacts/Release/Standalone/` (its `shaderc` and `licences/` beside it). The probes' GUI
+tests need an X display with a window manager (your desktop session; on a headless machine Xvfb with one, such as
+openbox); `-DFP_PROBE_TIMEOUT_SCALE=<n>` multiplies every probe's timeout, for a slow machine. Not every probe passes
+there yet: the rows that want a GPU picture, a few that assume macOS, and the folder conflicts.
 
 ### Install
 
