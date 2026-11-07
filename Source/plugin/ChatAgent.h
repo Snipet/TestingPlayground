@@ -439,6 +439,9 @@ namespace playground
         // are chatOnlyLines(), a line each, in their order; the two together are systemPrompt()'s text.
         static const std::string& guidePrompt();
         static std::string chatOnlyLines();
+        // The MCP guide's cheat sheet (part "cheatsheet", mcp::guide::kCheatSheet): the contract, FMinus, the DSP numbers
+        // and pitfalls and the library a line a file, on a page (ChatPrompt.cpp); mcpGuide puts it after the tools' notes.
+        static std::string cheatSheet();
         // The program in several files the system prompt shows, for this plugin's kind (the program first).
         static Sources promptExample();
         static juce::var toolDefinitions();

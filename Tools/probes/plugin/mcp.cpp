@@ -29,7 +29,9 @@
 //            projects, with THE SCHEMATIC and edit_circuit's notes; start names it), all (the system prompt whole, the
 //            lines only the plugin's chat needs at its end); library:host.fm (and :code) host.fm whole; a
 //            guide from before the circuits (an older
-//            plugin's guide.md) still cuts, its projects as they were, and has no circuits part;
+//            plugin's guide.md) still cuts, its projects as they were, and has no circuits part; cheatsheet (FMINUS
+//            AND DSP AT A GLANCE: the contract of this kind, the language, the numbers, the slow-state pitfall, every
+//            library file; in "all", in no other part; start names it; one from before it has none);
 //            library:<file> its header, library:<file>:code its whole text with no tab added to the editor; an unknown
 //            part refused, naming the parts and library:host.fm (a library file that is none too)
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
@@ -883,6 +885,40 @@ PROBE(plugin, mcp)
                                              && has(circuits, "<tool name=\"edit_circuit\" part=\"circuits\">")
                                              && !has(guide, "<tool name=\"edit_circuit\"") && !has(guide, "\nTHE SCHEMATIC\n") ? 1 : 0, 1);
         P.eq("guide.start_names_circuits", has(guide, "- \"circuits\": ") && !has(guide, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
+        {
+            // The cheat sheet: its own part, in "all" (before the chat's own lines), in no other part; start names it.
+            const std::string cheat = text("cheatsheet");
+            int files = 0;
+            for (const pg::LibraryFile& f : pg::kLibrary)
+                files += has(cheat, std::string("\n  ") + f.name + " ") ? 1 : 0;
+            const std::string kind = kInstrument ? "bool process(float* restrict left, float* restrict right, int n)"
+                                                 : "void process(float* restrict left, float* restrict right, int n)";
+            std::printf("guide part cheatsheet: %zu bytes (about %zu tokens)\n", cheat.size(), cheat.size() / 4);
+            juce::File(juce::String(probe::outPath("plugin.mcp.guide.cheatsheet.md"))).replaceWithText(juce::String::fromUTF8(cheat.c_str()));
+            P.eq("guide.cheatsheet", cheat.rfind(std::string(pg::mcp::guide::kCheatSheet) + "\n", 0) == 0 && has(cheat, kind)
+                                         && has(cheat, "\nFMINUS\n") && has(cheat, "0.0577622650f") && has(cheat, "in a double")
+                                         && files == static_cast<int>(std::size(pg::kLibrary)) && !has(cheat, pg::mcp::guide::kChatOnly)
+                                         && all.find(cheat.substr(0, 200)) < all.find(std::string("\n") + pg::mcp::guide::kChatOnly + "\n")
+                                         && cheat.size() / 4 < 3000 ? 1 : 0, 1);
+            P.eq("guide.cheatsheet_alone", has(guide, "- \"cheatsheet\": ") && !has(guide, pg::mcp::guide::kCheatSheet)
+                                               && !has(large, pg::mcp::guide::kCheatSheet) && !has(debugging, pg::mcp::guide::kCheatSheet)
+                                               && !has(circuits, pg::mcp::guide::kCheatSheet) && !has(projects, pg::mcp::guide::kCheatSheet)
+                                               && !has(pg::ChatAgent::systemPrompt(), pg::mcp::guide::kCheatSheet) ? 1 : 0, 1);
+            // DSP PRACTICE (start) names the slow-state pitfall.
+            P.eq("guide.slow_state", has(guide, "\n- Slow state (a temperature, a long fade) in a double: ") ? 1 : 0, 1);
+            // An older plugin's guide.md, from before the cheat sheet: no such part.
+            const std::string whole = pg::ChatAgent::mcpGuide();
+            const std::size_t from = whole.find(std::string("\n") + pg::mcp::guide::kCheatSheet + "\n");
+            const std::size_t to = whole.find(std::string("\n") + pg::mcp::guide::kChatOnly + "\n");
+            std::string older = whole;
+            if (from != std::string::npos && to != std::string::npos && to > from)
+                older.erase(from, to - from);
+            bool foundCheat = true, foundCircuits = false;
+            pg::mcp::guide::part(older, "cheatsheet", {}, foundCheat);
+            const std::string olderCircuits = pg::mcp::guide::part(older, "circuits", {}, foundCircuits);
+            P.eq("guide.cheatsheet_older", from != std::string::npos && to != std::string::npos && !foundCheat && foundCircuits
+                                               && olderCircuits == circuits ? 1 : 0, 1);
+        }
         {
             // An older plugin's guide.md, from before the circuits: it cuts as it did, and has no circuits part.
             const std::string whole = pg::ChatAgent::mcpGuide();

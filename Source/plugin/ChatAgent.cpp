@@ -3842,6 +3842,8 @@ namespace playground
                "their goals as set_checks', whose metric lists the names tune_dials' takes). "
                "What follows is the guide the plugin's chat works from, but for what only that chat has.\n\n"
              + guidePrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes
+             // The cheat sheet (part "cheatsheet"): MCP's alone, the plugin's chat has the whole prompt.
+             + "\n" + cheatSheet()
              // Last, in part "all" alone (every other part ends before it): the lines only the plugin's chat needs.
              + "\n" + mcp::guide::kChatOnly + "\n\n"
                "The plugin's own chat also works from these lines of How you work; they are not for you here (none of what "
