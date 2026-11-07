@@ -2,19 +2,24 @@
 //
 // The plugin fills a field of type Sample named by a line #pragma sample <field> "<file>" (the field of Voice or
 // Effect, in every voice, or of Shared) before init: the file decoded and resampled to the plugin's rate, one or two
-// channels, read only. While the program's samples have no file of that name, frames is 0 and every read gives 0.
+// channels, read only (one copy every voice shares). While the program's samples have no file of that name, frames is
+// 0 and every read gives 0.
 //
 //   #pragma sample kick "kick.wav"   a line of the program: kick.wav fills the field kick
 //   Sample kick;                   a field of your module (of Shared, for its init to read)
 //   kick.frames                    its length in samples (each channel's), at the plugin's rate; 0: none
 //   kick.channels                  1 (mono) or 2 (stereo)
 //   y = kick.at(c, i);             channel c's sample i: 0 outside it; a mono sample's channel 1 is its channel 0
-//   y = kick.read(c, pos);         at a position between samples (linear): another pitch, pos += step a sample
-// A one-shot voice: start sets pos = 0 and step = expf(0.0577622650f * (note - 60)); process adds read(0, pos) and
-// read(1, pos), steps pos, and returns pos < frames.
+//   y = kick.readAt(c, i, frac);   between samples i and i + 1 (frac 0 to 1, linear): another pitch
+//   y = kick.read(c, pos);         the same at a float position, for short sounds: a float holds 24 bits, so past
+//                                  2^16 samples (1.4 s at 48 kHz) pos += step rounds the step (a semitone's 5 cents
+//                                  off), more the further it goes. Longer: keep the index and the fraction apart.
+// A one-shot voice: start sets i = 0, frac = 0 and step = expf(0.0577622650f * (note - 60)); process adds
+// readAt(0, i, frac) and readAt(1, i, frac), then frac += step, int k = (int)frac, i += k, frac -= k, and returns
+// i < frames.
 module Sample
 {
-    const float* data;             // the plugin's: channel c's sample i at data[c * frames + i]
+    const float* data;             // the plugin's, read only: channel c's sample i at data[c * frames + i]
     int frames;
     int channels;
     float rate;                    // the rate it is at: the plugin's
@@ -27,13 +32,17 @@ module Sample
         return data[k * frames + i];
     }
 
+    float readAt(int c, int i, float frac)
+    {
+        const float a = at(c, i);
+        return a + frac * (at(c, i + 1) - a);
+    }
+
     float read(int c, float pos)
     {
         if (!(pos >= 0) || pos >= frames)
             return 0;
         const int i = (int)pos;
-        const float f = pos - i;
-        const float a = at(c, i);
-        return a + f * (at(c, i + 1) - a);
+        return readAt(c, i, pos - i);
     }
 };

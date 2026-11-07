@@ -233,8 +233,10 @@
 // the sound at the rate the Patch plays at (Asset::at: resampled once a rate, off the audio thread), planar, channel c's
 // frame i at data[c * frames + i]; frames each channel's, channels 1 or 2, rate the Patch's. The Patch holds the
 // sound while it lives (a reset at another rate takes that rate's), so the audio thread only reads it; nothing checks
-// the pointer's bounds (a host's buffer: FMinus's checks do not see it), so a program reads within frames. A file the
-// program's samples lack, or a field that is not there or of another type, is a note, and the field stays empty
+// the pointer's bounds (a host's buffer: FMinus's checks do not see it), so a program reads within frames. data is
+// const alone (FMinus refuses a write through it): the sound is one buffer that every instance, the next compile at
+// that rate and the tools' renders share, so a `float* data` makes no sample's field. A file the program's samples
+// lack, or a field that is not there or of another type (a `float* data` too), is a note, and the field stays empty
 // (frames 0, data null): the program plays, silent where it reads the sample. The recipe keeps the samples (Recipe::
 // assets) and what each line read (Recipe::samples: the file and its hash, "" for none), so a refine compiles with the
 // same ones, and a panel's edit is one only while the samples it read are the same (Compiler.h).

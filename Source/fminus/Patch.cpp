@@ -1078,17 +1078,25 @@ namespace playground
                     const fminus::Program::Module* m = x->type.rfind("param ", 0) == 0 ? nullptr : program.module(x->type);
                     if (m == nullptr)
                     {
-                        why = field + " is " + (x->type.rfind("param ", 0) == 0 ? std::string("a dial") : "of type " + x->type);
+                        why = field + " is "
+                            + (x->type.rfind("param ", 0) == 0 ? std::string("a dial") : "of type " + x->type)
+                            + ": a sample's field is a Sample (sample.fm), or a module of your own with `const float* "
+                              "data` and `int frames`";
                         continue;
                     }
                     SamplePlace place;
                     place.shared = shared;
+                    bool writable = false;
                     for (const fminus::Program::Module::Field& y : m->fields)
                     {
                         const std::string type = squeezed(y.type);
                         const std::size_t o = x->offset + y.offset;
-                        if (y.name == "data" && (type == "constfloat*" || type == "float*") && y.size == sizeof(void*))
+                        // const alone: the sound is one buffer every instance, the next RUN's program (Asset::at's
+                        // copies) and the tools' renders share, and FMinus refuses a write through a const float*.
+                        if (y.name == "data" && type == "constfloat*" && y.size == sizeof(void*))
                             place.data = o;
+                        else if (y.name == "data" && type == "float*")
+                            writable = true;
                         else if (y.name == "frames" && type == "int" && y.size == sizeof(int32_t))
                             place.frames = o;
                         else if (y.name == "channels" && type == "int" && y.size == sizeof(int32_t))
@@ -1096,9 +1104,16 @@ namespace playground
                         else if (y.name == "rate" && type == "float" && y.size == sizeof(float))
                             place.rate = o;
                     }
+                    if (place.data == SamplePlace::kNone && writable)
+                    {
+                        why = field + "'s " + m->name + " has `float* data`: data must be `const float* data`, as the "
+                              "sound is shared, read only";
+                        continue;
+                    }
                     if (place.data == SamplePlace::kNone || place.frames == SamplePlace::kNone)
                     {
-                        why = field + "'s " + m->name + " has no `const float* data` and `int frames`";
+                        why = field + "'s " + m->name + " has no `const float* data` and `int frames`: a sample's "
+                              "field is a Sample (sample.fm), or a module of your own with both";
                         continue;
                     }
                     use.places.push_back(place);
@@ -1107,8 +1122,7 @@ namespace playground
                 {
                     r.notes += at + (why.empty() ? std::string("neither ") + kModule + " nor Shared has a field " + field
                                                        + " (`Sample " + field + ";`, sample.fm)"
-                                                 : why + ": a sample's field is a Sample (sample.fm), or a module of your "
-                                                         "own with `const float* data` and `int frames`")
+                                                 : why)
                              + ", so it is left out\n";
                     continue;
                 }
