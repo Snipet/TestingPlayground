@@ -138,7 +138,8 @@ module Voice
 ### Both
 
 - **Dials.** The main module's first 32 parameters, in the order they are declared, are the dials, and the host's
-  parameters P1 to P32 (a host shows "1 gain", and the value in the program's units); the synth's voices all read the
+  parameters P1 to P32 (a host shows "1 gain", and the value in the program's units; the next 32 are the panel's own,
+  below); the synth's voices all read the
   same values. A `float` glides when its dial turns: it is read sample by sample, `gain[i]`, as a stream of 20 ms
   ramps, and held still otherwise (`release[0]` reads it once a call). An `int` or a `bool` is read once a call
   (`mode[0]`, or any index). `fminus::range` sets the dial's span (a float without one spans 0 to 1, an int 0 to 10)
@@ -151,6 +152,12 @@ module Voice
   undo it); a host's automation lane, which records the knob's turn, plays other values after a range or a taper
   changes. Projects and presets keep a value's name with its number, so a preset saved on PITCH applies PITCH after
   options are inserted before it.
+- **The panel's own dials.** The 33rd to the 64th parameter are dials too, but the panel's alone: a panel's control
+  turns one as any other, it glides, freezes and carries its value across a run as the others do, and the session, a
+  project's versions and presets and Claude's `set_dial` keep and set it by name, but the host never sees it: no
+  parameter P33, no automation (`Source/dsp/Controls.h`, `isPanelDial`). The session keeps their values beside the
+  host's (`<PANEL><DIAL slot value/>`); a session from before them loads them at their defaults. A 65th parameter has
+  no dial (a note says so) and keeps its default.
 - **Frozen dials.** Once no dial has moved for 3 seconds, the plugin compiles the program again in the background with
   each dial's value as a constant (FMinus's frozen binding), in FMinus's fast math (LLVM's own sinf, cosf, tanf, expf,
   tanhf and logf) and without the bounds checks ("An index outside its array", below), and plays that copy on the same
@@ -460,21 +467,23 @@ module Voice
   (line, dot, triangle, none), `sweep=`, `ticks=`, `thickness=`, `bipolar`, `labelpos=`, `value=` and `shadow=`;
   `live=field` marks on its ring where the program has the parameter now (its modulation, from a field).
   `class "NAME" ...` and `defaults KIND ...` lines give properties to many elements at once.
-  `shader "glow.sc" inputs="cutoff out"` draws a GPU shader of the program's own: `glow.sc`, a tab like any file,
-  holds the body of a fragment shader in bgfx's GLSL (a `main()` that sets `gl_FragColor`, reading `v_uv`, `v_px`,
-  `u_size`, `u_time` and its inputs as `in0`..`in7` or `in_cutoff`, `in_out`: a parameter's 0..1, a field's value, the
-  audio's level). One whose code reads `u_time` (outside its comments) is drawn every frame while it shows; any other
-  only when an input moves. The plugin builds it with the shaderc it carries (`Contents/Resources/shaderc`, bgfx's) when
-  the program runs, a panel's shaders at once and while the program compiles, and has the GPU check each then too, on
-  threads of their own that the compile waits for: a RUN's never on the window's thread, so a new shader does not stall
-  it, and a host's session or preset load's while the thread that loads it waits. The builds are kept, for every
-  instance and on disk between sessions (`~/Library/Caches/<Company>/<Name>/Shaders`, on Windows
-  `%LOCALAPPDATA%\<Company>\<Name>\Shaders`; 16 MB at most, the least used going first), so a shader built before is
-  not built again until it, its inputs or the plugin's shaderc change. One that does not compile, or that the GPU
-  refuses, is a note on its own line, and draws nothing until it does (`Source/fminus/Shaders.h`). Four a panel at most.
+  `shader "glow.sc" inputs="cutoff out"` draws a GPU shader of the program's own: `glow.sc`, a tab like any file, holds
+  the body of a fragment shader in bgfx's GLSL (a `main()` that sets `gl_FragColor`, reading `v_uv`, `v_px`, `u_size`,
+  `u_time` and its inputs, 16 at most (FunkGui's `u_params`), as `in0`..`in15` or `in_cutoff`, `in_out`: a parameter's
+  0..1, a field's value, the audio's level). One whose code reads `u_time` (outside its comments) is drawn every frame
+  while it shows; any other only when an input moves. The plugin builds it with the shaderc it carries
+  (`Contents/Resources/shaderc`, bgfx's) when the program runs, a panel's shaders at once and while the program
+  compiles, and has the GPU check each then too, on threads of their own that the compile waits for: a RUN's never on
+  the window's thread, so a new shader does not stall it, and a host's session or preset load's while the thread that
+  loads it waits. The builds are kept, for every instance and on disk between sessions
+  (`~/Library/Caches/<Company>/<Name>/Shaders`, on Windows `%LOCALAPPDATA%\<Company>\<Name>\Shaders`; 16 MB at most, the
+  least used going first), so a shader built before is not built again until it, its inputs or the plugin's shaderc
+  change. One that does not compile, or that the GPU refuses, is a note on its own line, and draws nothing until it does
+  (`Source/fminus/Shaders.h`). Four a panel at most.
   `taper=log` gives a frequency's or a time's knob the same turn for each octave, and the host's automation follows
   it; `unit=`, `decimals=` and `scale=` say how a value reads, to the host too (`Source/dsp/Controls.h`). Displays are
-  those of the lines below and `spectrum` (an analyser of `in` or `out`), sixteen at most; a field of the module
+  those of the lines below and `spectrum` (an analyser of `in` or `out`), 32 at most (a `live=` field and a field a
+  shader reads count as one each); a field of the module
   `Shared` is named through the main module's pointer to it, `meter shared->level` (its one Shared, read whether a
   voice sounds or not: the main module's fields of an instrument are its newest sounding voice's, 0 while none
   sounds), and `live=` and a shader's inputs take one too. A `number` shows an int or a bool field as a whole number
@@ -517,7 +526,7 @@ module Voice
     analog VU meter's needle (0 VU at -18 dBFS RMS); `led`: a light, a field's value its brightness (of the audio: a
     clip light); `number`: a readout of the field (of the audio: its peak in dBFS); `scope`: an oscilloscope (of a
     field: its trace over the last 2.5 seconds). A section names a display by its source, or by the name `as` gives
-    it, which a second display of one source needs: `#pragma panel scope out as wave "WAVE"`. Sixteen displays at most.
+    it, which a second display of one source needs: `#pragma panel scope out as wave "WAVE"`. 32 displays at most.
     The colours: red, orange, yellow, green, teal, blue, violet, pink, cream, grey.
 
   A row too wide for the window wraps, its sections shared out evenly; shorter rows widen toward the widest; when
