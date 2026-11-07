@@ -4,8 +4,8 @@
 // folder of the probe's own:
 //   INFO     setProjectInfo keeps a description, an author, a category, tags and genres, tidied (the tags split at
 //            commas, each once case aside, a long description cut), and the project file holds them
-//   PACKAGE  a project of 30 versions exported as a .fmpack: "FMPK", format 1, xz (on macOS), the header's size and
-//            CRC-32 the JSON's, the body an .xz stream (its magic), far smaller than its text
+//   PACKAGE  a project of 30 versions exported as a .fmpack: "FMPK", format 1, xz on macOS (the body an .xz stream,
+//            its magic) and zlib elsewhere, the header's size and CRC-32 the JSON's, far smaller than its text
 //   IMPORT   the package imported: a project of its own ("<name> 2", the name being taken), its versions, presets and
 //            info the same; opened, the newest version's files and dials
 //   NEWEST   exported with the newest version only: one version, numbered as it was
@@ -14,7 +14,8 @@
 //            same versions and files
 //   ZLIB     a package whose body is zlib (as a build without xz writes) imports
 //   REFUSE   a package of the other kind (the why names it), one with a byte changed (its check), one cut short, a file
-//            that is no export, a zip with no project.json: refused, nothing added
+//            that is no export, a zip with no project.json, and (but on macOS) one in xz, the why naming it: refused,
+//            nothing added
 #include "Probe.h"
 
 #include "plugin/EditorPort.h"
@@ -182,6 +183,9 @@ PROBE(plugin, export)
 #if defined(__APPLE__)
     P.eq("package.xz", pb.size() > 26 && pb[5] == 2 && ex.method == "xz" && pb[20] == 0xFD && pb[21] == '7' && pb[22] == 'z' && pb[23] == 'X'
                            && pb[24] == 'Z' && pb[25] == 0 ? 1 : 0, 1);
+#else
+    // No xz here (Apple's Compression framework writes it): zlib, its stream's first byte deflate's (0x78).
+    P.eq("package.zlib", pb.size() > 26 && pb[5] == 1 && ex.method == "zlib" && pb[20] == 0x78 ? 1 : 0, 1);
 #endif
     {
         uint64_t size = 0;
@@ -302,6 +306,14 @@ PROBE(plugin, export)
             zb.writeToStream(os, nullptr);
         }
         P.eq("refuse.no_manifest", refused(bare, "project.json") ? 1 : 0, 1);
+#if !defined(__APPLE__)
+        // A package in xz, as macOS writes it: this build reads none, and says so (its body is never looked at).
+        std::vector<uint8_t> xz = packageOf(ps::toJson(*original), px::Method::stored);
+        xz[5] = static_cast<uint8_t>(px::Method::xz);
+        const juce::File fromMac = out.getChildFile("FromMac.fmpack");
+        writeBytes(fromMac, xz);
+        P.eq("refuse.xz", refused(fromMac, "xz") ? 1 : 0, 1);
+#endif
         P.eq("refuse.nothing_added", ps::list().size() == before ? 1 : 0, 1);
     }
 

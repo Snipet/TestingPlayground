@@ -40,7 +40,8 @@
 //            writable, no conflict; the project before opened again: the copies written again quietly (nothing kept
 //            aside, no note)
 //   GONE     the folder deleted: made again with the draft's files, the draft untouched
-//   WATCH    (macOS) FSEvents: a save lands well before the look kept for a missed event (kWatchedSeconds)
+//   WATCH    macOS, FSEvents: a save lands well before the look kept for a missed event (kWatchedSeconds); elsewhere
+//            no watcher: a save lands at the first look kPollSeconds after the last, once it has held still, never sooner
 //   PORT     the processor: off at first; on, a folder under the projects' Folders/ (the path shown from ~), the
 //            project open's name when there is one; a save there lands in the draft (draftRevision moves) and, with run
 //            on save, compiles; the session keeps it on, its name and run on save, and a processor that loads it syncs
@@ -693,6 +694,27 @@ PROBE(plugin, folder)
         }
         std::printf("watch: landed after %.3f s\n", landedAfter);
         P.in("watch.prompt_s", landedAfter, 0.0, 1.5);
+    }
+#else
+    // No watcher here: the folder is looked at every kPollSeconds (of the probe's clock), and a save lands at the first
+    // look after it once its listing has held still kSettleSeconds, never sooner.
+    {
+        P.eq("watch.watching", sync.watching() ? 1 : 0, 0);
+        passFor(sync, t, 0.3);
+        sync.pass(t, true);                                  // a look: the next is kPollSeconds on
+        const double lookedAt = t;
+        const std::string polled = program("float w = 1.0f;");
+        writeFile(dir / "program.fm", polled);
+        double landedAfter = -1.0;
+        for (t += 0.05; t - lookedAt < 2.0 && landedAfter < 0.0; t += 0.05)
+        {
+            sync.pass(t);
+            if (*fake.text("program.fm") == polled)
+                landedAfter = t - lookedAt;
+        }
+        std::printf("watch: no watcher; landed %.2f s after the last look\n", landedAfter);
+        P.in("watch.poll_s", landedAfter, pg::FolderSync::kPollSeconds - 0.01,
+             pg::FolderSync::kPollSeconds + pg::FolderSync::kSettleSeconds + 0.2);
     }
 #endif
     sync.stop();

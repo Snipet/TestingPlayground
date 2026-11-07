@@ -227,7 +227,8 @@
 //            words follow in the same message. A question of one option is refused in its result and asks nothing
 //   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
 //            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
-//            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright;
+//            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
+//            elsewhere a TIFF is refused, its note naming the formats read there (PNG, JPEG or GIF);
 //            detach takes one back; the message's pictures go before its words as base64
 //            image blocks, the entry shows them and the box empties; a message of pictures alone goes; a message takes
 //            six; a new chat drops the attached; the session keeps each picture's thumbnail, which loads back
@@ -470,6 +471,56 @@ namespace
         if (img != nullptr)
             CGImageRelease(img);
         return ok;
+    }
+#else
+    // A w x h baseline TIFF (little-endian, uncompressed 8-bit RGB, one strip), written by hand: no system writer here.
+    std::vector<uint8_t> tiffOf(int w, int h)
+    {
+        std::vector<uint8_t> b = { 'I', 'I', 42, 0, 8, 0, 0, 0 };
+        const auto u16 = [&](uint32_t v) {
+            b.push_back(static_cast<uint8_t>(v));
+            b.push_back(static_cast<uint8_t>(v >> 8));
+        };
+        const auto u32 = [&](uint32_t v) {
+            u16(v & 0xFFFFu);
+            u16(v >> 16);
+        };
+        constexpr uint32_t kEntries = 9, kBits = 8 + 2 + kEntries * 12 + 4, kPixels = kBits + 6;
+        const uint32_t bytes = static_cast<uint32_t>(w * h * 3);
+        const auto entry = [&](uint32_t tag, uint32_t type, uint32_t count, uint32_t value) {
+            u16(tag);
+            u16(type);
+            u32(count);
+            if (type == 3 && count == 1)
+            {
+                u16(value);                                  // a SHORT sits left-justified in the value's 4 bytes
+                u16(0);
+            }
+            else
+                u32(value);
+        };
+        u16(kEntries);
+        entry(256, 4, 1, static_cast<uint32_t>(w));          // ImageWidth
+        entry(257, 4, 1, static_cast<uint32_t>(h));          // ImageLength
+        entry(258, 3, 3, kBits);                             // BitsPerSample: 8, 8, 8 (at kBits)
+        entry(259, 3, 1, 1);                                 // Compression: none
+        entry(262, 3, 1, 2);                                 // PhotometricInterpretation: RGB
+        entry(273, 4, 1, kPixels);                           // StripOffsets
+        entry(277, 3, 1, 3);                                 // SamplesPerPixel
+        entry(278, 4, 1, static_cast<uint32_t>(h));          // RowsPerStrip
+        entry(279, 4, 1, bytes);                             // StripByteCounts
+        u32(0);                                              // no further IFD
+        u16(8);
+        u16(8);
+        u16(8);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                b.push_back(static_cast<uint8_t>(x * 255 / w));
+                b.push_back(static_cast<uint8_t>(y * 255 / h));
+                b.push_back(128);
+            }
+        return b;
     }
 #endif
 
@@ -4482,6 +4533,21 @@ PROBE(plugin, chat)
             P.eq("pictures.upright", s != nullptr && (*s)->width == 100 && (*s)->height == 200 && (*s)->thumbHeight > (*s)->thumbWidth ? 1 : 0, 1);
             for (const pg::ChatPicturePtr& p : st.attached)
                 agent.detach(p->id);
+        }
+#else
+        // JUCE's reader takes PNG, JPEG and GIF alone: a TIFF is refused, its note naming what this build reads, and
+        // nothing is attached. (A photo stored on its side is read as stored: no EXIF orientation without ImageIO.)
+        {
+            const juce::File tiff = dir.getChildFile("scan.tiff");
+            const std::vector<uint8_t> bytes = tiffOf(120, 80);
+            P.eq("pictures.tiff_written", tiff.replaceWithData(bytes.data(), bytes.size()) ? 1 : 0, 1);
+            const std::size_t attachedBefore = agent.chatState().attached.size();
+            agent.attach({ tiff.getFullPathName().toStdString() });
+            agent.waitIdle();
+            P.eq("pictures.tiff_refused", agent.chatState().attached.size() == attachedBefore
+                                              && has(notes(), "scan.tiff is not a picture this plugin can read (PNG, JPEG or GIF).") ? 1 : 0, 1);
+            probe::skip(P, "pictures.upright",
+                        "macOS only: ImageIO turns a photo upright by its EXIF orientation, JUCE's reader keeps it as stored");
         }
 #endif
         // Pictures alone.
