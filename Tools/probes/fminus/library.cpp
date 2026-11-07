@@ -30,7 +30,8 @@
 //             within 20 dB; a pluck in the middle takes the 2nd harmonic down 15 dB against one near the bridge; a glide
 //             from 220 to 330 Hz (set every 16 samples) lands within a cent; noise in rings at a multiple of the pitch, a
 //             DC input leaves no offset once the loop's decay has passed (without the input's blocker it would build to
-//             0.5 / (1 - gain)); everything finite and under 1 for a pluck at 0.5; every call safe before allocate
+//             0.5 / (1 - gain)), the blocker's corner 5 Hz at 48 and at 192 kHz; everything finite and under 1 for a
+//             pluck at 0.5; every call safe before allocate
 //   OSC       at 440 Hz each wave has its RMS (saw and triangle 0.577, square 1, sine 0.707), no DC, 440 rising zero
 //             crossings a second; a 25 % pulse has no DC; the morph keeps its fundamental between saw and square;
 //             at 3.7 kHz the saw's strongest alias below 16 kHz is at least 10 dB under a naive saw's
@@ -460,6 +461,16 @@ void wgResonate(float* x, float* y, int n, float hz, float decay)
     for (int i = 0; i < n; ++i)
         y[i] = s.tick(x[i]);
     s.release();
+}
+
+// The input's DC blocker: its corner in Hz at `rate`, from its pole.
+float wgDcCorner(float rate)
+{
+    Waveguide s;
+    s.allocate(20, rate);
+    const float hz = (1 - s.dcPole) * rate / 6.28318531f;
+    s.release();
+    return hz;
 }
 
 float wgUnallocated()
@@ -1038,6 +1049,7 @@ PROBE(fminus, library)
         auto* glide = function<void(float*, int, float, float)>(p.get(), "wgGlide");
         auto* resonate = function<void(float*, float*, int, float, float)>(p.get(), "wgResonate");
         auto* unallocated = function<float()>(p.get(), "wgUnallocated");
+        auto* dcCorner = function<float(float)>(p.get(), "wgDcCorner");
         const std::size_t len = static_cast<std::size_t>(0.6 * kFs), from = static_cast<std::size_t>(0.1 * kFs), count = len - from;
         std::vector<float> y(len);
         bool finite = true;
@@ -1133,6 +1145,13 @@ PROBE(fminus, library)
             std::printf("waveguide with a DC input of 0.5 (decay 0.5 s): %.5f after half a second\n", tail);
             P.le("waveguide.dc_blocked", std::fabs(tail), 0.01);
             P.eq("waveguide.resonator_finite", probe::allFinite(out) ? 1 : 0, 1);
+        }
+        if (dcCorner != nullptr)
+        {
+            const double at48 = dcCorner(48000.0f), at192 = dcCorner(192000.0f);
+            std::printf("waveguide's DC blocker: %.3f Hz at 48 kHz, %.3f Hz at 192 kHz\n", at48, at192);
+            P.near("waveguide.dc_corner_48k_hz", at48, 5.0, 0.05);
+            P.near("waveguide.dc_corner_192k_hz", at192, 5.0, 0.05);
         }
         if (unallocated != nullptr)
             P.eq("waveguide.safe_unallocated", unallocated() == 0.0f ? 1 : 0, 1);

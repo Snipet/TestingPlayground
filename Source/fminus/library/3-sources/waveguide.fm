@@ -22,9 +22,10 @@
 //                                  bright), its peak at level; on a string still ringing it adds
 //   y = string.tick(x);            one sample: x goes into the loop as well (0 when it only rings); call it every sample
 //   string.clear();                silence
-// The loop's own filters take a few samples, so a pitch above about a quarter of the rate plays as high as it can, and
-// dispersion gives way on high notes. The decay is the fundamental's; a damping that would need a gain above 1 to keep
-// it (a high note, damped hard) makes it shorter. The input passes a DC blocker: an offset cannot build up in the loop.
+// The loop is 2.5 samples at least (its own filters'), so a string tunes up to 0.4 of the rate and a tube (two passes
+// a period) up to 0.2: a pitch above plays as high as it can. Dispersion gives way on high notes. The decay is the
+// fundamental's; a damping that would need a gain above 1 to keep it (a high note, damped hard) makes it shorter. The
+// input passes a DC blocker (5 Hz at any rate): an offset cannot build up in the loop.
 // Every call is safe before allocate (it reads 0 and writes nothing).
 
 enum { WAVEGUIDE_STAGES = 4 };
@@ -70,6 +71,7 @@ module Waveguide
     float z2;
     float dcIn;
     float dcOut;
+    float dcPole;                                       // the DC blocker's: 5 Hz at the rate
     int burstLength;
     int burstAt;
     int plucks;
@@ -79,6 +81,7 @@ module Waveguide
         release();
         rate = fmaxf(sampleRate, 1000);
         lowest = fmaxf(lowestHz, 20);
+        dcPole = expf(-6.28318531f * 5 / rate);
         const int n = (int)(rate / lowest) + 8;
         line = calloc(n, sizeof(float));
         burst = calloc(n, sizeof(float));
@@ -200,8 +203,8 @@ module Waveguide
     {
         if (length == 0)
             return 0;
-        // What comes in: x without its DC (a high-pass near 5 Hz), and the pluck's burst while it lasts.
-        dcOut = x - dcIn + 0.9993f * dcOut;
+        // What comes in: x without its DC (a high-pass at 5 Hz), and the pluck's burst while it lasts.
+        dcOut = x - dcIn + dcPole * dcOut;
         dcIn = x;
         float in = dcOut;
         if (burstAt < burstLength)
