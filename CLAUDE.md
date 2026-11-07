@@ -87,7 +87,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - `scripts/test.sh [effect|synth]`: build and run the probes only, of both products or the one named (`-R <name>`,
   `-L <label>`, `-V` pass through to ctest). Run the probes through ctest only: outside CTest a probe's stores are the
   user's own folders. The editor rendered headless lands in `build-dev/probe-out/<key>/` (`gui.dump*.png`,
-  `gui.code*.png`: the code editor's completion, signature, hover, problems, find bar and PAPER; `gui.ir*.png`: the IR
+  `gui.code*.png`: the code editor's completion, signature, hover (and a long declaration's on two lines, a local
+  named as a constant drawn plain: `.hover_long`), problems, find bar and PAPER; `gui.ir*.png`: the IR
   view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside sixteen narrowed ones;
   `gui.schematic*.png`: a netlist's Schematic view, the library's netlists drawn, PAPER, the least window with 32 dials
   folded and with sixteen tabs and the IR tab, a wire and a move mid-drag, the problems' marks, an empty netlist, 25 %
@@ -827,7 +828,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   constants folds so too. A pin move that changes what a declaration may be changes `Indexer` and the formatter with
   it (`fminus.lang` rows over a program FMinus compiles). `Folder` recurses at most
   `kMaxDepth` levels (63 parentheses): Patch folds every program's constants on the compiler's thread, whose stack is
-  a thread's default.
+  a thread's default. `foldValues` folds in the order the compile reads the files (`ReadOrder`: the first file from
+  its top, an `#include`'s file where it stands, once; the files no `#include` reaches after, each alone), so its first
+  pass folds all FMinus folds, and makes at most `kFoldPasses` (what FMinus refuses but Lang reads on, a name of a list
+  after it, costs a pass a link: never a pass for each constant). Another module's enumerations and their constants
+  are the file's from their place on in that order, as FMinus has them (`constantAt`, `globalNamed`'s `at`, completion,
+  a circuit field's extent): a use before the module is FMinus's error and Lang's nothing. A constant's name that a
+  local, an argument, a field or a param has too (`shadowNames`) is coloured as what it is at each use: `shadowed`
+  gives each use's flag (`resolve`'s answer), which CodeAssist's sync puts in `TypeNames` by tab and the highlighter
+  counts its way to in its state (bits 17 to 31, the conditionals' count in bits 1 to 16); a tab without flags, or a
+  use past them while the index is due, stays a constant. A hover's code is fitted to the card (`fitCode`:
+  `kHoverWidth` columns, `kHoverLines` lines, broken after a comma in brackets or before an attribute, outermost
+  first), and the card cuts a code line still too wide with "..." (never a piece of it left out further on).
 - **The plugin's macros are every build's** (`lang::kDefines`: DEBUG; Patch.h, "Conditionals and warnings"): each of
   Patch's compiles defines them (`Program::Options::defines`), the check's and the frozen copy's too, which plays
   through the program's instances and so must be the program (a field an `#ifdef DEBUG` declares is in both). A new
