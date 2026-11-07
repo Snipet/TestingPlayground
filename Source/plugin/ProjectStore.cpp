@@ -3,6 +3,7 @@
 
 #include "plugin/EditorPort.h"
 #include "plugin/Factory.h"
+#include "fminus/Xdg.h"
 
 #include "Product.h"
 
@@ -867,6 +868,11 @@ namespace playground::projectstore
 #if defined(_WIN32)
         // Windows: Documents\Funk\<name> (a user's own files, where a DAW's are).
         return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+            .getChildFile(product::kCompany)
+            .getChildFile(product::kName);
+#elif !defined(__APPLE__)
+        // Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/<name> (fminus/Xdg.h), the user's data beside the chats'.
+        return juce::File(juce::String::fromUTF8(xdg::dataHome().c_str()))
             .getChildFile(product::kCompany)
             .getChildFile(product::kName);
 #else
