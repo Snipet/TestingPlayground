@@ -529,12 +529,17 @@ namespace playground
         freeInstances();
     }
 
+    fminus::Program& Patch::fminusProgram() const noexcept
+    {
+        return *s_->program;
+    }
+
     void Patch::endInstances() noexcept
     {
         const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
         // Each end within kInitBudget; after one that runs past it (or fails a bounds check), no other; and none at all
-        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget").
-        bool ran = stopped() == Method::none;
+        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget"), a call by name's too.
+        bool ran = stopped() == Method::none && !callStopped_;
         endsCalled_ = 0;
         const auto end = [&](auto* fn, void* self) {
             if (!ran || fn == nullptr)
@@ -1067,6 +1072,7 @@ namespace playground
             patch->recipe_.probes.push_back(std::move(d));
         }
         patch->mapFields();
+        patch->layoutHash_ = hashLayout(program);   // run_function's "playing" (PatchCall.cpp)
         patch->reset(sampleRate);
         if (const Method stop = patch->stopped(); stop != Method::none)
         {

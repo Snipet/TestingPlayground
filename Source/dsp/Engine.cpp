@@ -833,6 +833,8 @@ namespace playground
             clock_ += static_cast<uint64_t>(n);      // the grid's (Engine.h, "Circuit dials")
         }
         publish(channels, numChannels, n, metering, fresh);
+        if (snapshot_.load(std::memory_order_relaxed) != nullptr)
+            serveSnapshot();                         // run_function's copy (Engine.h)
         samples_ += static_cast<uint64_t>(n);
         if (running_)                                // the song's position at the next call's first sample
             beat_ += static_cast<double>(n) * bpm_ / (60.0 * static_cast<double>(fs_));
@@ -848,6 +850,51 @@ namespace playground
         blockSeconds_.store(static_cast<double>(n) / static_cast<double>(fs_), std::memory_order_relaxed);
         blockNs_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(t1.time_since_epoch()).count(),
                        std::memory_order_release);
+    }
+
+    void Engine::serveSnapshot() noexcept
+    {
+        Snapshot* s = snapshot_.exchange(nullptr, std::memory_order_acq_rel);   // claimed: the asker waits for done
+        if (s == nullptr)
+            return;
+        s->status = Snapshot::Status::noProgram;
+        if (current_ != nullptr)
+        {
+            int instance = -1;
+            if constexpr (kInstrument)
+            {
+                uint64_t newest = 0;                 // the newest sounding voice, as the taps follow it
+                for (const Voice& v : voices_)
+                    if (v.patch == current_ && !v.fading && !v.ending && !v.exiting && (instance < 0 || v.age >= newest))
+                    {
+                        newest = v.age;
+                        instance = v.instance;
+                        s->key = v.key;
+                    }
+            }
+            else
+                instance = 0;
+            const Patch::Layout l = current_->layout();
+            const void* from = current_->instance(instance);
+            s->program = current_->program();
+            s->layout = l.hash;
+            if (from == nullptr)
+                s->status = Snapshot::Status::noVoice;
+            else if (l.instance != s->instanceBytes || l.shared != s->sharedBytes || l.host != s->hostBytes
+                     || l.instance + l.shared + l.host > kMaxSnapshot || s->instance == nullptr
+                     || (l.shared > 0 && s->shared == nullptr) || (l.host > 0 && s->host == nullptr))
+                s->status = Snapshot::Status::otherLayout;
+            else
+            {
+                std::memcpy(s->instance, from, l.instance);
+                if (l.shared > 0)
+                    std::memcpy(s->shared, current_->sharedInstance(), l.shared);
+                if (l.host > 0)
+                    std::memcpy(s->host, current_->hostInstance(), l.host);
+                s->status = Snapshot::Status::copied;
+            }
+        }
+        s->done.store(true, std::memory_order_release);
     }
 
     void Engine::heard(const Event& e) noexcept
