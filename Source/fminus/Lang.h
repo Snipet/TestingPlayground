@@ -67,7 +67,7 @@
 //                      and the GUI sandbox both take them from here, so a panel drawn for a circuit program has its dials
 //   sharedHooks()      the methods of an instrument's module Shared that the Engine calls as it plays (Patch.h's
 //                      "Shared on its own": tick, noteOn, noteOff), each declared as the plugin calls it or otherwise
-//   format()         the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
+//   format()           the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
 //                      a level, a single statement under its if/for/while/else a level deeper, continuation lines
 //                      under their open parenthesis (else a level deeper), C's spacing (binary operators and commas
 //                      spaced, the bitwise ones too, unary and member operators tight, `~x`, `float* p`, `(int)x`,
