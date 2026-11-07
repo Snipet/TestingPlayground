@@ -52,7 +52,8 @@
 //            so destructiveHint false), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
 //            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
-//            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
+//            get_status and write_file routed to it, playground_guide (its start, a part, and the debugging part naming the
+//            headless renderer beside the server with its path); the processor then knows
 //            Claude Desktop is connected, and its port says so with its name; the prompts (Make a sound, Improve the
 //            sound, Explain the sound, Fix what I hear), one filled in with the user's words, fix_what_i_hear naming no
 //            tool and carrying the plugin's state
@@ -754,7 +755,7 @@ PROBE(plugin, mcp)
     P.eq("link.guide_unnamed_whole", unnamed == pg::ChatAgent::mcpGuide() && unnamed != guide ? 1 : 0, 1);
 
     // ---- GUIDE -----------------------------------------------------------------------------------------------------------
-    std::string interfacePart;
+    std::string interfacePart, debuggingPart;
     {
         int id = 100;
         const auto part = [&](const std::string& name) { return ask(*a, r, id++, "guide", object({ { "part", juce::String(name) } })); };
@@ -823,6 +824,7 @@ PROBE(plugin, mcp)
         interfacePart = text("interface");
         const std::string library = text("library"), examples = text("examples"), projects = text("projects");
         const std::string debugging = text("debugging"), circuits = text("circuits");
+        debuggingPart = debugging;
         std::printf("guide parts: large-program %zu, interface %zu, library %zu, debugging %zu, examples %zu, projects %zu, "
                     "circuits %zu bytes\n", large.size(), interfacePart.size(), library.size(), debugging.size(), examples.size(),
                     projects.size(), circuits.size());
@@ -1128,6 +1130,15 @@ PROBE(plugin, mcp)
         P.eq("server.guide", firstText(rep["result"]) == guide ? 1 : 0, 1);
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "interface" } }) } }));
         P.eq("server.guide_part", firstText(rep["result"]) == interfacePart ? 1 : 0, 1);
+        // The debugging part names the headless renderer beside the server, with its path (Main.cpp's rendererNote).
+        rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "debugging" } }) } }));
+        {
+            const std::string said = firstText(rep["result"]);
+            const std::string renderer = juce::File(juce::String::fromUTF8(serverPath)).getSiblingFile(juce::String(pg::product::kName) + "Render")
+                                             .getFullPathName().toStdString();
+            P.eq("server.guide_renderer", said.rfind(debuggingPart, 0) == 0 && has(said, "\n\nTHE RENDERER\n")
+                                              && has(said, "(" + renderer + "), renders and measures") ? 1 : 0, 1);
+        }
         P.eq("server.connected", a->editorPort().desktopConnected() && a->editorPort().desktopName() == first ? 1 : 0, 1);
         rep = s.request({ a.get() }, "prompts/list", {});
         bool fixListed = false;
