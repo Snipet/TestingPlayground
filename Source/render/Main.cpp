@@ -14,9 +14,10 @@
 // --field, --every, --pcm24) and an effect's own input as a WAV (--input: up to what a render plays of it, 310 s up to
 // 96 kHz, never cut short). There is no plugin here: the dials not named are at the program's defaults, a scenario's
 // "host" rate and block are the tools' defaults (48 kHz, or an input's own rate; 256), and a "capture" (the user's
-// recording, which never leaves the plugin) is refused. A folder's FOLDER sync copies (host.fm, a library file) are
-// left out, as the plugin leaves them, and a library file the program #includes and the files lack is added as LIBRARY
-// adds it (fminus/LibraryIncludes.h), saying so. There is no time limit.
+// recording, which never leaves the plugin) is refused, as is a program that reads samples (#pragma sample: the plugin
+// keeps them in its session and its projects, and no folder holds them). A folder's FOLDER sync copies (host.fm, a
+// library file) are left out, as the plugin leaves them, and a library file the program #includes and the files lack
+// is added as LIBRARY adds it (fminus/LibraryIncludes.h), saying so. There is no time limit.
 //
 // Exit codes: 0 rendered; 1 a usage, input or output error (a request the tools would refuse too, a file that could not
 // be read or written); 2 the program did not compile (the compiler's messages on stderr); 3 the program stopped (a call
@@ -804,6 +805,22 @@ namespace
                 std::printf("%s\n", line.c_str());
             return kOk;
         }
+
+        // Samples (fminus/Patch.h, "Samples"): the plugin keeps them in its session and its projects, never in a folder
+        // (FOLDER sync mirrors the program's text files alone), so the renderer loads none. A program whose #pragma
+        // sample lines read one is refused (its fields are still listed), never rendered silent where it reads one.
+        if (const pg::Patch* p = session.patch(); p != nullptr)
+            if (const pg::Patch::Recipe recipe = p->recipe(); !recipe.samples.empty())
+            {
+                std::string named;
+                for (const auto& [file, hash] : recipe.samples)
+                    if (named.find("'" + file + "'") == std::string::npos)
+                        named += (named.empty() ? "" : ", ") + ("'" + file + "'");
+                return fail(kInputError, "the program reads samples (#pragma sample: " + named + "), which the renderer does "
+                                         "not load: they live in the plugin's session and its projects, not in a folder. "
+                                         "Render it in the plugin (measure_output, trace's export), or without its "
+                                         "#pragma sample lines.");
+            }
 
         // The report and the metrics: measure_output's.
         std::unique_ptr<ms::Result> res;
