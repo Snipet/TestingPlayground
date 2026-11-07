@@ -105,6 +105,17 @@
 // the key was refused: it stays, and the chat says so until the user replaces or removes it. When it starts, the
 // agent deletes what an earlier version kept of a sign-in it no longer has (chatstore::forgetOldSignIn).
 //
+// Other providers (Providers.h; setProvider): an OpenAI-compatible server by its base URL (OpenAI, OpenRouter, Ollama
+// or LM Studio on this Mac) or Google Gemini, each with its own key, encrypted and bound to its server (none for a server
+// on this Mac or the local network), and its models (the server's list, or one typed). Anthropic stays the default
+// and its requests are as they were. Another's turn runs the same loop over the same history: the request is the
+// Messages API's translated, the answer translated back, so the tools, the checks and their nudges, the retries, a
+// reply cut off and ask_user work alike. What only Anthropic has is off for it (thinking kept, caching, compaction,
+// fallbacks, fast mode, web search, the planner and the thinking levels: their pills are hidden); its own reasoning
+// shows and is never kept; a model that refuses a picture gets them as lines of text from then on, with a note; a
+// small context window gets the prompt's short form (shortPrompt); a server that cut the conversation to fit its
+// context is noted once (its prompt's tokens far under the request's).
+//
 // The chats, on this Mac only (ChatStore.h; CLAUDE.md, "The chats: on this Mac only"). The conversation shown is one of
 // its owner's chats: the project open's (by the project's id), or, while none is, this instance's own. The processor
 // names the owner (setOwner): opening another project keeps the chat shown with its project and shows that project's
@@ -220,6 +231,9 @@ namespace playground
         ChatState chatState() const override;
         bool saveKey(const std::string& key, std::string& why) override;
         void forgetKey() override;
+        bool setProvider(const ChatProvider& provider, const std::string& key, std::string& why) override;
+        ChatProviderInfo providerInfo(const ChatProvider& provider) const override;
+        void forgetProviderKey(const ChatProvider& provider) override;
         void setModel(const std::string& id) override;
         void setPlanner(const std::string& id) override;
         void setEffort(const std::string& effort) override;
@@ -302,6 +316,12 @@ namespace playground
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
+        // The prompt's short form, for another provider's model whose context window is small (under
+        // kShortPromptBelow tokens, or not said by a server on this Mac or the local network): systemPrompt() up to
+        // its THREADS, then a line of what was left out (the large program, the interface, the library, the examples,
+        // the projects, the circuits) and how to work without it.
+        static constexpr int kShortPromptBelow = 96000;
+        static const std::string& shortPrompt();
         // The system prompt as the MCP guide has it (mcpGuide): without the lines of "How you work" that only the
         // plugin's own chat needs (its <plugin_state>, the planner, web search, ask_user, its panel's markdown), which
         // are chatOnlyLines(), a line each, in their order; the two together are systemPrompt()'s text.
@@ -367,6 +387,24 @@ namespace playground
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                         int& status, std::string& error, int& retryAfter);
         juce::var buildRequest(std::string& beta) const;
+        // The request the turn sends (ChatProviderTurn.cpp): buildRequest's for Anthropic, as it was; for another
+        // provider, buildRequest's translated (Providers.h) with the turn's options. streamOther: streamOnce's for
+        // another provider (its server, its key, its answer translated back into the builder). The worker's.
+        std::string requestBody(std::string& beta);
+        bool streamOther(const std::string& body, claude::MessageBuilder& builder, int& status, std::string& error,
+                         int& retryAfter);
+        // Another provider: its key (mutex held; "" for none), its models fetched (the worker or the job thread, once
+        // a provider), whether this turn is another provider's, and a request refused for a reason the turn can work
+        // around (a model that takes no pictures, Gemini refusing the tools' JSON Schema): the request made again
+        // without it, said in the chat; true when the turn should ask again.
+        void loadOtherKey();
+        void fetchOtherModels();
+        bool otherTurn() const;
+        bool workAround(int status, const std::string& error);
+        // The provider's state in chatState (mutex held), the settings kept (chat.json), a model's entry of the list.
+        void otherState(ChatState& s) const;
+        void saveProviderChoice() const;
+        const ChatModel* otherModel(const std::string& id) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
@@ -471,6 +509,23 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
+        // The provider (Providers.h; setProvider), machine-wide. Anthropic's state is the members above (model_,
+        // models_, key_, effort_, ...), untouched while another is chosen; another's is here: its model, its models
+        // (the server's list, else the one chosen), its key (bound to its server) and why it cannot be used, the model
+        // chosen with each provider (chatstore::modelKey). The turn under way's: its provider, whether its pictures go
+        // (the model takes them), Gemini's schemas as JSON Schema, the prompt's short form (a small context).
+        ChatProvider provider_;
+        std::vector<ChatModel> otherModels_;
+        std::string otherModel_;
+        std::string otherKey_, otherKeyFor_, otherKeyProblem_;     // the key, the server it was read for
+        std::map<std::string, std::string> otherChosen_;
+        bool otherFetched_ = false;
+        ChatProvider turnProvider_;
+        bool turnImages_ = true, turnJsonSchema_ = true, turnShort_ = false;
+        bool turnHadPictures_ = false;                              // the request holds pictures
+        bool schemaRefused_ = false;                                // Gemini refused JSON Schema: its subset from then on
+        std::size_t turnTextBytes_ = 0;                             // the request's text (its pictures aside), bytes
+        bool cutNoted_ = false;                                     // the chat said a server cut the conversation
         std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
                                                                     // (hashText; Claude Desktop's: mcpMarks_)
         struct FileVersion

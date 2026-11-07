@@ -16,6 +16,7 @@
 #include "Product.h"
 
 #include "dsp/Measure.h"
+#include "mcp/McpGuide.h"
 
 #include <algorithm>
 #include <string>
@@ -901,6 +902,25 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
     const std::string& ChatAgent::systemPrompt()
     {
         static const std::string prompt = build(false);
+        return prompt;
+    }
+
+    // The short form (ChatAgent.h): the prompt up to THREADS (what the plugin is, how to work, the contract, the host,
+    // FMinus, DSP practice, checking the work), then what it leaves out.
+    const std::string& ChatAgent::shortPrompt()
+    {
+        static const std::string prompt = [] {
+            const std::string& full = systemPrompt();
+            const std::size_t cut = mcp::guide::detail::heading(full, mcp::guide::kThreads);
+            std::string s = cut == std::string::npos ? full : full.substr(0, cut);
+            s += "THIS PROMPT'S SHORT FORM\n\nThe model you run on has a small context window, so the plugin sends this "
+                 "short form of its instructions: what it says below or later about building a large program, threads, "
+                 "THE INTERFACE (panel.gui), THE LIBRARY, the examples, projects and circuits is left out. Write each "
+                 "program in one file from what is above, its dials plain params (the plugin shows them as knobs; no "
+                 "panel.gui), read a file before you change it, and keep your replies short: the conversation fills the "
+                 "same window.\n";
+            return s;
+        }();
         return prompt;
     }
 

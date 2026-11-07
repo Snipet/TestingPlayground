@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <map>
@@ -438,6 +439,130 @@ namespace playground::chatstore
     {
         const juce::File f = keyFile();
         return !f.existsAsFile() || f.deleteFile();
+    }
+
+    // ---- the other providers' keys (ChatStore.h) -------------------------------------------------------------------------
+    namespace
+    {
+        // A provider's kind as it may name a file: a-z alone (the callers' are "openai" and "gemini").
+        bool plainKind(std::string_view kind)
+        {
+            return !kind.empty() && kind.size() <= 16
+                && std::all_of(kind.begin(), kind.end(), [](char c) { return c >= 'a' && c <= 'z'; });
+        }
+
+        juce::File providerKeyFile(std::string_view kind, std::string_view origin)
+        {
+            uint64_t h = 1469598103934665603ull;     // FNV-1a over the origin: its file's name, never its text
+            for (const char c : origin)
+            {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1099511628211ull;
+            }
+            char hex[17];
+            std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(h));
+            return directory().getChildFile(juce::String("key-") + juce::String(std::string(kind)) + "-" + juce::String(hex) + ".bin");
+        }
+    }
+
+    bool hasProviderKey(std::string_view kind, std::string_view origin)
+    {
+        return plainKind(kind) && !origin.empty() && providerKeyFile(kind, origin).existsAsFile();
+    }
+
+    std::optional<std::string> loadProviderKey(std::string_view kind, std::string_view origin, std::string* why)
+    {
+        if (!plainKind(kind) || origin.empty())
+        {
+            if (why != nullptr)
+                *why = "no API key saved";
+            return std::nullopt;
+        }
+        std::optional<std::string> sealed = unseal(providerKeyFile(kind, origin), "key", why);
+        if (!sealed)
+        {
+            if (why != nullptr && why->find(kAnotherMachine) != std::string::npos)
+                *why += ": add it again";
+            if (why != nullptr && *why == "no key saved")
+                *why = "no API key saved";
+            return std::nullopt;
+        }
+        // The origin it was saved for, a line, then the key: another server's (a copied file) is none.
+        const std::size_t nl = sealed->find('\n');
+        if (nl == std::string::npos || std::string_view(*sealed).substr(0, nl) != origin || nl + 1 >= sealed->size())
+        {
+            std::fill(sealed->begin(), sealed->end(), '\0');
+            if (why != nullptr)
+                *why = "the saved key is for another server";
+            return std::nullopt;
+        }
+        std::string key = sealed->substr(nl + 1);
+        std::fill(sealed->begin(), sealed->end(), '\0');
+        return key;
+    }
+
+    bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why)
+    {
+        if (!plainKind(kind) || origin.empty() || origin.find('\n') != std::string_view::npos || key.empty()
+            || key.find('\n') != std::string_view::npos)
+        {
+            if (why != nullptr)
+                *why = "that key or server cannot be stored";
+            return false;
+        }
+        std::string secret = std::string(origin) + "\n" + std::string(key);
+        const bool ok = seal(providerKeyFile(kind, origin), secret, why);
+        std::fill(secret.begin(), secret.end(), '\0');
+        return ok;
+    }
+
+    bool forgetProviderKey(std::string_view kind, std::string_view origin)
+    {
+        if (!plainKind(kind) || origin.empty())
+            return true;
+        const juce::File f = providerKeyFile(kind, origin);
+        return !f.existsAsFile() || f.deleteFile();
+    }
+
+    std::string modelKey(std::string_view kind, std::string_view base)
+    {
+        return base.empty() ? std::string(kind) : std::string(kind) + " " + std::string(base);
+    }
+
+    ProviderChoice loadProvider()
+    {
+        ProviderChoice c;
+        const juce::var v = juce::JSON::parse(choiceFile());
+        if (auto* o = v.getDynamicObject())
+        {
+            if (const juce::String kind = o->getProperty("provider").toString(); kind.isNotEmpty())
+                c.kind = kind.toStdString();
+            c.base = o->getProperty("base").toString().toStdString();
+            // [{ "for": modelKey, "model": id }]: an array, as a key holds a URL
+            const juce::var models = o->getProperty("models");
+            if (const juce::Array<juce::var>* list = models.getArray())
+                for (const juce::var& m : *list)
+                    if (const juce::String k = m.getProperty("for", "").toString(); k.isNotEmpty())
+                        c.models[k.toStdString()] = m.getProperty("model", "").toString().toStdString();
+        }
+        return c;
+    }
+
+    void saveProvider(const ProviderChoice& choice)
+    {
+        saveChatJson([&](juce::DynamicObject& o) {
+            o.setProperty("provider", juce::String(choice.kind));
+            o.setProperty("base", juce::String(choice.base));
+            juce::Array<juce::var> models;
+            for (const auto& [k, m] : choice.models)
+            {
+                auto* entry = new juce::DynamicObject();
+                entry->setProperty("for", juce::String(k));
+                entry->setProperty("model", juce::String(m));
+                models.add(juce::var(entry));
+            }
+            o.setProperty("models", models);
+        });
     }
 
     Choice loadChoice()

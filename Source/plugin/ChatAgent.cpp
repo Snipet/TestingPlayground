@@ -6,6 +6,7 @@
 #include "plugin/ChatScenario.h"
 
 #include "plugin/ChatStore.h"
+#include "plugin/Providers.h"
 
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
@@ -1102,6 +1103,22 @@ namespace playground
         fast_ = choice.fast;
         web_ = choice.web;
         planner_ = choice.planner;
+        // The provider chosen last (none: Anthropic, as before), and the model chosen with each other one.
+        const chatstore::ProviderChoice provider = chatstore::loadProvider();
+        otherChosen_ = provider.models;
+        if (const providers::Kind k = providers::kindOf(provider.kind); k != providers::Kind::anthropic)
+        {
+            ChatProvider p;
+            p.kind = providers::idOf(k);
+            p.base = k == providers::Kind::openai ? provider.base : std::string();
+            if (!providers::baseOf(p).empty())
+            {
+                provider_ = p;
+                otherModel_ = otherChosen_[chatstore::modelKey(p.kind, p.base)];
+                if (!otherModel_.empty())
+                    otherModels_.push_back(providers::plainModel(otherModel_));
+            }
+        }
         chatstore::forgetOldSignIn();              // what an earlier version kept of a sign-in (ChatStore.h)
     }
 
@@ -1214,6 +1231,10 @@ namespace playground
         s.usage = usage_;
         s.title = titleNow();
         s.owner = ownerLabel_;
+        s.provider = provider_;
+        s.providerName = providers::nameOf(provider_);
+        if (provider_.kind != "anthropic")
+            otherState(s);                         // its key, its models, and none of Anthropic's own
         return s;
     }
 
@@ -1245,6 +1266,17 @@ namespace playground
     void ChatAgent::setModel(const std::string& id)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+        {
+            // Another provider's: one of its list, kept with it.
+            if (otherModel(id) == nullptr)
+                return;
+            otherModel_ = id;
+            otherChosen_[chatstore::modelKey(provider_.kind, provider_.base)] = id;
+            saveProviderChoice();
+            touch();
+            return;
+        }
         const auto it = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
         if (it == models_.end())
             return;
@@ -1261,6 +1293,8 @@ namespace playground
     void ChatAgent::setPlanner(const std::string& id)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;                                // Anthropic's alone (its models plan)
         if (!id.empty() && std::none_of(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; }))
             return;
         planner_ = id;
@@ -1271,6 +1305,8 @@ namespace playground
     void ChatAgent::setEffort(const std::string& effort)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;                                // Anthropic's alone: another provider's models show no levels
         const auto it = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == model_; });
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take
@@ -1282,6 +1318,8 @@ namespace playground
     void ChatAgent::setFast(bool on)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;
         fast_ = on;
         chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
@@ -1290,6 +1328,8 @@ namespace playground
     void ChatAgent::setWeb(bool on)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;
         web_ = on;
         chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
@@ -1401,7 +1441,7 @@ namespace playground
                 content.add(text(trimmed));
             if (!context.empty())
                 content.add(text(context));
-            if (effort_ == "xhigh" || effort_ == "max")
+            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
                 content.add(text(limitNote(maxTokensFor(model_))));
             planNext_ = !planner_.empty();
             deliver(std::move(content));
@@ -1438,7 +1478,7 @@ namespace playground
             juce::Array<juce::var> content = missingResults(answerText(qs, given));
             if (!context.empty())
                 content.add(text(context));
-            if (effort_ == "xhigh" || effort_ == "max")
+            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
                 content.add(text(limitNote(maxTokensFor(model_))));
             deliver(std::move(content));
         }
@@ -1560,6 +1600,7 @@ namespace playground
         ++attachEpoch_;
         checks_.clear();
         checksFailing_ = false;
+        cutNoted_ = false;
         touch();
     }
 
@@ -1737,6 +1778,7 @@ namespace playground
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
+        cutNoted_ = false;
         checks_.clear();
         checksFailing_ = false;
         if (const auto* cs = v.getProperty("checks", juce::var()).getArray())
@@ -2447,8 +2489,10 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         juce::Array<juce::var> system;
+        // Another provider's model with a small context: the prompt's short form (an Anthropic turn's never is).
+        const std::string& prompt = turnShort_ ? shortPrompt() : systemPrompt();
         system.add(claude::object({ { "type", "text" },
-                                    { "text", juce::String::fromUTF8(systemPrompt().c_str()) },
+                                    { "text", juce::String::fromUTF8(prompt.c_str()) },
                                     { "cache_control", claude::object({ { "type", "ephemeral" }, { "ttl", "1h" } }) } }));
         const auto model = std::find_if(models_.begin(), models_.end(),
                                         [&](const ChatModel& m) { return m.id == turnModel_; });
@@ -2459,7 +2503,9 @@ namespace playground
                                           { "system", system },
                                           { "tools", turnWeb_ ? withWebTools(toolDefinitions(), webDirect_.count(turnModel_) > 0)
                                                               : toolDefinitions() },
-                                          { "messages", messages_ },
+                                          // what another provider's answers carry of their own taken off (Providers.h)
+                                          { "messages", turnProvider_.kind == "anthropic" ? providers::forAnthropic(messages_)
+                                                                                          : juce::var(messages_) },
                                           { "thinking", claude::object({ { "type", "adaptive" },
                                                                          { "display", "summarized" } }) } });
         auto* o = body.getDynamicObject();
@@ -2498,6 +2544,8 @@ namespace playground
     bool ChatAgent::streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                                int& status, std::string& error, int& retryAfter)
     {
+        if (otherTurn())
+            return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
         std::string key;
         claude::Transport* transport = nullptr;
         {
@@ -2543,6 +2591,16 @@ namespace playground
 
     void ChatAgent::fetchModels()
     {
+        bool other = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            other = provider_.kind != "anthropic";
+        }
+        if (other)
+        {
+            fetchOtherModels();                    // another provider's list, once a provider (ChatProviderTurn.cpp)
+            return;
+        }
         std::string key;
         claude::Transport* transport = nullptr;
         {
@@ -2611,10 +2669,55 @@ namespace playground
     void ChatAgent::runTurn()
     {
         turnThread_.store(std::this_thread::get_id());
-        ensureKey();
+        // The provider for the whole turn (Providers.h): a change while it runs applies to the next one.
+        bool other = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (key_.empty())
+            turnProvider_ = provider_;
+            other = provider_.kind != "anthropic";
+            if (other)
+                loadOtherKey();
+        }
+        if (other)
+        {
+            std::string missing;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (otherKey_.empty() && !providers::keyless(turnProvider_))
+                    missing = otherKeyProblem_.empty()
+                                  ? "Add your " + providers::nameOf(turnProvider_) + " API key (KEY, above) to chat."
+                                  : "The saved " + providers::nameOf(turnProvider_) + " key cannot be used: " + otherKeyProblem_;
+            }
+            if (missing.empty())
+            {
+                fetchModels();
+                waitJobs();                        // a list asked for when the provider was chosen, still on its way
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (otherModel_.empty() && !otherModels_.empty())
+                {
+                    otherModel_ = otherModels_.front().id;   // the server's first, until another is chosen
+                    otherChosen_[chatstore::modelKey(provider_.kind, provider_.base)] = otherModel_;
+                    saveProviderChoice();
+                }
+                if (otherModel_.empty())
+                    missing = "Choose a model: " + providers::nameOf(turnProvider_)
+                            + " listed none (KEY, above, takes one by its name).";
+            }
+            if (!missing.empty())
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::error, missing);
+                busy_ = false;
+                activity_.clear();
+                turnThread_.store(std::thread::id{});
+                return;
+            }
+        }
+        else
+            ensureKey();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!other && key_.empty())
             {
                 addEntry(ChatEntry::Kind::error, keyProblem_.empty()
                                                      ? "Add your Anthropic API key (KEY, above) to chat with Claude."
@@ -2625,11 +2728,33 @@ namespace playground
                 return;
             }
         }
-        fetchModels();
+        if (!other)
+            fetchModels();
         int maxTokens = 0;                         // what one reply of this turn's model holds
+        if (other)
+        {
+            // Another provider's model for the whole turn: none of Anthropic's options, its pictures if it takes them,
+            // the prompt's short form for a small context (one a server on this Mac or the local network does not say).
+            const std::lock_guard<std::mutex> lock(mutex_);
+            turnModel_ = otherModel_;
+            turnProvider_.model = turnModel_;
+            turnEffort_.clear();
+            turnFast_ = false;
+            turnWeb_ = false;
+            const ChatModel* m = otherModel(turnModel_);
+            turnImages_ = m == nullptr || m->images;
+            turnJsonSchema_ = !schemaRefused_;
+            const int context = m != nullptr ? m->context : 0;
+            turnShort_ = context > 0 ? context < kShortPromptBelow : providers::isLocal(providers::baseOf(turnProvider_));
+            maxTokens = m != nullptr ? m->maxTokens : kDefaultMaxTokens;
+            plannerAsks_ = 0;
+            turnPlanUsage_.clear();
+        }
+        else
         {
             // The model and the thinking level for the whole turn: a change while it runs applies to the next one.
             const std::lock_guard<std::mutex> lock(mutex_);
+            turnShort_ = false;
             turnModel_ = model_;
             turnEffort_ = effort_;
             const auto model = std::find_if(models_.begin(), models_.end(),
@@ -2648,7 +2773,7 @@ namespace playground
         bool plan = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            plan = std::exchange(planNext_, false) && !planner_.empty();
+            plan = std::exchange(planNext_, false) && !planner_.empty() && !other;   // the planner is Anthropic's
         }
         if (plan && !cancel_.load())
             planTurn();
@@ -2666,7 +2791,7 @@ namespace playground
         for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
         {
             std::string beta;
-            std::string body = claude::toJson(buildRequest(beta));
+            std::string body = requestBody(beta);  // Anthropic's as it was; another provider's translated
             int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
 
             std::unique_ptr<claude::MessageBuilder> builder;
@@ -2771,6 +2896,14 @@ namespace playground
                                    && (builder->error().empty() || et == "overloaded_error" || et == "api_error");
                 if (ok && !brokeOff)
                     break;
+                // Another provider's refusal the turn can work around (a model that takes no pictures, Gemini refusing
+                // the tools' JSON Schema): the request made again without it, said in the chat.
+                if (!ok && other && workAround(status, error))
+                {
+                    body = requestBody(beta);
+                    --attempt;
+                    continue;
+                }
                 // Fast mode turned away: busy again after one wait (its rate limit, or its capacity), or refused
                 // (not open to this key, not on this model). The turn goes on at standard speed (the fast-mode docs'
                 // fallback; the cache starts again, as speeds share no cached prefix), and a refusal turns it off.
@@ -2876,6 +3009,10 @@ namespace playground
                         kept.add(blocks[i]);
                 blocks = kept;
             }
+            // Another provider's reasoning was shown as it came; it goes back as nothing (a thinking block without
+            // Anthropic's signature is refused there, and its own servers keep none).
+            if (other)
+                blocks.removeIf([](const juce::var& b) { return str(b, "type") == "thinking"; });
             const std::string stopReason = builder != nullptr ? builder->stopReason() : std::string();
             const bool complete = builder != nullptr && builder->finished() && builder->error().empty();
 
@@ -2890,6 +3027,19 @@ namespace playground
                                             : std::string())
                        + (u.compactions > 0 ? "; the conversation was summarized" : "")
                        + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_);
+                // A server here that took far fewer tokens than the request holds cut it to fit its context (Ollama
+                // does, with no error; a remote API refuses a request too long instead): said once a chat.
+                const int64_t took = u.input + u.cacheRead + u.cacheWrite;
+                const int64_t sent = static_cast<int64_t>(turnTextBytes_ / 4);
+                if (other && providers::keyless(turnProvider_) && !cutNoted_ && took > 0 && took * 2 < sent)
+                {
+                    cutNoted_ = true;
+                    addEntry(ChatEntry::Kind::note,
+                             providers::nameOf(turnProvider_) + " read " + thousands(took) + " tokens of a request of about "
+                                 + thousands(sent) + ": it cut the conversation to fit the model's context, so the model "
+                                   "misses part of the plugin's instructions. Give the model a longer context in the "
+                                   "server's settings (32K tokens or more), or choose a model with one.");
+                }
                 touch();
             }
 
@@ -2918,7 +3068,8 @@ namespace playground
                 if (stopped)
                     addEntry(ChatEntry::Kind::note, "Stopped.");
                 else if (stopReason == "refusal")
-                    addEntry(ChatEntry::Kind::error, "Claude declined this request.");
+                    addEntry(ChatEntry::Kind::error, other ? "The model (" + turnModel_ + ") declined this request."
+                                                           : std::string("Claude declined this request."));
                 else
                     addEntry(ChatEntry::Kind::error, builder != nullptr && !builder->error().empty()
                                                          ? "The answer broke off: " + builder->error()
@@ -2946,7 +3097,7 @@ namespace playground
             const bool endsHere = cutOff && cutOffs >= kMaxCutOffs;
             if (cutOff)
             {
-                const std::string limit = "Claude's reply reached its length limit (" + thousands(maxTokens)
+                const std::string limit = std::string(other ? "The model's reply" : "Claude's reply") + " reached its length limit (" + thousands(maxTokens)
                                         + " tokens, its thinking included)";
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::note,
@@ -4768,7 +4919,7 @@ namespace playground
             std::string builder;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                if (planner_.empty())
+                if (planner_.empty() || turnProvider_.kind != "anthropic")   // the planner is Anthropic's
                     return fail("No planning model is chosen (the model menu's Plan with): decide yourself.");
                 if (plannerAsks_ >= kMaxPlannerAsks)
                     return fail("The planner was asked " + std::to_string(kMaxPlannerAsks)

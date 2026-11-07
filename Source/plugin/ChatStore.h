@@ -1,7 +1,8 @@
 // Source/plugin/ChatStore.h: what the chat keeps on this Mac, shared by both playground plugins (the effect and the
-// synth, in any host and in their Standalones): the Anthropic API key, encrypted, the choices (the model, thinking
-// level, fast mode, web search and planner chosen last) and the chats themselves, encrypted. They live in
-// ~/Library/Application Support/Funk/Playground/ (0700): anthropic-key.bin (0600), chat.json and chats/ (below). On
+// synth, in any host and in their Standalones): the Anthropic API key, encrypted, the other providers' keys, encrypted
+// and each bound to its server (below), the choices (the provider, the model, thinking level, fast mode, web search and
+// planner chosen last) and the chats themselves, encrypted. They live in ~/Library/Application Support/Funk/Playground/
+// (0700): anthropic-key.bin (0600), key-<kind>-<origin>.bin (0600), chat.json and chats/ (below). On
 // Windows: %APPDATA%\Funk\Playground\, the user's profile's own, and the same files through Windows' CNG (bcrypt) in
 // place of CommonCrypto.
 //
@@ -28,6 +29,7 @@
 #include "plugin/ChatPort.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -66,6 +68,29 @@ namespace playground::chatstore
     };
     Choice loadChoice();
     void saveChoice(const Choice& choice);
+
+    // ---- the other providers (Providers.h) -------------------------------------------------------------------------
+    // A provider's key, bound to its server: key-<kind>-<16 hex digits of the server's origin>.bin (0600), sealed as
+    // anthropic-key.bin is (FPK1), holding the origin ("https://openrouter.ai") and the key, so a key is only ever read
+    // back for the server it was saved for: a file that names another origin reads as none. `kind` is the provider's
+    // ("openai", "gemini"); the key's plausibility is the caller's (Providers.h).
+    bool hasProviderKey(std::string_view kind, std::string_view origin);
+    std::optional<std::string> loadProviderKey(std::string_view kind, std::string_view origin, std::string* why = nullptr);
+    bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why = nullptr);
+    bool forgetProviderKey(std::string_view kind, std::string_view origin);
+
+    // The provider chosen last (chat.json "provider", "base": none is Anthropic, as before the providers) and the model
+    // chosen last with each other provider (chat.json "models", by modelKey: the kind, and an OpenAI-compatible
+    // server's base URL). Anthropic's model stays Choice's "model".
+    struct ProviderChoice
+    {
+        std::string kind = "anthropic";
+        std::string base;
+        std::map<std::string, std::string> models;
+    };
+    std::string modelKey(std::string_view kind, std::string_view base);
+    ProviderChoice loadProvider();
+    void saveProvider(const ProviderChoice& choice);
 
     // History: until 2026-10-28 the chat could also sign in to a TestingPlayground server instead of using a key, and
     // kept that sign-in here (account-token.bin, and chat.json's "account" and "use"). Deletes what is left of it: the
