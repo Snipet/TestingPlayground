@@ -1430,7 +1430,7 @@ namespace playground
                 const std::string name = juce::File(juce::String::fromUTF8(p.c_str())).getFileName().toStdString();
                 const int waiting = static_cast<int>(attached_.size()) + attaching_ + static_cast<int>(take.size());
                 if (!isPictureName(p))
-                    addEntry(ChatEntry::Kind::note, name + " is not a picture (PNG, JPEG, GIF, WebP, HEIC or TIFF).");
+                    addEntry(ChatEntry::Kind::note, name + " is not a picture (" + chatimages::kFormats + ").");
                 else if (waiting >= chatimages::kMaxPerMessage)
                     addEntry(ChatEntry::Kind::note, "A message takes " + std::to_string(chatimages::kMaxPerMessage)
                                                         + " pictures at most, so " + name + " was not added.");
