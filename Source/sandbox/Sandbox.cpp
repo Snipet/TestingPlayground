@@ -54,6 +54,14 @@ namespace playground::sandbox
             return s.size() >= n && s.compare(s.size() - n, n, e) == 0;
         }
 
+        // 1st, 2nd, 3rd, 4th, ..., 11th, 12th, 13th, ..., 21st, ..., 33rd, ..., 64th.
+        std::string ordinal(int n)
+        {
+            const int tens = n % 100, ones = n % 10;
+            const char* suffix = tens >= 11 && tens <= 13 ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th";
+            return std::to_string(n) + suffix;
+        }
+
         int lineCount(const std::string& t)
         {
             if (t.empty())
@@ -540,7 +548,8 @@ namespace playground::sandbox
             if (dials_.size() > static_cast<std::size_t>(kMaxControls))
                 out += " Only the first " + std::to_string(kMaxControls) + " are dials.";
             if (dials_.size() > static_cast<std::size_t>(kHostControls))
-                out += " Those past the " + std::to_string(kHostControls) + "th are the panel's own (no host parameter).";
+                out += " The " + ordinal(kHostControls + 1) + " to the " + ordinal(kMaxControls)
+                     + " are the panel's own (no host parameter).";
             out += "\n";
             // The circuits' (Patch.h, "Circuits"), with their defaults as the plugin shows them.
             std::string circuits;

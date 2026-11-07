@@ -42,6 +42,7 @@
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
 //            renders what view_panel's picture shows, pixel for pixel within MATCH's bound (gui.sandbox.circuit.png,
 //            .circuit.view.png)
+//   MOST     33 dials of Claude's: the report says the 33rd to the 64th are the panel's own
 //   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
 //            (<ENV_PREFIX>SANDBOX_DEADLINE_MS), saying so, the helper gone, and the next call working
@@ -801,6 +802,17 @@ PROBE(plugin, sandbox)
         P.le("circuit.match_pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
         P.le("circuit.match_largest", d.largestOutside, 40);
         s.sandbox(object({ { "action", "close" }, { "sandbox", number } }), &processor);
+    }
+
+    // ---- MOST: past the host's 32 dials ----------------------------------------------------------------------------------
+    {
+        juce::Array<juce::var> many;
+        for (int k = 1; k <= pg::kHostControls + 1; ++k)
+            many.add(object({ { "name", "d" + juce::String(k) } }));
+        const Result r = s.sandbox(object({ { "action", "open" }, { "text", "knob d33\n" }, { "dials", many } }));
+        std::printf("33 dials:\n%s", r.text.c_str());
+        P.eq("most.panel_own_said", !r.error && has(r.text, "The 33rd to the 64th are the panel's own (no host parameter).") ? 1 : 0, 1);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
     }
     s.stop();
 
