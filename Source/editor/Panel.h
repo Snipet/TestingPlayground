@@ -48,7 +48,7 @@
 //             is under the editor (up to the room the editor leaves), and scrolled by the wheel where it is taller or
 //             wider than its area. In the CODE view the editor's status line's Panel switch (Cmd-J) hides it (the
 //             dials or the interface, and a netlist's fold bar): the editor then has the column. The session keeps one
-//             choice for the program's code and one for its interface's files (.gui, .sc), both shown at first
+//             choice for the program's code and one for its interface's files (.gui, .sc, .sh), both shown at first
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
 //   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
@@ -297,7 +297,7 @@ namespace playground::ui
         // The panel under the code (the editor's status line's Panel switch, Cmd-J): whether the CODE view shows the
         // program's panel (its dials, or its .gui file's interface) under the editor. One choice while the program's
         // code shows (its FMinus files, a netlist, the IR), one while a file of its interface does (a .gui file, a
-        // shader's .sc: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
+        // shader's .sc or .sh: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
         // and the tab shown picks the one that applies. Hidden, the editor (or a netlist's drawing) has the column; the
         // PANEL view always shows the panel, and so do view_panel's pictures of it.
         bool codePanelShown() const;                     // the choice for the tab shown

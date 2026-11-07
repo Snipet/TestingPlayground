@@ -484,7 +484,7 @@ namespace playground
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
         // Whether the CODE view shows the program's panel (its dials, or its .gui file's interface) under the editor:
-        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc: editor/Items.h's
+        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc or .sh: editor/Items.h's
         // isInterfaceFile), else the one while the program's code shows (its FMinus files, a netlist, the IR). Both
         // shown at first; kept in the session (the editor's status line's Panel switch and Cmd-J set them).
         virtual bool codePanel(bool gui) const = 0;

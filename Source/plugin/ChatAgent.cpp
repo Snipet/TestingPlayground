@@ -3450,7 +3450,7 @@ namespace playground
             "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
             "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
             "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
-            ".gui file or a program's folder the user named, its .fm, .gui and .sc files, read only, 256 KB a file), or text "
+            ".gui file or a program's folder the user named, its .fm, .gui, .sc and .sh files, read only, 256 KB a file), or text "
             "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
             "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
             "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "

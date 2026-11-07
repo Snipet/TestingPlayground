@@ -46,7 +46,7 @@ namespace playground::sandbox
     inline constexpr int kMinSide = 160, kMaxSide = 2400;
     inline constexpr float kDpi = 1.5f;                      // the picture's pixels a logical px (view_panel's)
 
-    // What open reads from disk: a .gui file, or a program's folder (its .fm, .gui and .sc files), read only.
+    // What open reads from disk: a .gui file, or a program's folder (its .fm, .gui, .sc and .sh files), read only.
     inline constexpr std::size_t kMaxFileBytes = 256u * 1024u;
     inline constexpr std::size_t kMaxFiles = 16;             // the editor's tabs (kMaxFiles)
     inline constexpr std::size_t kMaxTotalBytes = 1024u * 1024u;

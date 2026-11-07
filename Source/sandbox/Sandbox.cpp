@@ -318,7 +318,7 @@ namespace playground::sandbox
         {
             if (!endsWith(path, ".gui"))
             {
-                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui and .sc files)";
+                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui, .sc and .sh files)";
                 return false;
             }
             return readOne(named, named.getFileName().toStdString());
@@ -332,13 +332,14 @@ namespace playground::sandbox
         for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(named, false, "*", juce::File::findFiles))
         {
             const std::string n = e.getFile().getFileName().toStdString();
-            if (!n.empty() && n[0] != '.' && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc")))
+            if (!n.empty() && n[0] != '.'
+                && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc") || endsWith(n, ".sh")))
                 names.push_back(n);
         }
         std::sort(names.begin(), names.end());
         if (names.empty())
         {
-            why = "the folder " + given + " has no .fm, .gui or .sc file";
+            why = "the folder " + given + " has no .fm, .gui, .sc or .sh file";
             return false;
         }
         if (names.size() > kMaxFiles)
@@ -464,6 +465,7 @@ namespace playground::sandbox
         // The shaders built at once (ShaderCache::buildAll: the process's cache, in memory and on disk).
         std::vector<ShaderJob> jobs;
         std::vector<PanelShader*> built;
+        const Sources headers = shaderHeaders(files_);
         for (PanelShader& sh : spec_.shaders)
         {
             const auto f = std::find_if(files_.begin(), files_.end(), [&](const SourceFile& s) { return s.name == sh.file; });
@@ -475,7 +477,7 @@ namespace playground::sandbox
                                     "plugin, and the sandbox finds it there); it shows as a placeholder\n";
                 continue;
             }
-            jobs.push_back({ sh.file, f->text, sh.inputs });
+            jobs.push_back({ sh.file, f->text, sh.inputs, headers });
             built.push_back(&sh);
         }
         const std::vector<ShaderBuild> builds = shaderCache().buildAll(jobs, tools_);

@@ -3576,7 +3576,7 @@ namespace playground::lang
         // module (that module's fields keep their own driving), or whose receiver Lang cannot type (every one).
         const auto isFmText = [](const std::string& n) {
             const auto ends = [&n](std::string_view e) { return n.size() > e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0; };
-            return !isCircuitFile(n) && !ends(".gui") && !ends(".sc");
+            return !isCircuitFile(n) && !ends(".gui") && !ends(".sc") && !ends(".sh");
         };
         std::vector<std::pair<std::string, std::string>> owners;   // module -> its note's place and words
         for (std::size_t fi = 0; fi < m.files.size(); ++fi)
