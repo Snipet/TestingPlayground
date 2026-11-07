@@ -30,6 +30,8 @@ namespace playground
 //   host->buttons      a bit each, a G29's: 0 cross, 1 square, 2 circle, 3 triangle, 4 right paddle, 5 left paddle,
 //                      6 R2, 7 L2, 8 share, 9 options, 10 R3, 11 L3, 12 +, 13 -, 14 dial right, 15 dial left,
 //                      16 return, 17 PS (also the start key: note 36 while held), 18-21 the d-pad up, right, down, left
+// Your field shiftLights (the main module's or Shared's) lights the G29's five shift lights: a float 0 to 1 that share,
+// an int their mask.
 module Host
 {
     float bpm;

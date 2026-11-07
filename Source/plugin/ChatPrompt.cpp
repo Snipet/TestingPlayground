@@ -393,6 +393,10 @@ scope and spectrum take width= and height=. 32 displays at most (each live= fiel
 - Give the panel life, as hardware has it: a VU or meters of out in the output section, an effect's in and out meters, a scope or a spectrum of out, a light that blinks with an LFO (a field from 0 to 1), a compressor's gain reduction (a field) on a meter, live= on the knobs that are modulated. One or two colours, for the sections that matter most, read better than many.
 - Give it a look of its own, as a product has: one knob look for the whole panel (defaults knob ...), a class for the main knobs, sections as cards or plates on a ground with a gradient, the top-level pages as a bar when there are many controls. An instrument gets a keyboard at the bottom, so it can be played without a controller.
 - Programs from before (some examples, RANDOM's) lay their dials out with #pragma panel lines in the program (section, row, label, small, style, options, color, and the displays meter, vu, led, number, scope). A .gui file replaces them all: when you make an interface for such a program, write its panel.gui and take the #pragma panel lines out.
+%LIGHTS%)";
+
+        // THE INTERFACE's line on a racing wheel's shift lights (an instrument's: the Standalone's G29).
+        const char* const kLightsInstrument = R"(- A racing wheel's shift lights (the Standalone's G29, host.fm): a field named shiftLights, the main module's or Shared's (Shared's when the sound runs on between notes, as an engine does), lights the five lights over the wheel's hub as a display reads a field: a float 0 to 1 lights floor(5 x) of them from the outside in (0.6: three), an int is their mask (bit 0 the outermost pair, bit 4 the middle). As a car's tach: shiftLights = (rpm - 0.75 * redline) / (0.25 * redline), all five at the redline; at the limiter flash them, 1 and 0 by turns about eight times a second (a count of samples decides). They reach the wheel when they change, 40 times a second at most, and go off when it is switched off or the app quits.
 )";
 
         const char* const kLibraryIntro = R"(
@@ -831,7 +835,7 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s += instrument ? kThreadsInstrument : kThreadsEffect;
             s += kLarge;
             s += instrument ? kLargeInstrument : "";
-            s += kPanel;
+            s += replaceAll(kPanel, "%LIGHTS%", instrument ? kLightsInstrument : "");
             s += kLibraryIntro;
             for (const LibraryFile& f : kLibrary)
                 s += std::string("<library_file name=\"") + f.name + "\" category=\"" + f.category + "\">\n" + headerOf(f.source)
