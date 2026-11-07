@@ -12,11 +12,22 @@
 //            Funk-<name>-mcp (made, 0700), else $TMPDIR's funk-<uid>/ (made 0700) holding it; a funk-<uid> that is a link
 //            or that others may write into refused (no folder); a socket there listens and takes a connection (AF_UNIX),
 //            its path within sun_path's 108 bytes
+//   STANDALONE  the probe as the installed Standalone (hard-linked, else copied, into an app folder beside a
+//            shaderc), started by name through a link in PATH from another folder, as `TestingPlayground` from a
+//            terminal: JUCE's currentExecutableFile is then argv[0] against the working folder (the case reproduced),
+//            and bundledShaderc(standalone) still finds the shaderc beside the program (/proc/self/exe)
 //   SECRETS  the chat's keys (plugin/ChatStore.h) with a keyring of the probe's own (secrets::Store): saved there, no
 //            file; read back; there per its kind and origin (another provider's server is none); forgotten in both
 //            places; no keyring to ask: the file (FPK1), which moves into the keyring the next time the key is read
 //            with one there; a keyring that refuses a key: the file; has() asked once for two looks in a row; a
-//            keyring that fails to read: why says so. The desktop's (libsecret): with no session bus to reach, not
+//            keyring that fails to read: why says so; a key the keyring refused while it held an older one: the newer
+//            (the file) read, then moved in, the Anthropic key and another provider's; a keyring left locked (its
+//            prompt dismissed: a lookup finds nothing and says nothing, a clear removes nothing and says nothing): the
+//            key kept and said locked, a forget false with why and the key still kept, then forgotten once unlocked;
+//            the agent (a processor's): a turn's key read while the keyring's prompt waits, the chat's state asked
+//            meanwhile and answered (the read holds no lock of the agent's), the turn then sent with that key; a
+//            removal the locked keyring refuses said as an error (Anthropic's, Gemini's), the key still shown kept,
+//            then removed and said so. The desktop's (libsecret): with no session bus to reach, not
 //            available and saying why, and the key goes to its file (the container's case); with a bus address that
 //            leads nowhere (libsecret loaded), each call returns its error, nothing hangs or crashes, and the key goes
 //            to its file. The machine's key: /etc/machine-id's text, else D-Bus's, else "host:" and the host's name
@@ -49,8 +60,11 @@
 #include "fminus/Shaders.h"
 #include "fminus/Xdg.h"
 #include "mcp/McpProtocol.h"
+#include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
+#include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
+#include "plugin/Providers.h"
 #include "plugin/SecretStore.h"
 #include "plugin/WheelDriver.h"
 #include "plugin/WheelEvdev.h"
@@ -69,18 +83,22 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <optional>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -166,12 +184,18 @@ namespace
     }
 
     // ---- SECRETS: a keyring of the probe's own -----------------------------------------------------------------------
+    // `locked`: as libsecret over a keyring the user leaves locked (the prompt to unlock it dismissed): its search
+    // (has) still finds the item, its lookup finds nothing and says nothing, its store fails, its clear removes nothing
+    // and says nothing. `hold`: lookup waits until it is let go (a prompt the user has not answered yet), `inLookup`
+    // saying so. Lookups may run on the agent's worker while the probe's thread looks: the maps are the probe's alone
+    // then (it changes them only while no turn runs).
     struct FakeStore final : pg::secrets::Store
     {
         std::map<std::string, std::string> kept;             // kind \n origin -> secret
         std::map<std::string, std::string> labels;
-        bool up = true, refuse = false, failRead = false;
-        int hasCalls = 0;
+        bool up = true, refuse = false, failRead = false, locked = false;
+        std::atomic<bool> hold{ false }, inLookup{ false };
+        std::atomic<int> hasCalls{ 0 };
         static std::string id(const pg::secrets::Item& i) { return i.kind + "\n" + i.origin; }
         std::string name() const override { return "the probe's keyring"; }
         bool available(std::string* why) override
@@ -187,6 +211,10 @@ namespace
         }
         std::optional<std::string> lookup(const pg::secrets::Item& i, std::string* why) override
         {
+            inLookup = true;
+            for (int waited = 0; hold.load() && waited < 3000; ++waited)   // 30 s at most: a probe never hangs
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            inLookup = false;
             if (failRead)
             {
                 if (why != nullptr)
@@ -196,11 +224,11 @@ namespace
             if (why != nullptr)
                 why->clear();
             const auto it = kept.find(id(i));
-            return it != kept.end() ? std::optional<std::string>(it->second) : std::nullopt;
+            return it != kept.end() && !locked ? std::optional<std::string>(it->second) : std::nullopt;
         }
         bool store(const pg::secrets::Item& i, const std::string& label, std::string_view secret, std::string* why) override
         {
-            if (refuse)
+            if (refuse || locked)
             {
                 if (why != nullptr)
                     *why = "refused";
@@ -212,7 +240,8 @@ namespace
         }
         bool clear(const pg::secrets::Item& i, std::string*) override
         {
-            kept.erase(id(i));
+            if (!locked)
+                kept.erase(id(i));
             return true;
         }
     };
@@ -515,6 +544,14 @@ PROBE(plugin, linux)
     const std::string name = pg::product::kName;
     const std::string company = pg::product::kCompany;
     const std::string prefix = pg::product::kEnvPrefix;
+    // The probe started again as the installed Standalone is, by name through PATH (STANDALONE, below): what it finds,
+    // into the file named, and nothing else.
+    if (const char* self = std::getenv((prefix + "LINUX_PROBE_SELF").c_str()); self != nullptr && *self != '\0')
+    {
+        writeText(self, juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName().toStdString()
+                            + "\n" + pg::bundledShaderc(true) + "\n");
+        return P.finish();
+    }
     const fs::path out = fs::path(probe::outPath("linux"));
     std::error_code ec;
     fs::remove_all(out, ec);
@@ -624,6 +661,49 @@ PROBE(plugin, linux)
         P.eq("mcp.folder.link_not_followed", fs::exists(t / "elsewhere" / ("Funk-" + name + "-mcp")) ? 1 : 0, 0);
     }
 
+    // ---- STANDALONE ------------------------------------------------------------------------------------------------------
+    {
+        // The probe as the installed Standalone (a file of the app's folder, beside its shaderc), started by name through
+        // the package's link in PATH from another folder: JUCE's currentExecutableFile is then argv[0] against the
+        // working folder, and the shaderc beside the program is found all the same.
+        const fs::path prog = out / "prog";
+        const fs::path app = prog / "app", bin = prog / "bin", cwd = prog / "cwd";
+        for (const fs::path& d : { app, bin, cwd })
+            fs::create_directories(d);
+        const fs::path probeExe = fs::read_symlink("/proc/self/exe", ec);
+        ec.clear();
+        fs::create_hard_link(probeExe, app / name, ec);      // its own file there: a link would resolve back
+        if (ec)                                              // another file system (PROBE_OUT_DIR elsewhere): a copy
+        {
+            ec.clear();
+            fs::copy_file(probeExe, app / name, ec);
+            ::chmod((app / name).c_str(), 0755);
+        }
+        yes(P, "standalone.setup", !ec, "cannot put " + probeExe.string() + " into " + app.string() + ": " + ec.message());
+        if (!ec)
+        {
+            writeText(app / "shaderc", "#!/bin/sh\n");
+            ::chmod((app / "shaderc").c_str(), 0755);
+            fs::create_symlink(app / name, bin / name, ec);
+            writeText(prog / "run.sh", "cd \"$1\" || exit 9\nexec \"$2\" plugin.linux\n");
+            const fs::path said = prog / "said.txt";
+            const Run r = runScript(prog / "run.sh", { cwd.string(), name },
+                                    { { "PATH", bin.string() + ":/usr/bin:/bin" }, { "HOME", (prog / "home").string() },
+                                      { "LANG", "C.UTF-8" }, { "PROBE_OUT_DIR", (prog / "out").string() },
+                                      { prefix + "LINUX_PROBE_SELF", said.string() } },
+                                    prog, prog / "child.log");
+            const std::string text = readText(said);
+            const std::size_t nl = text.find('\n');
+            if (nl == std::string::npos)
+                std::printf("standalone: the child (exit %d) said nothing:\n%s\n", r.code, r.out.c_str());
+            // The child sees its folders as the kernel has them (getcwd, /proc/self/exe): without links.
+            same(P, "standalone.by_name.reproduced", text.substr(0, nl), (fs::canonical(cwd, ec) / name).string());
+            same(P, "standalone.by_name.shaderc", nl != std::string::npos ? text.substr(nl + 1, text.find('\n', nl + 1) - nl - 1) : "",
+                 (fs::canonical(app, ec) / "shaderc").string());
+        }
+        fs::remove_all(prog, ec);
+    }
+
     // ---- SECRETS ----------------------------------------------------------------------------------------------------------
     {
         Env env;
@@ -645,7 +725,7 @@ PROBE(plugin, linux)
         store::setSecretStoreForTests(&ring, true);          // the cache emptied
         (void)store::hasKey();
         (void)store::hasKey();
-        P.eq("secrets.has_asked_once", ring.hasCalls, 1);
+        P.eq("secrets.has_asked_once", ring.hasCalls.load(), 1);
         yes(P, "secrets.forget", store::forgetKey());
         P.eq("secrets.forgotten", static_cast<int64_t>(ring.kept.size()), 0);
         P.eq("secrets.forgotten_has", store::hasKey() ? 1 : 0, 0);
@@ -684,6 +764,100 @@ PROBE(plugin, linux)
         P.eq("secrets.failing.loads", store::loadKey(&why).has_value() ? 1 : 0, 0);
         yes(P, "secrets.failing.why", why.find("the probe's keyring: locked") != std::string::npos, why);
         ring.failRead = false;
+
+        // A key saved while the keyring refused it (left locked), the keyring holding an older one: the newer, from its
+        // file, then moved in once the keyring takes it. The same for another provider's.
+        const std::string anthropicId = "anthropic\nhttps://api.anthropic.com", openaiId = "openai\nhttps://api.openai.com";
+        const std::string older = key.substr(0, key.size() - 6) + "OLDKEY";
+        const std::string olderAi = openai.substr(0, openai.size() - 6) + "OLDKEY";
+        yes(P, "secrets.newer.save_old", store::saveKey(older, &why) && store::saveProviderKey("openai", "https://api.openai.com", olderAi, &why), why);
+        ring.refuse = true;
+        yes(P, "secrets.newer.save_new", store::saveKey(key, &why) && keyFile.existsAsFile()
+                                             && store::saveProviderKey("openai", "https://api.openai.com", openai, &why), why);
+        same(P, "secrets.newer.ring_old", ring.kept[anthropicId], older);
+        same(P, "secrets.newer.loads_new_refused", store::loadKey(&why).value_or(""), key);
+        ring.refuse = false;
+        store::setSecretStoreForTests(&ring, true);          // as another process: nothing cached
+        same(P, "secrets.newer.loads_new", store::loadKey(&why).value_or(""), key);
+        same(P, "secrets.newer.moved_in", ring.kept[anthropicId], key);
+        P.eq("secrets.newer.file_gone", keyFile.exists() ? 1 : 0, 0);
+        same(P, "secrets.newer.provider_loads_new", store::loadProviderKey("openai", "https://api.openai.com", &why).value_or(""), openai);
+        same(P, "secrets.newer.provider_moved_in", ring.kept[openaiId], openai);
+        P.eq("secrets.newer.provider_file_gone", static_cast<int64_t>(dir.findChildFiles(juce::File::findFiles, false, "key-*").size()), 0);
+
+        // A keyring left locked (the user dismissed its prompt): the key kept but not read, and said so; not removed by
+        // a forget, which says so (libsecret's clear removes no locked item and says nothing); removed once unlocked.
+        ring.locked = true;
+        store::setSecretStoreForTests(&ring, true);
+        why.clear();
+        P.eq("secrets.locked.loads_none", store::loadKey(&why).has_value() ? 1 : 0, 0);
+        yes(P, "secrets.locked.why", why.find("the probe's keyring is locked") != std::string::npos, why);
+        P.eq("secrets.locked.has", store::hasKey() ? 1 : 0, 1);
+        std::string forgetWhy;
+        P.eq("secrets.locked.forget_fails", store::forgetKey(&forgetWhy) ? 1 : 0, 0);
+        yes(P, "secrets.locked.forget_why", forgetWhy.find("the probe's keyring still holds it") != std::string::npos, forgetWhy);
+        same(P, "secrets.locked.still_kept", ring.kept[anthropicId], key);
+        P.eq("secrets.locked.still_has", store::hasKey() ? 1 : 0, 1);
+        forgetWhy.clear();
+        P.eq("secrets.locked.provider_forget_fails", store::forgetProviderKey("openai", "https://api.openai.com", &forgetWhy) ? 1 : 0, 0);
+        yes(P, "secrets.locked.provider_forget_why", forgetWhy.find("still holds it") != std::string::npos, forgetWhy);
+        P.eq("secrets.locked.provider_still_has", store::hasProviderKey("openai", "https://api.openai.com") ? 1 : 0, 1);
+        ring.locked = false;
+        yes(P, "secrets.unlocked.forget", store::forgetKey(&forgetWhy) && store::forgetProviderKey("openai", "https://api.openai.com", &forgetWhy), forgetWhy);
+        P.eq("secrets.unlocked.forgotten", store::hasKey() || store::hasProviderKey("openai", "https://api.openai.com") ? 1 : 0, 0);
+        P.eq("secrets.unlocked.ring_empty", static_cast<int64_t>(ring.kept.size()), 0);
+
+        // The agent: a turn reads the key without the agent's lock (the keyring's prompt may wait for the user while the
+        // editor asks for the chat's state); a removal the keyring refuses is said as such, the key still shown kept.
+        {
+            const auto lastOf = [](const pg::ChatState& st, pg::ChatEntry::Kind kind) {
+                for (auto it = st.entries.rbegin(); it != st.entries.rend(); ++it)
+                    if (it->kind == kind)
+                        return it->text;
+                return std::string();
+            };
+            pg::Processor processor;
+            pg::ChatAgent& agent = processor.chatAgent();
+            auto script = std::make_shared<fake::Script>();
+            script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "high" } } });
+            script->add(fake::Response::ok(fake::Sse().start().text("Hello.").end()));
+            agent.setTransport(std::make_unique<fake::Transport>(script));
+            yes(P, "secrets.agent.saved", store::saveKey(key, &why), why);   // kept; the agent has not read it
+            ring.hold = true;                                // its prompt not answered yet
+            agent.send("hello");
+            for (int i = 0; i < 3000 && !ring.inLookup.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            P.eq("secrets.agent.reading", ring.inLookup.load() ? 1 : 0, 1);
+            auto state = std::async(std::launch::async, [&agent] { return agent.chatState(); });
+            P.eq("secrets.agent.state_while_reading", state.wait_for(std::chrono::seconds(5)) == std::future_status::ready ? 1 : 0, 1);
+            ring.hold = false;
+            state.wait();
+            agent.waitIdle();
+            same(P, "secrets.agent.answered", lastOf(agent.chatState(), pg::ChatEntry::Kind::assistant), "Hello.");
+            same(P, "secrets.agent.sent_with_key", script->lastHeader("POST /v1/messages", "x-api-key"), key);
+
+            ring.locked = true;
+            agent.forgetKey();
+            const std::string said = lastOf(agent.chatState(), pg::ChatEntry::Kind::error);
+            yes(P, "secrets.agent.not_removed_said", said.find("could not be removed") != std::string::npos
+                                                         && said.find("still holds it") != std::string::npos, said);
+            P.eq("secrets.agent.still_shown", agent.chatState().hasKey ? 1 : 0, 1);
+            const pg::ChatProvider gemini{ "gemini", "", "" };
+            const std::string geminiOrigin = pg::providers::originOf(pg::providers::baseOf(gemini));
+            ring.locked = false;
+            yes(P, "secrets.agent.gemini_saved", store::saveProviderKey("gemini", geminiOrigin, fake::fakeGeminiKey(), &why), why);
+            ring.locked = true;
+            agent.forgetProviderKey(gemini);
+            const std::string saidGemini = lastOf(agent.chatState(), pg::ChatEntry::Kind::error);
+            yes(P, "secrets.agent.provider_not_removed_said", saidGemini.find("for " + pg::providers::nameOf(gemini) + " could not be removed") != std::string::npos,
+                saidGemini);
+            ring.locked = false;
+            agent.forgetKey();
+            agent.forgetProviderKey(gemini);
+            const std::string removed = lastOf(agent.chatState(), pg::ChatEntry::Kind::note);
+            yes(P, "secrets.agent.removed_said", removed.find("removed from") != std::string::npos, removed);
+            P.eq("secrets.agent.gone", agent.chatState().hasKey || store::hasProviderKey("gemini", geminiOrigin) ? 1 : 0, 0);
+        }
 
         // The desktop's, with no session bus to reach: none, and the file. (libsecret's own file backend, which
         // SECRET_BACKEND=file chooses, is never reached from here.)
