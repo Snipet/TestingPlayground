@@ -195,11 +195,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   recording (its blocks keep 64 dials). The host never sees one: no `juce::AudioProcessorParameter`, no automation, no
   `params_` entry (it holds `kHostControls`); `raw_[c]` of a panel slot points into `panelValues_`, so every reader
   stays as it was, and every write goes through `Processor::writeDial` (a host gesture, or the value stored and the host
-  told its state changed: `withNonParameterStateChanged`; never from the audio thread). The session keeps the used
-  ones beside the APVTS's `<PARAM>`s, normalised in the program's controls as those are (`<PANEL><DIAL slot value/>`),
-  and a state without them loads each at its program's default (written straight, not as a gesture). A mask of slots
-  is 64 bits (`slotBit`): never `1u << c`. `plugin.state` PANEL, `plugin.projects` PANEL, `fminus.contract` DIALS,
-  `fminus.gui` LIMITS check.
+  told its state changed: `withNonParameterStateChanged`; never from the audio thread). The session keeps all 32
+  beside the APVTS's `<PARAM>`s, as it keeps every one of those (a slot the program that plays leaves unused may be
+  the kept program's: an A/B's side with fewer dials), normalised in the program's controls as those are
+  (`<PANEL><DIAL slot value/>`), and a state without them loads each at its program's default (written straight, not
+  as a gesture). A mask of slots is 64 bits (`slotBit`): never `1u << c`. Under the code, dials that would leave the
+  editor less than its 80 px floor (64 in the least window) fold into the dials' bar, as beside a netlist's drawing;
+  the PANEL view has every one (its small rows closing up, `kTightRowGap`). `plugin.state` PANEL, `plugin.projects`
+  PANEL, `fminus.contract` DIALS, `fminus.gui` LIMITS, `gui.dump` ROWS check.
 - **A panel's edit** (Compiler.h's "A panel's edit", `Compiler::editPanel`; Patch.h's "The panel"): a RUN whose
   files differ from the recipe's (what plays) only in the panel's files (`isPanelFile`, Sources.h: `.gui`, `.sc`,
   `.sh`) is applied to the program that plays with no compile and nothing offered: no crossfade and no fade (the same

@@ -7,7 +7,7 @@
 //   UNTITLED  a section without a title has the title ""
 //   REST      the dials no section names come last, in slot order, untitled, with a note naming them
 //   NOTES     each line the plugin cannot use is a note on its file and line, and the program still plays: an unknown
-//             word, a name that is no dial (a parameter's past the 32 dials too), a dial in two sections (the first keeps
+//             word, a name that is no dial (a parameter's past the 64 dials too), a dial in two sections (the first keeps
 //             it), a text without its closing quote, a label without its text, a section without a dial (not drawn),
 //             small without a name, row with words after it, a title and a label too long (cut)
 //   FILES     lines in an included file count, after the program's; in a file no #include reads they do not; other
