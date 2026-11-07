@@ -248,7 +248,8 @@ namespace playground
             { { "name", "compare" },
               { "description",
                 "Compare two versions of the sound rendered offline alike: identical bits, or how and where they differ "
-                "in level, delay, bands, metrics and code. It changes nothing.\n\n"
+                "in level, delay, bands, metrics and code.\n\n"
+                "It changes nothing. "
                 "a, b: playing is the running program's own code (not the frozen copy it plays once its dials hold still); "
                 "previous_run what played before the last run that changed it ({a: \"previous_run\", b: \"playing\"}: "
                 "what that run changed); version:N is the open project's (one not kept lists those kept); project:Name@N, "

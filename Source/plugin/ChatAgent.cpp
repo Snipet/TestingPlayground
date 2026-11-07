@@ -2087,15 +2087,22 @@ namespace playground
                                                                  "every file)") },
                                         { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
                        {}));
+        // files, from and to (ChatImport.cpp): several files as one change, a file or folder of the user's brought in,
+        // the editor's files out to a folder; in place of name and content, so nothing is required.
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
                        "edit_file for a change to part of a file. The editor shows the file and the user can undo the "
                        "change there. A write does not play anything: call run_program after the files are ready.",
-                       claude::object({ { "name", prop("string", "The file's name: letters, digits, _, - and ., not "
-                                                                  "starting with '.', such as program.fm or "
-                                                                  "filters.fm") },
-                                        { "content", prop("string", "The file's whole text") } }),
-                       { "name", "content" }));
+                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
+                                        { "content", prop("string", "The file's whole text") },
+                                        { "files", claude::object({ { "type", "array" },
+                                                                    { "description", "[{name, content}] in place of those two: "
+                                                                                     "one change, all or none" } }) },
+                                        { "from", prop("string", "A file or folder on this Mac the user named: its program "
+                                                                 "files come in (text, 256 KB each at most)") },
+                                        { "to", prop("string", "A name: the editor's files go to a new folder of it on this "
+                                                               "Mac") } }),
+                       {}));
         {
             // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
             // unified diff of them (ChatFiles.cpp); name is then left out, so none is required. Its two forms as anyOf,
@@ -2129,9 +2136,9 @@ namespace playground
                                              { "maxItems", kMaxCircuitOps },
                                              { "description", "One command a line, at most 64 (the CIRCUITS guide has the grammar)" } });
             tools.add(tool("edit_circuit",
-                           "Change a .cir netlist the way the schematic editor does: add, place, connect, disconnect, set, "
-                           "rename, delete and lay out parts, one command a line in ops, applied together as one step the "
-                           "user can undo. All or none: the first command that fails is named and nothing changes. A part "
+                           "Change a .cir netlist's parts and wires as the schematic editor does, one command a line in "
+                           "ops, as one step the user can undo. Its commands add, place, connect, disconnect, set, rename, "
+                           "delete and lay out parts. All or none: the first command that fails is named and nothing changes. A part "
                            "added without at is placed beside what it connects to, and every wire is routed for you; the "
                            "netlist lines change as little as they can, and the drawing (its *@ lines) is written again. "
                            "Its result says what each command did, the netlist lines it changed, the circuit compiler's "
@@ -2153,13 +2160,11 @@ namespace playground
             juce::Array<juce::var> names;
             for (const LibraryFile& f : kLibrary)
                 names.add(juce::String(f.name));
-            juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
-            name.getDynamicObject()->setProperty("enum", names);
+            juce::var name = claude::object({ { "type", "string" }, { "enum", names } });   // the enum names them
             tools.add(tool("add_library_file",
-                           "Add a ready-made building block (THE LIBRARY in your instructions: FMinus files, and .cir "
-                           "netlists that become modules) to the editor as a tab, and get its whole text back; #include "
-                           "it in the program to use it. A file of that name "
-                           "in the editor already is left as it is.",
+                           "Add a building block from THE LIBRARY (an FMinus file, or a .cir netlist that becomes a module) "
+                           "to the editor as a tab and get its whole text; #include it in the program to use it. A file of "
+                           "that name in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
         tools.add(tool("run_program",
@@ -2341,8 +2346,8 @@ namespace playground
                                                                              "170), then the best so far"));
             tools.add(tool("tune_dials",
                            "Find values of up to eight float dials that bring measurements to goals by rendering "
-                           "offline (as measure_output does) and searching, instead of guessing; or sweep one dial "
-                           "over values: the goals' metrics at each, side by side. Goals are "
+                           "offline and searching; or sweep one dial over values: the goals' metrics at each, side by "
+                           "side. Goals are "
                            "metrics (CHECKING YOUR WORK) with min, max "
                            "or a target (a sweep's may be a metric alone). The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
@@ -2351,6 +2356,7 @@ namespace playground
         }
         tools.add(compareDefinition());
         tools.add(traceDefinition());
+        tools.add(functionDefinition());             // run_function (ChatFunction.cpp)
         {
             juce::var option = claude::object(
                 { { "type", "object" },
@@ -3416,6 +3422,7 @@ namespace playground
             { "compare", "Compare two sounds", true, false, "debugging" },
             { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
             { "capture", "Record what you play", true, false, "debugging" },
+            { "run_function", "Call a function", true, false, "debugging" },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -4004,70 +4011,10 @@ namespace playground
 
         if (name == "read_file")
             return readFileText(input, isError);           // ChatFiles.cpp
+        if (name == "run_function")
+            return runFunction(input, isError);            // ChatFunction.cpp
         if (name == "write_file")
-        {
-            std::string file, content;
-            if (!stringArg("name", file) || !stringArg("content", content))
-                return fail("write_file needs a name and the content");
-            if (!validFileName(file))
-                return fail("'" + file + "' cannot name a file: use letters, digits, _, - and ., not starting with "
-                            "'.', at most " + std::to_string(kMaxNameLength) + " characters");
-            Draft d = host_.chatDraft();
-            int i = findFile(d, file);
-            int keptLines = 0;
-            if (i < 0)
-            {
-                if (d.files.size() >= kMaxFiles)
-                    return fail("The editor holds at most " + std::to_string(kMaxFiles) + " files; delete one first");
-                d.files.push_back({ file, content });
-                i = static_cast<int>(d.files.size()) - 1;
-            }
-            else
-            {
-                // A netlist written without its drawing keeps the old one (its *@ lines, put back before .end): the
-                // places the user gave its parts stay; a line naming a part that is gone goes at the next drawing.
-                const std::string& old = d.files[static_cast<std::size_t>(i)].text;
-                if (isCircuitFile(file) && layoutLines(content) == 0 && (keptLines = layoutLines(old)) > 0)
-                {
-                    std::string block;
-                    std::size_t at = 0;
-                    while (at <= old.size())
-                    {
-                        const std::size_t end = std::min(old.find('\n', at), old.size());
-                        std::string_view line = std::string_view(old).substr(at, end - at);
-                        if (!line.empty() && line.back() == '\r')
-                            line.remove_suffix(1);
-                        if (cir::isLayoutLine(line))
-                            block += std::string(line) + "\n";
-                        at = end + 1;
-                    }
-                    content = cir::withBlock(content, block);
-                }
-                d.files[static_cast<std::size_t>(i)].text = content;
-            }
-            d.active = i;
-            setActivity("Writing " + file);
-            host_.chatSetDraft(d);
-            std::string version;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, content);
-                version = keepVersion(file, content);
-            }
-            const int lines = lineCount(content);
-            const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
-            note("wrote " + file + " (" + count + ")");
-            std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
-            if (keptLines > 0)
-                out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
-            bool included = i == 0;
-            for (const SourceFile& f : d.files)
-                if (f.text.find("#include \"" + file + "\"") != std::string::npos)
-                    included = true;
-            if (!included)
-                out += " No file #includes it yet.";
-            return out;
-        }
+            return writeFileText(input, isError);          // ChatImport.cpp
         if (name == "edit_file")
             return editFileText(input, isError);           // ChatFiles.cpp
         if (name == "edit_circuit")

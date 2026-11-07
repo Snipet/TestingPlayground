@@ -333,6 +333,7 @@ namespace playground
         int chatHostBlock() const override;
         std::string chatProject() const override;
         std::string chatAb() const override;
+        bool chatSnapshot(Engine::Snapshot& s, std::string& why) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
