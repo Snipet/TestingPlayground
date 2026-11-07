@@ -7,6 +7,7 @@
 #include "editor/CodeAssist.h"
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
+#include "editor/Dropdown.h"
 #include "editor/GuiItems.h"
 #include "editor/GuiView.h"
 #include "editor/IrView.h"
@@ -209,6 +210,10 @@ namespace playground::ui
         // its idle calls (10 a second) and this long with no tick (Panel.h "The meters' reader").
         constexpr int kHiddenIdles = 5;
         constexpr double kHiddenAfter = 1.0;             // s
+        // The explorer's projects and presets are polled this often while it shows (s), and a poll that fell due while
+        // it was away comes this long after it shows again, not on that frame (Panel::syncExplorer).
+        constexpr double kProjectsPoll = 3.0;
+        constexpr double kPollAfterShow = 0.25;
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
@@ -764,6 +769,8 @@ namespace playground::ui
             problems_ = &problems;
             close_ = std::move(close);
         }
+        // ... and its menuOpenAt, which the Schematic view's triggers (More, the probe chip) draw open by.
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { schematic_.setMenuOpen(std::move(open)); }
         // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
         // fields, a dial's port and control, and RUN (the Panel's).
         void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
@@ -2539,21 +2546,25 @@ namespace playground::ui
             bool shown() const override { return !hidden_; }
         };
 
-        // ---- the dials folded under a netlist's Schematic view: "32 DIALS   SHOW" -------------------------------------
-        // A 24 px bar at the program's column's bottom when the dials do not fit beside the drawing's room; its button
-        // shows them (small, the editor keeping 192 px) and hides them again. The PANEL view always shows them all.
+        // ---- the dials folded under a netlist's Schematic view, or the code: "32 DIALS   SHOW" -----------------------
+        // A 24 px bar at the program's column's bottom when the dials do not fit beside the drawing's room (or, under
+        // the code, when they would leave the editor less than its floor: 64 in the least window); its button shows
+        // them (small; the editor keeping 192 px beside a drawing, its floor beside the code) and hides them again. The
+        // PANEL view always shows them all. A panel of displays alone counts its displays.
         class DialsBarItem final : public Item
         {
         public:
             DialsBarItem(uint32_t id, std::function<void()> toggle) : id_(id), toggle_(std::move(toggle)) {}
 
-            void place(funkgui::Rect r, int dials, int hidden, bool open, bool shown)
+            void place(funkgui::Rect r, int dials, int displays, int hidden, bool open, bool shown, bool schematic)
             {
                 bounds_ = r;
-                dials_ = dials;
+                displays_ = dials == 0;
+                dials_ = dials == 0 ? displays : dials;
                 hidden_ = hidden;
                 open_ = open;
                 shown_ = shown;
+                schematic_ = schematic;
             }
             funkgui::Rect button() const { return { bounds_.right() - 64.0f, bounds_.y + 2.0f, 60.0f, bounds_.h - 4.0f }; }
 
@@ -2564,7 +2575,7 @@ namespace playground::ui
             }
             uint64_t drawKey() const override
             {
-                return DrawKey{}.mix(bounds_).mix(dials_).mix(hidden_).mix(open_).mix(hovered_).mix(pointer_).h;
+                return DrawKey{}.mix(bounds_).mix(dials_).mix(displays_).mix(hidden_).mix(open_).mix(hovered_).mix(pointer_).h;
             }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
             {
@@ -2572,10 +2583,11 @@ namespace playground::ui
                 const chat::Palette p = chat::palette(th);
                 c.rrect(bounds_.x, bounds_.y, bounds_.w, bounds_.h, 6.0f, p.raised, 1.0f, p.cardEdge);
                 char text[64];
+                const char* what = displays_ ? "DISPLAY" : "DIAL";
                 if (open_ && hidden_ > 0)                // more than the window has room for: the PANEL view has all
-                    std::snprintf(text, sizeof text, "%d OF %d DIALS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_);
+                    std::snprintf(text, sizeof text, "%d OF %d %sS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_, what);
                 else
-                    std::snprintf(text, sizeof text, "%d DIAL%s", dials_, dials_ == 1 ? "" : "S");
+                    std::snprintf(text, sizeof text, "%d %s%s", dials_, what, dials_ == 1 ? "" : "S");
                 c.text(text, bounds_.x + 10.0f, c.capCentreTop(bounds_.centreY(), funkgui::type::kMicro), funkgui::type::kMicro, th.ink52);
                 const funkgui::Rect b = button();
                 const bool hot = hovered_ && bounds_.contains(pointer_);
@@ -2604,8 +2616,9 @@ namespace playground::ui
                 it.id = id_;
                 it.role = funkgui::A11yRole::button;
                 it.bounds = bounds_;
-                it.title = open_ ? "Hide the dials" : "Show the dials";
-                it.value = std::to_string(dials_) + " dials" + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
+                const std::string what = displays_ ? "displays" : "dials";
+                it.title = (open_ ? "Hide the " : "Show the ") + what;
+                it.value = std::to_string(dials_) + " " + what + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
                 out.push_back(std::move(it));
             }
             bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
@@ -2618,8 +2631,9 @@ namespace playground::ui
             }
             void specLine(char* out, std::size_t n) const override
             {
-                std::snprintf(out, n, "%d DIALS   %s   THE PANEL VIEW SHOWS THEM ALL", dials_,
-                              open_ ? "HIDE GIVES THE DRAWING THEIR ROOM" : "SHOW PUTS THEM UNDER THE DRAWING, SMALL");
+                const char* where = schematic_ ? "THE DRAWING" : "THE CODE";
+                std::snprintf(out, n, "%d %s   %s %s%s   THE PANEL VIEW SHOWS THEM ALL", dials_, displays_ ? "DISPLAYS" : "DIALS",
+                              open_ ? "HIDE GIVES" : "SHOW PUTS THEM UNDER", where, open_ ? " THEIR ROOM" : ", SMALL");
             }
             funkgui::Point centre() const override { return { button().centreX(), button().centreY() }; }
             bool shown() const override { return shown_; }
@@ -2628,8 +2642,9 @@ namespace playground::ui
             uint32_t id_;
             std::function<void()> toggle_;
             funkgui::Rect bounds_;
-            int dials_ = 0, hidden_ = 0;                 // the program's, and those over the editor's floor
-            bool open_ = false, shown_ = false, hovered_ = false;
+            int dials_ = 0, hidden_ = 0;                 // the program's (its displays' when it has no dial), and those over the editor's floor
+            bool displays_ = false;                      // a panel of displays alone: dials_ counts them
+            bool open_ = false, shown_ = false, hovered_ = false, schematic_ = true;
             funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         };
 
@@ -2706,6 +2721,9 @@ namespace playground::ui
     // Every call goes to the host the Panel was attached to. A menu's and a file chooser's answer comes later, outside
     // any input to the Panel (Panel.h "Unchanged frames"): the Panel is marked changed before the callback runs, so
     // what the answer does is drawn, whoever asked (the Panel, the code editor, the Schematic view, a .gui's menu).
+    // A menu shown is the open one (menuOpenAt: its trigger draws open) until its answer, dismissMenus() or the next
+    // request, which replaces it whether or not that one is shown (the hosts' rule): each request's serial says whether
+    // its answer still closes the open one.
     class Panel::HostProxy final : public funkgui::HostServices
     {
     public:
@@ -2726,13 +2744,30 @@ namespace playground::ui
         unsigned services() const override { return host_.services(); }
         bool showMenu(const funkgui::MenuRequest& request, funkgui::MenuCallback done) override
         {
-            return host_.showMenu(request, [panel = &panel_, then = std::move(done)](int id) {
+            const uint32_t serial = ++panel_.menuSerial_;
+            panel_.menuOpen_ = false;
+            panel_.dirty_ = true;
+            const bool shown = host_.showMenu(request, [panel = &panel_, serial, then = std::move(done)](int id) {
                 panel->dirty_ = true;
+                if (panel->menuSerial_ == serial)
+                    panel->menuOpen_ = false;
                 if (then)
                     then(id);
             });
+            if (shown && panel_.menuSerial_ == serial)
+            {
+                panel_.menuOpen_ = true;
+                panel_.menuAnchor_ = request.anchor;
+            }
+            return shown;
         }
-        void dismissMenus() override { host_.dismissMenus(); }
+        void dismissMenus() override
+        {
+            host_.dismissMenus();
+            ++panel_.menuSerial_;
+            panel_.menuOpen_ = false;
+            panel_.dirty_ = true;
+        }
         bool chooseFiles(const funkgui::FileRequest& request, funkgui::FilesCallback done) override
         {
             return host_.chooseFiles(request,
@@ -2907,6 +2942,8 @@ namespace playground::ui
             hooks.menuTheme = [this] {
                 return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
             };
+            hooks.menuOpen = [this](const funkgui::Rect& r) { return menuOpenAt(r); };
+            hooks.menuHost = [this] { return host_; };
             hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
             hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
             hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
@@ -3088,6 +3125,16 @@ namespace playground::ui
             sp.spec = "ZOOM   THE EDITOR'S SIZE ON SCREEN";
             zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        // The dropdowns' triggers draw open while their menu is (Dropdown.h), PROJECTS' while its card is.
+        for (const int i : { examplesItem_, libraryItem_, modelItem_, thinkingItem_, zoomItem_ })
+        {
+            TB& trigger = static_cast<TB&>(*items_[static_cast<std::size_t>(i)]);
+            trigger.setOpen([this, &trigger] { return menuOpenAt(trigger.bounds()); });
+        }
+        static_cast<TB&>(*items_[static_cast<std::size_t>(projectsItem_)]).setOpen([this] {
+            return projects_.isOpen();
+        });
+        settings_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
 
         // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
         // left of the zoom, and this button, which opens SETTINGS.
@@ -3144,6 +3191,7 @@ namespace playground::ui
     {
         FilesItem& fi = files();
         fi.setPanelHooks(problems_, [this](int tab) { closeFile(tab); });
+        fi.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         fi.setNotice([this](const std::string& text) { notice(text); });
         // The status line's Panel switch: the panel under the code, for the tab shown (none in the code window, which
         // has no panel: the editor's window shows it).
@@ -3246,6 +3294,19 @@ namespace playground::ui
             asked.explorerWant = explorerWant_;
             asked.chatWant = chatWant_;
             fit_ = columns::fit(asked);
+            // The chat as wide in the PANEL view as in the CODE view, where the explorer can take some of its room (the
+            // give-way order): a switch between them then never changes the conversation's width, which would lay out
+            // every block of it again (ChatView::setBounds; tens to hundreds of ms for a long one, at each switch). Its
+            // edge's reach is the CODE view's too. Not while the editor is in its own window, which has the explorer.
+            if (full() && !out_ && asked.chat && explorerOpen_)
+            {
+                columns::Asked code = asked;
+                code.explorer = true;
+                const columns::Fit c = columns::fit(code);
+                fit_.chat = c.chat;
+                fit_.chatLeast = c.chatLeast;
+                fit_.chatMost = c.chatMost;
+            }
         }
         chatW_ = fit_.chat;
         chatX_ = W - kMargin - chatW_;
@@ -3302,6 +3363,8 @@ namespace playground::ui
         // and the info strip's count carry them), and the dials, laid out in what is left, folded into a 24 px bar when
         // they do not fit ("32 DIALS   SHOW": shown small then, the editor keeping 192 px, or less, down to its 80 px
         // floor, for rows that need it: every dial shows unless even that is too little, which the bar then says).
+        // Under the code the bar comes only when the dials, all small, would leave the editor less than its 80 px
+        // floor over the problems list (64 in the least window): SHOW then shows the rows under that line.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
         const float inBottom = bottom - kInset;          // the program's card's inside
         const bool schematic = !full() && files().schematicShown();
@@ -3331,6 +3394,9 @@ namespace playground::ui
         };
         measure.micro = [](const std::string& text) {
             return funkgui::text::width(funkgui::FontService::get().atlas(), upper(asciiText(text)).c_str(), funkgui::type::kMicro);
+        };
+        measure.readout = [](const std::string& text) {
+            return funkgui::text::width(funkgui::FontService::get().atlas(), text.c_str(), looks::kReadout);
         };
         // A .gui file's interface (GuiLayout.h) in place of the dials: under the editor as tall as it is (up to the
         // room the editor leaves, scrolling past that), or across the whole column in the PANEL view.
@@ -3376,18 +3442,43 @@ namespace playground::ui
             guiView_->clear(panelSpec_);
             if (full())
             {
-                // The PANEL view: the dials from the column's top, as tall as they would be with all its room.
-                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, inBottom - kTabsY);
-                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY);
+                // The PANEL view: the dials from the column's top, as tall as they would be with all its room (small
+                // rows closing up to fit it: 64 dials in the least window, eight rows of eight; it has no fold).
+                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, inBottom - kTabsY, 0.0f, kTightRowGap);
+                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY, 0.0f,
+                                     kTightRowGap);
             }
             else
                 dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, roomForDials, schematic ? kTightGap : 0.0f);
             panelTop = dials_.top;
-            if (schematic && used > 0 && inBottom - dials_.top > roomForDials + 0.5f)
+            // The code view folds them into the bar too when, all small, they would leave the editor less than its
+            // 80 px floor over the problems list (64 dials in the least window): never over the editor, the tabs or
+            // the actions.
+            const float keepsFloor = kEditorY + kEditorFloor + 8.0f + problemsH + 16.0f;
+            const bool codeFold = !full() && !schematic && (used > 0 || !panelSpec_.displays.empty()) && dials_.top < keepsFloor - 0.5f;
+            if ((schematic && used > 0 && inBottom - dials_.top > roomForDials + 0.5f) || codeFold)
             {
                 dialsBar_ = true;
                 const float barTop = inBottom - kDialsBarH;
-                if (dialsOpen_)
+                if (dialsOpen_ && codeFold)
+                {
+                    // shown small over the bar; the rows over the editor's floor and the problems list are hidden (the
+                    // bar says how many: the PANEL view has all), and the list sits over the first row shown, the
+                    // editor taking the rest
+                    dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, barTop - 8.0f, roomForDials - kDialsBarH - 8.0f);
+                    hideAbove = keepsFloor;
+                    panelTop = barTop;
+                    for (int c = 0; c < kMaxControls; ++c)
+                        if (const float t = dials_.dials[static_cast<std::size_t>(c)].top; controls_[static_cast<std::size_t>(c)].used && t >= hideAbove)
+                            panelTop = std::min(panelTop, t);
+                    for (std::size_t d = 0; d < panelSpec_.displays.size() && d < dials_.displays.size(); ++d)
+                        if (dials_.displays[d].top >= hideAbove)
+                            panelTop = std::min(panelTop, dials_.displays[d].top);
+                    for (const SectionFrame& f : dials_.sections)
+                        if (f.r.y >= hideAbove)
+                            panelTop = std::min(panelTop, std::max(hideAbove, f.r.y - kSectionTitleTop));
+                }
+                else if (dialsOpen_)
                 {
                     // shown small for the room the editor's 192 px leave; rows past it take the editor's room down to
                     // its 80 px floor, and only rows past that are hidden (the bar says how many: the PANEL view has all)
@@ -3420,15 +3511,26 @@ namespace playground::ui
         files().setHidden(full());
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)]).setHidden(full() || schematic);
         const float editorH = schematic ? std::max(kEditorFloor, panelTop - 8.0f - kEditorY) : std::max(kEditorFloor, problemsY - 8.0f - kEditorY);
-        files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+        // Hidden in the PANEL view, the editors keep the CODE view's place: a width set every switch (the column is
+        // wider without the explorer) would measure every line of every tab's text and of the IR views' again
+        // (TextEditor::setBounds), both ways. Placed once at least, for a panel that opens in the PANEL view.
+        if (!full() || !filesPlaced_)
+        {
+            files().setGeometry({ inX, kTabsY, inW, kTabH }, { inX, kEditorY, inW, editorH });
+            filesPlaced_ = true;
+        }
         static_cast<ProblemsItem&>(*items_[static_cast<std::size_t>(problemsItem_)])
             .setBounds({ inX, problemsY, inW, problemsH });
         int hiddenDials = 0;                             // shown from the fold, but over the editor's floor
         for (int c = 0; c < kMaxControls; ++c)
             hiddenDials += dialsBar_ && !dialsFolded_ && controls_[static_cast<std::size_t>(c)].used
                                    && dials_.dials[static_cast<std::size_t>(c)].top < hideAbove ? 1 : 0;
+        const int displays = std::min(static_cast<int>(panelSpec_.displays.size()), kMaxDisplays);
+        if (used == 0)                                   // a panel of displays alone: the bar counts those
+            for (int d = 0; d < displays; ++d)
+                hiddenDials += dialsBar_ && !dialsFolded_ && dials_.displays[static_cast<std::size_t>(d)].top < hideAbove ? 1 : 0;
         static_cast<DialsBarItem&>(*items_[static_cast<std::size_t>(dialsBarItem_)])
-            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, hiddenDials, dialsOpen_, dialsBar_);
+            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, displays, hiddenDials, dialsOpen_, dialsBar_, schematic);
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
             {
@@ -3517,9 +3619,14 @@ namespace playground::ui
         usageY_ = card_.bottom() - kCardPad + 2.0f - kUsageH;
         const float composerY = usageY_ - 4.0f - composerH_;
         in.setBounds({ inX, composerY, inW, composerH_ }, kBarH);
+        const funkgui::Rect viewWas = chatView().bounds();
         chatView().setBounds({ card_.x + 2.0f, headerBottom + 6.0f, card_.w - 4.0f,
                                std::max(40.0f, composerY - 8.0f - (headerBottom + 6.0f)) });
-        reshowChat();                                    // the conversation laid out for its width now
+        // The conversation laid out for its place now, when it moved (refreshChat shows it whenever it changes, folded
+        // or not): a layout that leaves it where it was (a switch of the view) builds nothing of it again.
+        const funkgui::Rect viewIs = chatView().bounds();
+        if (viewIs.x != viewWas.x || viewIs.y != viewWas.y || viewIs.w != viewWas.w || viewIs.h != viewWas.h)
+            reshowChat();
         placeChatBar();
         ++layoutRevision_;
         dirty_ = true;
@@ -3761,6 +3868,7 @@ namespace playground::ui
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
     {
+        noteInput();
         dropActive_ = true;
         dropHover_ = card_.contains({ x, y });
         dirty_ = true;
@@ -3768,6 +3876,7 @@ namespace playground::ui
 
     void Panel::filesDragMove(float x, float y)
     {
+        noteInput();
         const bool over = card_.contains({ x, y });
         if (over != dropHover_)
         {
@@ -3778,12 +3887,14 @@ namespace playground::ui
 
     void Panel::filesDragExit()
     {
+        noteInput();
         dropActive_ = dropHover_ = false;
         dirty_ = true;
     }
 
     void Panel::filesDropped(const std::vector<std::string>& paths)
     {
+        noteInput();
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
@@ -3891,6 +4002,29 @@ namespace playground::ui
         }
         layout();
         dirty_ = true;
+    }
+
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant, bool explorerOpen, float explorerWant)
+    {
+        // layout()'s arithmetic in the PANEL view (full()): no explorer, the chat (or its rail) at the right, as wide
+        // as the CODE view has it when the explorer is open there.
+        columns::Asked asked;
+        asked.window = W;
+        asked.explorer = false;
+        asked.chat = chatOpen;
+        asked.chatWant = chatWant;
+        asked.explorerWant = explorerWant;
+        columns::Fit fit = columns::fit(asked);
+        if (chatOpen && explorerOpen)
+        {
+            columns::Asked code = asked;
+            code.explorer = true;
+            fit.chat = columns::fit(code).chat;
+        }
+        const float leftX = kMargin;
+        const float leftW = W - kMargin - fit.chat - (chatOpen ? kChatGap : kChatRailGap) - leftX;
+        const float inBottom = H - kFooterH - kBottomGap - kInset;
+        return { leftX + kInset, kTabsY, leftW - 2.0f * kInset, inBottom - kTabsY };
     }
 
     // ---- the columns' widths (Columns.h) ------------------------------------------------------------------------------
@@ -4001,17 +4135,32 @@ namespace playground::ui
     void Panel::syncExplorer()
     {
         if (!explorerShown_ || explorerItem_ < 0)
-            return;
-        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
-        const ProjectState st = port_.project();
-        // The projects and the open one's presets, every 3 s (the presets' file is read only when it changed:
-        // ProjectStore's presetsOf): a revision when they differ from what the rows show.
-        if (projectsAt_ < 0.0 || now - projectsAt_ > 3.0 || presetsOf_ != st.name)
         {
-            std::vector<ProjectEntry> projects = port_.projects();
+            explorerAway_ = true;
+            return;
+        }
+        const double now = host_ != nullptr ? host_->nowSeconds() : 0.0;
+        if (explorerAway_)
+        {
+            // Shown again (the CODE view, the explorer opened, a wider window): its rows as they were on this frame,
+            // which lays the panel out already; a poll that fell due while it was away comes kPollAfterShow later.
+            explorerAway_ = false;
+            if (projectsAt_ >= 0.0)
+                projectsAt_ = std::max(projectsAt_, now + kPollAfterShow - kProjectsPoll);
+        }
+        const ProjectState st = port_.project();
+        // The projects and the open one's presets, every kProjectsPoll s, and at once when the store's Reader has read a
+        // file since (EditorPort::projectsPolled: no project's file is read whole here; one the store does not hold as
+        // it is now is read on its thread, listed as it was until then): a revision when they differ from what the rows
+        // show.
+        const uint64_t read = port_.projectsRead();
+        if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
+        {
+            projectsReadSeen_ = read;
+            std::vector<ProjectEntry> projects = port_.projectsPolled();
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presets(st.name);
+            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
             if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name)
                 ++listsRevision_;
             projectList_ = std::move(projects);
@@ -4748,6 +4897,7 @@ namespace playground::ui
             const CompileStatus s = port_.status();
             lastOk_ = s.ok;
             lastMs_ = s.ms;
+            lastPanelOnly_ = s.panelOnly;
             // A program that stopped as it played (Compiler.h, "A program that stops"): what plays now, in words.
             lastStop_ = !s.stopped                       ? std::string()
                       : s.program == s.stoppedProgram    ? std::string("NOTHING PLAYS")
@@ -4852,8 +5002,8 @@ namespace playground::ui
         else
         {
             char buf[96];
-            std::snprintf(buf, sizeof buf, "%s   COMPILED IN %.0f MS", edited_ ? "EDITED: CMD-RETURN RUNS IT" : "RUNNING",
-                          lastMs_);
+            std::snprintf(buf, sizeof buf, "%s   %s IN %.0f MS", edited_ ? "EDITED: CMD-RETURN RUNS IT" : "RUNNING",
+                          lastPanelOnly_ ? "PANEL UPDATED" : "COMPILED", lastMs_);
             status_ = buf;
         }
         if (status_ != statusBefore)
@@ -4999,9 +5149,11 @@ namespace playground::ui
         const bool stale = chatAt_ < 0.0 || nowSec - chatAt_ >= 1.0 || nowSec < chatAt_;
         if (changed || stale)
         {
+            const bool moved = r != seenChat_;
             seenChat_ = r;
             chatAt_ = nowSec;
             const bool hadKey = chat_.ready();
+            const std::string hadProblem = chat_.keyProblem;
             const bool wasBusy = chat_.busy;
             chat_ = chat.chatState();
             if (chat_.busy && !wasBusy)
@@ -5013,7 +5165,11 @@ namespace playground::ui
                 if (inputItem().stripHeight() != strip)
                     layoutChat();                        // the row of pictures came or went: the box grows or shrinks
             }
-            chatView().show(chat_, emptyChat(chat_));
+            // Shown again when it changed (its revision) or the key's state did, not at each look once a second: that
+            // goes over the whole conversation's text (ChatView::show: every block's key, the transcript), 2 ms for a
+            // long one.
+            if (moved || hadKey != chat_.ready() || hadProblem != chat_.keyProblem)
+                chatView().show(chat_, emptyChat(chat_));
             inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
                                        : chat_.asking ? "Answer above, or write your own answer"
                                        : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
@@ -5069,16 +5225,15 @@ namespace playground::ui
         if (host_ == nullptr || efforts.empty())
             return;
         funkgui::MenuRequest request;
-        int id = 1;
+        int id = 1, current = 0;
         for (const std::string& e : efforts)
         {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = effortName(e) + (e == "medium" ? " (the default)" : "");
-            item.checked = e == chat_.effort;
-            request.items.push_back(std::move(item));
+            if (e == chat_.effort)
+                current = id;
+            request.items.push_back(
+                dropdown::choice(id++, effortName(e) + (e == "medium" ? " (the default)" : ""), e == chat_.effort));
         }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(thinkingItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(thinkingItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, efforts](int chosen) {
             if (chosen < 1 || chosen > static_cast<int>(efforts.size()))
@@ -5114,37 +5269,24 @@ namespace playground::ui
             return;
         // Two choices: the model that builds (writes the files, runs, measures, answers), and the one that plans each
         // request first, or none (ChatAgent.h, "A planner").
-        constexpr int kPlanNone = 1000, kPlanFirst = 1001, kHeading = 2000;
+        // Each a radio set under its header; the builder's choice highlighted when it opens.
+        constexpr int kPlanNone = 1000, kPlanFirst = 1001;
         funkgui::MenuRequest request;
-        request.items.push_back({ kHeading, "BUILD WITH", false });
-        int id = 1;
+        request.items.push_back(dropdown::header("Build with"));
+        int id = 1, current = 0;
         for (const ChatModel& m : chat_.models)
         {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = m.name;
-            item.checked = m.id == chat_.model;
-            request.items.push_back(std::move(item));
+            if (m.id == chat_.model)
+                current = id;
+            request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.model));
         }
-        request.items.push_back({ 0, {}, false, false, true });
-        request.items.push_back({ kHeading + 1, "PLAN WITH (EACH REQUEST, FIRST)", false });
-        {
-            funkgui::MenuItem none;
-            none.id = kPlanNone;
-            none.label = "No planner";
-            none.checked = chat_.planner.empty();
-            request.items.push_back(std::move(none));
-        }
+        request.items.push_back(dropdown::separator());
+        request.items.push_back(dropdown::header("Plan with (each request, first)"));
+        request.items.push_back(dropdown::choice(kPlanNone, "No planner", chat_.planner.empty()));
         id = kPlanFirst;
         for (const ChatModel& m : chat_.models)
-        {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = m.name;
-            item.checked = m.id == chat_.planner;
-            request.items.push_back(std::move(item));
-        }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(modelItem_)]).bounds();
+            request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.planner));
+        dropdown::dropdownMenu(request, triggerRect(modelItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::vector<ChatModel> models = chat_.models;
         host_->showMenu(request, [this, models](int chosen) {
@@ -5404,7 +5546,7 @@ namespace playground::ui
         int id = 1;
         for (const Example& e : kExamples)
             request.items.push_back({ id++, e.title });
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(examplesItem_), 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) { loadExample(chosen - 1); });
     }
@@ -5463,31 +5605,32 @@ namespace playground::ui
         return false;
     }
 
-    // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab
-    // of its own, shown, and the program #includes it (one more line at its top, an edit Cmd-Z takes back); one it has
-    // is shown. With no room for another tab, the others are greyed.
+    // LIBRARY: the library's files under their categories' headers, a tick on those the program has, each label
+    // starting with its file's name (the menu's type-ahead finds a file by it). One the program lacks becomes a tab of
+    // its own, shown, and the program #includes it (one more line at its top, an edit Cmd-Z takes back); one it has is
+    // shown. With no room for another tab, the others are greyed.
     void Panel::openLibrary()
     {
         if (host_ == nullptr)
             return;
         funkgui::MenuRequest request;
         const bool room = files().count() < static_cast<int>(kMaxFiles);
-        constexpr int kHeading = 1000;                   // a category's heading: an id of its own, greyed (never chosen)
         std::string category;
         for (std::size_t i = 0; i < std::size(kLibrary); ++i)
         {
             const LibraryFile& f = kLibrary[i];
             if (category != f.category)
             {
-                if (!category.empty())
-                    request.items.push_back({ 0, {}, false, false, true });
                 category = f.category;
-                request.items.push_back({ kHeading + static_cast<int>(i), upper(category), false });
+                std::string title = category;
+                if (!title.empty())
+                    title[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(title[0])));
+                request.items.push_back(dropdown::header(std::move(title)));   // MenuLook writes it in capitals
             }
             const bool have = files().find(f.name) >= 0;
             request.items.push_back({ static_cast<int>(i) + 1, std::string(f.name) + "   " + f.summary, have || room, have });
         }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(libraryItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(libraryItem_), 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             if (chosen >= 1 && chosen <= static_cast<int>(std::size(kLibrary)))
@@ -5676,6 +5819,18 @@ namespace playground::ui
     namespace
     {
         constexpr const char* kMutedText = "Input muted to avoid a feedback loop";
+    }
+
+    funkgui::Rect Panel::triggerRect(int item) const
+    {
+        return static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(item)]).bounds();
+    }
+
+    bool Panel::menuOpenAt(const funkgui::Rect& anchor) const noexcept
+    {
+        const funkgui::Rect& a = menuAnchor_;
+        return menuOpen_ && std::abs(a.x - anchor.x) < 0.5f && std::abs(a.y - anchor.y) < 0.5f
+            && std::abs(a.w - anchor.w) < 0.5f && std::abs(a.h - anchor.h) < 0.5f;
     }
 
     bool Panel::openSettings()
@@ -6105,8 +6260,8 @@ namespace playground::ui
             return;
         funkgui::MenuRequest request;
         for (int i = 0; i < z->count(); ++i)
-            request.items.push_back({ i + 1, z->label(i), z->enabled(i), i == z->active(), false });
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]).bounds();
+            request.items.push_back(dropdown::choice(i + 1, z->label(i), i == z->active(), z->enabled(i)));
+        dropdown::dropdownMenu(request, triggerRect(zoomItem_), z->active() >= 0 ? z->active() + 1 : 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             auto* m = static_cast<ZoomModel*>(zoom_);
@@ -6205,14 +6360,15 @@ namespace playground::ui
                 }
                 meters_ = shown_.frames[shownAt_];
                 meters_.program = panelProgram_;
+                meters_.tapTable = panelSpec_.tapTable;
             }
             else if (port_.meters(m))
                 meters_ = m;
             // The fields are this panel's program's once the audio thread plays it; until then they are another's,
-            // and read as 0.
+            // and read as 0. A panel's edit's new table read before this panel has its status, the last fields of its
+            // own hold; its own new table not read yet, 0 (TapsShown).
             Meters shown = meters_;
-            if (shown.program != panelProgram_)
-                std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
+            const bool fields = tapsShown_.show(shown, panelProgram_, panelSpec_.tapTable);
             if (showing_)
             {
                 for (const auto& [tap, v] : shown_.taps)
@@ -6246,7 +6402,7 @@ namespace playground::ui
                 for (const auto& tv : shown_.taps)
                     if (tv.first >= 0 && tv.first < kMaxDisplays)
                         stateTaps |= 1u << tv.first;
-            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_, stateTaps);
+            guiView_->tick(panelSpec_, shown, fields, stateTaps);
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
@@ -6329,9 +6485,26 @@ namespace playground::ui
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_ || compiling_)
+        if (dirty_ || compiling_ || inputHeld())
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
+    }
+
+    // Input (Panel.h "Unchanged frames", kInputHold): the time of the last, which holds the full rate. `nudge`: tell the
+    // host's pump now too, for the events FunkGui's EditorHost does not nudge it on (a release, the pointer leaving),
+    // so the frame that draws them runs at the next display tick.
+    void Panel::noteInput(bool nudge)
+    {
+        if (host_ == nullptr)
+            return;
+        inputAt_ = host_->nowSeconds();
+        if (nudge)
+            host_->nudgeFullRate();
+    }
+
+    bool Panel::inputHeld() const
+    {
+        return host_ != nullptr && host_->nowSeconds() - inputAt_ < kInputHold;
     }
 
     void Panel::draw(funkgui::Canvas& c, const funkgui::Theme& hostTheme)
@@ -6620,6 +6793,7 @@ namespace playground::ui
 
     void Panel::pointerMove(const funkgui::PointerEvent& e)
     {
+        noteInput();
         const int before = hasPointer_ ? itemAt(pointer_) : -1;
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
@@ -6633,6 +6807,7 @@ namespace playground::ui
 
     void Panel::pointerExit()
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no exit
         if (hasPointer_)
             if (const int before = itemAt(pointer_); before >= 0)
                 items_[static_cast<std::size_t>(before)]->pointerExit();
@@ -6648,6 +6823,7 @@ namespace playground::ui
 
     void Panel::pointerDown(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         ring_ = false;                                   // the pointer is the affordance now
         pointer_ = { e.x, e.y };
@@ -6729,6 +6905,7 @@ namespace playground::ui
 
     void Panel::pointerDrag(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         pointer_ = { e.x, e.y };
         if (pressed_ >= 0 && gestures_)
@@ -6738,6 +6915,7 @@ namespace playground::ui
 
     void Panel::pointerUp(const funkgui::PointerEvent& e)
     {
+        noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no release
         dirty_ = true;                                   // input: drawn at the next frame
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerUp(e, *gestures_);
@@ -6747,6 +6925,7 @@ namespace playground::ui
 
     void Panel::doubleClick(const funkgui::PointerEvent& e)
     {
+        noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
@@ -6773,6 +6952,7 @@ namespace playground::ui
 
     bool Panel::wheel(const funkgui::WheelEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {
@@ -6832,6 +7012,7 @@ namespace playground::ui
 
     bool Panel::key(const funkgui::KeyEvent& e)
     {
+        noteInput();
         dirty_ = true;
         if (settings_.isOpen())
         {
@@ -7025,13 +7206,12 @@ namespace playground::ui
     {
         // Items come and go with the program's dials, the host's zoom, the files' tabs, the conversation (as it grows and
         // scrolls) and the key dialog, and move with the panel's size.
-        static_assert(kMaxControls <= 32, "the dials' mask");
         uint32_t r = items_[static_cast<std::size_t>(zoomItem_)]->shown() ? 1u : 0u;
-        uint32_t dials = 0;                                   // the dials shown, one bit each, mixed in below
+        uint64_t dials = 0;                                   // the dials shown, one bit each, mixed in below
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
-                dials |= 1u << c;
-        r ^= dials * 0x27D4EB2Fu;
+                dials |= slotBit(c);
+        r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
@@ -7044,11 +7224,11 @@ namespace playground::ui
             if (items_[static_cast<std::size_t>(itemOfDisplay_[static_cast<std::size_t>(d)])]->shown())
                 displays |= 1u << d;
         r ^= displays * 0x9E3779B9u;
-        uint32_t gui = 0;                                     // a .gui interface's controls shown
+        uint64_t gui = 0;                                     // a .gui interface's controls shown
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = guiView_->controlItem(c); i >= 0 && items_[static_cast<std::size_t>(i)]->shown())
-                gui |= 1u << c;
-        r ^= gui * 0x2C1B3C6Du;
+                gui |= slotBit(c);
+        r ^= static_cast<uint32_t>(gui) * 0x2C1B3C6Du ^ static_cast<uint32_t>(gui >> 32) * 0x9E3779B1u;
         // The counters times odd constants: a change in any one of them changes the revision.
         // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
         r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;

@@ -17,7 +17,8 @@
 //   SWAP     an editor's swap, backup and lock files (.x.swp, x~, #x#, .#x, 4913, x.crswap) are never taken
 //   FOLDER   a new file there is appended to the draft; renamed, it keeps its place (its tab still shown); deleted,
 //            it goes; the program deleted there is written back (a note says so), renamed there it is renamed in the
-//            draft; a name the plugin cannot take and a file past 16 are left there with a note; a .txt is nobody's
+//            draft; a name the plugin cannot take and a file past 16 are left there with a note; a .txt is nobody's,
+//            a shader's .sh the program's
 //   PLUGIN   a file added, renamed and deleted in the draft is so in the folder
 //   CONFLICT both sides changed: the file is held (neither side written), listed; keeping the plugin's writes it there
 //            and keeps the folder's in .conflicts/; keeping the folder's lands it in the draft and keeps the plugin's
@@ -359,6 +360,13 @@ PROBE(plugin, folder)
         fs::remove(dir / "my file.fm");
         passFor(sync, t, 0.5);
         P.eq("folder.note_goes", noted(sync.state(""), "not a valid name") ? 0 : 1, 1);
+        // A shader's .sh file is the program's, as a .sc is.
+        writeFile(dir / "gauge.sh", "// shared shader functions\n");
+        passFor(sync, t, 0.5);
+        P.eq("folder.shader_header", fake.index("gauge.sh") == 2 ? 1 : 0, 1);
+        fs::remove(dir / "gauge.sh");
+        passFor(sync, t, 0.5);
+        P.eq("folder.shader_header_goes", fake.index("gauge.sh") < 0 && fake.draft.files.size() == 2u ? 1 : 0, 1);
     }
 
     // ---- PLUGIN --------------------------------------------------------------------------------------------------------

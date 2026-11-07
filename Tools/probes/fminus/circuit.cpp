@@ -35,8 +35,8 @@
 //   DIALS        a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //                set(): dials drive, tone and level after its own param, real 0 to 1 shown 0-100 %, linear, at the .pot
 //                defaults, one set for both elements, slots 1 to 3, one nonblocking shim; a param named drive gives
-//                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
-//                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
+//                amp_drive; two scalar fields two sets; with 63 params drive takes the 64th slot (the panel's own
+//                last) and a note each says tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
 //                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
 //                instrument's note on a free instance whose values are current none either); an effect's host->beat
 //                at each 16-sample call's first sample while a pot glides (no step; in 64 and 333 the circuit the same
@@ -80,7 +80,10 @@
 //                holds it, and it is offered later without compiling again; compileNow waits for a refine running on
 //                another thread, and its program plays; a RUN queued before the refine wins (it reads the store: no
 //                note, no job) and the refine is dropped; an instrument's refine waits while a key is held (no new
-//                program id), and lands after the release, once the voice has ended; with the tests on, a RUN whose
+//                program id), and lands after the release, once the voice has ended; an instrument's program whose
+//                Shared ticks (Patch.h, "Shared on its own") is never refined, silent though it is (its program and
+//                revision stay, the answer due), and the next RUN plays the answer, one that changes only its panel.gui
+//                too (a panel's edit before the answer, a compile once it waits); with the tests on, a RUN whose
 //                files drop the netlist cancels its test, which stores nothing, and a RUN made while the test runs has
 //                its status before landed() moves (by order), the refine after it
 //   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
@@ -672,18 +675,19 @@ namespace
             P.eq("dials.clash_field_pot", a == "drive amp_drive tone level" ? 1 : 0, 1);
             P.eq("dials.two_fields_two_sets", b == "a_drive a_tone a_level b_drive b_tone b_level" ? 1 : 0, 1);
         }
-        // 31 params: drive takes the 32nd slot, the note covers tone and level.
+        // 63 params: drive takes the 64th slot (the panel's own last: Controls.h), the note covers tone and level.
         {
             std::string params;
-            for (int k = 0; k < 31; ++k)
+            for (int k = 0; k < pg::kMaxControls - 1; ++k)
                 params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0)]];\n";
             const pg::Patch::Result full = pg::Patch::compile({ { pg::kProgramName, undriven("screamer.cir", params, { "Screamer amp" }) },
                                                                 { "screamer.cir", screamer } }, 48000.0f);
-            std::printf("31 params: %s%s", full.errors.c_str(), full.notes.c_str());
-            P.eq("dials.past_32_note", full.patch != nullptr && std::string(full.patch->controls()[31].name) == "drive"
-                                           && full.notes == "program.fm: note: amp's pot tone has no dial (the plugin has 32): it stays at "
-                                                            "its default\nprogram.fm: note: amp's pot level has no dial (the plugin has 32): "
-                                                            "it stays at its default\n" ? 1 : 0, 1);
+            std::printf("63 params: %s%s", full.errors.c_str(), full.notes.c_str());
+            const std::string has = " has no dial (the plugin has 64: the host's 32 and the panel's 32): it stays at its default\n";
+            P.eq("dials.past_64_note", full.patch != nullptr && std::string(full.patch->controls()[pg::kMaxControls - 1].name) == "drive"
+                                           && (full.patch->circuitSlots() & pg::slotBit(pg::kMaxControls - 1)) != 0
+                                           && full.notes == "program.fm: note: amp's pot tone" + has + "program.fm: note: amp's pot level" + has
+                                           ? 1 : 0, 1);
         }
 
         // 2 s, a pot gliding from sample 21312 (a block boundary of both: 64 x 333; the Engine starts a program on the
@@ -1304,6 +1308,57 @@ namespace
             const pg::Meters now = live.play(8);
             P.eq("refresh.synth_after_release", releasing && !sounding && silent && after && s.ok && chose(s) && now.program == s.program
                                                     ? 1 : 0, 1);
+        }
+        // An instrument whose Shared ticks is never refined, silent or not (its Shared would start again): the next RUN
+        // plays the answer.
+        if constexpr (kInstrument)
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::Sources ticking = clipperFiles(false, "\nmodule Shared\n{\n    int ticks;\n    void tick(int n) { ticks += 1; }\n};\n");
+            const pg::CompileStatus a = live.compiler->compileNow(ticking);
+            live.play(8);
+            store.store(key, answer);                    // another instance's answer lands: due, but not here
+            const bool refined = live.compiler->selfTestNow();
+            const pg::Meters m = live.play(8);
+            const pg::Patch* p = live.engine.playingPatch();
+            const auto provisional = [](const pg::CompileStatus& c) { return c.notes.find("; provisional: ") != std::string::npos; };
+            P.eq("refresh.synth_ticking_waits", a.ok && provisional(a) && p != nullptr && p->sharedTicks() && !refined && m.voices == 0 && m.held == 0
+                                                    && m.program == a.request && live.compiler->revision() == a.revision
+                                                    && live.compiler->selfTesting() && live.compiler->selfTests() == 0 ? 1 : 0, 1);
+            const pg::CompileStatus b = live.compiler->compileNow(ticking);
+            P.eq("refresh.synth_ticking_next_run", b.ok && !provisional(b) && live.play(8).program == b.request
+                                                       && !live.compiler->selfTesting() ? 1 : 0, 1);
+        }
+        // ... a RUN that changes only its panel.gui among them (Compiler.h, "A panel's edit"): a panel's edit while no
+        // answer waits, and a compile that plays the answer once one does.
+        if constexpr (kInstrument)
+        {
+            store.clearForTests();
+            Live live(false);
+            const auto ticking = [](const char* label) {
+                pg::Sources f = clipperFiles(false, "\nmodule Shared\n{\n    int ticks;\n    void tick(int n) { ticks += 1; }\n};\n");
+                f.push_back({ "panel.gui", std::string("panel {\n    column {\n        label \"") + label + "\"\n    }\n}\n" });
+                return f;
+            };
+            const auto provisional = [](const pg::CompileStatus& c) { return c.notes.find("; provisional: ") != std::string::npos; };
+            const pg::CompileStatus a = live.compiler->compileNow(ticking("TICKS"));
+            live.compiler->request(ticking("TICKING"));
+            live.compiler->wait();
+            const pg::CompileStatus e = live.compiler->status();
+            live.play(8);
+            P.eq("refresh.synth_ticking_panel_edit", a.ok && provisional(a) && e.ok && e.panelOnly && e.program == a.program
+                                                         && provisional(e) ? 1 : 0, 1);
+            store.store(key, answer);                    // another instance's answer lands: it waits for a RUN
+            const bool refined = live.compiler->selfTestNow();
+            const uint64_t run = live.compiler->request(ticking("TICKS"));
+            live.compiler->wait();
+            const pg::CompileStatus s = live.compiler->status();
+            std::printf("refresh: a panel-only RUN with an answer waiting: panelOnly %d, %s\n", s.panelOnly ? 1 : 0,
+                        provisional(s) ? "provisional" : "the answer plays");
+            P.eq("refresh.synth_ticking_panel_run", !refined && s.request == run && s.ok && !s.panelOnly && s.program != a.program
+                                                        && !provisional(s) && live.play(8).program == s.program
+                                                        && !live.compiler->selfTesting() ? 1 : 0, 1);
         }
         // With the tests on: a RUN whose files drop the netlist cancels its test, which stores nothing.
         const pg::Sources potFiles = clipperFiles(true);

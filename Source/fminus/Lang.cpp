@@ -3044,6 +3044,20 @@ namespace playground::lang
             if (afterHash == "pragma")
             {
                 offer("panel", Kind::word, "#pragma panel ...", "Lays out the dials and displays.", {}, 0);
+                if (m.options.instrument)
+                    offer("mono", Kind::word, "#pragma mono [dial]", "One voice, the newest key held: a note while it "
+                                                                     "sounds calls Voice's legato(float note, float "
+                                                                     "velocity). A bool dial named after it switches it.",
+                          {}, 0);
+                return finish();
+            }
+            // #pragma mono's dial (Patch.h, "Mono"): the main module's bool and int params.
+            if (m.options.instrument && afterHash.rfind("pragma mono", 0) == 0 && trimmed(afterHash.substr(11)).empty())
+            {
+                for (const auto& g : m.files)
+                    for (const Symbol& s : g->decls)
+                        if (s.kind == Kind::param && s.container == "Voice" && (s.type == "bool" || s.type == "int"))
+                            offer(s.name, Kind::param, s.signature, s.doc, {}, 1);
                 return finish();
             }
             if (afterHash.rfind("pragma panel", 0) == 0)
@@ -3801,7 +3815,7 @@ namespace playground::lang
         // module (that module's fields keep their own driving), or whose receiver Lang cannot type (every one).
         const auto isFmText = [](const std::string& n) {
             const auto ends = [&n](std::string_view e) { return n.size() > e.size() && n.compare(n.size() - e.size(), e.size(), e) == 0; };
-            return !isCircuitFile(n) && !ends(".gui") && !ends(".sc");
+            return !isCircuitFile(n) && !ends(".gui") && !ends(".sc") && !ends(".sh");
         };
         std::vector<std::pair<std::string, std::string>> owners;   // module -> its note's place and words
         for (std::size_t fi = 0; fi < m.files.size(); ++fi)
@@ -3948,6 +3962,61 @@ namespace playground::lang
         c.def = static_cast<float>(std::clamp(def, 0, std::max(positions, 2) - 1));
         c.used = true;
         return c;
+    }
+
+    // ---- an instrument's Shared hooks, and Voice's legato -------------------------------------------------------------
+    namespace
+    {
+        struct HookWant
+        {
+            const char* name;
+            const char* declaration;
+            std::vector<std::string> params;     // each parameter's type
+        };
+
+        // The method `w` of module `container` in the program `s` holds: declared as wanted, or otherwise.
+        SharedHook findHook(const Service& s, const char* container, const HookWant& w)
+        {
+            // A parameter as declared ("float note"; "float" without a name) without its name.
+            const auto typeOf = [](const std::string& p) {
+                const std::size_t space = p.find_last_of(' ');
+                return space == std::string::npos ? p : p.substr(0, space);
+            };
+            SharedHook h;
+            h.name = w.name;
+            h.declaration = w.declaration;
+            for (const Symbol& m : s.symbols())
+            {
+                if (m.kind != Kind::method || !m.body || m.container != container || m.name != w.name)
+                    continue;
+                bool same = m.type == "void" && m.params.size() == w.params.size();
+                for (std::size_t a = 0; same && a < w.params.size(); ++a)
+                    same = typeOf(m.params[a]) == w.params[a];
+                (same ? h.declared : h.otherwise) = true;
+                h.file = m.file;
+                h.at = m.at;
+                break;
+            }
+            return h;
+        }
+    }
+
+    std::array<SharedHook, kSharedHooks> sharedHooks(const Service& s)
+    {
+        const HookWant wants[kSharedHooks] = {
+            { "tick", "void tick(int n)", { "int" } },
+            { "noteOn", "void noteOn(float note, float velocity)", { "float", "float" } },
+            { "noteOff", "void noteOff(float note)", { "float" } },
+        };
+        std::array<SharedHook, kSharedHooks> out{};
+        for (int k = 0; k < kSharedHooks; ++k)
+            out[static_cast<std::size_t>(k)] = findHook(s, "Shared", wants[k]);
+        return out;
+    }
+
+    SharedHook legatoHook(const Service& s)
+    {
+        return findHook(s, "Voice", { "legato", "void legato(float note, float velocity)", { "float", "float" } });
     }
 
     // ---- occurrences ------------------------------------------------------------------------------------------------

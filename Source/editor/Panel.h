@@ -48,7 +48,7 @@
 //             is under the editor (up to the room the editor leaves), and scrolled by the wheel where it is taller or
 //             wider than its area. In the CODE view the editor's status line's Panel switch (Cmd-J) hides it (the
 //             dials or the interface, and a netlist's fold bar): the editor then has the column. The session keeps one
-//             choice for the program's code and one for its interface's files (.gui, .sc), both shown at first
+//             choice for the program's code and one for its interface's files (.gui, .sc, .sh), both shown at first
 //   view      the toolbar's CODE and PANEL cells: PANEL gives the interface the whole left column (the tabs, the editor
 //             and the problems go), CODE brings the editor back; the session keeps the choice (EditorPort::panelView)
 //   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
@@ -90,8 +90,13 @@
 //     second, a frame each, the rate calm), a label read through a callback, a notice that ran out.
 // Once a second it records the frame anyway (kRedrawEvery), a safety net: EditorHost then submits it only if it
 // differs from the last frame drawn (canvas/FrameCompare.h), so an idle editor still sends the GPU nothing.
-// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, or a
-// compile running: what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps the rate up.
+// wantsFullRate() (FunkGui's FramePump: 60 Hz, else about 12) is a shown item moving, a change not ticked yet, a
+// compile running, or input in the last kInputHold seconds (a pointer's move, press, drag, release or exit, a wheel, a
+// key, a double-click, a file drag): what is hidden (a dial a .gui file's interface draws, a page not shown) never keeps
+// the rate up. Without the hold the pump went back to its calm 12 Hz after each input frame (a hover changes what is
+// drawn at once, no ease), and the next event's frame waited for the calm tick: the hover trailed the pointer.
+// SoftEditorHost holds after input too. A release and the pointer's exit also nudge the host's pump at once
+// (HostServices::nudgeFullRate), which FunkGui's EditorHost does for the other events.
 // gui.dump DRAW checks the sources, gui.code TYPES the type names' colours, gui.styles PAGES a hidden page's knob and
 // RATE what moves with no input (a knob's, a pad's, an envelope's), gui.shaders DRAW a shader's inputs, gui.panel
 // SETTLE displays that stand still and readouts that change.
@@ -127,6 +132,7 @@
 #include "dsp/Sources.h"
 #include "dsp/Engine.h"
 #include "editor/DialLayout.h"
+#include "editor/DisplayItem.h"
 #include "editor/GuiLayout.h"
 #include "fminus/Lang.h"
 #include "fminus/PanelSpec.h"
@@ -175,6 +181,17 @@ namespace playground::ui
     // The size (logical px): the default, the least.
     inline constexpr int kDefaultWidth = 1360, kDefaultHeight = 760;
     inline constexpr int kMinWidth = 1000, kMinHeight = 600;
+    // After any input the full rate holds this long (s; Panel.h "Unchanged frames", Panel::wantsFullRate): the next
+    // event of a hover, a drag or typing finds the pump at 60 Hz.
+    inline constexpr double kInputHold = 0.3;
+
+    // Where the PANEL view puts a .gui file's interface in an editor W x H (logical px) whose chat is open (else its
+    // rail) and `chatWant` px wide (0: its share), as layout() does: the program's card across the window but the chat's
+    // column, from the tabs' line to over the status bar. With the explorer open (`explorerOpen`, `explorerWant` px
+    // wide, 0: its share) the chat is as wide as the CODE view leaves it beside the explorer, narrower in some windows
+    // (layout(): a switch never lays the conversation out again); pass false while the code is in its own window, which
+    // has the explorer. The panel's fit (EditorPort.h's panelFitLine) lays it out there.
+    funkgui::Rect panelViewArea(float W, float H, bool chatOpen, float chatWant, bool explorerOpen, float explorerWant);
 
     // The panel's own primitive tags, for probes that find what they check by tag.
     inline constexpr funkgui::Tag kHeaderTextTag = funkgui::tags::firstProduct;       // name, kind and version
@@ -291,7 +308,7 @@ namespace playground::ui
         // The panel under the code (the editor's status line's Panel switch, Cmd-J): whether the CODE view shows the
         // program's panel (its dials, or its .gui file's interface) under the editor. One choice while the program's
         // code shows (its FMinus files, a netlist, the IR), one while a file of its interface does (a .gui file, a
-        // shader's .sc: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
+        // shader's .sc or .sh: Items.h's isInterfaceFile), both shown at first; the session keeps them (EditorPort::codePanel)
         // and the tab shown picks the one that applies. Hidden, the editor (or a netlist's drawing) has the column; the
         // PANEL view always shows the panel, and so do view_panel's pictures of it.
         bool codePanelShown() const;                     // the choice for the tab shown
@@ -468,6 +485,10 @@ namespace playground::ui
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
         bool openSettings();
         SettingsCard& settingsCard() noexcept { return settings_; }
+
+        // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
+        // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
+        bool menuOpenAt(const funkgui::Rect& anchor) const noexcept;
         bool mutedNoticeShown() const noexcept { return mutedShown_; }
         funkgui::Point centreOfMutedSettings() const;
 
@@ -657,6 +678,8 @@ namespace playground::ui
         uint64_t explorerKey_ = 0;
         bool explorerStale_ = true;                      // made again at the next frame, whatever the hash
         int explorerBuilds_ = 0;
+        uint64_t projectsReadSeen_ = 0;                  // EditorPort::projectsRead at the last poll
+        bool explorerAway_ = true;                       // hidden at the last frame (its poll then waits: syncExplorer)
         void syncExplorer();
         void layoutExplorer();
         void openFromExplorer(ExplorerItem::Section section, const ExplorerItem::Row& row);
@@ -699,6 +722,10 @@ namespace playground::ui
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
         float width_ = 0.0f, height_ = 0.0f;
         uint32_t layoutRevision_ = 0;                    // bumps with each layout() and scroll (what moved)
+        bool filesPlaced_ = false;                       // the editors given a place once (layout(): kept while hidden)
+        double inputAt_ = -1.0e9;                        // the last input's time (the host's clock: kInputHold)
+        void noteInput(bool nudge = false);
+        bool inputHeld() const;
         int layouts_ = 0;                                // layout()'s calls (probes)
         std::string title_, subtitle_, status_, meter_;
         std::string meterAlerts_, meterLoad_;            // meter_'s two parts, drawn either side of the snowflake
@@ -735,6 +762,7 @@ namespace playground::ui
         bool ownsProbes_ = true;                         // false: a picture's Panel, which never arms one
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
+        TapsShown tapsShown_;                            // the fields its displays read, of its program and tap table
         DialsLayout dials_;                              // their places
         // A .gui file's interface (when panelSpec_.gui is not empty): its items (a control a slot, pools of tabs, pads,
         // envelopes, keyboards and shaders, in items_), its places, its tabs' pages and its scroll (GuiView.h).
@@ -769,6 +797,11 @@ namespace playground::ui
         funkgui::Point pointer_{};
         bool hasPointer_ = false;
         bool ring_ = false;                              // the focus ring is shown (keyboard use)
+        // The menu open (menuOpenAt): its anchor, and the request it belongs to (a later one replaces it).
+        bool menuOpen_ = false;
+        funkgui::Rect menuAnchor_{};
+        uint32_t menuSerial_ = 0;
+        funkgui::Rect triggerRect(int item) const;       // a ButtonItem trigger's bounds: its menu's anchor
         bool dirty_ = true;                              // a change since the last tick (input, a refresh, a layout)
         // Unchanged frames (above): a change not drawn yet (dirty_ as each tick found it, kept until draw()); an item
         // unsettled at the last tick, and at the tick before (the frame a motion ends in draws too); the mix of what
@@ -798,6 +831,7 @@ namespace playground::ui
         bool compiling_ = false;
         bool lastOk_ = true;
         double lastMs_ = 0.0;
+        bool lastPanelOnly_ = false;                     // the last RUN was a panel's edit (Compiler.h): no compile
         std::string lastStop_;                       // a program that stopped (Compiler.h): the status line's words,
         std::string lastStopWhy_;                    // and why (a loop past its budget, an index outside its array)
         uint32_t controlsRevision_ = 0;                  // bumps when the dials' program changes

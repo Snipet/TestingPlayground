@@ -300,7 +300,7 @@ namespace playground::measure
         std::vector<std::pair<std::size_t, Transport>> transport;
         std::vector<int> blocks;
         // A recording's dials, clock and parts (the capture's), for a replay that gives what played bit for bit:
-        // `frames`, the 32 normalised values the processor sent with the host block at each sample (where they
+        // `frames`, the 64 normalised values the processor sent with the host block at each sample (where they
         // changed), of a program whose dials were `frameControls`: as they are for a program with the same dials, else
         // by name through their plain values; they set every dial but those `dials` names (and `automate` moves).
         // `clock`: the Engine's samples at the start (the phase of the voices' grid, Engine::kGrid). `part`: the

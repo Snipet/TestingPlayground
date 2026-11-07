@@ -2,10 +2,10 @@
 // with every dial at its default the sound passes through untouched, the very same samples. Write your processing
 // between the two marked lines, then press RUN (or Cmd-Return).
 //
-// The plugin plays a module Effect. Its params are the dials under the editor, up to 32, in the order they are
-// declared: a float is read sample by sample, input[i], and glides when its dial turns, so a level never clicks; an
-// int or a bool is read once a call. process gets n samples of both channels and changes them in place. A dial of
-// your own is a param line; the #pragma panel lines put the dials in sections.
+// The plugin plays a module Effect. Its params are the dials under the editor, up to 64 (the first 32 the host's, the
+// rest the panel's alone), in the order declared: a float is read sample by sample, input[i], and glides when its dial
+// turns, so a level never clicks; an int or a bool is read once a call. process gets n samples of both channels and
+// changes them in place. A dial of your own is a param line; the #pragma panel lines put the dials in sections.
 #pragma panel section "INPUT" input in
 #pragma panel section "OUTPUT" mix output out
 #pragma panel label input "GAIN"

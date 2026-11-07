@@ -38,7 +38,8 @@
 // folder's "Presets before projects" (never deleted).
 //
 // Any thread; the functions do their own I/O. They hold no state but the folder override and a cache of the listing
-// and of each project's presets (a file read again only when its size or its time changes).
+// and of each project's presets (a file read again only when its size or its time changes; what this process writes
+// or reads whole, it keeps there as it is), and the Reader below.
 #pragma once
 
 #include "dsp/Controls.h"
@@ -46,6 +47,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -173,6 +175,44 @@ namespace playground::projectstore
     };
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why = nullptr);
     int parses();
+
+    // The listing and a project's presets for a caller that must not wait while a project's file is read whole (the
+    // explorer's poll, on the message thread: Processor::projectsPolled). As list() and presetsOf(), from the same
+    // cache, but a file the cache does not hold as it is now (another process wrote it since, or none read it yet in
+    // this process) is not read here: it is listed as the cache last held it (a file never read: not listed, its
+    // presets none) and its path goes to `unread`, for the Reader. A file this process wrote (saveVersion, savePreset,
+    // removePreset, removeVersion, setInfo, add, the migration) or read whole (load(), list(), presetsOf()) is held as
+    // it is.
+    std::vector<Entry> listCached(std::vector<std::string>& unread);
+    std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread,
+                                                            std::string* why = nullptr);
+
+    // Reads the project files listCached and presetsCached could not serve into the cache, on a thread of its own,
+    // one at a time, each path asked once until it is read; revision() counts the files it read into the cache, so a
+    // caller lists again when it moves. A read keeps what it read only if the file is still as a look before it found
+    // it (a file that changed meanwhile is asked for by the next listing; a write's own entry is never replaced by an
+    // older read). The process has one (reader()), made when first asked for; it goes, its thread joined, with its last
+    // holder. readerParses() counts the files it read whole (of parses()), listings() the listings, cached or not
+    // (probes).
+    class Reader
+    {
+    public:
+        Reader();
+        ~Reader();
+        Reader(const Reader&) = delete;
+        Reader& operator=(const Reader&) = delete;
+
+        void request(const std::vector<std::string>& paths);
+        uint64_t revision() const noexcept;
+        bool idle() const;                               // nothing asked waits or is being read (probes)
+
+    private:
+        struct State;
+        std::unique_ptr<State> s_;
+    };
+    std::shared_ptr<Reader> reader();
+    int readerParses();
+    int listings();
     bool exists(std::string_view name);
     // The project of that name: nothing, with why, when there is none, it is not a project of this plugin's, or its
     // file is damaged. Its name is its file's.

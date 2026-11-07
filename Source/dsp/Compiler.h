@@ -1,6 +1,7 @@
 // Source/dsp/Compiler.h: compiles programs and hands them to the Engine (JUCE-free).
 //
-//   request(files)      the editor's RUN: compiled on the compiler's own thread, so the editor never waits for LLVM.
+//   request(files)      the editor's RUN: compiled on the compiler's own thread, so the editor never waits for LLVM
+//                       (an edit of the panel's files alone is applied to the program that plays: "A panel's edit").
 //                       A request made while another compiles replaces any still waiting: the last one wins.
 //   compileNow(files)   the same on the calling thread, for the processor's construction and a host's state load,
 //                       which want the program playing when they return (and the probes, which want determinism);
@@ -52,8 +53,11 @@
 // with the answer, and offers it as any program (the effect crossfades; the synth's old voices would fade). It waits
 // while a RUN is queued (which reads the store itself: the refine is then dropped), while a recording is armed
 // (Engine::ownCode) and, for an instrument, until no voice sounds, fades or is held (Meters), so no held note starts
-// again; and it looks again once the compile is done, just before it offers: a refine that may not play then is held,
-// and offered at the first pass that may (dropped when another program plays first, or when an answer it lacks lands).
+// again; an instrument's program whose Shared ticks (Patch.h, "Shared on its own": its state moves between notes, and a
+// new program's Shared starts afresh) is never refined, its answer playing from the next RUN (which reads the store;
+// one of the panel's files alone compiles then too: "A panel's edit"); and it looks again once the compile is done,
+// just before it offers: a refine that may not play then is held, and offered at the first pass that may (dropped when
+// another program plays first, or when an answer it lacks lands).
 // A refine answers no request: it brings the status up to date (CompileStatus::refined), which still answers the
 // request before it (`request`, `ok`, and a failed compile's `errors` and `sources`, which the editor and Claude go on
 // showing), with the refined program as `program` and, when that request compiled, the refine's notes ending with what
@@ -87,6 +91,31 @@
 // the new id in `program`. With none (the first program, or one a state load brought: no run's, as the processor says),
 // nothing plays until the next RUN. A program that stopped is never gone back to again, nor refined, nor frozen: a
 // refine built while the program it refines stopped is let go before the offer, and the stop said.
+//
+// A panel's edit. A RUN (request(files), unless told otherwise) whose files differ from those of the program that plays
+// only in its panel's files (Sources.h's isPanelFile: the .gui file, a shader's .sc or .sh) is applied to that program
+// without compiling it: nothing is offered, so the program plays on, its instances, its state and its voices untouched
+// (no crossfade, no fade: the same samples), and its dials keep their values. The .gui file is read again over what the
+// program's compile kept (Patch::readPanel, Recipe::panel), its shaders built as a compile's are, and the status is the
+// program's with the new panel: `panelOnly`, `program` the same, `request` the RUN's, `sources` the new files (the
+// recipe's too, so a refine, a stop's restore of it and the freezer go on from them), `controls` with the .gui file's
+// units and scales, the notes of the panel's files read again, and `carry` the program's (the processor may have seen
+// this status and not its compile's: it then writes that carry, once, as it would have); when the displays read other
+// fields (a display or a live= mark or a shader's input added, moved or gone), their taps go to the Engine for that
+// program (Engine::setTaps), the panel names that table (PanelSpec::tapTable, as each frame does: Meters::tapTable, so
+// that a panel reads only the fields of its own table, editor/DisplayItem.h's TapsShown), and the thread waits for the
+// audio thread's next block to read them (unless it is idle), so the panel that shows the status reads its own fields
+// at once. It is panel-only when all of these hold, and else a compile as any RUN is:
+//   - a program plays, as the last status says (it compiled; not stopped; no refine compiled and held), and no
+//     self-test answer waits for a RUN to play it (a program whose Shared ticks: below, "The self-test");
+//   - the files other than the panel's are the same, in the same order, and at least one panel file changed (an
+//     unchanged RUN compiles: it starts the program afresh), none of them one that FMinus read (an #include of it);
+//   - both the files that play and the new ones have a .gui file, the same first one (a .gui added, removed or renamed
+//     changes where the panel comes from: the #pragma panel lines);
+//   - the .gui file leaves each dial's declaration as it plays: its type, range, default and taper (a taper= changes
+//     what a value means: the carry's), and an int's or a bool's option names (a value keeps its name across a run).
+// request(files, false) never applies one (the A/B's sides and its end, a recording's restart, a fresh start, a project
+// version opened: each wants the program compiled, as it was saved), nor does compileNow.
 //
 // The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
 // a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each
@@ -139,6 +168,7 @@ namespace playground
                                                // or the refine's (above, "The self-test")
         bool        refined = false;           // a refine brought it up to date (above): `program` is the refine's, and
                                                // when `ok`, all but `request`; else the failed compile's outcome stays
+        bool        panelOnly = false;         // a panel's edit (above): applied to the program that plays, not compiled
         bool        stopped = false;           // the program of `sources` compiled and stopped as it played (above, "A
                                                // program that stops"): a call ran past its loop budget, or failed a
                                                // bounds check, `errors` say which
@@ -209,7 +239,8 @@ namespace playground
         // What building a .gui file's shaders needs (the plugin's shaderc and FunkGui's texts); none until it is set.
         void setShaderTools(ShaderTools tools);
 
-        uint64_t request(Sources files);
+        // `panelEdits` false: compiled whatever changed (above, "A panel's edit").
+        uint64_t request(Sources files, bool panelEdits = true);
         // `carry` false: no carrier asked (a host's state load, whose dials come with it).
         CompileStatus compileNow(Sources files, bool carry = true);
         // Request `id` taken back while it still waits (true): nothing of it compiles, plays or has a status. One the
@@ -239,7 +270,8 @@ namespace playground
 
         // The self-test (above): the tests and the refines on or off (on by default); selfTestNow() runs the jobs
         // waiting, then the refine when one is due or held and may run (no RUN queued, no recording armed, an instrument
-        // silent: looked at before it compiles and again before it offers), on the calling thread: true when it offered
+        // silent and its Shared not ticking: looked at before it compiles and again before it offers), on the calling
+        // thread: true when it offered
         // the refined program; selfTesting() says whether a test waits or runs, or an answer waits to be compiled in or
         // offered; selfTests() counts the tests this compiler's tester started.
         void setSelfTesting(bool on);
@@ -277,6 +309,11 @@ namespace playground
         // program that stops"); firstBlocks() is the wait, false when the Engine went back from it.
         CompileStatus land(std::unique_ptr<Built> b, uint64_t landed, bool carry = true, bool watch = false);
         bool firstBlocks(uint64_t program);
+        // No block under way, and none ended for three of the audio thread's own (20 ms at least): it is stopped.
+        bool audioIdle() const;
+        // A panel's edit (above): `files` applied as RUN `id` to the program that plays, its status published; false,
+        // and nothing done, when they are not one (the caller compiles them).
+        bool editPanel(const Sources& files, uint64_t id, const ShaderTools& tools);
         // The Engine's stops of the program that plays since last looked at (above): the status, and the program
         // before it played again. Under mutex_ (let go while it compiles).
         void checkStops(std::unique_lock<std::mutex>& lock);
@@ -289,14 +326,17 @@ namespace playground
         void bumpIr();                         // under mutex_
         // The self-test's (under mutex_): refineDue_ from the answers landed since the program that plays was compiled
         // (a refine held then is stale: handed back, for the caller to let go once mutex_ is); whether a refine may run
-        // now, and whether one built may be offered now (no recording armed, an instrument silent); the refine itself,
-        // true when it offered (mutex_ held on entry and on return, let go while it compiles and once it offered).
+        // now, and whether one built may be offered now (no recording armed, an instrument silent and its Shared not
+        // ticking); the refine itself, true when it offered (mutex_ held on entry and on return, let go while it
+        // compiles and once it offered).
         [[nodiscard]] std::unique_ptr<Built> checkLanded();
         // The outcomes reported since last looked at (circuits::Answers::reported): a test of the program that plays
         // that gave no answer says why in the status (above). Under mutex_.
         void checkOutcomes();
         bool mayRefine() const;
         bool quiet() const;
+        // Whether the store holds an answer for a netlist the program that plays used provisionally (under mutex_).
+        bool answered() const;
         bool refine(std::unique_lock<std::mutex>& lock);
         // The status brought up to date by a refine that plays (above): its notes end with `chosen`.
         void finishRefine(CompileStatus s, const std::string& chosen);
@@ -314,6 +354,7 @@ namespace playground
         std::condition_variable wake_, idle_;
         Sources queued_;
         bool hasQueued_ = false;
+        bool queuedPanel_ = true;              // the request waiting may be a panel's edit (request's panelEdits)
         bool compiling_ = false;
         bool stop_ = false;
         uint64_t queuedId_ = 0, nextId_ = 0;

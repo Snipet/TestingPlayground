@@ -12,15 +12,20 @@ namespace playground
 {
     namespace
     {
+        // A word of a line: a name, a "text" or a number, or a property, key=value (`key` set; its value one of those).
         struct Token
         {
             enum class Kind : uint8_t { name, text, number };
             Kind kind = Kind::name;
             std::string value;
             double number = 0.0;
-            bool isName() const noexcept { return kind == Kind::name; }
-            bool isText() const noexcept { return kind == Kind::text; }
-            bool isNumber() const noexcept { return kind == Kind::number; }
+            std::string key;                                 // a property's (unit=, decimals=, scale=); "" for a word
+            bool isName() const noexcept { return key.empty() && kind == Kind::name; }
+            bool isText() const noexcept { return key.empty() && kind == Kind::text; }
+            bool isNumber() const noexcept { return key.empty() && kind == Kind::number; }
+            bool isProp() const noexcept { return !key.empty(); }
+            // As written, for a note: `unit=rpm`, `"text"`'s text.
+            std::string shown() const { return key.empty() ? value : key + "=" + (kind == Kind::text ? "\"" + value + "\"" : value); }
         };
 
         struct Line
@@ -80,8 +85,62 @@ namespace playground
             return true;
         }
 
-        // Names, "texts" and numbers (-24, 0.5); commas count as spaces and // ends the line. False, with why, for
-        // what is none of them.
+        bool numberStart(std::string_view s, std::size_t i)
+        {
+            const char c = s[i];
+            return digit(c) || ((c == '-' || c == '.') && i + 1 < s.size() && (digit(s[i + 1]) || s[i + 1] == '.'));
+        }
+
+        // A "text", a name or a number at s[i] (the caller knows one starts there: a quote, nameStart, numberStart),
+        // appended to `out` with `key` (a property's value); i past it. False, with why, for an open quote or a number
+        // that is none.
+        bool word(std::string_view s, std::size_t& i, const std::string& key, std::vector<Token>& out, std::string& why)
+        {
+            if (s[i] == '"')
+            {
+                const std::size_t close = s.find('"', i + 1);
+                if (close == std::string_view::npos)
+                {
+                    why = "a text without its closing \"";
+                    return false;
+                }
+                out.push_back({ Token::Kind::text, std::string(s.substr(i + 1, close - i - 1)), 0.0, key });
+                i = close + 1;
+                return true;
+            }
+            if (nameStart(s[i]))
+            {
+                const std::size_t start = i;
+                while (i < s.size() && nameChar(s[i]))
+                {
+                    ++i;
+                    if (key.empty() && i + 2 < s.size() && s[i] == '-' && s[i + 1] == '>' && nameStart(s[i + 2]))
+                        i += 2;                              // shared->level: a field of Shared, one name
+                }
+                if (key.empty())
+                    i = indexesAfter(s, i);                  // bands[2], grid[1][3]: an element, one name
+                out.push_back({ Token::Kind::name, std::string(s.substr(start, i - start)), 0.0, key });
+                return true;
+            }
+            const std::size_t start = i;
+            ++i;
+            while (i < s.size() && (digit(s[i]) || s[i] == '.'))
+                ++i;
+            const std::string text(s.substr(start, i - start));
+            char* end = nullptr;
+            const double v = std::strtod(text.c_str(), &end);
+            if (end == nullptr || *end != '\0' || !std::isfinite(v))
+            {
+                why = "'" + text + "' is not a number";
+                return false;
+            }
+            out.push_back({ Token::Kind::number, text, v, key });
+            return true;
+        }
+
+        // Names, "texts" and numbers (-24, 0.5), and properties, a name and = and one of those with no space between
+        // (unit="rpm", unit=Hz, decimals=1); commas count as spaces and // ends the line. False, with why, for what is
+        // none of them.
         bool tokens(std::string_view s, std::vector<Token>& out, std::string& why)
         {
             std::size_t i = 0;
@@ -92,48 +151,34 @@ namespace playground
                     ++i;
                 else if (c == '/' && i + 1 < s.size() && s[i + 1] == '/')
                     break;
-                else if (c == '"')
-                {
-                    const std::size_t close = s.find('"', i + 1);
-                    if (close == std::string_view::npos)
-                    {
-                        why = "a text without its closing \"";
-                        return false;
-                    }
-                    out.push_back({ Token::Kind::text, std::string(s.substr(i + 1, close - i - 1)), 0.0 });
-                    i = close + 1;
-                }
                 else if (nameStart(c))
                 {
-                    const std::size_t start = i;
-                    while (i < s.size() && nameChar(s[i]))
+                    std::size_t k = i;
+                    while (k < s.size() && nameChar(s[k]))
+                        ++k;
+                    if (k < s.size() && s[k] == '=')
                     {
-                        ++i;
-                        if (i + 2 < s.size() && s[i] == '-' && s[i + 1] == '>' && nameStart(s[i + 2]))
-                            i += 2;                          // shared->level: a field of Shared, one name
+                        const std::string key(s.substr(i, k - i));
+                        i = k + 1;
+                        if (i >= s.size() || !(s[i] == '"' || nameStart(s[i]) || numberStart(s, i)))
+                        {
+                            why = key + "= takes a value right after it: a \"text\", a name or a number";
+                            return false;
+                        }
+                        if (!word(s, i, key, out, why))
+                            return false;
                     }
-                    i = indexesAfter(s, i);                  // bands[2], grid[1][3]: an element, one name
-                    out.push_back({ Token::Kind::name, std::string(s.substr(start, i - start)), 0.0 });
-                }
-                else if (digit(c) || ((c == '-' || c == '.') && i + 1 < s.size() && (digit(s[i + 1]) || s[i + 1] == '.')))
-                {
-                    const std::size_t start = i;
-                    ++i;
-                    while (i < s.size() && (digit(s[i]) || s[i] == '.'))
-                        ++i;
-                    const std::string text(s.substr(start, i - start));
-                    char* end = nullptr;
-                    const double v = std::strtod(text.c_str(), &end);
-                    if (end == nullptr || *end != '\0' || !std::isfinite(v))
-                    {
-                        why = "'" + text + "' is not a number";
+                    else if (!word(s, i, {}, out, why))
                         return false;
-                    }
-                    out.push_back({ Token::Kind::number, text, v });
+                }
+                else if (c == '"' || numberStart(s, i))
+                {
+                    if (!word(s, i, {}, out, why))
+                        return false;
                 }
                 else
                 {
-                    why = std::string("'") + c + "' is neither a name, a \"text\" nor a number";
+                    why = std::string("'") + c + "' is neither a name, a \"text\", a number nor a key=value";
                     return false;
                 }
             }
@@ -266,12 +311,56 @@ namespace playground
             d.kind = displayKind(what);
             d.source = l.words[1].value;
             d.name = d.source;
-            // After the source, in any order: a range (two numbers), `as` and a name, a "label".
+            // After the source, in any order: a range (two numbers), `as` and a name, a "label"; a number's unit=,
+            // decimals= and scale=.
             bool ranged = false, named = false, labelled = false, extra = false;
+            const Token* format = nullptr;                   // the first of a number's unit=, decimals=, scale=
             for (std::size_t k = 2; k < l.words.size(); ++k)
             {
                 const Token& t = l.words[k];
-                if (t.isNumber() && !ranged && k + 1 < l.words.size() && l.words[k + 1].isNumber())
+                if (t.isProp() && d.kind == DisplayKind::number && (t.key == "unit" || t.key == "decimals" || t.key == "scale"))
+                {
+                    // As a knob's value reads (formatValue), as a .gui file's number takes them: its unit, its places
+                    // (0 to 4), times its scale.
+                    format = format != nullptr ? format : &t;
+                    if (t.key == "unit")
+                    {
+                        if (t.kind == Token::Kind::number)
+                            noteAt(l, "unit= takes a \"text\" or a name, not " + t.value + ": none");
+                        else
+                        {
+                            d.unit = t.value;
+                            if (d.unit.size() > sizeof(Control::unit) - 1)
+                            {
+                                noteAt(l, "the unit \"" + d.unit + "\" is cut to " + std::to_string(sizeof(Control::unit) - 1)
+                                              + " characters");
+                                d.unit.resize(sizeof(Control::unit) - 1);
+                            }
+                        }
+                    }
+                    else if (t.kind != Token::Kind::number)
+                        noteAt(l, t.key + "= takes a number, not '" + t.value + "'");
+                    else if (t.key == "decimals")
+                    {
+                        const double places = std::clamp(std::round(t.number), 0.0, 4.0);
+                        if (places != t.number)
+                            noteAt(l, "decimals=" + t.value + " is not one of 0 to 4: " + std::to_string(static_cast<int>(places))
+                                          + " instead");
+                        d.decimals = static_cast<int8_t>(places);
+                    }
+                    else if (t.number == 0.0 || std::fabs(t.number) > 1.0e6)
+                        noteAt(l, "scale=" + t.value + " would show " + (t.number == 0.0 ? "every value as 0" : "nothing useful")
+                                      + ": 1 instead");
+                    else
+                        d.scale = static_cast<float>(t.number);
+                }
+                else if (t.isProp())
+                {
+                    const bool formatKey = t.key == "unit" || t.key == "decimals" || t.key == "scale";
+                    noteAt(l, formatKey ? what + " takes no " + t.key + "=: unit=, decimals= and scale= are a number's"
+                                        : "unknown " + t.key + "=: a number takes unit=, decimals= and scale=");
+                }
+                else if (t.isNumber() && !ranged && k + 1 < l.words.size() && l.words[k + 1].isNumber())
                 {
                     ranged = true;
                     d.lo = static_cast<float>(t.number);
@@ -302,8 +391,15 @@ namespace playground
                 {
                     extra = true;
                     noteAt(l, what + " takes a source, then a range (two numbers), as and a name, and a \"label\", each "
-                                  "optional: \"" + t.value + "\" is left out");
+                                  "optional: \"" + t.shown() + "\" is left out");
                 }
+            }
+            if (format != nullptr && d.audio())
+            {
+                noteAt(l, what + " " + d.source + " shows dBFS: unit=, decimals= and scale= are a field's");
+                d.unit.clear();
+                d.decimals = -1;
+                d.scale = 1.0f;
             }
             if (!labelled && !named && d.source.find("->") != std::string::npos)
                 d.label = sourceLabel(d.source);     // Shared's field's own name ("LEVEL"), not "SHARED->LEVEL"
@@ -419,7 +515,7 @@ namespace playground
                     if (!w[k].isName())
                     {
                         noteAt(l, "a section takes one title, first, then the names of its dials and displays: \""
-                                      + w[k].value + "\" is left out");
+                                      + w[k].shown() + "\" is left out");
                         continue;
                     }
                     if (const int d = displayOf(w[k].value); d >= 0)
@@ -486,7 +582,7 @@ namespace playground
                 {
                     if (!w[k].isName())
                     {
-                        noteAt(l, "small takes dials' names, not \"" + w[k].value + "\"");
+                        noteAt(l, "small takes dials' names, not \"" + w[k].shown() + "\"");
                         continue;
                     }
                     if (const int c = slotOf(l, w[k].value); c >= 0)
@@ -569,7 +665,7 @@ namespace playground
                 {
                     if (!w[k].isText())
                     {
-                        noteAt(l, "options are \"texts\": " + w[k].value + " is left out");
+                        noteAt(l, "options are \"texts\": " + w[k].shown() + " is left out");
                         continue;
                     }
                     std::string n = w[k].value;
@@ -592,7 +688,7 @@ namespace playground
             }
             else if (what == "color")
             {
-                if (w.size() != 3 || w[1].isNumber() || !w[2].isName())
+                if (w.size() != 3 || w[1].isNumber() || w[1].isProp() || !w[2].isName())
                 {
                     noteAt(l, "color takes a section's \"title\" or an item's name, then a colour: " + colorNames());
                     continue;

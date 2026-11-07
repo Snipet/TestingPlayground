@@ -1,8 +1,8 @@
 // Gain and pan: a level and a stereo position, the smallest effect. Edit it, then press RUN (or Cmd-Return).
 //
-// The plugin plays a module Effect. Its params are the dials under the editor, up to 32, in the order they are
-// declared: a float is read sample by sample, gain[i], and glides when its dial turns; an int or a bool is read once a
-// call. process gets n samples of both channels and changes them in place.
+// The plugin plays a module Effect. Its params are the dials under the editor, up to 64 (the first 32 the host's, the
+// rest the panel's alone), in the order declared: a float is read sample by sample, gain[i], and glides when its dial
+// turns; an int or a bool is read once a call. process gets n samples of both channels and changes them in place.
 module Effect
 {
     param float gain [[fminus::range(-24, 12)]] [[fminus::default(0)]];   // dB

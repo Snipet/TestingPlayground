@@ -199,6 +199,9 @@ namespace playground
             why = "this host gives no copy of what plays";
             return false;
         }
+        // run_program's line on a .gui file's layout (EditorPort.h's panelFitLine): its content larger than the PANEL view
+        // at the editor's size, in words; "" when it fits, or when it cannot be said now. The worker's.
+        virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
     };
 
     class ChatAgent final : public ChatPort

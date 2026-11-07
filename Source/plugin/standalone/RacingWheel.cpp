@@ -57,13 +57,13 @@ namespace playground::standalone
         IOHIDManagerRef manager = nullptr;
         std::vector<IOHIDDeviceRef> held;                    // every G29 the driver was told of (retained)
         IOHIDDeviceRef listening = nullptr;                  // the one whose values go to the driver
-        CFRunLoopTimerRef timers[2] = { nullptr, nullptr };  // wheel::Timer's
+        CFRunLoopTimerRef timers[3] = { nullptr, nullptr, nullptr };   // wheel::Timer's
         wheel::Driver driver;
 
         Impl(Hooks h, bool o) : hooks(std::move(h)), driver(*this, o)
         {
-            timers[static_cast<int>(wheel::Timer::flush)] = timer(wheel::Timer::flush);
-            timers[static_cast<int>(wheel::Timer::switched)] = timer(wheel::Timer::switched);
+            for (const wheel::Timer t : { wheel::Timer::flush, wheel::Timer::switched, wheel::Timer::lights })
+                timers[static_cast<int>(t)] = timer(t);
             manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
             const void* each[] = { matching(wheel::kVendor, wheel::kG29), matching(wheel::kVendor, wheel::kCompat),
                                    matching(wheel::kVendor, wheel::kG29Ps4) };
@@ -99,7 +99,9 @@ namespace playground::standalone
         CFRunLoopTimerRef timer(wheel::Timer which)
         {
             CFRunLoopTimerContext context{ 0, this, nullptr, nullptr, nullptr };
-            const auto fire = which == wheel::Timer::flush ? &Impl::onFlush : &Impl::onSwitched;
+            const auto fire = which == wheel::Timer::flush ? &Impl::onFlush
+                            : which == wheel::Timer::switched ? &Impl::onSwitched
+                                                              : &Impl::onLights;
             CFRunLoopTimerRef t = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + kNever, kNever, 0, 0,
                                                        fire, &context);
             CFRunLoopAddTimer(CFRunLoopGetMain(), t, kCFRunLoopCommonModes);
@@ -168,6 +170,8 @@ namespace playground::standalone
                 hooks.changed();
         }
 
+        int lights() override { return hooks.lights ? hooks.lights() : -1; }
+
         // ---- IOKit's callbacks ---------------------------------------------------------------------------------------
         static wheel::Value valueOf(IOHIDElementRef e, IOHIDValueRef value)
         {
@@ -217,6 +221,7 @@ namespace playground::standalone
 
         static void onFlush(CFRunLoopTimerRef, void* info) { static_cast<Impl*>(info)->driver.fire(wheel::Timer::flush); }
         static void onSwitched(CFRunLoopTimerRef, void* info) { static_cast<Impl*>(info)->driver.fire(wheel::Timer::switched); }
+        static void onLights(CFRunLoopTimerRef, void* info) { static_cast<Impl*>(info)->driver.fire(wheel::Timer::lights); }
     };
 
     RacingWheel::RacingWheel(Hooks hooks, bool on) : impl_(std::make_unique<Impl>(std::move(hooks), on)) {}

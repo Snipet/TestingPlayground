@@ -54,6 +54,14 @@ namespace playground::sandbox
             return s.size() >= n && s.compare(s.size() - n, n, e) == 0;
         }
 
+        // 1st, 2nd, 3rd, 4th, ..., 11th, 12th, 13th, ..., 21st, ..., 33rd, ..., 64th.
+        std::string ordinal(int n)
+        {
+            const int tens = n % 100, ones = n % 10;
+            const char* suffix = tens >= 11 && tens <= 13 ? "th" : ones == 1 ? "st" : ones == 2 ? "nd" : ones == 3 ? "rd" : "th";
+            return std::to_string(n) + suffix;
+        }
+
         int lineCount(const std::string& t)
         {
             if (t.empty())
@@ -104,69 +112,9 @@ namespace playground::sandbox
             return number(r.x) + "," + number(r.y) + " " + number(r.w) + "x" + number(r.h);
         }
 
-        const char* displayWord(DisplayKind k)
-        {
-            switch (k)
-            {
-                case DisplayKind::meter:    return "meter";
-                case DisplayKind::vu:       return "vu";
-                case DisplayKind::led:      return "led";
-                case DisplayKind::number:   return "number";
-                case DisplayKind::scope:    return "scope";
-                case DisplayKind::spectrum: return "spectrum";
-            }
-            return "display";
-        }
-
-        bool isContainer(GuiKind k)
-        {
-            return k == GuiKind::row || k == GuiKind::column || k == GuiKind::grid || k == GuiKind::section || k == GuiKind::box
-                || k == GuiKind::tabs || k == GuiKind::page;
-        }
-
         bool isControl(GuiKind k)
         {
             return k == GuiKind::knob || k == GuiKind::slider || k == GuiKind::toggle || k == GuiKind::buttons || k == GuiKind::menu;
-        }
-
-        // An element as the report names it: its kind and what it shows.
-        std::string nameOf(const GuiNode& n, const PanelSpec& spec, const Controls& controls)
-        {
-            const auto dial = [&](int slot) {
-                return slot >= 0 && slot < kMaxControls && controls[static_cast<std::size_t>(slot)].used
-                         ? std::string(controls[static_cast<std::size_t>(slot)].name)
-                         : std::string("?");
-            };
-            switch (n.kind)
-            {
-                case GuiKind::row:      return n.wrap ? "row (wraps)" : "row";
-                case GuiKind::column:   return "column";
-                case GuiKind::grid:     return "grid of " + std::to_string(n.cols);
-                case GuiKind::section:  return "section \"" + n.text + "\"";
-                case GuiKind::box:      return "box";
-                case GuiKind::tabs:     return "tabs";
-                case GuiKind::page:     return "page \"" + n.text + "\"";
-                case GuiKind::spacer:   return "spacer";
-                case GuiKind::divider:  return "divider";
-                case GuiKind::label:    return "label \"" + n.text + "\"";
-                case GuiKind::knob:     return "knob " + dial(n.slot);
-                case GuiKind::slider:   return "slider " + dial(n.slot);
-                case GuiKind::toggle:   return "switch " + dial(n.slot);
-                case GuiKind::buttons:  return "buttons " + dial(n.slot);
-                case GuiKind::menu:     return "menu " + dial(n.slot);
-                case GuiKind::xy:       return "xy " + dial(n.slot) + " " + dial(n.slot2);
-                case GuiKind::envelope: return "envelope " + dial(n.env[0]) + " " + dial(n.env[1]) + " " + dial(n.env[2]) + " " + dial(n.env[3]);
-                case GuiKind::display:
-                    if (n.display >= 0 && static_cast<std::size_t>(n.display) < spec.displays.size())
-                    {
-                        const PanelDisplay& d = spec.displays[static_cast<std::size_t>(n.display)];
-                        return std::string(displayWord(d.kind)) + " " + d.source;
-                    }
-                    return "display";
-                case GuiKind::keyboard: return "keyboard from " + std::to_string(n.from) + ", " + std::to_string(n.keys) + " keys";
-                case GuiKind::shader:   return "shader \"" + n.file + "\"";
-            }
-            return "element";
         }
 
         // Where the plugin keeps shaderc: <ENV_PREFIX>SHADERC (the probes'), beside this helper, else in an installed
@@ -370,7 +318,7 @@ namespace playground::sandbox
         {
             if (!endsWith(path, ".gui"))
             {
-                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui and .sc files)";
+                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui, .sc and .sh files)";
                 return false;
             }
             return readOne(named, named.getFileName().toStdString());
@@ -384,13 +332,14 @@ namespace playground::sandbox
         for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(named, false, "*", juce::File::findFiles))
         {
             const std::string n = e.getFile().getFileName().toStdString();
-            if (!n.empty() && n[0] != '.' && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc")))
+            if (!n.empty() && n[0] != '.'
+                && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc") || endsWith(n, ".sh")))
                 names.push_back(n);
         }
         std::sort(names.begin(), names.end());
         if (names.empty())
         {
-            why = "the folder " + given + " has no .fm, .gui or .sc file";
+            why = "the folder " + given + " has no .fm, .gui, .sc or .sh file";
             return false;
         }
         if (names.size() > kMaxFiles)
@@ -524,6 +473,7 @@ namespace playground::sandbox
         // The shaders built at once (ShaderCache::buildAll: the process's cache, in memory and on disk).
         std::vector<ShaderJob> jobs;
         std::vector<PanelShader*> built;
+        const Sources headers = shaderHeaders(files_);
         for (PanelShader& sh : spec_.shaders)
         {
             const auto f = std::find_if(files_.begin(), files_.end(), [&](const SourceFile& s) { return s.name == sh.file; });
@@ -535,7 +485,7 @@ namespace playground::sandbox
                                     "plugin, and the sandbox finds it there); it shows as a placeholder\n";
                 continue;
             }
-            jobs.push_back({ sh.file, f->text, sh.inputs });
+            jobs.push_back({ sh.file, f->text, sh.inputs, headers });
             built.push_back(&sh);
         }
         const std::vector<ShaderBuild> builds = shaderCache().buildAll(jobs, tools_);
@@ -607,6 +557,9 @@ namespace playground::sandbox
                      + " (the plugin leaves them at their defaults).";
             if (dials_.size() > static_cast<std::size_t>(kMaxControls))
                 out += " Only the first " + std::to_string(kMaxControls) + " are dials.";
+            if (dials_.size() > static_cast<std::size_t>(kHostControls))
+                out += " The " + ordinal(kHostControls + 1) + " to the " + ordinal(kMaxControls)
+                     + " are the panel's own (no host parameter).";
             out += "\n";
             // The circuits' (Patch.h, "Circuits"), with their defaults as the plugin shows them.
             std::string circuits;
@@ -689,16 +642,30 @@ namespace playground::sandbox
         out += "Layout in the area " + std::to_string(areaW_) + " x " + std::to_string(areaH_) + " (" + (areaW_ == kDefaultWidth && areaH_ == kDefaultHeight
                    ? std::string("the PANEL view at the plugin's default size") : std::string("the last render's"))
              + "): natural size " + number(natural.w) + " x " + number(natural.h);
-        if (gl.maxScrollX <= 0.0f && gl.maxScrollY <= 0.0f)
+        // The check run_program makes too (GuiLayout.h's guiFit, guiFitLine).
+        const ui::GuiFit fit = ui::guiFit(spec_, gl);
+        if (fit.overW <= 0.0f && fit.overH <= 0.0f)
             out += ", it fits.\n";
         else
         {
             out += ";";
-            if (gl.maxScrollY > 0.0f)
-                out += " taller than the area by " + number(gl.maxScrollY) + " px, so it scrolls (a bar at its right)";
-            if (gl.maxScrollX > 0.0f)
-                out += std::string(gl.maxScrollY > 0.0f ? ";" : "") + " wider than the area by " + number(gl.maxScrollX) + " px, so it scrolls sideways";
+            if (fit.overH > 0.0f)
+                out += " taller than the area by " + number(fit.overH) + " px, so it scrolls (a bar at its right)";
+            if (fit.overW > 0.0f)
+                out += std::string(fit.overH > 0.0f ? ";" : "") + " wider than the area by " + number(fit.overW) + " px, so it scrolls sideways";
             out += ".\n";
+            if (!fit.outOfView.empty())
+            {
+                std::string names;
+                for (std::size_t k = 0; k < fit.outOfView.size() && k < 8; ++k)
+                {
+                    const GuiNode& n = spec_.gui.nodes[static_cast<std::size_t>(fit.outOfView[k])];
+                    names += (k == 0 ? "" : ", ") + ui::guiNodeName(n, spec_, controls_) + " (line " + std::to_string(n.line) + ")";
+                }
+                if (fit.outOfView.size() > 8)
+                    names += " and " + std::to_string(fit.outOfView.size() - 8) + " more";
+                out += "Out of view until scrolled: " + names + ".\n";
+            }
         }
         if (!view.allPages().empty())
             out += "Pages: " + view.allPages() + " (the first of each shown; render's page shows another).\n";
@@ -751,15 +718,15 @@ namespace playground::sandbox
             }
             const GuiNode& n = nodes[i];
             elements.push_back(std::string(static_cast<std::size_t>(2 * depthOf(i)), ' ') + (added[i] ? std::string("(added) ") : "L" + std::to_string(n.line) + " ")
-                               + nameOf(n, spec_, controls_) + " " + rectText(gl.rects[i]));
+                               + ui::guiNodeName(n, spec_, controls_) + " " + rectText(gl.rects[i]));
         }
         // Overlaps between the elements that draw something (containers hold theirs).
         std::vector<std::string> overlaps, outside, cut;
         const auto leaf = [&](std::size_t i) {
-            return i < gl.visible.size() && gl.visible[i] && !isContainer(nodes[i].kind) && nodes[i].kind != GuiKind::spacer;
+            return i < gl.visible.size() && gl.visible[i] && !ui::guiContainer(nodes[i].kind) && nodes[i].kind != GuiKind::spacer;
         };
         const auto where = [&](std::size_t i) {
-            return nameOf(nodes[i], spec_, controls_) + (added[i] ? std::string(" (added)") : " (line " + std::to_string(nodes[i].line) + ")");
+            return ui::guiNodeName(nodes[i], spec_, controls_) + (added[i] ? std::string(" (added)") : " (line " + std::to_string(nodes[i].line) + ")");
         };
         for (std::size_t i = 1; i < nodes.size(); ++i)
         {

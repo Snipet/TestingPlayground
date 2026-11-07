@@ -1,11 +1,11 @@
 // Sine: one sine a voice under an attack and a release. Edit it, then press RUN (or Cmd-Return).
 //
-// The plugin plays a module Voice, one instance a note, sixteen at once. start gets the MIDI note (69 is A, 440 Hz)
-// and its velocity (0 to 1), stop the key's release, and process the voice's next n samples into both channels, which
+// The plugin plays a module Voice, one instance a note, sixteen at once. start gets the MIDI note (69 is A, 440 Hz) and
+// its velocity (0 to 1), stop the key's release, and process the voice's next n samples into both channels, which
 // arrive at 0, returning false once the voice is silent for good: that frees it. The params are the dials under the
-// editor, up to 32, the same in every voice: a float is read sample by sample, attack[i], and glides when its dial
-// turns; an int or a bool is read once a call. host (host.fm, a file the plugin provides) is what the host and the
-// player are doing: here the pitch wheel bends the note up to 2 semitones.
+// editor, up to 64 (the host sees the first 32), the same in every voice: a float is read sample by sample, attack[i],
+// and glides when its dial turns; an int or a bool is read once a call. host (host.fm, a file the plugin provides) is
+// what the host and the player are doing: here the pitch wheel bends the note up to 2 semitones.
 #include "host.fm"
 
 module Voice

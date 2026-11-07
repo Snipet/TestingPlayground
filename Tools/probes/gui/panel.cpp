@@ -7,16 +7,21 @@
 //   gui.panel.meters.png  its METERS page, audio flowing (meter, VU, light, number, scope, spectrum)
 //   gui.panel.small.png   the least size, CODE view, scrolled to its end
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
+//   gui.panel.pragmas.png   PRAGMA READOUTS' panel: #pragma panel numbers with a unit, decimals and a scale
+//   gui.panel.meterfit.png  METER FIT's panel: meters short, narrow, tall, with a huge readout, and of the output
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
 //   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
+//   gui.panel.limits.png    LIMITS' panel: 40 dials (eight of them the panel's own) and 32 number displays
 //   gui.panel.spectrum.png  SPECTRUM's panel: two spectra of the output (and the effect's of its input), the effect's
 //                           input noise, the synth's voice a sine
 // and checks:
 //   CODE      the program runs with no note; the dials' own items give way to the interface's; every item it shows is
 //             inside its area, in the left column, none overlapping another; the area under the problems list
 //   VIEW      the toolbar's PANEL cell shows the PANEL view: the tabs, the editor and the problems go, the interface
-//             starts under the toolbar and fits; the processor keeps the choice, and its state carries it to another
-//             processor; CODE brings the editor back
+//             starts under the toolbar and fits, in the area panelViewArea computes (the panel's fit, run_program's
+//             line, lays it out there), the chat open and folded, and in a window where the CODE view's explorer
+//             narrows the chat (which the PANEL view keeps); the processor keeps the choice, and its state
+//             carries it to another processor; CODE brings the editor back
 //   CONTROLS  a drag up on the large knob raises its parameter by a quarter for 50 px, and a double-click returns it to
 //             its default; the knob's log taper puts 632 Hz at its middle (the host's text says so); a click on a
 //             button of a row of buttons chooses its value, a click on the switch flips it, a click on the menu opens
@@ -43,6 +48,17 @@
 //             (1250 rpm, as a knob reads), and a meter of shared->level at three quarters, all whether a voice sounds
 //             or not; the main module's int field a whole number too; a readout with a unit (-1200.0 cents) and one of
 //             twelve digits each drawn whole inside its box
+//   PRAGMA READOUTS  #pragma panel number lines with unit=, decimals= and scale= (Shared's fields, no note played) in
+//             the PANEL view: 1250 rpm and -1200.0 cents, as a .gui file's numbers read, each whole in its box, the
+//             cents' cell widened past 76 px for its unit (gui.panel.pragmas.png)
+//   METER FIT a .gui file's meters at every size (looks::meter): a short one (40 px: the bars alone, no readout), a
+//             narrow one (14 px: its readout drawn smaller, whole), a tall one (180 px: the bars down to the readout at
+//             its bottom), a huge readout (past half size, its leading digits from the cell's left, cut at its right)
+//             and the output's: every readout glyph and every bar inside its cell (gui.panel.meterfit.png)
+//   LIMITS    a program of 40 dials (d33 to d40 the panel's own: Controls.h's isPanelDial) and 32 fields, its panel
+//             a grid of 40 small knobs and one of 32 number displays (kMaxDisplays), in the PANEL view: every control
+//             and display shown, inside the area, none overlapping; each readout its field's value (the 32nd 32); a
+//             drag on d40's knob turns it, writing no host parameter (the host has 32)
 //   STATE     a picture's state (Panel::showState, view_panel's values and at): a value for a knob's live= field drawn
 //             as its mark before the audio thread plays the program (none without it); frames shown at the first until
 //             they play, then one a frame to the last (a number's readout, a field scope's points one a frame), a tap and
@@ -208,6 +224,12 @@ panel accent=orange {
         P.eq(key + ".png_written", ok ? 1 : 0, 1);
         std::printf("wrote %s\n", path.c_str());
         return ok;
+    }
+
+    bool sameRect(const funkgui::Rect& a, const funkgui::Rect& b)
+    {
+        return std::fabs(a.x - b.x) < 0.5f && std::fabs(a.y - b.y) < 0.5f && std::fabs(a.w - b.w) < 0.5f
+            && std::fabs(a.h - b.h) < 0.5f;
     }
 
     bool inside(const funkgui::Rect& in, const funkgui::Rect& r)
@@ -476,6 +498,34 @@ PROBE(gui, panel)
         P.eq("view.panel", panel.panelView() && port.panelView() ? 1 : 0, 1);
         P.le("view.from_toolbar", static_cast<double>(L->area.y), 100.0);
         P.eq("view.fits", L->maxScrollY == 0.0f && L->maxScrollX == 0.0f ? 1 : 0, 1);
+        // Where the panel's fit (run_program's line) lays it out: the same area, by panelViewArea's arithmetic.
+        {
+            const float defW = static_cast<float>(pg::ui::kDefaultWidth), defH = static_cast<float>(pg::ui::kDefaultHeight);
+            const funkgui::Rect a = pg::ui::panelViewArea(defW, defH, port.chatOpen(), panel.chatWant(), port.explorerOpen(),
+                                                          panel.explorerWant());
+            P.eq("view.area_as_fit_says", sameRect(a, L->area) ? 1 : 0, 1);
+            panel.setChatOpen(false);                // the chat folded to its rail: the area wider
+            host.settle();
+            const funkgui::Rect folded = pg::ui::panelViewArea(defW, defH, false, panel.chatWant(), port.explorerOpen(),
+                                                               panel.explorerWant());
+            P.eq("view.area_as_fit_says_folded", sameRect(folded, panel.guiLayout().area) && folded.w > a.w ? 1 : 0, 1);
+            panel.setChatOpen(true);
+            host.settle();
+            // A window where the CODE view's explorer narrows the chat (Columns.h's give-way order: at 1200 px the
+            // chat 356 px, not 384): the PANEL view keeps the chat's CODE width, and the fit's area follows it.
+            constexpr int kNarrowed = 1200;
+            host.resize(kNarrowed, pg::ui::kDefaultHeight);
+            host.settle();
+            const float narrowW = static_cast<float>(kNarrowed);
+            const funkgui::Rect narrowed = pg::ui::panelViewArea(narrowW, defH, true, panel.chatWant(), port.explorerOpen(),
+                                                                 panel.explorerWant());
+            const funkgui::Rect alone = pg::ui::panelViewArea(narrowW, defH, true, panel.chatWant(), false, panel.explorerWant());
+            P.eq("view.area_as_fit_says_explorer",
+                 port.explorerOpen() && sameRect(narrowed, panel.guiLayout().area) && narrowed.w > alone.w ? 1 : 0, 1);
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            host.settle();
+            L = &panel.guiLayout();
+        }
         bool editorGone = true;                  // no text field in the left column (the chat's message box stays)
         for (const funkgui::A11yItem& a : host.accessibility())
             editorGone = editorGone && !(a.role == funkgui::a11yrole::editableText && a.bounds.x < panel.chatCard().x);
@@ -931,6 +981,171 @@ PROBE(gui, panel)
         // The main module's int: the effect's process writes 3; the synth's voice sounds none, so it reads 0.
         P.eq("readouts.main_int_whole", count == (kInstrument ? "0" : "3") ? 1 : 0, 1);
         writePng(P, host, "gui.panel.readouts.png", "readouts");
+    }
+
+    // ---- PRAGMA READOUTS, METER FIT ------------------------------------------------------------------------------------
+    {
+        // The text quads of a display's readout: those centred under its label's line (13 px into its cell) and over
+        // its column (20 px either side), down to `below` px under its cell (a readout drawn past it).
+        const auto readoutGlyphs = [](const funkgui::PrimList& frame, const funkgui::Rect& r, float below) {
+            std::vector<funkgui::Rect> out;
+            for (const funkgui::Prim& q : frame.prims)
+            {
+                if (static_cast<int>(q.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                    continue;
+                const float cx = 0.5f * (q.x0 + q.x1), cy = 0.5f * (q.y0 + q.y1);
+                if (cx >= r.x - 20.0f && cx <= r.right() + 20.0f && cy >= r.y + 13.0f && cy <= r.bottom() + below)
+                    out.push_back({ q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0 });
+            }
+            return out;
+        };
+        const auto allInside = [](const std::vector<funkgui::Rect>& quads, const funkgui::Rect& r) {
+            return std::all_of(quads.begin(), quads.end(), [&](const funkgui::Rect& q) { return inside(r, q); });
+        };
+        const auto chars = [](const std::string& t) {
+            return static_cast<std::size_t>(std::count_if(t.begin(), t.end(), [](char ch) { return ch != ' '; }));
+        };
+        const std::string shared = "module Shared\n{\n    float level, speed, detune, big;\n"
+                                   "    void init(float rate) { level = 0.75f; speed = 20.8333333f; detune = -1200; big = 123456789012.0f; }\n"
+                                   "};\n\n";
+        std::string main = program();
+        const std::string head = kInstrument ? "module Voice\n{\n" : "module Effect\n{\n";
+        main.replace(main.find(head), head.size(), head + "    Shared* shared;\n");
+        const auto play = [&] {
+            processor.prepareToPlay(48000.0, 256);
+            juce::AudioBuffer<float> buffer(2, 256);
+            for (int k = 0; k < 60; ++k)                 // no note: the synth's voices are silent
+            {
+                buffer.clear();
+                juce::MidiBuffer midi;
+                processor.processBlock(buffer, midi);
+                host.tick(1);
+            }
+            host.settle();
+        };
+
+        // #pragma panel number lines with unit=, decimals= and scale=, in the PANEL view.
+        const std::string pragmas = "#pragma panel section \"READ\" shared->speed shared->detune shared->level\n"
+                                    "#pragma panel number shared->speed \"SPEED\" unit=rpm decimals=0 scale=60\n"
+                                    "#pragma panel number shared->detune \"DETUNE\" unit=\"cents\" decimals=1\n"
+                                    "#pragma panel meter shared->level \"LEVEL\"\n";
+        load(processor, { { pg::kProgramName, pragmas + shared + main } });
+        settleRun(processor, host);
+        const pg::CompileStatus st = port.status();
+        P.eq("pragma_readouts.runs", st.ok && !panel.hasGui() ? 1 : 0, 1);
+        P.eq("pragma_readouts.lines_no_note", st.notes.find("program.fm:2:") == std::string::npos
+                                                  && st.notes.find("program.fm:3:") == std::string::npos ? 1 : 0, 1);
+        std::printf("%s", st.notes.c_str());
+        play();
+        {
+            const funkgui::PrimList& frame = host.draw();
+            std::string speed, detune;
+            bool speedFits = false, detuneFits = false;
+            float detuneW = 0.0f;
+            for (int d = 0; d < pg::kMaxDisplays; ++d)
+            {
+                const pg::ui::DisplayItem& item = panel.displayItem(d);
+                if (!item.shown() || item.display().kind != pg::DisplayKind::number)
+                    continue;
+                // Its box (looks::number's): the cell less 2 each side, from 18 down, 30 high.
+                const funkgui::Rect& r = item.cell();
+                const funkgui::Rect box{ r.x + 2.0f, r.y + 18.0f, r.w - 4.0f, 30.0f };
+                const std::vector<funkgui::Rect> quads = readoutGlyphs(frame, r, 0.0f);   // the next row's labels apart
+                const bool fits = quads.size() == chars(item.readout()) && allInside(quads, box);
+                std::printf("pragma readout %s: \"%s\" in a cell %.0f px wide, %d glyphs\n", item.display().label.c_str(),
+                            item.readout().c_str(), static_cast<double>(r.w), static_cast<int>(quads.size()));
+                if (item.display().label == "SPEED")
+                {
+                    speed = item.readout();
+                    speedFits = fits;
+                }
+                else if (item.display().label == "DETUNE")
+                {
+                    detune = item.readout();
+                    detuneFits = fits;
+                    detuneW = r.w;
+                }
+            }
+            P.eq("pragma_readouts.formatted", speed == "1250 rpm" ? 1 : 0, 1);
+            P.eq("pragma_readouts.unit_decimals", detune == "-1200.0 cents" ? 1 : 0, 1);
+            P.eq("pragma_readouts.speed_in_its_box", speedFits ? 1 : 0, 1);
+            P.eq("pragma_readouts.detune_in_its_box", detuneFits ? 1 : 0, 1);
+            P.ge("pragma_readouts.detune_cell_widened", static_cast<double>(detuneW), 77.0);
+        }
+        writePng(P, host, "gui.panel.pragmas.png", "pragma_readouts");
+
+        // Meters of every size in a .gui file: short, narrow, tall, a huge readout, the output's.
+        const std::string meterGui = "row gap=48 pad=24 align=start {\n"
+                                     "    meter shared->level label=\"A\" maxheight=40\n"
+                                     "    meter shared->level label=\"B\" maxwidth=14\n"
+                                     "    meter shared->level label=\"C\" minheight=180\n"
+                                     "    meter shared->big label=\"D\"\n"
+                                     "    meter out label=\"E\"\n"
+                                     "}\n";
+        load(processor, { { pg::kProgramName, shared + main }, { "panel.gui", meterGui } });
+        settleRun(processor, host);
+        const pg::CompileStatus mst = port.status();
+        P.eq("meter_fit.runs", mst.ok ? 1 : 0, 1);
+        play();
+        {
+            const funkgui::PrimList& frame = host.draw();
+            int found = 0;
+            for (int d = 0; d < pg::kMaxDisplays; ++d)
+            {
+                const pg::ui::DisplayItem& item = panel.displayItem(d);
+                if (!item.shown() || item.display().kind != pg::DisplayKind::meter)
+                    continue;
+                ++found;
+                const funkgui::Rect& r = item.cell();
+                const std::string& l = item.display().label;
+                const std::vector<funkgui::Rect> quads = readoutGlyphs(frame, r, 40.0f);   // the row alone in its panel
+                // The lowest bar segment's bottom (rects centred in the cell, under its label).
+                float lowest = r.y;
+                for (const funkgui::Prim& q : frame.prims)
+                    if (static_cast<int>(q.d2[2] + 0.5f) == static_cast<int>(funkgui::PrimKind::rrect)
+                        && r.contains({ 0.5f * (q.x0 + q.x1), 0.5f * (q.y0 + q.y1) }) && 0.5f * (q.y0 + q.y1) > r.y + 13.0f)
+                        lowest = std::max(lowest, q.y1);
+                std::printf("meter %s: cell %.0f x %.0f, readout \"%s\", %d glyphs, bars to %.1f px of %.0f\n", l.c_str(),
+                            static_cast<double>(r.w), static_cast<double>(r.h), item.readout().c_str(), static_cast<int>(quads.size()),
+                            static_cast<double>(lowest - r.y), static_cast<double>(r.h));
+                const std::string key = "meter_fit." + std::string(l == "A"   ? "short"
+                                                                   : l == "B" ? "narrow"
+                                                                   : l == "C" ? "tall"
+                                                                   : l == "D" ? "huge"
+                                                                              : "output");
+                P.eq(key + "_readout_inside", allInside(quads, r) ? 1 : 0, 1);
+                P.le(key + "_bars_inside", static_cast<double>(lowest), static_cast<double>(r.bottom()) + 0.5);
+                if (l == "A")
+                {
+                    P.le("meter_fit.short_cell", static_cast<double>(r.h), 40.5);
+                    P.eq("meter_fit.short_no_readout", static_cast<int64_t>(quads.size()), 0);
+                }
+                else if (l == "B")
+                {
+                    P.le("meter_fit.narrow_cell", static_cast<double>(r.w), 14.5);
+                    P.eq("meter_fit.narrow_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+                }
+                else if (l == "C")
+                {
+                    P.ge("meter_fit.tall_cell", static_cast<double>(r.h), 179.5);
+                    P.eq("meter_fit.tall_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+                    P.ge("meter_fit.tall_bars_down", static_cast<double>(lowest - r.y), static_cast<double>(r.h) - 20.0);
+                }
+                else if (l == "D")
+                {
+                    // Past half size it is cut at the right: its leading digits from the cell's left.
+                    float left = r.right();
+                    for (const funkgui::Rect& q : quads)
+                        left = std::min(left, q.x);
+                    P.eq("meter_fit.huge_cut", !quads.empty() && quads.size() < chars(item.readout()) ? 1 : 0, 1);
+                    P.le("meter_fit.huge_from_the_left", static_cast<double>(left - r.x), 2.0);
+                }
+                else if (l == "E")
+                    P.eq("meter_fit.output_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+            }
+            P.eq("meter_fit.five", found, 5);
+        }
+        writePng(P, host, "gui.panel.meterfit.png", "meter_fit");
     }
 
     // ---- STATE ---------------------------------------------------------------------------------------------------------
@@ -1512,6 +1727,100 @@ PROBE(gui, panel)
             }
             P.eq("hidden.second_closed", port.meterReaders(), readers);
         }
+    }
+    // ---- LIMITS --------------------------------------------------------------------------------------------------------
+    {
+        std::string params, fields, writes, knobs, numbers;
+        for (int k = 1; k <= 40; ++k)
+        {
+            params += "    param float d" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+            knobs += "        knob d" + std::to_string(k) + " size=small\n";
+        }
+        for (int k = 1; k <= pg::kMaxDisplays; ++k)
+        {
+            fields += "    float f" + std::to_string(k) + ";\n";
+            writes += "        f" + std::to_string(k) + " = " + std::to_string(k) + ";\n";
+            numbers += "        number f" + std::to_string(k) + " decimals=0\n";
+        }
+        const std::string main = kInstrument
+            ? "module Voice\n{\n" + params + fields + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + writes + "        return true;\n    }\n};\n"
+            : "module Effect\n{\n" + params + fields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + writes + "    }\n};\n";
+        const std::string limitsGui = "column gap=8 {\n    section \"DIALS, 33+ PANEL ONLY\" { grid cols=14 gap=2 {\n" + knobs
+                              + "    } }\n    section \"32 DISPLAYS\" { grid cols=10 gap=4 {\n" + numbers + "    } }\n}\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", limitsGui } });
+        settleRun(processor, host);
+        const pg::CompileStatus st = port.status();
+        if (!st.notes.empty())
+            std::printf("LIMITS notes:\n%s", st.notes.c_str());
+        P.eq("limits.runs", st.ok && st.panel.displays.size() == static_cast<std::size_t>(pg::kMaxDisplays) ? 1 : 0, 1);
+        if (!port.panelView())
+        {
+            const funkgui::Point view = panel.centreOfView(true);
+            host.click(view.x, view.y);
+            host.settle();
+        }
+        processor.prepareToPlay(48000.0, 256);
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (int k = 0; k < 20; ++k)
+        {
+            buffer.clear();
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+            processor.processBlock(buffer, midi);
+            host.tick(1);
+        }
+        host.settle();
+        int controls = 0, displays = 0;
+        bool apart = true, within = true;
+        std::vector<funkgui::Rect> cells;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (panel.guiControl(c).shown())
+            {
+                ++controls;
+                cells.push_back(panel.guiControl(c).cell());
+            }
+        bool readouts = true;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (!item.shown())
+                continue;
+            ++displays;
+            cells.push_back(item.cell());
+            readouts = readouts && item.readout() == std::to_string(d + 1);
+        }
+        for (std::size_t a = 0; a < cells.size(); ++a)
+        {
+            within = within && inside(panel.guiLayout().area, cells[a]);
+            for (std::size_t b = 0; b < a; ++b)
+                apart = apart && !overlap(cells[a], cells[b]);
+        }
+        std::printf("LIMITS: %d controls, %d displays shown; the 32nd reads %s\n", controls, displays,
+                    panel.displayItem(pg::kMaxDisplays - 1).readout().c_str());
+        P.eq("limits.controls_shown", controls, 40);
+        P.eq("limits.displays_shown", displays, pg::kMaxDisplays);
+        P.eq("limits.inside", within && panel.guiLayout().maxScrollY == 0.0f && panel.guiLayout().maxScrollX == 0.0f ? 1 : 0, 1);
+        P.eq("limits.none_overlap", apart ? 1 : 0, 1);
+        P.eq("limits.readouts", readouts ? 1 : 0, 1);
+        // d40's knob, the panel's own: a drag turns it, and no host parameter moves.
+        constexpr int last = 39;
+        funkgui::ParamPort& dial = *processor.ports()[last];
+        const float before = dial.value01();
+        std::vector<float> host32;
+        for (const auto* p : processor.getParameters())
+            host32.push_back(p->getValue());
+        const funkgui::Point k = panel.guiControl(last).centre();
+        host.drag(k.x, k.y, k.x, k.y - 50.0f, 10);
+        host.settle();
+        bool hostStill = static_cast<int>(processor.getParameters().size()) == pg::kHostControls;
+        for (std::size_t i = 0; hostStill && i < host32.size(); ++i)
+            hostStill = processor.getParameters()[static_cast<int>(i)]->getValue() == host32[i];
+        P.ge("limits.panel_knob_turns", static_cast<double>(dial.value01() - before), 0.1);
+        P.eq("limits.no_host_parameter", hostStill ? 1 : 0, 1);
+        writePng(P, host, "gui.panel.limits.png", "limits");
     }
     return P.finish();
 }

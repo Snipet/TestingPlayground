@@ -519,4 +519,22 @@ namespace playground::ui
         std::snprintf(out, n, "%s   %s OF %s   %s%s", label.c_str(), kindName(display_.kind), source.c_str(),
                       readout_.c_str(), display_.audio() ? " DBFS" : "");
     }
+
+    bool TapsShown::show(Meters& m, uint64_t panelProgram, uint64_t panelTable) noexcept
+    {
+        if (m.program == panelProgram && m.tapTable == panelTable)
+        {
+            std::copy(std::begin(m.taps), std::end(m.taps), taps);
+            program = panelProgram;
+            table = panelTable;
+            held = true;
+            return true;
+        }
+        const bool own = held && m.program == panelProgram && program == panelProgram && table == panelTable;
+        if (own)
+            std::copy(std::begin(taps), std::end(taps), m.taps);
+        else
+            std::fill(std::begin(m.taps), std::end(m.taps), 0.0f);
+        return own;
+    }
 }

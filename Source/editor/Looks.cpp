@@ -178,27 +178,58 @@ namespace playground::ui::looks
     {
         const Rect& r = d.cell;
         label(c, th, r, d.label, false);
-        constexpr int kSegments = 15;
-        constexpr float kBarW = 8.0f, kBarGap = 4.0f, kTop = 16.0f, kHeight = 46.0f, kSegGap = 1.0f;
-        const float segH = (kHeight - kSegGap * static_cast<float>(kSegments - 1)) / static_cast<float>(kSegments);
-        const float total = static_cast<float>(count) * kBarW + static_cast<float>(count - 1) * kBarGap;
-        const Col base = d.tinted ? d.color : panelColor("green", th, th.accent);
-        const Col warm = panelColor("yellow", th, th.accent), hot = panelColor("red", th, th.accent);
-        for (int b = 0; b < count; ++b)
+        // The cell, top to bottom: the label, the bars from kTop, kGap, the readout kReadoutUp from the bottom (in an
+        // 80 px cell: the bars 46 px, the readout at 68, as they always were). Too short for bars of kMeterLeast px
+        // and the readout: the bars alone, to kFoot from the bottom.
+        constexpr float kTop = 16.0f, kGap = 6.0f, kFoot = 2.0f, kSegGap = 1.0f, kSegLeast = 2.0f;
+        constexpr float kBarW = 8.0f, kBarGap = 4.0f;
+        const float readoutUp = kFoot + type::kMicro.px;     // its top above the cell's bottom (12)
+        const bool withReadout = r.h - kTop - kGap - readoutUp >= kMeterLeast;
+        const float height = r.h - kTop - (withReadout ? kGap + readoutUp : kFoot);
+        // The bars: as wide as they were, narrower in a cell narrower than they are (a px either side).
+        const float barGap = count > 1 ? std::min(kBarGap, std::max(1.0f, 0.25f * (r.w - 2.0f))) : 0.0f;
+        const float barW = std::clamp((r.w - 2.0f - barGap * static_cast<float>(count - 1)) / static_cast<float>(count), 1.0f, kBarW);
+        if (height >= 1.0f)
         {
-            const float x = std::round(r.centreX() - 0.5f * total) + static_cast<float>(b) * (kBarW + kBarGap);
-            const int litTo = static_cast<int>(std::floor(std::clamp(levels[b], 0.0f, 1.0f) * kSegments + 0.0001f));
-            const int hold = static_cast<int>(std::ceil(std::clamp(holds[b], 0.0f, 1.0f) * kSegments)) - 1;
-            for (int s = 0; s < kSegments; ++s)
+            // Segments of kSegLeast px at least, fifteen at most (an 80 px cell's).
+            const int segments = std::clamp(static_cast<int>(std::floor((height + kSegGap) / (kSegLeast + kSegGap))), 1, 15);
+            const float segH = (height - kSegGap * static_cast<float>(segments - 1)) / static_cast<float>(segments);
+            const float total = static_cast<float>(count) * barW + static_cast<float>(count - 1) * barGap;
+            const Col base = d.tinted ? d.color : panelColor("green", th, th.accent);
+            const Col warm = panelColor("yellow", th, th.accent), hot = panelColor("red", th, th.accent);
+            const float n = static_cast<float>(segments);
+            for (int b = 0; b < count; ++b)
             {
-                const float p = (static_cast<float>(s) + 0.5f) / static_cast<float>(kSegments);
-                const Col col = p > 0.87f ? hot : (p > 0.7f ? warm : base);
-                const bool on = s < litTo || s == hold;
-                const float y = r.y + kTop + kHeight - static_cast<float>(s + 1) * segH - static_cast<float>(s) * kSegGap;
-                c.rrect(x, y, kBarW, segH, 0.0f, on ? col : funkgui::premix(th.ground, col, 0.14f));
+                const float x = std::round(r.centreX() - 0.5f * total) + static_cast<float>(b) * (barW + barGap);
+                const int litTo = static_cast<int>(std::floor(std::clamp(levels[b], 0.0f, 1.0f) * n + 0.0001f));
+                const int hold = static_cast<int>(std::ceil(std::clamp(holds[b], 0.0f, 1.0f) * n)) - 1;
+                for (int s = 0; s < segments; ++s)
+                {
+                    const float p = (static_cast<float>(s) + 0.5f) / n;
+                    const Col col = p > 0.87f ? hot : (p > 0.7f ? warm : base);
+                    const bool on = s < litTo || s == hold;
+                    const float y = r.y + kTop + height - static_cast<float>(s + 1) * segH - static_cast<float>(s) * kSegGap;
+                    c.rrect(x, y, barW, segH, 0.0f, on ? col : funkgui::premix(th.ground, col, 0.14f));
+                }
             }
         }
-        c.text(readout, r.centreX(), r.y + 68.0f, type::kMicro, th.ink52, funkgui::Align::centre);
+        if (!withReadout || readout == nullptr || readout[0] == '\0')
+            return;
+        // The readout: smaller when it would not fit the cell (a px either side), half size at least, its foot where it
+        // was; past that from the cell's left, cut at its right (the leading digits shown).
+        funkgui::TextStyle st = type::kMicro;
+        const float room = r.w - 2.0f, w = c.textWidth(readout, st);
+        bool cut = false;
+        if (w > room && w > 0.0f)
+        {
+            const float k = std::max(0.5f, room / w);
+            st.px *= k;
+            st.tracking *= k;
+            cut = w * k > room;
+        }
+        const funkgui::Canvas::ClipScope clip(c, r);
+        c.text(readout, cut ? r.x + 1.0f : r.centreX(), r.bottom() - kFoot - st.px, st, th.ink52,
+               cut ? funkgui::Align::left : funkgui::Align::centre);
     }
 
     void vu(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, float needle, bool audio, const char* lo,
@@ -282,6 +313,16 @@ namespace playground::ui::looks
         }
         const funkgui::Canvas::ClipScope clip(c, box);
         c.text(text, box.centreX(), c.capCentreTop(box.centreY(), st), st, digits, funkgui::Align::centre);
+    }
+
+    std::string readoutSample(const std::string& unit, int decimals)
+    {
+        std::string s = "-0000";
+        if (decimals > 0)
+            s += "." + std::string(static_cast<std::size_t>(std::min(decimals, 4)), '0');
+        if (!unit.empty())
+            s += " " + (unit == "Hz" ? std::string("kHz") : unit);
+        return s;
     }
 
     namespace

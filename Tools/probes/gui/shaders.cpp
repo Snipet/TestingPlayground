@@ -8,6 +8,7 @@
 //   gui.shaders.gpu.png    the same frame drawn on the GPU (editor/Picture.h): the shaders drawn
 //   gui.shaders.picture.png, gui.shaders.picture-soft.png   view_panel's picture of the panel, on the GPU and through
 //                          the fallback (SoftRaster, forced by the test hook)
+//   gui.shaders.text.png, gui.shaders.text.moved.png   TEXT's panel on the GPU: text, numbers and a gauge of shapes
 // and checks:
 //   PROMPT    the system prompt's shader example is there, and it builds
 //   ANIMATES  shaderAnimates: u_time and u_viewSize as words of the code animate; in a // comment (one a backslash
@@ -51,6 +52,27 @@
 //             sum (the early builds run while FMinus compiles); a shaderc that does not run (no permission to execute)
 //             leaves a note and nothing kept, in memory or on disk, so that once it runs the same cache builds it; a
 //             shader that does not compile is kept in memory (no second shaderc) and never written to disk
+//   SIXTEEN   a shader of 16 inputs (kMaxShaderInputs: FunkGui's u_params, 4 vec4s), the program's 17 dials named in
+//             its inputs=: the 17th a note, the shader built with no note of its own, reading in15 and in_p16; the
+//             Panel's item has the 16 inputs, the first and the 16th the dials' turns
+//   TEXT      text and includes (Shaders.h; fminus/ShaderLib.h; editor/ShaderFont.h): the atlas made from FunkGui's
+//             bake, every glyph in its cell, ShaderLib.h's numbers the bake's; the pre-pass (a string a vec4 of its
+//             codes, a longer one a mat4, the escapes; one too long, a character the font lacks, one with no end and a
+//             wrong escape each a note at its line and column; comments and #include lines left alone, line for line);
+//             the includes (the library's and the program's .sh files, in turn theirs, each once; a missing one a note at
+//             its line, in the shader or in the .sh; a clock read in an included .sh animates the shader, the library
+//             reads none); a panel of text.sc (text, numbers, a mat4 string from ink.sh, a .sh of the program's own that
+//             includes the library too), dash.sc (a gauge of shapes.sh) and odo.sc (8999001, past 2^23): built with no
+//             note, registered with the font's texture, still; text.sc's cell drawn by the GPU against funk/text.sh's
+//             arithmetic on the CPU over the same atlas, pixel for pixel (gui.shaders.text.png), and again with its
+//             numbers moved by their dials (.text.moved.png); odo.sc's number7() and number() the same pixels as its
+//             digits drawn one by one (digit7, text) under them; dash.sc's first and last ticks as wide on both sides of
+//             their centre lines, a sweep either way round; the cache's key: a .sh no shader includes changed builds
+//             nothing, ink.sh changed builds text.sc alone again; a .sh that does not compile a note on its own line,
+//             which the shader that includes it shows as why (its placeholder, its screen reader's value, view_panel's
+//             line), an #include of no file a note and no build; the shaders built for Vulkan (SPIR-V) too (Direct3D
+//             11's compiler is Windows' alone); PROMPT's gauge example (text.sh and shapes.sh) builds, the renderer
+//             takes it, and it is still
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -62,7 +84,9 @@
 #include "editor/GuiItems.h"
 #include "editor/Panel.h"
 #include "editor/Picture.h"
+#include "editor/ShaderFont.h"
 #include "fminus/GuiSpec.h"
+#include "fminus/ShaderLib.h"
 #include "fminus/Shaders.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -167,10 +191,10 @@ namespace
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
-    // The prompt's example: from the line "// glow.sc" to the "}" that closes its main().
-    std::string promptExample(const std::string& prompt)
+    // The prompt's example: from the line "// glow.sc" (or another's) to the "}" that closes its main().
+    std::string promptExample(const std::string& prompt, const std::string& file = "glow.sc")
     {
-        const std::size_t a = prompt.find("// glow.sc:");
+        const std::size_t a = prompt.find("// " + file + ":");
         if (a == std::string::npos)
             return {};
         const std::size_t m = prompt.find("void main()", a);
@@ -380,6 +404,93 @@ namespace
         }
         return nullptr;
     }
+
+    // ---- TEXT's reference: funk/text.sh's arithmetic on the CPU, over the atlas the GPU samples ---------------------------
+    namespace lib = pg::shaderlib;
+
+    struct TextRef
+    {
+        const std::vector<uint8_t>& texels;
+        float px;                                        // u_px
+
+        // The atlas bilinear at (x, y) in texels (texel k covering [k, k + 1]), clamped to its edges, 0..1.
+        float sample(float x, float y) const
+        {
+            const auto at = [&](int tx, int ty) {
+                tx = std::clamp(tx, 0, lib::kAtlasW - 1);
+                ty = std::clamp(ty, 0, lib::kAtlasH - 1);
+                return static_cast<float>(texels[static_cast<std::size_t>(ty) * lib::kAtlasW + static_cast<std::size_t>(tx)]) / 255.0f;
+            };
+            const float sx = x - 0.5f, sy = y - 0.5f;
+            const float fx = std::floor(sx), fy = std::floor(sy);
+            const int ix = static_cast<int>(fx), iy = static_cast<int>(fy);
+            const float ax = sx - fx, ay = sy - fy;
+            const float top = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * ax;
+            const float bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * ax;
+            return top + (bottom - top) * ay;
+        }
+
+        float glyph(float x, float y, float penX, float penY, float scale, int code) const
+        {
+            const float lx = (x - penX) / scale + static_cast<float>(lib::kPenX), ly = (y - penY) / scale + static_cast<float>(lib::kBaseline);
+            if (code <= 32 || lx < 0.0f || ly < 0.0f || lx > static_cast<float>(lib::kCellW) || ly > static_cast<float>(lib::kCellH))
+                return 0.0f;
+            const int cell = code - 32;
+            const float d = sample(static_cast<float>((cell % lib::kColumns) * lib::kCellW) + lx,
+                                   static_cast<float>((cell / lib::kColumns) * lib::kCellH) + ly);
+            return std::clamp((d - 0.5f) * 2.0f * lib::kSpread * scale / px + 0.5f, 0.0f, 1.0f);
+        }
+
+        float text(float x, float y, float atX, float atY, float size, float align, const std::vector<int>& codes) const
+        {
+            if (std::fabs(y - atY) > size)
+                return 0.0f;
+            const float scale = size / lib::kBasePx, advance = lib::kAdvance * scale;
+            const float n = static_cast<float>(codes.size());
+            const float penX = atX - align * n * advance, penY = atY + 0.5f * lib::kCapHeight * scale;
+            const float i = std::floor((x - penX) / advance);
+            float ink = 0.0f;
+            for (int k = -1; k <= 1; ++k)
+            {
+                const float j = i + static_cast<float>(k);
+                if (j >= 0.0f && j < n)
+                    ink = std::max(ink, glyph(x, y, penX + j * advance, penY, scale, codes[static_cast<std::size_t>(j)]));
+            }
+            return ink;
+        }
+
+        // number()'s characters, as text.sh makes them (rounded by the fraction, as it rounds).
+        static std::vector<int> numberCodes(float value, int decimals)
+        {
+            float m = 1.0f;
+            for (int k = 0; k < decimals; ++k)
+                m *= 10.0f;
+            const float a = std::fabs(value) * m;
+            const float whole = std::floor(a);
+            const int r = static_cast<int>(std::min(whole + (a - whole >= 0.5f ? 1.0f : 0.0f), 9999999.0f));
+            std::string digits = std::to_string(r);
+            while (static_cast<int>(digits.size()) < decimals + 1)
+                digits.insert(digits.begin(), '0');
+            std::vector<int> codes;
+            if (value < 0.0f && r > 0)
+                codes.push_back(lib::glyphCode(0x2212));
+            for (std::size_t k = 0; k < digits.size(); ++k)
+            {
+                if (decimals > 0 && k == digits.size() - static_cast<std::size_t>(decimals))
+                    codes.push_back('.');
+                codes.push_back(digits[k]);
+            }
+            return codes;
+        }
+    };
+
+    std::vector<int> codesOf(const std::string& ascii)
+    {
+        std::vector<int> out;
+        for (const char c : ascii)
+            out.push_back(static_cast<unsigned char>(c));
+        return out;
+    }
 }
 
 PROBE(gui, shaders)
@@ -411,6 +522,17 @@ PROBE(gui, shaders)
              kMetal ? 1 : 0);
         if (!why.empty())
             std::printf("FunkGui: %s\n", why.c_str());
+        // The text and shapes example (the library's): it builds, the renderer takes it, and it is still.
+        const std::string gauge = promptExample(pg::ChatAgent::systemPrompt(), "gauge.sc");
+        const pg::ShaderBuild gb = pg::buildShader("gauge.sc", gauge, { "rpm" }, t);
+        if (!gb.ok())
+            std::printf("the prompt's gauge:\n%s", gb.error.c_str());
+        std::string gwhy;
+        P.eq("prompt.gauge_builds", !gauge.empty() && gb.ok() && has(gauge, "#include \"funk/text.sh\"")
+                                        && funkgui::shaders::check(gb.binary.data(), static_cast<uint32_t>(gb.binary.size()), gwhy) ? 1 : 0, 1);
+        if (!gwhy.empty())
+            std::printf("FunkGui: %s\n", gwhy.c_str());
+        P.eq("prompt.gauge_still", pg::shaderAnimates(gauge) ? 0 : 1, 1);
     }
 
     // ---- ANIMATES ------------------------------------------------------------------------------------------------------
@@ -1099,7 +1221,7 @@ PROBE(gui, shaders)
                 for (const pg::PanelShader& sh : pg::readGuiShaders(them[1], kInstrument))
                     for (const pg::SourceFile& f : them)
                         if (f.name == sh.file)
-                            jobs.push_back({ sh.file, f.text, sh.inputs });
+                            jobs.push_back({ sh.file, f.text, sh.inputs, {} });
                 return jobs;
             };
             const std::vector<pg::ShaderJob> one = jobsOf(timedFiles(salt0 * 32 + 20 + round * 2, true, false));
@@ -1126,5 +1248,426 @@ PROBE(gui, shaders)
         std::error_code ec;
         std::filesystem::remove_all(disk, ec);
     }
+    // ---- SIXTEEN -------------------------------------------------------------------------------------------------------
+    {
+        std::string params, names;
+        for (int k = 1; k <= pg::kMaxShaderInputs + 1; ++k)
+        {
+            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(" + std::to_string(k * 0.05)
+                    + ")]];\n";
+            names += (k == 1 ? "" : " ") + std::string("p") + std::to_string(k);
+        }
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const std::string body = "// sixteen.sc: the sixteenth input, by its number and by its name.\n"
+                                 "void main()\n{\n    gl_FragColor = vec4(vec3(in15), in_p16);\n}\n";
+        pg::Processor q;
+        q.prepareToPlay(48000.0, 256);
+        pg::ui::Panel qp(q.ports(), q.editorPort());
+        funkgui::HeadlessHost qh(qp, 0, 2.0f);
+        qh.settle();
+        {
+            const funkgui::Point at = qp.centreOfView(true);
+            qh.click(at.x, at.y);
+            qh.settle();
+        }
+        load(q, { { pg::kProgramName, source },
+                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=160 height=90 } }\n" },
+                  { "sixteen.sc", body } });
+        q.settle();
+        qh.tick(20);
+        const pg::CompileStatus st = q.editorPort().status();
+        std::printf("SIXTEEN notes:\n%s", st.notes.c_str());
+        P.eq("sixteen.plays", st.ok ? 1 : 0, 1);
+        P.eq("sixteen.past_noted", has(st.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
+                                                     + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
+        P.eq("sixteen.built", st.panel.shaders.size() == 1 && !st.panel.shaders[0].binary.empty() && !has(st.notes, "sixteen.sc:")
+                                  && static_cast<int>(st.panel.shaders[0].inputs.size()) == pg::kMaxShaderInputs ? 1 : 0, 1);
+        const pg::ui::GuiShaderItem* item = shaderShowing(qp, "sixteen.sc");
+        P.eq("sixteen.shown", item != nullptr ? 1 : 0, 1);
+        if (item != nullptr)
+        {
+            std::printf("SIXTEEN inputs: %.3f ... %.3f\n", static_cast<double>(item->inputs()[0]),
+                        static_cast<double>(item->inputs()[pg::kMaxShaderInputs - 1]));
+            P.near("sixteen.first_input", static_cast<double>(item->inputs()[0]), 0.05, 1e-4);
+            P.near("sixteen.last_input", static_cast<double>(item->inputs()[pg::kMaxShaderInputs - 1]), 0.05 * pg::kMaxShaderInputs, 1e-4);
+        }
+        else
+        {
+            P.eq("sixteen.first_input", 0, 1);
+            P.eq("sixteen.last_input", 0, 1);
+        }
+    }
+    // ---- TEXT ----------------------------------------------------------------------------------------------------------
+    // Text and includes (Shaders.h; fminus/ShaderLib.h; editor/ShaderFont.h).
+    {
+        // The atlas: ShaderLib.h's constants are the bake's, and every glyph fits its cell.
+        const pg::ui::ShaderFontAtlas& atlas = pg::ui::shaderFontAtlas();
+        std::printf("TEXT atlas: %s, %d glyphs, base %.3f, spread %.3f, advance %.6f, capitals %.6f, all in their cells: %s\n",
+                    atlas.ok ? "made" : atlas.why.c_str(), atlas.glyphs, static_cast<double>(atlas.basePx),
+                    static_cast<double>(atlas.spread), static_cast<double>(atlas.advance),
+                    static_cast<double>(atlas.capHeight), atlas.allInCells ? "yes" : "no");
+        P.eq("text.atlas", atlas.ok && atlas.texels.size() == static_cast<std::size_t>(lib::kAtlasW) * lib::kAtlasH ? 1 : 0, 1);
+        P.eq("text.atlas_glyphs", atlas.glyphs, lib::kCodes - 33);
+        P.eq("text.atlas_in_cells", atlas.allInCells ? 1 : 0, 1);
+        P.near("text.atlas_base", static_cast<double>(atlas.basePx), static_cast<double>(lib::kBasePx), 1e-6);
+        P.near("text.atlas_spread", static_cast<double>(atlas.spread), static_cast<double>(lib::kSpread), 1e-6);
+        P.near("text.atlas_advance", static_cast<double>(atlas.advance), static_cast<double>(lib::kAdvance), 1e-3);
+        P.near("text.atlas_capitals", static_cast<double>(atlas.capHeight), static_cast<double>(lib::kCapHeight), 1e-3);
+
+        // The pre-pass: strings made codes, line for line; comments and #include lines left as they are.
+        std::string err;
+        const std::string rpm = pg::shaderText("t.sc", "vec4 s = \"RPM\"; // \"not\"\n#include \"funk/text.sh\"\n/* \"no\" */\n", err);
+        P.eq("text.literal", rpm == "vec4 s = vec4(5066834.0, 0.0, 0.0, 0.0); // \"not\"\n#include \"funk/text.sh\"\n/* \"no\" */\n"
+                                 && err.empty() ? 1 : 0, 1);
+        const std::string escapes = pg::shaderText("t.sc", "a = \"\\u00B0F\"; b = \"\\\"\\\\\"; c = \"\";\n", err);
+        P.eq("text.escapes", escapes == "a = vec4(18047.0, 0.0, 0.0, 0.0); b = vec4(23586.0, 0.0, 0.0, 0.0); c = vec4(0.0, 0.0, 0.0, 0.0);\n"
+                                 && err.empty() ? 1 : 0, 1);
+        const std::string longer = pg::shaderText("t.sc", "m = \"ABCDEFGHIJKLM\";\n", err);
+        std::string zeros;
+        for (int k = 0; k < 11; ++k)
+            zeros += ", 0.0";
+        P.eq("text.mat4", longer.rfind("m = mat4(4407873.0, ", 0) == 0 && has(longer, ", 77.0" + zeros + ");\n") && err.empty() ? 1 : 0, 1);
+        pg::shaderText("t.sc", "x\n  y = \"" + std::string(49, 'A') + "\";\n", err);
+        P.eq("text.too_long", has(err, "t.sc:2:7: note: the shader does not compile: a string holds 48 characters at most (this one 49)") ? 1 : 0, 1);
+        pg::shaderText("t.sc", "y = \"caf\\u00E9\";\n", err);
+        P.eq("text.no_glyph", has(err, "t.sc:1:5: note: the shader does not compile: the font has no U+00E9") ? 1 : 0, 1);
+        pg::shaderText("t.sc", "y = 1.0;\ny = \"open;\n", err);
+        P.eq("text.unended", has(err, "t.sc:2:5: note: the shader does not compile: a string has no closing quote on its line") ? 1 : 0, 1);
+        pg::shaderText("t.sc", "y = \"\\n\";\n", err);
+        P.eq("text.bad_escape", has(err, "t.sc:1:5: note: the shader does not compile: a string's backslash escapes") ? 1 : 0, 1);
+
+        // The includes: the library's and the program's .sh files, in turn theirs, each once; one there is none of a note.
+        const pg::Sources headers{ { "b.sh", "#include \"funk/text.sh\"\n#include \"c.sh\"\n" }, { "c.sh", "float c1() { return 1.0; }\n" },
+                                   { "d.sh", "" } };
+        const std::vector<std::string> reached = pg::shaderIncludes(
+            "a.sc", "#include \"funk/text.sh\"\n#include <funk/shapes.sh>\n#include \"b.sh\"\n// #include \"d.sh\"\n#include <bgfx_shader.sh>\n",
+            headers, err);
+        P.eq("includes.reached", reached == std::vector<std::string>{ "funk/text.sh", "funk/shapes.sh", "b.sh", "c.sh" } && err.empty() ? 1 : 0, 1);
+        pg::shaderIncludes("a.sc", "void f() {}\n  #include \"nofile.sh\"\n", headers, err);
+        P.eq("includes.missing", has(err, "a.sc:2:12: note: the shader does not compile: there is no file nofile.sh to #include") ? 1 : 0, 1);
+        pg::shaderIncludes("a.sc", "#include \"e.sh\"\n", { { "e.sh", "\n#include \"gone.sh\"\n" } }, err);
+        P.eq("includes.missing_in_header", has(err, "e.sh:2:10: note: the shader does not compile: there is no file gone.sh") ? 1 : 0, 1);
+        P.eq("includes.headers", static_cast<int64_t>(pg::shaderHeaders({ { "program.fm", "" }, { "x.sh", "" }, { "panel.gui", "" },
+                                                                          { "y.sc", "" }, { "z.sh", "" } }).size()), 2);
+        // A clock read in a .sh file the shader includes animates it; the library reads none.
+        const pg::Sources clock{ { "tick.sh", "float tick() { return fract(u_time); }\n" } };
+        P.eq("includes.animates", pg::shaderAnimates("a.sc", "#include \"tick.sh\"\nvoid main() {}\n", clock) ? 1 : 0, 1);
+        P.eq("includes.library_still", !pg::shaderAnimates("a.sc", "#include \"funk/text.sh\"\n#include \"funk/shapes.sh\"\nvoid main() {}\n", {})
+                                           && !pg::shaderAnimates("a.sc", "void main() { float t = text(v_px, v_px, 1.0, 0.0, \"u_time\"); }\n", {})
+                                           ? 1 : 0, 1);
+        int clocks = 0;
+        for (const lib::LibraryFile& f : lib::library())
+            clocks += pg::shaderAnimates(f.text) ? 1 : 0;
+        P.eq("includes.library_no_clock", clocks, 0);
+
+        // The panel: text and numbers drawn white on black (text.sc, ink.sh of the program's own, which includes the
+        // library too), a gauge of shapes (dash.sc: its outer scale counted from -135, its inner one from 135), and an
+        // odometer past 2^23 (odo.sc: 8999001 in seven segments and in the font, each over the same digits drawn one by
+        // one, digit7's and text()'s).
+        const char* const kTextSc = "// text.sc: the font, numbers and a long string, white on black.\n"
+                                    "#include \"funk/text.sh\"\n"
+                                    "#include \"ink.sh\"\n"
+                                    "void main()\n{\n"
+                                    "    float ink = text(v_px, vec2(8.0, 14.0), 14.0, 0.0, \"RPM 0-9 \\u00B0F\");\n"
+                                    "    ink = max(ink, text(v_px, vec2(0.5 * u_size.x, 38.0), 20.0, 0.5, \"Hg\"));\n"
+                                    "    ink = max(ink, number(v_px, vec2(u_size.x - 8.0, 64.0), 16.0, 1.0, in_level * 8000.0, 0.0));\n"
+                                    "    ink = max(ink, number(v_px, vec2(8.0, 64.0), 12.0, 0.0, -in_cutoff * 10.0, 2.0));\n"
+                                    "    ink = max(ink, label(v_px));\n"
+                                    "    gl_FragColor = vec4(vec3_splat(ink), 1.0);\n}\n";
+        const auto inkSh = [](const std::string& words) {
+            return "// ink.sh: a helper of the program's own, which includes the library too.\n#include \"funk/text.sh\"\n\n"
+                   "float label(vec2 p)\n{\n    return text(p, vec2(8.0, 92.0), 9.0, 0.0, \"" + words + "\");\n}\n";
+        };
+        const char* const kDashSc = "// dash.sc: a gauge of the library's shapes, its title and its value.\n"
+                                    "#include \"funk/text.sh\"\n#include \"funk/shapes.sh\"\n"
+                                    "void main()\n{\n"
+                                    "    vec2 c = vec2(0.5 * u_size.x, 0.56 * u_size.y);\n"
+                                    "    float r = 0.4 * u_size.y;\n"
+                                    "    vec3 col = ramp(vec3(0.08, 0.08, 0.1), vec3(0.03, 0.03, 0.04), around(v_px, c, 1.3 * r));\n"
+                                    "    col = mix(col, vec3(0.16, 0.16, 0.18), box(v_px, vec2(u_size.x - 27.0, 17.0), vec2(42.0, 24.0), 5.0));\n"
+                                    "    col = mix(col, vec3(0.3, 0.09, 0.06), number7(v_px, vec2(u_size.x - 12.0, 17.0), 16.0, 8888888.0, 2.0));\n"
+                                    "    col = mix(col, vec3(1.0, 0.25, 0.1), number7(v_px, vec2(u_size.x - 12.0, 17.0), 16.0, in_cutoff * 100.0, 2.0));\n"
+                                    "    col = mix(col, vec3(0.35, 0.35, 0.4), ring(v_px, c, r + 4.0, 1.5));\n"
+                                    "    col = mix(col, vec3(0.75, 0.75, 0.75), ticks(v_px, c, 0.82 * r, r, 1.5, -135.0, 135.0, 9.0));\n"
+                                    "    col = mix(col, vec3(0.5, 0.5, 0.55), ticks(v_px, c, 0.56 * r, 0.74 * r, 1.5, 135.0, -135.0, 5.0));\n"
+                                    "    col = mix(col, vec3(0.9, 0.2, 0.1), arc(v_px, c, r - 2.0, 4.0, 90.0, 135.0));\n"
+                                    "    col = mix(col, vec3(0.25, 0.25, 0.28), segment(v_px, vec2(10.0, 17.0), vec2(34.0, 17.0), 3.0));\n"
+                                    "    col = mix(col, vec3(0.2, 0.6, 1.0), segment(v_px, vec2(10.0, 17.0), vec2(10.0 + 24.0 * in_level, 17.0), 3.0));\n"
+                                    "    vec2 tip = c + dirOf(-135.0 + 270.0 * in_level) * 0.9 * r;\n"
+                                    "    col += vec3(1.0, 0.45, 0.1) * 0.35 * glow(sdLine(v_px, c, tip), 4.0);\n"
+                                    "    col = mix(col, vec3(1.0, 0.55, 0.1), needle(v_px, c, -135.0 + 270.0 * in_level, 0.9 * r, 3.0));\n"
+                                    "    col = mix(col, vec3(0.12, 0.12, 0.13), circle(v_px, c, 5.0));\n"
+                                    "    col = mix(col, vec3(0.6, 0.6, 0.62), text(v_px, c + vec2(0.0, 0.3 * r), 9.0, 0.5, \"RPM\"));\n"
+                                    "    col = mix(col, vec3(1.0, 1.0, 1.0), number(v_px, c + vec2(0.0, 0.58 * r), 12.0, 0.5, in_level * 8000.0, 0.0));\n"
+                                    "    col = mix(col, ramp3(vec3(0.2, 0.9, 0.3), vec3(1.0, 0.8, 0.1), vec3(1.0, 0.2, 0.1), along(v_px, c - vec2(r, 0.0), c + vec2(r, 0.0))),\n"
+                                    "              box(v_px, vec2(c.x, u_size.y - 6.0), vec2(2.0 * r, 4.0), 2.0));\n"
+                                    "    gl_FragColor = vec4(col, 1.0);\n}\n";
+        const char* const kOdoSc = "// odo.sc: 8999001 (odd, past 2^23) in seven segments and in the font, each over the same digits.\n"
+                                   "#include \"funk/text.sh\"\n#include \"funk/shapes.sh\"\n"
+                                   "void main()\n{\n"
+                                   "    float v = 8999001.0 + floor(in_level);\n"
+                                   "    float pitch = 0.62 * 20.0;\n"
+                                   "    float ink = number7(v_px, vec2(100.0, 20.0), 20.0, v, 7.0);\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 0.5 * pitch, 50.0), 20.0, 1.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 1.5 * pitch, 50.0), 20.0, 0.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 2.5 * pitch, 50.0), 20.0, 0.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 3.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 4.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 5.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 6.5 * pitch, 50.0), 20.0, 8.0));\n"
+                                   "    ink = max(ink, number(v_px, vec2(8.0, 78.0), 12.0, 0.0, v, 0.0));\n"
+                                   "    ink = max(ink, text(v_px, vec2(8.0, 98.0), 12.0, 0.0, \"8999001\"));\n"
+                                   "    gl_FragColor = vec4(vec3_splat(ink), 1.0);\n}\n";
+        const std::string textGui = "panel { row {\n"
+                                    "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=110\n"
+                                    "    shader \"dash.sc\" inputs=\"cutoff level\" width=170 height=110\n"
+                                    "    shader \"odo.sc\" inputs=\"level\" width=120 height=110\n"
+                                    "} row { knob cutoff; knob level } }\n";
+        const std::string firstWords = "A STRING LONGER THAN TWELVE";
+        const pg::Sources textFiles{ { pg::kProgramName, program() }, { "panel.gui", textGui }, { "text.sc", kTextSc },
+                                     { "ink.sh", inkSh(firstWords) }, { "dash.sc", kDashSc }, { "other.sh", "// no shader includes this\n" },
+                                     { "odo.sc", kOdoSc } };
+        load(processor, textFiles);
+        processor.settle();
+        host.tick(2);
+        host.settle(30);
+        const pg::CompileStatus ts = port.status();
+        std::printf("TEXT notes:\n%s", ts.notes.c_str());
+        const bool textBuilt = ts.ok && ts.panel.shaders.size() == 3 && !ts.panel.shaders[0].binary.empty() && !ts.panel.shaders[1].binary.empty()
+                               && !ts.panel.shaders[2].binary.empty();
+        P.eq("text.built", textBuilt && !has(ts.notes, "text.sc") && !has(ts.notes, "ink.sh") && !has(ts.notes, "dash.sc")
+                               && !has(ts.notes, "odo.sc") ? 1 : 0, 1);
+        const uint32_t textId = textBuilt ? ts.panel.shaders[0].id : 0u;
+        const pg::ui::GuiShaderItem* textItem = shaderShowing(panel, "text.sc");
+        const pg::ui::GuiShaderItem* dashItem = shaderShowing(panel, "dash.sc");
+        P.eq("text.registered", textItem != nullptr && dashItem != nullptr && textItem->program() == textId && textId != 0
+                                    && funkgui::shaders::hasTexture(lib::kTextureId) ? 1 : 0, 1);
+        P.eq("text.still", textItem != nullptr && textItem->settled() ? 1 : 0, 1);
+
+        // On the GPU, against the reference: each pixel of text.sc's cell what text.sh's arithmetic gives there.
+        constexpr float kDpi = 2.0f;
+        const TextRef ref{ atlas.texels, 1.0f / kDpi };
+        const auto compare = [&](const char* name, const char* png) {
+            host.settle(10);
+            const funkgui::PrimList& frame = host.draw();
+            const pg::picture::Drawn g = pg::picture::draw(frame);
+            if (png != nullptr && g.image.w > 0)
+                funkgui::writePng(g.image, probe::outPath(png).c_str());
+            if (textItem == nullptr || !g.gpu)
+            {
+                P.eq((std::string(name) + ".gpu").c_str(), 0, 1);
+                return;
+            }
+            const funkgui::Rect cell = textItem->cell();
+            const float cutoff = textItem->inputs()[0], level = textItem->inputs()[1];
+            const std::vector<int> first = [] {
+                std::vector<int> v = codesOf("RPM 0-9 ");
+                v.push_back(lib::glyphCode(0x00B0));
+                v.push_back('F');
+                return v;
+            }();
+            const Px box = pixelsOf(g.image, cell, kDpi, 0.0f);
+            int worst = 0, inked = 0, inkedRef = 0, n = 0, over16 = 0;
+            double sum = 0.0;
+            for (int y = box.y0; y < box.y1; ++y)
+                for (int x = box.x0; x < box.x1; ++x, ++n)
+                {
+                    const float px = (static_cast<float>(x) + 0.5f) / kDpi - cell.x, py = (static_cast<float>(y) + 0.5f) / kDpi - cell.y;
+                    float ink = ref.text(px, py, 8.0f, 14.0f, 14.0f, 0.0f, first);
+                    ink = std::max(ink, ref.text(px, py, 0.5f * cell.w, 38.0f, 20.0f, 0.5f, codesOf("Hg")));
+                    ink = std::max(ink, ref.text(px, py, cell.w - 8.0f, 64.0f, 16.0f, 1.0f, TextRef::numberCodes(level * 8000.0f, 0)));
+                    ink = std::max(ink, ref.text(px, py, 8.0f, 64.0f, 12.0f, 0.0f, TextRef::numberCodes(-cutoff * 10.0f, 2)));
+                    ink = std::max(ink, ref.text(px, py, 8.0f, 92.0f, 9.0f, 0.0f, codesOf(firstWords)));
+                    const int want = static_cast<int>(std::lround(ink * 255.0f));
+                    const int got = at(g.image, x, y)[0];
+                    const int d = std::abs(got - want);
+                    worst = std::max(worst, d);
+                    over16 += d > 16 ? 1 : 0;
+                    sum += d;
+                    inked += got > 128 ? 1 : 0;
+                    inkedRef += want > 128 ? 1 : 0;
+                }
+            std::printf("%s: text.sc's cell %d x %d px on the GPU against the reference: the mean difference %.3f, the "
+                        "largest %d, %d over 16; %d px inked (the reference %d); cutoff %.3f, level %.3f\n",
+                        name, box.x1 - box.x0, box.y1 - box.y0, sum / std::max(n, 1), worst, over16, inked, inkedRef,
+                        static_cast<double>(cutoff), static_cast<double>(level));
+            P.eq((std::string(name) + ".gpu").c_str(), 1, 1);
+            P.ge((std::string(name) + ".inked").c_str(), static_cast<double>(inkedRef), 400.0);
+            P.near((std::string(name) + ".inked_as_reference").c_str(), static_cast<double>(inked), static_cast<double>(inkedRef),
+                   std::max(20.0, 0.03 * inkedRef));
+            P.le((std::string(name) + ".mean_difference").c_str(), sum / std::max(n, 1), 1.5);
+            P.le((std::string(name) + ".over_16_share").c_str(), static_cast<double>(over16) / std::max(n, 1), 0.01);
+        };
+        compare("text.draw", "gui.shaders.text.png");
+
+        // Past 2^23 (odo.sc): number7's and number()'s 8999001 the same pixels as the digits drawn one by one under
+        // each (a float's x + 0.5 would round the tie to even, an 8999002); dash.sc's ticks as wide on both sides of
+        // the first and last marks, either way round (the outer scale from -135, the inner one from 135).
+        {
+            const funkgui::PrimList& frame = host.draw();
+            const pg::picture::Drawn g = pg::picture::draw(frame);
+            const pg::ui::GuiShaderItem* odoItem = shaderShowing(panel, "odo.sc");
+            const auto sameAsBelow = [&](const std::string& name, float top, float height, float below) {
+                if (odoItem == nullptr || !g.gpu)
+                {
+                    P.eq(name.c_str(), 0, 1);
+                    return;
+                }
+                funkgui::Rect band = odoItem->cell();
+                band.y += top;
+                band.h = height;
+                const Px box = pixelsOf(g.image, band, kDpi, 0.0f);
+                const int shift = static_cast<int>(std::lround(below * kDpi));
+                int differ = 0, inked = 0, worst = 0;
+                for (int y = box.y0; y < box.y1 && y + shift < g.image.h; ++y)
+                    for (int x = box.x0; x < box.x1; ++x)
+                    {
+                        const int a = at(g.image, x, y)[0], b = at(g.image, x, y + shift)[0];
+                        worst = std::max(worst, std::abs(a - b));
+                        differ += std::abs(a - b) > 16 ? 1 : 0;
+                        inked += a > 128 ? 1 : 0;
+                    }
+                std::printf("%s: %d px inked, %d differ from the digits %.0f px under them by more than 16 (the most %d)\n",
+                            name.c_str(), inked, differ, static_cast<double>(below), worst);
+                P.eq(name.c_str(), differ, 0);
+                P.ge((name + "_inked").c_str(), static_cast<double>(inked), 200.0);
+            };
+            sameAsBelow("text.number7_large", 6.0f, 28.0f, 30.0f);
+            sameAsBelow("text.number_large", 68.0f, 18.0f, 20.0f);
+
+            // A mark's ink (its red over the background's, near it) on each side of its centre line: the less over the more.
+            const auto evenness = [&](const char* name, float angle, float r0, float r1) {
+                if (dashItem == nullptr || !g.gpu)
+                {
+                    P.eq(name, 0, 1);
+                    return;
+                }
+                const funkgui::Rect cell = dashItem->cell();
+                const float cx = 0.5f * cell.w, cy = 0.56f * cell.h, rad = 0.4f * cell.h;
+                const float a = angle * 3.14159265f / 180.0f;
+                const float dx = std::sin(a), dy = -std::cos(a);     // along the mark (y down)
+                const Px box = pixelsOf(g.image, cell, kDpi, 0.0f);
+                std::vector<std::pair<float, int>> samples;          // across the mark (px), red
+                double background = 0.0;
+                int counted = 0;
+                for (int y = box.y0; y < box.y1; ++y)
+                    for (int x = box.x0; x < box.x1; ++x)
+                    {
+                        const float px = (static_cast<float>(x) + 0.5f) / kDpi - cell.x - cx;
+                        const float py = (static_cast<float>(y) + 0.5f) / kDpi - cell.y - cy;
+                        const float along = px * dx + py * dy, across = px * -dy + py * dx;
+                        if (along < r0 * rad + 1.0f || along > r1 * rad - 1.0f)
+                            continue;
+                        const int red = at(g.image, x, y)[0];
+                        if (std::fabs(across) > 2.5f && std::fabs(across) < 4.0f)
+                        {
+                            background += red;
+                            ++counted;
+                        }
+                        else if (std::fabs(across) <= 1.5f)
+                            samples.emplace_back(across, red);
+                    }
+                background /= std::max(counted, 1);
+                double side[2] = { 0.0, 0.0 };
+                for (const auto& [across, red] : samples)
+                    side[across < 0.0f ? 0 : 1] += std::max(0.0, red - background);
+                const double even = std::max(side[0], side[1]) > 0.0 ? std::min(side[0], side[1]) / std::max(side[0], side[1]) : 0.0;
+                std::printf("%s: the mark at %.0f deg, its ink on the two sides of its centre line %.0f and %.0f (the "
+                            "background %.1f): %.3f\n", name, static_cast<double>(angle), side[0], side[1], background, even);
+                P.ge(name, even, 0.8);
+            };
+            evenness("text.ticks_first_even", -135.0f, 0.82f, 1.0f);
+            evenness("text.ticks_reverse_first_even", 135.0f, 0.56f, 0.74f);
+            evenness("text.ticks_reverse_last_even", -135.0f, 0.56f, 0.74f);
+        }
+        // The numbers follow their inputs: the level at 1/8000 of its range (a "1"), the cutoff at 0.9 ("-9.00").
+        juce::AudioProcessorParameter& cutoffParam = *processor.getParameters()[0];
+        juce::AudioProcessorParameter& levelParam = *processor.getParameters()[1];
+        cutoffParam.setValueNotifyingHost(0.9f);
+        levelParam.setValueNotifyingHost(1.0f / 8000.0f);
+        host.tick(20);
+        P.near("text.inputs_follow", textItem != nullptr ? static_cast<double>(textItem->inputs()[1]) : 0.0, 1.0 / 8000.0, 1e-5);
+        compare("text.numbers_moved", "gui.shaders.text.moved.png");
+        cutoffParam.setValueNotifyingHost(0.25f);
+        levelParam.setValueNotifyingHost(0.5f);
+        host.tick(20);
+
+        // The cache's key holds every file a shader includes: ink.sh changed, text.sc builds again (another program); a
+        // .sh no shader includes changed, nothing builds.
+        {
+            const uint64_t runs = pg::shadercRuns();
+            pg::Sources other = textFiles;
+            other[5].text = "// still no shader includes this, changed\n";
+            load(processor, other);
+            processor.settle();
+            const pg::CompileStatus o = port.status();
+            P.eq("includes.unrelated_same", o.panel.shaders.size() == 3 && o.panel.shaders[0].id == textId ? 1 : 0, 1);
+            P.eq("includes.unrelated_no_build", static_cast<int64_t>(pg::shadercRuns() - runs), 0);
+            pg::Sources changed = textFiles;
+            changed[3].text = inkSh("ANOTHER STRING, AS LONG");
+            load(processor, changed);
+            processor.settle();
+            const pg::CompileStatus c = port.status();
+            P.eq("includes.header_rebuilds", c.panel.shaders.size() == 3 && c.panel.shaders[0].id != textId && c.panel.shaders[0].id != 0
+                                                 && c.panel.shaders[1].id == ts.panel.shaders[1].id
+                                                 && c.panel.shaders[2].id == ts.panel.shaders[2].id ? 1 : 0, 1);
+            P.eq("includes.header_one_build", static_cast<int64_t>(pg::shadercRuns() - runs), 1);
+            // A .sh file that does not compile: the note on its own line.
+            pg::Sources broken = textFiles;
+            broken[3].text = "#include \"funk/text.sh\"\n\nfloat label(vec2 p)\n{\n    return notDefinedHere(p);\n}\n";
+            load(processor, broken);
+            processor.settle();
+            const pg::CompileStatus b = port.status();
+            std::printf("a broken ink.sh: %s", b.notes.c_str());
+            P.eq("includes.header_note", has(b.notes, "ink.sh:5:1: note: the shader does not compile:") && has(b.notes, "notDefinedHere")
+                                             && b.ok ? 1 : 0, 1);
+            // ... and text.sc, which includes it, says so: its placeholder, its screen reader's value and view_panel's
+            // element line give ink.sh's note, at its line.
+            host.tick(2);
+            const pg::ui::GuiShaderItem* brokenText = shaderShowing(panel, "text.sc");
+            char line[512] = {};
+            if (brokenText != nullptr)
+                brokenText->specLine(line, sizeof line);
+            std::printf("text.sc with ink.sh broken: %s\n", line);
+            bool spoken = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                spoken = spoken || (a.title == "Shader text.sc" && has(a.value, "ink.sh:5: the shader does not compile:"));
+            P.eq("includes.header_why", brokenText != nullptr && brokenText->program() == 0
+                                            && brokenText->why().rfind("ink.sh:5: the shader does not compile:", 0) == 0
+                                            && has(brokenText->why(), "notDefinedHere") && has(line, "shader text.sc   ink.sh:5: ")
+                                            && spoken ? 1 : 0, 1);
+            // An #include of a file there is none of, and a string too long: notes on their lines, nothing built.
+            pg::Sources missing = textFiles;
+            missing[2].text = std::string(kTextSc) + "#include \"nothere.sh\"\n";
+            load(processor, missing);
+            processor.settle();
+            const pg::CompileStatus m = port.status();
+            P.eq("includes.missing_note", has(m.notes, "text.sc:13:10: note: the shader does not compile: there is no file nothere.sh")
+                                              && m.panel.shaders.size() == 3 && m.panel.shaders[0].binary.empty() ? 1 : 0, 1);
+        }
+
+        // Every renderer's profile: the library and both shaders compile for Vulkan (SPIR-V) here too; Direct3D 11's
+        // needs Windows' compiler, which this Mac has not.
+        {
+            pg::ShaderTools spirv = tools();
+            spirv.platform = "linux";
+            spirv.profile = "spirv";
+            const pg::Sources heads = pg::shaderHeaders(textFiles);
+            const pg::ShaderBuild a = pg::buildShader("text.sc", kTextSc, { "cutoff", "level" }, spirv, heads);
+            const pg::ShaderBuild b = pg::buildShader("dash.sc", kDashSc, { "cutoff", "level" }, spirv, heads);
+            const pg::ShaderBuild o = pg::buildShader("odo.sc", kOdoSc, { "level" }, spirv, heads);
+            if (!a.ok() || !b.ok() || !o.ok())
+                std::printf("SPIR-V:\n%s%s%s", a.error.c_str(), b.error.c_str(), o.error.c_str());
+            P.eq("text.spirv", a.ok() && b.ok() && o.ok() && a.binary != ts.panel.shaders[0].binary ? 1 : 0, 1);
+        }
+        load(processor, textFiles);
+        processor.settle();
+        host.tick(2);
+        host.settle(30);
+    }
+
     return P.finish();
 }

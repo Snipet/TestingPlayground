@@ -25,6 +25,10 @@
 //             holding no page, a page outside tabs, a label without text, a log taper from 0, decimals out of range;
 //             a second .gui file, and #pragma panel lines beside a .gui file, are notes too
 //   PRAGMAS   without a .gui file the #pragma panel lines still make the panel (no tree)
+//   LIMITS    each at its edge and one past it: 64 dials (a knob of the 33rd and the 64th, the panel's own dials:
+//             isPanelDial, at their slots; the 65th parameter none, a note), 32 displays (number f1 to f32, each its
+//             tap in order; the 33rd a note, left out), a shader of 16 inputs (inputs= of 17 names: the first 16
+//             kept in order, the 17th a note)
 //   STYLES    classes and defaults reach their elements (an element's own property beats its class's, which beats
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
@@ -32,7 +36,9 @@
 //   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
 //             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
 //             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
-//             unit too long for a display cut where a character starts, with a note on its line
+//             unit too long for a display cut where a character starts, with a note on its line; the Patch's taps (one a
+//             display, in order) reading what the program wrote in a double, an element and a 2-D array's (live=), and
+//             again after a panel's edit (Patch::readPanel over the recipe) that moves them about and names others
 #include "Probe.h"
 
 #include "fminus/GuiSpec.h"
@@ -549,6 +555,118 @@ panel background=#1d1b19 accent=orange {
                                            && cut.panel.displays[0].unit == "semiton" ? 1 : 0, 1);
         P.eq("elements.long_look_notes", has(cut.notes, "panel.gui:2:") && has(cut.notes, "(bend's ui::label) is cut to 14 characters")
                                              && has(cut.notes, "the unit \"semitones\" (bend's ui::unit) is cut to 7 characters") ? 1 : 0, 1);
+
+        // The Patch's taps through a .gui file (Patch::readPanel): one a display, in its order, each reading what the
+        // program wrote where FMinus put it (a double rounded to a float, an array's element, a 2-D array's by live=);
+        // and again after a panel's edit (a RUN of the .gui alone: readPanel over the compile's recipe, the Engine's
+        // taps then, Engine::setTaps) that moves the displays about and names other elements.
+        const std::string tapFields = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                      "    double temp;\n    float bands[4];\n    float grid[2][3];\n    float gr;\n";
+        const std::string tapWrites = "        temp = 90.5;\n        for (int k = 0; k < 4; ++k)\n            bands[k] = k + 0.5f;\n"
+                                      "        for (int r = 0; r < 2; ++r)\n            for (int c = 0; c < 3; ++c)\n"
+                                      "                grid[r][c] = 10 * r + c;\n        gr = 6;\n";
+        const std::string tapProgram = kInstrument
+            ? "module Voice\n{\n" + tapFields + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + tapWrites + "        return true;\n    }\n};\n"
+            : "module Effect\n{\n" + tapFields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+              + tapWrites + "    }\n};\n";
+        const pg::Sources tapFiles = { { pg::kProgramName, tapProgram },
+                                       { "panel.gui", "meter temp\nnumber bands[1]\nnumber gr\nknob cutoff live=grid[1][2]\n" } };
+        pg::Patch::Result tr = pg::Patch::compile(tapFiles, 48000.0f);
+        P.eq("elements.taps_compile", tr.patch != nullptr ? 1 : 0, 1);
+        if (!tr.errors.empty())
+            std::printf("errors:\n%s", tr.errors.c_str());
+        if (tr.patch != nullptr)
+        {
+            std::vector<float> l(16, 0.0f), rr(16, 0.0f);
+            if constexpr (kInstrument)
+            {
+                tr.patch->start(0, 60.0f, 0.8f);
+                tr.patch->render(0, l.data(), rr.data(), 16);
+            }
+            else
+                tr.patch->process(l.data(), rr.data(), 16);
+            const auto tapOf = [&](const std::string& source) {
+                for (const pg::PanelDisplay& x : tr.patch->panel().displays)
+                    if (x.source == source && x.tap >= 0)
+                        return static_cast<double>(tr.patch->tap(x.tap, 0));
+                return -1.0;
+            };
+            std::printf("elements: %d taps: temp %g, bands[1] %g, gr %g, grid[1][2] %g\n", tr.patch->taps(), tapOf("temp"),
+                        tapOf("bands[1]"), tapOf("gr"), tapOf("grid[1][2]"));
+            P.eq("elements.patch_taps", tr.patch->taps(), 4);
+            P.near("elements.tap_double", tapOf("temp"), 90.5, 0.0);
+            P.near("elements.tap_element", tapOf("bands[1]"), 1.5, 0.0);
+            P.near("elements.tap_field", tapOf("gr"), 6.0, 0.0);
+            P.near("elements.tap_live_element_2d", tapOf("grid[1][2]"), 12.0, 0.0);
+
+            const pg::Patch::Recipe recipe = tr.patch->recipe();
+            pg::Sources edited = tapFiles;
+            edited[1].text = "knob cutoff\nnumber gr\nnumber grid[0][2]\nmeter temp\nnumber bands[3]\n";
+            pg::Controls controls{};
+            std::vector<pg::Patch::Tap> taps;
+            std::string notes;
+            const pg::PanelSpec spec = pg::Patch::readPanel(recipe.panel, recipe.controls, edited, controls, taps, notes);
+            const auto editedTap = [&](const std::string& source) {
+                for (const pg::PanelDisplay& x : spec.displays)
+                    if (x.source == source && x.tap >= 0 && x.tap < static_cast<int>(taps.size()))
+                        return static_cast<double>(tr.patch->tapOf(taps[static_cast<std::size_t>(x.tap)], 0));
+                return -1.0;
+            };
+            std::printf("elements edited: %zu taps: gr %g, grid[0][2] %g, temp %g, bands[3] %g%s%s\n", taps.size(), editedTap("gr"),
+                        editedTap("grid[0][2]"), editedTap("temp"), editedTap("bands[3]"), notes.empty() ? "" : "; notes: ", notes.c_str());
+            P.eq("elements.edit_taps", static_cast<int64_t>(taps.size()), 4);
+            P.near("elements.edit_tap_field", editedTap("gr"), 6.0, 0.0);
+            P.near("elements.edit_tap_element_2d", editedTap("grid[0][2]"), 2.0, 0.0);
+            P.near("elements.edit_tap_double", editedTap("temp"), 90.5, 0.0);
+            P.near("elements.edit_tap_element", editedTap("bands[3]"), 3.5, 0.0);
+        }
+    }
+
+    // ---- LIMITS --------------------------------------------------------------------------------------------------------
+    {
+        // 65 parameters p1 to p65 and 33 fields f1 to f33.
+        std::string params, fields;
+        for (int k = 1; k <= pg::kMaxControls + 1; ++k)
+            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            fields += "    float f" + std::to_string(k) + ";\n";
+        const std::string body = params + fields;
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + body + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + body + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        std::string gui = "knob p33\nknob p64\nknob p65\n";
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            gui += "number f" + std::to_string(k) + "\n";
+        std::string inputs;
+        for (int k = 1; k <= pg::kMaxShaderInputs + 1; ++k)
+            inputs += (k == 1 ? "" : " ") + std::string("p") + std::to_string(k);
+        gui += "shader \"many.sc\" inputs=\"" + inputs + "\"\n";
+        const Compiled c = compile({ { pg::kProgramName, source }, { "panel.gui", gui }, { "many.sc", "void main() { gl_FragColor = vec4(in15); }\n" } });
+        std::printf("LIMITS notes:\n%s", c.notes.c_str());
+        P.eq("limits.compiles", c.ok ? 1 : 0, 1);
+        const pg::GuiTree& t = c.panel.gui;
+        const int first = pg::kHostControls, last = pg::kMaxControls - 1;
+        P.eq("limits.panel_dial_knobs", find(t, pg::GuiKind::knob, "", first) >= 0 && find(t, pg::GuiKind::knob, "", last) >= 0
+                                            && c.controls[static_cast<std::size_t>(first)].used && c.controls[static_cast<std::size_t>(last)].used
+                                            && std::string(c.controls[static_cast<std::size_t>(last)].name) == "p64" ? 1 : 0, 1);
+        P.eq("limits.past_dials_noted", has(c.notes, "p65 has no dial") && has(c.notes, "panel.gui:3:6: note:") ? 1 : 0, 1);
+        bool inOrder = static_cast<int>(c.panel.displays.size()) == pg::kMaxDisplays;
+        for (int k = 0; inOrder && k < pg::kMaxDisplays; ++k)
+            inOrder = c.panel.displays[static_cast<std::size_t>(k)].source == "f" + std::to_string(k + 1)
+                   && c.panel.displays[static_cast<std::size_t>(k)].tap == k;
+        P.eq("limits.displays_most", inOrder ? 1 : 0, 1);
+        P.eq("limits.display_past_noted", has(c.notes, "a panel shows " + std::to_string(pg::kMaxDisplays) + " displays at most")
+                                              && has(c.notes, "panel.gui:" + std::to_string(4 + pg::kMaxDisplays) + ":") ? 1 : 0, 1);
+        const int sh = find(t, pg::GuiKind::shader);
+        bool sixteen = sh >= 0 && c.panel.shaders.size() == 1 && static_cast<int>(c.panel.shaders[0].inputs.size()) == pg::kMaxShaderInputs;
+        for (int k = 0; sixteen && k < pg::kMaxShaderInputs; ++k)
+            sixteen = t.nodes[static_cast<std::size_t>(sh)].inputs[static_cast<std::size_t>(k)] == "param:" + std::to_string(k)
+                   && c.panel.shaders[0].inputs[static_cast<std::size_t>(k)] == "p" + std::to_string(k + 1);
+        P.eq("limits.shader_inputs_most", sixteen ? 1 : 0, 1);
+        P.eq("limits.shader_input_past_noted", has(c.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
+                                                                + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

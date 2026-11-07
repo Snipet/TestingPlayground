@@ -17,6 +17,8 @@
 //       void start(float note, float velocity);                 a note-on: the MIDI note number (69 is A 440 Hz) and
 //                                                               0..1; the voice may have played another note before
 //       void stop();                                            optional: the note-off (the key, or All Notes Off)
+//       void legato(float note, float velocity);                optional, a mono program's (below, "Mono"): the
+//                                                               sounding voice's new note, in place of a start
 //       bool process(float* restrict left, float* restrict right, int n);
 //                                                               the voice's next n samples into the buffers, which
 //                                                               arrive at 0 (write or add); false once it is silent
@@ -28,6 +30,11 @@
 //       void init(float rate);                                  optional: before the main module's instances' init,
 //                                                               off the audio thread (again when the rate changes)
 //       void end();                                             optional: after theirs
+//     and an instrument's, optionally (below, "Shared on its own"), on the audio thread:
+//       void tick(int n);                                       every 16 samples (n = 16), whether or not a voice sounds
+//       void noteOn(float note, float velocity);                a note-on, before its voice's start
+//       void noteOff(float note);                               that note's end, before its voice's stop
+//       param ...;                                              one named as a dial reads that dial (read-only)
 //   The audio thread reads it through those pointers; it is the plugin's to free, never a voice's.
 //
 //   either kind, optionally: module Host, from host.fm, the plugin's own file (#include "host.fm"; hostSource()): one
@@ -101,10 +108,56 @@
 // by, appended to the program and marked nonblocking (compile() below), so FMinus checks the method's types and its
 // effects, and a method of another type is an error, not a crash.
 //
-// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials: a float
-// is bound as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null
-// while it holds still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main
-// module holds, keep their fminus::default (they are set, in every instance, before init runs).
+// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials (the first
+// 32 the host's parameters, the next 32 the panel's own: Controls.h; the Patch treats both alike): a float is bound
+// as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null while it holds
+// still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main module holds,
+// keep their fminus::default (they are set, in every instance, before init runs).
+//
+// The panel. A .gui file (GuiSpec.h), the first one, gives the interface, the tapers, units and scales of the dials, and
+// the taps: where each field a display reads sits (in an instance, or in Shared; an array's element where the display
+// names one). What reading it needs of the compile is kept (Recipe::panel, PanelBase: the fields a display may name and
+// where each sits, so that any source displaySource reads resolves, the files FMinus read,
+// whether they hold #pragma panel lines), so readPanel() reads a .gui file again with no compile: the Compiler applies
+// an edit of the panel's files alone so to the program that plays (Compiler.h, "A panel's edit"), and its new taps go
+// to the Engine (Engine::setTaps, read through tapOf()) rather than into this Patch, which the audio thread reads.
+//
+// Shared on its own (an instrument's). Shared's init runs when the program compiles, before any dial is known, so it sees
+// each dial at its default; and without these hooks Shared moves only when a voice's call moves it. So an instrument's
+// Shared may also have the methods below, each optional, which the Engine calls (Engine.h, "Shared on its own") through
+// a nonblocking shim each, appended as the main module's are, and only when the method is declared as here
+// (lang::sharedHooks: a method of the name declared otherwise is never called, with a note at its place, so a program
+// that has one for its own use plays as it did):
+//   tick(int n)       at every absolute multiple of 16 samples (Engine::kGrid; n is 16), after the events at that sample
+//                     and before the voices' calls from it, whether or not a voice sounds: state that moves between notes
+//                     (a temperature, a display), the same however the host splits its blocks
+//   noteOn(float note, float velocity)   each note-on the Engine plays (the player's, or a held key started again on a
+//                     new program), before its voice's start(), velocity 0 to 1
+//   noteOff(float note)   that note's end, before its voice's stop() where it has one: its note-off, or, the sustain
+//                     pedal down, the pedal's going up; All Notes Off; prepare(). Each noteOn gets one noteOff before that
+//                     key's next noteOn (a key pressed again while its note is on gets its noteOff first)
+// and a param of Shared named as a dial (the main module's parameter, or a circuit's pot or switch) reads that dial:
+// reset() sets it to the dial's default before Shared's init (as the instances' are), and the Engine sets it to the
+// dial's value at the sample (setSharedDials) before each tick and each note hook, from the first block on: a knob's
+// value, never a stream. A param of Shared that no dial is named as keeps its default, with a note. The effect's Shared
+// has none of these, its init and end only. They run in the frozen copy too (it looks their shims up), and stop the
+// Patch as any audio-thread call does. A program whose Shared ticks is never refined (Compiler.h, "The self-test"): a
+// new Patch's Shared starts afresh, so its circuits' self-test answers play from the next RUN.
+//
+// Mono (an instrument's). A line `#pragma mono` plays the program one voice at a time, and `#pragma mono <dial>` does
+// while that dial (a bool, or an int: on when it is not 0) is on, so that the panel switches it; the line is read from
+// the files FMinus read, as it read them (a group a conditional skips has none), the first such line alone (another is a
+// note, and so is a dial that is not there or is real: the program is then mono always). The Engine plays it (Engine.h,
+// "Mono"): the keys held in the order they were pressed, the newest sounding, one voice. Voice may have, optionally:
+//   legato(float note, float velocity)   the sounding voice's new note while its key (or the sustain pedal) holds it, in
+//                     place of a start and a stop: a key pressed meanwhile, or, its key let go while others are held, the
+//                     newest of those at the velocity it was pressed with. Glide is the program's: legato gives the new
+//                     note, and process moves to it as it likes. Appended as a nonblocking shim only to a mono program,
+//                     and only when declared as here (lang::legatoHook: one declared otherwise is the program's own, with
+//                     a note at its place, as is one in a program that is not mono). Without it a new note starts a voice
+//                     as a steal does (the voice that sounded gets its stop() and fades out over 2 ms).
+// Each start() still gets one stop() before its instance's next start: legato comes between them, never after the stop.
+// The effect has no notes: its #pragma mono is a note, and nothing more.
 //
 // Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
@@ -196,6 +249,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fminus
@@ -222,7 +276,8 @@ namespace playground
 
         // ---- the loop budget (above) -------------------------------------------------------------------------------
         // The plugin's calls into a program, by method: which one ran past its budget (stopped()).
-        enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd };
+        enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd, sharedTick,
+                                      sharedNoteOn, sharedNoteOff, legato };
         static constexpr double kLoopsPerSecond = 4'294'967'296.0;        // 2^32: a call's budget a second of samples
         static constexpr int kBudgetFloor = 16;                           // samples: a call's least budget
         static constexpr std::int64_t kInitBudget = std::int64_t{ 1 } << 32;   // each init and end
@@ -257,6 +312,41 @@ namespace playground
         // `bounds` that failed "process() went outside an array (program.fm:14:33: index -188 out of bounds for ...)".
         static std::string stopWhy(Method call, const Bounds* bounds = nullptr);
 
+        // ---- the panel (above) --------------------------------------------------------------------------------------
+        // Where a field a display reads sits: plain data, so a table of them crosses to the audio thread by value
+        // (Engine::setTaps).
+        struct Tap
+        {
+            // none: a display whose field the compile did not lay out as its source reads it (it shows 0), so that
+            // every display keeps its index (PanelDisplay::tap).
+            enum class Type : uint8_t { real, integer, boolean, real64, none };
+            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes: an array's element's
+            Type type = Type::real;
+            bool shared = false;                       // a field of the module Shared ("shared->level")
+            friend bool operator==(const Tap&, const Tap&) = default;
+        };
+        // Where a field a display may name sits, beside it in PanelBase::fields: its first element's offset, an
+        // element's size and how many fit in the module FMinus laid out (a scalar one); none (0) when the compile has
+        // no field of that name.
+        struct FieldPlace
+        {
+            std::size_t offset = 0, each = 0, elements = 0;
+            bool shared = false;                       // in the module Shared ("shared->level")
+        };
+        // What reading the program's panel again needs of its compile (readPanel).
+        struct PanelBase
+        {
+            std::vector<PanelField> fields;            // the fields a display may name (PanelSpec.h's displayFields)
+            std::vector<FieldPlace> places;            // each one's place, in the same order: a display's source, a
+                                                       // field or an array's element ("bands[2]"), is read through
+                                                       // displaySource (tapAt below)
+            std::vector<std::string> read;             // the files FMinus read: the program and what it #includes
+            bool pragmas = false;                      // they hold #pragma panel lines (left out under a .gui file)
+        };
+        // The tap of a display of `source` over `base` (displaySource's field, or its element), or a Tap of type none
+        // when the compile laid out no such value. Any thread.
+        static Tap tapAt(const PanelBase& base, const std::string& source);
+
         struct Result
         {
             std::unique_ptr<Patch> patch;     // null when the program does not compile or does not fit the plugin
@@ -290,6 +380,14 @@ namespace playground
         // second pass finds (a method the audio thread calls that could allocate, a method declared otherwise than
         // the plugin calls it) waits for RUN. Off the audio thread; `patch` is always null.
         static Result check(const Sources& files);
+        // The panel `files`' first .gui file gives (above, "The panel"), as compile() reads it, over `base` and
+        // `declared` (a compile's Recipe::panel and Recipe::controls, the dials as the program declares them): the
+        // interface, `controls` the dials with its tapers, units and scales, `taps` its displays' taps in order (one a
+        // display with a PanelDisplay::tap, which indexes them: tapAt), and its notes appended to `notes` (each on an
+        // interface file's line).
+        // No .gui file: an empty spec, `controls` the declared ones. Any thread.
+        static PanelSpec readPanel(const PanelBase& base, const Controls& declared, const Sources& files, Controls& controls,
+                                   std::vector<Tap>& taps, std::string& notes);
 
         ~Patch();
         Patch(const Patch&) = delete;
@@ -352,10 +450,14 @@ namespace playground
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
             std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob
-            Controls controls{};
+            Controls controls{};                       // as the program declares them (before a .gui file's tapers)
+            PanelBase panel;                           // what reading its panel again needs (above, "The panel")
             uint64_t program = 0;                      // Patch::program
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
+            bool sharedTick = false, sharedNoteOn = false, sharedNoteOff = false;   // and Shared's (above, "Shared on
+                                                                                   // its own")
+            bool legato = false;                       // a mono program's Voice::legato (above, "Mono")
             bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
             bool boundsCheck = true;                   // and the bounds checks (compile()'s `boundsCheck`): ir()'s
                                                        // text has them, the frozen copy never
@@ -403,12 +505,35 @@ namespace playground
         void stop(int i) noexcept;
         bool render(int i, float* left, float* right, int n) noexcept;
 
+        // ---- Shared on its own (above; an instrument's) ---------------------------------------------------------------
+        // The hooks it has, declared as above: a tick; a note hook (noteOn or noteOff).
+        bool sharedTicks() const noexcept { return recipe_.sharedTick; }
+        bool sharedNotes() const noexcept { return recipe_.sharedNoteOn || recipe_.sharedNoteOff; }
+        // The dials a param of Shared reads (bit c: control c), and their values into those params: plain[c] for each
+        // (the controls' plain values at the hook's sample). No allocation.
+        uint64_t sharedDials() const noexcept { return sharedDialMask_; }
+        void setSharedDials(const float* plain) noexcept;
+        // The hooks, each within its budget (n samples' for a tick, kBudgetFloor's for a note's); nothing when the
+        // program has none, or has stopped.
+        void sharedTick(int n) noexcept;
+        void sharedNoteOn(float note, float velocity) noexcept;
+        void sharedNoteOff(float note) noexcept;
+
+        // ---- mono (above; an instrument's) -----------------------------------------------------------------------------
+        // Whether the program is mono (#pragma mono), the dial that switches it (-1: none, mono always), and whether its
+        // Voice has legato() as above; then legato() in instance i, within kBudgetFloor's budget (nothing when the
+        // program has none, or has stopped).
+        bool mono() const noexcept { return mono_; }
+        int monoDial() const noexcept { return monoDial_; }
+        bool legatos() const noexcept { return recipe_.legato; }
+        void legato(int i, float note, float velocity) noexcept;
+
         // The circuits' dials (above, "Circuits"): whether a dial drives a circuit's set(), which controls do (bit c:
         // control c is an argument of a shim), and the shims' calls in instance i, every bound field's set() with each
         // argument at plain[c] for its control c (the controls' plain values at the call's sample) or at its default
         // when it has none. No allocation.
         bool circuits() const noexcept { return !circuitCalls_.empty(); }
-        uint32_t circuitSlots() const noexcept { return circuitMask_; }
+        uint64_t circuitSlots() const noexcept { return circuitMask_; }
         bool circuitRamps() const noexcept { return circuitRamps_; }   // a dial drives a switch (its set() ramps)
         void setCircuits(const float* plain, int i) noexcept;
         // The bindings, checked, with their slots (Recipe::bindings): the status's (CompileStatus::circuitDials).
@@ -440,9 +565,19 @@ namespace playground
         // The field display t (PanelDisplay::tap) shows: its value in instance i (a field of Shared's: in its one
         // Shared, whatever i is, -1 too), as a float (a double's rounded, an int's number, a bool's 0 or 1; an array's
         // element when the display names one, PanelSpec.h's displaySource); 0 for an instance's field with no instance
-        // i, and for a value that is not finite. After a block, on the audio thread.
+        // i, for a Tap of type none and for a value that is not finite. After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
+        // The field at `k` in instance i, as tap() reads it: the Engine's, for the taps a panel's edit gave the program
+        // since (Engine::setTaps). After a block, on the audio thread.
+        float tapOf(const Tap& k, int i) const noexcept;
+        const std::vector<Tap>& tapList() const noexcept { return taps_; }   // compile()'s (any thread)
+        // A racing wheel's shift lights (plugin/WheelMap.h's lightsMask; the Standalone's G29): the field kLightsField
+        // the program writes, the main module's, else Shared's through its Shared* field, a float, an int or a bool;
+        // null when it has none (a field of that name of another type, or a dial, is a note). The Engine reads it as it
+        // reads a display's tap (tapOf), each block, into Meters::lights.
+        static constexpr const char* kLightsField = "shiftLights";
+        const Tap* lightsTap() const noexcept { return hasLights_ ? &lights_ : nullptr; }
 
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
@@ -596,14 +731,9 @@ namespace playground
         Controls controls_{};
         DialCarry carry_{};
         PanelSpec panel_;
-        struct Tap
-        {
-            enum class Type : uint8_t { real, integer, boolean, real64 };
-            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes: an array's element's
-            Type type = Type::real;
-            bool shared = false;                       // a field of the module Shared ("shared->level")
-        };
-        std::vector<Tap> taps_;
+        std::vector<Tap> taps_;                        // its displays' (readPanel's), in order
+        Tap lights_{};                                 // its shiftLights field's (lightsTap), when hasLights_
+        bool hasLights_ = false;
         // The probe table (above, "Probes"): per field, its offset in an instance and an element's size, its elements,
         // the probe fields' offsets in an element, and which of its nodes a probe reads.
         struct ProbeEntry
@@ -630,6 +760,12 @@ namespace playground
             Kind kind = Kind::none;
         };
         std::array<Slot, kMaxControls> slots_{};
+        // Per control, the param of Shared named as its dial (above, "Shared on its own"): its slot in Shared, and the
+        // controls that have one (bit c).
+        std::array<Slot, kMaxControls> sharedSlots_{};
+        uint64_t sharedDialMask_ = 0;
+        bool mono_ = false;                            // mono(), monoDial() (above, "Mono")
+        int monoDial_ = -1;
         static void store(void* instance, const Slot& slot, float plain) noexcept;
         // Per shim (setCircuits): each argument's control (-1: none) and the value it has without one.
         struct CircuitCall
@@ -639,7 +775,7 @@ namespace playground
         };
         std::vector<CircuitCall> circuitCalls_;
         std::vector<float> circuitArgs_;               // the arguments of one call (sized at compile)
-        uint32_t circuitMask_ = 0;
+        uint64_t circuitMask_ = 0;
         bool circuitRamps_ = false;
         Sources sources_;
         float rate_ = 48000.0f;

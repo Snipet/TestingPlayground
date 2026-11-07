@@ -1,6 +1,7 @@
 // Source/plugin/WheelDriver.h: the Standalone's racing wheel as decisions, apart from IOKit: which G29 is read, when a
 // compatibility-mode one is switched to its own mode, its range and spring, what the first flush may send, how often
-// the Map's messages go, what goes again when the receiver may have lost it, and the card's status line. The
+// the Map's messages go, what goes again when the receiver may have lost it, its shift lights, and the card's status
+// line. The
 // Standalone's RacingWheel (standalone/RacingWheel.cpp) is its transport over IOKit's HID manager; plugin.wheel drives
 // it with fake devices that record what they are sent. JUCE-free and IOKit-free, like WheelMap.h.
 //
@@ -25,6 +26,14 @@
 //     least (125 a second: a wheel and three pedals moving at once make about 1,000 control changes a second).
 //   - resend(): the receiver may have lost what it was sent (a device restart drops what was queued, a synth made
 //     afresh holds nothing): the whole state goes again (Map::resend).
+//   - The shift lights (WheelMap.h's "the shift lights"): while a G29 is read, every kLightsInterval, the mask the
+//     program asks for (Transport::lights: its shiftLights field) goes to the wheel (lightsReport) when it differs from
+//     what was sent, so at most 40 reports a second and none while it holds; a program that asks none (or none
+//     playing) turns off what was lit, then sends nothing. Reading starts with none lit (the wheel's own state: a
+//     program that never lights them never sends one). Reading ends (switched off, another G29 read in its place,
+//     quit()): off, when any are lit; the wheel unplugged takes them with it; a crash leaves them lit until it is
+//     unplugged, as it leaves the spring. A report that fails says so on the card and is not tried again until the
+//     mask changes.
 //
 // Message thread only (or a probe's). Transport::changed is called whenever present() or status() may have changed,
 // never from inside a Transport::send.
@@ -50,7 +59,7 @@ namespace playground::wheel
         uint64_t timestamp = 0;
     };
 
-    enum class Timer : uint8_t { flush, switched };
+    enum class Timer : uint8_t { flush, switched, lights };
 
     class Transport
     {
@@ -64,6 +73,8 @@ namespace playground::wheel
         virtual double now() = 0;                           // seconds, steady
         virtual void send(const std::vector<Message>& messages) = 0;   // channel 1's, in order
         virtual void changed() = 0;
+        virtual int lights() = 0;                           // the shift lights the program asks for now: their mask
+                                                            // (0 to kAllLights), or -1 when it asks none
     };
 
     class Driver
@@ -72,6 +83,7 @@ namespace playground::wheel
         static constexpr double kGather = 0.001;            // a report's values, after a quiet spell
         static constexpr double kInterval = 0.008;          // between two flushes, at least
         static constexpr double kSwitchSeconds = 8.0;       // the switch's re-enumeration, at the most
+        static constexpr double kLightsInterval = 0.025;    // the shift lights looked at, and sent when they changed
         static constexpr int kNotPermitted = static_cast<int>(0xE00002E2u);   // kIOReturnNotPermitted
 
         // The transport is the caller's, alive until quit(); the constructor calls none of it.
@@ -109,6 +121,8 @@ namespace playground::wheel
         void startReading(Device d);
         void stopReading(bool stillThere);
         void switchToNative(Device d);
+        void pollLights();
+        void lightsOff();                                   // what is lit turned off, while the wheel is read
         void endSwitch(Switch to);
         void refresh();
 
@@ -124,5 +138,6 @@ namespace playground::wheel
         bool switchUsed_ = false;                           // this "on"'s one switch is spent
         Switch switch_ = Switch::none;
         std::string problem_;                               // the last report that failed, in words
+        int lightsSent_ = 0;                                // the shift lights' mask last sent (or tried) while read
     };
 }

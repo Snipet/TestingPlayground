@@ -9,10 +9,15 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 
 #if !defined(_WIN32)
@@ -41,16 +46,23 @@ namespace playground::projectstore
         };
 
         // The listing's cache, and its presets' (presetsOf): a file read again only when its size or its time changes.
+        // A file that is no project of this plugin's (damaged, the other kind's) is kept as broken, so a listing does not
+        // read it whole again until it changes.
         struct Cached
         {
             juce::int64 modified = 0, size = 0;
             FileId id;
             Entry entry;
             std::vector<PresetSummary> presets;
+            bool broken = false;
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
         std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
+        std::atomic<int> readerParsed{ 0 };              // of them, by the Reader's thread (readerParses())
+        std::atomic<int> listed{ 0 };                    // listings, cached or not (listings())
+        std::mutex readerMutex;
+        std::weak_ptr<Reader> theReader;                 // the process's (reader()), while someone holds it
 
         std::string kindName(bool instrument) { return instrument ? "instrument" : "effect"; }
 
@@ -378,6 +390,44 @@ namespace playground::projectstore
             return c;
         }
 
+        // What a read of `f` (a parse of the file as a look before it found it, `modified` and `size`) leaves in the
+        // cache: its entry, or `p` none (no project of this plugin's) a broken mark, unless the file has changed since
+        // that look: then nothing, and the next listing reads it again. So a read never puts an older file's entry over
+        // a newer one's (a write's own, write() below, or another read's). The caller holds cacheMutex.
+        void keepRead(const juce::File& f, const std::optional<Project>& p, juce::int64 modified, juce::int64 size)
+        {
+            juce::int64 m = 0, s = 0;
+            FileId id;
+            if (!look(f, m, s, id) || m != modified || s != size)
+                return;
+            Cached c;
+            if (p)
+                c = cachedOf(*p, m, s, id);
+            else
+            {
+                c.modified = m;
+                c.size = s;
+                c.id = id;
+                c.broken = true;
+            }
+            cache[f.getFullPathName().toStdString()] = std::move(c);
+        }
+
+        // A project's file read whole (a look first, for the cache's time and size) and its entry kept (keepRead).
+        std::optional<Project> readAndKeep(const juce::File& f, std::string* why)
+        {
+            juce::int64 modified = 0, size = 0;
+            FileId id;
+            const bool looked = look(f, modified, size, id);
+            std::optional<Project> p = parse(f, why);
+            if (looked)
+            {
+                const std::lock_guard<std::mutex> lock(cacheMutex);
+                keepRead(f, p, modified, size);
+            }
+            return p;
+        }
+
         juce::var rootOf(const Project& p);
 
         void sortPresets(std::vector<Preset>& presets)
@@ -389,7 +439,10 @@ namespace playground::projectstore
         }
 
         // Writes `p` under p.name: beside, then moved over, so a project is never half written; one of the name in
-        // another case goes.
+        // another case goes. The cache then holds what it wrote (its entry, as the file now is): the listing after a
+        // save of this process's reads nothing whole (the explorer's next poll), where it read the file it had just
+        // written. A read of the file before (another thread's) checks the file again before it keeps its entry
+        // (keepRead), so it never takes this one's place.
         bool write(Project p, std::string* why)
         {
             p.name = tidyName(p.name);
@@ -422,6 +475,11 @@ namespace playground::projectstore
                 fail(why, "cannot replace " + target.getFullPathName().toStdString());
                 return false;
             }
+            juce::int64 modified = 0, size = 0;
+            FileId id;
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            if (look(target, modified, size, id))
+                cache[target.getFullPathName().toStdString()] = cachedOf(p, modified, size, id);
             return true;
         }
 
@@ -635,94 +693,164 @@ namespace playground::projectstore
                });
     }
 
+    namespace
+    {
+        // The folder listed (readdir and a look a file), each project's entry from the cache where it holds the file as
+        // it is now. A file it does not hold so: with `unread` none, read whole here (outside the cache's lock, so a
+        // listing that reads a large file holds up no other caller) and kept; else not read, but listed as the cache
+        // last held it (a file never read: not listed) and its path added to `unread`. The cache then forgets the
+        // files that are gone. A broken file is not listed, nor read again while it stays as it is.
+        std::vector<Entry> listing(std::vector<std::string>* unread)
+        {
+            listed.fetch_add(1, std::memory_order_relaxed);
+            const std::vector<Found> found = projectFiles(directory());
+            std::vector<Entry> out;
+            std::vector<const Found*> misses;
+            {
+                const std::lock_guard<std::mutex> lock(cacheMutex);
+                std::map<std::string, Cached> kept;
+                for (const Found& fd : found)
+                {
+                    const std::string name = fd.file.getFileNameWithoutExtension().toStdString();
+                    if (tidyName(name) != name || name.empty())
+                        continue;
+                    // By its path as listed: the entry's name is the file's, so another spelling's would not do here.
+                    const std::string path = fd.file.getFullPathName().toStdString();
+                    const auto it = cache.find(path);
+                    if (it != cache.end() && it->second.modified == fd.modified && it->second.size == fd.size)
+                    {
+                        Cached c = it->second;
+                        c.id = fd.id;
+                        if (!c.broken)
+                            out.push_back(c.entry);
+                        kept.emplace(path, std::move(c));
+                    }
+                    else if (unread != nullptr)
+                    {
+                        if (it != cache.end())
+                        {
+                            if (!it->second.broken)
+                                out.push_back(it->second.entry);   // as it was: the Reader brings it up to date
+                            kept.emplace(path, it->second);
+                        }
+                        unread->push_back(path);
+                    }
+                    else
+                        misses.push_back(&fd);
+                }
+                cache.swap(kept);
+            }
+            for (const Found* fd : misses)
+            {
+                std::optional<Project> p = parse(fd->file, nullptr);
+                {
+                    const std::lock_guard<std::mutex> lock(cacheMutex);
+                    keepRead(fd->file, p, fd->modified, fd->size);
+                }
+                if (p)
+                    out.push_back(cachedOf(*p, fd->modified, fd->size, fd->id).entry);
+            }
+            std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) {
+                const int c = str(a.name).compareIgnoreCase(str(b.name));
+                return c != 0 ? c < 0 : a.name < b.name;
+            });
+            return out;
+        }
+
+        // A project's file for its presets: by its name first (one look, where a scan of the folder looks at every
+        // project), else, as load() finds it, by the name in another case, once the presets from before projects are
+        // projects. None, with why, when there is none.
+        bool presetsFile(std::string_view name, juce::File& f, juce::int64& modified, juce::int64& size, FileId& id, std::string* why)
+        {
+            const std::string tidy = tidyName(name);
+            f = tidy.empty() ? juce::File() : directory().getChildFile(str(tidy) + kExtension);
+            if (f == juce::File() || !f.existsAsFile())
+            {
+                migrate();
+                f = fileOf(name);
+            }
+            if (f == juce::File() || !look(f, modified, size, id))
+            {
+                fail(why, "there is no project named \"" + std::string(name) + "\"");
+                return false;
+            }
+            return true;
+        }
+
+        // The cache's entry for that file as it is now, by its path, else by its identity (the path built from the
+        // name asked spells it as asked, and a listing keys the file by its name on disk: on a volume that ignores case,
+        // Shouty.FMPROJECT asked as Shouty, the same file under another spelling; its identity says so where a look
+        // gives one, else its path, case aside: Windows). The caller holds cacheMutex.
+        const Cached* heldLocked(const std::string& path, juce::int64 modified, juce::int64 size, const FileId& id)
+        {
+            if (const auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                return &it->second;
+            for (const auto& [key, c] : cache)
+                if (c.modified == modified && c.size == size && (id.known() ? c.id == id : sameName(key, path)))
+                    return &c;
+            return nullptr;
+        }
+    }
+
     std::vector<Entry> list()
     {
         migrate();
-        std::vector<Entry> out;
-        std::map<std::string, Cached> seen;
-        {
-            const std::lock_guard<std::mutex> lock(cacheMutex);
-            for (const Found& found : projectFiles(directory()))
-            {
-                const juce::File& f = found.file;
-                const std::string name = f.getFileNameWithoutExtension().toStdString();
-                if (tidyName(name) != name || name.empty())
-                    continue;
-                const std::string path = f.getFullPathName().toStdString();
-                const juce::int64 modified = found.modified, size = found.size;
-                Cached c;
-                // By its path as listed: the entry's name is the file's, so another spelling's would not do here.
-                if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
-                {
-                    c = it->second;
-                    c.id = found.id;
-                }
-                else
-                {
-                    std::optional<Project> p = parse(f, nullptr);
-                    if (!p)
-                        continue;
-                    c = cachedOf(*p, modified, size, found.id);
-                }
-                out.push_back(c.entry);
-                seen.emplace(path, std::move(c));
-            }
-            cache.swap(seen);
-        }
-        std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) {
-            const int c = str(a.name).compareIgnoreCase(str(b.name));
-            return c != 0 ? c < 0 : a.name < b.name;
-        });
-        return out;
+        return listing(nullptr);
+    }
+
+    std::vector<Entry> listCached(std::vector<std::string>& unread)
+    {
+        migrate();
+        return listing(&unread);
     }
 
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why)
     {
-        // Its file by its name first (one look, where a scan of the folder looks at every project), else, as load()
-        // finds it, by the name in another case, once the presets from before projects are projects.
-        const std::string tidy = tidyName(name);
-        juce::File f = tidy.empty() ? juce::File() : directory().getChildFile(str(tidy) + kExtension);
-        if (f == juce::File() || !f.existsAsFile())
-        {
-            migrate();
-            f = fileOf(name);
-        }
-        if (f == juce::File())
-        {
-            fail(why, "there is no project named \"" + std::string(name) + "\"");
-            return std::nullopt;
-        }
-        const std::string path = f.getFullPathName().toStdString();
+        juce::File f;
         juce::int64 modified = 0, size = 0;
         FileId id;
-        if (!look(f, modified, size, id))
-        {
-            fail(why, "there is no project named \"" + std::string(name) + "\"");
+        if (!presetsFile(name, f, modified, size, id, why))
             return std::nullopt;
-        }
         {
             const std::lock_guard<std::mutex> lock(cacheMutex);
-            if (auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
-                return it->second.presets;
-            // The path built from the name asked spells it as asked, and list() keys the file by its name on disk: on a
-            // volume that ignores case (Shouty.FMPROJECT asked as Shouty), the same file under another spelling. Its
-            // identity says so where a look gives one, else its path, case aside (Windows). The presets are the
-            // file's, whatever its name.
-            for (const auto& [key, c] : cache)
-                if (c.modified == modified && c.size == size && (id.known() ? c.id == id : sameName(key, path)))
-                    return c.presets;
+            if (const Cached* c = heldLocked(f.getFullPathName().toStdString(), modified, size, id); c != nullptr && !c->broken)
+                return c->presets;
         }
         std::optional<Project> p = parse(f, why);
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            keepRead(f, p, modified, size);
+        }
         if (!p)
             return std::nullopt;
-        Cached c = cachedOf(*p, modified, size, id);
-        std::vector<PresetSummary> out = c.presets;
+        return cachedOf(*p, modified, size, id).presets;
+    }
+
+    std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread, std::string* why)
+    {
+        juce::File f;
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (!presetsFile(name, f, modified, size, id, why))
+            return std::nullopt;
+        const std::string path = f.getFullPathName().toStdString();
         const std::lock_guard<std::mutex> lock(cacheMutex);
-        cache[path] = std::move(c);
-        return out;
+        if (const Cached* c = heldLocked(path, modified, size, id); c != nullptr)
+        {
+            if (!c->broken)
+                return c->presets;
+            fail(why, "\"" + std::string(name) + "\" is damaged, or no project of this plugin's");
+            return std::nullopt;
+        }
+        unread.push_back(path);
+        if (const auto it = cache.find(path); it != cache.end() && !it->second.broken)
+            return it->second.presets;                   // as it was: the Reader brings it up to date
+        return std::vector<PresetSummary>();
     }
 
     int parses() { return parsed.load(std::memory_order_relaxed); }
+    int readerParses() { return readerParsed.load(std::memory_order_relaxed); }
+    int listings() { return listed.load(std::memory_order_relaxed); }
 
     bool exists(std::string_view name)
     {
@@ -739,7 +867,7 @@ namespace playground::projectstore
             fail(why, "there is no project named \"" + std::string(name) + "\"");
             return std::nullopt;
         }
-        return parse(f, why);
+        return readAndKeep(f, why);                      // its entry kept too: what PROJECTS opens, the poll then has
     }
 
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
@@ -866,6 +994,8 @@ namespace playground::projectstore
             fail(why, "cannot delete the project \"" + std::string(name) + "\"");
             return false;
         }
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        cache.erase(f.getFullPathName().toStdString());
         return true;
     }
 
@@ -1008,5 +1138,108 @@ namespace playground::projectstore
         if (moved > 0)
             out += (out.empty() ? "" : ", ") + std::to_string(moved) + (moved == 1 ? " dial" : " dials");
         return out.empty() ? "the tab shown" : out;
+    }
+    // ---- the Reader ------------------------------------------------------------------------------------------------
+    struct Reader::State
+    {
+        mutable std::mutex mutex;
+        std::condition_variable wake;
+        std::deque<std::string> queue;                   // the paths asked, in order
+        std::set<std::string> asked;                     // queued or being read: each asked once until read
+        bool stop = false;
+        std::atomic<uint64_t> revision{ 0 };
+        std::thread thread;
+
+        void run()
+        {
+            for (;;)
+            {
+                std::string path;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    wake.wait(lock, [this] { return stop || !queue.empty(); });
+                    if (stop)
+                        return;
+                    path = std::move(queue.front());
+                    queue.pop_front();
+                }
+                if (read(path))
+                    revision.fetch_add(1, std::memory_order_release);
+                const std::lock_guard<std::mutex> lock(mutex);
+                asked.erase(path);
+            }
+        }
+
+        // The file read whole into the cache, unless the cache holds it as it is already (another caller read it since
+        // it was asked for) or it is gone. Whether the cache took a read.
+        static bool read(const std::string& path)
+        {
+            const juce::File f(juce::String::fromUTF8(path.c_str()));
+            juce::int64 modified = 0, size = 0;
+            FileId id;
+            if (!look(f, modified, size, id))
+                return false;
+            {
+                const std::lock_guard<std::mutex> lock(cacheMutex);
+                if (const auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
+                    return false;
+            }
+            readerParsed.fetch_add(1, std::memory_order_relaxed);
+            const std::optional<Project> p = parse(f, nullptr);
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            keepRead(f, p, modified, size);
+            return true;
+        }
+    };
+
+    Reader::Reader() : s_(std::make_unique<State>())
+    {
+        s_->thread = std::thread([s = s_.get()] { s->run(); });
+    }
+
+    Reader::~Reader()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(s_->mutex);
+            s_->stop = true;
+        }
+        s_->wake.notify_all();
+        s_->thread.join();
+    }
+
+    void Reader::request(const std::vector<std::string>& paths)
+    {
+        bool more = false;
+        {
+            const std::lock_guard<std::mutex> lock(s_->mutex);
+            for (const std::string& p : paths)
+                if (s_->asked.insert(p).second)
+                {
+                    s_->queue.push_back(p);
+                    more = true;
+                }
+        }
+        if (more)
+            s_->wake.notify_one();
+    }
+
+    uint64_t Reader::revision() const noexcept { return s_->revision.load(std::memory_order_acquire); }
+
+    bool Reader::idle() const
+    {
+        const std::lock_guard<std::mutex> lock(s_->mutex);
+        return s_->asked.empty();
+    }
+
+    std::shared_ptr<Reader> reader()
+    {
+        const std::lock_guard<std::mutex> lock(readerMutex);
+        std::shared_ptr<Reader> r = theReader.lock();
+        if (!r)
+        {
+            r = std::make_shared<Reader>();
+            theReader = r;
+        }
+        return r;
     }
 }

@@ -25,8 +25,10 @@
 //             compile); the header's + opens PROJECTS with a preset's name to save
 //   POLL      the projects and the open one's presets are read again every 3 s: with nothing changed, no project's
 //             file is read whole (ProjectStore's parses()) and the rows are not made again (Panel::explorerBuilds); a
-//             preset another instance saves shows at the next poll, its file read once for the listing and the
-//             presets both, the rows made again once
+//             preset this process saves shows at the next poll with no file read (the store kept what it wrote), the
+//             rows made again once; one another process writes shows once the store's Reader has read the file on its
+//             own thread, once for the listing and the presets both (none read on the message thread), the rows made
+//             again once
 //   FOLD      a section's header folds it (its rows gone) and opens it again; the chevron folds the explorer away (its
 //             rows gone, the program's card wider by the explorer and its gap, the program's card's header holding the
 //             button that opens it); the processor keeps it folded, and its state carries that to another processor;
@@ -61,8 +63,10 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -254,16 +258,43 @@ PROBE(gui, explorer)
         host.tick(400);                                  // 6.7 s: two polls
         P.eq("poll.still_reads_no_file", pg::projectstore::parses() - parses0, 0);
         P.eq("poll.still_rows_kept", panel.explorerBuilds() - builds0, 0);
-        // Another instance saves a preset of the project open (its file written): at the next poll one read of the
-        // file serves the listing and the presets, and the rows are made again once.
+        // This process saves a preset of the project open (the store's write, as another Panel's would): the store
+        // keeps what it wrote, so the next poll reads no file and shows it, the rows made again once.
         const std::vector<pg::projectstore::Dial> dials{ { "level", 0.5f } };
-        P.eq("poll.other_saved", pg::projectstore::savePreset("Beta Lead", "Third", dials, 1) ? 1 : 0, 1);
+        P.eq("poll.saved_here", pg::projectstore::savePreset("Beta Lead", "Third", dials, 1) ? 1 : 0, 1);
         const int parses1 = pg::projectstore::parses();
         host.tick(200);
-        P.eq("poll.change_read_once", pg::projectstore::parses() - parses1, 1);
-        P.eq("poll.change_shown", ex.rows(S::presets) == 3 && find(ex, S::presets, "Third") >= 0 ? 1 : 0, 1);
-        P.eq("poll.change_rows_made_once", panel.explorerBuilds() - builds0, 1);
-        P.eq("poll.tidy", pg::projectstore::removePreset("Beta Lead", "Third") ? 1 : 0, 1);
+        P.eq("poll.saved_reads_no_file", pg::projectstore::parses() - parses1, 0);
+        P.eq("poll.saved_shown", ex.rows(S::presets) == 3 && find(ex, S::presets, "Third") >= 0 ? 1 : 0, 1);
+        P.eq("poll.saved_rows_made_once", panel.explorerBuilds() - builds0, 1);
+        // Another process writes the project open (a preset more in its file): the poll lists it as it was and reads
+        // no file on the message thread; the store's Reader reads it on its own, once, and the poll that its revision
+        // brings shows it, the rows made again once.
+        {
+            const juce::File f = folder.getChildFile("Beta Lead.fmproject");
+            juce::var root = juce::JSON::parse(f.loadFileAsString());
+            if (juce::Array<juce::var>* presets = root["presets"].getArray(); presets != nullptr && !presets->isEmpty())
+            {
+                juce::var copy = presets->getFirst().clone();
+                copy.getDynamicObject()->setProperty("name", "Fourth");
+                presets->add(copy);
+            }
+            f.replaceWithText(juce::JSON::toString(root));
+        }
+        const int parses2 = pg::projectstore::parses(), reader2 = pg::projectstore::readerParses();
+        const int builds2 = panel.explorerBuilds();
+        host.tick(200);
+        for (int k = 0; k < 2000 && find(ex, S::presets, "Fourth") < 0; ++k)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            host.tick(1);
+        }
+        P.eq("poll.other_shown", ex.rows(S::presets) == 4 && find(ex, S::presets, "Fourth") >= 0 ? 1 : 0, 1);
+        P.eq("poll.other_read_by_the_reader_once", pg::projectstore::parses() - parses2 == 1
+                                                       && pg::projectstore::readerParses() - reader2 == 1 ? 1 : 0, 1);
+        P.eq("poll.other_rows_made_once", panel.explorerBuilds() - builds2, 1);
+        P.eq("poll.tidy", pg::projectstore::removePreset("Beta Lead", "Third") && pg::projectstore::removePreset("Beta Lead", "Fourth")
+                              ? 1 : 0, 1);
         host.tick(200);
         P.eq("poll.tidy_shown", ex.rows(S::presets), 2);
     }

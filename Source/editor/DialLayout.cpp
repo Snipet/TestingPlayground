@@ -1,6 +1,8 @@
 // Source/editor/DialLayout.cpp: the dials' and displays' places (DialLayout.h).
 #include "editor/DialLayout.h"
 
+#include "editor/Looks.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -26,8 +28,10 @@ namespace playground::ui
         constexpr float kButtonsExtra = 26.0f;           // buttons: a light, the gaps, beside the widest option
 
         // Full-size dials in as few rows as the width holds; when those rows are taller than maxHeight, every dial
-        // small (as many more a row as their width allows).
-        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom, float maxHeight, float minGap)
+        // small (as many more a row as their width allows), and with a minRowGap under kRowGap, small rows still
+        // taller than maxHeight closer together, down to it (whole px).
+        DialsLayout plainRows(const PanelSpec& spec, int used, float x, float width, float bottom, float maxHeight, float minGap,
+                              float minRowGap)
         {
             const int n = std::max(used, 1);
             const auto rowsFor = [&](float cellW) {
@@ -44,7 +48,14 @@ namespace playground::ui
                                                             / static_cast<float>(out.cols - 1),
                                                         minGap, kGap)
                                            : kGap;
-            const float rowStep = cellH + kRowGap;
+            float rowGap = kRowGap;
+            if (allSmall && out.rows > 1 && minRowGap > 0.0f && minRowGap < kRowGap)
+            {
+                const float rows = static_cast<float>(out.rows);
+                if (rows * cellH + (rows - 1.0f) * kRowGap > maxHeight)
+                    rowGap = std::clamp(std::floor((maxHeight - rows * cellH) / (rows - 1.0f)), minRowGap, kRowGap);
+            }
+            const float rowStep = cellH + rowGap;
             out.top = bottom - cellH - static_cast<float>(out.rows - 1) * rowStep;
             for (int c = 0; c < kMaxControls; ++c)
             {
@@ -85,7 +96,11 @@ namespace playground::ui
                     case DisplayKind::meter:  return { d.audio() ? kMeterW : kMeterMonoW, kDialH, false, false };
                     case DisplayKind::vu:     return { kVuW, kDialH, false, false };
                     case DisplayKind::led:    return { kLedW, kDialH, false, false };
-                    case DisplayKind::number: return { kNumberW, kDialH, false, false };
+                    case DisplayKind::number:   // a unit= or decimals= readout at full size (looks::number's box, the
+                    {                           // cell less 4, keeps 3 each side), as a .gui file's (GuiLayout)
+                        const float rw = d.formatted() && m.readout ? m.readout(looks::readoutSample(d.unit, d.decimals)) + 10.0f : 0.0f;
+                        return { std::max(kNumberW, std::ceil(rw)), kDialH, false, false };
+                    }
                     case DisplayKind::scope:
                     case DisplayKind::spectrum: return { kScopeW, kDialH, false, false };   // (a .gui file's)
                 }
@@ -328,7 +343,7 @@ namespace playground::ui
     }
 
     DialsLayout layoutDials(const PanelSpec& spec, const Controls& controls, const DialMeasure& measure, float x,
-                            float width, float bottom, float maxHeight, float minGap)
+                            float width, float bottom, float maxHeight, float minGap, float minRowGap)
     {
         if (!(minGap > 0.0f))
             minGap = kMinGap;
@@ -342,7 +357,7 @@ namespace playground::ui
                 knobs = knobs && (st == DialStyle::knob || st == DialStyle::vintage);
             }
         if (spec.sections.empty() && spec.displays.empty() && knobs)
-            return plainRows(spec, used, x, width, bottom, maxHeight, minGap);
+            return plainRows(spec, used, x, width, bottom, maxHeight, minGap, minRowGap);
         // No section line, but a style a plain row does not hold: one section, untitled, of every dial.
         std::vector<PanelSection> one;
         const std::vector<PanelSection>* sections = &spec.sections;

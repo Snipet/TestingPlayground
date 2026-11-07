@@ -77,6 +77,11 @@ namespace playground::ui
     inline constexpr float kGuiSectionEdge = 6.0f;         // a section's frame's top edge, under its top (its title on it)
     inline constexpr float kGuiLabelH = 16.0f;             // a control's label, over its cell
     inline constexpr float kGuiWheelsW = 56.0f;            // a keyboard's pitch and mod wheels, left of its keys
+    // A menu control's box (a dropdown's trigger, GuiItems): its value kGuiMenuInset from its left edge, and the box
+    // kGuiMenuRoom wider than its widest value, which then shows whole: the inset, the chevron's room
+    // (Dropdown.h's kChevronRoom) and 4 px to spare.
+    inline constexpr float kGuiMenuInset = 8.0f;
+    inline constexpr float kGuiMenuRoom = 34.0f;
 
     // A knob's places in its cell (relative to its top left): its face (`d` across, its centre at cx, cy), its label's
     // and its value's tops when it has them, and the cell's size. small, medium and large are faces of 22, 30 and 56 px.
@@ -104,4 +109,23 @@ namespace playground::ui
     // A tabs node's tabs: their rects (in its strip at the top, or its list at the left for look=side).
     std::vector<funkgui::Rect> guiTabRects(const PanelSpec& spec, int node, const funkgui::Rect& rect,
                                            const GuiMeasure& measure);
+
+    // ---- the layout checked: gui_sandbox's report (sandbox/Sandbox.cpp) and run_program's line (editor/Picture.cpp)
+    // Whether an element of `k` holds others (a row, a column, a grid, a section, a box, tabs, a page).
+    bool guiContainer(GuiKind k);
+    // An element as the checks name it: its kind and what it shows ("knob cutoff", "meter shared->rpm", "keyboard from
+    // 48, 25 keys", "section \"FILTER\"").
+    std::string guiNodeName(const GuiNode& n, const PanelSpec& spec, const Controls& controls);
+    // How a layout (layoutGui's) fits its area: how far its content reaches past it (px; 0: it fits that way), and
+    // the elements on the pages shown that are not wholly in it at no scroll, by node (what draws: no container, spacer
+    // or divider), in the file's order.
+    struct GuiFit
+    {
+        float overW = 0.0f, overH = 0.0f;
+        std::vector<int> outOfView;
+    };
+    GuiFit guiFit(const PanelSpec& spec, const GuiLayout& gl);
+    // The fit in one line, "" when the content fits: "Panel layout: its content is 140 px taller than <area> (853 x
+    // 612), so it scrolls; out of view until scrolled: keyboard from 48, 25 keys (line 40), ..." (four named at most).
+    std::string guiFitLine(const PanelSpec& spec, const Controls& controls, const GuiLayout& gl, const std::string& area);
 }

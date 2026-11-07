@@ -59,7 +59,7 @@ namespace playground
         bool knownExtension(const std::string& name)
         {
             const std::string ext = lowerExtension(name);
-            return ext == "fm" || ext == "gui" || ext == "cir" || ext == "sc";
+            return ext == "fm" || ext == "gui" || ext == "cir" || ext == "sc" || ext == "sh";
         }
 
         std::string lower(std::string s)
@@ -358,7 +358,7 @@ namespace playground
             out << "# " << product::kName << ": " << name_ << "\n\n"
                 << "This folder holds the program's files of one " << product::kName << " instance, synced both ways.\n\n"
                 << "- A file saved here changes it in the plugin (one undo step there), and an edit in the plugin is written here.\n"
-                << "- A new file here (.fm, .gui, .cir, .sc) becomes one of the program's files; a file renamed or deleted here is\n"
+                << "- A new file here (.fm, .gui, .cir, .sc, .sh) becomes one of the program's files; a file renamed or deleted here is\n"
                 << "  renamed or deleted there. The program, the first file, deleted here is written back: delete it in the plugin.\n"
                 << "- When a file changed on both sides, neither is written: the plugin asks which to keep, and the other is kept\n"
                 << "  in `.conflicts/`.\n"

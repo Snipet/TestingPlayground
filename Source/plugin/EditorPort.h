@@ -63,6 +63,11 @@
 //   project()         the project open (the one opened or saved last; none at first), its version, the preset applied,
 //                     and whether the editor's files and the dials have changed since; kept in the session
 //   versions()        a project's versions, the newest first; presets() its presets, by name
+//   projectsPolled()  projects() and presets() as the explorer polls them on the message thread every few seconds
+//   presetsPolled()   (Panel::syncExplorer): no project's file is read whole there. One the store's cache does not hold
+//   projectsRead()    as it is now (another process wrote it, or none read it yet) is read on the store's own thread
+//                     (projectstore::Reader) and listed as the cache last held it until then (one never read: not yet);
+//                     projectsRead() moves when that thread has read one, and the explorer then polls again
 //   saveVersion()     the editor's files (the draft) and the dials as they are now, by name, as a new version of the
 //                     project `name` (a new project when there is none): it is then the project open. No new version
 //                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot
@@ -211,6 +216,23 @@ namespace playground
     // (message thread only); nothing to do while nothing is held. Defined in Source/editor/Picture.cpp.
     inline constexpr double kPictureHoldSeconds = 10.0;
     void picturesIdle(double seconds = kPictureHoldSeconds);
+    // The panel's fit (run_program's line; gui_sandbox's check, editor/GuiLayout.h's guiFitLine): a .gui file's
+    // interface laid out as the PANEL view lays it out in an editor `width` x `height` (logical px; 0: the default size)
+    // whose chat is open or not and `chatWidth` px wide (0: its share), and whose explorer is open in the CODE view or
+    // not and `explorerWidth` px wide (0: its share; it can narrow the chat, which the PANEL view keeps:
+    // editor/Panel.h's panelViewArea), its first pages shown: a line when its content is larger than that area, "" when
+    // it fits or there is no .gui file. Any thread once panelFitReady() has said the font is made: it makes it, on the
+    // message thread only (FunkGui's FontService is the message thread's), and reads this Mac's chat and explorer
+    // widths there (the editor's for a session that set none). Defined in Source/editor/Picture.cpp.
+    struct PanelFitReady
+    {
+        bool fonts = false;                      // the font is made: panelFitLine may run on any thread
+        int chatWidth = 0;                       // this Mac's chat width (0: the share)
+        int explorerWidth = 0;                   // this Mac's explorer width (0: the share)
+    };
+    PanelFitReady panelFitReady();
+    std::string panelFitLine(const PanelSpec& spec, const Controls& controls, int width, int height, bool chatOpen,
+                             int chatWidth, bool explorerOpen, int explorerWidth);
     // A netlist's view as the session keeps it (editor/SchematicView.h): its Netlist or Schematic view, the drawing's
     // zoom (1: 100 %) and the world point at its canvas's centre (grid units), and the nets its probes are pinned to.
     // Kept only for files whose view the user chose (a switch, a zoom, a pan), at most kMaxFileViews, each with at most
@@ -436,6 +458,9 @@ namespace playground
         virtual ProjectState project() const = 0;
         virtual std::vector<VersionEntry> versions(const std::string& project) const = 0;
         virtual std::vector<PresetEntry> presets(const std::string& project) const = 0;
+        virtual std::vector<ProjectEntry> projectsPolled() const = 0;
+        virtual std::vector<PresetEntry> presetsPolled(const std::string& project) const = 0;
+        virtual uint64_t projectsRead() const = 0;
         virtual bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) = 0;
         virtual bool openProject(const std::string& name, int version, std::string& why) = 0;
         virtual void startAfresh(const Sources& files, const std::string& what) = 0;
@@ -470,7 +495,7 @@ namespace playground
         virtual bool panelView() const = 0;
         virtual void setPanelView(bool on) = 0;
         // Whether the CODE view shows the program's panel (its dials, or its .gui file's interface) under the editor:
-        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc: editor/Items.h's
+        // `gui` the choice while a file of the interface shows (a .gui file, a shader's .sc or .sh: editor/Items.h's
         // isInterfaceFile), else the one while the program's code shows (its FMinus files, a netlist, the IR). Both
         // shown at first; kept in the session (the editor's status line's Panel switch and Cmd-J set them).
         virtual bool codePanel(bool gui) const = 0;

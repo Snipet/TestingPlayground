@@ -7,7 +7,7 @@
 //   UNTITLED  a section without a title has the title ""
 //   REST      the dials no section names come last, in slot order, untitled, with a note naming them
 //   NOTES     each line the plugin cannot use is a note on its file and line, and the program still plays: an unknown
-//             word, a name that is no dial (a parameter's past the 32 dials too), a dial in two sections (the first keeps
+//             word, a name that is no dial (a parameter's past the 64 dials too), a dial in two sections (the first keeps
 //             it), a text without its closing quote, a label without its text, a section without a dial (not drawn),
 //             small without a name, row with words after it, a title and a label too long (cut)
 //   FILES     lines in an included file count, after the program's; in a file no #include reads they do not; other
@@ -23,6 +23,11 @@
 //             values, buttons of twenty-one; an unknown style
 //   OPTIONS   an int's values' names; a float's options and a wrong count are notes (the extra left out)
 //   COLOURS   a section's by its title, a dial's, a display's; an unknown colour and a title no section has are notes
+//   FORMAT    a number's unit= (a name or a "text"), decimals= and scale=, as a .gui file's number takes them: kept in
+//             the display with no note, beside its range, as and label, in any order; notes on their lines, the rest
+//             standing: decimals past 4 (4), a fraction of one (rounded), scale=0 (1), a unit cut to 7 characters, a
+//             number given as a unit, unit= on a meter, on number out (dBFS: none kept), an unknown key=, a key= with no
+//             value (the line left out), a key=value where a section names its items
 //   ONLY      displays without a section line: one section, untitled, of every dial and display, with no note
 //   ELEMENTS  a double field, an array's element (bands[2]) and a 2-D array's (grid[1][2]) as displays, each a tap that
 //             reads what the program wrote there (the double rounded to a float); a field's attributes as what the line
@@ -30,6 +35,8 @@
 //             (an `as` name is no label); a label and a unit too long for a display cut where a character starts, with
 //             a note, the field keeping them whole; notes for an array named without its indexes, an index outside its
 //             extent and one index too many
+//   MOST      32 displays (kMaxDisplays: scope out as w1 to w32) are all shown, the 33rd a note on its line, left out;
+//             a section names a panel dial (the 33rd of 33 dials, past the host's 32: Controls.h's isPanelDial)
 #include "Probe.h"
 
 #include "Rig.h"
@@ -320,6 +327,72 @@ PROBE(fminus, panel)
         P.eq("notes.unknown_colour", noteOn(26, "unknown colour 'purple'") ? 1 : 0, 1);
     }
 
+    // FORMAT: a number's unit=, decimals= and scale=.
+    {
+        const std::string before =
+            "#pragma panel number speed \"SPEED\" unit=rpm decimals=0 scale=60\n"   // 1
+            "#pragma panel number hz unit=\"Hz\" 0 20000 decimals=1 as freq\n"       // 2: among the others
+            "#pragma panel number places decimals=7\n"                               // 3: past 4
+            "#pragma panel number frac decimals=1.6 scale=0\n"                       // 4: rounded; scale=0
+            "#pragma panel number cut unit=\"kilometres\"\n"                         // 5: cut to 7
+            "#pragma panel number numeric unit=12\n"                                 // 6: a number as a unit
+            "#pragma panel meter speed unit=rpm as speedbar\n"                       // 7: a meter's
+            "#pragma panel number out unit=dB decimals=2\n"                          // 8: dBFS
+            "#pragma panel number hz bogus=1 as hz2\n"                               // 9: unknown
+            "#pragma panel number hz unit= as hz3\n"                                 // 10: no value
+            "#pragma panel section \"S\" speed unit=rpm\n";                          // 11: in a section
+        const std::string fields = "    float speed, hz, places, frac, cut, numeric;\n";
+        const std::string source = kInstrument
+            ? before + "module Voice\n{\n    param float gain [[fminus::default(0.5)]];\n" + fields
+                  + "    void start(float n, float v) {}\n    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : before + "module Effect\n{\n    param float gain [[fminus::default(0.5)]];\n" + fields
+                  + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled c = compile(source);
+        P.eq("format.compiles", c.ok ? 1 : 0, 1);
+        std::printf("%s", c.notes.c_str());
+        const auto noteOn = [&](int line, const char* what) {
+            return has(c.notes, "program.fm:" + std::to_string(line) + ":1: note: #pragma panel: ") && has(c.notes, what);
+        };
+        const auto find = [&](const std::string& name) -> const pg::PanelDisplay* {
+            for (const pg::PanelDisplay& x : c.panel.displays)
+                if (x.name == name)
+                    return &x;
+            return nullptr;
+        };
+        const pg::PanelDisplay* speed = find("speed");
+        P.eq("format.unit_decimals_scale", speed != nullptr && speed->unit == "rpm" && speed->decimals == 0 && speed->scale == 60.0f
+                                               && speed->label == "SPEED" && speed->formatted() ? 1 : 0, 1);
+        P.eq("format.no_note_line_1", has(c.notes, "program.fm:1:") ? 0 : 1, 1);
+        const pg::PanelDisplay* freq = find("freq");
+        P.eq("format.among_the_others", freq != nullptr && freq->unit == "Hz" && freq->decimals == 1 && freq->lo == 0.0f
+                                            && freq->hi == 20000.0f && freq->source == "hz" ? 1 : 0, 1);
+        P.eq("format.no_note_line_2", has(c.notes, "program.fm:2:") ? 0 : 1, 1);
+        const pg::PanelDisplay* places = find("places");
+        P.eq("format.decimals_past_4", noteOn(3, "decimals=7 is not one of 0 to 4: 4 instead") && places != nullptr
+                                           && places->decimals == 4 ? 1 : 0, 1);
+        const pg::PanelDisplay* frac = find("frac");
+        P.eq("format.decimals_rounded", noteOn(4, "decimals=1.6 is not one of 0 to 4: 2 instead") && frac != nullptr
+                                            && frac->decimals == 2 ? 1 : 0, 1);
+        P.eq("format.scale_zero", noteOn(4, "scale=0 would show every value as 0: 1 instead") && frac != nullptr
+                                      && frac->scale == 1.0f ? 1 : 0, 1);
+        const pg::PanelDisplay* cut = find("cut");
+        P.eq("format.unit_cut", noteOn(5, "the unit \"kilometres\" is cut to 7 characters") && cut != nullptr
+                                    && cut->unit == "kilomet" ? 1 : 0, 1);
+        const pg::PanelDisplay* numeric = find("numeric");
+        P.eq("format.unit_number", noteOn(6, "unit= takes a \"text\" or a name, not 12") && numeric != nullptr
+                                       && numeric->unit.empty() ? 1 : 0, 1);
+        const pg::PanelDisplay* bar = find("speedbar");
+        P.eq("format.meter_takes_none", noteOn(7, "meter takes no unit=: unit=, decimals= and scale= are a number's") && bar != nullptr
+                                            && bar->unit.empty() && !bar->formatted() ? 1 : 0, 1);
+        const pg::PanelDisplay* out = find("out");
+        P.eq("format.audio_dbfs", noteOn(8, "number out shows dBFS: unit=, decimals= and scale= are a field's") && out != nullptr
+                                      && !out->formatted() ? 1 : 0, 1);
+        P.eq("format.unknown_key", noteOn(9, "unknown bogus=: a number takes unit=, decimals= and scale=") && find("hz2") != nullptr
+                                       ? 1 : 0, 1);
+        P.eq("format.no_value", noteOn(10, "unit= takes a value right after it") && find("hz3") == nullptr ? 1 : 0, 1);
+        P.eq("format.not_in_a_section", noteOn(11, "\"unit=rpm\" is left out") ? 1 : 0, 1);
+    }
+
     // ONLY: displays without a section line.
     {
         const Compiled c = compile(program("#pragma panel meter out\n", kDials));
@@ -416,6 +489,24 @@ PROBE(fminus, panel)
             P.near("elements.tap_element_2d", r.patch->tap(2, 0), 12.0, 0.0);
             P.near("elements.tap_field", r.patch->tap(3, 0), 6.0, 0.0);
         }
+    }
+
+    // MOST
+    {
+        std::string lines;
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            lines += "#pragma panel scope out as w" + std::to_string(k) + "\n";
+        std::vector<std::string> dials;
+        for (int k = 1; k <= pg::kHostControls + 1; ++k)
+            dials.push_back("d" + std::to_string(k));
+        lines += "#pragma panel section \"PANEL\" d33\n";
+        const Compiled c = compile(program(lines, dials));
+        P.eq("most.displays", static_cast<int64_t>(c.panel.displays.size()), pg::kMaxDisplays);
+        P.eq("most.past_noted", has(c.notes, "program.fm:" + std::to_string(pg::kMaxDisplays + 1) + ":") && has(c.notes, "displays at most")
+                                    ? 1 : 0, 1);
+        const pg::PanelSection* panel = c.panel.sections.empty() ? nullptr : &c.panel.sections[0];
+        P.eq("most.panel_dial", panel != nullptr && panel->title == "PANEL" && panel->items.size() == 1 && !panel->items[0].display
+                                    && panel->items[0].index == pg::kHostControls ? 1 : 0, 1);
     }
 
     // PLAIN

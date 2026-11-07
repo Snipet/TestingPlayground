@@ -10,14 +10,18 @@
 //   ALLOCATES  one whose audio-thread method could reach calloc is refused: "it runs on the audio thread", with
 //              FMinus's note naming the program's line that calls it
 //   SYNTAX     a syntax error is FMinus's message, with the line and column in the program
-//   DIALS      33 parameters: the first 32 are the dials, in order; the 33rd gets a note (it keeps
-//              its default)
+//   DIALS      65 parameters: the first 64 are the dials, in order (Controls.h: the 32nd the host's last, the 33rd
+//              the panel's first own dial, isPanelDial); the 65th gets a note (it keeps its default); the 64th, the
+//              panel's last, reaches the program: at its default, then turned, once its glide is over
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block
 //   SHARED     a module Shared is made once for the program: its init runs once, with the rate, before every instance's
 //              init, which reads what it made through the main module's Shared* field; again at a new rate; the audio
 //              thread reads it through the pointer; a Shared nothing points at is a note; a Shared::init of another
-//              type is the plugin's message
+//              type is the plugin's message. An instrument's Shared's hooks (Patch.h, "Shared on its own"): tick, noteOn,
+//              noteOff and a param named as a dial compile with no note and are the Patch's; a tick of another type is
+//              the program's own, with a note at its place; a param no dial is named as is a note. The effect's: none
+//              of them (no note)
 //   INCLUDE    a program of several files (Sources.h): one that includes another compiles and plays what it includes;
 //              the main module may be in an included file; two files that include a third read it once; an error in
 //              an included file names that file and its line, after clang's include stack; an #include of a name no
@@ -37,6 +41,7 @@
 
 #include "Product.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -170,6 +175,34 @@ PROBE(fminus, contract)
             P.near("dials.default", static_cast<double>(r.patch->controls()[2].def), 3.0, 1e-6);
         }
         P.eq("dials.next_noted", has(r.notes, "p" + std::to_string(pg::kMaxControls + 1) + " has no dial") ? 1 : 0, 1);
+        P.eq("dials.host_then_panel", !pg::isPanelDial(pg::kHostControls - 1) && pg::isPanelDial(pg::kHostControls)
+                                          && pg::isPanelDial(pg::kMaxControls - 1) && !pg::isPanelDial(pg::kMaxControls) ? 1 : 0, 1);
+        // The last panel dial plays: p64 / 100, at its default (64), then turned to a quarter (25) at 50 ms.
+        probe::Rig rig(48000.0, 256);
+        const std::string last = "p" + std::to_string(pg::kMaxControls);
+        if (rig.load(program("", params + process("            left[i] = 0.01f * " + last + "[i];\n"))))
+        {
+            probe::Stereo in(4800);
+            if constexpr (!kInstrument)
+            {
+                std::fill(in.l.begin(), in.l.end(), 1.0f);
+                std::fill(in.r.begin(), in.r.end(), 1.0f);
+            }
+            const probe::Stereo out = rig.run(in, 256, { { 0, pg::EventKind::noteOn, 60, 1.0f } }, {},
+                                              [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                                                  if (at >= 2400)
+                                                      n[pg::kMaxControls - 1] = 0.25f;
+                                              });
+            std::printf("DIALS: %s plays %.4f, then %.4f\n", last.c_str(), static_cast<double>(out.l[100]),
+                        static_cast<double>(out.l[4700]));
+            P.near("dials.last_panel_default", static_cast<double>(out.l[100]), 0.01 * pg::kMaxControls, 1e-5);
+            P.near("dials.last_panel_turned", static_cast<double>(out.l[4700]), 0.25, 1e-5);
+        }
+        else
+        {
+            P.eq("dials.last_panel_default", 0, 1);
+            P.eq("dials.last_panel_turned", 0, 1);
+        }
     }
 
     // DEFAULTS: a held module's parameter at its default (0.25), read in the main module's process.
@@ -220,6 +253,30 @@ PROBE(fminus, contract)
         const pg::Patch::Result wrong = compile(program("module Shared\n{\n    float x;\n    void init() { x = 1; }\n};\n",
                                                         "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
         P.eq("shared.init_signature", !wrong.patch && has(wrong.errors, "Shared::init: the plugin calls it as `void init(float rate)`") ? 1 : 0, 1);
+        // Its hooks (an instrument's only).
+        const std::string hooks = "module Shared\n{\n    param float level;\n    float y;\n    int notes;\n"
+                                  "    void tick(int n) { y += level[0] * (float)n; }\n"
+                                  "    void noteOn(float note, float velocity) { notes += 1; }\n"
+                                  "    void noteOff(float note) { notes -= 1; }\n};\n";
+        const std::string reads = "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n    Shared* shared;\n"
+                                  + process("            left[i] = shared->y * 0.0001f;\n");
+        const pg::Patch::Result h = compile(program(hooks, reads));
+        P.eq("shared.hooks_compile", h.patch && h.notes.empty() ? 1 : 0, 1);
+        if constexpr (kInstrument)
+            P.eq("shared.hooks_are_its", h.patch && h.patch->sharedTicks() && h.patch->sharedNotes() && h.patch->sharedDials() == 1u ? 1 : 0, 1);
+        else
+            P.eq("shared.effect_has_none", h.patch && !h.patch->sharedTicks() && !h.patch->sharedNotes() && h.patch->sharedDials() == 0 ? 1 : 0, 1);
+        const pg::Patch::Result other = compile(program("module Shared\n{\n    float x;\n    float tick() { x += 1; return x; }\n"
+                                                        "    param float stray;\n};\n",
+                                                        "    Shared* shared;\n" + process("            left[i] = shared->x;\n")));
+        if constexpr (kInstrument)
+        {
+            P.eq("shared.tick_otherwise_note", other.patch && !other.patch->sharedTicks()
+                                                   && has(other.notes, "program.fm:4:11: note: Shared::tick is not declared as the plugin calls it (`void tick(int n)`)") ? 1 : 0, 1);
+            P.eq("shared.stray_param_note", other.patch && has(other.notes, "Shared::stray reads no dial") ? 1 : 0, 1);
+        }
+        else
+            P.eq("shared.effect_no_notes", other.patch && other.notes.empty() ? 1 : 0, 1);
     }
 
     // INCLUDE

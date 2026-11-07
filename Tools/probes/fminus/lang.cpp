@@ -26,7 +26,8 @@
 //             c75caab); a keyword; a library module the program does
 //             not read, which adds its #include (lfo.fm); nothing in a comment; a #pragma panel display's source: in
 //             and out, the main module's float, int and bool fields and Shared's through its pointer (shared->level),
-//             after `shared->` Shared's own names, no array and no param
+//             after `shared->` Shared's own names, no array and no param; after `#pragma ` the synth's mono (the effect's
+//             none), and after `#pragma mono ` its Voice's bool and int params
 //   SIGNATURE in a call: a method's (receiver's type resolved), a builtin's, a function's of another file, a vector
 //             literal's lanes; the parameter the place is in, and its place in the label
 //   HOVER     a method (its declaration and the usage header's line for it), a Host field (host.fm's line), a module
@@ -860,6 +861,26 @@ PROBE(fminus, lang)
         c = s.complete(0, { 2, 29 });
         std::printf("complete after shared->: %s\n", labels(c, 20).c_str());
         P.eq("complete.display_after_arrow", item(c, "level") != nullptr && item(c, "shared->level") == nullptr && c.prefix == "l" ? 1 : 0, 1);
+
+        // #pragma mono (Patch.h, "Mono"): the synth's word after #pragma, then its Voice's bool and int params; the
+        // effect's, none.
+        const std::string mono = "#pragma \n#pragma mono \nmodule Voice\n{\n    param bool solo;\n    param int mode;\n"
+                                 "    param float level;\n    void start(float note, float velocity) {}\n"
+                                 "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n";
+        lg::Options monoOpts;
+        monoOpts.instrument = pg::product::kIsInstrument;
+        lg::Service ms;
+        ms.setOptions(monoOpts);
+        ms.setFiles({ { "program.fm", mono } });
+        c = ms.complete(0, { 0, 8 });
+        P.eq("complete.pragma_mono", (item(c, "mono") != nullptr) == pg::product::kIsInstrument && item(c, "panel") != nullptr ? 1 : 0, 1);
+        if constexpr (pg::product::kIsInstrument)
+        {
+            c = ms.complete(0, { 1, 13 });
+            std::printf("complete #pragma mono's dial: %s\n", labels(c, 20).c_str());
+            P.eq("complete.pragma_mono_dial", item(c, "solo") != nullptr && item(c, "mode") != nullptr && item(c, "level") == nullptr
+                                                  ? 1 : 0, 1);
+        }
     }
 
     // ---- SIGNATURE --------------------------------------------------------------------------------------------------

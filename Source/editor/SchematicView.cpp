@@ -2,6 +2,7 @@
 #include "editor/SchematicView.h"
 
 #include "editor/ChatStyle.h"
+#include "editor/Dropdown.h"
 #include "editor/Items.h"
 #include "editor/Theme.h"
 #include "plugin/EditorPort.h"                      // shortcutText
@@ -87,6 +88,8 @@ namespace playground::ui
         constexpr float kEaseTau = 0.08f;                // a fit's motion
         constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--
         constexpr float kPinW = 38.0f, kChipH2 = 16.0f;  // the probes' card: Pin, the chip's height
+        constexpr float kProbeChipW = 72.0f;             // ... the chip's width (a dropdown's trigger: Dropdown.h)
+        constexpr float kMoreW = 60.0f;                  // the toolbar's More (a dropdown's trigger too)
         constexpr float kUnpinW = 16.0f;                 // ... a lane's unpin
         // A gesture a write of Claude's overtook before the Panel merged it (SchematicView::setSyncHook): undone.
         constexpr const char* kOvertaken = "The circuit changed (Claude's edit came first): do it again";
@@ -113,6 +116,15 @@ namespace playground::ui
         };
 
         float dist(funkgui::Point a, funkgui::Point b) noexcept { return std::hypot(a.x - b.x, a.y - b.y); }
+
+        // A menu's commands written "Label   Key": each key in the shortcut column (Dropdown.h), as the user's keyboard
+        // names it (Ctrl- on Windows).
+        void withKeys(funkgui::MenuRequest& request)
+        {
+            for (funkgui::MenuItem& item : request.items)
+                if (!item.separator)
+                    item = dropdown::command(item.id, shortcutText(item.label), item.enabled);
+        }
 
         float distToSegment(funkgui::Point p, funkgui::Point a, funkgui::Point b) noexcept
         {
@@ -274,7 +286,7 @@ namespace playground::ui
         put(Button::p, kButtonW);
         put(Button::x, kButtonW);
         put(Button::s, kButtonW);
-        put(Button::more, 52.0f);
+        put(Button::more, kMoreW);
         // the right end, right to left
         float r = toolbar_.right() - 4.0f;
         const auto putRight = [&](Button b, float w) {
@@ -2019,8 +2031,7 @@ namespace playground::ui
             if (const std::optional<funkgui::Point> pin = centreOfPin();
                 pin && funkgui::Rect{ pin->x - 0.5f * kPinW, pin->y - 0.5f * kChipH2, kPinW, kChipH2 }.contains(p))
                 pinProbe(slots_[0].net);
-            else if (const std::optional<funkgui::Point> chip = centreOfChip();
-                     chip && funkgui::Rect{ chip->x - 32.0f, chip->y - 0.5f * kChipH2, 64.0f, kChipH2 }.contains(p))
+            else if (const std::optional<funkgui::Rect> chip = chipRect(); chip && chip->contains(p))
                 openChipMenu();
             return;
         }
@@ -2682,7 +2693,7 @@ namespace playground::ui
             request.anchor = buttonRect(Button::more);
             for (std::size_t i = 0; i < std::size(kMore); ++i)
             {
-                funkgui::MenuItem item{ static_cast<int>(i) + 1, kMore[i].label };
+                funkgui::MenuItem item = dropdown::command(static_cast<int>(i) + 1, shortcutText(kMore[i].label));
                 if (kMore[i].kind == cir::Kind::Input && nl_.input)
                 {
                     item.enabled = false;
@@ -2724,8 +2735,7 @@ namespace playground::ui
                     request.items.push_back({ 10, "Show " + n.name + " as wires" });
                 }
             }
-            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-                item.label = shortcutText(item.label);
+            withKeys(request);
             host_->showMenu(request, [this, name, tagged](int chosen) {
                 if (!showing())
                     return;
@@ -2761,8 +2771,7 @@ namespace playground::ui
                               { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 18, "Probe this net" },
                               { 19, pinned ? "Unpin probe   Alt-click" : "Pin probe   Alt-click", !ground },
                               { 0, {}, true, false, true },   { 13, "Show in netlist" } };
-            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-                item.label = shortcutText(item.label);
+            withKeys(request);
             host_->showMenu(request, [this, net, at, r](int chosen) {
                 if (!showing())
                     return;
@@ -2810,8 +2819,7 @@ namespace playground::ui
         request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 23, "Tidy" },
                           { 0, {}, true, false, true },   { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
                           { 25, "Undo   Cmd-Z", ed_->canUndo() }, { 26, "Redo   Cmd-Shift-Z", ed_->canRedo() } };
-        for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-            item.label = shortcutText(item.label);
+        withKeys(request);
         host_->showMenu(request, [this, pasteAt](int chosen) {
             if (!showing())
                 return;
@@ -2948,6 +2956,8 @@ namespace playground::ui
             k.mix(part);
         for (const ProbeSlot& slot : slots_)
             k.mix(slot.net).mix(slot.node).mix(slot.reason).mix(slot.valid);
+        const std::optional<funkgui::Rect> chip = chipRect();      // the triggers' open looks
+        k.mix(menuOpenAt(buttonRect(Button::more))).mix(chip && menuOpenAt(*chip));
         if (dials_.port)
             for (const Knob& kn : knobs())
                 if (const funkgui::ParamPort* port = dials_.port(kn.slot))
@@ -3684,10 +3694,13 @@ namespace playground::ui
                     enabled = ed_->canUndo();
                 else if (btn == Button::redo)
                     enabled = ed_->canRedo();
-                if (active)
-                    c.rrect(r.x, r.y, r.w, r.h, 6.0f, pal.composer, 1.0f, pal.composerEdge);
-                else if (hover && enabled)
-                    c.rrect(r.x, r.y, r.w, r.h, 6.0f, pal.hover);
+                if (btn != Button::more)                 // More, a dropdown's trigger, draws its own pill (below)
+                {
+                    if (active)
+                        c.rrect(r.x, r.y, r.w, r.h, 6.0f, pal.composer, 1.0f, pal.composerEdge);
+                    else if (hover && enabled)
+                        c.rrect(r.x, r.y, r.w, r.h, 6.0f, pal.hover);
+                }
                 const funkgui::Col ink = !enabled ? pal.faint : active || hover ? pal.text : pal.soft;
                 const float cx = r.centreX(), cy = r.centreY();
                 switch (btn)
@@ -3721,9 +3734,17 @@ namespace playground::ui
                         sch::icon(c, kBarKinds[b - static_cast<int>(Button::r)], cx, cy, 18.0f, ink);
                         break;
                     case Button::more:
-                        c.text("More", r.x + 7.0f, c.capCentreTop(cy, chat::kSmall), chat::kSmall, ink);
-                        chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 9.0f, cy + 0.5f, 8.0f, ink);
+                    {
+                        // a dropdown's trigger (Dropdown.h): a toolbar's, a field's while a part of its menu is the
+                        // tool, open while its menu is
+                        const dropdown::State state{ true, hover, menuOpenAt(r), false };
+                        const dropdown::Base base = active ? dropdown::Base::field : dropdown::Base::ghost;
+                        const funkgui::Col mi = dropdown::drawTrigger(c, pal, r, base, state);
+                        const float lx = r.x + 8.0f;
+                        c.text(fitText(c, "More", chat::kSmall, dropdown::labelRoom(r, lx)).c_str(), lx,
+                               c.capCentreTop(cy, chat::kSmall), chat::kSmall, mi);
                         break;
+                    }
                     case Button::undo:
                     case Button::redo:
                     {
@@ -4399,8 +4420,16 @@ namespace playground::ui
         const funkgui::Rect card = probeCard();
         if (card.h <= 0.0f || probeElements().size() < 2)
             return std::nullopt;
-        const float w = 64.0f;
-        return funkgui::Point{ card.right() - 8.0f - kPinW - 6.0f - 0.5f * w, card.y + 4.0f + 0.5f * kChipH2 };
+        return funkgui::Point{ card.right() - 8.0f - kPinW - 6.0f - 0.5f * kProbeChipW,
+                               card.y + 4.0f + 0.5f * kChipH2 };
+    }
+
+    std::optional<funkgui::Rect> SchematicView::chipRect() const
+    {
+        const std::optional<funkgui::Point> at = centreOfChip();
+        if (!at)
+            return std::nullopt;
+        return funkgui::Rect{ at->x - 0.5f * kProbeChipW, at->y - 0.5f * kChipH2, kProbeChipW, kChipH2 };
     }
 
     void SchematicView::openChipMenu()
@@ -4408,19 +4437,20 @@ namespace playground::ui
         if (host_ == nullptr)
             return;
         const std::vector<std::string> paths = probeElements();
-        const std::optional<funkgui::Point> at = centreOfChip();
-        if (paths.size() < 2 || !at)
+        const std::optional<funkgui::Rect> chip = chipRect();
+        if (paths.size() < 2 || !chip)
             return;
         funkgui::MenuRequest request;
-        request.anchor = { at->x - 32.0f, at->y - 0.5f * kChipH2, 64.0f, kChipH2 };
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::string now = probeElement();
+        int current = 0;
         for (std::size_t i = 0; i < paths.size(); ++i)
         {
-            funkgui::MenuItem item{ static_cast<int>(i) + 1, paths[i] };
-            item.checked = paths[i] == now;
-            request.items.push_back(std::move(item));
+            if (paths[i] == now)
+                current = static_cast<int>(i) + 1;
+            request.items.push_back(dropdown::choice(static_cast<int>(i) + 1, paths[i], paths[i] == now));
         }
+        dropdown::dropdownMenu(request, *chip, current);
         host_->showMenu(request, [this, paths](int chosen) {
             if (chosen >= 1 && chosen <= static_cast<int>(paths.size()) && showing())
                 setProbeElement(paths[static_cast<std::size_t>(chosen - 1)]);
@@ -4592,17 +4622,19 @@ namespace playground::ui
         std::string words = p.reason.empty() ? probeNumbers(0) : p.reason;
         if (words.empty())
             words = "waiting for the program";
-        const std::optional<funkgui::Point> chip = centreOfChip(), pin = centreOfPin();
-        const float right = chip ? chip->x - 32.0f - 8.0f : pin->x - 0.5f * kPinW - 8.0f;
+        const std::optional<funkgui::Rect> chip = chipRect();
+        const std::optional<funkgui::Point> pin = centreOfPin();
+        const float right = chip ? chip->x - 8.0f : pin->x - 0.5f * kPinW - 8.0f;
         c.text(fitText(c, words, st, std::max(0.0f, right - x)).c_str(), x, c.capCentreTop(line, st), st, pal.soft);
         if (chip)
         {
-            const funkgui::Rect r{ chip->x - 32.0f, chip->y - 0.5f * kChipH2, 64.0f, kChipH2 };
-            const bool hot = r.contains(pointer_);
-            c.rrect(r.x, r.y, r.w, r.h, 0.5f * r.h, hot ? pal.hover : pal.composer, 1.0f, pal.composerEdge);
-            const std::string e = probeElement();
-            c.text(fitText(c, e, st, r.w - 22.0f).c_str(), r.x + 7.0f, c.capCentreTop(r.centreY(), st), st, hot ? pal.text : pal.soft);
-            chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 9.0f, r.centreY() + 0.5f, 7.0f, hot ? pal.text : pal.soft);
+            // a dropdown's trigger, a form's field (Dropdown.h): open while its menu is
+            const funkgui::Rect& r = *chip;
+            const dropdown::State state{ true, r.contains(pointer_), menuOpenAt(r), false };
+            const funkgui::Col ink = dropdown::drawTrigger(c, pal, r, dropdown::Base::field, state);
+            const float lx = r.x + 8.0f;
+            c.text(fitText(c, probeElement(), st, dropdown::labelRoom(r, lx)).c_str(), lx, c.capCentreTop(r.centreY(), st),
+                   st, ink);
         }
         {
             const funkgui::Rect r{ pin->x - 0.5f * kPinW, pin->y - 0.5f * kChipH2, kPinW, kChipH2 };

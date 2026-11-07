@@ -9,7 +9,8 @@
 //   EDIT     an edit naming no dial: GuiSpec's note on its line, the control listed as naming no dial; a dial no
 //            control names listed; an old_text that does not occur refused, nothing changed; with no program, a
 //            display of shared->speed mocked as the main module's fields are, no note; an overlap and what
-//            sticks out of its container reported, text too wide, and a panel taller than the area scrolling
+//            sticks out of its container reported, text too wide, and a panel taller than the area scrolling (what is out
+//            of view until scrolled named)
 //   RENDER   a PNG of the size asked (1.5 pixels a px) in both themes, which differ (gui.sandbox.png, .paper.png); a
 //            dial's value moves its knob: the pictures differ inside its cell and nowhere else (gui.sandbox.knob.png);
 //            a large render without detail made smaller to fit the MCP cap (100,000 base64 characters), and saying so
@@ -17,11 +18,12 @@
 //            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
 //            its number acts on the first (put back in the helper), a render naming the second shows the second as it
 //            was; a number no sandbox has refused; apply without a number refused
-//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
+//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc, the .sh; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an array as its elements (ring[i]), an enumeration's an int as FMinus makes it, Shared's
-//            through its pointer, shared->tone):
-//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png);
+//            through its pointer, shared->tone): the shader drawn by the GPU in its colour, not FunkGui's striped
+//            placeholder (gui.sandbox.shader.png), its colour from the folder's .sh file (read with the rest), its title
+//            in the library's text (funk/text.sh);
 //            values naming the field the shader reads (an input with no display of its own) changes its colour
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
@@ -42,6 +44,7 @@
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
 //            renders what view_panel's picture shows, pixel for pixel within MATCH's bound (gui.sandbox.circuit.png,
 //            .circuit.view.png)
+//   MOST     33 dials of Claude's: the report says the 33rd to the 64th are the panel's own
 //   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
 //            (<ENV_PREFIX>SANDBOX_DEADLINE_MS), saying so, the helper gone, and the next call working
@@ -257,11 +260,13 @@ namespace
     // A rect (logical px in the area) from the report's line of the element named `what` ("knob drive 10,20 60x80").
     bool rectOf(const std::string& report, const std::string& what, float& x, float& y, float& w, float& h)
     {
-        const std::size_t at = report.find(what + " ");
-        if (at == std::string::npos)
-            return false;
+        // Its line among the elements: the name followed by its place (the name may be said before, as out of view).
         int xi = 0, yi = 0, wi = 0, hi = 0;
-        if (std::sscanf(report.c_str() + at + what.size() + 1, "%d,%d %dx%d", &xi, &yi, &wi, &hi) != 4)
+        std::size_t at = report.find(what + " ");
+        while (at != std::string::npos
+               && std::sscanf(report.c_str() + at + what.size() + 1, "%d,%d %dx%d", &xi, &yi, &wi, &hi) != 4)
+            at = report.find(what + " ", at + 1);
+        if (at == std::string::npos)
             return false;
         x = static_cast<float>(xi);
         y = static_cast<float>(yi);
@@ -420,6 +425,8 @@ PROBE(plugin, sandbox)
         P.eq("edit.outside", has(r.text, "knob tone (line 2) sticks out of its row (line 2)") ? 1 : 0, 1);
         P.eq("edit.too_wide", has(r.text, "label \"A LABEL FAR TOO LONG FOR ITS ROOM\" (line 5): its text") ? 1 : 0, 1);
         P.eq("edit.scrolls", has(r.text, "taller than the area by") && has(r.text, "so it scrolls") ? 1 : 0, 1);
+        // What the spacer pushes down (GuiLayout.h's guiFit, run_program's check too): the dial added last.
+        P.eq("edit.out_of_view", has(r.text, "Out of view until scrolled: ") && has(r.text, "knob spare (line") ? 1 : 0, 1);
         // Back to the blank panel's (drive large, wave, tone; spare left over), for the pictures.
         r = s.sandbox(object({ { "action", "open" }, { "from", "blank" }, { "dials", dials() } }));
         P.eq("edit.reopened", !r.error && numberIn(r.text) == blank + 1 ? 1 : 0, 1);
@@ -510,8 +517,11 @@ PROBE(plugin, sandbox)
         std::ofstream(folder / pg::kProgramName) << program();
         std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
-        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), "
-                                             "step(100.0, in1));\n}\n";
+        // The shader takes its colour from a .sh file of the program's own and writes its title with the library's text.
+        std::ofstream(folder / "glow.sc") << "#include \"funk/text.sh\"\n#include \"tint.sh\"\n\nvoid main()\n{\n"
+                                             "    gl_FragColor = mix(tint(in1), vec4(1.0, 1.0, 1.0, 1.0), text(v_px, vec2(6.0, 10.0), 10.0, 0.0, \"GLOW\"));\n}\n";
+        std::ofstream(folder / "tint.sh") << "// tint.sh: magenta, green once shine passes 100.\nvec4 tint(float shine)\n{\n"
+                                             "    return mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), step(100.0, shine));\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
@@ -526,7 +536,7 @@ PROBE(plugin, sandbox)
         float x = 0, y = 0, w = 0, h = 0;
         const bool found = rectOf(r.text, "shader \"glow.sc\"", x, y, w, h);
         const juce::Image img = decode(pic.png);
-        int magenta = 0, placeholder = 0, n = 0;
+        int magenta = 0, placeholder = 0, n = 0, title = 0;
         if (found && img.isValid())
             for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
                 for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
@@ -535,8 +545,13 @@ PROBE(plugin, sandbox)
                     ++n;
                     magenta += c.getRed() > 200 && c.getGreen() < 60 && c.getBlue() > 120 ? 1 : 0;
                     placeholder += (c.getRed() == 28 && c.getGreen() == 30 && c.getBlue() == 34) || (c.getRed() == 46 && c.getGreen() == 49 && c.getBlue() == 55) ? 1 : 0;
+                    // GLOW's letters, white over the magenta (its green up), in the band of the cell's top 16 px
+                    title += py < static_cast<int>((y + 16) * pg::sandbox::kDpi) && c.getGreen() > 100 ? 1 : 0;
                 }
-        std::printf("shader cell: %d pixels, %d in its colour, %d the placeholder's\n", n, magenta, placeholder);
+        std::printf("shader cell: %d pixels, %d in its colour, %d the placeholder's, %d of its title's\n", n, magenta, placeholder, title);
+        // Built, so the folder's tint.sh was read (an #include of no file is a note, and no build); its colour drawn.
+        P.eq("shader.header_read", has(r.text, "Shaders: 1 of 1 built") && !has(r.text, "tint.sh") ? 1 : 0, 1);
+        P.ge("shader.text_drawn", title, 60);
         P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
         P.ge("shader.drawn", magenta, n * 9 / 10);
         P.eq("shader.no_placeholder", placeholder, 0);
@@ -797,6 +812,17 @@ PROBE(plugin, sandbox)
         P.le("circuit.match_pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
         P.le("circuit.match_largest", d.largestOutside, 40);
         s.sandbox(object({ { "action", "close" }, { "sandbox", number } }), &processor);
+    }
+
+    // ---- MOST: past the host's 32 dials ----------------------------------------------------------------------------------
+    {
+        juce::Array<juce::var> many;
+        for (int k = 1; k <= pg::kHostControls + 1; ++k)
+            many.add(object({ { "name", "d" + juce::String(k) } }));
+        const Result r = s.sandbox(object({ { "action", "open" }, { "text", "knob d33\n" }, { "dials", many } }));
+        std::printf("33 dials:\n%s", r.text.c_str());
+        P.eq("most.panel_own_said", !r.error && has(r.text, "The 33rd to the 64th are the panel's own (no host parameter).") ? 1 : 0, 1);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
     }
     s.stop();
 
