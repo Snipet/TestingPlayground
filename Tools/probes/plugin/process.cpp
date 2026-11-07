@@ -178,10 +178,10 @@ PROBE(plugin, process)
         std::printf("P1 is \"%s\", its default's text \"%s\"; P%d is \"%s\"\n", name.toRawUTF8(),
                     p.getParameters()[0]->getCurrentValueAsText().toRawUTF8(), used + 1, unused.toRawUTF8());
         P.eq("names.p1", name == (kInstrument ? "1 wave" : "1 input") ? 1 : 0, 1);
-        P.eq("names.first_unused", used < pg::kMaxControls && unused == juce::String(used + 1) ? 1 : 0, 1);
-        P.eq("names.params", static_cast<int64_t>(p.getParameters().size()) >= pg::kMaxControls ? 1 : 0, 1);
+        P.eq("names.first_unused", used < pg::kHostControls && unused == juce::String(used + 1) ? 1 : 0, 1);
+        P.eq("names.params", static_cast<int64_t>(p.getParameters().size()), pg::kHostControls);   // the panel's own: none
         P.eq("names.last_unused",
-             p.getParameters()[pg::kMaxControls - 1]->getName(100) == juce::String(pg::kMaxControls) ? 1 : 0, 1);
+             p.getParameters()[pg::kHostControls - 1]->getName(100) == juce::String(pg::kHostControls) ? 1 : 0, 1);
         P.eq("names.p1_text", p.getParameters()[0]->getCurrentValueAsText() == (kInstrument ? "SAW" : "0.00") ? 1 : 0,
              1);
     }

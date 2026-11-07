@@ -6,7 +6,9 @@
 //           output's 0.4 and 0.283, within 1 %; an instrument: a voice at 0.25 out
 //   FALL    after the sound stops the peaks fall 20 dB a second (half a second: 10 dB), and the RMS (its power
 //           smoothed over 50 ms) more than 40 dB in half a second
-//   TAPS    the fields the displays show, in display order: a float, an int, a bool, as the program wrote them last
+//   TAPS    the fields the displays show, in display order: a float, an int, a bool, as the program wrote them last;
+//           a program of kMaxDisplays (32) number displays, each of its own field (field k holding k), reads each,
+//           the last one's 32
 //   VOICE   an instrument's fields come from its newest sounding voice (a second note's while both sound, the first's
 //           after the second's voice has ended), 0 once none sounds
 //   SHARED  a display of a field of the module Shared (#pragma panel number shared->held) reads its one Shared: the
@@ -599,6 +601,37 @@ PROBE(dsp, meters)
     P.near("taps.int", static_cast<double>(m.taps[1]), 7.0, 1e-6);
     P.near("taps.bool", static_cast<double>(m.taps[2]), 1.0, 1e-6);
     P.near("taps.note", static_cast<double>(m.taps[3]), 60.0, 1e-6);
+    {
+        // The most displays a panel has, each its own field.
+        std::string lines, fields, writes;
+        for (int k = 1; k <= pg::kMaxDisplays; ++k)
+        {
+            const std::string f = "f" + std::to_string(k);
+            lines += "#pragma panel number " + f + " 0 64\n";
+            fields += "    float " + f + ";\n";
+            writes += "        " + f + " = " + std::to_string(k) + ";\n";
+        }
+        const std::string program = kInstrument
+            ? lines + "module Voice\n{\n" + fields + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + writes + "        return true;\n    }\n};\n"
+            : lines + "module Effect\n{\n" + fields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + writes + "    }\n};\n";
+        probe::Rig many(kFs, kBlock);
+        std::string errors;
+        const bool loaded = many.load(program, &errors);
+        if (!loaded)
+            std::printf("%s", errors.c_str());
+        pg::Meters mm;
+        std::vector<probe::Note> on;
+        if constexpr (kInstrument)
+            on.push_back({ 0, pg::EventKind::noteOn, 60, 0.8f });
+        many.run(probe::Stereo(4 * kBlock), kBlock, on);
+        bool each = loaded && many.engine().meters(mm) && static_cast<int>(many.panel().displays.size()) == pg::kMaxDisplays;
+        for (int k = 0; each && k < pg::kMaxDisplays; ++k)
+            each = mm.taps[k] == static_cast<float>(k + 1);
+        P.eq("taps.most_each", each ? 1 : 0, 1);
+        P.near("taps.most_last", static_cast<double>(mm.taps[pg::kMaxDisplays - 1]), pg::kMaxDisplays, 0.0);
+    }
 
     // SCOPE: the last 512 samples, as the Engine wrote them.
     {

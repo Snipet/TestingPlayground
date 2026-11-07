@@ -56,9 +56,10 @@
 //   ROWS      a program of sixteen dials shows them all, in order, in rows: two of eight at the default size and at
 //             the least, one of sixteen on a wide panel, each row's dials evenly spaced, none overlapping another,
 //             all of them in the left column (left of the chat's card) and under the problems list; the editor
-//             gives up the second row's height. The most, 32: full size in three or four rows at the default size,
-//             all small at the least, the same checks. Back to a program of fewer dials, one row again, and the
-//             editor's height back
+//             gives up the second row's height. The host's most, 32: full size in three or four rows at the default
+//             size, all small at the least, the same checks. The most, 64 (the host's 32 and the panel's own 32:
+//             Controls.h): each shown, in order, the same checks at the default size. Back to a program of fewer dials,
+//             one row again, and the editor's height back
 //   PANEL     the sixteen dials in five sections (#pragma panel): two rows of frames, as the row line asks, their
 //             titles in order; each dial inside its section's frame, in its order; no frame over another, all in the
 //             left column under the problems list; the rows of frames even (the shorter widened toward the longer);
@@ -174,11 +175,16 @@ namespace
     // A program of this plugin's kind with the first `count` of these parameters and no panel line.
     std::string dialsProgram(int count)
     {
-        static_assert(pg::kMaxControls == 32, "the names below");
+        static_assert(pg::kMaxControls == 64, "the names below");
         const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
                                       "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level",
                                       "shape2",  "detune2",  "sub2",    "noise2", "cutoff2", "drive",    "fenvattack", "fenvdecay",
-                                      "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix" };
+                                      "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix",
+                                      // the panel's own (Controls.h's isPanelDial)
+                                      "shape3",  "detune3",  "sub3",    "noise3", "cutoff3", "drive3",   "fenv3",     "keytrack3",
+                                      "lfo3rate", "lfo3depth", "attack3", "decay3", "sustain3", "release3", "glide3",   "level3",
+                                      "eqlow",   "eqmid",    "eqhigh",  "width",  "reverb", "size",      "damping",   "predelay",
+                                      "crush",   "rate",     "bits",    "tilt",   "tune",   "octave",    "bend",      "trim" };
         std::string params;
         for (int k = 0; k < count && k < pg::kMaxControls; ++k)
             params += std::string("    param float ") + names[k] + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
@@ -713,7 +719,7 @@ PROBE(gui, dump)
         for (int c = 0; c < pg::kMaxControls; ++c)
         {
             const pg::Control& k = now.controls[static_cast<std::size_t>(c)];
-            const float want = k.used ? pg::normOf(k, k.def) : processor.getParameters()[c]->getDefaultValue();
+            const float want = k.used ? pg::normOf(k, k.def) : processor.ports()[static_cast<std::size_t>(c)]->default01();
             moved += std::fabs(processor.ports()[static_cast<std::size_t>(c)]->value01() - want) > 1e-6f ? 1 : 0;
         }
         P.eq("examples.dials_at_defaults", moved, 0);
@@ -878,13 +884,13 @@ PROBE(gui, dump)
         checkRows(P, "rows.wide", panel, shownDials(panel), 1);
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
-        // The most, 32: full-size rows at the default size; at the least size every one small, still in rows.
+        // The host's most, 32: full-size rows at the default size; at the least size every one small, still in rows.
         editor.selectAll();
-        editor.insert(dialsProgram(pg::kMaxControls));
+        editor.insert(dialsProgram(pg::kHostControls));
         host.keys("cmd+return");
         settleRun(processor, host);
         dials = shownDials(panel);
-        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
+        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), pg::kHostControls);
         std::printf("32 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
         P.eq("rows.most_full_size", panel.dialsLayout().allSmall ? 0 : 1, 1);
         checkRows(P, "rows.most", panel, dials, panel.dialRows());
@@ -898,6 +904,16 @@ PROBE(gui, dump)
         writePng(P, host, "gui.dump.dials.most.small.png", "rows.most_least");
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
+        // The most, 64: the panel's own 32 after the host's.
+        editor.selectAll();
+        editor.insert(dialsProgram(pg::kMaxControls));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        dials = shownDials(panel);
+        std::printf("64 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
+        P.eq("rows.panel_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
+        checkRows(P, "rows.panel", panel, dials, panel.dialRows(), panel.dialsLayout().allSmall);
+        writePng(P, host, "gui.dump.dials.panel.png", "rows.panel");
         // Back to three dials: one row, and the editor's height back.
         editor.selectAll();
         editor.insert(dialsProgram(3));

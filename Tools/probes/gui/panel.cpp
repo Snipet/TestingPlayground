@@ -9,6 +9,7 @@
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
 //   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
+//   gui.panel.limits.png    LIMITS' panel: 40 dials (eight of them the panel's own) and 32 number displays
 //   gui.panel.spectrum.png  SPECTRUM's panel: two spectra of the output (and the effect's of its input), the effect's
 //                           input noise, the synth's voice a sine
 // and checks:
@@ -44,6 +45,10 @@
 //             (1250 rpm, as a knob reads), and a meter of shared->level at three quarters, all whether a voice sounds
 //             or not; the main module's int field a whole number too; a readout with a unit (-1200.0 cents) and one of
 //             twelve digits each drawn whole inside its box
+//   LIMITS    a program of 40 dials (d33 to d40 the panel's own: Controls.h's isPanelDial) and 32 fields, its panel
+//             a grid of 40 small knobs and one of 32 number displays (kMaxDisplays), in the PANEL view: every control
+//             and display shown, inside the area, none overlapping; each readout its field's value (the 32nd 32); a
+//             drag on d40's knob turns it, writing no host parameter (the host has 32)
 //   STATE     a picture's state (Panel::showState, view_panel's values and at): a value for a knob's live= field drawn
 //             as its mark before the audio thread plays the program (none without it); frames shown at the first until
 //             they play, then one a frame to the last (a number's readout, a field scope's points one a frame), a tap and
@@ -1535,6 +1540,100 @@ PROBE(gui, panel)
             }
             P.eq("hidden.second_closed", port.meterReaders(), readers);
         }
+    }
+    // ---- LIMITS --------------------------------------------------------------------------------------------------------
+    {
+        std::string params, fields, writes, knobs, numbers;
+        for (int k = 1; k <= 40; ++k)
+        {
+            params += "    param float d" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+            knobs += "        knob d" + std::to_string(k) + " size=small\n";
+        }
+        for (int k = 1; k <= pg::kMaxDisplays; ++k)
+        {
+            fields += "    float f" + std::to_string(k) + ";\n";
+            writes += "        f" + std::to_string(k) + " = " + std::to_string(k) + ";\n";
+            numbers += "        number f" + std::to_string(k) + " decimals=0\n";
+        }
+        const std::string main = kInstrument
+            ? "module Voice\n{\n" + params + fields + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + writes + "        return true;\n    }\n};\n"
+            : "module Effect\n{\n" + params + fields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + writes + "    }\n};\n";
+        const std::string limitsGui = "column gap=8 {\n    section \"DIALS, 33+ PANEL ONLY\" { grid cols=14 gap=2 {\n" + knobs
+                              + "    } }\n    section \"32 DISPLAYS\" { grid cols=10 gap=4 {\n" + numbers + "    } }\n}\n";
+        load(processor, { { pg::kProgramName, main }, { "panel.gui", limitsGui } });
+        settleRun(processor, host);
+        const pg::CompileStatus st = port.status();
+        if (!st.notes.empty())
+            std::printf("LIMITS notes:\n%s", st.notes.c_str());
+        P.eq("limits.runs", st.ok && st.panel.displays.size() == static_cast<std::size_t>(pg::kMaxDisplays) ? 1 : 0, 1);
+        if (!port.panelView())
+        {
+            const funkgui::Point view = panel.centreOfView(true);
+            host.click(view.x, view.y);
+            host.settle();
+        }
+        processor.prepareToPlay(48000.0, 256);
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (int k = 0; k < 20; ++k)
+        {
+            buffer.clear();
+            juce::MidiBuffer midi;
+            if (kInstrument && k == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, static_cast<juce::uint8>(100)), 0);
+            processor.processBlock(buffer, midi);
+            host.tick(1);
+        }
+        host.settle();
+        int controls = 0, displays = 0;
+        bool apart = true, within = true;
+        std::vector<funkgui::Rect> cells;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (panel.guiControl(c).shown())
+            {
+                ++controls;
+                cells.push_back(panel.guiControl(c).cell());
+            }
+        bool readouts = true;
+        for (int d = 0; d < pg::kMaxDisplays; ++d)
+        {
+            const pg::ui::DisplayItem& item = panel.displayItem(d);
+            if (!item.shown())
+                continue;
+            ++displays;
+            cells.push_back(item.cell());
+            readouts = readouts && item.readout() == std::to_string(d + 1);
+        }
+        for (std::size_t a = 0; a < cells.size(); ++a)
+        {
+            within = within && inside(panel.guiLayout().area, cells[a]);
+            for (std::size_t b = 0; b < a; ++b)
+                apart = apart && !overlap(cells[a], cells[b]);
+        }
+        std::printf("LIMITS: %d controls, %d displays shown; the 32nd reads %s\n", controls, displays,
+                    panel.displayItem(pg::kMaxDisplays - 1).readout().c_str());
+        P.eq("limits.controls_shown", controls, 40);
+        P.eq("limits.displays_shown", displays, pg::kMaxDisplays);
+        P.eq("limits.inside", within && panel.guiLayout().maxScrollY == 0.0f && panel.guiLayout().maxScrollX == 0.0f ? 1 : 0, 1);
+        P.eq("limits.none_overlap", apart ? 1 : 0, 1);
+        P.eq("limits.readouts", readouts ? 1 : 0, 1);
+        // d40's knob, the panel's own: a drag turns it, and no host parameter moves.
+        constexpr int last = 39;
+        funkgui::ParamPort& dial = *processor.ports()[last];
+        const float before = dial.value01();
+        std::vector<float> host32;
+        for (const auto* p : processor.getParameters())
+            host32.push_back(p->getValue());
+        const funkgui::Point k = panel.guiControl(last).centre();
+        host.drag(k.x, k.y, k.x, k.y - 50.0f, 10);
+        host.settle();
+        bool hostStill = static_cast<int>(processor.getParameters().size()) == pg::kHostControls;
+        for (std::size_t i = 0; hostStill && i < host32.size(); ++i)
+            hostStill = processor.getParameters()[static_cast<int>(i)]->getValue() == host32[i];
+        P.ge("limits.panel_knob_turns", static_cast<double>(dial.value01() - before), 0.1);
+        P.eq("limits.no_host_parameter", hostStill ? 1 : 0, 1);
+        writePng(P, host, "gui.panel.limits.png", "limits");
     }
     return P.finish();
 }

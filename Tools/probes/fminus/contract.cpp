@@ -10,8 +10,9 @@
 //   ALLOCATES  one whose audio-thread method could reach calloc is refused: "it runs on the audio thread", with
 //              FMinus's note naming the program's line that calls it
 //   SYNTAX     a syntax error is FMinus's message, with the line and column in the program
-//   DIALS      33 parameters: the first 32 are the dials, in order; the 33rd gets a note (it keeps
-//              its default)
+//   DIALS      65 parameters: the first 64 are the dials, in order (Controls.h: the 32nd the host's last, the 33rd
+//              the panel's first own dial, isPanelDial); the 65th gets a note (it keeps its default); the 64th, the
+//              panel's last, reaches the program: at its default, then turned, once its glide is over
 //   DEFAULTS   a module the main one holds has its parameters at their fminus::default when the program starts
 //   INIT       init runs with the sample rate before the first block
 //   SHARED     a module Shared is made once for the program: its init runs once, with the rate, before every instance's
@@ -37,6 +38,7 @@
 
 #include "Product.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -170,6 +172,34 @@ PROBE(fminus, contract)
             P.near("dials.default", static_cast<double>(r.patch->controls()[2].def), 3.0, 1e-6);
         }
         P.eq("dials.next_noted", has(r.notes, "p" + std::to_string(pg::kMaxControls + 1) + " has no dial") ? 1 : 0, 1);
+        P.eq("dials.host_then_panel", !pg::isPanelDial(pg::kHostControls - 1) && pg::isPanelDial(pg::kHostControls)
+                                          && pg::isPanelDial(pg::kMaxControls - 1) && !pg::isPanelDial(pg::kMaxControls) ? 1 : 0, 1);
+        // The last panel dial plays: p64 / 100, at its default (64), then turned to a quarter (25) at 50 ms.
+        probe::Rig rig(48000.0, 256);
+        const std::string last = "p" + std::to_string(pg::kMaxControls);
+        if (rig.load(program("", params + process("            left[i] = 0.01f * " + last + "[i];\n"))))
+        {
+            probe::Stereo in(4800);
+            if constexpr (!kInstrument)
+            {
+                std::fill(in.l.begin(), in.l.end(), 1.0f);
+                std::fill(in.r.begin(), in.r.end(), 1.0f);
+            }
+            const probe::Stereo out = rig.run(in, 256, { { 0, pg::EventKind::noteOn, 60, 1.0f } }, {},
+                                              [](std::size_t at, std::array<float, pg::kMaxControls>& n) {
+                                                  if (at >= 2400)
+                                                      n[pg::kMaxControls - 1] = 0.25f;
+                                              });
+            std::printf("DIALS: %s plays %.4f, then %.4f\n", last.c_str(), static_cast<double>(out.l[100]),
+                        static_cast<double>(out.l[4700]));
+            P.near("dials.last_panel_default", static_cast<double>(out.l[100]), 0.01 * pg::kMaxControls, 1e-5);
+            P.near("dials.last_panel_turned", static_cast<double>(out.l[4700]), 0.25, 1e-5);
+        }
+        else
+        {
+            P.eq("dials.last_panel_default", 0, 1);
+            P.eq("dials.last_panel_turned", 0, 1);
+        }
     }
 
     // DEFAULTS: a held module's parameter at its default (0.25), read in the main module's process.

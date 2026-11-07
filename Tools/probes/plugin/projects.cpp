@@ -39,6 +39,9 @@
 //            draft is untouched
 //   DELETE   a preset deleted (no longer applied); a version deleted, never the only one; a project deleted: gone from
 //            the list, project() none
+//   PANEL    a panel dial (Controls.h's isPanelDial: the 34th of 34, past the host's 32) is kept by name as a host
+//            dial is: a version saved with it at 7 has it in its JSON's dials; moved through its port (the editor's
+//            way) the project notices it; a preset saved at 2; the version opened again plays 7, the preset applied 2
 //   CIRCUITS a program with a netlist whose configuration is the self-test's (AutoClipper.h), saved before its test (no
 //            "circuits" in the version), refined (the tests off, Compiler::selfTestNow) and saved again unchanged: no
 //            version added, and version 1 now keeps the answer (its "circuits": key and text), as an export's JSON
@@ -129,6 +132,19 @@ namespace
             : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                   "        for (int i = 0; i < n; ++i) { left[i] = left[i] * level[i]; right[i] = right[i] * level[i]; }\n    }\n};\n";
         return { { pg::kProgramName, program }, { "panel.gui", "row {\n    buttons drive " + names + "\n    knob level\n}\n" } };
+    }
+
+    // PANEL's program: `count` float dials q1 to q<count>, each 0 to 10 at 1, doing nothing.
+    pg::Sources manyDials(int count)
+    {
+        std::string params;
+        for (int k = 1; k <= count; ++k)
+            params += "    param float q" + std::to_string(k) + " [[fminus::range(0, 10)]] [[fminus::default(1)]];\n";
+        const std::string program = kInstrument
+            ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        return { { pg::kProgramName, program } };
     }
 
     juce::var dialVar(const char* name, double value)
@@ -599,6 +615,43 @@ PROBE(plugin, projects)
                                                      && e.editorPort().status().notes == provisional.notes && store.size() == 0
                                                      && e.compiler().selfTesting() ? 1 : 0, 1);
         store.clearForTests();
+    }
+
+    // PANEL
+    {
+        constexpr int last = 33;                                 // q34: the panel's own (isPanelDial)
+        pg::Processor c;
+        pg::EditorPort& pc = c.editorPort();
+        const pg::Sources many = manyDials(last + 1);
+        pc.setDraft({ many, 0 });
+        pc.run(many);
+        c.settle();
+        P.eq("panel.runs", pc.status().ok && c.control(last).used && pg::isPanelDial(last) ? 1 : 0, 1);
+        const auto turn = [&](float plain) {
+            funkgui::ParamPort& port = *c.ports()[static_cast<std::size_t>(last)];
+            port.beginGesture();
+            port.setValue01(pg::normOf(c.control(last), plain));
+            port.endGesture();
+        };
+        const auto value = [&] { return pg::plainOf(c.control(last), c.ports()[static_cast<std::size_t>(last)]->value01()); };
+        turn(7.0f);
+        pg::SavedVersion v;
+        P.eq("panel.saved", pc.saveVersion("Panel Dials", v, why) && v.number == 1 ? 1 : 0, 1);
+        const juce::var root = juce::JSON::parse(dir.getChildFile("Panel Dials.fmproject").loadFileAsString());
+        bool inJson = false;
+        if (const juce::Array<juce::var>* ds = root["versions"][0]["dials"].getArray())
+            for (const juce::var& d : *ds)
+                inJson = inJson || (d["name"].toString() == "q34" && std::fabs(static_cast<double>(d["value"]) - 7.0) < 1e-4);
+        P.eq("panel.in_json", inJson ? 1 : 0, 1);
+        turn(2.0f);
+        P.eq("panel.move_noticed", pc.project().dialsEdited ? 1 : 0, 1);
+        P.eq("panel.preset_saved", pc.savePreset("Two", why) ? 1 : 0, 1);
+        P.eq("panel.open", pc.openProject("Panel Dials", 1, why) ? 1 : 0, 1);
+        c.settle();
+        P.near("panel.version_value", static_cast<double>(value()), 7.0, 1e-4);
+        P.eq("panel.preset_applied", pc.applyPreset("Panel Dials", "Two", why) ? 1 : 0, 1);
+        P.near("panel.preset_value", static_cast<double>(value()), 2.0, 1e-4);
+        P.eq("panel.removed", pc.deleteProject("Panel Dials", why) ? 1 : 0, 1);
     }
 
     ps::setDirectoryForTests({});

@@ -24,6 +24,8 @@
 //   OPTIONS   an int's values' names; a float's options and a wrong count are notes (the extra left out)
 //   COLOURS   a section's by its title, a dial's, a display's; an unknown colour and a title no section has are notes
 //   ONLY      displays without a section line: one section, untitled, of every dial and display, with no note
+//   MOST      32 displays (kMaxDisplays: scope out as w1 to w32) are all shown, the 33rd a note on its line, left out;
+//             a section names a panel dial (the 33rd of 33 dials, past the host's 32: Controls.h's isPanelDial)
 #include "Probe.h"
 
 #include "Rig.h"
@@ -320,6 +322,24 @@ PROBE(fminus, panel)
         P.eq("only.one_section", c.panel.sections.size() == 1 && c.panel.sections[0].title.empty()
                                      && c.panel.sections[0].items.size() == kDials.size() + 1 ? 1 : 0, 1);
         P.eq("only.no_note", c.notes.empty() ? 1 : 0, 1);
+    }
+
+    // MOST
+    {
+        std::string lines;
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            lines += "#pragma panel scope out as w" + std::to_string(k) + "\n";
+        std::vector<std::string> dials;
+        for (int k = 1; k <= pg::kHostControls + 1; ++k)
+            dials.push_back("d" + std::to_string(k));
+        lines += "#pragma panel section \"PANEL\" d33\n";
+        const Compiled c = compile(program(lines, dials));
+        P.eq("most.displays", static_cast<int64_t>(c.panel.displays.size()), pg::kMaxDisplays);
+        P.eq("most.past_noted", has(c.notes, "program.fm:" + std::to_string(pg::kMaxDisplays + 1) + ":") && has(c.notes, "displays at most")
+                                    ? 1 : 0, 1);
+        const pg::PanelSection* panel = c.panel.sections.empty() ? nullptr : &c.panel.sections[0];
+        P.eq("most.panel_dial", panel != nullptr && panel->title == "PANEL" && panel->items.size() == 1 && !panel->items[0].display
+                                    && panel->items[0].index == pg::kHostControls ? 1 : 0, 1);
     }
 
     // PLAIN

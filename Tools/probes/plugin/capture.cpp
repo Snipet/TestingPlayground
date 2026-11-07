@@ -24,7 +24,8 @@
 //             holds together (its blocks back to back, its samples and events theirs)
 //   FREEZE    a frozen copy playing (Compiler::freezeNow) stops the block after arm, one offered while armed is refused,
 //             and after forget one plays again
-//   SIZE      20 s at 48 kHz: what an armed recording holds (at most 25 MB), and the live status and stop each within
+//   SIZE      20 s at 48 kHz: what an armed recording holds (at most 30 MB: each block's ring entry keeps 64 dials, the
+//             panel's own 32 too, 3.8 MB more than the host's 32 alone did), and the live status and stop each within
 //             a quarter of a second (they copy what was published), the take its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
@@ -214,8 +215,8 @@ namespace
             ppqs.push_back(head.ppq);
             playing.push_back(head.known && head.playing);
             std::array<float, pg::kMaxControls> d{};
-            for (int c = 0; c < pg::kMaxControls; ++c)
-                d[static_cast<std::size_t>(c)] = rec.getParameters()[c]->getValue();
+            for (int c = 0; c < pg::kMaxControls; ++c)                   // the host's and the panel's own
+                d[static_cast<std::size_t>(c)] = rec.ports()[static_cast<std::size_t>(c)]->value01();
             dials.push_back(d);
             juce::MidiBuffer mb;
             for (const auto& [at, m] : midi)
@@ -1362,7 +1363,7 @@ PROBE(plugin, capture)
         const double takeMb = stopped.take != nullptr ? static_cast<double>(stopped.take->bytes) / 1e6 : 0.0;
         std::printf("size: armed for 20 s it holds %.1f MB; status (its report) took %.1f ms, stop %.1f ms; the take %.2f s, %.1f MB\n",
                     heldMb, statusMs, stopMs, stopped.take != nullptr ? stopped.take->seconds() : 0.0, takeMb);
-        P.le("size.held_mb", heldMb, 25.0);
+        P.le("size.held_mb", heldMb, 30.0);
         P.le("size.status_ms", statusMs, 250.0);
         P.le("size.stop_ms", stopMs, 250.0);
         P.ge("size.take_seconds", stopped.take != nullptr ? stopped.take->seconds() : 0.0, 20.0 - 512.0 / kFs);

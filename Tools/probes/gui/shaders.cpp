@@ -51,6 +51,9 @@
 //             sum (the early builds run while FMinus compiles); a shaderc that does not run (no permission to execute)
 //             leaves a note and nothing kept, in memory or on disk, so that once it runs the same cache builds it; a
 //             shader that does not compile is kept in memory (no second shaderc) and never written to disk
+//   SIXTEEN   a shader of 16 inputs (kMaxShaderInputs: FunkGui's u_params, 4 vec4s), the program's 17 dials named in
+//             its inputs=: the 17th a note, the shader built with no note of its own, reading in15 and in_p16; the
+//             Panel's item has the 16 inputs, the first and the 16th the dials' turns
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -1125,6 +1128,58 @@ PROBE(gui, shaders)
         P.eq("time.compiles", compiled ? 1 : 0, 1);
         std::error_code ec;
         std::filesystem::remove_all(disk, ec);
+    }
+    // ---- SIXTEEN -------------------------------------------------------------------------------------------------------
+    {
+        std::string params, names;
+        for (int k = 1; k <= pg::kMaxShaderInputs + 1; ++k)
+        {
+            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(" + std::to_string(k * 0.05)
+                    + ")]];\n";
+            names += (k == 1 ? "" : " ") + std::string("p") + std::to_string(k);
+        }
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const std::string body = "// sixteen.sc: the sixteenth input, by its number and by its name.\n"
+                                 "void main()\n{\n    gl_FragColor = vec4(vec3(in15), in_p16);\n}\n";
+        pg::Processor q;
+        q.prepareToPlay(48000.0, 256);
+        pg::ui::Panel qp(q.ports(), q.editorPort());
+        funkgui::HeadlessHost qh(qp, 0, 2.0f);
+        qh.settle();
+        {
+            const funkgui::Point at = qp.centreOfView(true);
+            qh.click(at.x, at.y);
+            qh.settle();
+        }
+        load(q, { { pg::kProgramName, source },
+                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=160 height=90 } }\n" },
+                  { "sixteen.sc", body } });
+        q.settle();
+        qh.tick(20);
+        const pg::CompileStatus st = q.editorPort().status();
+        std::printf("SIXTEEN notes:\n%s", st.notes.c_str());
+        P.eq("sixteen.plays", st.ok ? 1 : 0, 1);
+        P.eq("sixteen.past_noted", has(st.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
+                                                     + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
+        P.eq("sixteen.built", st.panel.shaders.size() == 1 && !st.panel.shaders[0].binary.empty() && !has(st.notes, "sixteen.sc:")
+                                  && static_cast<int>(st.panel.shaders[0].inputs.size()) == pg::kMaxShaderInputs ? 1 : 0, 1);
+        const pg::ui::GuiShaderItem* item = shaderShowing(qp, "sixteen.sc");
+        P.eq("sixteen.shown", item != nullptr ? 1 : 0, 1);
+        if (item != nullptr)
+        {
+            std::printf("SIXTEEN inputs: %.3f ... %.3f\n", static_cast<double>(item->inputs()[0]),
+                        static_cast<double>(item->inputs()[pg::kMaxShaderInputs - 1]));
+            P.near("sixteen.first_input", static_cast<double>(item->inputs()[0]), 0.05, 1e-4);
+            P.near("sixteen.last_input", static_cast<double>(item->inputs()[pg::kMaxShaderInputs - 1]), 0.05 * pg::kMaxShaderInputs, 1e-4);
+        }
+        else
+        {
+            P.eq("sixteen.first_input", 0, 1);
+            P.eq("sixteen.last_input", 0, 1);
+        }
     }
     return P.finish();
 }
