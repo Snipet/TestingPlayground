@@ -2198,6 +2198,8 @@ namespace playground
             o->setProperty("spectrum", claude::object({ { "enum", juce::Array<juce::var>{ "octave", "third", "semitone" } },
                                                         { "description", kInstrument ? "Band levels while held, as data"
                                                                                      : "The noise's gain in bands, as data" } }));
+            // Where the CPU time goes (Measure.h's Request::profile, dsp/Profile.h).
+            o->setProperty("profile", prop("boolean", "CPU time by function"));
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. Its report gives "
                            "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
@@ -4302,6 +4304,8 @@ namespace playground
                 req.current = currentDials();
             if (why.empty())
                 scenario::spectrumOf(input, req.spectrum, why);
+            if (why.empty())
+                scenario::profileOf(input, req.profile, why);
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))

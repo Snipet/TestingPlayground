@@ -110,6 +110,7 @@
 
 #include "dsp/Controls.h"
 #include "dsp/Events.h"
+#include "dsp/Profile.h"
 #include "dsp/Sources.h"
 #include "fminus/Patch.h"
 
@@ -289,6 +290,9 @@ namespace playground::measure
         // The report's band levels (analysis only, as `want`): an instrument's while held (bandLevels of bandSpectrum),
         // an effect's noise's (and its own input's) out against in, a band's gain; none: no such line.
         Bands spectrum = Bands::none;
+        // The report's profile (dsp/Profile.h; analysis only, as `want`, its bits the same): where the CPU time of the
+        // calls cpu_percent times goes, by the program's function and module, sampled; false: no sampler at all.
+        bool profile = false;
         // A recording replayed (the capture's: plugin/ChatScenario.h), merged with the above: the MIDI at absolute
         // samples, the transport the host sent at a block's start, the host's blocks as they came (their sizes in
         // order; after the last, `block` each).
@@ -469,6 +473,11 @@ namespace playground::measure
         // noise's, the impulse's and silence's; the steady tone's aside), its own input's after them, which a window
         // never lengthens. `hashed`: those renders, in words.
         std::string hash, hashed;
+        // The profile (Request::profile; dsp/Profile.h), as its line gives it: each function's share of the time sampled
+        // (the most first), the share outside the program's code, and the samples; empty without one.
+        std::vector<profile::Sampler::Share> profile;
+        double profileOutside = 0.0;
+        std::size_t profileSamples = 0;
     };
 
     // One compile, measured as often as asked. `pins`: its netlists generated with these configurations (Sources.h's

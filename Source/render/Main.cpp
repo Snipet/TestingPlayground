@@ -9,14 +9,14 @@
 //
 // Its input is what the tools take (plugin/ChatScenario.h reads it, the file this program compiles with the plugin):
 // the program's files (a folder, or the files), and the render's settings as JSON (measure_output's: notes, velocity,
-// hold_seconds, tail_seconds, bpm, modwheel, pitchbend, dials, dials_from, window, base_hz, spectrum, scenario,
-// try_edits; and trace's fields, voice and export's wav and every), with a few options over it (--dial, --field,
-// --every, --pcm24) and an effect's own input as a WAV (--input: up to what a render plays of it, 310 s up to 96 kHz,
-// never cut short). There is no plugin here: the dials not named are at the program's defaults, a scenario's "host" rate
-// and block are the tools' defaults (48 kHz, or an input's own rate; 256), and a "capture" (the user's recording, which
-// never leaves the plugin) is refused. A folder's FOLDER sync copies (host.fm, a library file) are left out, as the plugin
-// leaves them, and a library file the program #includes and the files lack is added as LIBRARY adds it
-// (fminus/LibraryIncludes.h), saying so. There is no time limit.
+// hold_seconds, tail_seconds, bpm, modwheel, pitchbend, dials, dials_from, window, base_hz, spectrum, profile,
+// scenario, try_edits; and trace's fields, voice and export's wav and every), with a few options over it (--dial,
+// --field, --every, --pcm24) and an effect's own input as a WAV (--input: up to what a render plays of it, 310 s up to
+// 96 kHz, never cut short). There is no plugin here: the dials not named are at the program's defaults, a scenario's
+// "host" rate and block are the tools' defaults (48 kHz, or an input's own rate; 256), and a "capture" (the user's
+// recording, which never leaves the plugin) is refused. A folder's FOLDER sync copies (host.fm, a library file) are
+// left out, as the plugin leaves them, and a library file the program #includes and the files lack is added as LIBRARY
+// adds it (fminus/LibraryIncludes.h), saying so. There is no time limit.
 //
 // Exit codes: 0 rendered; 1 a usage, input or output error (a request the tools would refuse too, a file that could not
 // be read or written); 2 the program did not compile (the compiler's messages on stderr); 3 the program stopped (a call
@@ -76,8 +76,8 @@ namespace
     constexpr std::uintmax_t kMaxFileBytes = std::uintmax_t{ 1 } << 20;
     // The request's properties the renderer reads (above); any other is named on stderr (the tools ignore one).
     constexpr const char* kKnown[] = { "notes", "velocity", "hold_seconds", "tail_seconds", "bpm", "modwheel", "pitchbend",
-                                       "dials", "dials_from", "window", "base_hz", "spectrum", "scenario", "try_edits",
-                                       "fields", "voice", "export" };
+                                       "dials", "dials_from", "window", "base_hz", "spectrum", "profile", "scenario",
+                                       "try_edits", "fields", "voice", "export" };
 
     std::string self() { return std::string(pg::product::kName) + "Render"; }
 
@@ -712,6 +712,8 @@ namespace
             pg::scenario::dialsFrom(input, defaults, why);
         if (why.empty())
             pg::scenario::spectrumOf(input, req.spectrum, why);
+        if (why.empty())
+            pg::scenario::profileOf(input, req.profile, why);
         if (why.empty())
             pg::scenario::watchOf(input, q, why);
         if (why.empty())

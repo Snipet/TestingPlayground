@@ -502,6 +502,20 @@ namespace playground::scenario
         return false;
     }
 
+    bool profileOf(const juce::var& input, bool& on, std::string& why)
+    {
+        const juce::var p = input.getProperty("profile", juce::var());
+        if (p.isVoid() || p.isUndefined())
+            return true;
+        if (p.isBool())
+        {
+            on = static_cast<bool>(p);
+            return true;
+        }
+        why = "profile is true or false: whether the report says where the CPU time goes.";
+        return false;
+    }
+
     // ---- trace's fields, voice and export ----------------------------------------------------------------------------
     bool watchOf(const juce::var& input, measure::TraceRequest& q, std::string& why)
     {

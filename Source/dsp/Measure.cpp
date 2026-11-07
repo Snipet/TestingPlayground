@@ -5,6 +5,7 @@
 #include "dsp/Engine.h"
 #include "dsp/Events.h"
 #include "dsp/Export.h"
+#include "dsp/Profile.h"
 #include "fminus/Patch.h"
 
 #include "Product.h"
@@ -2435,6 +2436,9 @@ namespace playground::measure
         // runs (named(): whose, Cancel::who), `began` when it began.
         Cancel cancel;
         bool asking = false;
+        // measure_output's profile (Profile.h), while measure() renders the calls cpu_percent times: armed as a render's
+        // timed calls start, disarmed as they end. Null otherwise (no profile asked, or another render).
+        profile::Sampler* sampler = nullptr;
         std::string what = "the render";
         std::chrono::steady_clock::time_point began{};
         struct Cut
@@ -2634,6 +2638,8 @@ namespace playground::measure
                 {
                     timing = true;
                     timedFrom = pos;
+                    if (sampler != nullptr)
+                        sampler->arm();
                     t0 = threadMs();
                 }
                 else if (timing && pos >= timeUntil)
@@ -2641,6 +2647,8 @@ namespace playground::measure
                     timing = false;
                     r.cpuMs = threadMs() - t0;
                     r.cpuSamples = pos - timedFrom;
+                    if (sampler != nullptr)
+                        sampler->disarm();
                 }
                 float* ch[2] = { r.out.l.data() + pos, r.out.r.data() + pos };
                 engine.process(ch, 2, static_cast<int>(n), block);
@@ -2670,6 +2678,8 @@ namespace playground::measure
             {
                 r.cpuMs = threadMs() - t0;
                 r.cpuSamples = pos - timedFrom;
+                if (sampler != nullptr)
+                    sampler->disarm();
             }
             if (!r.cancelled)
                 spend(pos);
@@ -2879,6 +2889,22 @@ namespace playground::measure
         }
         res.compiled = true;
         impl_->stopCall = Patch::Method::none;                 // the first render that stops, said at the end
+        // The profile (Request::profile, Profile.h): a sampler of this thread, armed over the calls cpu_percent times
+        // (the notes held, or the window; an effect's counted signals), with the program's code listed; none otherwise.
+        std::unique_ptr<profile::Sampler> sampler;
+        if (request.profile)
+        {
+            std::vector<Patch::CodeRange> code;
+            std::string unlisted;
+            if (const Patch* p = impl_->engine.playingPatch(); p != nullptr && profile::available())
+                code = p->codeRanges(unlisted);
+            sampler = std::make_unique<profile::Sampler>(std::move(code));
+        }
+        struct Unarm                                           // impl_->sampler never outlives this call
+        {
+            Impl& impl;
+            ~Unarm() { impl.sampler = nullptr; }
+        } unarm{ *impl_ };
         const double rate = rate_;
         const float hold = static_cast<float>(std::clamp(static_cast<double>(request.holdSeconds), 0.05, request.longest));
         const float tail = static_cast<float>(std::clamp(static_cast<double>(request.tailSeconds), 0.0, kMaxTailSeconds));
@@ -2977,7 +3003,9 @@ namespace playground::measure
             const Span win = windowed ? windowSpan(request.window, plan.length, rate) : Span{ from, heldEnd };
             Timeline tl = plan;
             impl_->what = phrased ? "the render of the scenario" : notes.size() == 1 ? "the render of the note held" : "the render of the notes held";
+            impl_->sampler = sampler.get();
             const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
+            impl_->sampler = nullptr;
             if (r.cancelled)
                 return halted();
             const std::string rendered = impl_->what;
@@ -3533,7 +3561,9 @@ namespace playground::measure
                 if (starts)
                     tl.marks.push_back({ 0, name, -1, false });
                 sortMarks(tl);
+                impl_->sampler = counted ? sampler.get() : nullptr;
                 Rendered r = impl_->render(dials, &in, tl, 0);
+                impl_->sampler = nullptr;
                 if (!counted)
                     return std::move(r.out);
                 if (all)                                         // a whole report's (Result::hash)
@@ -3852,6 +3882,13 @@ namespace playground::measure
         }
         if (impl_->cut.hit)
             return halted();
+        if (sampler != nullptr)
+        {
+            out += sampler->words(!kInstrument ? "the signals cpu_percent times" : windowed ? "the window" : "the notes held");
+            res.profile = sampler->shares();
+            res.profileOutside = sampler->outside();
+            res.profileSamples = sampler->samples();
+        }
         for (const std::string& w : warnings)
             out += "Note: " + w + "\n";
         if (impl_->stopCall != Patch::Method::none)            // what the numbers above measured, first

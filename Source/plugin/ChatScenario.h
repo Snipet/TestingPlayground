@@ -115,10 +115,13 @@ namespace playground::scenario
     // The result's line: "The dials not named are at their defaults.\n" ("" for current).
     std::string dialsLine(bool defaults);
 
-    // ---- spectrum (measure_output's) -----------------------------------------------------------------------------
+    // ---- spectrum and profile (measure_output's) ---------------------------------------------------------------------
     // The input's `spectrum`, the report's band levels (Measure.h's Request::spectrum): octave, third or semitone into
     // `bands` (absent: none); false with why for anything else.
     bool spectrumOf(const juce::var& input, measure::Bands& bands, std::string& why);
+    // The input's `profile` (Measure.h's Request::profile, dsp/Profile.h): true or false into `on` (absent: false);
+    // false with why for anything else.
+    bool profileOf(const juce::var& input, bool& on, std::string& why);
 
     // ---- trace's fields, voice and export (ChatTrace.cpp's, and the renderer's) ------------------------------------
     // fields: a list of at most measure::kMaxTracePatterns paths or globs; voice: newest, all or a MIDI note. Into `q`
