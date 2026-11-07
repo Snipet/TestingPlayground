@@ -175,8 +175,10 @@ namespace playground::ui
         }
 #if defined(_WIN32)
         constexpr const char* kShowFolder = "Show in Explorer";
-#else
+#elif defined(__APPLE__)
         constexpr const char* kShowFolder = "Show in Finder";
+#else
+        constexpr const char* kShowFolder = "Show in File Manager";
 #endif
         // The problems as the code editor marks them.
         std::vector<Diagnostic> diagnosticsOf(const std::vector<Problem>& problems)
@@ -1002,6 +1004,9 @@ namespace playground::ui
         {
             recount();                                   // what was typed before it takes those tabs out of the groups
             UndoGroup changed;
+            // a name being typed (a new tab's) goes on when its tab stays under that name (the Panel's merge keeps a tab
+            // added since the editor last gave its files)
+            const std::string naming = renaming_ >= 0 && renaming_ < count() && !fresh ? name(renaming_) : std::string();
             renaming_ = -1;
             why_.clear();
             editor().setFocused(false);
@@ -1069,6 +1074,8 @@ namespace playground::ui
             for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
                 v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
+            if (!naming.empty())
+                renaming_ = find(naming);                // -1 when it went: the edit ends
             show();
             structure_ += kStructureStep;
             syncSchematic();
@@ -1823,7 +1830,7 @@ namespace playground::ui
             editor().accessibility(text);
             out.push_back(std::move(text));
         }
-        bool a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&) override
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double value, funkgui::GestureController& g) override
         {
             const uint32_t files = static_cast<uint32_t>(kMaxFiles);
             if (id == editor().a11yId() || id == id_ + 1)
@@ -1840,8 +1847,12 @@ namespace playground::ui
                 assist_.togglePanelSwitch();
                 return true;
             }
-            if (schematicShown() && schematic_.a11yAction(id, a))
-                return true;
+            if (schematicShown())
+            {
+                schematic_.setGestures(&g);              // a circuit dial's item writes through it
+                if (schematic_.a11yAction(id, a, value))
+                    return true;
+            }
             if (id >= id_ + 2 && id < id_ + 2 + files)
             {
                 select(static_cast<int>(id - id_ - 2));
@@ -3298,6 +3309,23 @@ namespace playground::ui
             sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        // The recorder's Mark (the capture tool's recording for Claude): in the status bar, right of its REC notice, while
+        // it records; it marks this moment for Claude (Cmd-Shift-M too).
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::flag; };
+            sp.label = [] { return std::string("Mark"); };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] {
+                return recording_.stage == RecordingState::Stage::waiting || recording_.stage == RecordingState::Stage::recording;
+            };
+            sp.enabled = [this] { return recording_.stage == RecordingState::Stage::recording && recording_.room; };
+            sp.act = [this] { markNow(); };
+            sp.a11yTitle = "Mark this moment in the recording for Claude";
+            sp.spec = upper(shortcutText("Mark   this moment in the recording, for Claude to find (Cmd-Shift-M)"));
+            markItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
         // Claude Desktop's badge in the chat's header, while it is connected and its calls go to another instance (or to
         // none: several open, none chosen): a click makes this one its target. The chat folded, a mark on its rail says
         // it instead (its footer line the badge's words), and does the same.
@@ -3346,6 +3374,7 @@ namespace playground::ui
         // The processor's files and status, and the chat; the netlists' views the session kept.
         bindFiles();
         claudeSeen_ = port_.claudeNotice().count;        // what Claude did before this editor opened: not said again
+        saveSeen_ = port_.saving().done;                 // and a save another editor made
         seenDraft_ = port_.draftRevision();
         given_ = port_.draft();
         files().load(given_);
@@ -3750,6 +3779,7 @@ namespace playground::ui
             z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
         }
         placeMutedNotice();
+        placeRecordNotice();
         placeMeter();
         ++layoutRevision_;
         ++layouts_;
@@ -4485,11 +4515,21 @@ namespace playground::ui
         }
         if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
         {
-            projectsReadSeen_ = read;
-            std::vector<ProjectEntry> projects = port_.projectsPolled();
+            // The two lists of one state of the store's cache: a Reader's read that lands between them (the listing as
+            // it was, the presets as it is) would make the rows twice, so a poll that saw the revision move is made
+            // again (the Reader moves it under the cache's lock, with its read), a few times at most.
+            std::vector<ProjectEntry> projects;
+            std::vector<PresetEntry> presets;
+            for (int tries = 0; tries < 3; ++tries)
+            {
+                projectsReadSeen_ = port_.projectsRead();
+                projects = port_.projectsPolled();
+                presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
+                if (port_.projectsRead() == projectsReadSeen_)
+                    break;
+            }
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
             ProjectsView view = port_.projectsView();    // the stars and the groups folded (a look at a small file)
             if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name || view != projectsView_)
                 ++listsRevision_;
@@ -4990,18 +5030,51 @@ namespace playground::ui
             openProjects();
             return;
         }
-        SavedVersion saved;
+        // The project's file is read and written off the message thread (EditorPort::startSave): SAVING meanwhile,
+        // then what came of it (syncSave).
         std::string why;
-        if (!port_.saveVersion(st.name, saved, why))
-        {
+        if (!port_.startSave(st.name, why))
             notice("NOT SAVED: " + upper(why));
+        else
+            savingNotice();
+        dirty_ = true;
+    }
+
+    void Panel::savingNotice()
+    {
+        if (const SaveState s = port_.saving(); s.busy)
+        {
+            notice("SAVING " + upper(s.name) + "...");
+            saving_ = true;
+        }
+        else
+            syncSave();
+    }
+
+    // What a save of the editor's came to, said once it has ended (SaveState::done moved): the explorer's lists read
+    // again, and PROJECTS' when what it shows changed (a confirmation it asks for stands over lists that did not).
+    void Panel::syncSave()
+    {
+        const SaveState s = port_.saving();
+        if (s.done == saveSeen_)
+        {
+            if (saving_ && !s.busy)
+                saving_ = false;
             return;
         }
-        const std::string at = upper(saved.name.empty() ? st.name : saved.name) + " V" + std::to_string(saved.number);
-        notice(saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(saved.name) + " (THE FACTORY'S STAYS AS IT IS)"
+        saveSeen_ = s.done;
+        saving_ = s.busy;
+        if (s.busy)
+            return;                                      // one more was asked for: its outcome comes next
+        const SavedVersion& saved = s.saved;
+        const std::string at = upper(saved.name.empty() ? s.name : saved.name) + " V" + std::to_string(saved.number);
+        notice(!s.ok           ? "NOT SAVED: " + upper(s.why)
+               : saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(saved.name) + " (THE FACTORY'S STAYS AS IT IS)"
                : saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT"
+               : saved.created   ? "PROJECT SAVED: " + upper(saved.name)
                                  : "SAVED: " + at);
         projectsAt_ = -100.0;
+        (void)projects_.rereadIfChanged(ProjectBrowser::Because::saved);
         dirty_ = true;
     }
 
@@ -5293,6 +5366,22 @@ namespace playground::ui
                         return &f;
                 return nullptr;
             };
+            // A tab renamed since (a new name at the place of one gone, as FilesItem::merge reads it): the draft's file
+            // of the old name takes the new one (and the typing in it, where the draft left its text).
+            for (std::size_t i = 0; i < given_.files.size() && i < now.files.size(); ++i)
+            {
+                const SourceFile &g = given_.files[i], &t = now.files[i];
+                if (g.name == t.name || named(now, g.name) != nullptr || named(given_, t.name) != nullptr || named(d, t.name) != nullptr)
+                    continue;
+                for (SourceFile& f : d.files)
+                    if (f.name == g.name)
+                    {
+                        f.name = t.name;
+                        if (f.text == g.text)
+                            f.text = t.text;
+                        kept = true;
+                    }
+            }
             for (SourceFile& f : d.files)
                 if (const SourceFile *g = named(given_, f.name), *t = named(now, f.name);
                     g != nullptr && t != nullptr && f.text == g->text && t->text != g->text)
@@ -5300,6 +5389,36 @@ namespace playground::ui
                     f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
                     kept = true;
                 }
+            // A tab closed since that the draft carries as it was given: it stays closed. One the draft changed stays
+            // (neither side's change is lost). The tab the draft shows stays shown, by name.
+            const std::string drafted = d.files.empty() ? std::string()
+                                                        : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
+            const std::size_t before = d.files.size();
+            std::erase_if(d.files, [&](const SourceFile& f) {
+                const SourceFile* g = named(given_, f.name);
+                return g != nullptr && named(now, f.name) == nullptr && f.text == g->text;
+            });
+            if (d.files.size() != before)
+            {
+                kept = true;
+                d.active = 0;
+                for (std::size_t i = 0; i < d.files.size(); ++i)
+                    if (d.files[i].name == drafted)
+                        d.active = static_cast<int>(i);
+            }
+            // A tab added since that the draft lacks: it stays, after the draft's files, and stays shown when it was.
+            const std::string shown = now.active >= 0 && now.active < static_cast<int>(now.files.size())
+                                          ? now.files[static_cast<std::size_t>(now.active)].name
+                                          : std::string();
+            for (const SourceFile& t : now.files)
+                if (named(given_, t.name) == nullptr && named(d, t.name) == nullptr && d.files.size() < kMaxFiles)
+                {
+                    d.files.push_back(t);
+                    if (t.name == shown)
+                        d.active = static_cast<int>(d.files.size()) - 1;
+                    kept = true;
+                }
+            d.active = std::clamp(d.active, 0, std::max(0, static_cast<int>(d.files.size()) - 1));
         }
         seenDraft_ = r;
         files().merge(d);
@@ -5387,6 +5506,13 @@ namespace playground::ui
         keepStepDefaults(nowSec, false);
         syncFolder();
         syncMidi();
+        // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
+        syncSave();
+        // PROJECTS and EXPORT read the store's cache alone: what its Reader has read since shows now.
+        if (projects_.poll())
+            dirty_ = true;
+        if (export_.poll())
+            dirty_ = true;
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -5596,6 +5722,7 @@ namespace playground::ui
         if (role_ == Role::code)
             return;                                      // no settings card and no chat in the code window
         syncSettings();
+        syncRecording(nowSec);
         refreshChat(nowSec);
     }
 
@@ -6776,6 +6903,8 @@ namespace playground::ui
     {
         if (const std::string n = projects_.takeNotice(); !n.empty())
             notice(n);
+        if (projects_.takeStartedSave())
+            savingNotice();
         projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
         const bool importIt = projects_.takeImport();
         const std::string exportIt = projects_.takeExport();
@@ -6998,6 +7127,83 @@ namespace playground::ui
     }
 
     funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
+
+    // ---- the recorder: REC in the status bar while the capture tool records for Claude, and the user's marks ----------
+    std::string Panel::recordText() const
+    {
+        char buf[96] = {};
+        switch (recording_.stage)
+        {
+            case RecordingState::Stage::off:     return {};
+            case RecordingState::Stage::waiting: return "REC   WAITING TO START";
+            case RecordingState::Stage::recording:
+            case RecordingState::Stage::ended:
+                std::snprintf(buf, sizeof buf, "REC   %.1f S%s", recording_.seconds,
+                              recording_.stage == RecordingState::Stage::ended ? ", ENDED" : "");
+                break;
+        }
+        std::string out = buf;
+        if (recording_.marks > 0)
+            out += "   " + std::to_string(recording_.marks) + (recording_.marks == 1 ? " MARK" : " MARKS");
+        return out;
+    }
+
+    // Ten looks a second at most (EditorPort::recording never waits): a frame when what the notice says changes. Mark
+    // is placed again at each (as the muted notice's button is): the zoom's pill beside it shows once the host offers
+    // steps, with no layout of its own.
+    void Panel::syncRecording(double nowSec)
+    {
+        if (recordingAt_ >= 0.0 && nowSec - recordingAt_ < 0.1 && nowSec >= recordingAt_)
+            return;
+        recordingAt_ = nowSec;
+        const RecordingState r = port_.recording();
+        const bool shownBefore = recordShown();
+        recording_ = r;
+        if (const std::string text = recordText(); text != recordShownText_ || shownBefore != recordShown())
+        {
+            recordShownText_ = text;
+            dirty_ = true;
+        }
+        if (recordShown())
+            placeRecordNotice();
+    }
+
+    // The Mark button at the status bar's right (left of the muted notice and the zoom); REC's words left of it.
+    void Panel::placeRecordNotice()
+    {
+        auto& b = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(markItem_)]);
+        const auto& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
+        const auto& muted = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]);
+        const float y = height_ - kFooterH + 4.0f, h = kFooterH - 8.0f;
+        const funkgui::Rect before = b.bounds();
+        b.setBounds({ 0.0f, y, 10.0f, h });
+        const float w = b.preferredWidth();
+        float right = zoom.shown() ? zoom.bounds().x - 10.0f : width_ - kMargin;
+        if (mutedShown_)                                 // the muted notice's words and button, right of it
+            right = muted.bounds().x - 10.0f - funkgui::text::width(funkgui::FontService::get().atlas(), kMutedText, chat::kSmall)
+                  - 18.0f - 14.0f;
+        b.setBounds({ right - w, y, w, h });
+        const funkgui::Rect now = b.bounds();
+        if (now.x != before.x || now.y != before.y || now.w != before.w || now.h != before.h)
+        {
+            ++layoutRevision_;                           // its accessibility item moved
+            dirty_ = true;
+        }
+    }
+
+    funkgui::Point Panel::centreOfMark() const { return centreOf(markItem_); }
+
+    funkgui::Point Panel::centreOfZoom() const { return centreOf(zoomItem_); }
+
+    void Panel::markNow()
+    {
+        std::string why;
+        recordingAt_ = -1.0;                             // looked at again in the next refresh
+        if (const int number = port_.markRecording(why); number > 0)
+            notice("MARKED M" + std::to_string(number) + " IN THE RECORDING");   // its own number, never a glance's
+        else
+            notice("NOT MARKED: " + upper(why));
+    }
 
     void Panel::chooseImport()
     {
@@ -7597,7 +7803,7 @@ namespace playground::ui
         }
         k.mix(status_).mix(meter_).mix(meterAlerts_).mix(meterLoad_).mix(port_.alerts() != 0).mix(projectText_).mix(title_)
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
-            .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
+            .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
@@ -7648,7 +7854,7 @@ namespace playground::ui
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_ || compiling_ || inputHeld())
+        if (dirty_ || compiling_ || saving_ || inputHeld())
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
     }
@@ -7912,11 +8118,27 @@ namespace playground::ui
             c.text(kMutedText, tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
             noticeW = b.right() - (tx - 18.0f) + 12.0f;
         }
+        // The recorder's notice (REC, its seconds and marks), left of its Mark (or where Mark would be).
+        float recordW = 0.0f;
+        if (recordShown())
+        {
+            const funkgui::Canvas::Scope s(c, kRecordTag, false);
+            const ButtonItem& mark = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(markItem_)]);
+            const funkgui::Rect b = mark.bounds();
+            const std::string text = recordText();
+            const float right = mark.shown() ? b.x - 10.0f : b.right();
+            const float tx = right - c.textWidth(text.c_str(), chat::kSmall);
+            constexpr funkgui::Col kRecording{ 0xE5, 0x48, 0x4D, 255 };   // a recorder's red, in either theme
+            const bool live = recording_.stage == RecordingState::Stage::recording;
+            c.disc(tx - 9.0f, b.centreY(), 3.5f, live ? kRecording : pal.faint);
+            c.text(text.c_str(), tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
+            recordW = b.right() - (tx - 16.0f) + 12.0f;
+        }
         if (line[0] != '\0')
         {
             const ButtonItem& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
             const float zoomW = zoom.shown() ? zoom.bounds().w + 12.0f : 0.0f;
-            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - 8.0f);
+            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - recordW - 8.0f);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
             c.text(shown.c_str(), kMargin + 8.0f, c.capCentreTop(height_ - 0.5f * kFooterH, funkgui::type::kMicro),
                    funkgui::type::kMicro, th.ink52);
@@ -8298,6 +8520,14 @@ namespace playground::ui
             if (full() || role_ == Role::code)
                 return false;
             toggleCodePanel();
+            return true;
+        }
+        // Cmd-Shift-M: a mark in the recording for Claude, while the capture tool records (anywhere in the panel).
+        if (e.key == funkgui::Key::character && e.mods.cmd && e.mods.shift && !e.mods.alt && (e.ch == 'm' || e.ch == 'M'))
+        {
+            if (!recordShown())
+                return false;
+            markNow();
             return true;
         }
         // Cmd-Shift-D: a netlist's Netlist / Schematic view, in either view; nothing while the IR tab shows.

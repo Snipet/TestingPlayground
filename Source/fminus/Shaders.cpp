@@ -2,6 +2,7 @@
 #include "fminus/Shaders.h"
 #include "fminus/PanelSpec.h"
 #include "fminus/ShaderLib.h"
+#include "fminus/Xdg.h"
 
 #include "Product.h"
 
@@ -466,8 +467,10 @@ namespace playground
             {
                 int status = 0;
                 const pid_t done = waitpid(pid, &status, WNOHANG);
+                // 127: the child could not run it. POSIX lets posix_spawn succeed and report a failed exec so (glibc's
+                // does under Rosetta's emulation of x86-64 Linux); shaderc itself exits 0 or 1.
                 if (done == pid)
-                    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+                    return WIFEXITED(status) && WEXITSTATUS(status) != 127 ? WEXITSTATUS(status) : -1;
                 if (done < 0 && errno != EINTR)
                     return -1;
                 if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(kTimeoutMs))
@@ -882,7 +885,7 @@ namespace playground
                 return out;
             }
             std::error_code ec;
-            const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
+            const std::filesystem::path tmp = shaderTempBase(ec);
 #if defined(_WIN32)
             const std::string pattern = ec ? std::string() : madeTempFolder(tmp);
             if (pattern.empty())
@@ -1071,6 +1074,21 @@ namespace playground
         return cache;
     }
 
+    std::filesystem::path shaderTempBase(std::error_code& ec)
+    {
+#if defined(__linux__)
+        // Linux: $TMPDIR when set, else the user's own $XDG_RUNTIME_DIR (private, gone at logout), else /tmp.
+        const char* tmpdir = std::getenv("TMPDIR");
+        if (tmpdir == nullptr || *tmpdir == '\0')
+            if (const std::string runtime = xdg::runtimeDir(); !runtime.empty())
+            {
+                ec.clear();
+                return runtime;
+            }
+#endif
+        return std::filesystem::temp_directory_path(ec);
+    }
+
     std::filesystem::path shaderCacheFolder()
     {
         // A probe's sandbox (CTest sets <ENV_PREFIX>PREFS_DIR for each, cmake/Probes.cmake): never the user's folder.
@@ -1084,10 +1102,8 @@ namespace playground
         if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0')
             return std::filesystem::path(home) / "Library" / "Caches" / product::kCompany / product::kName / "Shaders";
 #else
-        if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg != nullptr && *xdg != '\0')
-            return std::filesystem::path(xdg) / product::kCompany / product::kName / "Shaders";
-        if (const char* home = std::getenv("HOME"); home != nullptr && *home != '\0')
-            return std::filesystem::path(home) / ".cache" / product::kCompany / product::kName / "Shaders";
+        if (const std::string cache = xdg::cacheHome(); !cache.empty())
+            return std::filesystem::path(cache) / product::kCompany / product::kName / "Shaders";
 #endif
         return {};
     }

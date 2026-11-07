@@ -56,6 +56,7 @@ namespace playground
         io.alerts = alerts_.load();
         const std::lock_guard<std::mutex> lock(programMutex_);
         io.program = program_;
+        io.tapTable = panel_.tapTable;
         io.displays = panel_.displays;
     }
 

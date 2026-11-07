@@ -1,7 +1,8 @@
 // Source/mcp/McpProtocol.h: how this playground's instances (plugin/McpLink.h) and its MCP server (mcp/Main.cpp, the
 // program Claude Desktop starts) find and talk to each other.
 //
-//   the folder   one per user and plugin, private (0700): <the user's temp folder>/Funk-<plugin>-mcp/, or
+//   the folder   one per user and plugin, private (0700): <the user's temp folder>/Funk-<plugin>-mcp/ (Linux:
+//                $XDG_RUNTIME_DIR, else $TMPDIR or /tmp's funk-<uid>/, a folder of the user's own), or
 //                <ENV_PREFIX>MCP_DIR when set (the probes' own). In it each instance's socket, <n>.sock: the lowest
 //                number free when it started, its number's name to the user ("Synth 2", unless the user named it);
 //                its card, <n>.json, and Claude Desktop's target, target.json (mcp/McpTarget.h); and what the newest
@@ -32,6 +33,7 @@
 #pragma once
 
 #include "Product.h"
+#include "fminus/Xdg.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -378,8 +380,25 @@ namespace playground::mcp
                 if (c == '\\')
                     c = '/';
 #else
-            const char* run = std::getenv("XDG_RUNTIME_DIR");
-            dir = run != nullptr && *run != '\0' ? std::string(run) : "/tmp/funk-" + std::to_string(getuid());
+            // Linux: $XDG_RUNTIME_DIR, the user's own (0700, gone at logout), when it is one (fminus/Xdg.h); else a
+            // folder of the user's own in $TMPDIR (else /tmp), funk-<uid>, which must be a real folder of theirs that
+            // no one else may write into (made so when missing): one another account made first, or a link, is
+            // refused, and there is no MCP folder.
+            dir = xdg::runtimeDir();
+            if (dir.empty())
+            {
+                const char* t = std::getenv("TMPDIR");
+                std::string tmp = t != nullptr && t[0] == '/' ? std::string(t) : std::string("/tmp");
+                while (tmp.size() > 1 && tmp.back() == '/')
+                    tmp.pop_back();
+                const std::string own = tmp + "/funk-" + std::to_string(getuid());
+                if (mkdir(own.c_str(), 0700) != 0 && errno != EEXIST)
+                    return {};
+                if (!xdg::ownPrivateFolder(own, false))
+                    return {};
+                chmod(own.c_str(), 0700);
+                dir = own;
+            }
 #endif
             if (!dir.empty() && dir.back() != '/')
                 dir += '/';

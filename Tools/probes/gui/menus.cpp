@@ -7,7 +7,7 @@
 //   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, projects (a project's context menu in
 //   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, zoom, chats (the chat card's list of the project's
 //   chats), provider (the key dialog's Provider pill), settings (the output's select), panel (a .gui file's menu
-//   control) and schematic (a netlist's canvas menu)
+//   control) and schematic (a netlist's canvas menu); on Linux with no X display, skipped, saying so (noDisplay)
 // and checks:
 //   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the key dialog's
 //            Provider, the output's select, a .gui file's menu control): a combo box to a screen reader, its value its label; its chevron
@@ -197,6 +197,11 @@ namespace
                  const funkgui::MenuRequest& request, const std::string& name, int theme)
     {
         const std::string file = "gui.menus." + name + kThemeName[theme] + ".png";
+        if (const std::string why = probe::noDisplay(); !why.empty())
+        {
+            probe::skip(P, "png." + name + kThemeName[theme], why);
+            return;
+        }
         auto backdrop = std::make_unique<Backdrop>();
         backdrop->frame = toJuce(funkgui::rasterise(host.draw(), funkgui::FontService::get().atlas(), 2));
         // Where the backdrop sits "on screen" (it is on no desktop): the display's top left, so that JUCE, which keeps a

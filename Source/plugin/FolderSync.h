@@ -25,7 +25,7 @@
 //     program, the first: it is written back); with run on save, the files then run;
 //   - both changed: a conflict. The file is held (neither side written) until the user chooses (resolve), and the
 //     side not kept is kept in the folder's .conflicts/ ("program.folder-20261106-140211.fm"): nothing is lost.
-// The folder's changes are taken only once its listing (each file's name, size and time) has held still for
+// The folder's changes are taken only once its listing (each file's name, size, time and identity) has held still for
 // kSettleSeconds, so an editor's save in steps (a temporary file renamed over, the old one moved aside first, a write
 // in place) is read once whole; and a write of the plugin's goes only right after a look that found the file as last
 // seen, so a save the sync has not taken yet is never overwritten. The sync's own writes come back as the text both
@@ -127,6 +127,10 @@ namespace playground
         {
             int64_t size = -1;
             int64_t time = 0;
+            // The file's identity (its inode; 0 on Windows): a save that renames a new file into place (most editors'
+            // safe save) is a change even when its size is the old one's and its time the same, as within one tick of
+            // the kernel's file clock on Linux before 6.13 (1 to 10 ms there).
+            uint64_t id = 0;
             friend bool operator==(const Stat&, const Stat&) = default;
         };
         struct Seen                                   // a file of the folder as last read

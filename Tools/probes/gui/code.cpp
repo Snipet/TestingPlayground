@@ -14,7 +14,10 @@
 //   gui.code.conditional.png an #if 0 and an #ifndef DEBUG group dimmed, #ifdef DEBUG's group read, the directives'
 //                            parts, a -Wswitch warning's squiggle and mark after RUN and its row in the problems
 //   gui.code.doubles.png     a module with a double, a 2-D array and a field's attributes: its strings coloured, the
-//                            hover card of the field with its attributes
+//                            hover card of the field with its attributes (on two lines: lang::kHoverWidth)
+//   gui.code.hover_long.png  the hover card of a function of eight parameters, on two lines; a local named as a
+//                            constant drawn plain, the constant's uses in the constants' colour
+//   gui.code.hover_local.png the hover card of that local: its name plain, as the editor draws it
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -64,6 +67,12 @@
 //             Panel asking for that frame; the same through Claude's write_file while the editor has not the keys
 //             (the check's sync, the files rested, recolours it: no caret rests in it, no pointer hovers it); the Code
 //             view's tick, recording and highlighter costs printed; idle, the Code view asks for no frame
+//   SHADOW    a local named as a constant of the top level: its declaration and its use drawn plain (an identifier's
+//             ink), the constant's declaration and its use in another function in the constants' colour, once the
+//             check's sync has the index; a function of eight parameters hovered: its card's code on two lines, the
+//             second under its parenthesis (gui.code.hover_long.png); the local hovered: no glyph of its card in the
+//             constants' colour (gui.code.hover_local.png), the constant hovered: its name's; the tab renamed by its
+//             name's field, and renamed back: the local still plain, the constant still coloured
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -1074,6 +1083,121 @@ PROBE(gui, code)
             }
             P.eq("types.write_rehighlighted", code.highlights() != was && drawAsked ? 1 : 0, 1);
             P.eq("types.write_recoloured", inkOf(host.draw(), "Quux") == thing ? 1 : 0, 1);
+        }
+
+        // SHADOW: a local named as a constant drawn as a local (plain) where it is in scope, the constant's own uses in the
+        // constants' colour, once the index has them (the check's sync); and a declaration wider than the hover card
+        // hovered: its lines (lang::kHoverWidth), the second under its parenthesis.
+        {
+            const std::string mainModule = pg::product::kIsInstrument
+                ? "module Voice\n{\n    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+                : "module Effect\n{\n    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+            ed.selectAll();
+            ed.insert("// Shadow probe.\nenum { GAIN = 2 };\n\n"
+                      "float scaled(float x)\n{\n    float GAIN = 0.5f;\n    return GAIN * x;\n}\n\n"
+                      "float louder(float x)\n{\n    return x * GAIN;\n}\n\n"
+                      "// spread: a declaration wider than the hover card, which shows it on two lines, the second\n"
+                      "// under its parenthesis (a blank line under this, so the card has no documentation).\n\n"
+                      "float spread(float x, float wet, float dry, float left, float right, float width, float depth, float mix)\n"
+                      "{\n    return x;\n}\n\n" + mainModule);
+            ed.setCaret({ 0, 0 });
+            ed.scrollToCaret();
+            settleChecks(panel, host);
+            // The first glyph's colour at a place, as drawn (0: none).
+            const auto inkAt = [&](const funkgui::PrimList& frame, funkgui::TextPos at) -> uint32_t {
+                if (at.line < 0)
+                    return 0;
+                const funkgui::Point a = ed.pointOf(at), b = ed.pointOf({ at.line, at.col + 1 });
+                for (const funkgui::Prim& p : frame.prims)
+                {
+                    if (p.tag != funkgui::tags::editText || static_cast<int>(p.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                        continue;
+                    const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+                    if (cx >= a.x && cx < b.x && cy >= a.y && cy < a.y + ed.rowHeight())
+                        return p.c0;
+                }
+                return 0;
+            };
+            // The inks of an identifier's plain glyph, of the constant's declaration and its use, of the local's.
+            struct Inks
+            {
+                uint32_t plain = 0, decl = 0, constant = 0, local = 0, use = 0;
+                bool localPlain() const { return plain != 0 && local == plain && use == plain; }
+                bool constantColoured() const { return decl != 0 && constant == decl && decl != plain; }
+            };
+            const auto inks = [&](const char* when) {
+                const funkgui::PrimList& frame = host.draw();
+                Inks k;
+                k.plain = inkAt(frame, posIn(ed, "    return x;", 11));
+                k.decl = inkAt(frame, posIn(ed, "GAIN = 2"));
+                k.constant = inkAt(frame, posIn(ed, "x * GAIN", 4));
+                k.local = inkAt(frame, posIn(ed, "GAIN = 0.5f"));
+                k.use = inkAt(frame, posIn(ed, "GAIN * x"));
+                std::printf("shadow%s: plain %08x, the constant %08x and its use %08x, the local %08x and its use %08x\n", when,
+                            k.plain, k.decl, k.constant, k.local, k.use);
+                return k;
+            };
+            const Inks drawn = inks("");
+            const uint32_t decl = drawn.decl;
+            P.eq("shadow.local_plain", drawn.localPlain() ? 1 : 0, 1);
+            P.eq("shadow.constant_coloured", drawn.constantColoured() ? 1 : 0, 1);
+            const auto hoverAt = [&](funkgui::TextPos at) {
+                host.move(10.0f, 10.0f);
+                host.tick(2);
+                const funkgui::Point over = ed.pointOf(at);
+                host.move(over.x + 2.0f, over.y + ed.rowHeight() * 0.5f);
+                host.tick(40);
+            };
+            hoverAt(posIn(ed, "spread(", 2));
+            std::printf("shadow: hover %s\n", code.hoverText().c_str());
+            P.eq("shadow.hover_wrapped", code.hoverOpen()
+                                             && code.hoverText().find("float left, float right,\n             float width, float depth, float mix)")
+                                                    != std::string::npos ? 1 : 0, 1);
+            writePng(P, host, "gui.code.hover_long.png", "shadow");
+            // The hover card's code draws the local's name as the editor does (lang::Hover::plain), the constant's in the
+            // constants' colour: the glyphs of the card in that colour.
+            const auto cardGlyphsIn = [&](uint32_t ink) {
+                int n = 0;
+                for (const funkgui::Prim& p : host.draw().prims)
+                    n += p.tag == pg::ui::kCodePopupTag && static_cast<int>(p.d2[2] + 0.5f) == static_cast<int>(funkgui::PrimKind::text)
+                             && p.c0 == ink ? 1 : 0;
+                return n;
+            };
+            hoverAt(posIn(ed, "GAIN * x", 1));
+            const bool localCard = code.hoverOpen() && code.hoverText().find("a local") != std::string::npos;
+            const int localGlyphs = cardGlyphsIn(decl);
+            writePng(P, host, "gui.code.hover_local.png", "shadow_card");
+            hoverAt(posIn(ed, "x * GAIN", 5));
+            const bool constantCard = code.hoverOpen() && code.hoverText().find("GAIN = 2") != std::string::npos;
+            const int constantGlyphs = cardGlyphsIn(decl);
+            std::printf("shadow: the card's glyphs in the constants' colour: the local's %d, the constant's %d\n", localGlyphs,
+                        constantGlyphs);
+            P.eq("shadow.card_local_plain", localCard && decl != 0 && localGlyphs == 0 ? 1 : 0, 1);
+            P.eq("shadow.card_constant_coloured", constantCard && constantGlyphs >= 4 ? 1 : 0, 1);
+            host.move(10.0f, 10.0f);
+            host.tick(2);
+            // The tab renamed (the same kind: its editor and highlighter kept) and renamed back: the shadows' flags are
+            // the tab's by its name, and its highlighter follows it (CodeAssist::sync).
+            const auto renameTab = [&](const std::string& to) {
+                const funkgui::Point t0 = panel.centreOfTab(0);
+                host.doubleClick(t0.x, t0.y);
+                std::string keys;
+                for (const char ch : to)
+                    keys += std::string(keys.empty() ? "" : ",") + ch;
+                host.keys((keys + ",return").c_str());
+                settleChecks(panel, host);
+                return panel.fileName(0) == to && !panel.renamingFile();
+            };
+            const std::string was = panel.fileName(0);
+            const bool renamed = renameTab("shadow.fm");
+            const Inks afterRename = inks(" (renamed)");
+            P.eq("shadow.renamed_plain", renamed && afterRename.localPlain() && afterRename.constantColoured() ? 1 : 0, 1);
+            const bool back = renameTab(was);
+            const Inks afterBack = inks(" (renamed back)");
+            P.eq("shadow.renamed_back_plain", back && afterBack.localPlain() && afterBack.constantColoured() ? 1 : 0, 1);
+            host.click(4.0f, static_cast<float>(panel.height()) - 4.0f);   // beside everything: the keys as they were
+            settleChecks(panel, host);
         }
 
         // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the

@@ -53,7 +53,8 @@
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for, its CPU
 //            line the numbers alone
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
-//            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
+//            what it shows, drawn on the message thread by the GPU on this Mac (the text says so; on Linux by
+//            SoftRaster, the text saying why: common/Pictures.h); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
 //            shader shows as a striped placeholder and why; the saved session keeps no picture
 //   PANELSTATE view_panel's values and at, over MCP on a processor of its own playing a program whose fields tell
@@ -226,7 +227,8 @@
 //            words follow in the same message. A question of one option is refused in its result and asks nothing
 //   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
 //            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
-//            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright;
+//            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
+//            elsewhere a TIFF is refused, its note naming the formats read there (PNG, JPEG or GIF);
 //            detach takes one back; the message's pictures go before its words as base64
 //            image blocks, the entry shows them and the box empties; a message of pictures alone goes; a message takes
 //            six; a new chat drops the attached; the session keeps each picture's thumbnail, which loads back
@@ -262,6 +264,7 @@
 //            with the key and no other credential (the models too), the history valid; the key removed, a message
 //            asks for the key (and for nothing else) and sends nothing
 //   NEW      newChat forgets the conversation
+#include "Pictures.h"
 #include "Probe.h"
 
 #include "FakeClaude.h"
@@ -468,6 +471,56 @@ namespace
         if (img != nullptr)
             CGImageRelease(img);
         return ok;
+    }
+#else
+    // A w x h baseline TIFF (little-endian, uncompressed 8-bit RGB, one strip), written by hand: no system writer here.
+    std::vector<uint8_t> tiffOf(int w, int h)
+    {
+        std::vector<uint8_t> b = { 'I', 'I', 42, 0, 8, 0, 0, 0 };
+        const auto u16 = [&](uint32_t v) {
+            b.push_back(static_cast<uint8_t>(v));
+            b.push_back(static_cast<uint8_t>(v >> 8));
+        };
+        const auto u32 = [&](uint32_t v) {
+            u16(v & 0xFFFFu);
+            u16(v >> 16);
+        };
+        constexpr uint32_t kEntries = 9, kBits = 8 + 2 + kEntries * 12 + 4, kPixels = kBits + 6;
+        const uint32_t bytes = static_cast<uint32_t>(w * h * 3);
+        const auto entry = [&](uint32_t tag, uint32_t type, uint32_t count, uint32_t value) {
+            u16(tag);
+            u16(type);
+            u32(count);
+            if (type == 3 && count == 1)
+            {
+                u16(value);                                  // a SHORT sits left-justified in the value's 4 bytes
+                u16(0);
+            }
+            else
+                u32(value);
+        };
+        u16(kEntries);
+        entry(256, 4, 1, static_cast<uint32_t>(w));          // ImageWidth
+        entry(257, 4, 1, static_cast<uint32_t>(h));          // ImageLength
+        entry(258, 3, 3, kBits);                             // BitsPerSample: 8, 8, 8 (at kBits)
+        entry(259, 3, 1, 1);                                 // Compression: none
+        entry(262, 3, 1, 2);                                 // PhotometricInterpretation: RGB
+        entry(273, 4, 1, kPixels);                           // StripOffsets
+        entry(277, 3, 1, 3);                                 // SamplesPerPixel
+        entry(278, 4, 1, static_cast<uint32_t>(h));          // RowsPerStrip
+        entry(279, 4, 1, bytes);                             // StripByteCounts
+        u32(0);                                              // no further IFD
+        u16(8);
+        u16(8);
+        u16(8);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+            {
+                b.push_back(static_cast<uint8_t>(x * 255 / w));
+                b.push_back(static_cast<uint8_t>(y * 255 / h));
+                b.push_back(128);
+            }
+        return b;
     }
 #endif
 
@@ -1275,14 +1328,14 @@ PROBE(plugin, chat)
         P.eq("view.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
         P.eq("view.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
         P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
-#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
-        P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
-                             && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
-#else
-        // A build without FunkGui's GPU layer (FP_WITH_GPU off) draws with SoftRaster, and says so.
-        P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (this build has no GPU)")
-                             && has(windowAbout, "Drawn without the GPU (this build has no GPU)") ? 1 : 0, 1);
-#endif
+        // Drawn by the GPU; where there is no GPU picture, SoftRaster's, saying why: a build without FunkGui's GPU
+        // layer (FP_WITH_GPU off: "this build has no GPU"), Linux ("no GPU pictures on this platform").
+        if (const std::string noGpu = probe::noGpuPictures(); noGpu.empty())
+            P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
+                                 && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
+        else
+            P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (" + noGpu + ")")
+                                 && has(windowAbout, "Drawn without the GPU (" + noGpu + ")") ? 1 : 0, 1);
 
         // The fallback (SoftRaster), forced: a picture still, and the note.
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_v3", "view_panel", input({})).end("tool_use")));
@@ -4480,6 +4533,21 @@ PROBE(plugin, chat)
             P.eq("pictures.upright", s != nullptr && (*s)->width == 100 && (*s)->height == 200 && (*s)->thumbHeight > (*s)->thumbWidth ? 1 : 0, 1);
             for (const pg::ChatPicturePtr& p : st.attached)
                 agent.detach(p->id);
+        }
+#else
+        // JUCE's reader takes PNG, JPEG and GIF alone: a TIFF is refused, its note naming what this build reads, and
+        // nothing is attached. (A photo stored on its side is read as stored: no EXIF orientation without ImageIO.)
+        {
+            const juce::File tiff = dir.getChildFile("scan.tiff");
+            const std::vector<uint8_t> bytes = tiffOf(120, 80);
+            P.eq("pictures.tiff_written", tiff.replaceWithData(bytes.data(), bytes.size()) ? 1 : 0, 1);
+            const std::size_t attachedBefore = agent.chatState().attached.size();
+            agent.attach({ tiff.getFullPathName().toStdString() });
+            agent.waitIdle();
+            P.eq("pictures.tiff_refused", agent.chatState().attached.size() == attachedBefore
+                                              && has(notes(), "scan.tiff is not a picture this plugin can read (PNG, JPEG or GIF).") ? 1 : 0, 1);
+            probe::skip(P, "pictures.upright",
+                        "macOS only: ImageIO turns a photo upright by its EXIF orientation, JUCE's reader keeps it as stored");
         }
 #endif
         // Pictures alone.

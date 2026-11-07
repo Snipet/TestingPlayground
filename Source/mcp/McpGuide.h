@@ -22,6 +22,9 @@
 //                         start) says when to use each
 //   examples              THIS PLUGIN'S EXAMPLES
 //   projects              RANDOM AND PROJECTS (when to save, and how), and the notes of the tools it uses (projects')
+//   cheatsheet            FMINUS AND DSP AT A GLANCE: the contract, the language, the numbers and the pitfalls on a page
+//                         (ChatAgent::cheatSheet), after the tools' notes; the plugin's own chat has the whole prompt
+//                         and never gets it; a guide from before it (an older plugin's guide.md) has none
 //   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules, and THE SCHEMATIC: the drawing's *@
 //                         lines and edit_circuit's grammar), and the notes of the tools it uses (edit_circuit's); a
 //                         guide from before it (an older plugin's guide.md) cuts as it did, without the part
@@ -48,6 +51,8 @@ namespace playground::mcp::guide
     inline constexpr const char* kProjects = "RANDOM AND PROJECTS";
     inline constexpr const char* kCircuits = "CIRCUITS: .cir NETLISTS";
     inline constexpr const char* kNotes = "THE TOOLS: WHAT THEIR SHORT DESCRIPTIONS LEAVE OUT";
+    // The cheat sheet (part "cheatsheet"): after the tools' notes, before kChatOnly's section.
+    inline constexpr const char* kCheatSheet = "FMINUS AND DSP AT A GLANCE";
     // The guide's last section, after the tools' notes (ChatAgent::mcpGuide): the lines of the prompt's How you work
     // that only the plugin's own chat needs (its <plugin_state>, the planner, web search, ask_user, its panel's
     // markdown), which no part but "all" gives.
@@ -58,7 +63,7 @@ namespace playground::mcp::guide
 
     // The parts a caller may ask for (library:<file> and library:<file>:code aside).
     inline constexpr const char* kParts[] = { "start", "large-program", "interface", "library", "debugging", "examples", "projects",
-                                              "circuits", "all" };
+                                              "circuits", "cheatsheet", "all" };
     inline constexpr const char* kDebugging = "WHAT PLAYS NOW AND WHAT WENT WRONG";   // the debugging part's title
 
     namespace detail
@@ -259,14 +264,14 @@ namespace playground::mcp::guide
                    "- \"library\": the ready-made building blocks (" + categories + "), a line each. Read it before you "
                    "build, and use them rather than writing your own; then \"library:<file>\" gives a block's usage (its "
                    "header), \"library:<file>:code\" its whole code without adding anything to the user's editor.\n"
-                   "- \"debugging\": listen, capture, trace, compare and run_function in full (what plays now in the user's "
-                   "song, recording what they play, where a problem starts, two versions against each other, one function "
-                   "called). Read it before you "
+                   "- \"debugging\": listen, capture, trace, compare and run_function in full (what plays now, recording "
+                   "what the user plays, where a problem starts, two versions, one function called). Read it before you "
                    "first use one of them: when the user says something sounds wrong, or a measurement shows a problem.\n"
                    "- \"examples\": this plugin's examples (its EXAMPLES menu), whole.\n"
                    "- \"projects\": RANDOM, and the user's projects and presets: read it before you save, open or apply "
                    "one.\n"
                    "- \"circuits\": .cir netlists, analog circuits as modules. Read it before you write or #include one.\n"
+                   "- \"cheatsheet\": FMinus and DSP on a page, to look up while you write.\n"
                    "- \"all\": all of it at once (about " + std::to_string((g.size() / 4 + 500) / 1000) + "K tokens).\n";
         }
         if (n == "large-program")
@@ -298,6 +303,17 @@ namespace playground::mcp::guide
             return g.substr(c.examples, c.projects - c.examples);
         if (n == "projects")
             return trimmed(g.substr(c.projects, c.circuits - c.projects)) + "\n" + notes(g, c.notes, "projects");
+        if (n == "cheatsheet")
+        {
+            const std::size_t at = heading(g, kCheatSheet, c.notes);
+            if (at != std::string::npos)
+            {
+                const std::size_t end = heading(g, kChatOnly, at);
+                return trimmed(g.substr(at, (end == std::string::npos ? g.size() : end) - at)) + "\n";
+            }
+            found = false;
+            return "This guide has no part \"cheatsheet\" (it is an older plugin's): \"start\" and \"large-program\" hold the same.";
+        }
         if (n == "circuits")
         {
             if (c.hasCircuits)

@@ -18,8 +18,8 @@
 # <build>/probe-out/<key>/, its results JSON to <build>/probe-results/<key>/, and the FunkGui preferences of a probe
 # to <build>/sandbox/<key>/<probe>/ (never the user's ~/Library).
 #
-# fp_add_lints(), once after every product: lint.exports and lint.signature over every product's bundles, and
-# lint.layers over the sources, labelled `lint`.
+# fp_add_lints(), once after every product: lint.exports (macOS and Linux) and lint.signature (macOS) over every
+# product's bundles, and lint.layers over the sources, labelled `lint`.
 include_guard(GLOBAL)
 
 set(FP_PROBE_ROOT ${PROJECT_SOURCE_DIR}/Tools/probes)
@@ -27,12 +27,16 @@ file(GLOB_RECURSE FP_PROBE_SOURCES CONFIGURE_DEPENDS ${FP_PROBE_ROOT}/*.cpp)
 # Tools/probes/installer/ is the installer's (cmake/Installer.cmake: one executable, no product's): never a product's.
 list(FILTER FP_PROBE_SOURCES EXCLUDE REGEX "/Tools/probes/installer/")
 # Windows: the probes that run the MCP server and the sandbox's helper as POSIX child processes are left out, and,
-# with FP_WITH_GPU off, the one that needs FunkGui's GPU layer (its shaders and GPU pictures). FP_PROBES_SKIPPED names
-# them (the summary prints it).
+# with FP_WITH_GPU off, the one that needs FunkGui's GPU layer (its shaders and GPU pictures); plugin.linux (Linux's own
+# folders, keyring, MCP folder, racing wheel and install script) runs on Linux alone. FP_PROBES_SKIPPED names them (the
+# summary prints it).
 set(FP_PROBES_SKIPPED "")
 set(_fp_skip "")
 if(FP_WINDOWS)
   list(APPEND _fp_skip plugin/mcp plugin/sandbox)
+endif()
+if(NOT FP_LINUX)
+  list(APPEND _fp_skip plugin/linux)
 endif()
 if(NOT FP_WITH_GPU)
   list(APPEND _fp_skip gui/shaders)
@@ -127,6 +131,8 @@ function(fp_add_probes key)
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report
+  elseif(FP_LINUX)
+    target_link_libraries(${FP_PROBES} PRIVATE ${FP_LINUX_LIBS})
   endif()
   if(FP_LTO)
     target_link_options(${FP_PROBES} PRIVATE $<$<CONFIG:Release>:-flto>)  # the DSP library holds bitcode there
@@ -162,19 +168,21 @@ endfunction()
 
 # fp_add_lints(): the lints, once, over what every product built.
 function(fp_add_lints)
-  if(APPLE)
+  if(APPLE OR FP_LINUX)
   # ---- the export lint: each built bundle exports its entry points only (CMakeLists.txt says why) ------------------
   get_property(_fp_bundles GLOBAL PROPERTY FP_EXPORT_BUNDLES)
   add_test(NAME lint.exports COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_bundles}"
                                      -P ${PROJECT_SOURCE_DIR}/cmake/LintExports.cmake)
   set_tests_properties(lint.exports PROPERTIES LABELS "lint" TIMEOUT 120)
+  endif()   # a Windows DLL exports only what is marked
 
+  if(APPLE)
   # ---- the signature lint: each built bundle's signature holds (a host refuses one whose seal does not) -----------
   get_property(_fp_signed GLOBAL PROPERTY FP_SIGNED_BUNDLES)
   add_test(NAME lint.signature COMMAND ${CMAKE_COMMAND} "-DFP_BUNDLES=${_fp_signed}"
                                        -P ${PROJECT_SOURCE_DIR}/cmake/LintSignature.cmake)
   set_tests_properties(lint.signature PROPERTIES LABELS "lint" TIMEOUT 120)
-  endif()   # APPLE: a Windows DLL exports only what is marked, and nothing there is signed
+  endif()   # APPLE: nothing is signed on Windows or Linux
 
   # ---- the layer lint: Source/dsp and Source/fsdsp are JUCE-free and FunkGui-free ------------------------------------
   add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}

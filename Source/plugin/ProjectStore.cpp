@@ -3,6 +3,7 @@
 
 #include "plugin/EditorPort.h"
 #include "plugin/Factory.h"
+#include "fminus/Xdg.h"
 
 #include "Product.h"
 
@@ -59,11 +60,18 @@ namespace playground::projectstore
             FileId id;
             Entry entry;
             std::vector<PresetSummary> presets;
+            std::vector<VersionSummary> versions;        // oldest first (detailCached)
+            Info info;
             bool broken = false;
             std::string project, writtenAs;              // the project's id and the name written in its file (idOf)
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
+        // One writer at a time in this process: each read, change and write of a project's file (update and every write
+        // made through it, saveVersion, add, remove, idOf's new id, the migration) holds it whole, so the editor's save on
+        // a thread of its own (Processor::startSave) and a write on the message thread never interleave (one would write
+        // over the other's). Recursive: a write may list the folder (exists, the migration), which may write.
+        std::recursive_mutex writeMutex;
         std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
         std::atomic<int> readerParsed{ 0 };              // of them, by the Reader's thread (readerParses())
         std::atomic<int> listed{ 0 };                    // listings, cached or not (listings())
@@ -560,6 +568,9 @@ namespace playground::projectstore
             c.entry.category = p.info.category;
             c.entry.tags = p.info.tags;
             c.entry.description = p.info.description;
+            for (const Version& v : p.versions)
+                c.versions.push_back({ v.number, v.savedMs, v.note });
+            c.info = p.info;
             return c;
         }
 
@@ -727,14 +738,22 @@ namespace playground::projectstore
             return juce::var(root);
         }
 
-        // The playground's presets before projects: each a project of one version, the old file then moved aside.
+        // The playground's presets before projects: each a project of one version, the old file then moved aside. The
+        // store's one writer (writeMutex) while there are any, never when there are none (the explorer's poll lists the
+        // folder every few seconds on the message thread: it never waits for a save on the saver's thread).
         void migrate()
         {
             const juce::File dir = directory();
             if (!dir.isDirectory())
                 return;
-            for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kLegacyExtension))
+            const juce::Array<juce::File> legacy = dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kLegacyExtension);
+            if (legacy.isEmpty())
+                return;
+            const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+            for (const juce::File& f : legacy)
             {
+                if (!f.existsAsFile())
+                    continue;                            // another thread migrated it while this one waited
                 const std::string name = f.getFileNameWithoutExtension().toStdString();
                 if (tidyName(name) != name || name.empty() || f.getSize() > kMaxBytes)
                     continue;
@@ -775,6 +794,7 @@ namespace playground::projectstore
         {
             if (readOnly(name, why))
                 return false;
+            const std::lock_guard<std::recursive_mutex> writing(writeMutex);
             std::optional<Project> p = load(name, why);
             if (!p)
                 return false;
@@ -867,6 +887,11 @@ namespace playground::projectstore
 #if defined(_WIN32)
         // Windows: Documents\Funk\<name> (a user's own files, where a DAW's are).
         return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+            .getChildFile(product::kCompany)
+            .getChildFile(product::kName);
+#elif !defined(__APPLE__)
+        // Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/<name> (fminus/Xdg.h), the user's data beside the chats'.
+        return juce::File(juce::String::fromUTF8(xdg::dataHome().c_str()))
             .getChildFile(product::kCompany)
             .getChildFile(product::kName);
 #else
@@ -1102,6 +1127,39 @@ namespace playground::projectstore
         return std::vector<PresetSummary>();
     }
 
+    std::optional<Detail> detailCached(std::string_view name, std::vector<std::string>& unread, std::string* why)
+    {
+        const auto detailOf = [](const Cached& c) { return Detail{ true, c.versions, c.presets, c.info }; };
+        if (isFactoryName(name))
+        {
+            const Project* p = factory::find(name);
+            if (p == nullptr)
+            {
+                fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+                return std::nullopt;
+            }
+            return detailOf(cachedOf(*p, 0, 0, {}));
+        }
+        juce::File f;
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (!presetsFile(name, f, modified, size, id, why))
+            return std::nullopt;
+        const std::string path = f.getFullPathName().toStdString();
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        if (const Cached* c = heldLocked(path, modified, size, id); c != nullptr)
+        {
+            if (!c->broken)
+                return detailOf(*c);
+            fail(why, "\"" + std::string(name) + "\" is damaged, or no project of this plugin's");
+            return std::nullopt;
+        }
+        unread.push_back(path);
+        if (const auto it = cache.find(path); it != cache.end() && !it->second.broken)
+            return detailOf(it->second);                 // as it was: the Reader brings it up to date
+        return Detail{};                                 // never read: the Reader reads it
+    }
+
     int parses() { return parsed.load(std::memory_order_relaxed); }
     int readerParses() { return readerParsed.load(std::memory_order_relaxed); }
     int listings() { return listed.load(std::memory_order_relaxed); }
@@ -1171,6 +1229,7 @@ namespace playground::projectstore
     {
         if (readOnly(name, why))
             return std::nullopt;
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         const std::vector<midilearn::Mapping> maps = midilearn::tidy(midi.mappings);
         const std::vector<SampleRef> refs = refsOf(samples);
         const std::string tidy = tidyName(name);
@@ -1327,6 +1386,7 @@ namespace playground::projectstore
     {
         if (readOnly(name, why))
             return false;
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         const juce::File f = fileOf(name);
         if (f == juce::File() || !f.deleteFile())
         {
@@ -1566,6 +1626,7 @@ namespace playground::projectstore
 
     std::optional<std::string> add(Project p, std::string* why)
     {
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         std::string base = tidyName(ownName(p.name));    // a factory project's copy: its own name
         if (base.empty())
             base = "Imported";
@@ -1623,21 +1684,20 @@ namespace playground::projectstore
             fail(why, "there is no project named \"" + project.name + "\"");
             return {};
         }
-        std::optional<Project> p = project;
-        if (!p->id.empty())
+        if (!project.id.empty())
         {
             // Another file with the same id: one of the two is a copy made in the Finder (an export or an import never
             // carries an id). The copy is the file whose name is not the one written in it while the other's is; when
             // both are so, or neither, the one made later.
             (void)list();                                // the cache holds every project's id
             const std::string path = f.getFullPathName().toStdString();
-            const bool mine = sameName(p->writtenAs, p->name);
+            const bool mine = sameName(project.writtenAs, project.name);
             bool copy = false;
             {
                 const std::lock_guard<std::mutex> lock(cacheMutex);
                 for (const auto& [other, c] : cache)
                 {
-                    if (other == path || c.broken || c.project != p->id)
+                    if (other == path || c.broken || c.project != project.id)
                         continue;
                     const bool theirs = sameName(c.writtenAs, c.entry.name);
                     if (mine != theirs)
@@ -1647,15 +1707,24 @@ namespace playground::projectstore
                 }
             }
             if (!copy)
-                return p->id;
-            p->id = newProjectId();
+                return project.id;
         }
-        if (p->id.empty())
-            p->id = newProjectId();                      // a project from before ids: its first
-        const std::string made = p->id;
-        if (!write(std::move(*p), why))
-            return {};
-        return made;
+        // A new id (a project from before ids: its first; a copy: one of its own), written by the store's one writer
+        // into the file as it is now (update), never `project` as it was read: a save on another thread (the editor's)
+        // may have added a version since. When the file has another id by then (that save made one), it is that one.
+        std::string made, now;
+        if (update(project.name, why, [&](Project& q) {
+                if (q.id != project.id)
+                {
+                    now = q.id;
+                    return false;
+                }
+                q.id = newProjectId();
+                made = q.id;
+                return true;
+            }))
+            return made;
+        return now;
     }
 
     std::string nameOfId(std::string_view id)
@@ -1748,32 +1817,33 @@ namespace playground::projectstore
                     path = std::move(queue.front());
                     queue.pop_front();
                 }
-                if (read(path))
-                    revision.fetch_add(1, std::memory_order_release);
+                read(path);
                 const std::lock_guard<std::mutex> lock(mutex);
                 asked.erase(path);
             }
         }
 
         // The file read whole into the cache, unless the cache holds it as it is already (another caller read it since
-        // it was asked for) or it is gone. Whether the cache took a read.
-        static bool read(const std::string& path)
+        // it was asked for) or it is gone. A read the cache takes moves the revision under the cache's lock, with it:
+        // whoever finds the read in the cache finds the revision moved too (Panel::syncExplorer polls again when it
+        // moved while it polled, so its lists never straddle a read).
+        void read(const std::string& path)
         {
             const juce::File f(juce::String::fromUTF8(path.c_str()));
             juce::int64 modified = 0, size = 0;
             FileId id;
             if (!look(f, modified, size, id))
-                return false;
+                return;
             {
                 const std::lock_guard<std::mutex> lock(cacheMutex);
                 if (const auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
-                    return false;
+                    return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
             const std::optional<Project> p = parse(f, nullptr);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
-            return true;
+            revision.fetch_add(1, std::memory_order_release);
         }
     };
 

@@ -222,6 +222,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kAbTag = funkgui::tags::firstProduct + 15;          // A/B's card
     inline constexpr funkgui::Tag kNameTag = funkgui::tags::firstProduct + 16;        // the name card
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
+    inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -400,7 +401,9 @@ namespace playground::ui
         void runNow();                                   // RUN
         // The draft and the tabs. mergeDraft: a draft the editor has not merged (a host's load, Claude's write) into
         // the tabs, each keeping what was typed in it since the editor last gave its files where that draft left the
-        // file as given (true when one came). pushFiles: the tabs to the processor, never over such a draft (which
+        // file as given, and the tabs added, renamed or closed since where it left those files as given (an added tab
+        // shown stays shown, its name still being typed; true when one came). pushFiles: the tabs to the processor,
+        // never over such a draft (which
         // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
         bool mergeDraft();
         bool pushFiles();
@@ -533,6 +536,14 @@ namespace playground::ui
         bool menuOpenAt(const funkgui::Rect& anchor) const noexcept;
         bool mutedNoticeShown() const noexcept { return mutedShown_; }
         funkgui::Point centreOfMutedSettings() const;
+        // The recorder (EditorPort::recording: the capture tool's, recording for Claude): its notice in the status bar
+        // (REC, the seconds, the marks) while it is armed, with Mark; markNow, the user's mark of this moment (Mark,
+        // Cmd-Shift-M), which the status confirms.
+        bool recordShown() const noexcept { return recording_.stage != RecordingState::Stage::off; }
+        std::string recordText() const;
+        funkgui::Point centreOfMark() const;
+        funkgui::Point centreOfZoom() const;             // the status bar's zoom pill
+        void markNow();
 
         // funkgui::Panel
         void  attach(funkgui::HostServices&) override;
@@ -822,6 +833,10 @@ namespace playground::ui
         AbCard ab_{ port_ };
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
+        uint64_t saveSeen_ = 0;                          // EditorPort::saving().done this Panel last said
+        bool saving_ = false;                            // a save of the editor's in flight (its notice SAVING)
+        void savingNotice();                             // SAVING, or what came of it when it ended at once
+        void syncSave();                                 // what a save came to, once it has ended
         int focusBeforeProjects_ = -1;
         // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
         SettingsCard settings_{ port_ };
@@ -833,6 +848,12 @@ namespace playground::ui
         void syncSettings();                             // refresh(): the devices, the app's request, the notice
         void afterSettings(bool wasOpen);                // the card closed: the focus back
         void placeMutedNotice();                         // its button, left of the zoom in the status bar
+        int markItem_ = -1;                              // the recorder's Mark, left of the muted notice and the zoom
+        RecordingState recording_{};
+        std::string recordShownText_;                    // recordText() as last drawn: a frame when it changes
+        double recordingAt_ = -1.0;                      // the last look (ten a second at most)
+        void syncRecording(double nowSec);
+        void placeRecordNotice();
         std::string notice_;                             // RANDOM's or PROJECTS' word in the status, until noticeUntil_
         double noticeUntil_ = -1.0;
         uint32_t randomCount_ = 0;

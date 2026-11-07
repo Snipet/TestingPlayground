@@ -1274,9 +1274,21 @@ namespace playground
 
     ChatState ChatAgent::chatState() const
     {
+        // Whether the chosen provider's key is kept (when none is read yet), asked before mutex_ is taken, never under it
+        // (on Linux the keyring, over D-Bus, at most every 3 s): the editor asks for this on the message thread. A
+        // provider chosen in between shows its own on the next look.
+        ChatProvider chosen;
+        bool held = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            chosen = provider_;
+            held = chosen.kind == "anthropic" ? !key_.empty() : !otherKey_.empty();
+        }
+        const bool kept = !held && keyKept(chosen);
         const std::lock_guard<std::mutex> lock(mutex_);
+        const bool keptHere = kept && chosen.kind == provider_.kind && chosen.base == provider_.base;
         ChatState s;
-        s.hasKey = !key_.empty() || chatstore::hasKey();
+        s.hasKey = !key_.empty() || keptHere;
         s.keyProblem = keyProblem_;
         s.busy = busy_;
         s.asking = !asking_.empty();
@@ -1298,7 +1310,7 @@ namespace playground
         s.provider = provider_;
         s.providerName = providers::nameOf(provider_);
         if (provider_.kind != "anthropic")
-            otherState(s);                         // its key, its models, and none of Anthropic's own
+            otherState(s, keptHere);               // its key, its models, and none of Anthropic's own
         return s;
     }
 
@@ -1309,6 +1321,7 @@ namespace playground
             return false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            ++keyGeneration_;
             key_ = trimmed;
             keyProblem_.clear();
             modelsFetched_ = false;
@@ -1318,13 +1331,20 @@ namespace playground
         return true;
     }
 
+    // The key forgotten here and where it is kept. Not removed from there (a keyring the user left locked): said so, as
+    // an error; the key the next turn finds is then the one still kept, as the card shows.
     void ChatAgent::forgetKey()
     {
-        chatstore::forgetKey();
+        std::string why;
+        const bool removed = chatstore::forgetKey(&why);
         const std::lock_guard<std::mutex> lock(mutex_);
+        ++keyGeneration_;
         key_.clear();
         keyProblem_.clear();
-        addEntry(ChatEntry::Kind::note, std::string("API key removed from ") + kThisMachine + ".");
+        if (removed)
+            addEntry(ChatEntry::Kind::note, std::string("API key removed from ") + kThisMachine + ".");
+        else
+            addEntry(ChatEntry::Kind::error, "The API key could not be removed: " + why + ".");
     }
 
     void ChatAgent::setModel(const std::string& id)
@@ -1410,7 +1430,7 @@ namespace playground
                 const std::string name = juce::File(juce::String::fromUTF8(p.c_str())).getFileName().toStdString();
                 const int waiting = static_cast<int>(attached_.size()) + attaching_ + static_cast<int>(take.size());
                 if (!isPictureName(p))
-                    addEntry(ChatEntry::Kind::note, name + " is not a picture (PNG, JPEG, GIF, WebP, HEIC or TIFF).");
+                    addEntry(ChatEntry::Kind::note, name + " is not a picture (" + chatimages::kFormats + ").");
                 else if (waiting >= chatimages::kMaxPerMessage)
                     addEntry(ChatEntry::Kind::note, "A message takes " + std::to_string(chatimages::kMaxPerMessage)
                                                         + " pictures at most, so " + name + " was not added.");
@@ -2132,26 +2152,31 @@ namespace playground
         worker_ = std::thread([this] { runTurn(); });
     }
 
+    // The key read with mutex_ released: on Linux the keyring may have the desktop ask the user to unlock it and wait
+    // for the answer, while the editor's chatState() and the MCP link's quick calls take mutex_. Kept unless a key was
+    // saved or removed meanwhile (that stands).
     void ChatAgent::ensureKey()
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        loadKey();
-    }
-
-    void ChatAgent::loadKey()
-    {
-        if (!key_.empty())
-            return;
+        uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!key_.empty())
+                return;
+            generation = keyGeneration_;
+        }
         std::string why;
-        if (const auto k = chatstore::loadKey(&why))
+        const std::optional<std::string> k = chatstore::loadKey(&why);
+        const bool kept = k || chatstore::hasKey();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!key_.empty() || keyGeneration_ != generation)
+            return;
+        if (k)
         {
             key_ = *k;
             keyProblem_.clear();
         }
-        else if (chatstore::hasKey())
-        {
+        else if (kept)
             keyProblem_ = why;
-        }
     }
 
     claude::Headers ChatAgent::headersFor(const std::string& key)
@@ -2648,9 +2673,9 @@ namespace playground
             return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
         std::string key;
         claude::Transport* transport = nullptr;
+        ensureKey();                               // a key saved again during the turn (read without the lock)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            loadKey();                             // a key saved again during the turn
             key = key_;
             transport = transport_.get();
             if (key.empty())
@@ -3828,9 +3853,8 @@ namespace playground
         return std::string(mcp::guide::kOutside) + "\n\n" + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
              + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
                "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
-               "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
-               "use. The plugin does not send you its state with each message, as it does its own chat (its "
-               "<plugin_state>): call get_status for the files, the dials and the last run, and read_file before editing a file. "
+               "their DAW and sees your work in its editor. The plugin does not send you its state with each message, as it "
+               "does its own chat: call get_status for the files, the dials and the last run, and read_file before editing a file. "
                "A call without `instance` goes to the target, the instance the user chose in the plugin, else the only "
                "one open (list_instances says which); for another, pass `instance`: the one meant, by its name (\""
              + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the user's words. "
@@ -3840,8 +3864,10 @@ namespace playground
              + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
                "not described again in a later one's (a check's and tune_dials' render settings are as measure_output's, "
                "their goals as set_checks', whose metric lists the names tune_dials' takes). "
-               "What follows is the guide the plugin's chat works from, but for what only that chat has.\n\n"
+               "The rest is the plugin's chat's guide, less what only it has.\n\n"
              + guidePrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes
+             // The cheat sheet (part "cheatsheet"): MCP's alone, the plugin's chat has the whole prompt.
+             + "\n" + cheatSheet()
              // Last, in part "all" alone (every other part ends before it): the lines only the plugin's chat needs.
              + "\n" + mcp::guide::kChatOnly + "\n\n"
                "The plugin's own chat also works from these lines of How you work; they are not for you here (none of what "

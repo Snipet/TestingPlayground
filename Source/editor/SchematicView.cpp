@@ -118,7 +118,7 @@ namespace playground::ui
         float dist(funkgui::Point a, funkgui::Point b) noexcept { return std::hypot(a.x - b.x, a.y - b.y); }
 
         // A menu's commands written "Label   Key": each key in the shortcut column (Dropdown.h), as the user's keyboard
-        // names it (Ctrl- on Windows).
+        // names it (Ctrl- on Windows and Linux).
         void withKeys(funkgui::MenuRequest& request)
         {
             for (funkgui::MenuItem& item : request.items)
@@ -412,7 +412,11 @@ namespace playground::ui
             ++structure_;
             std::vector<std::string> keys;
             for (const cir::Part& p : d_.parts)
+            {
                 keys.push_back("p:" + p.name);
+                if (p.kind == cir::Kind::Pot || p.kind == cir::Kind::Rheostat || p.kind == cir::Kind::S)
+                    keys.push_back("k:" + p.name);       // its circuit dial's knob or chip, while one is drawn
+            }
             for (const cir::Net& n : d_.nets)
                 if (!n.pins.empty())
                     keys.push_back("n:" + n.name);
@@ -422,7 +426,7 @@ namespace playground::ui
             for (const std::string& k : keys)
             {
                 uint32_t h = fnv(k) & 0xFFFFFFu;
-                while (h < 16u || taken.count(h) != 0)
+                while (h < kA11yReserved || taken.count(h) != 0)
                     h = (h + 1u) & 0xFFFFFFu;
                 taken.insert(h);
                 ids_[k] = kA11yBase | h;
@@ -987,7 +991,7 @@ namespace playground::ui
             drag_ = Drag::none;
     }
 
-    bool SchematicView::placeAt(cir::Kind kind, cir::Pt at, cir::Orient o)
+    bool SchematicView::placeAt(cir::Kind kind, cir::Pt at, cir::Orient o, std::string* why)
     {
         ensure();
         cir::Op op;
@@ -999,8 +1003,12 @@ namespace playground::ui
             const bool in = kind == cir::Kind::Input;
             if (in ? nl_.input.has_value() : nl_.output.has_value())
             {
-                say(in ? "The netlist has its input (" + nl_.input->name + "): FMinus takes exactly one"
-                       : "The netlist has its output (" + nl_.output->name + ")");
+                const std::string text = in ? "The netlist has its input (" + nl_.input->name + "): FMinus takes exactly one"
+                                            : "The netlist has its output (" + nl_.output->name + ")";
+                if (why != nullptr)
+                    *why = text;
+                else
+                    say(text);
                 return false;
             }
             const std::string base = in ? "u" : "vout";
@@ -1016,10 +1024,92 @@ namespace playground::ui
         }
         if (op.lines.empty())
             return false;
-        if (!commit({ op }))
+        if (!commit({ op }, why))
             return false;
         selectPart(name, false);
         return true;
+    }
+
+    bool SchematicView::placeAway(cir::Kind kind)
+    {
+        ensure();
+        // at the view's centre, or 4 units right of the selection
+        cir::Pt at = gridAt({ canvas_.centreX(), canvas_.centreY() });
+        if (!st_->selected.empty())
+            if (const int i = d_.part(st_->selected.back()); i >= 0)
+            {
+                const cir::Part& s = d_.parts[static_cast<std::size_t>(i)];
+                const cir::Box body = cir::turned(cir::Orient::r0, cir::symbol(kind).body);
+                at = { s.body.x1 + 4 - body.x0, s.origin.y };
+            }
+        // where that would overlap a part, the next of a few spots around it, then under the drawing (where nothing is:
+        // the view centred there), so that a key or a screen reader's press always places one
+        const cir::Box all = d_.bounds();
+        const cir::Box body = cir::turned(cir::Orient::r0, cir::symbol(kind).body);
+        const cir::Pt spots[] = { at, at + cir::Pt{ 0, 6 }, at + cir::Pt{ 0, -6 }, at + cir::Pt{ 8, 0 }, at + cir::Pt{ 0, 12 },
+                                  at + cir::Pt{ 0, -12 }, at + cir::Pt{ 16, 0 },
+                                  { at.x, (all.empty() ? at.y : all.y1) + 6 - body.y0 } };
+        std::string why;
+        for (std::size_t k = 0; k < std::size(spots); ++k)
+        {
+            why.clear();
+            if (placeAt(kind, spots[k], cir::Orient::r0, &why))
+            {
+                if (k + 1 == std::size(spots) && !st_->selected.empty())
+                    selectPart(st_->selected.front(), true);
+                return true;
+            }
+            if (why.find("overlap") == std::string::npos)
+                break;                                   // refused for another reason: said as it is
+        }
+        if (!why.empty())
+            say(why);
+        return false;
+    }
+
+    void SchematicView::pressButton(Button b, bool reader)
+    {
+        if (!showing())
+            return;
+        switch (b)
+        {
+            case Button::select: setTool(Tool::select); break;
+            case Button::ground: setTool(tool_ == Tool::ground ? Tool::select : Tool::ground); break;
+            case Button::label: setTool(tool_ == Tool::label ? Tool::select : Tool::label); break;
+            case Button::r: case Button::c: case Button::l: case Button::d: case Button::p: case Button::x: case Button::s:
+            {
+                // a click carries the part to the canvas; a screen reader's press places it at once, as its key does
+                // with the pointer away
+                const cir::Kind kind = kBarKinds[static_cast<int>(b) - static_cast<int>(Button::r)];
+                if (reader)
+                    placeAway(kind);
+                else
+                    setTool(Tool::place, kind);
+                break;
+            }
+            case Button::more: openMore(reader); break;
+            case Button::undo: undo(); break;
+            case Button::redo: redo(); break;
+            case Button::tidy: tidy(); break;
+            case Button::zoomOut: zoomTo(zoom() / kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); break;
+            case Button::zoom: fit(false); persist(); break;
+            case Button::zoomIn: zoomTo(zoom() * kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); break;
+            case Button::count: break;
+        }
+    }
+
+    void SchematicView::pressStripButton()
+    {
+        // Play this circuit (its why, when it cannot), or Undo what it wrote
+        const std::string label = stripButton();
+        if (label == "Undo")
+        {
+            if (dials_.undoPlay)
+                dials_.undoPlay();
+        }
+        else if (!label.empty() && dials_.play)
+            if (const std::string why = dials_.play(); !why.empty())
+                say(why);
     }
 
     bool SchematicView::startCircuit()
@@ -1974,30 +2064,11 @@ namespace playground::ui
             if (e.popup)
                 return;
             for (int b = 0; b < static_cast<int>(Button::count); ++b)
-            {
-                if (!buttons_[static_cast<std::size_t>(b)].contains(p))
-                    continue;
-                const Button btn = static_cast<Button>(b);
-                switch (btn)
+                if (buttons_[static_cast<std::size_t>(b)].contains(p))
                 {
-                    case Button::select: setTool(Tool::select); break;
-                    case Button::ground: setTool(tool_ == Tool::ground ? Tool::select : Tool::ground); break;
-                    case Button::label: setTool(tool_ == Tool::label ? Tool::select : Tool::label); break;
-                    case Button::r: case Button::c: case Button::l: case Button::d: case Button::p: case Button::x:
-                    case Button::s:
-                        setTool(Tool::place, kBarKinds[b - static_cast<int>(Button::r)]);
-                        break;
-                    case Button::more: openMenu(p); break;
-                    case Button::undo: undo(); break;
-                    case Button::redo: redo(); break;
-                    case Button::tidy: tidy(); break;
-                    case Button::zoomOut: zoomTo(zoom() / kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); break;
-                    case Button::zoom: fit(false); persist(); break;
-                    case Button::zoomIn: zoomTo(zoom() * kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); break;
-                    case Button::count: break;
+                    pressButton(static_cast<Button>(b), false);
+                    return;
                 }
-                return;
-            }
             return;
         }
         if (strip_.contains(p))
@@ -2006,17 +2077,7 @@ namespace playground::ui
             if (!e.popup && countRect().contains(p))
                 stepProblem(e.mods.shift ? -1 : 1);
             else if (!e.popup && stripButtonRect().contains(p))
-            {
-                // Play this circuit (its why, when it cannot), or Undo what it wrote
-                if (stripButton() == "Undo")
-                {
-                    if (dials_.undoPlay)
-                        dials_.undoPlay();
-                }
-                else if (dials_.play)
-                    if (const std::string why = dials_.play(); !why.empty())
-                        say(why);
-            }
+                pressStripButton();
             return;
         }
         if (!canvas_.contains(p))
@@ -2636,7 +2697,7 @@ namespace playground::ui
         switch (ch)
         {
             case 'f': fit(false); persist(); return true;
-            case 'a': openMenu(centreOfButton(Button::more)); return true;
+            case 'a': openMore(false); return true;
             case 'n':
                 setTool(tool_ == Tool::label ? Tool::select : Tool::label);
                 return true;
@@ -2666,52 +2727,59 @@ namespace playground::ui
             setTool(Tool::place, kind);
             return true;
         }
-        // No pointer over the canvas: at the view's centre, or 4 units right of the selection.
-        cir::Pt at = gridAt({ canvas_.centreX(), canvas_.centreY() });
-        if (!st_->selected.empty())
-            if (const int i = d_.part(st_->selected.back()); i >= 0)
-            {
-                const cir::Part& s = d_.parts[static_cast<std::size_t>(i)];
-                const cir::Box body = cir::turned(cir::Orient::r0, cir::symbol(kind).body);
-                at = { s.body.x1 + 4 - body.x0, s.origin.y };
-            }
-        placeAt(kind, at, cir::Orient::r0);
+        placeAway(kind);                                 // no pointer over the canvas
         return true;
     }
 
     // ---- menus --------------------------------------------------------------------------------------------------------
-    void SchematicView::openMenu(funkgui::Point at)
+    void SchematicView::openMore(bool reader)
     {
         if (host_ == nullptr || !showing())
             return;
         ensure();
         funkgui::MenuRequest request;
-        request.anchor = { at.x, at.y, 1.0f, 1.0f };
+        request.anchor = buttonRect(Button::more);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        for (std::size_t i = 0; i < std::size(kMore); ++i)
+        {
+            funkgui::MenuItem item = dropdown::command(static_cast<int>(i) + 1, shortcutText(kMore[i].label));
+            if (kMore[i].kind == cir::Kind::Input && nl_.input)
+            {
+                item.enabled = false;
+                item.label = "Input (the netlist has one: FMinus takes exactly one)";
+            }
+            if (kMore[i].kind == cir::Kind::Output && nl_.output)
+            {
+                item.enabled = false;
+                item.label = "Output (the netlist has one)";
+            }
+            request.items.push_back(std::move(item));
+        }
+        // the choice carried to the canvas; a screen reader's placed at once, as the toolbar's parts are
+        host_->showMenu(request, [this, reader](int chosen) {
+            if (chosen < 1 || chosen > static_cast<int>(std::size(kMore)) || !showing())
+                return;
+            const cir::Kind kind = kMore[static_cast<std::size_t>(chosen - 1)].kind;
+            if (reader)
+                placeAway(kind);
+            else
+                setTool(Tool::place, kind);
+        });
+    }
+
+    void SchematicView::openMenu(funkgui::Point at)
+    {
+        if (host_ == nullptr || !showing())
+            return;
+        ensure();
         if (toolbar_.contains(at))
         {
-            request.anchor = buttonRect(Button::more);
-            for (std::size_t i = 0; i < std::size(kMore); ++i)
-            {
-                funkgui::MenuItem item = dropdown::command(static_cast<int>(i) + 1, shortcutText(kMore[i].label));
-                if (kMore[i].kind == cir::Kind::Input && nl_.input)
-                {
-                    item.enabled = false;
-                    item.label = "Input (the netlist has one: FMinus takes exactly one)";
-                }
-                if (kMore[i].kind == cir::Kind::Output && nl_.output)
-                {
-                    item.enabled = false;
-                    item.label = "Output (the netlist has one)";
-                }
-                request.items.push_back(std::move(item));
-            }
-            host_->showMenu(request, [this](int chosen) {
-                if (chosen >= 1 && chosen <= static_cast<int>(std::size(kMore)) && showing())
-                    setTool(Tool::place, kMore[static_cast<std::size_t>(chosen - 1)].kind);
-            });
+            openMore(false);
             return;
         }
+        funkgui::MenuRequest request;
+        request.anchor = { at.x, at.y, 1.0f, 1.0f };
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const Hit h = hitAt(at);
         if (h.kind == Hit::Kind::part || h.kind == Hit::Kind::pin || h.kind == Hit::Kind::badge)
         {
@@ -2858,6 +2926,11 @@ namespace playground::ui
             fit(true);
         computeMarks();
         updateProbes();
+        if (std::string shape = a11yShape(); shape != shapeKey_)   // the dials, the strip's button and count, the
+        {                                                            // probe card's controls: items came or went
+            shapeKey_ = std::move(shape);
+            ++shapeA11y_;
+        }
         if (probe_.meters)                               // the meters standing still: an audio thread that stopped
         {
             const uint32_t f = probe_.meters().frame;
@@ -3192,6 +3265,9 @@ namespace playground::ui
         }
         if (d_.parts.empty())
             return emptyNetlist() ? "An empty netlist" : "No part here can be drawn yet";
+        // the drawing's notes, when another banner (Not played: ..., a probe's why, ...) has the strip's right
+        if (const std::string note = noteWords(); !note.empty() && stripBanner() != note)
+            return note;
         return "Drag from a pin to wire it   R C L D P X S place parts   G grounds";
     }
 
@@ -3231,11 +3307,15 @@ namespace playground::ui
                     return b.why;                        // "program.fm:38: Screamer's pots have no dials: the program calls its
                                                          // set()"
         // The drawing's own notes (a *@ line it could not read, parts placed again, nets drawn as name tags for want of
-        // a route): what the next write will make of the block.
-        if (!d_.notes.empty())
-            return "Note: " + d_.notes.front()
-                 + (d_.notes.size() > 1 ? " (+" + std::to_string(d_.notes.size() - 1) + " more)" : std::string());
-        return {};
+        // a route): what the next write will make of the block. (Under another banner, the hint's place says them.)
+        return noteWords();
+    }
+
+    std::string SchematicView::noteWords() const
+    {
+        if (d_.notes.empty())
+            return {};
+        return "Note: " + d_.notes.front() + (d_.notes.size() > 1 ? " (+" + std::to_string(d_.notes.size() - 1) + " more)" : std::string());
     }
 
     std::string SchematicView::stripButton() const
@@ -3270,7 +3350,7 @@ namespace playground::ui
     }
 
     // ---- the circuit dials on the drawing -------------------------------------------------------------------------------
-    std::vector<SchematicView::Knob> SchematicView::knobs() const
+    std::vector<SchematicView::Knob> SchematicView::knobs(bool hidden) const
     {
         std::vector<Knob> out;
         if (!showing() || !dials_.bindings)
@@ -3284,7 +3364,7 @@ namespace playground::ui
                 break;
             }
         const sch::View v = view();
-        if (b == nullptr || sch::labelPx(v, false) <= 0.0f)
+        if (b == nullptr || (!hidden && sch::labelPx(v, false) <= 0.0f))
             return out;
         const auto folded = [](std::string x) {
             for (char& ch : x)
@@ -3520,10 +3600,59 @@ namespace playground::ui
     }
 
     // ---- accessibility ------------------------------------------------------------------------------------------------
+    namespace
+    {
+        // The items' ids past kA11yBase below kA11yReserved (a part's, a net's and a circuit dial's hash past them).
+        constexpr uint32_t kGroupA11y = 0, kPartsA11y = 1, kNetsA11y = 2, kStripA11y = 3, kToolbarA11y = 4, kStripButtonA11y = 5,
+                           kCountA11y = 6, kChipA11y = 7, kReadoutA11y = 8, kPinA11y = 12, kUnpinA11y = 13, kButtonA11y = 16;
+        static_assert(kButtonA11y + static_cast<uint32_t>(SchematicView::Button::count) <= SchematicView::kA11yReserved, "the reserved ids");
+
+        // A toolbar button as a screen reader names it, and what a press does.
+        struct ButtonWords
+        {
+            const char* title;
+            const char* help;
+        };
+        constexpr ButtonWords kButtonA11yWords[] = {
+            { "Select", "the pointer's tool" },
+            { "Ground (G)", "the tool that grounds a pin's or a wire's net" },
+            { "Label (N)", "the tool that names a pin's or a wire's net" },
+            { "Resistor (R)", "places one at the view's centre, or right of the selection" },
+            { "Capacitor (C)", "places one at the view's centre, or right of the selection" },
+            { "Inductor (L)", "places one at the view's centre, or right of the selection" },
+            { "Diode (D)", "places one at the view's centre, or right of the selection" },
+            { "Pot (P)", "places one and its .pot line at the view's centre, or right of the selection" },
+            { "Op amp (X)", "places one at the view's centre, or right of the selection" },
+            { "Switch (S)", "places one and its .switch line at the view's centre, or right of the selection" },
+            { "More parts (A)", "VCVS, VCCS, OTA, DC sources, a rheostat, the input and the output: the one chosen placed" },
+            { "Undo", "the tab's own: the Netlist view's steps too" },
+            { "Redo", "" },
+            { "Tidy", "lays the whole drawing out again, one undo step" },
+            { "Zoom out", "" },
+            { "Zoom", "fits the drawing" },
+            { "Zoom in", "" },
+        };
+        static_assert(std::size(kButtonA11yWords) == static_cast<std::size_t>(SchematicView::Button::count), "a title a button");
+    }
+
     uint32_t SchematicView::a11yRevision() const
     {
         ensure();
-        return structure_ + probeA11y_;                  // parts or nets, or the probes' readouts, came or went
+        // parts or nets, the probes' readouts, or the circuit dials, the strip's button and count, the probe card's
+        // controls came or went
+        return structure_ + probeA11y_ + shapeA11y_;
+    }
+
+    std::string SchematicView::a11yShape() const
+    {
+        if (!showing())
+            return {};
+        std::string s;
+        for (const Knob& k : knobs(true))
+            s += d_.parts[static_cast<std::size_t>(k.part)].name + (k.chip ? "/s" : "/k") + std::to_string(k.slot) + ' ';
+        s += '|' + stripButton() + '|' + (marks_.empty() ? "0" : "1") + (chipRect() ? "1" : "0") + (centreOfPin() ? "1" : "0")
+           + std::to_string(std::min<std::size_t>(pinnedProbes().size(), 3));
+        return s;
     }
 
     uint32_t SchematicView::idOf(const std::string& key) const
@@ -3546,7 +3675,7 @@ namespace playground::ui
             return funkgui::Rect{ x0, y0, x1 - x0, y1 - y0 };
         };
         funkgui::A11yItem group;
-        group.id = kA11yBase;
+        group.id = kA11yBase + kGroupA11y;
         group.role = funkgui::a11yrole::group;
         group.bounds = area_;
         group.title = "Schematic, " + file_;
@@ -3554,7 +3683,7 @@ namespace playground::ui
         group.help = "The Netlist view (Command Shift D) is the keyboard's way to edit it";
         out.push_back(group);
         funkgui::A11yItem parts;
-        parts.id = kA11yBase + 1;
+        parts.id = kA11yBase + kPartsA11y;
         parts.parent = kA11yBase;
         parts.role = funkgui::a11yrole::list;
         parts.bounds = canvas_;
@@ -3576,7 +3705,7 @@ namespace playground::ui
             out.push_back(std::move(it));
         }
         funkgui::A11yItem nets;
-        nets.id = kA11yBase + 2;
+        nets.id = kA11yBase + kNetsA11y;
         nets.parent = kA11yBase;
         nets.role = funkgui::a11yrole::list;
         nets.bounds = canvas_;
@@ -3609,7 +3738,7 @@ namespace playground::ui
             if (p.net.empty())
                 continue;
             funkgui::A11yItem it;
-            it.id = kA11yBase + 8 + static_cast<uint32_t>(k);
+            it.id = kA11yBase + kReadoutA11y + static_cast<uint32_t>(k);
             it.parent = kA11yBase;
             it.role = funkgui::A11yRole::staticText;
             const funkgui::Rect r = k == 0 ? probeCard() : probeLane(static_cast<int>(k) - 1);
@@ -3620,15 +3749,198 @@ namespace playground::ui
             it.readOnly = true;
             out.push_back(std::move(it));
         }
+        // the probe card's chip (the element watched: a dropdown's trigger, Dropdown.h) and Pin; a lane's unpin
+        if (const std::optional<funkgui::Rect> chip = chipRect())
+        {
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kChipA11y;
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::comboBox;
+            it.bounds = *chip;
+            it.title = "Probe element";
+            it.value = probeElement();
+            it.help = "the element of the netlist's array the probes watch";
+            out.push_back(std::move(it));
+        }
+        if (const std::optional<funkgui::Point> pin = centreOfPin(); pin && !slots_[0].net.empty())
+        {
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kPinA11y;
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::button;
+            it.bounds = { pin->x - 0.5f * kPinW, pin->y - 0.5f * kChipH2, kPinW, kChipH2 };
+            it.title = "Pin " + slots_[0].net;
+            it.help = "keeps its probe in a lane";
+            out.push_back(std::move(it));
+        }
+        for (int lane = 0; lane < 3 && lane < static_cast<int>(pinnedProbes().size()); ++lane)
+        {
+            const funkgui::Rect r = probeLane(lane);
+            if (r.h <= 0.0f)
+                continue;
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kUnpinA11y + static_cast<uint32_t>(lane);
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::button;
+            it.bounds = clamp({ r.right() - 6.0f - kUnpinW, r.centreY() - 0.5f * kUnpinW, kUnpinW, kUnpinW });
+            it.title = "Unpin " + pinnedProbes()[static_cast<std::size_t>(lane)];
+            out.push_back(std::move(it));
+        }
+        // the circuit dials: a pot's knob a slider, a switch's chip its positions (a stepped slider, index space), each
+        // its dial's, whatever the zoom (the drawing hides them under 60 %: their items stay)
+        if (dials_.port && dials_.control)
+            for (const Knob& k : knobs(true))
+            {
+                funkgui::ParamPort* port = dials_.port(k.slot);
+                if (port == nullptr)
+                    continue;
+                const Control c = dials_.control(k.slot);
+                const std::string& part = d_.parts[static_cast<std::size_t>(k.part)].name;
+                funkgui::A11yItem it;
+                it.id = idOf("k:" + part);
+                it.parent = kA11yBase;
+                it.role = funkgui::A11yRole::slider;
+                it.bounds = clamp(k.chip ? funkgui::Rect{ k.at.x - 0.5f * kChipW, k.at.y - 0.5f * kChipH, kChipW, kChipH }
+                                         : funkgui::Rect{ k.at.x - kKnobR, k.at.y - kKnobR, 2.0f * kKnobR, 2.0f * kKnobR });
+                it.title = std::string(c.name) + (k.chip ? ", the switch of " : ", the knob of ") + part;
+                const float plain = plainOf(c, port->value01());
+                it.value = asciiText(dialText(c, plain));
+                if (k.chip)
+                {
+                    it.v = std::clamp(static_cast<double>(std::lround(plain - c.min)), 0.0, static_cast<double>(std::max(k.positions - 1, 0)));
+                    it.lo = 0.0;
+                    it.hi = static_cast<double>(std::max(k.positions - 1, 0));
+                    it.step = 1.0;
+                    it.help = "a press steps it";
+                }
+                else
+                {
+                    it.v = port->value01();
+                    it.lo = 0.0;
+                    it.hi = 1.0;
+                    it.step = 0.01;
+                }
+                out.push_back(std::move(it));
+            }
+        // the toolbar: its tools, its parts (a press places one), More, Undo, Redo, Tidy and the zoom
+        funkgui::A11yItem bar;
+        bar.id = kA11yBase + kToolbarA11y;
+        bar.parent = kA11yBase;
+        bar.role = funkgui::a11yrole::group;
+        bar.bounds = toolbar_;
+        bar.title = "Schematic toolbar";
+        out.push_back(bar);
+        for (int b = 0; b < static_cast<int>(Button::count) && b < static_cast<int>(buttons_.size()); ++b)
+        {
+            const Button btn = static_cast<Button>(b);
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kButtonA11y + static_cast<uint32_t>(b);
+            it.parent = bar.id;
+            it.role = funkgui::A11yRole::button;
+            it.bounds = buttons_[static_cast<std::size_t>(b)];
+            it.title = kButtonA11yWords[b].title;
+            it.help = kButtonA11yWords[b].help;
+            if (btn == Button::select || btn == Button::ground || btn == Button::label)
+            {
+                it.role = funkgui::A11yRole::toggleButton;
+                it.checkable = true;
+                it.checked = tool_ == (btn == Button::select ? Tool::select : btn == Button::ground ? Tool::ground : Tool::label);
+            }
+            else if (btn == Button::more)
+                it.role = funkgui::A11yRole::comboBox;
+            else if (btn == Button::undo)
+                it.enabled = ed_->canUndo();
+            else if (btn == Button::redo)
+                it.enabled = ed_->canRedo();
+            else if (btn == Button::zoom)
+                it.value = std::to_string(static_cast<int>(std::lround(zoom() * 100.0f))) + "%";
+            out.push_back(std::move(it));
+        }
+        // the info strip: what it says (its banner, the count, then the notice, the selection or the hint), its button
+        // (Play this circuit, Undo) and its count (a press steps to the next problem's part)
+        {
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kStripA11y;
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::staticText;
+            it.bounds = strip_;
+            it.title = "Schematic info";
+            const std::string l = stripLeft(), r = stripRight();
+            it.value = asciiText(r.empty() ? l : l.empty() ? r : r + ". " + l);
+            it.readOnly = true;
+            out.push_back(std::move(it));
+        }
+        if (const std::string label = stripButton(); !label.empty())
+        {
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kStripButtonA11y;
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::button;
+            it.bounds = stripButtonRect();
+            it.title = label == "Undo" ? "Undo Play this circuit" : label;   // (the toolbar has an Undo of its own)
+            it.help = asciiText(stripBanner());
+            out.push_back(std::move(it));
+        }
+        if (!marks_.empty())
+        {
+            funkgui::A11yItem it;
+            it.id = kA11yBase + kCountA11y;
+            it.parent = kA11yBase;
+            it.role = funkgui::A11yRole::button;
+            it.bounds = countRect();
+            it.title = std::to_string(marks_.size()) + (marks_.size() == 1 ? " problem" : " problems");
+            it.help = "selects the next one's part";
+            out.push_back(std::move(it));
+        }
     }
 
-    bool SchematicView::a11yAction(uint32_t id, funkgui::A11yAction a)
+    bool SchematicView::a11yAction(uint32_t id, funkgui::A11yAction a, double value)
     {
         if (!showing() || (id & 0xFF000000u) != kA11yBase)
             return false;
         ensure();
-        (void)a;
-        if (id == kA11yBase || id == kA11yBase + 1 || id == kA11yBase + 2)
+        const uint32_t k = id - kA11yBase;
+        const bool press = a == funkgui::A11yAction::press || a == funkgui::A11yAction::toggle || a == funkgui::A11yAction::showMenu;
+        if (k == kGroupA11y || k == kPartsA11y || k == kNetsA11y || k == kToolbarA11y || k == kStripA11y)
+            return true;
+        if (k >= kButtonA11y && k < kButtonA11y + static_cast<uint32_t>(Button::count))
+        {
+            if (press)
+                pressButton(static_cast<Button>(k - kButtonA11y), true);
+            return true;
+        }
+        if (k == kStripButtonA11y)
+        {
+            if (press)
+                pressStripButton();
+            return true;
+        }
+        if (k == kCountA11y)
+        {
+            if (press)
+                stepProblem(1);
+            return true;
+        }
+        if (k == kChipA11y)
+        {
+            if (press)
+                openChipMenu();
+            return true;
+        }
+        if (k == kPinA11y)
+        {
+            if (press && !slots_[0].net.empty())
+                pinProbe(slots_[0].net);
+            return true;
+        }
+        if (k >= kUnpinA11y && k < kUnpinA11y + 3)
+        {
+            const std::size_t lane = k - kUnpinA11y;
+            if (press && lane < pinnedProbes().size())
+                unpinProbe(pinnedProbes()[lane]);
+            return true;
+        }
+        if (k < kA11yReserved)
             return true;
         for (const cir::Part& p : d_.parts)
             if (idOf("p:" + p.name) == id)
@@ -3650,6 +3962,52 @@ namespace playground::ui
                     st_->cy = 0.5f * static_cast<float>(b.y0 + b.y1);
                     st_->framed = true;
                     easing_ = false;
+                }
+                return true;
+            }
+        // a circuit dial: through the Panel's gestures on its own port, as the program card's dial writes
+        if (gestures_ != nullptr && dials_.port && dials_.control)
+            for (const Knob& kn : knobs(true))
+            {
+                if (idOf("k:" + d_.parts[static_cast<std::size_t>(kn.part)].name) != id)
+                    continue;
+                funkgui::ParamPort* port = dials_.port(kn.slot);
+                if (port == nullptr)
+                    return true;
+                const Control c = dials_.control(kn.slot);
+                const float now = port->value01();
+                if (kn.chip)
+                {
+                    const long n = std::max(kn.positions, 1);
+                    const long at = std::lround(plainOf(c, now) - c.min);
+                    long to = at;
+                    switch (a)
+                    {
+                        case funkgui::A11yAction::increment: to = std::min(at + 1, n - 1); break;
+                        case funkgui::A11yAction::decrement: to = std::max(at - 1, 0L); break;
+                        case funkgui::A11yAction::setValue: to = std::clamp(std::lround(value), 0L, n - 1); break;
+                        case funkgui::A11yAction::press: case funkgui::A11yAction::toggle: case funkgui::A11yAction::showMenu:
+                            to = (at + 1) % n;           // as its click
+                            break;
+                        case funkgui::A11yAction::focus: break;
+                    }
+                    if (to != at)
+                        gestures_->tap(*port, normOf(c, c.min + static_cast<float>(to)));
+                }
+                else
+                {
+                    float to = now;
+                    switch (a)
+                    {
+                        case funkgui::A11yAction::increment: to = std::min(1.0f, now + 0.01f); break;
+                        case funkgui::A11yAction::decrement: to = std::max(0.0f, now - 0.01f); break;
+                        case funkgui::A11yAction::setValue: to = std::clamp(static_cast<float>(value), 0.0f, 1.0f); break;
+                        case funkgui::A11yAction::press: case funkgui::A11yAction::toggle: case funkgui::A11yAction::showMenu:
+                        case funkgui::A11yAction::focus:
+                            break;
+                    }
+                    if (to != now)
+                        gestures_->tap(*port, to);
                 }
                 return true;
             }

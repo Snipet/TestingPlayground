@@ -1,0 +1,261 @@
+// waveguide.fm: a plucked string or a blown tube: a delay line in a loop (Karplus-Strong, a digital waveguide).
+//
+// A wave runs round a loop as long as the note's period. Each pass loses a little (decay), loses its highs faster
+// (damping) and may spread its partials apart (dispersion: a piano's or a steel string's stretched overtones); the loop
+// is read between samples by an allpass, so the pitch is exact at any frequency and glides. Pluck it, or feed it all the
+// time: a bow's or a breath's noise, or an effect's input (a resonator tuned to a note).
+//
+//   Waveguide string;              a field of your module
+//   string.allocate(lowest, rate); in init: room for the lowest pitch in Hz (20 or more); free it with
+//   string.release();              in end (process may not allocate)
+//   string.set(hz, decay, damping, dispersion);
+//                                  the pitch in Hz; the seconds the fundamental takes to fall 60 dB; damping 0 to 1,
+//                                  how much faster the highs die (0 all alike, 0.3 a steel string, 1 a nylon one or a
+//                                  dull pluck); dispersion 0 to 1, how far the overtones stretch above the harmonics
+//                                  (0 none, 0.3 a piano's low strings, 1 a stiff metal bar: its 8th partial two thirds
+//                                  of a semitone sharp). Once a call, or every 16 samples while it glides
+//   string.tube = true;            a tube closed at one end (a clarinet's): the reflection inverted, odd harmonics
+//                                  only; before set()
+//   string.pluck(position, brightness, level);
+//                                  a pluck: a burst of noise as long as the loop, brightness 0 to 1, position 0 to 1
+//                                  along the string (0.5 the middle: no even harmonics; 0.1 near the bridge: thin and
+//                                  bright), its peak at level; on a string still ringing it adds
+//   y = string.tick(x);            one sample: x goes into the loop as well (0 when it only rings); call it every sample
+//   string.clear();                silence
+// The loop is 2.5 samples at least (its own filters'), so a string tunes up to 0.4 of the rate and a tube (two passes
+// a period) up to 0.2: a pitch above plays as high as it can. Dispersion gives way on high notes. The decay is the
+// fundamental's; a damping that would need a gain above 1 to keep it (a high note, damped hard) makes it shorter. The
+// input passes a DC blocker (5 Hz at any rate): an offset cannot build up in the loop.
+// Every call is safe before allocate (it reads 0 and writes nothing).
+
+enum { WAVEGUIDE_STAGES = 4 };
+
+// atan(x) within 2e-6 rad for x >= 0 (a polynomial: the loop's tuning needs no libm call).
+float waveguideAtan(float x)
+{
+    const bool big = x > 1;
+    const float t = big ? 1 / x : x;
+    const float t2 = t * t;
+    const float a = t * (0.99997726f + t2 * (-0.33262347f + t2 * (0.19354346f + t2 * (-0.11643287f + t2 * (0.05265332f - t2 * 0.01172120f)))));
+    return big ? 1.57079633f - a : a;
+}
+
+module Waveguide
+{
+    // The loop's samples and a pluck's burst: heap blocks (calloc's) as long as the lowest pitch's period.
+    float* line;
+    float* burst;
+    int length;
+    int at;
+    float rate;
+    float lowest;
+    bool tube;
+
+    // What set() works out: the whole samples read back, the allpass's coefficient for the rest, the dispersion's
+    // coefficient, the damping's taps, the gain a pass, the loop's period.
+    int whole;
+    float eta;
+    float disp;
+    bool dispersing;
+    float tapOuter;
+    float tapMiddle;
+    float gain;
+    float period;
+
+    // The filters' state.
+    float apIn;
+    float apOut;
+    float stageIn[WAVEGUIDE_STAGES];
+    float stageOut[WAVEGUIDE_STAGES];
+    float z1;
+    float z2;
+    float dcIn;
+    float dcOut;
+    float dcPole;                                       // the DC blocker's: 5 Hz at the rate
+    int burstLength;
+    int burstAt;
+    int plucks;
+
+    void allocate(float lowestHz, float sampleRate)
+    {
+        release();
+        rate = fmaxf(sampleRate, 1000);
+        lowest = fmaxf(lowestHz, 20);
+        dcPole = expf(-6.28318531f * 5 / rate);
+        const int n = (int)(rate / lowest) + 8;
+        line = calloc(n, sizeof(float));
+        burst = calloc(n, sizeof(float));
+        length = line ? (burst ? n : 0) : 0;
+        if (length == 0)
+        {
+            if (line)
+                free(line);
+            if (burst)
+                free(burst);
+        }
+        at = 0;
+        clear();
+        set(lowest, 1, 0, 0);
+    }
+
+    void release()
+    {
+        if (length > 0)
+        {
+            free(line);
+            free(burst);
+        }
+        length = 0;
+    }
+
+    void set(float hz, float decay, float damping, float dispersion)
+    {
+        if (length == 0)
+            return;
+        const float f = fminf(fmaxf(hz, lowest), 0.45f * rate);
+        const float passes = tube ? 2 * f : f;             // the loop's passes a second
+        period = rate / passes;                           // its delay at f, in samples
+        const float w = 6.28318531f * f / rate;
+        // The damping: three taps of linear phase (a sample's delay at every frequency), 1 at DC, 1 - damping at the
+        // Nyquist frequency.
+        const float d = fminf(fmaxf(damping, 0), 1);
+        tapOuter = 0.25f * d;
+        tapMiddle = 1 - 0.5f * d;
+        float rest = period - 1;
+        // The dispersion: allpass stages that delay the low partials more than the high ones (their phase delay at f,
+        // 2 atan(k tan(w / 2)) / w a stage), left out where the loop is too short for them.
+        const float amount = fminf(dispersion, 1);
+        dispersing = amount > 0;
+        disp = dispersing ? -0.8f * expf(0.4f * logf(amount)) : 0;   // -0.8 amount^0.4: an even step in what is heard
+        if (dispersing)
+        {
+            const float k = (1 - disp) / (1 + disp);
+            const float stages = WAVEGUIDE_STAGES * 2 * waveguideAtan(k * tanf(0.5f * w)) / w;
+            if (rest - stages >= 1.5f)
+                rest -= stages;
+            else
+                dispersing = false;
+        }
+        // The rest: whole samples, and an allpass whose phase delay at f is the fraction left (0.5 to 1.5 samples).
+        rest = fmaxf(rest, 1.5f);
+        whole = (int)(rest - 0.5f);
+        if (whole > length - 2)
+            whole = length - 2;
+        const float fraction = rest - (float)whole;
+        const float half = 0.5f * w;
+        const float k = tanf(fraction * half) / tanf(half);
+        eta = (1 - k) / (1 + k);
+        // The gain a pass: the fundamental down 60 dB in `decay` seconds, the damping's loss at f made up (never above
+        // 1 at DC, where the damping passes everything).
+        const float loss = 1 - 0.5f * d * (1 - cosf(w));
+        gain = fminf(expf(-6.90775528f / (fmaxf(decay, 0.01f) * passes)) / loss, 0.99999f);
+    }
+
+    void pluck(float position, float brightness, float level)
+    {
+        if (length == 0)
+            return;
+        int n = (int)period;
+        n = n < 2 ? 2 : (n > length ? length : n);
+        // Noise, smoothed as brightness says, from a seed of its own each pluck.
+        plucks += 1;
+        const int key = hash(plucks * 7919 + 17);
+        const float c = 1 - 0.97f * (1 - fminf(fmaxf(brightness, 0), 1));
+        float s = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            s += c * (randf(key ^ i) - s);
+            burst[i] = s;
+        }
+        // Where it is plucked: a comb that takes out the harmonics with a node there, round the loop (the burst is one
+        // period of it: what leaves its end comes back to its start). Its first p samples take the noise's last p,
+        // drawn again as they were.
+        int p = (int)(fminf(fmaxf(position, 0.02f), 0.98f) * (float)n);
+        p = p < 1 ? 1 : p;
+        for (int i = n - 1; i >= p; --i)
+            burst[i] -= burst[i - p];
+        s = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            s += c * (randf(key ^ i) - s);
+            if (i >= n - p)
+                burst[i - n + p] -= s;
+        }
+        // No DC, its peak at level.
+        float mean = 0;
+        for (int i = 0; i < n; ++i)
+            mean += burst[i];
+        mean /= (float)n;
+        float peak = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            burst[i] -= mean;
+            peak = fmaxf(peak, fabsf(burst[i]));
+        }
+        const float scale = peak > 0 ? level / peak : 0;
+        for (int i = 0; i < n; ++i)
+            burst[i] *= scale;
+        burstLength = n;
+        burstAt = 0;
+    }
+
+    float tick(float x)
+    {
+        if (length == 0)
+            return 0;
+        // What comes in: x without its DC (a high-pass at 5 Hz), and the pluck's burst while it lasts.
+        dcOut = x - dcIn + dcPole * dcOut;
+        dcIn = x;
+        float in = dcOut;
+        if (burstAt < burstLength)
+        {
+            in += burst[burstAt];
+            burstAt += 1;
+        }
+        // The loop: `whole` samples back, the allpass for the fraction, the dispersion, the damping, the gain.
+        int i = at - whole;
+        if (i < 0)
+            i += length;
+        const float back = line[i];
+        const float fine = eta * (back - apOut) + apIn;
+        apIn = back;
+        apOut = fine;
+        float v = fine;
+        if (dispersing)
+            for (int k = 0; k < WAVEGUIDE_STAGES; ++k)
+            {
+                const float y = disp * (v - stageOut[k]) + stageIn[k];
+                stageIn[k] = v;
+                stageOut[k] = y;
+                v = y;
+            }
+        const float damped = tapOuter * (v + z2) + tapMiddle * z1;
+        z2 = z1;
+        z1 = v;
+        const float y = in + (tube ? -gain : gain) * damped;
+        line[at] = y;
+        at += 1;
+        if (at == length)
+            at = 0;
+        return y;
+    }
+
+    void clear()
+    {
+        for (int i = 0; i < length; ++i)
+            line[i] = 0;
+        apIn = 0;
+        apOut = 0;
+        for (int k = 0; k < WAVEGUIDE_STAGES; ++k)
+        {
+            stageIn[k] = 0;
+            stageOut[k] = 0;
+        }
+        z1 = 0;
+        z2 = 0;
+        dcIn = 0;
+        dcOut = 0;
+        burstLength = 0;
+        burstAt = 0;
+    }
+};

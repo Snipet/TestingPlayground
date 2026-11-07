@@ -37,10 +37,11 @@
 //   TEXT       stripLayout, sameNetlist, lineMap and sameProgram on planted cases
 //   BUDGET     the A* pops of each library netlist's layout, printed, below the caps; the times of a reconcile and a
 //              full layout at 60 parts printed (never asserted); the router's grid bounded: a part moved 9,000 units
-//              away routes nothing (every wired net name tags, one note, the write a fixed point), an op that would do
-//              so is refused, as is a point past reach (place, add, paste); a stray route far out is dropped and the
-//              net routed again; a drawing at the edge of reach places a new part within it and writes only what
-//              reads back
+//              away is wired in groups (every other net routed as before, on a grid within the bound; only the nets
+//              that join it name tags, one note naming them; the write a fixed point), two groups far apart each
+//              wire their own nets; an op that would spread the parts so is refused, as is a point past reach (place,
+//              add, paste); a stray route far out is dropped and the net routed again; a drawing at the edge of reach
+//              places a new part within it and writes only what reads back
 //   CLIP       copied(): parts as text (their lines, no terminal, part lines from the selection's top-left), pasted at a
 //              point (new names, fresh nodes, the top-left there), text no netlist's refused (prose of any first letter:
 //              a value no number, a model or a switch never declared), a paste onto parts refused, a .model's + lines
@@ -1210,22 +1211,78 @@ PROBE(fminus, schematic)
     // The router's grid stays bounded (kRouteCells), and everything a write says reads back (kPartLimit).
     {
         const std::string tone = cir::written(libraryText("diodetone.cir"));
-        // a part moved thousands of units away by hand: nothing routed, every wired net name tags, one note
+        // a part moved thousands of units away by hand: wired in groups, the rest routed on a grid of its own and only
+        // the nets that join the far part name tags, one note naming them
         const std::string far = replaced(tone, partLine(tone, "C2"), "*@ part C2 9000,9000 r90");
         const cir::Drawing d = cir::reconcile(far);
-        int wired = 0, tags = 0;
-        for (const cir::Net& n : d.nets)
-            if (n.style == cir::Style::wired && n.pins.size() >= 2)
+        const cir::Drawing asDrawn = cir::reconcile(tone);
+        const int c2 = d.part("C2");
+        int wired = 0, tags = 0, joining = 0, kept = 0, others = 0;
+        std::vector<int> c2Nets;
+        for (std::size_t n = 0; n < d.nets.size(); ++n)
+        {
+            const cir::Net& net = d.nets[n];
+            if (net.style != cir::Style::wired || net.pins.size() < 2)
+                continue;
+            ++wired;
+            tags += net.unroutable ? 1 : 0;
+            if (std::any_of(net.pins.begin(), net.pins.end(), [&](const cir::PinRef& r) { return r.part == c2; }))
             {
-                ++wired;
-                tags += n.unroutable ? 1 : 0;
+                c2Nets.push_back(static_cast<int>(n));
+                joining += net.unroutable ? 1 : 0;
+                continue;
             }
-        const bool noted = std::any_of(d.notes.begin(), d.notes.end(), [](const std::string& n) { return n.find("past what the router wires") != std::string::npos; });
-        std::printf("budget: C2 at 9000,9000: %s, %d of %d wired nets name tags, %zu note(s)\n", d.budget.wide ? "too wide to route" : "routed", tags, wired,
-                    d.notes.size());
-        P.eq("budget.wide_tags", d.budget.wide && d.budget.cells == 0 && d.budget.pops == 0 && wired > 0 && tags == wired && noted ? 1 : 0, 1);
+            ++others;
+            const int m = asDrawn.net(net.name);
+            kept += m >= 0 && asDrawn.nets[static_cast<std::size_t>(m)].edges == net.edges ? 1 : 0;
+        }
+        std::string whyFar;
+        const bool farClean = routesClean(d, whyFar);
+        const auto noteWith = [&](const std::string& words) {
+            return std::any_of(d.notes.begin(), d.notes.end(), [&](const std::string& n) {
+                return n.find("past what the router wires") != std::string::npos && n.find(words) != std::string::npos;
+            });
+        };
+        std::printf("budget: C2 at 9000,9000: %s, %d of %d wired nets name tags (%d join C2), %d of the other %d routed as before, a grid of %ld "
+                    "points%s%s, %zu note(s): %s\n",
+                    d.budget.wide ? "wired in groups" : "routed", tags, wired, joining, kept, others, d.budget.cells, farClean ? "" : ", ", whyFar.c_str(),
+                    d.notes.size(), d.notes.empty() ? "" : d.notes.front().c_str());
+        P.eq("budget.wide_groups", d.budget.wide && c2 >= 0 && d.budget.cells > 0 && d.budget.cells <= cir::kRouteCells && !c2Nets.empty()
+                                       && joining == static_cast<int>(c2Nets.size()) && tags == joining && d.budget.far == c2Nets && farClean
+                                       && noteWith(" drawn as name tags") ? 1 : 0, 1);
+        P.eq("budget.wide_rest_wired", others > 0 && kept == others ? 1 : 0, 1);
         const std::string w = cir::written(far);
         P.eq("budget.wide_fixed_point", cir::written(w) == w && cir::sameNetlist(w, tone) ? 1 : 0, 1);
+        // two groups far apart, a net in each routed on its group's grid, the one between them name tags
+        {
+            const std::string two = "* g.cir: two groups far apart\n"
+                                    ".input u in\n"
+                                    ".output y o\n"
+                                    "R1 in m 1k\n"
+                                    "C1 m 0 10n\n"
+                                    "R2 m o 1k\n"
+                                    "*@ schematic 1 (the playground's drawing; SPICE reads *@ lines as comments)\n"
+                                    "*@ input u 0,0\n"
+                                    "*@ output y 9000,0\n"
+                                    "*@ part C1 10,5 r90\n"
+                                    "*@ part R1 6,0\n"
+                                    "*@ part R2 8990,0\n"
+                                    ".end\n";
+            const cir::Drawing g = cir::reconcile(two);
+            const auto routed = [&](const char* name) {
+                const int n = g.net(name);
+                return n >= 0 && !g.nets[static_cast<std::size_t>(n)].unroutable && !g.nets[static_cast<std::size_t>(n)].edges.empty();
+            };
+            const int m = g.net("m");
+            std::string why2;
+            const bool clean2 = routesClean(g, why2);
+            std::printf("budget: two groups: in %s, o %s, m %s%s%s\n", routed("in") ? "wired" : "not wired", routed("o") ? "wired" : "not wired",
+                        m >= 0 && g.nets[static_cast<std::size_t>(m)].unroutable ? "name tags" : "wired", clean2 ? "" : ", ", why2.c_str());
+            P.eq("budget.wide_each_group_wired", g.budget.wide && routed("in") && routed("o") && m >= 0 && g.nets[static_cast<std::size_t>(m)].unroutable
+                                                     && g.budget.far == std::vector<int>{ m } && clean2 ? 1 : 0, 1);
+            const std::string w2 = cir::written(two);
+            P.eq("budget.wide_groups_fixed_point", cir::written(w2) == w2 && cir::sameNetlist(w2, two) ? 1 : 0, 1);
+        }
         // an op that would spread the parts so is refused, and so is a point past reach
         std::string why;
         run(tone, { "place C2 9000,9000" }, &why);

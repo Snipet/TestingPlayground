@@ -141,6 +141,12 @@ if(FP_CXX_HAS_WNONTRIVIAL_MEMCALL)
   set_source_files_properties(${_fp_juce_module_tus} DIRECTORY ${PROJECT_SOURCE_DIR}
                               PROPERTIES COMPILE_OPTIONS -Wno-nontrivial-memcall)
 endif()
+# Upstream Clang on Linux also warns -Warray-bounds in the HarfBuzz that JUCE 8.0.4 bundles (one-element arrays read
+# past their declared end, as HarfBuzz means them to): silenced on that translation unit alone.
+if(FP_LINUX)
+  set_property(SOURCE "${juce_SOURCE_DIR}/modules/juce_graphics/juce_graphics_Harfbuzz.cpp"
+               DIRECTORY ${PROJECT_SOURCE_DIR} APPEND PROPERTY COMPILE_OPTIONS -Wno-array-bounds)
+endif()
 
 # ---- shaderc, then bgfx (FunkGui's GPU layer: Metal on macOS, Direct3D 11 on Windows) --------------------------------
 if(NOT FP_WITH_GPU)
@@ -178,8 +184,9 @@ foreach(_t bgfx bx bimg bimg_decode bimg_encode)
   if(TARGET ${_t})
     # A plugin binary exports only its entry points.
     set_target_properties(${_t} PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
-    # Windows: bgfx's own sources warn under clang-cl; third-party code, quiet as FunkGui keeps it (-w is cl's /w).
-    if(FP_WINDOWS)
+    # Windows and Linux: bgfx's own sources warn under clang-cl and upstream clang (miniz's #pragma message, the GL
+    # renderer's constant compares); third-party code, quiet as FunkGui keeps it (-w is cl's /w).
+    if(NOT APPLE)
       target_compile_options(${_t} PRIVATE -w)
     endif()
   endif()

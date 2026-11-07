@@ -3,7 +3,8 @@
 // gui.midi: MIDI learn on the panel's dials (plugin/MidiLearn.h; editor/Panel.cpp's dial menu, Looks.h's midiMark),
 // headless over real Processors, the MIDI in host blocks, to <build>/probe-out/:
 //   gui.midi.menu.png and gui.midi.menu.paper.png     a dial's menu over its dial (FunkGui's MenuLook, as gui.menus)
-//   gui.midi.mapped.menu.png                          ... once the dial has learned a control
+//   gui.midi.mapped.menu.png                          ... once the dial has learned a control (the menus' pictures
+//                                                     skipped, saying so, on Linux with no X display: noDisplay)
 //   gui.midi.learning.png                             the dial learning: its ring, the footer's line under the pointer
 //   gui.midi.mark.png and gui.midi.mark.paper.png     the dial a control moves: its dot, the footer naming the control
 //   gui.midi.gui.png                                  a .gui file's knob a control moves, and one learning
@@ -161,6 +162,11 @@ panel {
     void menuPicture(funkgui::test::Probe& P, Pictures& pics, funkgui::HeadlessHost& host, const pg::ui::Panel& panel,
                      const funkgui::MenuRequest& request, const funkgui::Rect& keep, const std::string& file)
     {
+        if (const std::string why = probe::noDisplay(); !why.empty())
+        {
+            probe::skip(P, "png." + file, why);
+            return;
+        }
         auto backdrop = std::make_unique<Backdrop>();
         backdrop->frame = toJuce(funkgui::rasterise(host.draw(), funkgui::FontService::get().atlas(), 2));
         const juce::Point<int> at = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay() != nullptr

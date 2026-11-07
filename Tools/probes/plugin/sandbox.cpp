@@ -23,8 +23,9 @@
 //            display can show, an array as its elements (ring[i]), an enumeration's an int as FMinus makes it, Shared's
 //            through its pointer, shared->tone): the shader drawn by the GPU in its colour, not FunkGui's striped
 //            placeholder (gui.sandbox.shader.png), its colour from the folder's .sh file (read with the rest), its title
-//            in the library's text (funk/text.sh);
-//            values naming the field the shader reads (an input with no display of its own) changes its colour
+//            in the library's text (funk/text.sh); values naming the field the shader reads (an input with no display
+//            of its own) changes its colour. On Linux, where FunkGui draws no GPU picture (common/Pictures.h), the
+//            render is SoftRaster's, its text saying why, the shader's cell the placeholder; the GPU's rows skipped
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
@@ -50,6 +51,7 @@
 //            (<ENV_PREFIX>SANDBOX_DEADLINE_MS), saying so, the helper gone, and the next call working
 //   IDLE     the helper idle past <ENV_PREFIX>SANDBOX_IDLE_MS ended by the server, and back on the next call, quietly
 //   EXIT     the server gone while its helper hangs: the helper stopped too
+#include "Pictures.h"
 #include "Probe.h"
 
 #include "mcp/McpProtocol.h"
@@ -84,9 +86,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
 #include <libproc.h>
-#include <spawn.h>
 #include <sys/proc.h>
+#else
+#include <dirent.h>
+#endif
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -202,6 +208,7 @@ namespace
         }
 
         // The helper processes it started that still run (its children, but those that ended and wait to be reaped).
+#if defined(__APPLE__)
         std::vector<pid_t> children() const
         {
             pid_t kids[16] = {};
@@ -212,6 +219,44 @@ namespace
                     found.push_back(kids[k]);
             return found;
         }
+#else
+        // Linux: every process's /proc/<pid>/stat whose parent is the server's.
+        std::vector<pid_t> children() const
+        {
+            std::vector<pid_t> found;
+            DIR* d = opendir("/proc");
+            if (d == nullptr)
+                return found;
+            while (const dirent* e = readdir(d))
+            {
+                char* end = nullptr;
+                const long p = std::strtol(e->d_name, &end, 10);
+                char state = 0;
+                pid_t parent = 0;
+                if (p > 0 && *end == '\0' && statOf(static_cast<pid_t>(p), state, parent) && parent == pid
+                    && state != 'Z' && state != 'X')
+                    found.push_back(static_cast<pid_t>(p));
+            }
+            closedir(d);
+            return found;
+        }
+
+        // A process's state and parent, from /proc/<pid>/stat: "pid (name) state ppid ...", the name any bytes, so
+        // read after its last ')'.
+        static bool statOf(pid_t p, char& state, pid_t& parent)
+        {
+            std::ifstream f("/proc/" + std::to_string(p) + "/stat");
+            std::string line;
+            if (!std::getline(f, line))
+                return false;
+            const std::size_t close = line.rfind(')');
+            if (close == std::string::npos || close + 4 > line.size())
+                return false;
+            state = line[close + 2];
+            parent = static_cast<pid_t>(std::strtol(line.c_str() + close + 4, nullptr, 10));
+            return true;
+        }
+#endif
 
         // Whether it has no helper running, within `ms` (a helper ended takes a moment to go).
         bool childless(int ms) const
@@ -228,8 +273,14 @@ namespace
 
         static bool running(pid_t p)
         {
+#if defined(__APPLE__)
             proc_bsdinfo info{};
             return proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, sizeof info) == static_cast<int>(sizeof info) && info.pbi_status != SZOMB;
+#else
+            char state = 0;
+            pid_t parent = 0;
+            return statOf(p, state, parent) && state != 'Z' && state != 'X';
+#endif
         }
 
         void stop()
@@ -443,7 +494,10 @@ PROBE(plugin, sandbox)
         graphite = decode(g.png);
         paper = decode(p.png);
         P.eq("render.size", graphite.getWidth() == 780 && graphite.getHeight() == 390 && paper.getWidth() == 780 && paper.getHeight() == 390 ? 1 : 0, 1);
-        P.eq("render.gpu", has(g.text, "drawn by the GPU") ? 1 : 0, 1);
+        if (const std::string noGpu = probe::noGpuPictures(); noGpu.empty())
+            P.eq("render.gpu", has(g.text, "drawn by the GPU") ? 1 : 0, 1);
+        else   // Linux: SoftRaster's picture, saying why
+            P.eq("render.gpu", has(g.text, "drawn without the GPU (" + noGpu + ")") ? 1 : 0, 1);
         P.eq("render.paper_said", has(p.text, "paper") ? 1 : 0, 1);
         const Diff themes = compare(graphite, paper, {}, 8);
         P.ge("render.themes_differ", themes.outside, themes.total / 2);
@@ -551,10 +605,24 @@ PROBE(plugin, sandbox)
         std::printf("shader cell: %d pixels, %d in its colour, %d the placeholder's, %d of its title's\n", n, magenta, placeholder, title);
         // Built, so the folder's tint.sh was read (an #include of no file is a note, and no build); its colour drawn.
         P.eq("shader.header_read", has(r.text, "Shaders: 1 of 1 built") && !has(r.text, "tint.sh") ? 1 : 0, 1);
-        P.ge("shader.text_drawn", title, 60);
-        P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
-        P.ge("shader.drawn", magenta, n * 9 / 10);
-        P.eq("shader.no_placeholder", placeholder, 0);
+        const std::string noGpu = probe::noGpuPictures();
+        if (noGpu.empty())
+        {
+            P.ge("shader.text_drawn", title, 60);
+            P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
+            P.ge("shader.drawn", magenta, n * 9 / 10);
+            P.eq("shader.no_placeholder", placeholder, 0);
+        }
+        else
+        {
+            // Linux: SoftRaster's picture, saying why, the shader's cell FunkGui's striped placeholder; what the GPU
+            // would draw there, skipped.
+            P.eq("shader.soft_said", found && has(pic.text, "drawn without the GPU (" + noGpu + "): each shader is a striped placeholder")
+                                         && n > 0 ? 1 : 0, 1);
+            P.ge("shader.placeholder", placeholder, n * 9 / 10);
+            for (const char* row : { "shader.text_drawn", "shader.gpu", "shader.drawn", "shader.no_placeholder" })
+                probe::skip(P, row, probe::noGpuPicturesSkip());
+        }
         // values reach a shader's input: shine, which no display shows, at 50 (magenta) and at 500 (green).
         const auto colours = [&](double shine, int& pink, int& green) {
             const Result v = s.sandbox(object({ { "action", "render" }, { "width", 480 }, { "height", 200 }, { "detail", "high" },
@@ -577,8 +645,14 @@ PROBE(plugin, sandbox)
         std::printf("shader cell with shine 50: %d magenta, %d green; with 500: %d magenta, %d green\n", pinkLow, greenLow, pinkHigh,
                     greenHigh);
         P.eq("shader.value_said", has(highText, "shine (as asked)") ? 1 : 0, 1);
-        P.ge("shader.value_low", pinkLow, n * 9 / 10);
-        P.ge("shader.value_high", greenHigh, n * 9 / 10);
+        if (noGpu.empty())
+        {
+            P.ge("shader.value_low", pinkLow, n * 9 / 10);
+            P.ge("shader.value_high", greenHigh, n * 9 / 10);
+        }
+        else
+            for (const char* row : { "shader.value_low", "shader.value_high" })
+                probe::skip(P, row, probe::noGpuPicturesSkip());
 
         // values names fields too (as view_panel's): a main module's and Shared's, drawn in place of the demo's, only
         // their readouts changing; a name that is no dial or field said; the .gui put back after.

@@ -19,10 +19,13 @@
 //   gui.schematic.own.png      a program that calls screamer.cir's set() itself: no knobs, the info strip saying why
 //   gui.schematic.probes.png   Play this circuit's program for diodetone.cir playing (an effect's 1 kHz sine, a synth's
 //                              A4): net a's readout card and two pinned lanes (c, b), each a steady triggered trace
+//   gui.schematic.notes.png    a netlist no program #includes, with a *@ line it cannot read: the Not played banner at
+//                              the info strip's right, the drawing's note at its left
 // (empty.png and dials.png once the check while typing is over: no "Checking..." in a picture, run after run)
 // and checks:
 //   VIEW      the pills (Netlist, Schematic) at the tab bar's right end while a .cir tab shows, labelled at the
-//             default size; a click shows the drawing: opening fits it, never under 60 %; the status line's words; the
+//             default size; a click shows the drawing: opening fits it, never under 60 %, the screamer's labels then
+//             each shown and none over a wire, a pin or a junction; the status line's words; the
 //             parts and wires drawn inside the canvas only; nothing missing from the font; Cmd-Shift-D; the find bar
 //             closed by the drawing (switched to, or its tab shown)
 //   GESTURES  each gives the exact text as one undo step: placing every kind (by click), a wire from pin to pin, a
@@ -56,7 +59,13 @@
 //             edit's overlap outlined
 //   MENUS     the part's, the wire's, the canvas's and More's menus (pendingMenu), each item working (chooseMenuItem)
 //   A11Y      the group, an item a part and a net, their ids the same across a pan and a zoom, the revision too, every
-//             item visible, at 400 % too with parts off the canvas (bounds on it); the focus action selects and centres
+//             item visible, at 400 % too with parts off the canvas (bounds on it); the focus action selects and centres;
+//             the toolbar's buttons (toggles, More a combo box, Undo off with nothing to undo), a part's button and
+//             More's choice placing one at once from a screen reader; each circuit knob a slider of its dial (its value
+//             the dial's text; increment and setValue write the dial and leave the text; listed under 60 % too, the
+//             revision kept), a switch's chip a stepped slider (press, increment within its positions, setValue); the
+//             strip's button (Play this circuit, then Undo) with its banner as its help; the probe card's Pin, the
+//             lanes' unpins and an effect's element chip (a combo box whose press opens its menu)
 //   DIALS     a program holding screamer.cir's module, never calling its set(): a knob beside Pdrive, Ptone and Plevel
 //             on the slots of their dials; a drag up on one turns its dial (the program card's) and leaves the text
 //             alone, the info strip saying its value; a double-click its default, closing the drag its second press
@@ -67,8 +76,10 @@
 //             program, the library tabs it needs), runs it, the view staying on the netlist, and offers Undo, which
 //             gives program.fm's text back in one step; a probe's reason the strip draws (a node typed since RUN)
 //             hides the Undo with the note it takes back, and a wire that resolves leaves both
-//   NOTES     the drawing's notes in the info strip (a *@ part line it cannot read); a part's value spelled out there
-//             (2.2k = 2,200 ohms, 10n = 10 nanofarads); a netlist's law inputs in the status words (otalp.cir's iabc)
+//   NOTES     the drawing's notes in the info strip (a *@ part line it cannot read), and under another banner (Not
+//             played) at its left, where the hint was (a selection's words before them), the strip's item saying both;
+//             a part's value spelled out there (2.2k = 2,200 ohms, 10n = 10 nanofarads); a netlist's law inputs in the
+//             status words (otalp.cir's iabc)
 //   PERSIST   nothing kept by opening; a Panel opened again keeps each file's view, zoom and pan (the session's views);
 //             a view switched but never zoomed nor panned keeps no zoom, and fits again when opened again; a text-only
 //             netlist's session pins, after Claude added a part by text: a view_panel picture leaves them as they were,
@@ -122,6 +133,7 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <juce_core/juce_core.h>
@@ -565,6 +577,27 @@ PROBE(gui, schematic)
         P.eq("view.not_played", v.stripRight() == "Not played: no program #includes screamer.cir" ? 1 : 0, 1);
         P.ge("view.screamer_zoom", v.zoom(), 0.6);
         {
+            // its labels at the opening zoom: each part's shown, none over a wire, a pin or a junction (its feedback rows
+            // 4 units apart: a row's name and value on one line between them)
+            funkgui::Canvas lc(funkgui::FontService::get().atlas());
+            std::vector<std::string> values;
+            for (const cir::Part& p : v.drawing().parts)
+                values.push_back(sch::valueText(v.netlist(), p));
+            const std::vector<sch::LabelSpot> spots = sch::placeLabels(lc, v.view(), v.drawing(), values, sch::labelPx(v.view(), false));
+            int shown = 0, elements = 0;
+            std::string crossing;
+            for (std::size_t i = 0; i < spots.size(); ++i)
+            {
+                elements += v.drawing().parts[i].element >= 0 ? 1 : 0;
+                shown += spots[i].shown ? 1 : 0;
+                if (spots[i].shown && !spots[i].backdrop)
+                    crossing += " " + v.drawing().parts[i].name;
+            }
+            std::printf("screamer at %.0f%%: %d of %d labels shown, over a connection:%s\n", static_cast<double>(v.zoom() * 100.0f), shown, elements,
+                        crossing.empty() ? " none" : crossing.c_str());
+            P.eq("view.screamer_labels_clear", shown == elements && crossing.empty() ? 1 : 0, 1);
+        }
+        {
             // the drawing's budget: 3,000 primitives a frame for 40 parts (the screamer has 23; the grid, the toolbar
             // and the info strip counted in)
             const funkgui::PrimList& sf = host.draw();
@@ -655,7 +688,7 @@ PROBE(gui, schematic)
         const bool found = bad.find(from) != std::string::npos;
         if (found)
             bad.replace(bad.find(from), from.size(), "*@ part R1 6,x");
-        Rig r(draftWith(dialsProgram("d.cir", 1), { { "d.cir", bad }, { "otalp.cir", libraryText("otalp.cir") } }, 1));
+        Rig r(draftWith(dialsProgram("d.cir", 1), { { "d.cir", bad }, { "otalp.cir", libraryText("otalp.cir") }, { "e.cir", bad } }, 1));
         r.panel->setSchematic(true);
         r.host->settle();
         SV& v = r.view();
@@ -676,6 +709,31 @@ PROBE(gui, schematic)
         r.host->settle();
         std::printf("otalp.cir: %s\n", v.statusWords().c_str());
         P.eq("notes.law_inputs", has(v.statusWords(), "   law input iabc   ") ? 1 : 0, 1);
+        // the same notes in a netlist no program #includes: the Not played banner has the strip's right, and the notes
+        // take the hint's place at its left (they hid behind the banner); the strip's item says both (notes.png)
+        {
+            const funkgui::Point t3 = r.panel->centreOfTab(3);
+            r.host->click(t3.x, t3.y);
+            r.panel->setSchematic(true);
+            r.host->settle();
+            std::string said;
+            for (const funkgui::A11yItem& it : r.host->accessibility())
+                if (it.title == "Schematic info")
+                    said = it.value;
+            std::printf("notes under Not played: \"%s\" | \"%s\"; said \"%s\"\n", v.stripLeft().c_str(), v.stripRight().c_str(), said.c_str());
+            P.eq("notes.under_not_played", v.stripRight() == "Not played: no program #includes e.cir" && v.stripLeft().rfind("Note: ", 0) == 0
+                                               && has(v.stripLeft(), "'6,x' is not a position") ? 1 : 0, 1);
+            P.eq("notes.said", said.rfind("Not played: no program #includes e.cir. Note: ", 0) == 0 && has(said, "'6,x' is not a position") ? 1 : 0, 1);
+            v.selectPart("R1", false);
+            r.host->tick(1);
+            P.eq("notes.selection_first", v.stripLeft().rfind("R1   ", 0) == 0 ? 1 : 0, 1);
+            const funkgui::Rect cv = v.canvasRect();
+            r.host->click(cv.x + 4.0f, cv.y + 4.0f);   // nothing there: the selection cleared
+            r.host->tick(1);
+            P.eq("notes.after_selection", v.selection().empty() && v.stripLeft().rfind("Note: ", 0) == 0 ? 1 : 0, 1);
+            P.eq("notes.checked", checkSettled(*r.host, r.panel->codeAssist()) ? 1 : 0, 1);   // the picture the same each run
+            writePng(P, *r.host, "gui.schematic.notes.png", "notes");
+        }
     }
 
     // ---- GESTURES -------------------------------------------------------------------------------------------------------
@@ -1092,6 +1150,46 @@ PROBE(gui, schematic)
             P.eq("overtaken.typing_kept_over_write", !w3.isError && ed.text() == typed && after.files.size() == 2 && after.files[1].text == typed
                                                          && has(after.files[0].text, "// Claude's write\n") ? 1 : 0, 1);
         }
+        // TABS over a write: a tab added (the +: its name being typed), then renamed, then closed, each with a write of
+        // Claude's to program.fm before a frame merged it: the tab stays (shown, its name still being typed), the new
+        // name stays, the closed one stays closed, and each write lands
+        {
+            const auto claudeWrites = [&](const char* line) {
+                const std::string program = r.processor.editorPort().draft().files[0].text + line;
+                return !r.processor.chatAgent()
+                            .mcpCall("write_file", pg::claude::object({ { "name", "program.fm" }, { "content", juce::String(program) } }))
+                            .isError;
+            };
+            const auto portNames = [&] {
+                std::string names;
+                for (const pg::SourceFile& f : r.processor.editorPort().draft().files)
+                    names += (names.empty() ? "" : " ") + f.name;
+                return names;
+            };
+            const auto landed = [&](const char* line) { return has(r.processor.editorPort().draft().files[0].text, line); };
+            const funkgui::Point plus = panel.centreOfNewTab();
+            host.click(plus.x, plus.y);
+            const std::string fresh = panel.fileName(panel.fileCount() - 1);
+            const bool w1 = claudeWrites("// a write as the tab came\n");
+            host.tick(1);
+            std::printf("tabs over a write: %s added: %d tabs, shown %d, naming %d; the port's files: %s\n", fresh.c_str(), panel.fileCount(),
+                        panel.activeFile(), panel.renamingFile() ? 1 : 0, portNames().c_str());
+            P.eq("overtaken.new_tab_kept", w1 && panel.fileCount() == 3 && panel.fileName(2) == fresh && panel.activeFile() == 2 && panel.renamingFile()
+                                               && portNames() == "program.fm g.cir " + fresh && landed("// a write as the tab came\n") ? 1 : 0, 1);
+            host.keys("n,o,t,e,s,.,f,m,return");
+            const bool w2 = claudeWrites("// a write as it was named\n");
+            host.tick(1);
+            std::printf("tabs over a write: renamed: %s\n", portNames().c_str());
+            P.eq("overtaken.renamed_tab_kept", w2 && !panel.renamingFile() && panel.fileCount() == 3 && panel.fileName(2) == "notes.fm"
+                                                   && portNames() == "program.fm g.cir notes.fm" && landed("// a write as it was named\n") ? 1 : 0, 1);
+            const funkgui::Point x = panel.centreOfCloseTab(2);
+            host.click(x.x, x.y);
+            const bool w3 = claudeWrites("// a write as it closed\n");
+            host.tick(1);
+            std::printf("tabs over a write: closed: %s\n", portNames().c_str());
+            P.eq("overtaken.closed_tab_stays_closed", w3 && panel.fileCount() == 2 && portNames() == "program.fm g.cir"
+                                                          && landed("// a write as it closed\n") ? 1 : 0, 1);
+        }
     }
 
     // ---- POINTER, KEYS --------------------------------------------------------------------------------------------------
@@ -1418,6 +1516,48 @@ PROBE(gui, schematic)
             P.eq("menus.more_key", host.pendingMenu() != nullptr ? 1 : 0, 1);
             P.eq("menus.more_vccs", choose(host, "VCCS") && v.carried() == cir::Kind::Vccs ? 1 : 0, 1);
             host.keys("escape");
+        }
+        // A11Y: the toolbar's buttons as items under its group (Select, Ground and Label toggles, More a combo box, Undo
+        // off with nothing to undo); a screen reader's press on a part's button places one at once (one undo step), as
+        // its key does with the pointer away, and More's choice is placed so
+        {
+            uint32_t barId = 0;
+            for (const funkgui::A11yItem& it : host.accessibility())
+                if (it.title == "Schematic toolbar" && it.role == funkgui::a11yrole::group)
+                    barId = it.id;
+            std::map<std::string, funkgui::A11yItem> bar;
+            for (const funkgui::A11yItem& it : host.accessibility())
+                if (barId != 0 && it.parent == barId)
+                    bar[it.title] = it;
+            const auto item = [&](const std::string& t) { return bar.count(t) != 0 ? bar.at(t) : funkgui::A11yItem{}; };
+            std::string titles;
+            for (const auto& [t, it] : bar)
+                titles += (titles.empty() ? "" : ", ") + t;
+            std::printf("toolbar items: %s\n", titles.c_str());
+            const bool listed = bar.size() == static_cast<std::size_t>(SV::Button::count) && item("More parts (A)").role == funkgui::A11yRole::comboBox
+                             && item("Select").role == funkgui::A11yRole::toggleButton && item("Select").checked && !item("Ground (G)").checked
+                             && item("Resistor (R)").role == funkgui::A11yRole::button && item("Zoom").value == std::to_string(static_cast<int>(std::lround(v.zoom() * 100.0f))) + "%"
+                             && item("Undo").enabled == ed.canUndo() && item("Undo").bounds.w > 0.0f;
+            P.eq("a11y.toolbar", listed ? 1 : 0, 1);
+            const std::string text = ed.text();
+            const std::size_t parts = cir::read(text).elements.size();
+            panel.a11yAction(item("Capacitor (C)").id, funkgui::A11yAction::press);
+            host.tick(1);
+            std::printf("a part's button pressed: %zu -> %zu elements, tool %d, the strip \"%s\"\n", parts, cir::read(ed.text()).elements.size(),
+                        static_cast<int>(v.tool()), v.stripLeft().c_str());
+            const bool placed = cir::read(ed.text()).elements.size() == parts + 1 && v.tool() == SV::Tool::select;
+            const bool oneStep = ed.undo() && ed.text() == text;
+            host.tick(1);
+            P.eq("a11y.part_button_places", placed && oneStep ? 1 : 0, 1);
+            panel.a11yAction(item("More parts (A)").id, funkgui::A11yAction::press);
+            const bool menu = menuLabels(host).size() == 8;
+            const bool chosen = choose(host, "DC voltage");
+            host.tick(1);
+            const cir::Netlist after = cir::read(ed.text());
+            const bool placedV = after.elements.size() == parts + 1 && after.elements.back().kind == cir::Kind::V && v.tool() == SV::Tool::select;
+            const bool undone = ed.undo() && ed.text() == text;
+            host.tick(1);
+            P.eq("a11y.more_places", menu && chosen && placedV && undone ? 1 : 0, 1);
         }
         // the part's menu, each item
         const std::string beforeMenus = ed.text();
@@ -1972,6 +2112,57 @@ PROBE(gui, schematic)
             host.tick(20);
             P.eq("dials.automation_settles", v.settled() ? 1 : 0, 1);
         }
+        // A11Y: each knob a slider of its dial, titled by its dial and its part, its value the dial's text; increment and
+        // setValue write the dial (the Panel's gestures, as a drag does); listed under 60 % too, where none is drawn
+        {
+            const auto knobItems = [&] {
+                std::map<std::string, funkgui::A11yItem> out;
+                for (const funkgui::A11yItem& it : host.accessibility())
+                    if (it.role == funkgui::A11yRole::slider && (it.id & 0xFF000000u) == SV::kA11yBase)
+                        out[it.title] = it;
+                return out;
+            };
+            funkgui::ParamPort& dial = *r.processor.ports()[0];
+            const float was = dial.value01();
+            std::map<std::string, funkgui::A11yItem> items = knobItems();
+            std::string titles;
+            for (const auto& [t, it] : items)
+                titles += "[" + t + ": " + it.value + "]";
+            std::printf("dials: a11y %s\n", titles.c_str());
+            const auto drive = items.find("drive, the knob of Pdrive");
+            const bool listed = items.size() == 3 && drive != items.end() && items.count("tone, the knob of Ptone") == 1
+                             && items.count("level, the knob of Plevel") == 1 && drive->second.value == "50 %"
+                             && std::abs(drive->second.v - static_cast<double>(was)) < 1e-6 && drive->second.step > 0.0
+                             && v.canvasRect().contains({ drive->second.bounds.centreX(), drive->second.bounds.centreY() });
+            P.eq("a11y.knobs", listed ? 1 : 0, 1);
+            if (drive != items.end())
+            {
+                const uint32_t id = drive->second.id;
+                panel.a11yAction(id, funkgui::A11yAction::increment);
+                host.tick(1);
+                const float up = dial.value01();
+                panel.a11yAction(id, funkgui::A11yAction::setValue, 0.25);
+                host.tick(1);
+                const float set = dial.value01();
+                std::printf("dials: a11y increment %.3f -> %.3f, setValue 0.25 -> %.3f\n", static_cast<double>(was), static_cast<double>(up),
+                            static_cast<double>(set));
+                P.eq("a11y.knob_writes", std::abs(up - (was + 0.01f)) < 1e-4f && std::abs(set - 0.25f) < 1e-6f
+                                             && port.draft().files[1].text == libraryText("screamer.cir") ? 1 : 0, 1);
+                panel.a11yAction(id, funkgui::A11yAction::setValue, static_cast<double>(was));
+                host.tick(1);
+                const uint32_t rev = panel.a11yRevision();
+                const funkgui::Rect cr = v.canvasRect();
+                const float zoom = v.zoom();
+                v.zoomTo(0.3f, { cr.centreX(), cr.centreY() });
+                host.tick(1);
+                const std::map<std::string, funkgui::A11yItem> small = knobItems();
+                P.eq("a11y.knobs_under_60", v.knobCount() == 0 && small.size() == 3 && small.count("drive, the knob of Pdrive") == 1
+                                                && small.at("drive, the knob of Pdrive").id == id && panel.a11yRevision() == rev ? 1 : 0, 1);
+                v.zoomTo(zoom, { cr.centreX(), cr.centreY() });
+                host.tick(1);
+                P.near("a11y.knob_restored", dial.value01(), was, 1e-6);
+            }
+        }
         frame(v, host);                           // 100 %, the drawing centred: room in the canvas's lower left
         host.settle();
         // dragging Pdrive's knob 60 px up turns the dial of its slot (the program card's): +0.4 of its range
@@ -2045,6 +2236,28 @@ PROBE(gui, schematic)
                     static_cast<double>(at2));
         P.eq("dials.chip_steps", chip && v.knobSlot("S1") == 0 && std::string(c.name) == "clip" && at0 == 0.0f && at1 == 1.0f && at2 == 0.0f
                                      ? 1 : 0, 1);
+        // A11Y: the chip a stepped slider of its positions (index space: 0 to 1, a step of 1); a press steps it as its
+        // click, increment and decrement keep within its positions, setValue chooses one
+        {
+            funkgui::A11yItem item;
+            for (const funkgui::A11yItem& it : host.accessibility())
+                if (it.title == "clip, the switch of S1")
+                    item = it;
+            const bool listed = item.id != 0 && item.role == funkgui::A11yRole::slider && item.lo == 0.0 && item.hi == 1.0 && item.step == 1.0
+                             && item.v == 0.0;
+            panel.a11yAction(item.id, funkgui::A11yAction::press);
+            host.tick(1);
+            const float pressed = pg::plainOf(c, sw.value01());
+            panel.a11yAction(item.id, funkgui::A11yAction::increment);
+            host.tick(1);
+            const float capped = pg::plainOf(c, sw.value01());
+            panel.a11yAction(item.id, funkgui::A11yAction::setValue, 0.0);
+            host.tick(1);
+            const float chosen = pg::plainOf(c, sw.value01());
+            std::printf("a switch's chip to a screen reader: \"%s\" %s, press %g, increment %g, setValue 0: %g\n", item.title.c_str(), item.value.c_str(),
+                        static_cast<double>(pressed), static_cast<double>(capped), static_cast<double>(chosen));
+            P.eq("a11y.chip", listed && pressed == 1.0f && capped == 1.0f && chosen == 0.0f ? 1 : 0, 1);
+        }
     }
     {
         // A program that calls the module's set() itself: no knobs, and the info strip says why (own.png).
@@ -2090,6 +2303,14 @@ PROBE(gui, schematic)
         SV& v = r.view();
         P.eq("play.offered", v.stripButton() == "Play this circuit" && v.stripRight() == "Not played: no program #includes diodetone.cir"
                                  && v.centreOfStripButton().has_value() ? 1 : 0, 1);
+        // the strip's button an item, its banner its help (a press plays, as its click: SchematicView::pressStripButton)
+        const auto stripItem = [&](const std::string& title) {
+            for (const funkgui::A11yItem& it : host.accessibility())
+                if (it.role == funkgui::A11yRole::button && it.title == title && (it.id & 0xFF000000u) == SV::kA11yBase)
+                    return it.help;
+            return std::string("(none)");
+        };
+        P.eq("a11y.strip_button", stripItem("Play this circuit") == "Not played: no program #includes diodetone.cir" ? 1 : 0, 1);
         const funkgui::Point b = v.centreOfStripButton().value_or(funkgui::Point{});
         host.click(b.x, b.y);
         r.processor.settle();
@@ -2108,6 +2329,7 @@ PROBE(gui, schematic)
         P.eq("play.runs", port.status().ok && port.status().notes.empty() && names == "tone" ? 1 : 0, 1);
         P.eq("play.view_stays", panel.schematicShown() && v.file() == "diodetone.cir" ? 1 : 0, 1);
         P.eq("play.undo_offered", v.stripButton() == "Undo" && v.stripRight() == "program.fm now plays diodetone.cir" ? 1 : 0, 1);
+        P.eq("a11y.strip_undo", stripItem("Undo Play this circuit") == "program.fm now plays diodetone.cir" && stripItem("Play this circuit") == "(none)" ? 1 : 0, 1);
         writePng(P, host, "gui.schematic.play.png", "play");
         // a probe's reason the strip draws (a node typed since RUN: no card) takes the strip, and the Undo goes with
         // the note it takes back; a wire that resolves (the card's) leaves the note and its Undo
@@ -2338,6 +2560,27 @@ PROBE(gui, schematic)
                     items += it.value.rfind("PEAK ", 0) == 0 && it.value.find(" V   RMS ") != std::string::npos ? 1 : 0;
             P.eq("probes.a11y_readouts", items, 3);
             writePng(P, host, "gui.schematic.probes.png", "probes");
+            // the card's controls as items: Pin (the selected net's), each lane's unpin, an effect's element chip (a
+            // combo box, its value the element watched, whose press opens its menu)
+            int pins = 0, unpins = 0;
+            funkgui::A11yItem chipItem;
+            for (const funkgui::A11yItem& it : host.accessibility())
+            {
+                pins += it.role == funkgui::A11yRole::button && it.title == "Pin a" ? 1 : 0;
+                unpins += it.role == funkgui::A11yRole::button && (it.title == "Unpin c" || it.title == "Unpin b") ? 1 : 0;
+                if (it.role == funkgui::A11yRole::comboBox && it.title == "Probe element")
+                    chipItem = it;
+            }
+            bool chipOk = chipItem.id == 0;
+            if constexpr (!kInstrument)
+            {
+                panel.a11yAction(chipItem.id, funkgui::A11yAction::press);
+                chipOk = chipItem.id != 0 && chipItem.value == "amp[0]" && menuLabels(host) == std::vector<std::string>{ "amp[0]", "amp[1]" };
+                host.cancelMenu();
+                host.tick(1);
+            }
+            std::printf("probes: a11y Pin %d, unpins %d, chip \"%s\"\n", pins, unpins, chipItem.value.c_str());
+            P.eq("probes.a11y_card", pins == 1 && unpins == 2 && chipOk ? 1 : 0, 1);
         }
         // the meters standing still (an audio thread that stopped calling): the readouts stay, and the view settles
         {

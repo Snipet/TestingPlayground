@@ -35,7 +35,8 @@
 //            expected pitch following the wheel; the two notes each alone),
 //            "Unpitched" (with both pitches, no Inharmonic line) for noise and for a sine of its own pitch; the sixteen
 //            voices' CPU in words for the sine voice, none for a voice that ends unless it is the newest, and a voice
-//            that keeps the newest four saying four sound;
+//            that keeps the newest four saying four sound, a #pragma mono program one voice at a time (sixteen with
+//            its dial off);
 //            (the prompt teaches the FFT's builtins and the module Shared too); the Host block (host.fm) as asked:
 //            its line in the report, an instrument's pitch wheel up 2 semitones, an effect's delay of a beat at 90 BPM
 //            (the prompt has THE HOST and host.fm word for word)
@@ -646,6 +647,15 @@ PROBE(plugin, chatexample)
             P.eq("measure.mono_no_sixteen", has(one, "CPU: the notes held take ") && !has(one, "sixteen") && has(one, "Held: peak -12.0 dBFS")
                                                 ? 1 : 0, 1);
             P.eq("measure.four_of_sixteen", has(some, "; sixteen keys at once take ") && has(some, " (4 voices sound).") ? 1 : 0, 1);
+            // A mono program (#pragma mono, no legato: each key a voice of its own, the one before fading out) plays
+            // one voice at a time: its line says so, never sixteen; with its dial off, sixteen.
+            const std::string mono = pg::measure::run(pg::singleFile("#pragma mono\n" + voice), req);
+            std::string switched = "#pragma mono solo\n" + voice;
+            switched.replace(switched.find("    float rate;"), 0, "    param bool solo;\n");
+            const std::string soloOff = pg::measure::run(pg::singleFile(switched), req);
+            std::printf("a mono program's CPU line: %s\nits dial off: %s\n", cpuLine(mono).c_str(), cpuLine(soloOff).c_str());
+            P.eq("measure.mono_one_voice", has(mono, "; mono: one voice at a time.") && !has(cpuLine(mono), "sixteen") ? 1 : 0, 1);
+            P.eq("measure.mono_dial_off_sixteen", has(soloOff, "; sixteen voices at once take ") && !has(soloOff, "mono: one voice") ? 1 : 0, 1);
         }
         // The Host block (host.fm) as measure_output is asked: the pitch wheel up bends it 2 semitones.
         {

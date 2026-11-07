@@ -5,11 +5,14 @@
 // the network, and the key's, the chats' and the projects' folders are the probe's own.
 //   STORE    a chat written: its .chat and .meta sealed ("FPC1"), 0600 in 0700 folders, the store's salt 0600, no word
 //            of it in clear anywhere under the folder; it loads back; a byte changed: refused, saying why; another
-//            writer's change since it was read: a conflict, nothing written; an owner or an id that is no folder's
+//            writer's change since it was read, of the same size and time (only the file's identity tells it): a
+//            conflict, nothing written; an owner or an id that is no folder's
 //            name (../, upper case, a slash) is refused before it reaches a path
 //   ID       a project gets a UUID when it is first saved, kept by its next save; renamed in the Finder it keeps it
 //            (load, idOf), and nameOfId finds it by it; a copy made in the Finder gets an id of its own when opened,
-//            the original keeping its; a project from before ids gets one when opened, written into its file
+//            the original keeping its; a project from before ids gets one when opened, written into its file; a
+//            project read before a save rewrote it (one from before ids, a Finder copy) gets its id written into the
+//            file as it is now (the save's own id, or one of its own), the version saved kept
 //   SWITCH   a chat in project A; opening B (no chats yet) shows a new chat, A's kept; a chat in B; opening A again
 //            brings A's back (its words, its history), and its next request sends A's thinking block unchanged
 //            (preserved thinking); B's comes back with B
@@ -251,7 +254,6 @@ PROBE(plugin, chats)
         {
             const auto now = cs::loadChat(owner, meta.id);   // as the file is now (restored above)
             cs::Stamp mine = now ? now->stamp : cs::Stamp{}, theirs = mine;
-            juce::Thread::sleep(5);
             std::string whyNot;
             const cs::Stamp was = theirs;
             const cs::SaveResult written = cs::saveChat(owner, meta, state + " ", theirs, &whyNot);
@@ -260,6 +262,12 @@ PROBE(plugin, chats)
                             static_cast<long long>(was.modified), static_cast<long long>(was.size),
                             static_cast<long long>(chatFile.getLastModificationTime().toMilliseconds()), static_cast<long long>(chatFile.getSize()));
             P.eq("store.theirs_written", written == cs::SaveResult::ok ? 1 : 0, 1);
+            // Their save given back the time mine read: of the same sealed size, it then differs from mine by its
+            // identity alone (each save renames a new file in), as two saves within one tick of a file clock do (JUCE
+            // reads whole seconds on Linux), so the conflict below rests on that alone.
+            chatFile.setLastModificationTime(juce::Time(mine.modified));
+            P.eq("store.theirs_alike", chatFile.getLastModificationTime().toMilliseconds() == mine.modified && chatFile.getSize() == mine.size
+                                           && chatFile.getFileIdentifier() != mine.id && chatFile.getFileIdentifier() != 0 ? 1 : 0, 1);
             const std::string after = bytesOf(chatFile);
             P.eq("store.conflict", cs::saveChat(owner, meta, state, mine) == cs::SaveResult::conflict ? 1 : 0, 1);
             P.eq("store.conflict_writes_nothing", bytesOf(chatFile) == after ? 1 : 0, 1);
@@ -304,6 +312,30 @@ PROBE(plugin, chats)
         P.eq("id.older_has_none", idInFile("Older").empty() ? 1 : 0, 1);
         const std::string older = ps::idOf("Older");
         P.eq("id.older_gets_one", ps::validProjectId(older) && idInFile("Older") == older ? 1 : 0, 1);
+        // A project read before a save rewrote its file (the editor's save runs on a thread of its own): the id made
+        // from that read goes into the file as it is now, the version saved kept. One from before ids: the id the save
+        // made is its id.
+        old.getDynamicObject()->setProperty("name", "Oldest");
+        projects.getChildFile("Oldest.fmproject").replaceWithText(juce::JSON::toString(old));
+        const std::optional<ps::Project> stale = ps::load("Oldest");
+        const std::size_t staleVersions = stale ? stale->versions.size() : 0;
+        P.eq("id.stale_setup", stale && stale->id.empty() && ps::saveVersion("Oldest", program("oldest 2"), 0, {}).has_value() ? 1 : 0, 1);
+        const std::string saveMade = idInFile("Oldest");
+        const std::string fromStale = stale ? ps::idOf(*stale) : std::string();
+        const std::optional<ps::Project> oldest = ps::load("Oldest");
+        P.eq("id.stale_read_keeps_the_save", ps::validProjectId(saveMade) && fromStale == saveMade && oldest
+                                                 && oldest->versions.size() == staleVersions + 1 ? 1 : 0, 1);
+        // A copy made in the Finder, read, then a version saved into it: an id of its own, the version kept.
+        P.eq("id.gamma_saved", ps::saveVersion("Gamma", program("gamma"), 0, {}).has_value()
+                                   && projects.getChildFile("Gamma.fmproject").copyFileTo(projects.getChildFile("Gamma copy.fmproject")) ? 1 : 0, 1);
+        const std::string gamma = idInFile("Gamma");
+        const std::optional<ps::Project> staleCopy = ps::load("Gamma copy");
+        const bool copySaved = ps::saveVersion("Gamma copy", program("gamma 2"), 0, {}).has_value();
+        const std::string ownId = staleCopy ? ps::idOf(*staleCopy) : std::string();
+        const std::optional<ps::Project> gammaCopy = ps::load("Gamma copy");
+        P.eq("id.stale_copy_keeps_the_save", copySaved && staleCopy && staleCopy->id == gamma && ps::validProjectId(ownId) && ownId != gamma
+                                                 && idInFile("Gamma copy") == ownId && idInFile("Gamma") == gamma && gammaCopy
+                                                 && gammaCopy->versions.size() == staleCopy->versions.size() + 1 ? 1 : 0, 1);
     }
 
     // The processors go before the folders are given back (each keeps its chat as it goes).

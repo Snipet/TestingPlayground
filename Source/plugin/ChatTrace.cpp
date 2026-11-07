@@ -403,7 +403,7 @@ namespace playground
         }
         if (q.render.fromCapture)
         {
-            if (!scenario::captured(host_, recording, why, q.render.captureFrom, q.render.captureTo))
+            if (!scenario::captured(host_, recording, why, q.render))
                 return done((source == "capture" ? "source" : "the scenario") + std::string(" is the recording, but ") + why + ".", true);
             if (source == "capture")
             {

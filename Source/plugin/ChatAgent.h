@@ -439,6 +439,9 @@ namespace playground
         // are chatOnlyLines(), a line each, in their order; the two together are systemPrompt()'s text.
         static const std::string& guidePrompt();
         static std::string chatOnlyLines();
+        // The MCP guide's cheat sheet (part "cheatsheet", mcp::guide::kCheatSheet): the contract, FMinus, the DSP numbers
+        // and pitfalls and the library a line a file, on a page (ChatPrompt.cpp); mcpGuide puts it after the tools' notes.
+        static std::string cheatSheet();
         // The program in several files the system prompt shows, for this plugin's kind (the program first).
         static Sources promptExample();
         static juce::var toolDefinitions();
@@ -509,12 +512,16 @@ namespace playground
         std::string requestBody(std::string& beta);
         bool streamOther(const std::string& body, claude::MessageBuilder& builder, int& status, std::string& error,
                          int& retryAfter);
-        // Another provider: its key (mutex held; "" for none), its models fetched (the worker's, `cancel_` ending it, or
-        // the job thread's, `listCancel_`: once a provider; a failure kept in otherListError_), whether this turn is
+        // Another provider: the key of `p`'s server ("" for none), read with mutex_ released (the keyring may ask the
+        // user to unlock it, and wait: never under the lock the editor's chatState() takes) and kept as otherKey_ while
+        // `p` is the provider chosen and no key was saved or removed meanwhile (keyGeneration_); whether one is kept for
+        // `p` (no prompt: chatState's, before it takes the lock); its models fetched (the worker's, `cancel_` ending it,
+        // or the job thread's, `listCancel_`: once a provider; a failure kept in otherListError_), whether this turn is
         // another provider's, and a request refused for a reason the turn can work around (a model that takes no
         // pictures, Gemini refusing the tools' JSON Schema): the request made again without it, said in the chat; true
         // when the turn should ask again.
-        void loadOtherKey();
+        std::string otherKeyOf(const ChatProvider& p);
+        bool keyKept(const ChatProvider& p) const;
         void fetchOtherModels(const std::atomic<bool>& cancel);
         bool otherTurn() const;
         bool workAround(int status, const std::string& error);
@@ -524,8 +531,9 @@ namespace playground
         // other: another provider's, ready (`maxTokens` its model's); ended: it cannot start, said in the chat.
         enum class Start : uint8_t { anthropic, other, ended };
         Start startTurn(int& maxTokens);
-        // The provider's state in chatState (mutex held), the settings kept (chat.json), a model's entry of the list.
-        void otherState(ChatState& s) const;
+        // The provider's state in chatState (mutex held; `kept`: keyKept's, asked before), the settings kept
+        // (chat.json), a model's entry of the list.
+        void otherState(ChatState& s, bool kept) const;
         void saveProviderChoice() const;
         const ChatModel* otherModel(const std::string& id) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
@@ -570,8 +578,8 @@ namespace playground
                                    std::string& why);
         std::map<std::string, float> currentDials() const;          // the running program's, by name
         void fetchModels();                                         // the worker, before a turn, once a key is known
-        void ensureKey();                                           // the key, loaded
-        void loadKey();                                             // the same (mutex held)
+        void ensureKey();                                           // the key, loaded (mutex_ not held: it is
+                                                                    // read without it, as otherKeyOf's)
         void refused(const std::string& key, int status, const std::string& why);   // a 401: that key is refused
                                                                     // (mutex held)
         void queueJob(std::function<void()> job);                   // a picture to read, on the job thread
@@ -645,6 +653,8 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
+        uint64_t keyGeneration_ = 0;                                // + 1 for each key saved or removed: a read
+                                                                    // begun before is not kept
         // The provider (Providers.h; setProvider), machine-wide. Anthropic's state is the members above (model_,
         // models_, key_, effort_, ...), untouched while another is chosen; another's is here: its model, its models
         // (the server's list, else the one chosen), its key (bound to its server) and why it cannot be used, the model

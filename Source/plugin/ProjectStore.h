@@ -1,8 +1,9 @@
 // Source/plugin/ProjectStore.h: the projects on this Mac. A project is a program (the editor's files, the tab shown)
 // and its dials' values, under a name, kept as versions (every save adds one, numbered 1, 2, 3, ...: an older one
 // opens again), and its presets: dial settings for its program, no code. One file each, in
-// ~/Library/Audio/Presets/Funk/<this plugin's name>/<name>.fmproject, the effect's apart from the synth's (one's
-// programs do not play in the other). A file is JSON:
+// ~/Library/Audio/Presets/Funk/<this plugin's name>/<name>.fmproject (Windows: Documents\Funk\<name>\; Linux:
+// $XDG_DATA_HOME, else ~/.local/share, /Funk/<name>/), the effect's apart from the synth's (one's programs do not play
+// in the other). A file is JSON:
 //
 //   { "format": "funk-playground-project", "version": 1, "plugin": "<product name>", "kind": "instrument",
 //     "name": "Glass Bloom", "id": "8c1f4e2a-...",
@@ -255,6 +256,25 @@ namespace playground::projectstore
     std::vector<Entry> listCached(std::vector<std::string>& unread);
     std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread,
                                                             std::string* why = nullptr);
+    // A project's versions (each its number, when and what changed, oldest first), its presets and its info, from the same
+    // cache, for PROJECTS and EXPORT on the message thread: as presetsCached, a file the cache does not hold as it is now
+    // goes to `unread` and what the cache last held of it is given, `read` false for one never read (nothing yet); none,
+    // with why, for no such project or a damaged one. A factory project's from what is compiled in.
+    struct VersionSummary
+    {
+        int number = 0;
+        int64_t savedMs = 0;
+        std::string note;
+        friend bool operator==(const VersionSummary&, const VersionSummary&) = default;
+    };
+    struct Detail
+    {
+        bool read = false;
+        std::vector<VersionSummary> versions;
+        std::vector<PresetSummary> presets;
+        Info info;
+    };
+    std::optional<Detail> detailCached(std::string_view name, std::vector<std::string>& unread, std::string* why = nullptr);
 
     // Reads the project files listCached and presetsCached could not serve into the cache, on a thread of its own,
     // one at a time, each path asked once until it is read; revision() counts the files it read into the cache, so a

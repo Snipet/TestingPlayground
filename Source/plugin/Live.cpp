@@ -724,10 +724,13 @@ namespace playground
         Level outL, inL, outCh[2], inCh[2];
         std::vector<double> gains;
         Spectrum outS, inS;
-        std::vector<Seen> shown;
+        std::vector<Seen> shown;                                // the displays' fields, of shownDisplays
+        std::vector<PanelDisplay> shownDisplays;                // the panel they were counted for: its program and table
+        uint64_t shownProgram = 0, shownTable = 0;
         std::vector<double> shares;
         BlockStat worst{};
         int mostVoices = 0, mostReleased = 0, mostPedal = 0, mostFading = 0;
+        int monoReads = 0, polyReads = 0;                       // the reads that found the program mono, and not
         std::bitset<128> notes;
         int velLo = 128, velHi = -1;
         Seen mod, bend, after;
@@ -784,9 +787,19 @@ namespace playground
                         inS.add(r.in);
                     lastFft = m.samples;
                 }
-                if (m.program == r.program)
+                // A frame's fields are the panel's only when the frame is of its program and was read by its tap
+                // table: after a panel's edit the audio thread may read the edit's table before the processor's panel
+                // is the edit's, or the other way round, and the same index is then another field (as ui::TapsShown
+                // holds them). Another panel than the one counted so far starts the count again: the newest is shown.
+                if (m.program == r.program && m.tapTable == r.tapTable)
                 {
-                    shown.resize(r.displays.size());
+                    if (shownDisplays.empty() || r.program != shownProgram || r.tapTable != shownTable || r.displays != shownDisplays)
+                    {
+                        shown.assign(r.displays.size(), Seen{});
+                        shownDisplays = r.displays;
+                        shownProgram = r.program;
+                        shownTable = r.tapTable;
+                    }
                     for (std::size_t i = 0; i < r.displays.size(); ++i)
                         if (const PanelDisplay& d = r.displays[i]; !d.audio() && !d.hidden && d.tap >= 0 && d.tap < kMaxDisplays)
                             shown[i].add(static_cast<double>(m.taps[d.tap]));
@@ -819,6 +832,7 @@ namespace playground
                     mostReleased = std::max(mostReleased, static_cast<int>(m.released));
                     mostPedal = std::max(mostPedal, static_cast<int>(m.pedalHeld));
                     mostFading = std::max(mostFading, static_cast<int>(m.fading));
+                    ++(m.mono ? monoReads : polyReads);
                 }
                 last = r;
             }
@@ -834,6 +848,8 @@ namespace playground
         const Meters& m1 = last.meters;
         const double rate = static_cast<double>(last.rate > 0.0f ? last.rate : r.rate);
         const uint32_t noteOns = m1.noteOns - m0.noteOns, steals = m1.steals - m0.steals, dropped = m1.dropped - m0.dropped;
+        // The voices the program plays at once: one while it was mono at every read (#pragma mono, its dial on).
+        const int ofVoices = monoReads > 0 && polyReads == 0 ? 1 : Patch::kVoices;
         const bool playsDraft = cir::sameProgram(host_.chatRunning(), host_.chatDraft().files);   // *@ lines aside
         const auto racingMoved = [&] {                          // a racing wheel off rest at some time in the window
             for (const Seen& x : racing)
@@ -903,9 +919,9 @@ namespace playground
                 sp->setProperty("in", spectrumVar(inS, inB, inCentroid, inPeaks));
             o->setProperty("spectrum", spectra);
             juce::Array<juce::var> ds;
-            for (std::size_t i = 0; i < shown.size() && i < last.displays.size(); ++i)
+            for (std::size_t i = 0; i < shown.size() && i < shownDisplays.size(); ++i)
                 if (shown[i].count > 0)
-                    ds.add(claude::object({ { "name", juce::String(last.displays[i].name) }, { "kind", kindName(last.displays[i].kind) },
+                    ds.add(claude::object({ { "name", juce::String(shownDisplays[i].name) }, { "kind", kindName(shownDisplays[i].kind) },
                                             { "now", shown[i].now }, { "min", shown[i].lo }, { "max", shown[i].hi } }));
             o->setProperty("displays", ds);
             if constexpr (kInstrument)
@@ -936,9 +952,11 @@ namespace playground
                         w->setProperty("buttons", claude::object({ { "now", buttonsNow }, { "down_in_window", buttonsWere } }));
                     o->setProperty("racing_wheel", wheel);
                 }
-                o->setProperty("voices", claude::object({ { "most", mostVoices }, { "of", Patch::kVoices }, { "released", mostReleased },
+                o->setProperty("voices", claude::object({ { "most", mostVoices }, { "of", ofVoices }, { "released", mostReleased },
                                                           { "pedal_held", mostPedal }, { "fading", mostFading },
                                                           { "steals", static_cast<int>(steals) }, { "dropped", static_cast<int>(dropped) } }));
+                if (monoReads > 0)
+                    o->getProperty("voices").getDynamicObject()->setProperty("mono", polyReads > 0 ? "at times" : "always");
             }
             if (!shares.empty())
                 o->setProperty("cpu_percent", claude::object({ { "p50", 100.0 * pct(shares, 0.5) }, { "p95", 100.0 * pct(shares, 0.95) },
@@ -1021,10 +1039,10 @@ namespace playground
         // The panel's displays.
         {
             std::string ds;
-            for (std::size_t i = 0; i < shown.size() && i < last.displays.size(); ++i)
+            for (std::size_t i = 0; i < shown.size() && i < shownDisplays.size(); ++i)
                 if (shown[i].count > 0)
                 {
-                    const PanelDisplay& d = last.displays[i];
+                    const PanelDisplay& d = shownDisplays[i];
                     ds += (ds.empty() ? "" : "; ") + d.name + " (" + kindName(d.kind) + ") now " + num(shown[i].now)
                         + (shown[i].lo == shown[i].hi ? std::string() : ", " + num(shown[i].lo) + " to " + num(shown[i].hi));
                 }
@@ -1073,7 +1091,10 @@ namespace playground
             if (noteOns == 0 && held.empty() && mostVoices == 0 && blocks > 0 && m1.hostKnown && h.playing)
                 out += ". No note-ons while the host plays: no MIDI arrives (is the track armed, its input routed here?)";
             out += ".\n";
-            out += "Voices: at most " + std::to_string(mostVoices) + " at once (of " + std::to_string(Patch::kVoices) + "), "
+            out += "Voices: at most " + std::to_string(mostVoices) + " at once ("
+                 + (monoReads > 0 && polyReads == 0 ? std::string("of 1: mono")
+                                                    : "of " + std::to_string(Patch::kVoices) + (monoReads > 0 ? "; mono at times" : ""))
+                 + "), "
                  + std::to_string(mostReleased) + " released, " + std::to_string(mostPedal) + " held by the pedal, "
                  + std::to_string(mostFading) + " fading out; " + std::to_string(steals) + " stolen";
             if (dropped > 0)

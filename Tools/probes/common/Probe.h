@@ -20,12 +20,17 @@
 // funkgui::test::Probe is FunkGui's Harness (<funkgui/test/Harness.h>): spec rows near/le/ge/in/eq print a line each,
 // and finish() returns the exit code (0 pass, 1 a spec row failed, 4 a harness error). There are no golden files here:
 // use spec rows with tolerances that state what must hold.
+//
+// A row this machine cannot judge (a GPU picture where FunkGui reads none back: common/Pictures.h; a time budget under
+// emulation: emulated(); a menu's window with no X display: noDisplay()) is never left out in silence: probe::skip
+// prints it with why, and the rows that can be judged there (the fallback, and that it says why) run in its place.
 #pragma once
 
 #include <funkgui/test/Harness.h>
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace probe
 {
@@ -50,6 +55,25 @@ namespace probe
 
     // outDir() / name, as a string, for the probe's "wrote ..." line.
     std::string outPath(const std::string& name);
+
+    // A row skipped here, said: "SKIP       <key>  <why>" where its SPEC line would be, and the results' note
+    // skip_<key> (its other characters as underscores, 64 at most) holding why, so a reader of the results JSON sees it.
+    void skip(funkgui::test::Probe& P, std::string_view key, std::string_view why);
+
+    // Why this process's timings are not the machine's, "" when they are: an x86-64 build run by Rosetta (a Linux
+    // container on Apple silicon, whose /proc/cpuinfo names the CPU "VirtualApple"). A row with a time budget is skipped
+    // there (skip), saying so; everything else runs as anywhere. (QEMU is not told apart: its CPU's name is the same
+    // under KVM, where the timings are the machine's.)
+    std::string emulated();
+
+    // Why JUCE cannot show a window here, "" when it can: on Linux, no X display ($DISPLAY unset), where JUCE's X calls
+    // end the process, even for a menu shown inside a component (gui.menus' and gui.midi's pictures). The rows that need
+    // one are skipped there (skip); the rest of the probe runs.
+    std::string noDisplay();
+
+    // The calling thread's CPU time, ms (Windows: GetThreadTimes, in the scheduler's ticks of about 15.6 ms): what a
+    // cost row times, so that the time a busy machine keeps the thread waiting for a core is not counted.
+    double threadMs();
 }
 
 #define PROBE_FN_(layer, name)  probeFn_##layer##_##name

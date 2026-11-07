@@ -313,9 +313,11 @@ namespace playground::measure
         std::string recording;
         // What the plugin fills in before it renders (plugin/ChatScenario.h): the host's rate and block ("host"), the
         // user's last recording ("capture"; captureFrom and captureTo, in seconds of it, the part replayed, -1: to its
-        // end). Measure renders what the fields above say and ignores these.
+        // end; or the user's marks in it by number, captureFromMark and captureToMark, 0: none, which the plugin reads
+        // from the take). Measure renders what the fields above say and ignores these.
         bool hostRate = false, hostBlock = false, fromCapture = false;
         double captureFrom = 0.0, captureTo = -1.0;
+        int captureFromMark = 0, captureToMark = 0;
         // The program's samples (dsp/Assets.h), which its #pragma sample lines read: the plugin's, filled in with the
         // above (none: each such field empty). A Session made for the request compiles with them.
         Assets assets;
@@ -705,7 +707,7 @@ namespace playground::measure
     // frequency; and its centroid (Spectrum::centroid).
     std::vector<Peak> spectrumPeaks(const std::vector<float>& x, double rate, int count, double* centroidHz = nullptr);
 
-    // ---- loudness and time variation: lufs (noise_lufs), rms_a_db, off_order_db, wobble_db -----------------------------
+    // ---- loudness and time variation: lufs (noise_lufs), rms_a_db, off_order_db, wobble_db, level_wobble_db -----------
     inline constexpr double kLoudnessBlockSeconds = 0.4;     // BS.1770's gating blocks, one every kLoudnessStepSeconds
     inline constexpr double kLoudnessStepSeconds = 0.1;
     inline constexpr double kOrderSeconds = 2.0;             // off_order_db's Blackman-Harris frames: as long as the part,
@@ -768,6 +770,21 @@ namespace playground::measure
     };
     Wobble wobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
                   bool onPeriod = false);
+    // How the level moves (level_wobble_db): over wobble()'s frames (the same places, `onPeriod` too), each frame's level
+    // in dB (both channels' mean square, Hann-weighted; at least kWobbleFloorDb under the loudest frame's), and its
+    // trend there: a straight line fitted (least squares) to the levels of its span's frames within kLevelTrendSeconds of
+    // it. The standard deviation of the levels about their trends: a tremolo moves them, a fade or a decay (a straight
+    // line in dB, or near one over a second) does not. A silent frame is left out; NaN with fewer than three that sound.
+    inline constexpr double kLevelTrendSeconds = 0.5;
+    struct LevelWobble
+    {
+        double db = std::numeric_limits<double>::quiet_NaN();
+        double mostDb = 0.0;                      // the largest level off its trend, either way
+        int frames = 0;                           // the frames that sound
+        int silent = 0;                           // and those left out as silent
+    };
+    LevelWobble levelWobble(const std::vector<float>& l, const std::vector<float>& r, double rate,
+                            const std::vector<Span>& spans, bool onPeriod = false);
     // wobble_db's frame in samples at `rate` (kSpectrumSeconds, at least 16); and an effect's steady tone for it, `n`
     // samples: a partial every rate / wobbleFrame(rate) (10 Hz) in the band (kBandLowHz to kBandHighHz, under the Nyquist
     // frequency), each of the same amplitude (a flat spectrum, as the test noise's) and a fixed random phase, kSteadyToneDb

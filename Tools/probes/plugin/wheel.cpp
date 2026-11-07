@@ -55,7 +55,8 @@
 //               compatibility mode, not switched again until switched off and on (at most one switch each "on")
 //     FAILED    back in its compatibility mode while switching: no second switch, the card says what to do; gone and
 //               the timer firing: the same, listed until switched off; its first report failing: the same, no timer
-//     DENIED    macOS refusing the manager: nothing switched, the card says where to allow it
+//     DENIED    macOS refusing the manager (Linux: the device's node): nothing switched, the card says where to allow
+//               it
 //     QUIT      quit() with a G29 read: the spring off and nothing else; after it nothing is sent, switched or read
 //     RESEND    resend() while read: the whole state again; nothing while off
 //     LIGHTS    the shift lights: read with a program that asks none, none sent and the timer kept every
@@ -748,7 +749,12 @@ PROBE(plugin, wheel)
             denied.opened(wh::Driver::kNotPermitted);
             denied.added(compat, wh::Kind::compat);
             same(P, "driver.denied.nothing_sent", f.take(true), "");
+#if defined(__APPLE__)
             same(P, "driver.denied.said", denied.status(), "macOS keeps it from this app: allow it in Privacy & Security, Input Monitoring");
+#else
+            same(P, "driver.denied.said", denied.status(),
+                 "the system keeps it from this app: its device needs your read and write access (see the README)");
+#endif
             denied.quit();
         }
 

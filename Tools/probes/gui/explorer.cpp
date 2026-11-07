@@ -76,6 +76,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -149,6 +151,24 @@ namespace
         if (p)
             host.click(p->x, p->y);
         host.tick(2);
+        host.settle();
+    }
+
+    // A click on `where` (a row's or a header's centre) once the list is scrolled to show it (from the top, in steps,
+    // when it is not in view), the scroll put back after. The sections above a row differ by machine (CLAUDE DESKTOP
+    // shows its two rows while the MCP link listens, which it does where the sandbox's socket path fits the platform's
+    // limit), so a row in view on one may be below the card on another.
+    void clickInView(funkgui::HeadlessHost& host, pg::ui::ExplorerItem& ex,
+                     const std::function<std::optional<funkgui::Point>()>& where)
+    {
+        const float was = ex.scroll();
+        for (float y = 0.0f; !where() && y <= ex.contentHeight(); y += 40.0f)
+        {
+            ex.scrollTo(y);
+            host.settle();
+        }
+        clickAt(host, where());
+        ex.scrollTo(was);
         host.settle();
     }
 
@@ -258,7 +278,7 @@ PROBE(gui, explorer)
     P.eq("library.included", port.draft().files[0].text.find("#include \"" + libName + "\"") != std::string::npos ? 1 : 0, 1);
     P.eq("library.ticked", ex.row(S::library, libRow) != nullptr && ex.row(S::library, libRow)->marked ? 1 : 0, 1);
     clickAt(host, ex.centreOfRow(S::files, 0));
-    clickAt(host, ex.centreOfRow(S::library, libRow));
+    clickInView(host, ex, [&] { return ex.centreOfRow(S::library, libRow); });   // the added tab moved it down
     P.eq("library.again_shows", panel.fileCount() == filesBefore + 1 && panel.fileName(panel.activeFile()) == libName ? 1 : 0, 1);
 
     // ---- PROJECTS (two saved) and PRESETS (the open one's, two) ---------------------------------------------------------
@@ -458,9 +478,9 @@ PROBE(gui, explorer)
     // ---- FOLD ----------------------------------------------------------------------------------------------------------
     ex.setSectionOpen(S::library, true);
     host.settle();
-    clickAt(host, ex.centreOfHeader(S::library));
+    clickInView(host, ex, [&] { return ex.centreOfHeader(S::library); });
     P.eq("fold.section_closes", ex.sectionOpen(S::library) || ex.centreOfRow(S::library, 1).has_value() ? 0 : 1, 1);
-    clickAt(host, ex.centreOfHeader(S::library));
+    clickInView(host, ex, [&] { return ex.centreOfHeader(S::library); });
     P.eq("fold.section_opens", ex.sectionOpen(S::library) ? 1 : 0, 1);
     const float wideBefore = panel.programCard().w, explorerW = panel.explorerCard().w;
     const funkgui::Point chevron = panel.centreOfExplorerToggle();

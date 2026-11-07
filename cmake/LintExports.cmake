@@ -1,7 +1,9 @@
 # cmake/LintExports.cmake: the export rule, as the CTest test lint.exports (cmake -DFP_BUNDLES=<binary>=<list>;... -P
 # <this>). Each plugin binary exports exactly the symbols of its list (CMakeLists.txt writes them: JUCE's entry points)
 # and nothing else. A library linked into the plugin that exports its own symbols (LLVM, with FMinus) would otherwise
-# share them with every other plugin in the host's process: macOS merges weak definitions across loaded images.
+# share them with every other plugin in the host's process: macOS merges weak definitions across loaded images, and on
+# Linux an exported symbol may be bound to another loaded object's definition. The symbols are the Mach-O's external
+# defined ones on macOS (nm -gU), the ELF's dynamic defined ones on Linux (nm -D --defined-only).
 if(NOT FP_BUNDLES)
   message(FATAL_ERROR "LintExports.cmake: pass -DFP_BUNDLES=<binary>=<list>;...")
 endif()
@@ -14,7 +16,11 @@ foreach(_pair IN LISTS FP_BUNDLES)
   if(NOT EXISTS "${_bin}")
     message(FATAL_ERROR "lint.exports: ${_bin} is not built (build the plugin first)")
   endif()
-  execute_process(COMMAND ${_nm} -gU -j "${_bin}" OUTPUT_VARIABLE _out RESULT_VARIABLE _rc)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    execute_process(COMMAND ${_nm} -D --defined-only -j "${_bin}" OUTPUT_VARIABLE _out RESULT_VARIABLE _rc)
+  else()
+    execute_process(COMMAND ${_nm} -gU -j "${_bin}" OUTPUT_VARIABLE _out RESULT_VARIABLE _rc)
+  endif()
   if(NOT _rc EQUAL 0)
     message(FATAL_ERROR "lint.exports: nm failed on ${_bin}")
   endif()
