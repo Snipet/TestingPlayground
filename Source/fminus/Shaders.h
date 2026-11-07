@@ -6,7 +6,8 @@
 //
 //   u_time      float  seconds, the editor's clock (it moves while the panel draws)
 //   u_size      vec2   the element's size in px
-//   in0 .. in7  float  its inputs in order; in_<name> the same by the input's name (in_cutoff, in_env, in_out):
+//   in0 .. in15 float  its inputs in order (kMaxShaderInputs: FunkGui's 16 params); in_<name> the same by the
+//                      input's name (in_cutoff, in_env, in_out):
 //                      a parameter's value 0..1 (its knob's turn), a field's value as the program writes it, in and
 //                      out the audio's level (its peak, 0..1)
 // and v_uv (0..1 across, y down) and v_px (px from the top left corner), FunkGui's varyings.
@@ -96,7 +97,7 @@ namespace playground
 
     inline constexpr int kShadercAtOnce = 4;  // shaderc's runs at once in a process, at most (fewer on fewer cores)
 
-    // The fragment shader shaderc compiles: FunkGui's head, the plugin's names for `inputs` (up to eight names), and
+    // The fragment shader shaderc compiles: FunkGui's head, the plugin's names for `inputs` (up to sixteen names), and
     // the file's text. bodyLine: the line of the result where the file's first line is.
     std::string shaderSource(const std::string& body, const std::vector<std::string>& inputs, const ShaderTools& tools,
                              int* bodyLine = nullptr);

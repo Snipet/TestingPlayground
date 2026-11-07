@@ -338,7 +338,7 @@ namespace playground::ui
             if (!item.shown() || node < 0 || static_cast<std::size_t>(node) >= spec.gui.nodes.size())
                 continue;
             const GuiNode& n = spec.gui.nodes[static_cast<std::size_t>(node)];
-            std::array<float, 8> v{};
+            std::array<float, kMaxShaderInputs> v{};
             for (std::size_t j = 0; j < v.size(); ++j)
             {
                 const std::string& in = n.inputs[j];

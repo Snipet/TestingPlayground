@@ -1,5 +1,6 @@
 // Source/fminus/Shaders.cpp: see Shaders.h.
 #include "fminus/Shaders.h"
+#include "fminus/PanelSpec.h"
 
 #include "Product.h"
 
@@ -583,9 +584,9 @@ namespace playground
              "#define u_time (u_viewSize.w)\n"
              "#define u_size (u_rect.zw)\n";
         static constexpr const char* kSwizzle[4] = { "x", "y", "z", "w" };
-        for (int k = 0; k < 8; ++k)
+        for (int k = 0; k < kMaxShaderInputs; ++k)
             s += "#define in" + std::to_string(k) + " (u_params[" + std::to_string(k / 4) + "]." + kSwizzle[k % 4] + ")\n";
-        for (std::size_t k = 0; k < inputs.size() && k < 8; ++k)
+        for (std::size_t k = 0; k < inputs.size() && k < static_cast<std::size_t>(kMaxShaderInputs); ++k)
             if (!inputs[k].empty())
                 s += "#define in_" + inputName(inputs[k]) + " in" + std::to_string(k) + "\n";
         if (bodyLine != nullptr)

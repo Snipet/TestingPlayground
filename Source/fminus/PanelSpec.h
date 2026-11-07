@@ -52,7 +52,9 @@ namespace playground
     inline constexpr std::size_t kMaxSectionTitle = 24;   // characters; longer ones are cut
     inline constexpr std::size_t kMaxDialLabel = 14;
     inline constexpr std::size_t kMaxOptionLabel = 10;
-    inline constexpr int kMaxDisplays = 16;               // displays (and so field taps) a program may have
+    inline constexpr int kMaxDisplays = 32;               // displays (and so field taps) a program may have: the
+                                                          // Panel's masks hold a bit each (32 at most)
+    inline constexpr int kMaxShaderInputs = 16;           // a shader's inputs: FunkGui's u_params, 4 vec4s
     inline constexpr int kMaxOptions = 8;                 // values a switch or buttons may name
 
     enum class DisplayKind : uint8_t { meter, vu, led, number, scope, spectrum };   // spectrum: a .gui file's
@@ -168,7 +170,7 @@ namespace playground
         int from = 48, keys = 25;                           // a keyboard's lowest note and its keys
         bool wheels = false;                                // and its pitch and mod wheels, at its left
         std::string file;                                   // a shader's source file
-        std::array<std::string, 8> inputs{};                // a shader's inputs: parameters, fields, in, out
+        std::array<std::string, kMaxShaderInputs> inputs{}; // a shader's inputs: parameters, fields, in, out
         int shader = -1;                                    // a shader's program (PanelSpec::shaders)
         bool operator==(const GuiNode&) const = default;
     };

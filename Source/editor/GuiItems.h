@@ -317,8 +317,8 @@ namespace playground::ui
         // it draws nothing ("" when it draws), and whether it animates.
         void place(const GuiNode& node, const funkgui::Rect& cell, const funkgui::Rect& area, bool shown, uint32_t program,
                    const std::string& file, const std::string& why, bool animated);
-        void setInputs(const std::array<float, 8>& v);
-        const std::array<float, 8>& inputs() const noexcept { return inputs_; }
+        void setInputs(const std::array<float, kMaxShaderInputs>& v);
+        const std::array<float, kMaxShaderInputs>& inputs() const noexcept { return inputs_; }
         uint32_t program() const noexcept { return program_; }
         const std::string& why() const noexcept { return why_; }
         const funkgui::Rect& cell() const noexcept { return cell_; }
@@ -350,7 +350,7 @@ namespace playground::ui
         uint32_t id_;
         uint32_t program_ = 0;
         std::string file_, why_;
-        std::array<float, 8> inputs_{};
+        std::array<float, kMaxShaderInputs> inputs_{};
         funkgui::Rect cell_, area_;
         bool shown_ = false, animated_ = false;
         bool changed_ = false;                           // since the last tick: an input, the program, shown
