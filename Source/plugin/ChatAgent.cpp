@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -328,31 +329,33 @@ namespace playground
                         range += (i == 0 ? "" : " ") + names[i];
                     range += ")";
                 }
+                // A dial's MIDI control by its name in `controls` (a compile apply() has not taken yet may have put
+                // it in another slot than the mappings were bound to: MidiLearn.h's View).
+                const midilearn::Mapping* m = midi.forDial(std::string_view(k.name, strnlen(k.name, sizeof k.name)));
                 out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
                      + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "")
-                     + (midi.words[static_cast<std::size_t>(c)].empty() ? std::string()
-                                                                        : ", moved by MIDI " + midi.words[static_cast<std::size_t>(c)])
-                     + "\n";
+                     + (m == nullptr ? std::string() : ", moved by MIDI " + midilearn::describe(*m)) + "\n";
             }
             return out.empty() ? "none\n" : out;
         }
 
         // MIDI learn's state beyond the dial lines (plugin/MidiLearn.h), "" when there is none to say: a dial learning
-        // (and a control it refused), mappings whose dial the program has none of.
-        std::string midiLines(const ChatHost& host)
+        // (and a control it refused), mappings whose dial `controls` (the dial lines') have none of.
+        std::string midiLines(const Controls& controls, const ChatHost& host)
         {
             const midilearn::View midi = host.chatMidi();
             std::string out;
             if (midi.learning >= 0)
                 out += "MIDI learn: " + midi.learningDial + " waits for the user to move a control on a MIDI controller"
                      + (midi.note.empty() ? std::string() : " (" + midi.note + ")") + "\n";
-            if (!midi.waiting.empty())
-            {
-                out += "MIDI mappings waiting for a dial of their name:";
-                for (std::size_t i = 0; i < midi.waiting.size(); ++i)
-                    out += std::string(i == 0 ? " " : ", ") + midi.waiting[i].dial + " (" + midilearn::describe(midi.waiting[i]) + ")";
-                out += "\n";
-            }
+            std::string waiting;
+            for (const midilearn::Mapping& m : midi.mappings)
+                if (std::none_of(controls.begin(), controls.end(), [&](const Control& k) {
+                        return k.used && std::string_view(k.name, strnlen(k.name, sizeof k.name)) == m.dial;
+                    }))
+                    waiting += (waiting.empty() ? " " : ", ") + m.dial + " (" + midilearn::describe(m) + ")";
+            if (!waiting.empty())
+                out += "MIDI mappings waiting for a dial of their name:" + waiting + "\n";
             return out;
         }
 
@@ -2026,6 +2029,8 @@ namespace playground
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
         const std::string ab = host_.chatAb();
+        const Controls controls = host_.chatDials();
+        const std::string dials = dialLines(controls, host_);
         std::string tail = "What plays: "
                          + std::string(cir::sameProgram(running, d.files) ? "these files"
                                        : !ab.empty()                       ? "a side of the user's A/B listening (below)"
@@ -2033,8 +2038,7 @@ namespace playground
                                                                              "were edited since the last run)")
                          + (ab.empty() ? std::string() : "\n" + ab)
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
-                         + dialLines(host_.chatDials(), host_) + midiLines(host_)
-                         + (status.ok ? panelLine(status.panel, status.controls) : "");
+                         + dials + midiLines(controls, host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
@@ -4766,7 +4770,8 @@ namespace playground
             if (!ab.empty())
                 out += ab + "\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
-            out += "Dials:\n" + dialLines(host_.chatDials(), host_) + midiLines(host_);
+            const Controls controls = host_.chatDials();
+            out += "Dials:\n" + dialLines(controls, host_) + midiLines(controls, host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "
                    "(the busiest recent block)\n";
             const uint32_t a = host_.chatAlerts();

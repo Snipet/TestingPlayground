@@ -12,9 +12,13 @@
 //               bits when the controller sends a pair (MIDI's control 0 to 31 with its LSB, the number + 32, after
 //               it), else 7. One control a dial, one dial a control: learning one takes it from where it was.
 //   learning    one dial at a time; the first control change on any channel decides (a control 0 to 31 waits kPairMs
-//               for its LSB; an LSB whose MSB came is that pair). A racing wheel's controls (dsp/Events.h's wheelcc:
-//               16 to 24 and 48 to 51, on any channel: the Engine reads them into the Host block) and the channel
-//               mode messages (120 to 127) are refused, in words (refusal()), and learning goes on.
+//               for its LSB; an LSB whose MSB came is that pair). The channel mode messages (120 to 127) are refused,
+//               and so, while the Standalone's racing wheel is on (setWheel), are its controls on channel 1, the one
+//               it sends on (dsp/Events.h's wheelcc: 16 to 24 and 48 to 51; it sends them all again when the devices
+//               change, so learning would take the wheel's in place of the knob moved): in words (refusal()), and
+//               learning goes on. Elsewhere (a host, the Standalone with no wheel on) those controls are learned as
+//               any other, a controller's knob on CC 16 as well: the Engine reads them into the Host block's wheel
+//               fields from any channel whether a dial learned them or not.
 //   moving      a control's value (7 bits: v / 127; 14 bits: (MSB << 7 | LSB) / 16383, an MSB setting its LSB to 0
 //               as MIDI says) is the dial's normalised value. The audio thread only notes the newest value of each
 //               slot (controlChange: atomics, no lock, no allocation); the message thread takes them (tick) and
@@ -32,6 +36,7 @@
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace playground::midilearn
@@ -53,26 +58,32 @@ namespace playground::midilearn
         friend bool operator==(const Mapping&, const Mapping&) = default;
     };
 
-    // Whether control `cc` may be learned: "" when it may, else why, in words ("CC 17 is the racing wheel's throttle").
-    std::string refusal(int cc);
-    bool refused(int cc) noexcept;                       // refusal(cc) is not "" (the audio thread's test)
-    // In words: "CC 74 on channel 1", "CC 2 and 34 (14-bit) on channel 3"; the mark a dial shows: "CC 74", "CC 2+34".
+    // Whether control `cc` on `channel` (1 to 16) may be learned, `wheel` whether the Standalone's racing wheel is on: ""
+    // when it may, else why, in words ("CC 123 is a channel mode message (All Notes Off), not a control"; "CC 17 on
+    // channel 1 is the racing wheel's throttle ...").
+    std::string refusal(int channel, int cc, bool wheel);
+    bool refused(int channel, int cc, bool wheel) noexcept;   // refusal() is not "" (the audio thread's test)
+    // In words: "CC 74 on channel 1", "CC 2 and 34 (14-bit) on channel 3".
     std::string describe(const Mapping& m);
-    std::string mark(const Mapping& m);
-    // Each mapping valid (a dial named, a channel 1 to 16, a control no refusal names, 14 bits only for 0 to 31), at most
-    // kMaxControls, one a dial and one a control (a later one wins): what a session, a project and learning keep.
+    // Each mapping valid (a dial named, a channel 1 to 16, a control 0 to 119, 14 bits only for 0 to 31), at most
+    // kMaxControls, one a dial and one a control (a later one wins): what a session, a project and learning keep. A
+    // racing wheel's control is a valid mapping: the wheel's refusal is learning's alone, while it is on.
     std::vector<Mapping> tidy(std::vector<Mapping> in);
 
-    // What the editor shows and Claude reads (view()).
+    // What the editor shows and Claude reads (view()). `words` are by slot, the slots of the program bind() took last
+    // (the one apply() took: the editor's); a newer program's controls (a compile apply() has not taken yet, which
+    // Claude's tools may read) match `mappings` by name instead (forDial).
     struct View
     {
-        std::array<std::string, kMaxControls> marks{};   // each slot's control, mark()'s words ("" for none)
-        std::array<std::string, kMaxControls> words{};   // ... describe()'s
+        std::array<std::string, kMaxControls> words{};   // each slot's control, describe()'s words ("" for none)
+        std::vector<Mapping> mappings;                   // every mapping (tidy()'s order)
         int learning = -1;                               // the slot learning, else -1
         std::string learningDial;
         std::string note;                                // learning's last word: a refusal ("" for none)
         std::vector<Mapping> waiting;                    // mappings whose dial the program has none of
         uint64_t revision = 0;
+
+        const Mapping* forDial(std::string_view dial) const noexcept;   // the mapping of the dial so named, else null
     };
 
     class Learn
@@ -87,6 +98,12 @@ namespace playground::midilearn
         void controlChange(int channel, int cc, int value) noexcept;
         // Whether a control change can matter (a dial learning, or a mapping bound): else the audio thread skips them.
         bool listening() const noexcept { return listening_.load(std::memory_order_relaxed); }
+
+        // ---- any thread -----------------------------------------------------------------------------------------------
+        // The Standalone's racing wheel is on (its controls on channel 1 are not learned meanwhile), and a dial learns.
+        void setWheel(bool on) noexcept { wheel_.store(on, std::memory_order_release); }
+        bool wheel() const noexcept { return wheel_.load(std::memory_order_acquire); }
+        bool learning() const noexcept { return armed_.load(std::memory_order_acquire); }
 
         // ---- any thread, under the mutex ---------------------------------------------------------------------------
         // The program's dials (their names to slots): the mappings bound to them, a dial learning that the program
@@ -145,6 +162,7 @@ namespace playground::midilearn
         std::array<uint8_t, kChannels * kPairs> msb_{}, lsb_{};       // the audio thread's own
         std::atomic<bool> listening_{ false };
         std::atomic<bool> armed_{ false };
+        std::atomic<bool> wheel_{ false };
         std::atomic<uint32_t> first_{ 0 };              // learning's first control: 1 << 16 | channel << 8 | cc
         std::atomic<uint32_t> refusedCc_{ 0 };           // the last control it refused, packed the same way
         std::array<std::atomic<uint64_t>, kChannels * kControls / 64> seen_{};   // the controls seen while learning

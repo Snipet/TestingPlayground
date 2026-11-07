@@ -30,15 +30,19 @@ namespace playground::midilearn
         bool valid(const Mapping& m) noexcept
         {
             if (m.dial.empty() || m.dial.size() >= sizeof(Control{}.name) || m.channel < 1 || m.channel > kChannels
-                || m.cc < 0 || m.cc >= kFirstMode || refused(m.cc))
+                || m.cc < 0 || m.cc >= kFirstMode)
                 return false;
-            return !m.fine || (m.cc < kPairs && !refused(m.cc + kLsb));
+            return !m.fine || m.cc < kPairs;
         }
     }
 
-    bool refused(int cc) noexcept { return cc < 0 || cc >= kFirstMode || wheelControl(cc); }
+    // The racing wheel sends on channel 1 alone (plugin/WheelMap.h's Map): its controls there, while it is on.
+    bool refused(int channel, int cc, bool wheel) noexcept
+    {
+        return cc < 0 || cc >= kFirstMode || (wheel && channel == 1 && wheelControl(cc));
+    }
 
-    std::string refusal(int cc)
+    std::string refusal(int channel, int cc, bool wheel)
     {
         const std::string n = "CC " + std::to_string(cc);
         if (cc < 0 || cc >= kControls)
@@ -49,7 +53,7 @@ namespace playground::midilearn
                                                       "Omni Off",      "Omni On",               "Mono On",       "Poly On" };
             return n + " is a channel mode message (" + kModes[cc - kFirstMode] + "), not a control";
         }
-        if (!wheelControl(cc))
+        if (!refused(channel, cc, wheel))
             return {};
         using namespace wheelcc;
         static constexpr const char* kAxisNames[] = { "steering", "throttle", "brake", "clutch" };
@@ -57,7 +61,8 @@ namespace playground::midilearn
                          : cc < kSteering + kAxes ? kAxisNames[cc - kSteering]
                          : cc == kGear            ? "gear"
                                                   : "buttons";
-        return n + " is the racing wheel's " + what + " (a wheel's controls, CC 16 to 24 and 48 to 51, are not learned)";
+        return n + " on channel 1 is the racing wheel's " + what
+             + " (while the wheel is on, its controls on channel 1, CC 16 to 24 and 48 to 51, are not learned)";
     }
 
     std::string describe(const Mapping& m)
@@ -67,9 +72,10 @@ namespace playground::midilearn
         return cc + " on channel " + std::to_string(m.channel);
     }
 
-    std::string mark(const Mapping& m)
+    const Mapping* View::forDial(std::string_view dial) const noexcept
     {
-        return "CC " + std::to_string(m.cc) + (m.fine ? "+" + std::to_string(m.cc + kLsb) : std::string());
+        const auto at = std::find_if(mappings.begin(), mappings.end(), [&](const Mapping& m) { return m.dial == dial; });
+        return at == mappings.end() || dial.empty() ? nullptr : &*at;
     }
 
     std::vector<Mapping> tidy(std::vector<Mapping> in)
@@ -102,7 +108,7 @@ namespace playground::midilearn
         if (armed_.load(std::memory_order_acquire))
         {
             const uint32_t packed = kPacked | static_cast<uint32_t>(channel) << 8 | static_cast<uint32_t>(cc);
-            if (refused(cc))
+            if (refused(channel + 1, cc, wheel_.load(std::memory_order_acquire)))
                 refusedCc_.store(packed, std::memory_order_release);
             else
             {
@@ -299,9 +305,9 @@ namespace playground::midilearn
                 continue;
             }
             const auto slot = static_cast<std::size_t>(at - names_.begin());
-            v.marks[slot] = mark(m);
             v.words[slot] = describe(m);
         }
+        v.mappings = mappings_;
         v.learning = learning_;
         v.learningDial = learningDial_;
         v.note = note_;
@@ -322,9 +328,10 @@ namespace playground::midilearn
         const std::lock_guard<std::mutex> lock(mutex_);
         if (learning_ >= 0)
         {
+            const bool wheel = wheel_.load(std::memory_order_acquire);
             if (const uint32_t r = refusedCc_.exchange(0, std::memory_order_acq_rel); r != 0)
             {
-                out.refused = refusal(static_cast<int>(r & 0xffu));
+                out.refused = refusal(static_cast<int>((r >> 8) & 0xffu) + 1, static_cast<int>(r & 0xffu), wheel);
                 if (out.refused != note_)
                 {
                     note_ = out.refused;
@@ -340,8 +347,8 @@ namespace playground::midilearn
                     const int i = index(ch, n);
                     return (seen_[static_cast<std::size_t>(i / 64)].load(std::memory_order_acquire) >> (i % 64) & 1u) != 0;
                 };
-                const bool lsbCame = cc < kPairs && !refused(cc + kLsb) && seen(cc + kLsb);
-                const bool msbCame = cc >= kLsb && cc < kLsb + kPairs && !refused(cc - kLsb) && seen(cc - kLsb);
+                const bool lsbCame = cc < kPairs && !refused(ch + 1, cc + kLsb, wheel) && seen(cc + kLsb);
+                const bool msbCame = cc >= kLsb && cc < kLsb + kPairs && !refused(ch + 1, cc - kLsb, wheel) && seen(cc - kLsb);
                 if (!(cc < kPairs && !lsbCame && nowMs - firstAtMs_ < kPairMs))   // else a control 0 to 31 waits
                 {
                     Mapping m{ learningDial_, ch + 1, msbCame ? cc - kLsb : cc, lsbCame || msbCame };

@@ -3,6 +3,7 @@
 
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
+#include "plugin/WheelMap.h"
 
 #include "Examples.h"
 #include "Product.h"
@@ -734,7 +735,12 @@ namespace playground
         return it == schematicPins_.end() ? std::string() : it->second;
     }
 
-    void Processor::setWindowHooks(WindowHooks hooks) { windowHooks_ = std::move(hooks); }
+    void Processor::setWindowHooks(WindowHooks hooks)
+    {
+        windowHooks_ = std::move(hooks);
+        wheelKnown_ = false;                                     // the racing wheel read again from these (syncWheel)
+        syncWheel();
+    }
 
     void Processor::placeWindowButtons(float x, float middle)
     {
@@ -2072,8 +2078,30 @@ namespace playground
     // ---- MIDI learn (MidiLearn.h) ------------------------------------------------------------------------------------
     bool Processor::midiLearnable() const { return product::kIsInstrument; }
 
+    // The Standalone's racing wheel on or not (MidiLearn.h: its controls on channel 1 are not learned while it is), read
+    // from its devices when they say something changed; none in a host. Message thread (the devices are its alone).
+    void Processor::syncWheel()
+    {
+        DevicePort* d = windowHooks_.devices;
+        if (d == nullptr)
+        {
+            learn_.setWheel(false);
+            return;
+        }
+        const uint64_t serial = d->serial();
+        if (wheelKnown_ && serial == wheelSerial_)
+            return;
+        wheelKnown_ = true;
+        wheelSerial_ = serial;
+        const DeviceSetup s = d->setup();
+        learn_.setWheel(std::any_of(s.midi.begin(), s.midi.end(),
+                                    [](const MidiInputDevice& m) { return m.on && m.identifier == wheel::kIdentifier; }));
+    }
+
     void Processor::pollMidi(double nowMs)
     {
+        if (learn_.learning())
+            syncWheel();                                         // switched on or off while a dial learns
         midilearn::Learn::Tick t;
         learn_.tick(nowMs, t);
         if (t.learned)
@@ -2118,7 +2146,10 @@ namespace playground
 
     bool Processor::learnMidi(int slot)
     {
-        if (!midiLearnable() || !learn_.arm(slot))
+        if (!midiLearnable())
+            return false;
+        syncWheel();
+        if (!learn_.arm(slot))
             return false;
         if (!midiTimer_.isTimerRunning())
             midiTimer_.startTimerHz(kMidiHz);

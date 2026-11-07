@@ -579,6 +579,9 @@ namespace playground
         uint64_t midiGestures_ = 0;
         void midiControls(const juce::MidiBuffer& midi) noexcept;   // the audio thread: control changes to learn_
         void endMidiGestures();
+        void syncWheel();                                        // learn_.setWheel from the Standalone's devices
+        bool wheelKnown_ = false;                                // ... read at their serial wheelSerial_
+        uint64_t wheelSerial_ = 0;
         struct MidiTimer final : juce::Timer
         {
             explicit MidiTimer(Processor& p) : owner(p) {}
