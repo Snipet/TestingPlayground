@@ -237,7 +237,7 @@ namespace playground
     {
         const fminus::Program& p = fminusProgram();
         const fminus::Program::Module* main = p.module(kModule);
-        if (main == nullptr || instances_.empty() || instance == nullptr)
+        if (main == nullptr || instances_.empty())
             return "the program has no " + std::string(kModule);
         const fminus::Program::Module* sharedModule = shared_ != nullptr ? p.module(kSharedModule) : nullptr;
         if ((shared_ != nullptr) != (shared != nullptr) || (host_ != nullptr) != (host != nullptr))
@@ -265,7 +265,8 @@ namespace playground
         std::vector<std::size_t> mainPointed = sharedFields_;
         mainPointed.insert(mainPointed.end(), hostFields_.begin(), hostFields_.end());
         const char* in = static_cast<const char*>(instance);
-        walk(p, *main, in, "", 0, check(mainPointed, in, ""));
+        if (in != nullptr)
+            walk(p, *main, in, "", 0, check(mainPointed, in, ""));
         if (sharing.empty() && sharedModule != nullptr)
         {
             const char* sh = static_cast<const char*>(shared);
@@ -275,7 +276,8 @@ namespace playground
             return "its field " + sharing + " points at memory of the program that plays (a block its init allocated, or "
                    "Shared's), which a call on a copy would share";
 
-        std::memcpy(instances_[0], instance, instanceSize_);
+        if (instance != nullptr)
+            std::memcpy(instances_[0], instance, instanceSize_);
         if (shared_ != nullptr)
             std::memcpy(shared_, shared, sharedSize_);
         if (host_ != nullptr)
@@ -308,9 +310,10 @@ namespace playground
 
     // ---- the call -----------------------------------------------------------------------------------------------------
     Patch::CallOutcome Patch::call(const std::string& name, const std::vector<CallArg>& args,
-                                   const std::function<std::string()>& onState)
+                                   const std::function<std::string(bool instance)>& onState)
     {
         CallOutcome out;
+        bool onInstance = false;                       // it runs on instance 0, or a field it holds (onState's)
         fminus::Program& p = fminusProgram();
         if (name.rfind("playground_", 0) == 0)
         {
@@ -442,6 +445,7 @@ namespace playground
             {
                 self = at;
                 callName = m->name + "::" + method;
+                onInstance = where != kSharedModule;
                 out.where = CallOutcome::On::field;
                 out.on = (where == kSharedModule ? name.substr(0, name.find("->") + 2) : std::string()) + path;
             }
@@ -452,6 +456,7 @@ namespace playground
             if (module == kModule && !instances_.empty())
             {
                 self = instances_[0];
+                onInstance = true;
                 out.where = CallOutcome::On::main;
                 out.on = kModule;
             }
@@ -672,7 +677,7 @@ namespace playground
         // which the caller may make ready now (run_function's "playing": the copy of what plays adopted).
         if (onState && (out.where == CallOutcome::On::main || out.where == CallOutcome::On::shared
                         || out.where == CallOutcome::On::field))
-            if (std::string why = onState(); !why.empty())
+            if (std::string why = onState(onInstance); !why.empty())
             {
                 out.error = std::move(why);
                 return out;

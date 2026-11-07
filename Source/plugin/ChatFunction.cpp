@@ -175,8 +175,9 @@ namespace playground
                 "elements, then zeros. on: fresh (the default: the editor's files compiled now, a new instance, the dials as "
                 "they are, init run) or playing (the program that plays, on a copy of its state the audio thread makes at a "
                 "block's end: the effect's instance, or the newest sounding voice's, with Shared and Host; what plays is never "
-                "written). playing is refused while no voice sounds, and when the state holds a pointer that is not null (a "
-                "block init allocated: the copy would share it). The loop budget and the bounds checks apply: a loop that "
+                "written). While no voice sounds, playing runs a method of Shared or Host on their copy and refuses the "
+                "voice's; it refuses a state that holds a pointer that is not null (a block init allocated: the copy would "
+                "share it). The loop budget and the bounds checks apply: a loop that "
                 "never ends stops after about a second, saying so, and an index past an array names the access. The result "
                 "says what it ran on, what it returned, each array after the call and the fields a method changed. To call "
                 "several methods in a row on one instance (start, then process), write a method that calls them, and call "
@@ -261,10 +262,10 @@ namespace playground
         // the call is checked and runs on that state (Patch::call's onState): a function, an instance of its own or a
         // call that is wrong anyway costs the audio thread nothing.
         std::string where, refusal;
-        std::function<std::string()> onState;
+        std::function<std::string(bool)> onState;
         if (playing)
         {
-            onState = [&]() -> std::string {
+            onState = [&](bool onInstance) -> std::string {
                 // A copy of the state that plays, made by the audio thread at a block's end (Engine::Snapshot).
                 const Patch::Layout l = patch.layout();
                 if (l.instance + l.shared + l.host > Engine::kMaxSnapshot)
@@ -290,8 +291,11 @@ namespace playground
                     case Engine::Snapshot::Status::noProgram:
                         return refusal = "Nothing plays now, so there is no state to copy: on: fresh runs it on a new instance.";
                     case Engine::Snapshot::Status::noVoice:
-                        return refusal = "No voice sounds now, so there is no voice's state to copy: hold a note and call it "
-                                         "again, or on: fresh.";
+                        // Shared and Host were copied all the same: a call on them runs; one on a voice has none.
+                        if (onInstance)
+                            return refusal = "No voice sounds now, so there is no voice's state to copy: hold a note and call "
+                                             "it again, or on: fresh.";
+                        break;
                     case Engine::Snapshot::Status::otherLayout:
                     case Engine::Snapshot::Status::waiting:
                         return refusal = changed;
@@ -300,9 +304,12 @@ namespace playground
                 // took since, is another program, though laid out alike: its state under this code fits neither).
                 if (s.layout != l.hash || s.program != program)
                     return refusal = changed;
-                if (const std::string refused = patch.adopt(s.instance, s.shared, s.host); !refused.empty())
+                const bool voice = s.status == Engine::Snapshot::Status::copied;
+                if (const std::string refused = patch.adopt(voice ? s.instance : nullptr, s.shared, s.host); !refused.empty())
                     return refusal = "Not on a copy of what plays: " + refused + ". on: fresh runs it on a new instance.";
-                where = kInstrument ? "a copy of the voice playing note " + std::to_string(s.key) + " (the newest sounding), made "
+                where = !voice      ? std::string("a copy of the state that plays, Shared's and Host's alone (no voice sounds now), "
+                                                  "made by the audio thread at a block's end")
+                      : kInstrument ? "a copy of the voice playing note " + std::to_string(s.key) + " (the newest sounding), made "
                                       "by the audio thread at a block's end"
                                     : std::string("a copy of the effect's state, made by the audio thread at a block's end");
                 where += " (the program that plays, compiled again for the call; what plays is untouched)";

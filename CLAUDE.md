@@ -1335,7 +1335,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   copy of its state (`ChatHost::chatSnapshot`, `Engine::askSnapshot`: one `Snapshot` at a time, into buffers the asker
   wrote whole first, so the audio thread's copy takes no page fault, claimed by an exchange at a block's end after
   `publish`, the effect's instance or the newest sounding voice's (the taps' rule), Shared and Host copied when their
-  sizes are the asker's, at most `kMaxSnapshot` bytes; nothing allocated or locked there, a relaxed load a block while
+  sizes are the asker's, whether a voice sounds or not (`noVoice`: Shared and Host alone, which a call on Shared or
+  Host takes; `onState` is told whether the call needs the instance, and only such a call is refused then), at most
+  `kMaxSnapshot` bytes; nothing allocated or locked there, a relaxed load a block while
   none waits; the asker waits `kSnapshotWaitMs` and takes the ask back with a compare-exchange when no block comes,
   waiting for `done` when the audio thread claimed it first), compares `Patch::layout`'s hash and `Snapshot::program`
   with that status's (a run the audio thread has not taken yet, laid out alike, is another program: refused, call it

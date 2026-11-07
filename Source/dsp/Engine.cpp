@@ -963,20 +963,21 @@ namespace playground
             const void* from = current_->instance(instance);
             s->program = current_->program();
             s->layout = l.hash;
-            if (from == nullptr)
-                s->status = Snapshot::Status::noVoice;
-            else if (l.instance != s->instanceBytes || l.shared != s->sharedBytes || l.host != s->hostBytes
-                     || l.instance + l.shared + l.host > kMaxSnapshot || s->instance == nullptr
-                     || (l.shared > 0 && s->shared == nullptr) || (l.host > 0 && s->host == nullptr))
+            if (l.instance != s->instanceBytes || l.shared != s->sharedBytes || l.host != s->hostBytes
+                || l.instance + l.shared + l.host > kMaxSnapshot || s->instance == nullptr
+                || (l.shared > 0 && s->shared == nullptr) || (l.host > 0 && s->host == nullptr))
                 s->status = Snapshot::Status::otherLayout;
             else
             {
-                std::memcpy(s->instance, from, l.instance);
+                // Shared and Host whether a voice sounds or not (an instrument's Shared runs on its own between notes);
+                // the instance only when one does.
                 if (l.shared > 0)
                     std::memcpy(s->shared, current_->sharedInstance(), l.shared);
                 if (l.host > 0)
                     std::memcpy(s->host, current_->hostInstance(), l.host);
-                s->status = Snapshot::Status::copied;
+                if (from != nullptr)
+                    std::memcpy(s->instance, from, l.instance);
+                s->status = from != nullptr ? Snapshot::Status::copied : Snapshot::Status::noVoice;
             }
         }
         s->done.store(true, std::memory_order_release);

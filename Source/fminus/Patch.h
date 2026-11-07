@@ -623,8 +623,10 @@ namespace playground
         // reading a little past what it was given, stays in a buffer of its own; a call that takes an array and an int
         // past kMaxCallElements is refused. `onState`, when given, is called once the call is checked and before it
         // runs, and only when it runs on the state (a method of instance 0, of Shared or Host, or of a field they
-        // hold): "" to run it, else why not (`error`, and nothing runs); run_function's "playing" adopts its copy
-        // there, so a call that is wrong anyway asks the audio thread for nothing. FMinus's call() runs it in the
+        // hold), told whether it runs on instance 0 (a main-module method, or one of a field the main module holds;
+        // not Shared's, Host's or a field through Shared*): "" to run it, else why not (`error`, and nothing runs);
+        // run_function's "playing" adopts its copy there, so a call that is wrong anyway asks the audio thread for
+        // nothing, and one on Shared needs no voice sounding. FMinus's call() runs it in the
         // programs' mode (flush to zero) within kInitBudget, and a bounds check or the budget that stops it is said in
         // FMinus's words. What a method changed in the fields (fieldMap's paths of its instance, and of Shared and
         // Host) is listed. A call that stopped leaves the Patch so that its destructor calls no end (its state may be
@@ -665,12 +667,13 @@ namespace playground
         static constexpr std::size_t kMaxCallElements = 1u << 20;  // an array's elements (or a length beside one) at most
         static constexpr std::size_t kMaxChanged = 16;             // fields changed listed at most
         CallOutcome call(const std::string& name, const std::vector<CallArg>& args,
-                         const std::function<std::string()>& onState = {});
+                         const std::function<std::string(bool instance)>& onState = {});
 
         // run_function's "playing": the state that plays, copied by the audio thread (Engine::Snapshot) and put into a
         // Patch of the caller's own, compiled from the same files with the same pins, so laid out alike (layout(): the
         // sizes, and a hash of every module's fields and offsets, which the Engine's copy carries to be compared).
-        // adopt() takes the copy into instance 0, Shared and Host (each as large as this Patch's), points the main
+        // adopt() takes the copy into instance 0, Shared and Host (each as large as this Patch's; no `instance`, as an
+        // instrument's copy has none while no voice sounds: instance 0 as it is, Shared and Host alone), points the main
         // module's Shared* and Host* fields (and Shared's Host*) at this Patch's own, and the dials' streams at none;
         // it refuses ("" when it took it) a copy any of whose other pointers is not null: it would point at memory of
         // the program that plays (a heap block init made, Shared's table), which a call on the copy would then write

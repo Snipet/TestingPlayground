@@ -21,7 +21,8 @@
 //            count (or the held voice's, its note named) larger on a later call; a method that zeroes it run on a copy,
 //            and the state that plays counts on (never written); Shared reached through the copy's own Shared (its
 //            pointer repointed), and Shared's own method by shared-> (and Shared:: on a fresh one); a program whose init
-//            allocated a block (a pointer not null) refused, saying why; an instrument with no voice sounding refused; a
+//            allocated a block (a pointer not null) refused, saying why; an instrument with no voice sounding refused
+//            for a voice's method, while Shared's (Shared:: and shared->) run on the copy's Shared, which ticks on; a
 //            host that has stopped calling the plugin: refused after the wait, nothing copied, while a function runs
 //            (no copy asked) and a call with a wrong count says so (checked before a copy is asked); a newer run
 //            offered while the swap to the last one is under way (blocks of 16 samples, slowly): the copy is of the
@@ -131,6 +132,13 @@ namespace
     {
         return "module Shared\n{\n    int built;\n    void init(float r) { built = 7; }\n    int twiceBuilt() { return 2 * built; }\n};\n\n"
              + mainModule("    Shared* shared;\n    int count;\n    int fromShared() { return shared->built; }\n");
+    }
+
+    // An instrument's Shared that runs on its own (its tick, every 16 samples, whether a voice sounds or not).
+    [[maybe_unused]] std::string tickingProgram()
+    {
+        return "module Shared\n{\n    int ticks;\n    void tick(int n) { ticks = ticks + 1; }\n    int ticked() { return ticks; }\n};\n\n"
+             + mainModule("    Shared* shared;\n    int count;\n    int seen() { return count; }\n");
     }
 
     // A block its init allocated: a pointer that is not null in the state that plays.
@@ -411,6 +419,25 @@ PROBE(plugin, function)
         bool error = false;
         const std::string t = call(object({ { "name", "Voice::seen" }, { "on", "playing" } }), &error);
         P.eq("playing.no_voice", error && has(t, "No voice sounds now") ? 1 : 0, 1);
+    }
+    if constexpr (kInstrument)
+    {
+        // Shared runs between notes: its method (by Shared:: and by shared->) on a copy of what plays though no voice
+        // sounds, the copy's Shared and Host alone; a voice's still refused.
+        P.eq("playing.ticking_compiles", load(p, tickingProgram()) ? 1 : 0, 1);
+        Host host(p, false);
+        host.waitBlocks(5);
+        bool error = true;
+        std::string t = call(object({ { "name", "Shared::ticked" }, { "on", "playing" } }), &error);
+        std::printf("Shared::ticked with no note held: %s\n", t.c_str());
+        P.eq("playing.shared_no_voice", !error && returned(t) >= 5.0 * kBlock / 16.0 && has(t, "on the Shared of a copy")
+                                            && has(t, "no voice sounds now") ? 1 : 0, 1);
+        error = true;
+        t = call(object({ { "name", "shared->ticked" }, { "on", "playing" } }), &error);
+        P.eq("playing.shared_path_no_voice", !error && returned(t) >= 5.0 * kBlock / 16.0 ? 1 : 0, 1);
+        error = false;
+        t = call(object({ { "name", "Voice::seen" }, { "on", "playing" } }), &error);
+        P.eq("playing.voice_still_no_voice", error && has(t, "No voice sounds now") ? 1 : 0, 1);
     }
 
     owned.reset();

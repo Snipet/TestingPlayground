@@ -264,8 +264,10 @@ namespace playground
         // run_function's "playing" (the chat's tool; Patch.h, "one function called by name"): a copy of the state that
         // plays, made by the audio thread at the end of a block (between calls, so never torn), into the asker's
         // buffers: the instance an effect plays, or an instrument's newest sounding voice's (the taps' rule), and its
-        // program's Shared and Host, each copied only when its size is the buffer's (the asker sized them from a compile
-        // of its own of the same files: Patch::layout, whose hash the copy carries back to be compared). Ask one at a
+        // program's Shared and Host, copied only when every size is the buffer's (the asker sized them from a compile
+        // of its own of the same files: Patch::layout, whose hash the copy carries back to be compared). With no voice
+        // sounding, Shared and Host are copied all the same and the status is noVoice (the instance's buffer as the
+        // asker wrote it): a call on Shared or Host takes them. Ask one at a
         // time and wait for `done`; when no block comes, take the ask back (cancelSnapshot: true when the audio thread
         // never claimed it; false when it did, and `done` follows within its block). The audio thread allocates and
         // locks nothing for it: a relaxed load a block while none waits, then an exchange and at most three memcpys of
