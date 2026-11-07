@@ -368,6 +368,7 @@ PROBE(gui, explorer)
     ex.scrollTo(0.0f);
     host.settle();
     ex.setSectionOpen(S::library, false);                // room for the examples in view
+    ex.scrollTo(ex.contentHeight());                     // and at the end (CLAUDE DESKTOP above them when the link listens)
     host.settle();
     const std::string projectBefore = port.project().name;
     panel.editor().setCaret(panel.editor().endPos());     // a change, which the example would take away
@@ -386,6 +387,7 @@ PROBE(gui, explorer)
         P.eq("examples.project_back", port.openProject(projectBefore, 0, why) ? 1 : 0, 1);
         settleRun(processor, host);
     }
+    ex.scrollTo(0.0f);                                   // the list from its top again
 
     // ---- FOLD ----------------------------------------------------------------------------------------------------------
     ex.setSectionOpen(S::library, true);
