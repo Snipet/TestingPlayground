@@ -278,33 +278,52 @@ namespace playground::ui
 
     // A shader's program goes to FunkGui's registry (process-wide, keyed by its bytes' hash: the same shader in two
     // instances is one program) the first time a panel shows it, with the text font bound to it (ShaderFont.h); a
-    // program is never removed, since another instance may draw it too. One that was not built says why from the compile's notes; one FunkGui refuses (Metal's own
-    // compiler, say), from FunkGui.
+    // program is never removed, since another instance may draw it too. One that was not built says why from the
+    // compile's notes: the note on its own file, else the first on a .sh file of the program's it includes, with that
+    // file's name and line ("ink.sh:5: the shader does not compile: ..."); one FunkGui refuses (Metal's own compiler,
+    // say), from FunkGui.
     void GuiView::registerShaders(const PanelSpec& spec, const Sources& files, const std::string& notes)
     {
         const std::size_t n = spec.shaders.size();
         shaderIds_.assign(n, 0u);
         shaderWhy_.assign(n, std::string());
         shaderMoves_.assign(n, false);
+        const Sources headers = shaderHeaders(files);
         for (std::size_t k = 0; k < n; ++k)
         {
             const PanelShader& sh = spec.shaders[k];
             const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& x) { return x.name == sh.file; });
             if (f != files.end())
-                shaderMoves_[k] = shaderAnimates(sh.file, f->text, shaderHeaders(files));
+                shaderMoves_[k] = shaderAnimates(sh.file, f->text, headers);
             if (sh.binary.empty() || sh.id == 0)
             {
                 std::string why = f == files.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");
+                std::vector<std::string> included;
+                if (f != files.end())
+                {
+                    std::string unused;
+                    included = shaderIncludes(sh.file, f->text, headers, unused);
+                }
+                std::string own, fromInclude;
                 std::istringstream in(notes);
                 std::string line;
-                while (std::getline(in, line))
+                while (own.empty() && std::getline(in, line))
+                {
+                    const std::size_t at = line.find("note: ");
+                    if (at == std::string::npos)
+                        continue;
                     if (line.rfind(sh.file + ":", 0) == 0)
-                        if (const std::size_t at = line.find("note: "); at != std::string::npos)
-                        {
-                            why = line.substr(at + 6);
-                            break;
-                        }
-                shaderWhy_[k] = why;
+                        own = line.substr(at + 6);
+                    else if (fromInclude.empty())
+                        for (const std::string& name : included)
+                            if (line.rfind(name + ":", 0) == 0)
+                            {
+                                const int lineAt = std::max(1, std::atoi(line.c_str() + name.size() + 1));
+                                fromInclude = name + ":" + std::to_string(lineAt) + ": " + line.substr(at + 6);
+                                break;
+                            }
+                }
+                shaderWhy_[k] = !own.empty() ? own : !fromInclude.empty() ? fromInclude : why;
                 continue;
             }
             std::string why;
