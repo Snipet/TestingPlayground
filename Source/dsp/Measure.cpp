@@ -2979,11 +2979,7 @@ namespace playground::measure
             const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
             if (r.cancelled)
                 return halted();
-            if (all)                                              // this render's alone (Result::hash), a whole report's
-            {
-                res.hash = renderHash(r.out.l, r.out.r);
-                res.hashed = impl_->what;
-            }
+            const std::string rendered = impl_->what;
             impl_->what = "a short render after it";                    // the pitch's, the chord's, sixteen voices'
             voiceMarks(tl, r);
             // The whole render's metrics (the steps, the clicks, the decay, the release, the voices' end, the alerts) over
@@ -2996,6 +2992,13 @@ namespace playground::measure
                 cut.r.assign(r.out.r.begin(), r.out.r.begin() + static_cast<std::ptrdiff_t>(plainN));
             }
             const Stereo& whole = plainN < r.out.size() ? cut : r.out;
+            if (all)                                              // this render's alone (Result::hash), a whole report's;
+            {                                                     // its own length, so a window past it changes nothing
+                res.hash = renderHash(whole.l, whole.r);
+                res.hashed = rendered + (plainN < r.out.size() ? " up to its own end (" + seconds(static_cast<double>(plainN) / rate)
+                                                                     + "), not the window's part past it"
+                                                               : std::string());
+            }
             const long endedAt = r.endedAt >= 0 && static_cast<std::size_t>(r.endedAt) <= plainN ? r.endedAt : -1;
             const uint32_t alerts = plan.plain > 0 ? r.plainAlerts : r.alerts;
 

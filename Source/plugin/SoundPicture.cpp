@@ -470,7 +470,7 @@ namespace playground::soundpicture
                   + (window ? " in the window" : kInstrument ? " while held" : "") + "; the output guard's alerts: "
                   + (v.alerts == 0 ? std::string("none") : "NaN, infinite or clipped samples (" + std::to_string(v.alerts) + ")")
                   + "." + (v.stopped.empty() ? std::string() : "\n" + v.stopped)
-                  + (v.hash.empty() ? std::string() : "\n" + measure::hashLine(v.hash, "the render"));
+                  + (v.hash.empty() ? std::string() : "\n" + measure::hashLine(v.hash, v.hashed.empty() ? "the render" : v.hashed));
         return out;
     }
 

@@ -197,12 +197,16 @@
 //            it renders them, the dials as measure_output's
 //   EXPORT   the render hash and trace's export through MCP (dsp/Export.h): measure_output's Render hash line the same
 //            twice and another with the level (gain) moved, an instrument's trace's the same as measure_output's; view_sound's
-//            and compare's (A's and B's alike for the same files); an export with fields writes a WAV, a CSV (and the
-//            effect's input) into the probe's renders folder, named in the result, read back: the WAV's frames, rate
-//            and data hashing to the render hash, the CSV's header, its rows (the effect's count the row's sample, the
-//            synth's held 1 then 0) and their count as the result says; the CSV inline 32 rows (the first and the last)
-//            within its bytes, and `rows` fewer; the same name again replaces its files, 24-bit reads as 24 bits; a bad
-//            wav word, a list with it and a render of the recording refused, and nothing written for them
+//            (an instrument's the same as measure_output's) and compare's (A's and B's alike for the same files); a window
+//            past the render's end leaves measure_output's and view_sound's hashes as they were, saying so; an export
+//            with fields writes a WAV, a CSV (and the effect's input) into the probe's renders folder (emptied first),
+//            named in the result, read back: the WAV's frames, rate and data hashing to the render hash, the CSV's
+//            header, its rows (the effect's count the row's sample, the synth's held 1 then 0) and their count as the
+//            result says; the CSV inline 32 rows (the first and the last) within its bytes, and `rows` fewer; the same
+//            name again numbered ("probe export 2"), the first files untouched, and "probe pair" after "probe pair
+//            input" never touching that one's WAV (the effect's "probe pair 2", whose input would be it); 24-bit reads
+//            as 24 bits; a bad wav word, a list with it and a render of the recording refused, export "false" (a JSON
+//            string) off, and nothing written for them; a trace with export cancelled as it renders writes nothing
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -3900,6 +3904,21 @@ PROBE(plugin, chat)
             std::printf("export: view_sound's hash %s; compare's A %s, B %s\n", hashIn(viewed).c_str(), ha.c_str(), hb.c_str());
             P.eq("export.view_sound_hash", hashIn(viewed).size() == ms::kHashShown ? 1 : 0, 1);
             P.eq("export.compare_hashes", ha.size() == ms::kHashShown && ha == hb && has(cmp, ", B " + ha + " (SHA-256 of each side's") ? 1 : 0, 1);
+            if constexpr (pg::product::kIsInstrument)   // the same render (the voices on the absolute grid)
+                P.eq("export.view_sound_is_measure_outputs", !hashIn(viewed).empty() && hashIn(viewed) == hashIn(m1) ? 1 : 0, 1);
+            {
+                // A window past the render's end (0.50 s) renders on to its own end, which the hash leaves out: the same
+                // sound hashes the same, and the line says what it is of (the effect's measure_output is never lengthened).
+                juce::var late = juce::JSON::parse(juce::JSON::toString(plain));
+                late.getDynamicObject()->setProperty("window", input({ { "from", 0.1 }, { "to", 2.0 } }));
+                const std::string mw = toolText(sa.mcpCall("measure_output", late)), vw = toolText(sa.mcpCall("view_sound", late));
+                std::printf("export: with a window to 2 s, measure_output's hash %s, view_sound's %s\n", hashIn(mw).c_str(), hashIn(vw).c_str());
+                P.eq("export.window_hash_same", !hashIn(mw).empty() && hashIn(mw) == hashIn(m1) && !hashIn(vw).empty() && hashIn(vw) == hashIn(viewed)
+                                                    && has(vw, "of the render up to its own end (0.50 s), not the window's part past it).")
+                                                    && (!pg::product::kIsInstrument
+                                                        || has(mw, "of the render of the note held up to its own end (0.50 s), not the window's part past it)."))
+                                                    ? 1 : 0, 1);
+            }
 
             // The export: the effect's program with a counter (a trial edit), the synth's own fields.
             juce::var ask = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "dials_from", "defaults" },
@@ -3921,6 +3940,10 @@ PROBE(plugin, chat)
                 ask.getDynamicObject()->setProperty("try_edits", counter);
                 ask.getDynamicObject()->setProperty("fields", juce::Array<juce::var>{ "count" });
             }
+            // The sandbox's renders folder emptied first (an export never replaces a file, so a run's names would be
+            // numbered after the last run's); only under CTest, never the user's folder.
+            if (const char* prefs = std::getenv((std::string(pg::product::kEnvPrefix) + "PREFS_DIR").c_str()); prefs != nullptr && *prefs != '\0')
+                juce::File(juce::String::fromUTF8(prefs)).getChildFile("renders").deleteRecursively();
             const pg::ChatAgent::McpResult ex = sa.mcpCall("trace", ask);
             const std::string exported = toolText(ex);
             std::printf("trace with export:\n%s\n", exported.c_str());
@@ -3980,12 +4003,37 @@ PROBE(plugin, chat)
                                            && inlineRows[1].startsWith("0.010000,480,") && inlineRows[32].fromFirstOccurrenceOf(",", false, false).startsWith(juce::String(480 * static_cast<int>(want)) + ",")
                                            ? 1 : 0, 1);
             P.le("export.inline_bytes", static_cast<double>(inlined.size()), 6000.0);
+            // An export adds files and never replaces one (trace is no destructive tool): a file's time set back stays so.
+            const juce::Time old(2001, 0, 1, 0, 0);
             {
                 juce::var fewer = juce::JSON::parse(juce::JSON::toString(ask));
                 fewer.getDynamicObject()->setProperty("export", input({ { "every", 480 }, { "name", "probe export" }, { "rows", 4 } }));
+                wavFile.setLastModificationTime(old);
+                csvFile.setLastModificationTime(old);
                 const std::string again = toolText(sa.mcpCall("trace", fewer));
                 P.eq("export.inline_rows_asked", has(again, "The CSV inline (4 of its ") ? 1 : 0, 1);
-                P.eq("export.same_name_replaces", has(again, ", replacing that name's files:\n") ? 1 : 0, 1);
+                P.eq("export.same_name_numbered", has(again, " (\"probe export\" was taken, and nothing is replaced):\n- probe export 2.wav: ")
+                                                      && folder.getChildFile("probe export 2.wav").existsAsFile()
+                                                      && folder.getChildFile("probe export 2.csv").existsAsFile()
+                                                      && wavFile.getLastModificationTime() == old && csvFile.getLastModificationTime() == old ? 1 : 0, 1);
+            }
+            {
+                // A name never reaches another export's files: "probe pair input" (the synth's WAV, the effect's too, beside
+                // its own input), then "probe pair", whose input the effect would write where that WAV is: "probe pair 2".
+                juce::var first = juce::JSON::parse(juce::JSON::toString(ask)), second = juce::JSON::parse(juce::JSON::toString(ask));
+                first.getDynamicObject()->setProperty("export", input({ { "name", "probe pair input" } }));
+                second.getDynamicObject()->setProperty("export", input({ { "name", "probe pair" } }));
+                const juce::File pairInput = folder.getChildFile("probe pair input.wav");
+                const bool made = !sa.mcpCall("trace", first).isError && pairInput.existsAsFile() && pairInput.setLastModificationTime(old);
+                const std::string said = toolText(sa.mcpCall("trace", second));
+                const std::size_t e0 = said.find("Exported on this Mac");
+                std::printf("export: \"probe pair\" after \"probe pair input\": %s\n",
+                            e0 == std::string::npos ? said.c_str() : said.substr(e0, said.find("\n- ", said.find("\n- ", e0) + 3) - e0).c_str());
+                P.eq("export.names_kept_apart", made && pairInput.getLastModificationTime() == old
+                                                    && (pg::product::kIsInstrument ? has(said, ":\n- probe pair.wav: ") && !has(said, "was taken")
+                                                                                   : has(said, " (\"probe pair\" was taken, and nothing is replaced):\n- probe pair 2.wav: ")
+                                                                                         && has(said, "- probe pair 2 input.wav: "))
+                                                    ? 1 : 0, 1);
             }
             {
                 juce::var deep = juce::JSON::parse(juce::JSON::toString(ask));
@@ -4007,7 +4055,42 @@ PROBE(plugin, chat)
                 P.eq("export.bad_wav_refused", badWav.isError && has(toolText(badWav), "export's wav is float32 (the default) or 24") ? 1 : 0, 1);
                 P.eq("export.list_refused", listed.isError && has(toolText(listed), "list names the fields") ? 1 : 0, 1);
                 P.eq("export.capture_refused", captured.isError && has(toolText(captured), "export writes no render of the user's recording") ? 1 : 0, 1);
+                // Declined as a JSON string (a client that sends its arguments so): "false" is false, so a trace and no file.
+                juce::var declined = juce::JSON::parse(juce::JSON::toString(ask));
+                declined.getDynamicObject()->setProperty("export", "false");
+                const pg::ChatAgent::McpResult no = sa.mcpCall("trace", declined);
+                std::printf("export \"false\": %s\n", toolText(no).substr(0, 400).c_str());
+                P.eq("export.false_string_off", !no.isError && has(toolText(no), "Traced offline") && !has(toolText(no), "Exported") ? 1 : 0, 1);
                 P.eq("export.refused_write_nothing", folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
+            }
+            {
+                // Cancelled mid-render (Claude Desktop's cancel): the trace says how far it got, and writes no file.
+                const juce::Array<juce::File> filesBefore = folder.findChildFiles(juce::File::findFiles, false);
+                juce::var longer = juce::JSON::parse(juce::JSON::toString(ask));
+                longer.getDynamicObject()->setProperty("hold_seconds", 300.0);
+                longer.getDynamicObject()->setProperty("export", input({ { "name", "probe cancelled" } }));
+                pg::ChatAgent::McpResult cut;
+                std::atomic<bool> finished{ false };
+                std::thread desktop([&] {
+                    cut = sa.mcpCall("trace", longer, 4343);
+                    finished.store(true);
+                });
+                bool tracing = false;
+                for (int tick = 0; tick < 20000 && !tracing && !finished.load(); ++tick)
+                {
+                    tracing = sa.chatState().activity == "Tracing the program";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                const bool early = !finished.load();
+                sa.mcpCancel(4343);
+                desktop.join();
+                const std::string said = toolText(cut);
+                std::printf("export cancelled (%s):\n%s\n", early ? "while it rendered" : "after it ended", said.c_str());
+                P.eq("export.cancel_writes_nothing", tracing && early && has(said, "Cancelled, so nothing was exported: no file was written.")
+                                                         && has(said, "cancelled") && !has(said, "Exported on this Mac")
+                                                         && !folder.getChildFile("probe cancelled.wav").exists()
+                                                         && folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
             }
         }
     }

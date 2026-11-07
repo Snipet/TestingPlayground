@@ -462,9 +462,11 @@ namespace playground::measure
                                                   // it got, and nothing is measured (`values` empty)
         // The render hash of a whole report (`want` empty; a partial one, a check's or tune_dials', has none: Export.h:
         // SHA-256 of the float32 samples, L R interleaved, 64 hex digits; the report's line shows its first 16): an
-        // instrument's render of the notes held (or the scenario), not the pitch's, the chord's or the sixteen voices';
-        // an effect's test signals' renders in turn (the sine's, the noise's, the impulse's and silence's; the steady
-        // tone's aside), its own input's after them. `hashed`: those renders, in words.
+        // instrument's render of the notes held (or the scenario), not the pitch's, the chord's or the sixteen voices',
+        // over its own length (Timeline::plain: a window past its end renders on, which the hash leaves out, so the same
+        // sound hashes the same whatever the window); an effect's test signals' renders in turn (the sine's, the
+        // noise's, the impulse's and silence's; the steady tone's aside), its own input's after them, which a window
+        // never lengthens. `hashed`: those renders, in words.
         std::string hash, hashed;
     };
 

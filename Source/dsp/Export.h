@@ -38,8 +38,8 @@ namespace playground::measure
         Sha256();
         void add(const void* data, std::size_t bytes);
         // The samples as the hash takes them: float32, little-endian, l[i] then r[i] (r shorter: its missing samples
-        // are 0; r empty: l mono, each sample twice).
-        void addStereo(const std::vector<float>& l, const std::vector<float>& r);
+        // are 0; r empty: l mono, each sample twice); the first `most` frames at most.
+        void addStereo(const std::vector<float>& l, const std::vector<float>& r, std::size_t most = SIZE_MAX);
         std::string hex();                           // finishes it: add nothing after
 
     private:
@@ -52,8 +52,9 @@ namespace playground::measure
         std::string digest_;
     };
 
-    // The render hash of one render: SHA-256 of its float32 samples, L R interleaved (above), 64 hex digits.
-    std::string renderHash(const std::vector<float>& l, const std::vector<float>& r);
+    // The render hash of one render: SHA-256 of its float32 samples, L R interleaved (above), 64 hex digits; of its
+    // first `most` frames at most (view_sound's: its own length, not a window's part past it).
+    std::string renderHash(const std::vector<float>& l, const std::vector<float>& r, std::size_t most = SIZE_MAX);
     // A report's line of it: "Render hash: 9f86d081884c7d65 (SHA-256 of the float32 samples, L R interleaved, of <what>)."
     std::string hashLine(const std::string& hex, const std::string& what);
 

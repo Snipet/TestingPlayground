@@ -2087,6 +2087,7 @@ namespace playground::measure
             }
         }
         out.stopped = clock.stopped;
+        out.stoppedFirst = stoppedFirst;
         if (clock.stopped && !stoppedFirst)
             out.lines.push_back(std::string("(Stopped in the calls of 1 sample: ") + clock.why() + "; what they did not reach says so.)");
         // The export's field log: a row after the call that reaches each multiple of `every` (its own end the row's

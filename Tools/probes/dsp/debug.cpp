@@ -27,7 +27,9 @@
 //   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
 //   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
 //   SHARED  a module Shared's field listed, and watched as shared->gain
-//   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so
+//   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so;
+//           stoppedFirst for pass 1's and the time limit's (the render the part before), not for pass 2's (pass 1's
+//           render whole, its hash the one a trace never stopped gives)
 //   NAN0    a NaN from the first sample: the self-check says it had nothing to compare
 //   DOUBLE  a double accumulator (90 + 1e-6 a sample) and its float twin, a 2-D grid of 2 x 3 and one of 4 x 16, and a
 //           field's attributes: listed as a double with its label, unit and range, the grid's rows by its two indexes
@@ -1820,11 +1822,19 @@ PROBE(dsp, debug)
         P.eq("stop.pass2_stopped", two.stopped && anyHas(two.lines, "cancelled") ? 1 : 0, 1);
         P.eq("stop.pass2_claims_nothing", b != nullptr && b->culprits.empty() && b->verdict.find("lives in a local") == std::string::npos
                                               && anyHas(two.lines, "not traced") && !anyHas(two.lines, "same bits") ? 1 : 0, 1);
+        // Which pass stopped (TraceResult::stoppedFirst: an export's WAV and CSV say "up to where trace stopped" for pass
+        // 1's alone): pass 1's render is cut, pass 2's stop leaves it whole, the same bits as a trace that never stopped.
+        const ms::TraceResult whole = ms::trace(pg::singleFile(localProgram), localReq);
+        std::printf("STOP: pass 1's render %zu samples cut in pass 1, %zu cut in pass 2, %zu never cut\n", one.l.size(), two.l.size(),
+                    whole.l.size());
+        P.eq("stop.pass1_first", one.stoppedFirst && one.l.size() >= 9000 && one.l.size() < whole.l.size() ? 1 : 0, 1);
+        P.eq("stop.pass2_not_first", two.stopped && !two.stoppedFirst && !whole.stopped && two.l.size() == whole.l.size()
+                                         && !two.hash.empty() && two.hash == whole.hash ? 1 : 0, 1);
         ms::TraceRequest tiny = nanReq;
         tiny.seconds = 1e-9;
         const ms::TraceResult t = ms::trace(pg::singleFile(nanProgram), tiny);
         print("STOP at the time limit", t);
-        P.eq("stop.time_limit", t.stopped && anyHas(t.lines, "the time limit") && anyHas(t.lines, "rendered before it stopped")
+        P.eq("stop.time_limit", t.stopped && t.stoppedFirst && anyHas(t.lines, "the time limit") && anyHas(t.lines, "rendered before it stopped")
                                     && !anyHas(t.lines, "same bits") ? 1 : 0, 1);
     }
 

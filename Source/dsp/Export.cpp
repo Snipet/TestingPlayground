@@ -174,13 +174,13 @@ namespace playground::measure
         used_ = bytes;
     }
 
-    void Sha256::addStereo(const std::vector<float>& l, const std::vector<float>& r)
+    void Sha256::addStereo(const std::vector<float>& l, const std::vector<float>& r, std::size_t most)
     {
         // Eight frames a block (64 bytes), straight into the compression when the buffer is empty.
         const std::vector<float>& right = r.empty() ? l : r;
         uint8_t frames[64];
         std::size_t i = 0;
-        const std::size_t n = l.size();
+        const std::size_t n = std::min(l.size(), most);
         while (i < n)
         {
             const std::size_t take = std::min<std::size_t>(8, n - i);
@@ -216,10 +216,10 @@ namespace playground::measure
         return digest_;
     }
 
-    std::string renderHash(const std::vector<float>& l, const std::vector<float>& r)
+    std::string renderHash(const std::vector<float>& l, const std::vector<float>& r, std::size_t most)
     {
         Sha256 h;
-        h.addStereo(l, r);
+        h.addStereo(l, r, most);
         return h.hex();
     }
 

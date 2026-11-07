@@ -3414,7 +3414,7 @@ namespace playground
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
             { "listen", "Listen live", true, false, "debugging" },
             { "compare", "Compare two sounds", true, false, "debugging" },
-            { "trace", "Trace a problem", true, false, "debugging" },
+            { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
             { "capture", "Record what you play", true, false, "debugging" },
         };
 

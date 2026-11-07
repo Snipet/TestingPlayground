@@ -48,8 +48,8 @@
 //            2025-11-25 too, tools with listChanged, prompts, instructions that keep tools and ids from the user),
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
 //            few words on the first of the chat's alone: the instructions say how to name one) and a title in words,
-//            the ones that only look marked read-only, the annotations without a title or a read-only tool's
-//            destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
+//            the ones that only look marked read-only (trace not: its export writes files, adding and never replacing,
+//            so destructiveHint false), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
 //            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, and a part); the processor then knows
@@ -1087,7 +1087,7 @@ PROBE(plugin, mcp)
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
-            juce::var measure, write, del;
+            juce::var measure, write, del, trace;
             bool titled = true, lean = true;
             if (const juce::Array<juce::var>* t = list.getArray())
                 for (const juce::var& tool : *t)
@@ -1105,11 +1105,18 @@ PROBE(plugin, mcp)
                         write = tool;
                     if (tool["name"].toString() == "delete_file")
                         del = tool;
+                    if (tool["name"].toString() == "trace")
+                        trace = tool;
                 }
             P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
                                       && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
             P.eq("server.annotations", lean && !static_cast<bool>(write["annotations"]["destructiveHint"])
                                            && static_cast<bool>(del["annotations"]["destructiveHint"]) ? 1 : 0, 1);
+            // trace writes files when asked (its export), adding them and never replacing one: not read-only, not
+            // destructive.
+            P.eq("server.trace_writes", trace.isObject() && !trace["annotations"].hasProperty("readOnlyHint")
+                                            && trace["annotations"].hasProperty("destructiveHint")
+                                            && !static_cast<bool>(trace["annotations"]["destructiveHint"]) ? 1 : 0, 1);
         }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());

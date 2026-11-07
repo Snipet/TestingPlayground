@@ -1,16 +1,18 @@
-// Source/plugin/ChatTrace.cpp: the chat's trace (ChatAgent.h), read-only: where a problem in the sound starts, or what
-// the program's fields do, in an offline render (dsp/Debug.h). Its source is the editor's files (with try_edits), the
-// program that plays (its own code, never the frozen copy) or the user's recording (ChatScenario.h's captured()); its
-// render measure_output's (scenario::renderOf: the notes, the times, the dials, the wheels, the scenario). find's
-// result is at most twenty lines.
+// Source/plugin/ChatTrace.cpp: the chat's trace (ChatAgent.h), which changes nothing in the plugin: where a problem in
+// the sound starts, or what the program's fields do, in an offline render (dsp/Debug.h). Its source is the editor's
+// files (with try_edits), the program that plays (its own code, never the frozen copy) or the user's recording
+// (ChatScenario.h's captured()); its render measure_output's (scenario::renderOf: the notes, the times, the dials, the
+// wheels, the scenario). find's result is at most twenty lines.
 //
 // Its `export` writes the render as files on this Mac (dsp/Export.h): a WAV (float32, or 24-bit PCM), an effect's input
 // beside it, and with fields a CSV of them; the result names each file whole, its path one the user can open (the MCP
 // server runs here too), and gives a short CSV inline for a client that cannot open them (a cloud session). The folder
 // is rendersFolder() (the user's Music folder, <Company>/<Name>/Renders; a probe's sandbox under CTest), whose files
-// are the user's: a name given replaces its own files, nothing else is deleted, and an export that would take the
-// folder past kMaxFolderBytes, or the disk past kKeepFree, is refused in words. Never of the user's recording (Capture.h:
-// it is never written anywhere): a render that reads it is refused.
+// are the user's: an export only adds files, never replacing or deleting one (a stem, the name given or the time's,
+// takes a number after it while a file it would write is there), so the tool is no read-only one but no
+// destructive one either (ChatAgent.cpp's kFaces); an export that would take the folder past kMaxFolderBytes, or the
+// disk past kKeepFree, is refused in words, and a trace cancelled writes nothing. Never of the user's recording
+// (Capture.h: it is never written anywhere): a render that reads it is refused.
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -61,14 +63,16 @@ namespace playground
             std::string name;                                      // the files' stem ("": a time's)
         };
 
-        // `export`: true, or {wav, every, rows, name} (an object sent as a JSON string read as one); false with why.
+        // `export`: true, or {wav, every, rows, name} (a value sent as a JSON string read as one: "false" is false); false
+        // with why.
         bool exportOf(const juce::var& in, ExportAsk& ask, std::string& why)
         {
             juce::var v = in.getProperty("export", juce::var());
-            if (v.isVoid() || v.isUndefined() || (v.isBool() && !static_cast<bool>(v)))
+            const auto off = [](const juce::var& x) { return x.isVoid() || x.isUndefined() || (x.isBool() && !static_cast<bool>(x)); };
+            if (off(v))
                 return true;
-            if (v.isString())
-                v = juce::JSON::parse(v.toString());
+            if (v.isString() && off(v = juce::JSON::fromString(v.toString())) && !v.isVoid())   // any JSON value, "false" too
+                return true;
             ask.on = true;
             if (v.isBool())
                 return true;
@@ -234,18 +238,20 @@ namespace playground
                 return {};
             }
 
-            // The stem: the name given (its files replaced), else the time's (a number after it while one is taken).
-            std::string stem = ask.name;
-            if (stem.empty())
-            {
-                const std::string base = "render " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H.%M.%S").toStdString();
-                stem = base;
-                for (int k = 2; dir.getChildFile(stem + ".wav").exists() || dir.getChildFile(stem + ".csv").exists(); ++k)
-                    stem = base + " " + std::to_string(k);
-            }
+            // The stem: the name given, else the time's; a number after it while any of the files it would write is
+            // there (an export adds files, never replacing one: an effect's "pad" after "pad input" is "pad 2", whose
+            // input would be that one's WAV, and its "pad input" after "pad" is "pad input 2").
+            const std::string base = !ask.name.empty() ? ask.name
+                                                       : "render " + juce::Time::getCurrentTime().formatted("%Y-%m-%d %H.%M.%S").toStdString();
+            const auto taken = [&dir](const std::string& s) {
+                return dir.getChildFile(s + ".wav").exists() || dir.getChildFile(s + ".csv").exists()
+                    || (!product::kIsInstrument && dir.getChildFile(s + " input.wav").exists());
+            };
+            std::string stem = base;
+            for (int k = 2; taken(stem); ++k)
+                stem = base + " " + std::to_string(k);
             const juce::File wavFile = dir.getChildFile(stem + ".wav"), inFile = dir.getChildFile(stem + " input.wav"),
                              csvFile = dir.getChildFile(stem + ".csv");
-            const bool replaced = !ask.name.empty() && (wavFile.exists() || csvFile.exists() || inFile.exists());
 
             const bool fl = ask.wav == measure::WavFormat::float32;
             measure::WavWritten w;
@@ -257,27 +263,20 @@ namespace playground
             std::size_t csvBytes = 0;
             if (csv && !writeFile(csvFile, [&](const measure::Sink& sink) { return (csvBytes = measure::writeCsv(sink, r.log, rate)) > 0; }, why))
                 return {};
-            // A name given whose last export had an input or a CSV this one has not: those files go, so the name's files are
-            // one export's.
-            if (!ask.name.empty())
-            {
-                if (!input)
-                    inFile.deleteFile();
-                if (!csv)
-                    csvFile.deleteFile();
-            }
 
             const std::string format = fl ? "float32" : "24-bit PCM";
             const auto clipped = [&](const measure::WavWritten& x) {
                 return fl || x.clipped == 0 ? std::string()
                                             : ", " + grouped(x.clipped) + " samples past full scale clipped (float32 keeps them)";
             };
+            // Pass 1's render cut short (TraceResult::stoppedFirst: the time limit, or its records full); a stop in the
+            // calls of 1 sample after it leaves the render whole.
+            const std::string part = r.stoppedFirst ? "; up to where trace stopped" : "";
             std::string out = "Exported on this Mac (the user can open these) to " + dir.getFullPathName().toStdString()
-                            + (replaced ? ", replacing that name's files" : "") + ":\n";
+                            + (stem != base && !ask.name.empty() ? " (\"" + base + "\" was taken, and nothing is replaced)" : "") + ":\n";
             out += "- " + wavFile.getFileName().toStdString() + ": the render, " + secondsText(static_cast<double>(frames) / rate)
                  + " at " + std::to_string(std::llround(rate)) + " Hz, stereo " + format + ", " + sizeText(static_cast<int64_t>(w.bytes))
-                 + clipped(w) + (fl ? "; its data's SHA-256 is the render hash" : "")
-                 + (r.stopped ? "; the part rendered before trace stopped" : "") + ".\n";
+                 + clipped(w) + (fl ? "; its data's SHA-256 is the render hash" : "") + part + ".\n";
             if (input)
                 out += "- " + inFile.getFileName().toStdString() + ": the input as it went in, " + format + ", "
                      + sizeText(static_cast<int64_t>(wi.bytes)) + clipped(wi) + ".\n";
@@ -292,7 +291,7 @@ namespace playground
                     cols += (cols.empty() ? "" : ", ") + c;
                 out += "- " + csvFile.getFileName().toStdString() + ": time_s, sample, then " + cols + whose + "; a row every "
                      + std::to_string(every) + " samples (" + secondsText(static_cast<double>(every) / rate) + "), "
-                     + grouped(r.log.rows()) + " rows, " + sizeText(static_cast<int64_t>(csvBytes)) + ".\n";
+                     + grouped(r.log.rows()) + " rows, " + sizeText(static_cast<int64_t>(csvBytes)) + part + ".\n";
                 // The short CSV: its rows evenly, the first and the last among them, 6 digits; fewer while it passes
                 // kInlineBytes.
                 if (ask.rows > 0)
@@ -339,7 +338,7 @@ namespace playground
                                            { "points", typed("integer") },
                                            { "around", typed("number") },
                                            { "detail", typed("boolean") },
-                                           { "export", typed("object") } });
+                                           { "export", juce::var(new juce::DynamicObject()) } });   // true or an object
         auto* o = props.getDynamicObject();
         if constexpr (product::kIsInstrument)
             for (const char* k : { "velocity", "modwheel", "pitchbend" })
@@ -374,7 +373,8 @@ namespace playground
                 "an effect's input beside it, and with fields a CSV of them (time_s, sample, a column a field, as voice "
                 "chooses; a row every `every` samples, a multiple of 16, default about 1 ms), up to 300 s of render; then the "
                 "CSV's rows evenly, at most 64 (rows, default 32), inline, for a client that cannot open the files. name: the "
-                "files' name (a later export of that name replaces them). Never of the user's recording. The render as "
+                "files' name (a number after it when taken: it never replaces a file). Never of the user's recording. The "
+                "render as "
                 "measure_output's: ")
                     + (product::kIsInstrument ? "notes, velocity, the wheels, " : "")
                     + "hold_seconds, tail_seconds, bpm, dials, dials_from, scenario and try_edits (an effect plays the "
@@ -540,7 +540,9 @@ namespace playground
                         + "Traced offline (nothing that plays changed): " + words
                         + (trials > 0 ? ", with the trial edits" : "") + ".\n";
         std::string tail;                                   // the short CSV, after trace's own lines
-        if (ask.on)
+        if (ask.on && cancel_.load())                       // stopped (the stop button, Desktop's cancel): no file
+            out += "Cancelled, so nothing was exported: no file was written.\n";
+        else if (ask.on)
         {
             std::string why2;
             const std::string written = exportFiles(r, ask, every, q, tail, why2);

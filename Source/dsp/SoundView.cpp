@@ -255,6 +255,13 @@ namespace playground::measure
         std::size_t total = holdN + static_cast<std::size_t>(tail * rate);
         const double hiHz = std::min(20000.0, 0.5 * rate);
         const std::string scenario = scenarioText(request.render);
+        // Its own length (Sound::plain): as `total` is worked out, but without a window's end (Timeline::plain).
+        const std::size_t least = total;
+        const auto natural = [&session](const Request& q) {
+            const Timeline t = session.timeline(q, 0);
+            return t.plain > 0 ? t.plain : t.length;
+        };
+        std::size_t plain = 0;
 
         Session::Render played;
         if constexpr (kInstrument)
@@ -273,6 +280,7 @@ namespace playground::measure
                     what += (what.empty() ? "" : " ") + std::to_string(n) + " (" + noteName(n) + ")";
                 r.notes = notes;
                 total = request.length > 0 ? request.length : std::max(total, session.lengthOf(r));   // a late move too
+                plain = request.length > 0 ? request.length : std::max(least, natural(r));
                 out.title = (notes.size() == 1 ? "Note " : "Notes ") + what + " at velocity "
                           + fmt("%.2f", std::clamp(request.render.velocity, 0.0f, 1.0f)) + ", held " + fmt("%.2f s", hold)
                           + ", then released for " + fmt("%.2f s", static_cast<double>(total - std::min(total, holdN)) / rate)
@@ -287,6 +295,7 @@ namespace playground::measure
                 // A phrase (or a recording): as long as it plays, and the tail; held until its last note-off.
                 const Timeline tl = session.timeline(r, request.length);
                 total = tl.length;
+                plain = tl.plain > 0 ? tl.plain : tl.length;
                 int lowest = 127;
                 for (const auto& [at, e] : tl.events)
                     if (e.kind == EventKind::noteOn)
@@ -303,6 +312,9 @@ namespace playground::measure
             total = request.length > 0                  ? request.length
                   : request.render.input != nullptr     ? session.lengthOf(request.render)
                                                         : std::max(total, session.lengthOf(request.render));
+            plain = request.length > 0                  ? request.length
+                  : request.render.input != nullptr     ? natural(request.render)
+                                                        : std::max(least, natural(request.render));
             const double after = static_cast<double>(total - std::min(total, holdN)) / rate;   // the silence after it
             std::vector<float> in(std::max(total, holdN), 0.0f);
             const double amp = std::pow(10.0, -12.0 / 20.0);
@@ -390,6 +402,7 @@ namespace playground::measure
         out.cancelled = played.cancelled;
         out.l = std::move(played.l);
         out.r = std::move(played.r);
+        out.plain = std::min(plain, out.l.size());
         return out;
     }
 
@@ -404,7 +417,12 @@ namespace playground::measure
             return v;
         }
         View v = analyse(s.l, s.r, s.rate, s.heldUntil, request, s.cycleHz, s.harmonics, s.fromStart);
-        v.hash = renderHash(s.l, s.r);
+        // Its own length (Sound::plain): a window past its end renders on, which the hash leaves out (measure_output's).
+        const bool cut = s.plain > 0 && s.plain < s.l.size();
+        v.hash = renderHash(s.l, s.r, cut ? s.plain : SIZE_MAX);
+        v.hashed = cut ? "the render up to its own end (" + fmt("%.2f s", static_cast<double>(s.plain) / s.rate)
+                             + "), not the window's part past it"
+                       : "the render";
         v.title = std::move(s.title);
         v.dials = std::move(s.dials);
         v.alerts = s.alerts;
