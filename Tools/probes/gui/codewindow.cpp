@@ -654,6 +654,8 @@ PROBE(gui, codewindow)
         host.keys("z");
         host.tick(2);
         host.keys("cmd+s");
+        processor.settle();                              // the save, off the message thread, lands
+        host.tick(2);
         host.settle();
         const std::optional<pg::projectstore::Project> p = pg::projectstore::load("Code Window");
         P.eq("hidden.saved_v2", p.has_value() && p->latest().number == 2 ? 1 : 0, 1);
