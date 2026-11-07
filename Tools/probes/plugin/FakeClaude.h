@@ -8,6 +8,14 @@
 //                    stream that stalls until the agent cancels
 //   fake::Script     what the transport plays and what it saw (the bodies, the headers, the hosts, the paths),
 //                    shared with the probe while the agent owns the transport
+//   fake::OpenAiSse  another provider's answer as an OpenAI-compatible server streams Chat Completions (OpenAI's API
+//                    reference, "Streaming"; OpenRouter, Ollama and LM Studio send the same chunks): data: lines of
+//                    chat.completion.chunk (a delta's role, content, reasoning or reasoning_content, tool_calls by
+//                    index, their arguments in pieces; a finish_reason; a last chunk of usage alone), then [DONE]
+//   fake::GeminiSse  Gemini's streamGenerateContent?alt=sse (the Gemini API reference): data: lines of
+//                    GenerateContentResponse (candidates[0].content.parts: text, a functionCall whole with its
+//                    thoughtSignature; finishReason; usageMetadata), with no end marker
+//   (and the models lists: OpenAI's, OpenRouter's, Ollama's, Gemini's, as their references show them)
 #pragma once
 
 #include "plugin/ClaudeApi.h"
@@ -15,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -242,6 +251,7 @@ namespace fake
         std::deque<Response> posts;          // played in order; past the end, a short text answer
         int modelsStatus = 200;
         std::string models;                  // GET /v1/models's body
+        std::map<std::string, std::pair<int, std::string>> gets;   // another GET's (status, body), by its path
         std::vector<std::string> bodies;     // every POST's body
         std::vector<claude::Headers> headers;
         std::vector<std::string> paths;      // every request's path, in order ("POST /v1/messages")
@@ -372,6 +382,8 @@ namespace fake
             script_->paths.push_back("GET " + path);
             script_->headers.push_back(headers);
             script_->hosts.push_back(host);
+            if (const auto it = script_->gets.find(path); it != script_->gets.end())
+                return { it->second.first, {}, it->second.second, -1 };
             return { script_->modelsStatus, {}, script_->models, -1 };
         }
 
@@ -422,4 +434,196 @@ namespace fake
 
     // A key of the right shape for plausibleKey, which no server knows (and which no secret scanner takes for a key).
     inline std::string fakeKey() { return "sk-ant-probe-NotARealKey_0123456789abcdefghijklmnop-QRSTUV"; }
+    // Other providers' keys, as plausible and as unreal.
+    inline std::string fakeOpenRouterKey() { return "sk-or-v1-probe-NotARealKey-0123456789abcdef"; }
+    inline std::string fakeOpenAiKey() { return "sk-proj-probe-NotARealKey-0123456789abcdef"; }
+    inline std::string fakeGeminiKey() { return "AIzaProbeNotARealKey_0123456789abcdefg"; }
+
+    // An OpenAI-compatible server's streamed Chat Completion: each call a chunk (a data: line).
+    class OpenAiSse
+    {
+    public:
+        explicit OpenAiSse(std::string model = "gpt-probe") : model_(std::move(model)) {}
+
+        // A delta of text, cut in pieces as a server streams it; reasoning (OpenRouter's and Ollama's "reasoning",
+        // DeepSeek's and LM Studio's "reasoning_content").
+        OpenAiSse& text(const std::string& t)
+        {
+            for (std::size_t p = 0; p < t.size(); p += 6)
+                chunk(claude::object({ { "content", juce::String::fromUTF8(t.substr(p, 6).c_str()) } }));
+            return *this;
+        }
+        OpenAiSse& reasoning(const std::string& t, const char* key = "reasoning")
+        {
+            for (std::size_t p = 0; p < t.size(); p += 8)
+                chunk(claude::object({ { key, juce::String::fromUTF8(t.substr(p, 8).c_str()) } }));
+            return *this;
+        }
+        // A tool call by its index: the first chunk its id and name, then its arguments in pieces (OpenAI's way);
+        // `whole`: the call in one chunk, without an index (some local servers' way).
+        OpenAiSse& call(int index, const std::string& id, const std::string& name, const std::string& args, bool whole = false)
+        {
+            if (whole)
+            {
+                juce::var fn = claude::object({ { "name", juce::String(name) }, { "arguments", juce::String::fromUTF8(args.c_str()) } });
+                juce::var tc = claude::object({ { "id", juce::String(id) }, { "type", "function" }, { "function", fn } });
+                return chunk(claude::object({ { "tool_calls", juce::Array<juce::var>{ tc } } }));
+            }
+            juce::var first = claude::object({ { "index", index },
+                                               { "id", juce::String(id) },
+                                               { "type", "function" },
+                                               { "function", claude::object({ { "name", juce::String(name) }, { "arguments", "" } }) } });
+            chunk(claude::object({ { "tool_calls", juce::Array<juce::var>{ first } } }));
+            for (std::size_t p = 0; p < args.size(); p += 7)
+            {
+                juce::var part = claude::object({ { "index", index },
+                                                  { "function", claude::object({ { "arguments", juce::String::fromUTF8(args.substr(p, 7).c_str()) } }) } });
+                chunk(claude::object({ { "tool_calls", juce::Array<juce::var>{ part } } }));
+            }
+            return *this;
+        }
+        OpenAiSse& finish(const std::string& reason)
+        {
+            juce::var choice = claude::object({ { "index", 0 }, { "delta", juce::var(new juce::DynamicObject()) }, { "finish_reason", juce::String(reason) } });
+            return raw(claude::object({ { "id", "chatcmpl-probe" }, { "object", "chat.completion.chunk" }, { "model", juce::String(model_) },
+                                        { "choices", juce::Array<juce::var>{ choice } } }));
+        }
+        // The usage chunk (stream_options.include_usage): no choices.
+        OpenAiSse& usage(int prompt, int completion, int cached = 0)
+        {
+            juce::var u = claude::object({ { "prompt_tokens", prompt }, { "completion_tokens", completion }, { "total_tokens", prompt + completion },
+                                           { "prompt_tokens_details", claude::object({ { "cached_tokens", cached } }) } });
+            return raw(claude::object({ { "id", "chatcmpl-probe" }, { "object", "chat.completion.chunk" }, { "model", juce::String(model_) },
+                                        { "choices", juce::Array<juce::var>() }, { "usage", u } }));
+        }
+        OpenAiSse& error(const std::string& message)
+        {
+            return raw(claude::object({ { "error", claude::object({ { "message", juce::String(message) }, { "code", 502 } }) } }));
+        }
+        OpenAiSse& done()
+        {
+            text_ += "data: [DONE]\n\n";
+            return *this;
+        }
+        const std::string& str() const noexcept { return text_; }
+
+    private:
+        OpenAiSse& chunk(const juce::var& delta)
+        {
+            if (first_)
+            {
+                delta.getDynamicObject()->setProperty("role", "assistant");
+                first_ = false;
+            }
+            juce::var choice = claude::object({ { "index", 0 }, { "delta", delta }, { "finish_reason", juce::var() } });
+            return raw(claude::object({ { "id", "chatcmpl-probe" }, { "object", "chat.completion.chunk" }, { "created", 1762500000 },
+                                        { "model", juce::String(model_) }, { "choices", juce::Array<juce::var>{ choice } } }));
+        }
+        OpenAiSse& raw(const juce::var& v)
+        {
+            text_ += "data: " + claude::toJson(v) + "\n\n";
+            return *this;
+        }
+        std::string model_, text_;
+        bool first_ = true;
+    };
+
+    // Gemini's streamed answer: each call a GenerateContentResponse (a data: line), its usage on every one.
+    class GeminiSse
+    {
+    public:
+        explicit GeminiSse(std::string model = "gemini-probe-pro") : model_(std::move(model)) {}
+
+        GeminiSse& text(const std::string& t, bool thought = false)
+        {
+            juce::var part = claude::object({ { "text", juce::String::fromUTF8(t.c_str()) } });
+            if (thought)
+                part.getDynamicObject()->setProperty("thought", true);
+            return parts({ part }, {});
+        }
+        // A function call arrives whole, its thought signature on its part (Gemini 3's).
+        GeminiSse& call(const std::string& name, const juce::var& args, const std::string& signature = {})
+        {
+            juce::var part = claude::object({ { "functionCall", claude::object({ { "name", juce::String(name) }, { "args", args } }) } });
+            if (!signature.empty())
+                part.getDynamicObject()->setProperty("thoughtSignature", juce::String(signature));
+            return parts({ part }, {});
+        }
+        GeminiSse& finish(const std::string& reason, int prompt = 900, int out = 42)
+        {
+            prompt_ = prompt;
+            out_ = out;
+            return parts({}, reason);
+        }
+        const std::string& str() const noexcept { return text_; }
+
+    private:
+        GeminiSse& parts(const juce::Array<juce::var>& ps, const std::string& reason)
+        {
+            juce::var cand = claude::object({ { "content", claude::object({ { "role", "model" }, { "parts", ps } }) }, { "index", 0 } });
+            if (!reason.empty())
+                cand.getDynamicObject()->setProperty("finishReason", juce::String(reason));
+            juce::var v = claude::object({ { "candidates", juce::Array<juce::var>{ cand } },
+                                           { "usageMetadata", claude::object({ { "promptTokenCount", prompt_ },
+                                                                               { "candidatesTokenCount", out_ },
+                                                                               { "totalTokenCount", prompt_ + out_ } }) },
+                                           { "modelVersion", juce::String(model_) } });
+            text_ += "data: " + claude::toJson(v) + "\r\n\r\n";
+            return *this;
+        }
+        std::string model_, text_;
+        int prompt_ = 900, out_ = 1;
+    };
+
+    // The models lists. OpenAI's: { object: list, data: [{ id, object: model, created, owned_by }] }; OpenRouter's adds
+    // name, context_length, architecture.input_modalities and supported_parameters; Ollama's and LM Studio's are
+    // OpenAI's. Gemini's: { models: [{ name: models/<id>, displayName, inputTokenLimit, outputTokenLimit,
+    // supportedGenerationMethods }] }.
+    struct ListedModel
+    {
+        std::string id, name;
+        int64_t created = 0;
+        int context = 0;
+        bool tools = true, images = true;
+    };
+    inline std::string openAiModels(const std::vector<ListedModel>& models, bool openRouter = false)
+    {
+        juce::Array<juce::var> data;
+        for (const ListedModel& m : models)
+        {
+            juce::var v = claude::object({ { "id", juce::String(m.id) }, { "object", "model" }, { "created", static_cast<juce::int64>(m.created) },
+                                           { "owned_by", "probe" } });
+            if (openRouter)
+            {
+                auto* o = v.getDynamicObject();
+                o->setProperty("name", juce::String(m.name));
+                o->setProperty("context_length", m.context);
+                juce::Array<juce::var> in{ "text" };
+                if (m.images)
+                    in.add("image");
+                o->setProperty("architecture", claude::object({ { "input_modalities", in } }));
+                juce::Array<juce::var> params{ "max_tokens", "temperature" };
+                if (m.tools)
+                    params.add("tools");
+                o->setProperty("supported_parameters", params);
+            }
+            data.add(v);
+        }
+        return claude::toJson(claude::object({ { "object", "list" }, { "data", data } }));
+    }
+    inline std::string geminiModels(const std::vector<ListedModel>& models, const std::vector<std::string>& methods = { "generateContent", "countTokens" })
+    {
+        juce::Array<juce::var> list;
+        for (const ListedModel& m : models)
+        {
+            juce::Array<juce::var> ms;
+            for (const std::string& x : methods)
+                ms.add(juce::String(x));
+            list.add(claude::object({ { "name", juce::String("models/" + m.id) }, { "displayName", juce::String(m.name) },
+                                      { "inputTokenLimit", m.context }, { "outputTokenLimit", 65536 },
+                                      { "supportedGenerationMethods", m.id.find("embedding") != std::string::npos
+                                                                          ? juce::var(juce::Array<juce::var>{ "embedContent" }) : juce::var(ms) } }));
+        }
+        return claude::toJson(claude::object({ { "models", list } }));
+    }
 }

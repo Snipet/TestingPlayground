@@ -5,11 +5,11 @@
 // pressed and, over it, the menu FunkGui's MenuLook draws for the Panel's request (JUCE's popup menu, shown in a
 // component as fg.menulook shows its own), cut to the two, at 2x, to <build>/probe-out/:
 //   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, model, thinking, zoom, chats (the chat
-//   card's list of the project's chats), settings (the output's select), panel (a .gui file's menu control) and
-//   schematic (a netlist's canvas menu)
+//   card's list of the project's chats), provider (the key dialog's Provider pill), settings (the output's select), panel
+//   (a .gui file's menu control) and schematic (a netlist's canvas menu)
 // and checks:
-//   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the output's select, a
-//            .gui file's menu control): a combo box to a screen reader, its value its label; its chevron
+//   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the key dialog's
+//            Provider, the output's select, a .gui file's menu control): a combo box to a screen reader, its value its label; its chevron
 //            kChevronInset from its right edge; a click opens its menu under it (the anchor its bounds), at least as
 //            wide when it holds choices; while the menu is open the trigger's pill has the accent's edge and the one
 //            open fill (every trigger's the same), and once it is dismissed neither; Projects' while its card is open;
@@ -22,7 +22,7 @@
 //            and highlighted when it opens (selectedId); THINKING, ZOOM, the output's select and the .gui menu a radio
 //            set, the current one dotted and highlighted; CHATS its header (the project's name), its chats a radio set,
 //            the newest first, the one shown dotted and highlighted, each one's time in the shortcut column, then New
-//            chat, Rename and Delete; the schematic's canvas menu every key in the shortcut column, none left in a label;
+//            chat, Rename and Delete; PROVIDER its header, every provider a radio set, the one shown dotted; the schematic's canvas menu every key in the shortcut column, none left in a label;
 //            a choice made from each doing what it did
 #include "Probe.h"
 
@@ -738,6 +738,27 @@ PROBE(gui, menus)
                 picture(P, pics, host, panel, *m, "chats", t);
                 host.cancelMenu();
                 closedTrigger(R, host, "chats", seen);
+            }
+
+            // PROVIDER: the key dialog's Provider pill, the providers a radio set under its header.
+            {
+                const funkgui::Point key = panel.centreOfKey();
+                host.click(key.x, key.y);
+                host.tick(1);
+                if (const funkgui::MenuRequest* m = openTrigger(R, host, "provider", panel.centreOfKeyProvider(), true, seen))
+                {
+                    int headers = 0;
+                    for (const funkgui::MenuItem& it : m->items)
+                        headers += it.header ? 1 : 0;
+                    R.eq("rows.provider.header", headers, 1);
+                    R.eq("rows.provider.every", static_cast<int64_t>(choicesOf(*m).size()), static_cast<int64_t>(std::size(pg::kChatPresets)));
+                    radioSet(R, "rows.provider", *m, choicesOf(*m), "Anthropic");
+                    picture(P, pics, host, panel, *m, "provider", t);
+                    host.cancelMenu();
+                    closedTrigger(R, host, "provider", seen);
+                }
+                host.keys("escape");
+                host.tick(1);
             }
 
             if (rows)
