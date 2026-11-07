@@ -111,9 +111,10 @@
 // newest (a new chat when it has none); saving the editor's files as a project carries the chat to it (moved from the
 // instance, copied from another project). The chat is written to the store (keep(): the conversation as saveState(true)
 // has it, the panel's pictures kept, so a chat opened again keeps its thinking) when a turn ends, when the session is
-// saved, before another chat shows and when the agent goes; the session keeps only which chat it is (chatRef()), and a
-// session from before keeps its conversation here once (adoptChat). The chat list (chatList) is its owner's, the newest
-// first: new, open, rename, delete.
+// saved (keepIdle: not while a turn runs, whose end does), before another chat shows and when the agent goes; the
+// session keeps only which chat it is (chatRef()), and a session from before keeps its conversation here once
+// (adoptChat). A copy of a state in another live instance shows its chat as a chat of its own (restoreChat's `from`;
+// the processor decides). The chat list (chatList) is its owner's, the newest first: new, open, rename, delete.
 //
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
 // ChatHost (whose implementation must be safe from that thread) and the transport. Pictures are read on a job thread
@@ -175,7 +176,8 @@ namespace playground
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
-        // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most): the panel (`name`
+        // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most, and no longer than
+        // the agent's stopping(): the message thread may be the one waiting for the turn to end): the panel (`name`
         // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file);
         // the panel or the editor with `state` drawn in place of what plays (picturePanel: view_panel's values and at).
         virtual PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) = 0;
@@ -247,17 +249,26 @@ namespace playground
         // The chats (above). setOwner: the owner the conversation belongs to now (a project's id, or
         // chatstore::instanceOwner of the instance's id) and its name for the list ("" for none); open shows the new
         // owner's newest chat (the one shown kept with its owner), carry takes the chat shown along (a project saved:
-        // from the instance it moves, from another project a copy goes, the old project keeping its own). The same owner
-        // again changes nothing but the name. Asked from a turn's own thread, the change waits for the turn's end. True
-        // when another chat shows. restoreChat: a session's chat (its id) when it is this owner's, else the owner's
-        // newest, else a new one. adoptChat: a session from before the chats were kept here: its conversation kept under
-        // `owner`, its id made from its text, so a session loaded again finds the chat it became (and what was said
-        // since). chatRef: what the session keeps (keep() first). keep: the chat written when it changed since it was
-        // last written and holds more than the chat's notes (any thread, no lock of the agent's held); a chat whose file
-        // another writer changed meanwhile (another instance with it open) is kept under a new id, nothing lost.
-        enum class OwnerChange : uint8_t { open, carry };
+        // from the instance it moves, from another project a copy goes, the old project keeping its own), move takes it
+        // along from a project whose file is gone (nothing is left with that project). The same owner again changes
+        // nothing but the name. An open asked from a turn's own thread waits for the turn's end (a carry or a move runs
+        // at once: it never joins the worker). True when another chat shows. restoreChat: a session's chat (its id) when
+        // it is this owner's (read from `from`'s chats when that is not "": a copy of another instance's state, shown as
+        // a new chat of `owner`, written at once); else, for a project, its newest, and for an instance (or none
+        // found) a new one. adoptChat: a session from before the chats were kept here: its conversation, when it holds
+        // more than the chat's notes (adoptable), kept under `owner`, its id made from its text, so a session loaded
+        // again finds the chat it became (and what was said since); else a new chat (restoreChat with no id). chatRef:
+        // what the session keeps (keep() first). keep: the chat written when it changed since it was last written and
+        // holds more than the chat's notes (any thread, no lock of the agent's held); a chat whose file another writer
+        // changed meanwhile (another instance with it open) is kept under a new id, nothing lost; a project's chat
+        // whose folder is gone since it was kept (the project deleted, with its chats, in another instance) is not
+        // written back. A write that fails (or is held back so) says so in the chat once, is tried again at each keep,
+        // and says so again when it is kept. keepIdle: keep, unless a turn or a call of Claude Desktop's runs (its
+        // end, or the next keep, writes it): getStateInformation's, which a host may call at every change.
+        enum class OwnerChange : uint8_t { open, carry, move };
         bool setOwner(const std::string& owner, const std::string& label, OwnerChange how);
-        void restoreChat(const std::string& owner, const std::string& label, const std::string& id);
+        void restoreChat(const std::string& owner, const std::string& label, const std::string& id,
+                         const std::string& from = {});
         void adoptChat(const std::string& json, const std::string& owner, const std::string& label);
         struct ChatRef
         {
@@ -265,9 +276,17 @@ namespace playground
         };
         ChatRef chatRef() const;
         void keep();
+        void keepIdle();
         // The id adoptChat gives a session's conversation (32 hex digits from its text); a session from before has no
-        // instance id either, so the processor takes this one for it: the same session loaded again is the same owner.
+        // instance id either, so the processor takes this one for it when the conversation is adoptable and kept with
+        // the instance: the same session loaded again is the same owner. adoptable: whether a session's conversation
+        // holds more than the chat's notes (a message, a check, an entry other than a note or an error): an empty one
+        // (every instance's alike) or a lone note (the key saved) is nothing to keep, and no instance's.
         static std::string sessionChatId(const std::string& json);
+        static bool adoptable(const std::string& json);
+        // Whether the turn (or Claude Desktop's call) running was asked to stop: a host's wait for another thread
+        // (chatPicture's for the message thread) ends at it, so a switch that stops and joins the turn never waits long.
+        bool stopping() const noexcept { return cancel_.load(); }
         std::string chatOwner() const;
 
         // For probes: the transport (the next turn uses it), waiting for the current turn (and for the pictures
@@ -414,11 +433,13 @@ namespace playground
         void readState(const std::string& json);
 
         // The chats (ChatChats.cpp). keepLocked: keep() with storeMutex_ held. The chat shown replaced (storeMutex_ held,
-        // no turn running): by a chat of the store, by the owner's newest (else a new one), by a new one. clearChat: the
-        // conversation forgotten (mutex held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner
-        // asked from the turn's thread, at its end.
+        // no turn running): by a chat of the store, by a copy of one (another owner's, as a new chat of `owner`, written
+        // at once), by the owner's newest (else a new one), by a new one. clearChat: the conversation forgotten (mutex
+        // held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner asked from the turn's thread,
+        // at its end.
         void keepLocked();
         void showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
+        void showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
         void showNewest(const std::string& owner, const std::string& label);
         void showFresh(const std::string& owner, const std::string& label);
         void clearChat();
@@ -533,6 +554,7 @@ namespace playground
             std::string owner, label;
         };
         PendingOwner pendingOwner_;                                 // mutex held
+        bool keepFailed_ = false;                                   // the last keep failed, and the chat said so (mutex held)
         std::atomic<std::thread::id> turnThread_{};
 
         std::atomic<bool> cancel_{ false };

@@ -1700,6 +1700,24 @@ namespace playground
         return buf;
     }
 
+    // A session's conversation from before (ChatAgent.h): worth adopting when it holds more than the chat's notes, as
+    // worthKeeping tells of the chat shown.
+    bool ChatAgent::adoptable(const std::string& json)
+    {
+        const juce::var v = claude::parseJson(json);
+        const auto some = [&](const char* key) {
+            const juce::Array<juce::var>* a = v.getProperty(key, juce::var()).getArray();
+            return a != nullptr && !a->isEmpty();
+        };
+        if (some("messages") || some("checks"))
+            return true;
+        if (const juce::Array<juce::var>* entries = v.getProperty("entries", juce::var()).getArray())
+            for (const juce::var& e : *entries)
+                if (const ChatEntry::Kind k = kindOf(str(e, "k")); k != ChatEntry::Kind::note && k != ChatEntry::Kind::error)
+                    return true;
+        return false;
+    }
+
     void ChatAgent::loadState(const std::string& json)
     {
         stop();

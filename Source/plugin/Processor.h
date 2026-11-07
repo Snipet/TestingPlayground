@@ -365,13 +365,16 @@ namespace playground
         std::vector<projectstore::Dial> baseDials_;
         // The chats (ChatAgent.h, "The chats"; programMutex_): the project open's id (ProjectStore.h: the session keeps it,
         // to find the project renamed in the Finder since), and this instance's own (its chats while no project is open;
-        // kept in the session, <CHAT instance>). chatOwnerNow: the owner the chat shown belongs to now (the project's
-        // id, made when it has none; `opened`: the project read already), projectId_ followed; syncChatOwner tells the
-        // agent (open: the owner's newest chat shows; carry: the chat goes along).
+        // kept in the session, <CHAT instance>; no two live processors of this process hold one: Processor.cpp's
+        // heldIds). chatOwnerNow: the owner the chat shown belongs to now (the project's id, made when it has none;
+        // `opened`: the project read already), projectId_ followed; syncChatOwner tells the agent (open: the owner's
+        // newest chat shows; carry: the chat goes along; move, in carry's place, from a project whose file is gone);
+        // loadChat: the chat a state's <CHAT> names (setStateInformation), the instance's id with it.
         std::string projectId_, projectIdName_;                   // the id, and the name it was found for
         std::string instanceId_ = chatstore::newId();
         void chatOwnerNow(std::string& owner, std::string& label, const projectstore::Project* opened = nullptr);
         void syncChatOwner(ChatAgent::OwnerChange how, const projectstore::Project* opened = nullptr);
+        void loadChat(const juce::ValueTree& chat);
         // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();

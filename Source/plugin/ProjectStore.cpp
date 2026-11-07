@@ -945,9 +945,14 @@ namespace playground::projectstore
                 if (p.name != tidy || more || named)     // the same project, named in another case now, answered, labelled
                 {
                     p.name = tidy;
+                    if (p.id.empty())
+                        p.id = newProjectId();
+                    saved.id = p.id;
                     if (!write(std::move(p), why))
                         return std::nullopt;
                 }
+                else
+                    saved.id = p.id;
                 return saved;
             }
         }
@@ -966,6 +971,9 @@ namespace playground::projectstore
         if (p.versions.size() > static_cast<std::size_t>(kMaxVersions))
             p.versions.erase(p.versions.begin(), p.versions.end() - kMaxVersions);
         saved.number = p.latest().number;
+        if (p.id.empty())
+            p.id = newProjectId();                       // made when it is first written (write() would make it too)
+        saved.id = p.id;
         if (!write(std::move(p), why))
             return std::nullopt;
         return saved;

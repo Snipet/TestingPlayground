@@ -130,6 +130,16 @@ namespace playground
         keepLocked();
     }
 
+    void ChatAgent::keepIdle()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_)
+                return;                                // a turn's end (or the next keep) writes it
+        }
+        keep();
+    }
+
     void ChatAgent::keepLocked()
     {
         std::string owner, wasId;
@@ -149,24 +159,53 @@ namespace playground
             wasId = chatId_;
             stamp = chatStamp_;
         }
-        const std::string json = saveState(true);      // its pictures kept: opened again, it keeps its thinking
-        chatstore::SaveResult r = chatstore::saveChat(owner, meta, json, stamp);
-        if (r == chatstore::SaveResult::conflict)
+        std::string why;
+        chatstore::SaveResult r = chatstore::SaveResult::failed;
+        if (!instanceOwned(owner) && !stamp.none() && !chatstore::hasOwner(owner))
         {
-            // Another writer changed this chat's file since it was read here (the same chat open in another instance):
-            // this one goes under an id of its own, and neither is lost.
-            meta.id = chatstore::newId();
-            stamp = {};
-            r = chatstore::saveChat(owner, meta, json, stamp);
+            // A project's chat kept here before, whose folder is gone: the project was deleted with its chats (another
+            // instance's Projects card). It is not written back; saved as a project, it goes on with that one.
+            why = "its project was deleted, with its chats; save the program as a project to keep this chat";
         }
-        if (r != chatstore::SaveResult::ok)
-            return;                                    // tried again at the next keep (still changed)
+        else
+        {
+            const std::string json = saveState(true);  // its pictures kept: opened again, it keeps its thinking
+            r = chatstore::saveChat(owner, meta, json, stamp, &why);
+            if (r == chatstore::SaveResult::conflict)
+            {
+                // Another writer changed this chat's file since it was read here (the same chat open in another
+                // instance): this one goes under an id of its own, and neither is lost.
+                meta.id = chatstore::newId();
+                stamp = {};
+                r = chatstore::saveChat(owner, meta, json, stamp, &why);
+            }
+        }
         const std::lock_guard<std::mutex> lock(mutex_);
         if (chatOwner_ != owner || chatId_ != wasId)
             return;
+        if (r != chatstore::SaveResult::ok)
+        {
+            // Tried again at the next keep (it is still changed); the chat says so once, as the session no longer
+            // holds it: until it is kept, it goes when the plugin closes.
+            if (!keepFailed_)
+            {
+                keepFailed_ = true;
+                addEntry(ChatEntry::Kind::note, "This chat could not be kept on this Mac (" + (why.empty() ? std::string("the write failed") : why)
+                                                    + "). It is tried again after each answer and each save of the session; "
+                                                      "until it is kept, closing the plugin loses it.");
+                touch();
+            }
+            return;
+        }
         chatId_ = meta.id;
         chatStamp_ = stamp;
         storedRevision_ = revision;
+        if (keepFailed_)
+        {
+            keepFailed_ = false;
+            addEntry(ChatEntry::Kind::note, "This chat is kept on this Mac again.");
+            touch();                                   // written at the next keep
+        }
     }
 
     // ---- which chat shows (storeMutex_ held, no turn running) ---------------------------------------------------------
@@ -181,8 +220,22 @@ namespace playground
         chatTitle_ = chat.meta.named ? chat.meta.title : std::string();
         chatCreated_ = chat.meta.createdMs;
         chatStamp_ = chat.stamp;
+        keepFailed_ = false;
         touch();
         storedRevision_ = revision_;                   // as it is on disk
+    }
+
+    void ChatAgent::showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label)
+    {
+        showChat(chat, owner, label);
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            chatId_ = chatstore::newId();              // a chat of its own, with the words and the history it came with
+            chatCreated_ = 0;
+            chatStamp_ = {};
+            storedRevision_ = 0;                       // written now
+        }
+        keepLocked();
     }
 
     void ChatAgent::showNewest(const std::string& owner, const std::string& label)
@@ -208,6 +261,7 @@ namespace playground
         chatNamed_ = false;
         chatCreated_ = 0;
         chatStamp_ = {};
+        keepFailed_ = false;
         touch();
         storedRevision_ = revision_;
     }
@@ -259,9 +313,10 @@ namespace playground
                 return false;
             }
         }
-        if (instanceOwned(from))
+        if (how == OwnerChange::move || instanceOwned(from))
         {
-            // A chat with no project moves to the project it was saved as.
+            // A chat with no project moves to the project it was saved as (and one whose project's file is gone: nothing
+            // is left with it).
             const bool moved = stored && chatstore::moveChat(from, owner, id);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -303,11 +358,12 @@ namespace playground
         showNewest(p.owner, p.label);
     }
 
-    void ChatAgent::restoreChat(const std::string& owner, const std::string& label, const std::string& id)
+    void ChatAgent::restoreChat(const std::string& owner, const std::string& label, const std::string& id, const std::string& from)
     {
+        const std::string source = from.empty() ? owner : from;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (owner == chatOwner_ && !id.empty() && id == chatId_)
+            if (source == owner && owner == chatOwner_ && ((!id.empty() && id == chatId_) || (id.empty() && !worthKeeping())))
             {
                 ownerLabel_ = label;                   // the chat shown already (a host setting the state it got)
                 return;
@@ -318,24 +374,27 @@ namespace playground
         const std::lock_guard<std::mutex> store(storeMutex_);
         keepLocked();
         if (chatstore::validId(id))
-            if (const std::optional<chatstore::Loaded> l = chatstore::loadChat(owner, id))
+            if (const std::optional<chatstore::Loaded> l = chatstore::loadChat(source, id))
             {
-                showChat(*l, owner, label);
+                if (source == owner)
+                    showChat(*l, owner, label);
+                else
+                    showCopy(*l, owner, label);        // another instance's (a copy of its state): a chat of this one's
                 return;
             }
-        showNewest(owner, label);
+        // A project's newest; an instance's chat is the one its session names, never another of its chats (a state copied
+        // into templates and default presets names an instance many others name too).
+        if (instanceOwned(owner))
+            showFresh(owner, label);
+        else
+            showNewest(owner, label);
     }
 
     void ChatAgent::adoptChat(const std::string& json, const std::string& owner, const std::string& label)
     {
-        const juce::var v = claude::parseJson(json);
-        const auto count = [&](const char* key) {
-            const juce::Array<juce::var>* a = v.getProperty(key, juce::var()).getArray();
-            return a == nullptr ? 0 : a->size();
-        };
-        if (count("messages") == 0 && count("entries") == 0)
+        if (!adoptable(json))
         {
-            restoreChat(owner, label, {});             // an empty conversation: nothing to keep
+            restoreChat(owner, label, {});             // nothing but notes, or nothing: no chat to keep
             return;
         }
         const std::string id = sessionChatId(json);
@@ -366,6 +425,7 @@ namespace playground
             chatNamed_ = false;
             chatCreated_ = 0;
             chatStamp_ = {};
+            keepFailed_ = false;
             touch();
             storedRevision_ = 0;                       // written now
         }

@@ -233,6 +233,8 @@ namespace playground::projectstore
         int number = 0;                                  // the version's
         bool unchanged = false;                          // the files, the tab and the dials were the latest's: none added
         bool created = false;                            // a new project
+        std::string id;                                  // the id in its file now ("" for a project from before ids
+                                                         // that this save did not write)
     };
     // A new version of the project `name` (tidied; a new project when there is none), its note what changed since the
     // latest, with the self-test's answers for its netlists (`circuits`: at most kMaxAnswers kept; when the files, the

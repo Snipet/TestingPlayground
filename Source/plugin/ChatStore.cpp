@@ -731,6 +731,23 @@ namespace playground::chatstore
         return dir != juce::File() && validId(id) && chatFile(dir, id).existsAsFile();
     }
 
+    bool hasOwner(std::string_view owner)
+    {
+        const juce::File dir = ownerPath(owner);
+        return dir != juce::File() && dir.isDirectory();
+    }
+
+    bool hasChats(std::string_view owner)
+    {
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !dir.isDirectory())
+            return false;
+        for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kChatExtension))
+            if (validId(f.getFileNameWithoutExtension().toStdString()))
+                return true;
+        return false;
+    }
+
     std::optional<Loaded> loadChat(std::string_view owner, std::string_view id, std::string* why)
     {
         const juce::File dir = ownerPath(owner);

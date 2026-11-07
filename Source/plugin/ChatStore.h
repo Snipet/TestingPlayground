@@ -85,7 +85,8 @@ namespace playground::chatstore
     // so before it reaches a path.
     bool validOwner(std::string_view owner);
     std::string instanceOwner(std::string_view instanceId);     // "instance-<id>"
-    // A title as the list keeps it: printable ASCII, the spaces collapsed, at most kMaxTitle characters.
+    // A title as the list keeps it: its UTF-8 kept whole, control characters dropped, the spaces (tabs, line breaks)
+    // collapsed and trimmed, at most kMaxTitle characters.
     std::string tidyTitle(std::string_view title);
 
     // A chat as the list shows it.
@@ -111,6 +112,10 @@ namespace playground::chatstore
     // file's time, titled "Chat". Ids not valid and files not sealed here are left out.
     std::vector<ChatMeta> chatsOf(std::string_view owner);
     bool hasChat(std::string_view owner, std::string_view id);
+    // Whether an owner's folder is there (none: it never kept a chat, or its project was deleted with its chats), and
+    // whether it holds a chat (a file named by a chat's id; none read).
+    bool hasOwner(std::string_view owner);
+    bool hasChats(std::string_view owner);
     struct Loaded
     {
         ChatMeta meta;
