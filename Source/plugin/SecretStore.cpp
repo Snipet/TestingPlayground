@@ -55,6 +55,8 @@ namespace playground::secrets
         };
 
         constexpr int kSearchNone = 0;                       // SECRET_SEARCH_NONE: no unlocking, no secrets loaded
+        constexpr int kSearchAll = 2;                        // SECRET_SEARCH_ALL: every match, not the first alone
+        constexpr int kSearchUnlock = 4;                     // SECRET_SEARCH_UNLOCK: locked matches unlocked (a prompt)
 
         using StoreFn = gboolean (*)(const Schema*, const gchar* collection, const gchar* label, const gchar* password,
                                      void* cancellable, GError** error, ...);
@@ -231,9 +233,30 @@ namespace playground::secrets
                 const Lib& l = lib();
                 if (!available(why))
                     return false;
+                // libsecret's clear deletes only the unlocked items that match: a locked keyring's stays, and it says
+                // nothing (false, no error). So the matches are unlocked first, by a search that unlocks them (the
+                // desktop asks the user; libsecret before 0.19, which cannot, by a lookup, which unlocks the first).
+                // One the user leaves locked stays, which has() still finds (SecretStore.h).
                 GError* e = nullptr;
+                if (l.search != nullptr)
+                {
+                    GList* found = l.search(&kSchema, kSearchAll | kSearchUnlock, nullptr, &e, "kind", item.kind.c_str(),
+                                            "origin", item.origin.c_str(), kNull);
+                    if (found != nullptr)
+                        l.listFreeFull(found, l.unref);
+                }
+                else if (gchar* got = l.lookup(&kSchema, nullptr, &e, "kind", item.kind.c_str(), "origin",
+                                               item.origin.c_str(), kNull);
+                         got != nullptr)
+                    l.passwordFree(got);
+                if (std::string w = taken(e); !w.empty())
+                {
+                    if (why != nullptr)
+                        *why = w;
+                    return false;
+                }
                 l.clear(&kSchema, nullptr, &e, "kind", item.kind.c_str(), "origin", item.origin.c_str(), kNull);
-                const std::string w = taken(e);              // false and no error: there was none to remove
+                const std::string w = taken(e);              // false and no error: nothing unlocked to remove
                 if (!w.empty())
                 {
                     if (why != nullptr)

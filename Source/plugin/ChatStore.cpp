@@ -547,7 +547,8 @@ namespace playground::chatstore
 
         // A key kept: in the store when there is one (its file, if any, deleted: one place), else sealed into its file
         // (`sealed`: what the file holds) with the machine's key. A store that refuses it (a keyring left locked) falls
-        // back to the file.
+        // back to the file, which readKey then reads before the store: the store may still hold an older key, which a
+        // locked keyring would not let clear() remove either.
         bool keepKey(const secrets::Item& item, const std::string& label, std::string_view key, const juce::File& file,
                      std::string_view sealed, std::string* why)
         {
@@ -556,41 +557,56 @@ namespace playground::chatstore
                 if (store->store(item, label, key, nullptr))
                 {
                     remember(item, true);
-                    if (file.existsAsFile())
-                        file.deleteFile();
-                    return true;
+                    if (!file.existsAsFile() || file.deleteFile())
+                        return true;
+                    // A file it cannot delete would be read first, an older key: the new one sealed into it too.
                 }
             }
             return seal(file, sealed, why);
         }
 
-        // A key read: from the store when it keeps it, else from its file (`opened`: the file's text made the key),
-        // which then moves into the store when there is one (a key saved while no keyring ran). Nothing, with why.
+        // A key read (`opened`: the file's text made the key). The file first: there is one only when the last save did
+        // not reach the store (none ran, or it refused: a keyring left locked), since a save the store takes and the
+        // move below both delete it, so it is newer than whatever the store holds; it moves into the store when there
+        // is one that takes it. Else the store's. A store that keeps the key but left it locked (the user dismissed the
+        // prompt to unlock it: libsecret's lookup then finds nothing and says nothing) is said so, and the key counted
+        // kept. Nothing, with why.
         std::optional<std::string> readKey(const secrets::Item& item, const std::string& label, const juce::File& file,
                                            const std::function<std::optional<std::string>(std::string*)>& opened,
                                            std::string* why)
         {
             secrets::Store* store = usableStore();
-            std::string storeWhy;
-            if (store != nullptr)
+            if (store == nullptr || file.existsAsFile())
             {
-                if (std::optional<std::string> k = store->lookup(item, &storeWhy))
+                std::optional<std::string> k = opened(why);
+                if (k && store != nullptr && store->store(item, label, *k, nullptr))
                 {
                     remember(item, true);
-                    return k;
+                    file.deleteFile();
                 }
-                if (storeWhy.empty())
-                    remember(item, false);
+                return k;
             }
-            std::optional<std::string> k = opened(why);
-            if (k && store != nullptr && store->store(item, label, *k, nullptr))
+            std::string storeWhy;
+            if (std::optional<std::string> k = store->lookup(item, &storeWhy))
             {
                 remember(item, true);
-                file.deleteFile();
+                return k;
             }
-            if (!k && !storeWhy.empty() && !file.existsAsFile() && why != nullptr)
-                *why = store->name() + ": " + storeWhy;
-            return k;
+            if (!storeWhy.empty())
+            {
+                if (why != nullptr)
+                    *why = store->name() + ": " + storeWhy;
+                return std::nullopt;
+            }
+            if (store->has(item, nullptr) == 1)
+            {
+                remember(item, true);
+                if (why != nullptr)
+                    *why = store->name() + " is locked: send again, and unlock it when it asks";
+                return std::nullopt;
+            }
+            remember(item, false);
+            return opened(why);                      // no file: its words for none
         }
 
         bool keyKept(const secrets::Item& item, const juce::File& file)
@@ -601,15 +617,29 @@ namespace playground::chatstore
             return store != nullptr && keptInStore(*store, item);
         }
 
-        // Both places emptied: the store's item and the file.
-        bool dropKey(const secrets::Item& item, const juce::File& file)
+        // Both places emptied: the store's item and the file, each whatever the other did. False, with why, when either
+        // still holds the key: the store's is looked for again after clear() (a keyring the user left locked keeps it,
+        // and its clear says nothing: SecretStore.h).
+        bool dropKey(const secrets::Item& item, const juce::File& file, std::string* why)
         {
+            std::string problem;
             if (secrets::Store* store = usableStore())
             {
-                store->clear(item, nullptr);
-                remember(item, false);
+                std::string w;
+                const bool cleared = store->clear(item, &w);
+                const int has = store->has(item, nullptr);
+                const bool left = has == 1 || (has < 0 && !cleared);   // not asked again either: as it was, kept
+                remember(item, left);
+                if (!cleared)
+                    problem = store->name() + ": " + (w.empty() ? std::string("it failed") : w);
+                else if (left)
+                    problem = store->name() + " still holds it (it is locked: remove the key again, and unlock it when it asks)";
             }
-            return !file.existsAsFile() || file.deleteFile();
+            if (file.existsAsFile() && !file.deleteFile())
+                problem += (problem.empty() ? "" : "; ") + std::string("cannot delete ") + file.getFullPathName().toStdString();
+            if (!problem.empty() && why != nullptr)
+                *why = problem;
+            return problem.empty();
         }
 
         std::string labelFor(const secrets::Item& item)
@@ -683,7 +713,7 @@ namespace playground::chatstore
         return key;
     }
 
-    bool forgetKey() { return dropKey(kAnthropic, keyFile()); }
+    bool forgetKey(std::string* why) { return dropKey(kAnthropic, keyFile(), why); }
 
     // ---- the other providers' keys (ChatStore.h) -------------------------------------------------------------------------
     namespace
@@ -767,11 +797,11 @@ namespace playground::chatstore
         return ok;
     }
 
-    bool forgetProviderKey(std::string_view kind, std::string_view origin)
+    bool forgetProviderKey(std::string_view kind, std::string_view origin, std::string* why)
     {
         if (!plainKind(kind) || origin.empty())
             return true;
-        return dropKey({ std::string(kind), std::string(origin) }, providerKeyFile(kind, origin));
+        return dropKey({ std::string(kind), std::string(origin) }, providerKeyFile(kind, origin), why);
     }
 
     std::string modelKey(std::string_view kind, std::string_view base)

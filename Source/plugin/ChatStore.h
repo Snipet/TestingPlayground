@@ -6,8 +6,9 @@
 // Windows: %APPDATA%\Funk\Playground\, the user's profile's own, and the same files through Windows' CNG (bcrypt) in
 // place of CommonCrypto. On Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/Playground/, through OpenSSL's libcrypto,
 // and the keys (the Anthropic key and the other providers') in the desktop's keyring when a Secret Service runs
-// (plugin/SecretStore.h: GNOME Keyring, KWallet, KeePassXC), a file only where none does; a key saved to a file while
-// none ran moves into the keyring the next time it is read with one there. The chats stay files (below) everywhere.
+// (plugin/SecretStore.h: GNOME Keyring, KWallet, KeePassXC), a file only where none does or it refused the key (left
+// locked); such a file is newer than whatever the keyring holds, so it is read first, and moves into the keyring the
+// next time it is read with one there that takes it. The chats stay files (below) everywhere.
 //
 // The key's file is "FPK1", a 16-byte salt, a 16-byte IV, the key encrypted with AES-256-CBC, and an HMAC-SHA256 of
 // all that before it (CommonCrypto). The two keys come from PBKDF2-HMAC-SHA256 (100,000 rounds, the salt) over this
@@ -56,12 +57,15 @@ namespace playground::chatstore
     juce::File directory();
     void setDirectoryForTests(const juce::File& dir);
 
-    // The API key: whether one is saved, the key (nothing, with why, when it is missing or does not decrypt), save
-    // (false with why: not a plausible key, or the file cannot be written), forget (the file deleted).
+    // The API key: whether one is saved, the key (nothing, with why, when it is missing, does not decrypt or sits in a
+    // keyring left locked), save (false with why: not a plausible key, or the file cannot be written), forget (the
+    // keyring's item and the file deleted; false with why when either still holds it: a keyring the user left locked).
+    // On Linux loadKey, saveKey and forgetKey may wait for the user to answer the desktop's prompt to unlock the
+    // keyring: never call them holding a lock the message thread may take.
     bool hasKey();
     std::optional<std::string> loadKey(std::string* why = nullptr);
     bool saveKey(std::string_view key, std::string* why = nullptr);
-    bool forgetKey();
+    bool forgetKey(std::string* why = nullptr);
 
     // Whether `key` looks like an Anthropic API key: "sk-ant-" then 20 to 300 letters, digits, '-' and '_'.
     bool plausibleKey(std::string_view key);
@@ -95,7 +99,7 @@ namespace playground::chatstore
     bool hasProviderKey(std::string_view kind, std::string_view origin);
     std::optional<std::string> loadProviderKey(std::string_view kind, std::string_view origin, std::string* why = nullptr);
     bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why = nullptr);
-    bool forgetProviderKey(std::string_view kind, std::string_view origin);
+    bool forgetProviderKey(std::string_view kind, std::string_view origin, std::string* why = nullptr);
 
     // The provider chosen last (chat.json "provider", "base": none is Anthropic, as before the providers) and the model
     // chosen last with each other provider (chat.json "models", by modelKey: the kind, and an OpenAI-compatible

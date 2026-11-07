@@ -11,9 +11,10 @@
 //
 // Never a bus started: the desktop's store is available() only when the session's bus is there to be reached
 // ($DBUS_SESSION_BUS_ADDRESS set, or $XDG_RUNTIME_DIR/bus a socket), so that GLib never autolaunches one (dbus-launch,
-// under X11) for a process that has none. has() looks without unlocking anything (no prompt); lookup() and store() may
-// have the desktop ask the user to unlock the keyring, and wait for the answer. Any thread; each call blocks until the
-// service answers (or the bus's own timeout, 25 s).
+// under X11) for a process that has none. has() looks without unlocking anything (no prompt); lookup(), store() and
+// clear() may have the desktop ask the user to unlock the keyring, and wait for the answer. Any thread; each call blocks
+// until the service answers (or the bus's own timeout, 25 s), a prompt until the user answers it: never call one with a
+// lock the message thread may wait for.
 #pragma once
 
 #include <optional>
@@ -35,13 +36,16 @@ namespace playground::secrets
         virtual std::string name() const = 0;
         // Whether there is a store to ask now; false with why when there is none (no bus, no libsecret).
         virtual bool available(std::string* why) = 0;
-        // Whether `item` is kept: 1 yes, 0 no, -1 the store could not be asked (why). Never unlocks (no prompt).
+        // Whether `item` is kept, locked or not: 1 yes, 0 no, -1 the store could not be asked (why). Never unlocks (no
+        // prompt).
         virtual int has(const Item& item, std::string* why) = 0;
-        // The secret kept for `item`; nothing when there is none (why left empty) or the store failed (why said).
+        // The secret kept for `item`; nothing when there is none or it stayed locked (the user dismissed the prompt:
+        // why left empty in both cases, has() tells them apart), or the store failed (why said).
         virtual std::optional<std::string> lookup(const Item& item, std::string* why) = 0;
         // `secret` kept for `item` under `label`, replacing what was; false with why.
         virtual bool store(const Item& item, const std::string& label, std::string_view secret, std::string* why) = 0;
-        // `item` removed (true when it was not there either); false with why.
+        // `item` removed, unlocked first (true when it was not there either); false with why when the store failed. One
+        // the user left locked stays, with no error (libsecret's clear removes unlocked items alone): has() tells.
         virtual bool clear(const Item& item, std::string* why) = 0;
     };
 

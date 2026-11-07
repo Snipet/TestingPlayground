@@ -1274,9 +1274,21 @@ namespace playground
 
     ChatState ChatAgent::chatState() const
     {
+        // Whether the chosen provider's key is kept (when none is read yet), asked before mutex_ is taken, never under it
+        // (on Linux the keyring, over D-Bus, at most every 3 s): the editor asks for this on the message thread. A
+        // provider chosen in between shows its own on the next look.
+        ChatProvider chosen;
+        bool held = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            chosen = provider_;
+            held = chosen.kind == "anthropic" ? !key_.empty() : !otherKey_.empty();
+        }
+        const bool kept = !held && keyKept(chosen);
         const std::lock_guard<std::mutex> lock(mutex_);
+        const bool keptHere = kept && chosen.kind == provider_.kind && chosen.base == provider_.base;
         ChatState s;
-        s.hasKey = !key_.empty() || chatstore::hasKey();
+        s.hasKey = !key_.empty() || keptHere;
         s.keyProblem = keyProblem_;
         s.busy = busy_;
         s.asking = !asking_.empty();
@@ -1298,7 +1310,7 @@ namespace playground
         s.provider = provider_;
         s.providerName = providers::nameOf(provider_);
         if (provider_.kind != "anthropic")
-            otherState(s);                         // its key, its models, and none of Anthropic's own
+            otherState(s, keptHere);               // its key, its models, and none of Anthropic's own
         return s;
     }
 
@@ -1309,6 +1321,7 @@ namespace playground
             return false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            ++keyGeneration_;
             key_ = trimmed;
             keyProblem_.clear();
             modelsFetched_ = false;
@@ -1318,13 +1331,20 @@ namespace playground
         return true;
     }
 
+    // The key forgotten here and where it is kept. Not removed from there (a keyring the user left locked): said so, as
+    // an error; the key the next turn finds is then the one still kept, as the card shows.
     void ChatAgent::forgetKey()
     {
-        chatstore::forgetKey();
+        std::string why;
+        const bool removed = chatstore::forgetKey(&why);
         const std::lock_guard<std::mutex> lock(mutex_);
+        ++keyGeneration_;
         key_.clear();
         keyProblem_.clear();
-        addEntry(ChatEntry::Kind::note, std::string("API key removed from ") + kThisMachine + ".");
+        if (removed)
+            addEntry(ChatEntry::Kind::note, std::string("API key removed from ") + kThisMachine + ".");
+        else
+            addEntry(ChatEntry::Kind::error, "The API key could not be removed: " + why + ".");
     }
 
     void ChatAgent::setModel(const std::string& id)
@@ -2132,26 +2152,31 @@ namespace playground
         worker_ = std::thread([this] { runTurn(); });
     }
 
+    // The key read with mutex_ released: on Linux the keyring may have the desktop ask the user to unlock it and wait
+    // for the answer, while the editor's chatState() and the MCP link's quick calls take mutex_. Kept unless a key was
+    // saved or removed meanwhile (that stands).
     void ChatAgent::ensureKey()
     {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        loadKey();
-    }
-
-    void ChatAgent::loadKey()
-    {
-        if (!key_.empty())
-            return;
+        uint64_t generation = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!key_.empty())
+                return;
+            generation = keyGeneration_;
+        }
         std::string why;
-        if (const auto k = chatstore::loadKey(&why))
+        const std::optional<std::string> k = chatstore::loadKey(&why);
+        const bool kept = k || chatstore::hasKey();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (!key_.empty() || keyGeneration_ != generation)
+            return;
+        if (k)
         {
             key_ = *k;
             keyProblem_.clear();
         }
-        else if (chatstore::hasKey())
-        {
+        else if (kept)
             keyProblem_ = why;
-        }
     }
 
     claude::Headers ChatAgent::headersFor(const std::string& key)
@@ -2648,9 +2673,9 @@ namespace playground
             return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
         std::string key;
         claude::Transport* transport = nullptr;
+        ensureKey();                               // a key saved again during the turn (read without the lock)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            loadKey();                             // a key saved again during the turn
             key = key_;
             transport = transport_.get();
             if (key.empty())
