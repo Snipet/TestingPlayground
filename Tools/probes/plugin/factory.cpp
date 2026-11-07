@@ -30,9 +30,10 @@
 //   SESSION  the session keeps a factory project open by its name; one this build lacks loads as none
 //   EXPORT   an export of a factory project imports as a project of its own name (no colon)
 //   IMPORT   (python3 on the PATH) the import over made-up projects of two versions: the latest only (version 1, its
-//            files, tab and dials), presets' "from" 1 for the latest's and 0 for an older one's, the info kept, a field
-//            it does not know left behind; factory::fromFolder reads it; imported.txt lists it; run again with another
-//            name: the old folder gone, the new one there, a hand-made folder untouched; the map's fourth column (a
+//            files, tab and dials), presets' "from" 1 for the latest's and 0 for an older one's (and their category,
+//            tidied), the info kept, a field it does not know left behind; factory::fromFolder reads it; imported.txt
+//            lists it; run again with another name: the old folder gone, the new one there, a hand-made folder
+//            untouched; the map's fourth column (a
 //            category) over the project's own, one the plugin would change refused; a project holding an email
 //            address, a path in /Users and a key is refused, nothing written; a map naming a hand-made folder refused;
 //            each project's largest text said (a dry run of one over 64 KB says so, and writes nothing)
@@ -286,6 +287,8 @@ namespace
             pr->setProperty("name", name);
             pr->setProperty("saved", static_cast<juce::int64>(1762000000100LL));
             pr->setProperty("from", from);
+            if (from == 7)
+                pr->setProperty("category", "Bright  Ones");   // spaces the plugin collapses
             pr->setProperty("dials", dials(from == 7 ? 0.9 : 0.1));
             presets.add(juce::var(pr));
         }
@@ -644,6 +647,8 @@ PROBE(plugin, factory)
             const ps::Preset* newer = p->preset("Newer");
             const ps::Preset* older = p->preset("Older");
             P.eq("import.presets_from", newer != nullptr && older != nullptr && newer->from == 1 && older->from == 0 ? 1 : 0, 1);
+            P.eq("import.preset_category", newer != nullptr && older != nullptr && newer->category == "Bright Ones"
+                                               && older->category.empty() ? 1 : 0, 1);
             P.eq("import.info", p->info.description == "A test's own, made up." && p->info.category == "Pad" && p->info.author == "Probe"
                                     ? 1 : 0, 1);
             P.eq("import.named", p->name == pg::factoryName("First Name") ? 1 : 0, 1);

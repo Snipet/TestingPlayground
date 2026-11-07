@@ -11,7 +11,8 @@
 //                     "dials": [ { "name": "cutoff", "value": 900 }, { "name": "drive", "value": 2, "label": "PITCH" }, ... ],
 //                     "circuits": [ { "key": "0123456789abcdef", "text": "fminus-circuit-choice 1 ..." } ] },
 //                   ... ],                                                                     oldest first
-//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
+//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "category": "Leads", "dials": [ ... ] }, ... ],
+//                                                                                                       by name
 //     "info":     { "description": "...", "author": "...", "category": "Pad", "tags": [ "warm" ], "genres": [ ... ] } }
 //
 // A version's "circuits" (optional: an older project has none, and an older build reads past it) are the circuit
@@ -29,6 +30,10 @@
 // since the one before ("program.fm +12 -3, lib.fm new, 2 dials"). A project keeps its last kMaxVersions versions; the
 // numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project renamed); names
 // are told apart case aside, as the Mac's disks tell files apart.
+//
+// A preset's "category" (optional: added later, read past by an older build; none when it has none) is what the top
+// bar's list of the presets groups it by (editor/PresetList.h); setPresetCategory sets it, and a preset saved over
+// one of its name keeps it.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.
@@ -82,6 +87,7 @@ namespace playground::projectstore
         std::string name;
         float value = 0.0f;
         std::string label = {};                          // its value's option name, when it has one (above)
+        friend bool operator==(const Dial&, const Dial&) = default;
     };
 
     // The plain value dial `d` gives a control `c` of those options: its option's name's value, else its value, within
@@ -119,6 +125,7 @@ namespace playground::projectstore
         int64_t savedMs = 0;
         int from = 0;                                    // the version it was saved with (0: none)
         std::vector<Dial> dials;
+        std::string category = {};                       // "" for none (above)
     };
 
     inline constexpr int kMaxTags = 16;
@@ -181,6 +188,8 @@ namespace playground::projectstore
         std::string name;
         int64_t savedMs = 0;
         int from = 0;                                    // the version it was saved with (0: none)
+        std::string category = {};                       // "" for none
+        std::vector<Dial> dials = {};                    // what the top bar's cycle matches the dials against
         friend bool operator==(const PresetSummary&, const PresetSummary&) = default;
     };
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why = nullptr);
@@ -240,10 +249,16 @@ namespace playground::projectstore
     // it cannot be written.
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
                                      const std::vector<Answer>& circuits = {}, std::string* why = nullptr);
-    // A preset of the project (over one of that name, case aside, which takes the new name's case).
+    // A preset of the project (over one of that name, case aside, which takes the new name's case and keeps its
+    // category).
     bool savePreset(std::string_view project, std::string_view preset, const std::vector<Dial>& dials, int from,
                     std::string* why = nullptr);
     bool removePreset(std::string_view project, std::string_view preset, std::string* why = nullptr);
+    // A preset's category alone (tidied as a project's is; "" for none): one read, one write. Nothing, with why, when
+    // the project or the preset is not there (a factory project's: read-only).
+    bool setPresetCategory(std::string_view project, std::string_view preset, std::string_view category,
+                           std::string* why = nullptr);
+    std::string tidyCategory(std::string_view category);   // as tidyInfo tidies a project's
     bool removeVersion(std::string_view project, int number, std::string* why = nullptr);   // never its only one
     bool remove(std::string_view name, std::string* why = nullptr);
 

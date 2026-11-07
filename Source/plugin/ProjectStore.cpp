@@ -227,6 +227,8 @@ namespace playground::projectstore
         }
 
         // The project in a file's JSON: nothing, with why, when it is not one of this plugin's or it is damaged.
+        void sortPresets(std::vector<Preset>& presets);
+
         std::optional<Project> parseRoot(const juce::var& root, const std::string& name, const std::string& label, std::string* why)
         {
             if (!root.isObject() || root["format"].toString() != kFormat)
@@ -280,6 +282,7 @@ namespace playground::projectstore
                     pr.savedMs = static_cast<int64_t>(static_cast<juce::int64>(v["saved"]));
                     pr.from = static_cast<int>(v["from"]);
                     pr.dials = dialsOf(v["dials"]);
+                    pr.category = tidyCategory(v["category"].toString().toStdString());   // none in an older file
                     if (!pr.name.empty() && p.preset(pr.name) == nullptr)
                         p.presets.push_back(std::move(pr));
                 }
@@ -293,6 +296,7 @@ namespace playground::projectstore
                 in.genres = stringsOf(info["genres"]);
                 p.info = tidyInfo(std::move(in));
             }
+            sortPresets(p.presets);                      // by name, case aside, whoever wrote the file (their numbers)
             return p;
         }
 
@@ -388,7 +392,7 @@ namespace playground::projectstore
             for (const Preset& pr : p.presets)
             {
                 c.entry.presets.push_back(pr.name);
-                c.presets.push_back({ pr.name, pr.savedMs, pr.from });
+                c.presets.push_back({ pr.name, pr.savedMs, pr.from, pr.category, pr.dials });
             }
             c.entry.category = p.info.category;
             c.entry.tags = p.info.tags;
@@ -530,6 +534,8 @@ namespace playground::projectstore
                 o->setProperty("name", str(pr.name));
                 o->setProperty("saved", static_cast<juce::int64>(pr.savedMs));
                 o->setProperty("from", pr.from);
+                if (!pr.category.empty())
+                    o->setProperty("category", str(pr.category));
                 o->setProperty("dials", dialsVar(pr.dials));
                 presets.add(juce::var(o));
             }
@@ -1002,6 +1008,7 @@ namespace playground::projectstore
             for (Preset& old : p.presets)
                 if (sameName(old.name, name))
                 {
+                    pr.category = old.category;          // a preset saved over keeps its group
                     old = std::move(pr);
                     return true;
                 }
@@ -1020,6 +1027,20 @@ namespace playground::projectstore
                 return false;
             }
             p.presets.erase(it);
+            return true;
+        });
+    }
+
+    bool setPresetCategory(std::string_view project, std::string_view preset, std::string_view category, std::string* why)
+    {
+        return update(project, why, [&](Project& p) {
+            const auto it = std::find_if(p.presets.begin(), p.presets.end(), [&](const Preset& pr) { return sameName(pr.name, preset); });
+            if (it == p.presets.end())
+            {
+                fail(why, "\"" + p.name + "\" has no preset named \"" + std::string(preset) + "\"");
+                return false;
+            }
+            it->category = tidyCategory(category);
             return true;
         });
     }
@@ -1123,6 +1144,13 @@ namespace playground::projectstore
         info.tags = list(info.tags);
         info.genres = list(info.genres);
         return info;
+    }
+
+    std::string tidyCategory(std::string_view category)
+    {
+        Info info;
+        info.category = std::string(category);
+        return tidyInfo(std::move(info)).category;
     }
 
     bool setInfo(std::string_view project, const Info& info, std::string* why)

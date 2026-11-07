@@ -23,9 +23,9 @@ What it writes, for each product the map names (the others are left as they are)
 project: project.json (a project file's JSON, as the plugin writes one, of one version, its files' texts left out)
 and each of that version's files beside it, by its name, as its text. Of a project it keeps its latest version only
 (numbered 1, its note "factory version"): its files, the tab shown, its dials (with their values' names) and its
-netlists' self-test answers; its presets (each one's "from" 1 when it was saved with that version, else 0); and its
-info (description, author, category, tags, genres; the map's category over its own). Nothing else of the file comes: its older versions, and any field
-this script does not know.
+netlists' self-test answers; its presets (each one's "from" 1 when it was saved with that version, else 0, and its
+category, when it has one); and its info (description, author, category, tags, genres; the map's category over its
+own). Nothing else of the file comes: its older versions, and any field this script does not know.
 
 Re-runnable: factory/<key>/imported.txt lists what its last run wrote there, and a run removes those folders before
 it writes the map's, so it replaces what it wrote and nothing else. A folder of a name the map gives that no import
@@ -292,8 +292,12 @@ def convert(src: Path, product: dict[str, str], to: str, author: str | None) -> 
         if not name or name.lower() in seen:
             continue
         seen.add(name.lower())
-        presets.append({"name": name, "saved": int(p.get("saved", 0) or 0),
-                        "from": 1 if int(p.get("from", 0) or 0) == number else 0, "dials": dials_of(p.get("dials"))})
+        preset = {"name": name, "saved": int(p.get("saved", 0) or 0),
+                  "from": 1 if int(p.get("from", 0) or 0) == number else 0}
+        if isinstance(p.get("category"), str) and tidy_category(p["category"]):
+            preset["category"] = tidy_category(p["category"])   # the top bar's list groups by it
+        preset["dials"] = dials_of(p.get("dials"))
+        presets.append(preset)
     presets.sort(key=lambda p: (p["name"].lower(), p["name"]))
 
     out = {"format": FORMAT, "version": FORMAT_VERSION, "plugin": product["NAME"], "kind": product["KIND"], "name": to,
