@@ -400,7 +400,9 @@ namespace playground::ui
         void runNow();                                   // RUN
         // The draft and the tabs. mergeDraft: a draft the editor has not merged (a host's load, Claude's write) into
         // the tabs, each keeping what was typed in it since the editor last gave its files where that draft left the
-        // file as given (true when one came). pushFiles: the tabs to the processor, never over such a draft (which
+        // file as given, and the tabs added, renamed or closed since where it left those files as given (an added tab
+        // shown stays shown, its name still being typed; true when one came). pushFiles: the tabs to the processor,
+        // never over such a draft (which
         // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
         bool mergeDraft();
         bool pushFiles();

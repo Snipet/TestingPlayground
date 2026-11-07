@@ -1092,6 +1092,46 @@ PROBE(gui, schematic)
             P.eq("overtaken.typing_kept_over_write", !w3.isError && ed.text() == typed && after.files.size() == 2 && after.files[1].text == typed
                                                          && has(after.files[0].text, "// Claude's write\n") ? 1 : 0, 1);
         }
+        // TABS over a write: a tab added (the +: its name being typed), then renamed, then closed, each with a write of
+        // Claude's to program.fm before a frame merged it: the tab stays (shown, its name still being typed), the new
+        // name stays, the closed one stays closed, and each write lands
+        {
+            const auto claudeWrites = [&](const char* line) {
+                const std::string program = r.processor.editorPort().draft().files[0].text + line;
+                return !r.processor.chatAgent()
+                            .mcpCall("write_file", pg::claude::object({ { "name", "program.fm" }, { "content", juce::String(program) } }))
+                            .isError;
+            };
+            const auto portNames = [&] {
+                std::string names;
+                for (const pg::SourceFile& f : r.processor.editorPort().draft().files)
+                    names += (names.empty() ? "" : " ") + f.name;
+                return names;
+            };
+            const auto landed = [&](const char* line) { return has(r.processor.editorPort().draft().files[0].text, line); };
+            const funkgui::Point plus = panel.centreOfNewTab();
+            host.click(plus.x, plus.y);
+            const std::string fresh = panel.fileName(panel.fileCount() - 1);
+            const bool w1 = claudeWrites("// a write as the tab came\n");
+            host.tick(1);
+            std::printf("tabs over a write: %s added: %d tabs, shown %d, naming %d; the port's files: %s\n", fresh.c_str(), panel.fileCount(),
+                        panel.activeFile(), panel.renamingFile() ? 1 : 0, portNames().c_str());
+            P.eq("overtaken.new_tab_kept", w1 && panel.fileCount() == 3 && panel.fileName(2) == fresh && panel.activeFile() == 2 && panel.renamingFile()
+                                               && portNames() == "program.fm g.cir " + fresh && landed("// a write as the tab came\n") ? 1 : 0, 1);
+            host.keys("n,o,t,e,s,.,f,m,return");
+            const bool w2 = claudeWrites("// a write as it was named\n");
+            host.tick(1);
+            std::printf("tabs over a write: renamed: %s\n", portNames().c_str());
+            P.eq("overtaken.renamed_tab_kept", w2 && !panel.renamingFile() && panel.fileCount() == 3 && panel.fileName(2) == "notes.fm"
+                                                   && portNames() == "program.fm g.cir notes.fm" && landed("// a write as it was named\n") ? 1 : 0, 1);
+            const funkgui::Point x = panel.centreOfCloseTab(2);
+            host.click(x.x, x.y);
+            const bool w3 = claudeWrites("// a write as it closed\n");
+            host.tick(1);
+            std::printf("tabs over a write: closed: %s\n", portNames().c_str());
+            P.eq("overtaken.closed_tab_stays_closed", w3 && panel.fileCount() == 2 && portNames() == "program.fm g.cir"
+                                                          && landed("// a write as it closed\n") ? 1 : 0, 1);
+        }
     }
 
     // ---- POINTER, KEYS --------------------------------------------------------------------------------------------------
