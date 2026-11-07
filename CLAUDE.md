@@ -1040,7 +1040,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   of its `index`, else of its label, case aside, else is added; one replaced under another label is named with both,
   so a stale index shows) and remove (by index or label; an index whose check has another label than the item's is
   refused) change them all or not at all, and a label two checks share needs the index. A listing changes nothing:
-  it never sends a turn on, nor does tune_dials' sweep (it sets nothing). Never let a check nudge without a cap: each
+  it never sends a turn on, nor does tune_dials' sweep (it sets nothing) or write_file's `to` (an export). Never let a
+  check nudge without a cap: each
   nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model

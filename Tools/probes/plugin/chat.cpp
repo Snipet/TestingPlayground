@@ -134,8 +134,8 @@
 //            it on one line (clang's note left out, no Notes:); one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
-//            that only sweeps a dial (tune_dials' sweep sets nothing); the
-//            session keeps them (and loads
+//            that only sweeps a dial (tune_dials' sweep sets nothing), nor one that only exports the files (write_file's
+//            to); the session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
 //   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
@@ -2946,6 +2946,11 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("The level follows it.").end()));
             const int bw = turn("how does that dial change the level?", 2);
             P.eq("checks.sweep_no_nudge", ss->postCount() - bw == 2 && has(resultText(bw + 1), "No dial was set") ? 1 : 0, 1);
+            // Nor is one that only exports the files (write_file's to changes nothing in the plugin), though one fails.
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c8", "write_file", input({ { "to", "backup" } })).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The files are saved.").end()));
+            const int bx = turn("save a copy of the files", 2);
+            P.eq("checks.export_no_nudge", ss->postCount() - bx == 2 && has(resultText(bx + 1), "It changed nothing in the plugin") ? 1 : 0, 1);
 
             // The session keeps the checks; Clear forgets them.
             const std::string saved = sa.saveState();
