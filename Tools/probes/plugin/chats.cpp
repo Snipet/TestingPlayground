@@ -208,7 +208,7 @@ PROBE(plugin, chats)
         const std::string id = idInFile("Alpha");
         P.eq("id.made", ps::validProjectId(id) ? 1 : 0, 1);
         P.eq("id.kept_by_a_save", ps::saveVersion("Alpha", program("alpha 2"), 0, {}).has_value() && idInFile("Alpha") == id ? 1 : 0, 1);
-        P.eq("id.idOf", ps::idOf("Alpha") == id ? 1 : 0, 1);
+        P.eq("id.id_of", ps::idOf("Alpha") == id ? 1 : 0, 1);
         // A copy made in the Finder: its own id when opened, the original's kept.
         const juce::File alpha = projects.getChildFile("Alpha.fmproject");
         P.eq("id.copied", alpha.copyFileTo(projects.getChildFile("Alpha copy.fmproject")) ? 1 : 0, 1);
