@@ -131,9 +131,9 @@ module Voice
 - **One stop a start.** Each start gets exactly one stop before its instance starts again: at the note-off (or the
   pedal), a retrigger, a steal or a cut as above, and also when a voice's process returns false while its key is held
   (as it is freed), when it goes non-finite and is dropped, and when the host prepares the plugin again. So a program
-  may keep what its notes do in its `Shared` (a key stack for a mono voice, a count of the keys held). A program swap
-  is apart: the old program's voices fade out over 20 ms with no stop, its `Shared` going with it, and the keys still
-  held start again on the new one.
+  may keep what its notes do in its `Shared` (a count of the keys held; for a mono voice, `#pragma mono` below, or
+  Shared's `noteOn` and `noteOff`). A program swap is apart: the old program's voices fade out over 20 ms with no
+  stop, its `Shared` going with it, and the keys still held start again on the new one.
 - **Shared on its own.** The synth's `Shared` (below, "Shared data") may also have, each optional: `void tick(int n)`,
   called every 16 samples (n is 16) whether or not a voice sounds, after the events at that sample and before the
   voices' calls, so state that moves between notes (an engine's temperature, a display, an LFO every voice reads) moves
@@ -285,11 +285,12 @@ module Voice
   signature and whether the transport runs (`playing`), and, in the synth, the player's mod wheel (CC 1, 0 to 1),
   pitch wheel (-1 to 1; the program picks the range), channel pressure and sustain pedal, and a racing wheel's
   `steering`, `throttle`, `brake`, `clutch`, `gear` and `buttons` (MIDI CCs 16 to 24: "A racing wheel", under "The
-  editor"); the effect's stay at rest. The other way, a field of the program's own named `shiftLights` (the main
-  module's or Shared's) lights a G29's shift lights ("A racing wheel"). A host that says nothing (the Standalone) gets 120 BPM and a position that runs
-  on from the start. Tempo sync is the program's: a delay of `beats * 60 / bpm` seconds, an LFO at `bpm / 60 / beats`
-  Hz, or one that follows the song with `lfo.follow(position, beats)` (`lfo.fm`); a voice's key tracking comes from
-  start's note. Read it, never write it.
+  editor"); the effect's stay at rest. The other way, in the synth's Standalone, a field of the program's own named
+  `shiftLights` (the main module's or Shared's) lights a G29's shift lights ("A racing wheel"); the effect has no
+  wheel. A host that says nothing (the Standalone) gets 120 BPM and a position that runs on from the start. Tempo sync
+  is the program's: a delay of `beats * 60 / bpm` seconds, an LFO at `bpm / 60 / beats` Hz, or one that follows the
+  song with `lfo.follow(position, beats)` (`lfo.fm`); a voice's key tracking comes from start's note. Read it, never
+  write it.
 
   ```c
   #include "host.fm"

@@ -1048,7 +1048,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes of listen, capture, trace and compare, whose uses CHECKING YOUR WORK names), examples, projects, circuits
   (CIRCUITS: .cir NETLISTS, the prompt's last section; a guide.md from before it cuts as it did), all. A heading
   renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails. Its start is at most 9,200 tokens for the synth
-  and 8,100 for the effect (bytes / 4: 8,460 and 7,337 now; `plugin.mcp` prints them).
+  and 8,100 for the effect (bytes / 4: 8,542 and 7,358 now; `plugin.mcp` prints them).
 - **The GUI sandbox** (`gui_sandbox`, the server's own tool, `mcp/Main.cpp`; its helper `<Name>GuiSandbox`,
   `Source/sandbox/`): Claude Desktop designs a panel.gui and sees it drawn as the plugin's PANEL view draws it, with no
   plugin open and nothing of an open one touched until the user asks to apply it. Its rules:
