@@ -17,19 +17,28 @@
 //   HOST     the host's programs are the presets: their count and names; setCurrentProgram applies one (the host's
 //            program and project().preset it); getCurrentProgram follows a preset applied from elsewhere, and keeps the
 //            last while the dials match none; a number past them changes nothing. A VST3 host's list is a fixed 128
-//            (JUCE reads it once), those past the presets named "-"
-//   SESSION  a session saved with a preset applied, loaded by another processor: that preset is its current program
-//            (applied), so a host that sets the program it saved changes nothing
+//            (JUCE reads it once), those past the presets named "-"; another project opened whose dials match none of
+//            its presets: the "-" past them, not the number the one before had (JUCE's VST3 program parameter sets a
+//            program only when it is not the current one: the old number chosen again in the new project applies); the
+//            AU's and the Standalone's list, which has no "-": its first
+//   SESSION  a session saved with a preset applied, loaded by another processor in a store that has not read the
+//            project (its file copied to a folder of its own, as in a host just started): that preset is its current
+//            program (applied) as soon as the load returns, before any poll, so a host that sets the program it saved
+//            changes nothing; a dial moved then: edited (the dot, dialsEdited), and the next preset's notice says the
+//            changes were not saved; a session of a version with a dial moved off it: dialsEdited
 //   MIDI     (the synth) a program change on channel 1 applies the preset of that number (0 the first) at the next
 //            poll; one on channel 2 changes nothing, and nor does a number past them. The effect takes no MIDI
 //   FACTORY  a factory project open cycles its presets the same way; their category stays (setPresetCategory refused)
 //   CATEGORY setPresetCategory sets a preset's alone (tidied), the cycle shows it, its JSON has it ("category"); a
 //            preset saved over keeps it; "" clears it (no field written); a preset that is not there refused; a file
 //            from before categories reads none
-//   RAMP     stepping from Bright (level 0.8) to Dark (0.2) while it plays: the output glides there (no step between
-//            two samples over 0.01; a sample between the two levels on the way; at Dark's 30 ms on), as a dial turned
+//   RAMP     stepping from Bright (level 0.8) to Dark (0.2) while it plays: the output glides there as a dial turned
+//            does, the Engine's linear 20 ms (0.6 / 960 = 0.000625 a sample: no step between two samples over 0.001;
+//            from the first sample off Bright's level to the first at Dark's 20 ms, within 1; half way at 10 ms; at
+//            Dark's 30 ms on)
 #include "Probe.h"
 
+#include "editor/PresetPicker.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -243,20 +252,94 @@ PROBE(plugin, presets)
         P.eq("host.vst3_fixed", before == 128 && v.getNumPrograms() == 128 ? 1 : 0, 1);
         P.eq("host.vst3_names", v.getProgramName(0) == "Bright" && v.getProgramName(2) == "Warm" && v.getProgramName(3) == "-"
                                     && v.getProgramName(127) == "-" ? 1 : 0, 1);
+        // Its third (Warm), then another project whose version's dials match none of its presets (One, Three, Two).
+        v.setCurrentProgram(2);
+        v.settle();
+        P.eq("host.vst3_set", v.editorPort().project().preset == "Warm" && v.getCurrentProgram() == 2 ? 1 : 0, 1);
+        bool other = ps::saveVersion("Other Song", files, 0, { { "level", 0.1f }, { "tone", 3000.0f } }, {}, &why).has_value();
+        other = other && ps::savePreset("Other Song", "One", { { "level", 0.7f } }, 1, &why);
+        other = other && ps::savePreset("Other Song", "Two", { { "level", 0.75f } }, 1, &why);
+        other = other && ps::savePreset("Other Song", "Three", { { "level", 0.85f } }, 1, &why);
+        P.eq("host.other_saved", other && v.editorPort().openProject("Other Song", 0, why) ? 1 : 0, 1);
+        v.settle();
+        const pg::PresetCycle oc = v.editorPort().presetCycle();
+        std::printf("vst3, another project: %s, current %s, program %d (%s)\n", oc.project.c_str(), nameAt(oc).c_str(),
+                    v.getCurrentProgram(), v.getProgramName(v.getCurrentProgram()).toRawUTF8());
+        P.eq("host.vst3_other_none", oc.project == "Other Song" && oc.current == -1 && v.getCurrentProgram() == 3
+                                         && v.getProgramName(3) == "-" ? 1 : 0, 1);
+        // As JUCE's VST3 program parameter does (setNormalized): a program set only when it is not the current one.
+        if (v.getCurrentProgram() != 2)
+            v.setCurrentProgram(2);
+        v.settle();
+        P.eq("host.vst3_other_applies", v.editorPort().project().preset == "Two" && v.getCurrentProgram() == 2 ? 1 : 0, 1);
+    }
+    {
+        // The AU's and the Standalone's list has no "-": another project matching none is at its first.
+        pg::Processor u;
+        u.editorPort().setDraft({ files, 0 });
+        u.editorPort().run(files);
+        u.settle();
+        u.editorPort().openProject("Glass Bloom", 0, why);
+        u.settle();
+        u.setCurrentProgram(2);
+        u.settle();
+        const bool third = u.getCurrentProgram() == 2;
+        u.editorPort().openProject("Other Song", 0, why);
+        u.settle();
+        P.eq("host.other_project_first", third && u.editorPort().presetCycle().current == -1 && u.getCurrentProgram() == 0 ? 1 : 0, 1);
     }
 
-    // SESSION: Dark applied, the session loaded elsewhere.
+    // SESSION: Dark applied, the session loaded elsewhere, in a store whose cache has none of the project (its file
+    // copied to a folder of its own: another path), as in a host just started.
     pa.applyPreset("Glass Bloom", "Dark", why);
     {
         juce::MemoryBlock state;
         a.getStateInformation(state);
-        pg::Processor b;
-        b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
-        b.settle();
-        const pg::PresetCycle bc = b.editorPort().presetCycle();
-        std::printf("session: %s, current %s, program %d\n", bc.project.c_str(), nameAt(bc).c_str(), b.getCurrentProgram());
-        P.eq("session.current", bc.project == "Glass Bloom" && nameAt(bc) == "Dark" && bc.applied && b.getCurrentProgram() == 1 ? 1 : 0, 1);
+        pa.openProject("Glass Bloom", 1, why);              // version 1 (level 0.4), a dial moved off it
+        a.settle();
+        setDial(a, 0, 0.66f);
+        juce::MemoryBlock versionState;
+        a.getStateInformation(versionState);
+        const juce::File cold = dir.getSiblingFile(dir.getFileName() + "-cold");
+        cold.deleteRecursively();
+        const bool copied = cold.createDirectory().wasOk() && dir.getChildFile("Glass Bloom.fmproject").copyFileTo(cold.getChildFile("Glass Bloom.fmproject"));
+        ps::setDirectoryForTests(cold);
+        {
+            pg::Processor b;
+            pg::EditorPort& pb = b.editorPort();
+            b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+            const pg::PresetCycle at = pb.presetCycle();  // before any poll
+            const int program = b.getCurrentProgram();
+            std::printf("session at once: %s, %zu presets, current %s, program %d\n", at.project.c_str(), at.presets.size(),
+                        nameAt(at).c_str(), program);
+            P.eq("session.at_once", copied && at.presets.size() == 3 && nameAt(at) == "Dark" && at.applied && program == 1 ? 1 : 0, 1);
+            b.settle();
+            const pg::PresetCycle bc = pb.presetCycle();
+            std::printf("session: %s, current %s, program %d\n", bc.project.c_str(), nameAt(bc).c_str(), b.getCurrentProgram());
+            P.eq("session.current", bc.project == "Glass Bloom" && nameAt(bc) == "Dark" && bc.applied && !bc.edited
+                                        && !pb.project().dialsEdited && b.getCurrentProgram() == 1 ? 1 : 0, 1);
+            setDial(b, 0, 0.6f);
+            const pg::PresetCycle moved = pb.presetCycle();
+            P.eq("session.edited", nameAt(moved) == "Dark" && moved.applied && moved.edited && pb.project().dialsEdited ? 1 : 0, 1);
+            const bool stepped = pb.stepPreset(1, why);
+            const std::string notice = pg::ui::presetNotice(moved, pb.presetCycle());
+            std::printf("session step: %s\n", notice.c_str());
+            P.eq("session.step_not_saved", stepped && nameAt(pb.presetCycle()) == "Warm"
+                                               && notice.find("THE CHANGES TO DARK WERE NOT SAVED") != std::string::npos ? 1 : 0, 1);
+        }
+        {
+            pg::Processor b;
+            b.setStateInformation(versionState.getData(), static_cast<int>(versionState.getSize()));
+            b.settle();
+            const pg::ProjectState st = b.editorPort().project();
+            P.eq("session.version_edited", st.name == "Glass Bloom" && st.version == 1 && st.preset.empty() && st.dialsEdited ? 1 : 0, 1);
+            setDial(b, 0, 0.4f);
+            P.eq("session.version_back", b.editorPort().project().dialsEdited ? 0 : 1, 1);
+        }
+        ps::setDirectoryForTests(dir);
+        cold.deleteRecursively();
     }
+    pa.applyPreset("Glass Bloom", "Dark", why);          // as the session had it, for the rows below
 
     // OTHER: a preset added to the file by another process (rewritten in place).
     {
@@ -381,16 +464,25 @@ PROBE(plugin, presets)
         P.eq("ramp.step", pr.stepPreset(1, why) && pr.project().preset == "DARK" ? 1 : 0, 1);
         const std::vector<float> after = render(r, 8 * kBlock);
         float most = std::fabs(after.front() - before.back());
-        bool between = false;
         for (std::size_t i = 1; i < after.size(); ++i)
-        {
             most = std::max(most, std::fabs(after[i] - after[i - 1]));
-            between = between || (after[i] < 0.75f && after[i] > 0.25f);
+        // The glide's length: from the first sample off Bright's level to the first at Dark's (each within 1e-3).
+        int left = -1, landed = -1;
+        for (std::size_t i = 0; i < after.size(); ++i)
+        {
+            if (left < 0 && std::fabs(after[i] - 0.8f) > 1e-3f)
+                left = static_cast<int>(i);
+            if (left >= 0 && landed < 0 && std::fabs(after[i] - 0.2f) < 1e-3f)
+                landed = static_cast<int>(i);
         }
+        const double ms = left >= 0 && landed > left ? (landed - left) * 1000.0 / kFs : 0.0;
         const std::size_t at30 = static_cast<std::size_t>(0.030 * kFs);
-        std::printf("ramp: the largest step %.5f, at 30 ms %.5f\n", static_cast<double>(most), static_cast<double>(after[at30]));
-        P.le("ramp.no_step", static_cast<double>(most), 0.01);
-        P.eq("ramp.on_the_way", between ? 1 : 0, 1);
+        std::printf("ramp: the largest step %.6f, from sample %d to %d (%.2f ms), at 30 ms %.5f\n", static_cast<double>(most),
+                    left, landed, ms, static_cast<double>(after[at30]));
+        P.le("ramp.no_step", static_cast<double>(most), 0.001);     // 20 ms's linear glide: 0.6 / 960 = 0.000625
+        P.near("ramp.length_ms", ms, 20.0, 1.0);
+        const std::size_t half = static_cast<std::size_t>(std::max(left, 0)) + static_cast<std::size_t>(0.010 * kFs);
+        P.near("ramp.halfway", left >= 0 && half < after.size() ? static_cast<double>(after[half]) : 0.0, 0.5, 0.02);
         P.near("ramp.there", static_cast<double>(after[at30]), 0.2, 1e-3);
     }
 

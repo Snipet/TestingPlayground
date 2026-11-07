@@ -155,7 +155,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **The presets in turn** (`EditorPort::presetCycle`, `stepPreset`; `Processor`'s "The presets in turn"): the project
   open's presets, by name (a number is an index there), as the store's cache has them (`presetsCached`: a file it lacks
   goes to the Reader), held by the processor and read again by `poll()` every `kPresetsPollMs`, at once after this
-  processor changed them or the project open, and by a state load. The current one is the preset applied, else the
+  processor changed them or the project open, and by a state load (which reads the session's project whole first,
+  `restoreProjectBase`: its presets into the cache, so the host's program is the session's as the load returns even in
+  a host just started, and the base the dials are compared with, its version's dials with the preset applied over
+  them, so a session reopened shows its edits as it had them). The current one is the preset applied, else the
   first whose dials (every one the program has) are where the dials are (`dialsAgainst`), else none; `edited` the
   applied one's dials moved. A step applies through `applyPreset`, so the dials glide as any host gesture does and
   the edits to the one before are dropped, as the browser drops them. The top bar shows them right of the project's
@@ -164,9 +167,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   programs** are the same list (`getNumPrograms`, `getProgramName`, `setCurrentProgram`, `getCurrentProgram`): a
   VST3 host reads the count once (JUCE's program parameter is made when the plugin is), so the VST3 reports
   `kVst3Programs` (128, those past the presets "-"), the AU and the Standalone the presets themselves (at least one);
-  `getCurrentProgram` is `hostCurrent_`, the one applied or matched last, kept while the dials match none (so a host
-  that sets the program it saved changes nothing), and the host is told with `updateHostDisplay(programChanged)` when
-  it or the names change (from `poll()`, never at a state load). `setCurrentProgram` off the message thread, and
+  `getCurrentProgram` is `hostCurrent_`, the one applied or matched last, kept while the dials match none in the
+  project it was set in (`hostFor_`: so a host that sets the program it saved changes nothing); another project open
+  drops it, to the "-" past the presets in the VST3 (JUCE's program parameter sets a program only when it is not the
+  current one, so a number kept from the project before would never apply that number's preset), to the first in the
+  AU and the Standalone; and the host is told with `updateHostDisplay(programChanged)` when it or the names change
+  (from `poll()`, never at a state load). `setCurrentProgram` off the message thread, and
   **MIDI's program change** on channel 1 (the synth's: `play()` stores it in an atomic, nothing more), are applied by
   `poll()`. Never read a project's file in the host's program calls. `plugin.presets` and `gui.presets` check it all. `Source/plugin/ProjectExport` writes a project
   as a source .zip (`funk-playground-source`) or a .fmpack (a 20-byte header, then the project's JSON as xz through

@@ -32,7 +32,7 @@
 // are told apart case aside, as the Mac's disks tell files apart.
 //
 // A preset's "category" (optional: added later, read past by an older build; none when it has none) is what the top
-// bar's list of the presets groups it by (editor/PresetList.h); setPresetCategory sets it, and a preset saved over
+// bar's list of the presets groups it by (editor/PresetPicker.h); setPresetCategory sets it, and a preset saved over
 // one of its name keeps it.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and

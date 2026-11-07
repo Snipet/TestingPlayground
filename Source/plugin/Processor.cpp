@@ -1686,11 +1686,12 @@ namespace playground
             }
             projectLatest_ = projectVersion_;
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
-            baseDials_.clear();
+            baseDials_.clear();                                  // restoreProjectBase's, below
             draft_ = std::move(draft);
             ++draftRevision_;
             abKept_ = {};                                        // an A/B's: the session's program plays, as saved
         }
+        restoreProjectBase();
         // An A/B (ProcessorAb.cpp) ends: its compile still waiting is taken back (it would play over the session's
         // program), the session's program plays untrimmed from its first block, and poll() ends it once that is out.
         abLoading_.store(true);
@@ -1718,7 +1719,8 @@ namespace playground
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
         abStateLoaded_.store(std::max<uint64_t>(1, s.request));
-        refreshPresets(true);                                    // the session's project's, its preset the host's program
+        // The session's project's presets (restoreProjectBase read them into the cache), its preset the host's program.
+        refreshPresets(true);
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -2146,6 +2148,35 @@ namespace playground
         return true;
     }
 
+    // A state load (not a host's program call): the session's project read whole, outside programMutex_. Its base is
+    // as openVersion and applyPreset leave it: the version's dials, the preset applied over them. A project gone, or a
+    // version no more kept, leaves what is known (none: nothing reads as edited). The read also puts its presets in the
+    // store's cache, so refreshPresets has them at once, even in a host just started.
+    void Processor::restoreProjectBase()
+    {
+        std::string name, preset;
+        int version = 0;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+            preset = projectPreset_;
+            version = projectVersion_;
+        }
+        if (name.empty())
+            return;
+        const std::optional<projectstore::Project> p = projectstore::load(name);
+        if (!p)
+            return;
+        std::vector<projectstore::Dial> base;
+        if (const projectstore::Version* v = p->version(version))
+            base = v->dials;
+        if (const projectstore::Preset* pr = preset.empty() ? nullptr : p->preset(preset))
+            base = overlay(std::move(base), pr->dials);
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (projectName_ == name && projectPreset_ == preset && projectVersion_ == version)
+            baseDials_ = std::move(base);
+    }
+
     // EXAMPLES and RANDOM (EditorPort::startAfresh): `files` as a new instance plays Init. They are the whole draft, no
     // project is open, and the dials go to their defaults when they have compiled. A version's dials still on their
     // way are dropped.
@@ -2479,15 +2510,31 @@ namespace playground
             heldNames_ = names;
         }
         std::vector<projectstore::PresetSummary> list;
+        std::string held;
         {
             const std::lock_guard<std::mutex> lock(presetsMutex_);
             list = heldPresets_;
+            held = heldProject_;
         }
         bool applied = false;
-        if (const int at = currentPreset(list, applied); at >= 0 && at < programCount())
-            hostCurrent_.store(at);                              // kept while the dials match none
-        else if (list.empty())
-            hostCurrent_.store(0);
+        const int at = currentPreset(list, applied);
+        const int count = programCount();
+        // None applied or matched: the "-" past the presets in the VST3 (its 128th at most), the first elsewhere.
+        const int none = wrapperType == wrapperType_VST3 ? std::min(static_cast<int>(list.size()), count - 1) : 0;
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        if (at >= 0 && at < count)
+        {
+            hostCurrent_.store(at);
+            hostFor_ = held;
+        }
+        else if (list.empty() || hostFor_ != held)
+        {
+            // Another project's number names another preset here: a VST3 host told it would take it for the one
+            // playing and never apply that preset when chosen (JUCE sets a program only when it is not the current).
+            hostCurrent_.store(none);
+            hostFor_ = list.empty() ? std::string() : held;
+        }
+        // else kept: the dials match none, in the project it was set in
     }
 
     PresetCycle Processor::presetCycle() const

@@ -381,10 +381,13 @@ namespace playground
         // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
         // goes to reader_), read again by poll() every kPresetsPollMs and at once after this processor changed them
         // or the project open (presetsStale_), and by a state load. `hostCurrent_` is the program the host is told
-        // (getCurrentProgram): the preset applied or matched last, kept while the dials match none, so a host that
-        // sets the program it saved changes nothing. A program asked off the message thread (a host's
-        // setCurrentProgram) or by MIDI (the audio thread: a program change on channel 1, its count in the top bits,
-        // the synth's) is applied by poll().
+        // (getCurrentProgram): the preset applied or matched last, kept while the dials match none in the project it
+        // was set in (`hostFor_`), so a host that sets the program it saved changes nothing; another project open (or
+        // none with presets) drops it, to the "-" past the presets in the VST3 (whose host would take a number it
+        // was told for the one playing and never apply it), else to the first. A state load reads its project whole
+        // (restoreProjectBase), so the cache has its presets and the host's program is the session's from that call
+        // on. A program asked off the message thread (a host's setCurrentProgram) or by MIDI (the audio thread: a
+        // program change on channel 1, its count in the top bits, the synth's) is applied by poll().
         static constexpr double kPresetsPollMs = 500.0;
         static constexpr int kVst3Programs = 128;                // a VST3 host's list: fixed when the plugin is made
         mutable std::mutex presetsMutex_;
@@ -395,7 +398,8 @@ namespace playground
         double heldAt_ = -1.0e12;                                // ms (poll's clock)
         std::atomic<bool> presetsStale_{ true };
         std::atomic<int> hostCurrent_{ 0 };
-        int hostTold_ = -1;                                      // the program the host was last told of (poll)
+        std::string hostFor_;                                    // the project hostCurrent_ was set in (presetsMutex_)
+        int hostTold_ = -1;                                     // the program the host was last told of (poll)
         uint64_t namesTold_ = 0;                                 // ... and the names then
         std::atomic<int> hostProgramAsked_{ -1 };
         std::atomic<uint32_t> midiProgram_{ 0 };                 // (count << 8) | program, written by the audio thread
@@ -494,6 +498,9 @@ namespace playground
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
                             const std::vector<projectstore::Dial>& dials);
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
+        // A state load's: the project's file read whole (the store's cache then has its presets), and the dials its
+        // version and the preset applied set kept as baseDials_ (what dialsEdited and the presets' `edited` compare).
+        void restoreProjectBase();
         bool saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
                       const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
                       SavedVersion& saved, std::string& why);   // a factory project's: the user's own copy

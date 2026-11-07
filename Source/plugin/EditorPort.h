@@ -323,7 +323,7 @@ namespace playground
         std::string name;
         std::string when;
         int from = 0;                            // the version it was saved with
-        std::string category = {};               // "" for none: the top bar's list groups by it (editor/PresetList.h)
+        std::string category = {};               // "" for none: the top bar's list groups by it (editor/PresetPicker.h)
         friend bool operator==(const PresetEntry&, const PresetEntry&) = default;
     };
 
