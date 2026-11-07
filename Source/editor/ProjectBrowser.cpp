@@ -73,11 +73,29 @@ namespace playground::ui
         return name;
     }
 
+    std::string ProjectBrowser::homeName() const
+    {
+        if (state_.name.empty())
+            return title_;
+        return isFactoryName(state_.name) ? copyName(state_.name) : state_.name;
+    }
+
+    // A project of this Mac's: its name (Save adds a version to it, asked first when it is not the one open). A factory
+    // project: its copy's name when it is the one open, else the program open's: Save saves the editor's program, so a
+    // factory project's name never goes onto another program.
+    std::string ProjectBrowser::fieldFor(const std::string& project) const
+    {
+        if (!isFactoryName(project))
+            return project;
+        return same(project, state_.name) ? copyName(project) : homeName();
+    }
+
     void ProjectBrowser::open(const std::string& name, bool preset)
     {
         open_ = true;
         readProjects();
         state_ = port_.project();
+        title_ = name;
         chosen_ = { -1, -1, -1 };
         first_ = { 0, 0, 0 };
         for (std::size_t i = 0; i < projects_.size(); ++i)
@@ -270,7 +288,7 @@ namespace playground::ui
             const int past = i + (step < 0 ? -1 : 1);
             i = past >= 0 && past < n ? past : i - (step < 0 ? -1 : 1);
         }
-        if (i < 0 || i >= n || heading(i))
+        if (i < 0 || i >= n || (l == L::projects && heading(i)))
             return;
         c = i;
         if (c < first)
@@ -281,14 +299,15 @@ namespace playground::ui
         ask_ = Ask::none;
         why_.clear();
         typed_ = false;
-        if (l == L::projects)
+        if (l == L::projects || l == L::versions)
         {
-            readChosen();
-            const std::string& chosen = projects_[static_cast<std::size_t>(c)].name;
-            name_.set(isFactoryName(chosen) ? copyName(chosen) : chosen, kMaxNameLength);
+            if (l == L::projects)
+                readChosen();
+            const std::string chosen = chosenProject();
+            name_.set(fieldFor(chosen), kMaxNameLength);
+            if (isFactoryName(chosen) && !chosenIsOpen())
+                why_ = "\"" + ownName(chosen) + "\" is read-only: open it to make it yours. Save saves the program open.";
         }
-        else if (l == L::versions)
-            name_.set(factoryChosen() ? copyName(chosenProject()) : chosenProject(), kMaxNameLength);
         else
             name_.set(presets_[static_cast<std::size_t>(c)].name, kMaxNameLength);
         ++revision_;

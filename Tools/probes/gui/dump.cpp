@@ -19,7 +19,7 @@
 //   gui.dump.random.png  a program RANDOM made, running
 //   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen;
 //                        .projects.factory.png a factory project chosen under the FACTORY caption
-//   gui.dump.export.png  EXPORT: a project's info typed and chosen
+//   gui.dump.export.png  EXPORT: a project's info typed and chosen; .export.factory.png a factory project's, read-only
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
 //   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
 //                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
@@ -102,11 +102,14 @@
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
 //             version to it; Delete asks, then deletes a project, and a version; Escape closes. FACTORY: the factory
-//             projects listed after the user's, under a caption a click does not choose; one chosen, its one version,
-//             the copy's name in the field (Save as mine), Delete refused (it says so); Up from it skips the caption.
-//             EXPORT (from Export...)
+//             projects listed after the user's, under a caption a click does not choose; one chosen (not the one open),
+//             its one version, the field left at the project open's (Save version) with a line saying to open it
+//             first, Delete refused (it says so); Up from it skips the caption; Save then saves the program open, no
+//             project of the factory one's name made. EXPORT (from Export...)
 //             takes a description, an author, tags, a category and genres, asks where (a save chooser), writes the
-//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen
+//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen; a factory
+//             project's EXPORT is read-only (a click or a key changes none of its info), writes its package, and Done
+//             closes it
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
@@ -1704,7 +1707,10 @@ PROBE(gui, dump)
                 clickRow(BL::projects, caption + 1);
                 P.eq("factory.chosen", browser.chosen(BL::projects) == caption + 1 && browser.versionList().size() == 1
                                            && browser.versionList()[0].number == 1 ? 1 : 0, 1);
-                P.eq("factory.copy_name", browser.name() == pg::ownName(factory[0].name) ? 1 : 0, 1);
+                const std::string openName = port.project().name;
+                std::printf("factory chosen: field [%s], open [%s], %s\n", browser.name().c_str(), openName.c_str(), browser.why().c_str());
+                P.eq("factory.field_keeps_open", !openName.empty() && browser.name() == openName && browser.saveLabel() == "Save version"
+                                                     && browser.why().find("open it") != std::string::npos ? 1 : 0, 1);
                 P.eq("factory.presets", static_cast<int64_t>(browser.presetList().size()), factory[0].presets);
                 writePng(P, host, "gui.dump.projects.factory.png", "projects_factory");
                 click(browser.places(W, H).remove);
@@ -1713,6 +1719,16 @@ PROBE(gui, dump)
                 host.keys("up");
                 host.settle();
                 P.eq("factory.up_skips_caption", browser.chosen(BL::projects), caption - 1);
+                // Save with it chosen: the program open saved under its own name, no project of the factory one's.
+                clickRow(BL::projects, caption + 1);
+                const std::size_t projectsBefore = pg::projectstore::list().size();
+                click(browser.places(W, H).save);
+                std::printf("factory chosen, Save: %s\n", panel.statusText().c_str());
+                P.eq("factory.save_keeps_program", !browser.isOpen() && pg::projectstore::list().size() == projectsBefore
+                                                       && !pg::projectstore::exists(pg::ownName(factory[0].name))
+                                                       && port.project().name == openName ? 1 : 0, 1);
+                host.click(open.x, open.y);
+                host.settle();
             }
         }
         host.keys("escape");
@@ -1775,6 +1791,38 @@ PROBE(gui, dump)
             P.eq("import.info_with_it", port.projectInfo("My Patch 2").tags == entered.tags ? 1 : 0, 1);
             host.keys("escape");
             host.settle();
+            // A factory project's: its info shown as it is, read-only; its package written; Done closes.
+            if (const std::vector<pg::ProjectEntry> factory = port.factoryProjects(); !factory.empty())
+            {
+                host.click(open.x, open.y);
+                host.settle();
+                const std::vector<pg::ProjectEntry>& rows = browser.projectList();
+                const auto it = std::find_if(rows.begin(), rows.end(), [&](const pg::ProjectEntry& e) { return e.name == factory[0].name; });
+                clickRow(BL::projects, static_cast<int>(it - rows.begin()));
+                click(browser.places(W, H).exportIt);
+                P.eq("export.factory_opens", card.isOpen() && card.readOnly() && card.project() == factory[0].name ? 1 : 0, 1);
+                const pg::ProjectInfo shown = card.info();
+                const pg::ui::ExportCard::Places fs = card.places(W, H);
+                click(fs.description);
+                typeText(host, "x");
+                host.keys("tab");
+                typeText(host, "y");
+                click(fs.categories[0]);
+                click(fs.genres[0]);
+                P.eq("export.factory_info_as_is", card.info() == shown && shown == port.projectInfo(factory[0].name) ? 1 : 0, 1);
+                writePng(P, host, "gui.dump.export.factory.png", "export_factory");
+                click(fs.package);
+                asked = host.pendingFiles();
+                const std::string file = pg::ownName(factory[0].name) + ".fmpack";
+                P.eq("export.factory_asks_where", asked != nullptr && asked->suggestedName == file ? 1 : 0, 1);
+                const juce::File packed = folder.getChildFile("out").getChildFile(juce::String(file));
+                host.returnFiles({ packed.getFullPathName().toStdString() });
+                host.settle();
+                std::printf("factory export: %s\n", card.why().c_str());
+                P.eq("export.factory_written", packed.existsAsFile() && card.why().find("Exported ") != std::string::npos ? 1 : 0, 1);
+                click(card.places(W, H).done);
+                P.eq("export.factory_done_closes", card.isOpen() ? 0 : 1, 1);
+            }
         }
         // Back: the program as it was.
         editor.selectAll();

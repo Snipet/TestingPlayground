@@ -4,8 +4,10 @@
 //   PROJECTS   a row a project, its name, its newest version and when it was saved; the one open marked. A click
 //              chooses one (its name goes into the field, its versions and presets show at the right), a double-click
 //              opens its newest version. Under the FACTORY caption (a row of no name: never chosen), the factory
-//              projects (EditorPort::factoryProjects), read-only: one chosen puts the name its copy would take into the
-//              field ("Warm Pad", "Warm Pad 2" when a project of this Mac's has that), and nothing of it is deleted
+//              projects (EditorPort::factoryProjects), read-only, nothing of them deleted. The one open, chosen, puts the
+//              name its copy would take into the field ("Warm Pad", "Warm Pad 2" when a project of this Mac's has
+//              that); another leaves the field at the program open's (homeName: Save saves the editor's program, never
+//              the chosen one's) and says to open it first
 //   VERSIONS   the chosen project's, the newest first, each with when and what changed; the one open marked. A click
 //              chooses one, a double-click opens it
 //   PRESETS    the chosen project's dial settings; the one applied marked. A click chooses one (its name goes into the
@@ -117,6 +119,8 @@ namespace playground::ui
         int count(List l) const;
         int rowAt(funkgui::Point p, const Places& at, List l) const;
         void readProjects();                             // this Mac's, then the FACTORY caption and the factory's
+        std::string homeName() const;                    // the field for the program open: its project's (copy's), else its title
+        std::string fieldFor(const std::string& project) const;   // the field when `project` is chosen
         bool heading(int i) const;                       // the projects' row i is the FACTORY caption
         bool factoryChosen() const;                      // the chosen project is a factory one
         void readChosen();                               // the chosen project's versions and presets
@@ -134,6 +138,7 @@ namespace playground::ui
         std::vector<VersionEntry> versions_;
         std::vector<PresetEntry> presets_;
         ProjectState state_;                             // EditorPort::project when it opened, or after it acted
+        std::string title_;                              // the name it opened with (the program's title when none is open)
         std::array<int, 3> chosen_{ -1, -1, -1 };
         std::array<int, 3> first_{ 0, 0, 0 };            // each list's first row shown
         List focus_ = List::projects;

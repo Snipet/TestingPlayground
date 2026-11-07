@@ -97,6 +97,7 @@ namespace playground::ui
     {
         open_ = true;
         project_ = project;
+        readOnly_ = isFactoryName(project);
         saved_ = port_.projectInfo(project);
         description_.set(saved_.description, kDescriptionLength);
         author_.set(saved_.author, kAuthorLength);
@@ -106,9 +107,7 @@ namespace playground::ui
         category_ = saved_.category;
         genres_ = saved_.genres;
         versions_ = latest_ = presets_ = 0;
-        std::vector<ProjectEntry> all = port_.projects();
-        if (isFactoryName(project))
-            all = port_.factoryProjects();
+        const std::vector<ProjectEntry> all = readOnly_ ? port_.factoryProjects() : port_.projects();
         for (const ProjectEntry& e : all)
             if (e.name == project)
             {
@@ -143,7 +142,7 @@ namespace playground::ui
     bool ExportCard::keepInfo()
     {
         const ProjectInfo now = info();
-        if (now == saved_)
+        if (readOnly_ || now == saved_)                  // a factory project's info stays as it is
             return true;
         std::string why;
         if (!port_.setProjectInfo(project_, now, why))
@@ -260,11 +259,11 @@ namespace playground::ui
     void ExportCard::pointerDown(funkgui::Point p, float width, float height)
     {
         const Places at = places(width, height);
-        if (at.description.contains(p))
+        if (!readOnly_ && at.description.contains(p))
             focusOn(Field::description);
-        else if (at.author.contains(p))
+        else if (!readOnly_ && at.author.contains(p))
             focusOn(Field::author);
-        else if (at.tags.contains(p))
+        else if (!readOnly_ && at.tags.contains(p))
             focusOn(Field::tags);
         else if (at.versions.contains(p))
             allVersions_ = !allVersions_;
@@ -274,7 +273,7 @@ namespace playground::ui
             ask(Want::source);
         else if (at.package.contains(p))
             ask(Want::package);
-        else
+        else if (!readOnly_)
         {
             const std::vector<std::string> cats = categories();
             for (std::size_t i = 0; i < at.categories.size(); ++i)
@@ -300,6 +299,8 @@ namespace playground::ui
         funkgui::text::LineEdit& f = field(focus_);
         if (e.key == Key::escape)
             close();
+        else if (readOnly_)
+            return;                                      // no field takes a key
         else if (e.key == Key::tab || e.key == Key::enter)
         {
             const int step = e.key == Key::tab && e.mods.shift ? 2 : 1;
@@ -324,6 +325,8 @@ namespace playground::ui
         const Places at = places(width, height);
         if (at.versions.contains(p) || at.done.contains(p) || at.source.contains(p) || at.package.contains(p))
             return funkgui::Cursor::pointingHand;
+        if (readOnly_)
+            return funkgui::Cursor::normal;
         for (const auto* list : { &at.categories, &at.genres })
             for (const funkgui::Rect& r : *list)
                 if (r.contains(p))
@@ -355,13 +358,15 @@ namespace playground::ui
         const std::string facts = "v" + std::to_string(latest_) + "   " + std::to_string(versions_) + (versions_ == 1 ? " version   " : " versions   ")
                                 + std::to_string(presets_) + (presets_ == 1 ? " preset" : " presets");
         c.text(facts.c_str(), box.right() - kPad, c.capCentreTop(box.y + 37.0f, chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
-        c.text(fitText(c, "What it is goes with it: a description, tags and genres. Done keeps them with the project.", chat::kSmall,
-                       box.w - 2.0f * kPad).c_str(),
+        c.text(fitText(c, readOnly_ ? "A factory project, read-only: its info goes with it as it is. Your own copy's is yours to change."
+                                    : "What it is goes with it: a description, tags and genres. Done keeps them with the project.",
+                       chat::kSmall, box.w - 2.0f * kPad).c_str(),
                x, c.capCentreTop(box.y + 62.0f, chat::kSmall), chat::kSmall, p.soft);
 
         const auto caption = [&](const funkgui::Rect& r, const char* text) {
             c.text(text, r.x + 2.0f, c.capCentreTop(r.y - 10.0f, chat::kSmallStrong), chat::kSmallStrong, p.faint);
         };
+        const auto focusedOn = [&](Field f) { return !readOnly_ && focus_ == f; };   // read-only: no field takes the caret
         const auto box3 = [&](const funkgui::Rect& r, bool focused) {
             c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, focused ? funkgui::mix(p.composerEdge, p.accent, 0.6f) : p.composerEdge);
         };
@@ -370,7 +375,7 @@ namespace playground::ui
         {
             const funkgui::Rect& r = at.description;
             caption(r, "DESCRIPTION");
-            box3(r, focus_ == Field::description);
+            box3(r, focusedOn(Field::description));
             const funkgui::TextStyle& st = chat::kBody;
             const float maxW = r.w - 28.0f;
             const std::string& s = description_.buffer;
@@ -382,7 +387,7 @@ namespace playground::ui
                     caretLine = i;
             const std::size_t lines = static_cast<std::size_t>(at.descriptionLines);
             const std::size_t first = caretLine >= lines ? caretLine - lines + 1 : 0;   // the caret's line in view
-            if (s.empty())
+            if (s.empty() && !readOnly_)
                 c.text("What it is, how it sounds, how to play it", r.x + 14.0f, c.capCentreTop(r.y + 8.0f + 0.5f * kLineH, st), st, p.faint);
             for (std::size_t i = first; i < starts.size() && i < first + lines; ++i)
             {
@@ -390,7 +395,7 @@ namespace playground::ui
                 const float ly = r.y + 8.0f + static_cast<float>(i - first) * kLineH;
                 c.text(s.substr(starts[i], end - starts[i]).c_str(), r.x + 14.0f, c.capCentreTop(ly + 0.5f * kLineH, st), st, p.text);
             }
-            if (focus_ == Field::description)
+            if (focusedOn(Field::description))
             {
                 const float ly = r.y + 8.0f + static_cast<float>(caretLine - first) * kLineH;
                 const float cx = r.x + 14.0f + c.textWidth(s.substr(starts[caretLine], caret - starts[caretLine]).c_str(), st);
@@ -405,7 +410,7 @@ namespace playground::ui
             const float maxW = r.w - 28.0f;
             const float top = c.capCentreTop(r.centreY(), st);
             if (e.buffer.empty())
-                c.text(hint, r.x + 14.0f, top, st, p.faint);
+                c.text(readOnly_ ? "" : hint, r.x + 14.0f, top, st, p.faint);
             else
             {
                 if (e.allSelected && focused)
@@ -419,12 +424,12 @@ namespace playground::ui
                 c.rrect(cx, r.y + 9.0f, 1.5f, r.h - 18.0f, 0.75f, p.accent);
             }
         };
-        line(at.author, "AUTHOR", author_, focus_ == Field::author, "Your name");
-        line(at.tags, "TAGS (COMMAS BETWEEN)", tags_, focus_ == Field::tags, "warm, analog, slow attack");
+        line(at.author, "AUTHOR", author_, focusedOn(Field::author), "Your name");
+        line(at.tags, "TAGS (COMMAS BETWEEN)", tags_, focusedOn(Field::tags), "warm, analog, slow attack");
 
         // The pills: the category (one), the genres (any), and the versions' switch.
         const auto pill = [&](const funkgui::Rect& r, const std::string& label, bool on) {
-            const bool hover = hasPointer && r.contains(pointer);
+            const bool hover = !readOnly_ && hasPointer && r.contains(pointer);
             c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, on ? p.accent : (hover ? p.hover : p.composer), 1.0f, on ? p.accent : p.composerEdge);
             c.text(label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, on ? p.onAccent : p.soft,
                    funkgui::Align::centre);
@@ -474,7 +479,7 @@ namespace playground::ui
         box.role = funkgui::a11yrole::group;
         box.bounds = at.box;
         box.title = "Export " + project_;
-        box.description = why_;
+        box.description = why_.empty() && readOnly_ ? "A factory project, read-only: its info goes with it as it is" : why_;
         out.push_back(box);
         const auto text = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
             funkgui::A11yItem it;
@@ -484,12 +489,14 @@ namespace playground::ui
             it.bounds = r;
             it.title = title;
             it.value = e.buffer;
+            it.readOnly = readOnly_;
             out.push_back(std::move(it));
         };
         text(kDescriptionId, at.description, "Description", description_);
         text(kAuthorId, at.author, "Author", author_);
         text(kTagsId, at.tags, "Tags, commas between", tags_);
-        const auto toggle = [&](uint32_t id, const funkgui::Rect& r, const std::string& title, bool on, const char* help) {
+        const auto toggle = [&](uint32_t id, const funkgui::Rect& r, const std::string& title, bool on, const char* help,
+                                bool enabled) {
             funkgui::A11yItem it;
             it.id = id;
             it.parent = kBoxId;
@@ -498,15 +505,16 @@ namespace playground::ui
             it.title = title;
             it.checkable = true;
             it.checked = on;
+            it.enabled = enabled;
             it.help = help;
             out.push_back(std::move(it));
         };
         const std::vector<std::string> cats = categories();
         for (std::size_t i = 0; i < at.categories.size(); ++i)
-            toggle(kCategoryId + static_cast<uint32_t>(i), at.categories[i], cats[i], category_ == cats[i], "Category");
+            toggle(kCategoryId + static_cast<uint32_t>(i), at.categories[i], cats[i], category_ == cats[i], "Category", !readOnly_);
         for (std::size_t i = 0; i < at.genres.size(); ++i)
-            toggle(kGenreId + static_cast<uint32_t>(i), at.genres[i], kGenres[i], has(genres_, kGenres[i]), "Genre");
-        toggle(kVersionsId, at.versions, "Every version", allVersions_, "Else the newest only");
+            toggle(kGenreId + static_cast<uint32_t>(i), at.genres[i], kGenres[i], has(genres_, kGenres[i]), "Genre", !readOnly_);
+        toggle(kVersionsId, at.versions, "Every version", allVersions_, "Else the newest only", true);
         const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
             funkgui::A11yItem b;
             b.id = id;
@@ -527,6 +535,8 @@ namespace playground::ui
             return false;
         const Places at = places(width, height);
         const auto at_ = [](const funkgui::Rect& r) { return funkgui::Point{ r.centreX(), r.centreY() }; };
+        if (readOnly_ && (id == kDescriptionId || id == kAuthorId || id == kTagsId))
+            return false;                                // a factory project's info takes no edit
         if (id == kDescriptionId)
             focusOn(Field::description);
         else if (id == kAuthorId)
