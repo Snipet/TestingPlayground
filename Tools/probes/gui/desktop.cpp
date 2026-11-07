@@ -8,6 +8,7 @@
 //                           second on its track among the others
 //   gui.desktop.paper.png   the same in PAPER
 //   gui.desktop.badge.png   the second chosen: the first's badge "Desktop uses Synth 2" (or Effect 2), its row ticked
+//   gui.desktop.rail.png    the same with the chat folded: the badge's mark on the rail
 //   gui.desktop.name.png    the name card, a name typed
 // and checks:
 //   ALONE    the section after FOLDER and before LLVM IR: its name ("Synth 1", this synth) and Use with Claude Desktop,
@@ -19,6 +20,8 @@
 //            Desktop calls this Synth 1", and the second sees the first as the target; a second click clears it
 //   OTHER    the second's row clicked: it is the target, ticked; the badge "Desktop uses Synth 2"; the badge's click
 //            makes the first the target again
+//   MARK     the second chosen again, the chat folded: no badge in the header, its mark on the rail under the rail's
+//            button; the mark's click makes the first the target (the mark gone, the chat still folded)
 //   RENAME   the name row's click opens the name card, the field its name (empty: its number's); a name another's
 //            number's refused, said in the card, which stays; "Bass" and Return name it (the row "Bass", its detail its
 //            number's name; the subtitle); Escape leaves it; an empty name gives its number's back
@@ -171,7 +174,15 @@ PROBE(gui, desktop)
     funkgui::UiPreferences::get().setBackend(funkgui::UiPreferences::memoryBackend());   // never the user's file
     funkgui::UiPreferences::get().setTheme(0);
     // A folder of its own for the sockets, short enough for a socket's path (the build's sandbox is too deep).
+#if defined(_WIN32)
+    const std::string dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                .getChildFile(juce::String(pg::product::kEnvPrefix) + "desktop-" + juce::String(getpid()))
+                                .getFullPathName()
+                                .replaceCharacter('\\', '/')
+                                .toStdString();
+#else
     const std::string dir = "/tmp/" + std::string(pg::product::kEnvPrefix) + "desktop-" + std::to_string(getpid());
+#endif
     setenv((std::string(pg::product::kEnvPrefix) + "MCP_DIR").c_str(), dir.c_str(), 1);
     struct Gone
     {
@@ -258,6 +269,23 @@ PROBE(gui, desktop)
         const std::optional<funkgui::Point> badge = panel.centreOfDesktopBadge();
         clickAt(host, badge);
         P.eq("other.badge_click", badge.has_value() && port.desktop().chosen && panel.desktopBadge().empty() ? 1 : 0, 1);
+    }
+
+    // ---- MARK ----------------------------------------------------------------------------------------------------------
+    {
+        b.editorPort().chooseDesktop(b.mcpLink()->id(), true);
+        const bool elsewhere = pump({ &a, &b }, host, 3.0, [&] { return panel.desktopBadge() == "Desktop uses " + second; });
+        panel.setChatOpen(false);
+        host.tick(2);
+        host.settle();
+        const std::optional<funkgui::Point> mark = panel.centreOfDesktopMark();
+        P.eq("mark.folded", elsewhere && !panel.chatOpen() && !panel.centreOfDesktopBadge().has_value() && mark.has_value() ? 1 : 0, 1);
+        writePng(P, host, "gui.desktop.rail.png");
+        clickAt(host, mark);
+        P.eq("mark.click", port.desktop().chosen && !panel.chatOpen() && !panel.centreOfDesktopMark().has_value() ? 1 : 0, 1);
+        panel.setChatOpen(true);
+        host.tick(2);
+        host.settle();
     }
 
     // ---- RENAME --------------------------------------------------------------------------------------------------------
