@@ -62,14 +62,17 @@
 // by kMaxLongSeconds when the call returns numbers alone (measure_output, a check, tune_dials, compare without its
 // picture, trace), the tail at most kMaxTailSeconds after them (a window ends by both: Request::endSeconds); and a
 // render holds kMaxRenderSamples a channel at most (310 s up to 96 kHz, 155 s at 192 kHz: about 240 MB of stereo
-// floats a buffer). The plugin's tools refuse what is past them, in words (plugin/ChatScenario.h); here they are
-// clamped, a request's times at a rate where kMaxRenderSamples holds less to what it holds with the tail (145 s at
-// 192 kHz), so that every span a render's analysis reads lies inside it.
+// floats a buffer), so at a rate above 96 kHz its times end by what that holds less a whole tail (longestAt: 145 s at
+// 192 kHz) and the render, its tail and its window by kMaxRenderSamples. The plugin's tools refuse what is past either,
+// in words (plugin/ChatScenario.h's fits), so a request they take is never re-timed; here a request is clamped to the
+// same (a Session's times to longestAt), so that every span a render's analysis reads lies inside it.
 //
 // A render can be cancelled as it goes (Session::setCancel: the chat's stop, an MCP cancel, a time limit): it asks
 // every kCancelSamples samples and stops there. measure() then measures nothing and says how far it got ("Cancelled
-// 84.21 s into the render of the notes held, 301.50 s long, 12.3 s after it began: nothing was measured."), as
-// render() and what renders through it (SoundView.h, Compare.h) do; a cancelled render is never measured. The render
+// 84.21 s into the render of the notes held (301.50 s long), 12.3 s after it began, about 6.8 s of sound a second.
+// Nothing was measured."), as render() and what renders through it (SoundView.h, Compare.h) do; a cancelled render is
+// never measured. The time limit is the call's (Cancel::start, shared by the Sessions a call renders in), and its words
+// name it whole, and the render that spent it when the limit lands in a short one after it. The render
 // runs on its caller's thread (the chat's worker, the MCP link's one worker): the call's answer is its numbers, and
 // what a call reads and writes is the chat's one at a time (ChatAgent's busy_), so nothing else could take the worker
 // meanwhile; a cancel reaches it in milliseconds, and the live tools answer on the link's poll thread while it runs.
@@ -113,6 +116,7 @@
 #include <utility>
 
 #include <array>
+#include <chrono>
 #include <complex>
 #include <functional>
 #include <limits>
@@ -150,8 +154,24 @@ namespace playground::measure
     struct Cancel
     {
         std::function<bool()> asked;              // true: stop (the chat's stop, an MCP cancel)
-        double seconds = 0.0;                     // a time limit, wall-clock from Session::setCancel (0: none)
+        double seconds = 0.0;                     // the call's time limit, wall-clock from `start` (0: none)
         std::function<void(double done, double length)> progress;   // a render's seconds so far, of its length
+        // When the call's time began (unset, the clock's epoch: at Session::setCancel). A call that renders in several
+        // Sessions (compare's sides, the checks' rates) gives each the same (started()), so the limit is the call's.
+        std::chrono::steady_clock::time_point start{};
+        std::string who;                          // whose renders, in the words ("A": "A's render"); empty: no one's
+        // What the renders spent, over the Sessions that share it: the words name the render that used the time when
+        // the limit lands in a short one after it.
+        struct Spent
+        {
+            double sound = 0.0;                   // seconds of sound rendered
+            int renders = 0;                      // renders that ran to their end
+            std::string longest;                  // the one that took the most of the clock: what it rendered, its
+            double longestLength = 0.0, longestSeconds = 0.0;   // seconds of sound and of the clock
+        };
+        std::shared_ptr<Spent> spent;
+        // A copy with `start` (now) and `spent` set where they are not: what a call gives each Session it renders in.
+        Cancel started() const;
     };
 
     struct PhraseNote
@@ -305,8 +325,15 @@ namespace playground::measure
     // The seconds the longest render of a request lasts, as Session's plans make it, without a compile (a move of a dial
     // the program lacks counts too): an instrument's notes held (or its phrase), its moves, wheels and host edits, then
     // the tail; an effect's test signals (or its own input), its moves and edits, then the tail; at least until its
-    // window's end. The plugin holds it to kMaxRenderSamples at the request's rate (plugin/ChatScenario.h's resolve).
+    // window's end. The plugin holds it to kMaxRenderSamples at the request's rate (plugin/ChatScenario.h's fits).
     double renderSeconds(const Request& request);
+    // The latest of a request's times as its plan reads them, its longest at most: holdSeconds (an instrument's while it
+    // plays no phrase and no recording; an effect's always, its test signals' length), a phrase's note-offs, the moves'
+    // ends, the wheels, the host's edits. A Session cuts them to longestAt (above); the plugin refuses a request past it.
+    double latestTime(const Request& request);
+    // Where a request's times end at most at `rate` (above): `longest`, or what kMaxRenderSamples holds there less a
+    // whole tail (145 s at 192 kHz; 300 s and more up to 96 kHz).
+    double longestAt(double longest, double rate);
 
     // What a request plays, by absolute sample (Session::timeline): the plan a render follows, and what the click
     // locator and the trace name a moment by.
@@ -481,10 +508,15 @@ namespace playground::measure
         // where.
         std::string stopWords(Patch::Method call, double seconds, const Patch::Bounds* bounds = nullptr) const;
 
-        // From now on each render asks `cancel` every kCancelSamples samples (above), its time limit counted from
-        // here, and stops when it says so; so does every render after it, at once, until the next setCancel.
-        // cancelled(): one did; cancelWords(): what was rendering, how far it got, after how long and why ("Cancelled
-        // 84.21 s into the render of the notes held, 301.50 s long, 12.3 s after it began: nothing was measured.").
+        // From now on each render asks `cancel` every kCancelSamples samples (above), its time limit counted from its
+        // start (here when it has none: Cancel::started), and stops when it says so; so does every render after it, at
+        // once, until the next setCancel. cancelled(): one did; cancelWords(): what was rendering, how far it got,
+        // after how long and how fast ("Cancelled 84.21 s into the render of the notes held (301.50 s long), 12.3 s
+        // after it began, about 6.8 s of sound a second."; at the time limit "Stopped at the time limit (170 s): the
+        // render of the notes held had reached 150.87 s of its 301.50 s, about 0.89 s of sound a second; a shorter
+        // render fits.", or, when the limit lands in a short render after a long one, "Stopped at the time limit (170
+        // s) 0.00 s into a short render after it (0.60 s long): the render before it, the render of the notes held
+        // (301.50 s long), took 169.9 s; a shorter render fits."). measure() adds " Nothing was measured.".
         void setCancel(Cancel cancel);
         bool cancelled() const noexcept;
         std::string cancelWords() const;

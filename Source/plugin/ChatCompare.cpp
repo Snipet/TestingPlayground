@@ -345,6 +345,8 @@ namespace playground
             }
         }
         B.request.rate = rateB;
+        if (!scenario::fits(B.request, why))             // resolve() held A's to A's rate; B's at its own
+            return done("B at b_rate: " + why, true);
         int trials = 0;
         if (input.hasProperty("try_edits") && b.capture)
             return done("try_edits apply to b, which is the recording: put the program in b.", true);

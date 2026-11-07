@@ -2,7 +2,6 @@
 #include "dsp/Compare.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -160,7 +159,7 @@ namespace playground::measure
             const Result mb = ma.cancelled ? Result{} : sb.measure(qb);
             if (ma.cancelled || mb.cancelled)                // a cancel (CompareOptions::cancel): nothing compared
             {
-                c.error = (ma.cancelled ? "A's metrics: " + sa.cancelWords() : "B's metrics: " + sb.cancelWords()) + " Nothing was compared.";
+                c.error = (ma.cancelled ? sa.cancelWords() : sb.cancelWords()) + " Nothing was compared.";
                 return;
             }
             c.metricsMeasured = true;
@@ -309,19 +308,17 @@ namespace playground::measure
         // An effect's input unless the request names one: noise, or at two rates the sweep (20 Hz to 20 kHz at -12
         // dBFS, the same at every rate; white noise's level per hertz falls as the rate rises).
         const ViewInput input = c.twoRates() ? ViewInput::sweep : ViewInput::noise;
-        // The cancel, its time limit over both sides from here (each Session counts from its own setCancel).
-        const auto t0 = std::chrono::steady_clock::now();
-        const auto cancelNow = [&] {
-            Cancel k = options.cancel;
-            if (k.seconds > 0.0)
-                k.seconds = std::max(1e-3, k.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-            return k;
+        // The cancel, its time limit the call's over both sides (Cancel::started), each side's renders named its own.
+        const auto sideCancel = [k = options.cancel.started()](const char* who) {
+            Cancel s = k;
+            s.who = who;
+            return s;
         };
-        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input, cancelNow());
-        Rendered rb = ra.sound.cancelled ? Rendered{} : renderSide(sb, c.rateB, lengthAt(c.rateB), input, cancelNow());
+        Rendered ra = renderSide(sa, c.rate, lengthAt(c.rate), input, sideCancel("A"));
+        Rendered rb = ra.sound.cancelled ? Rendered{} : renderSide(sb, c.rateB, lengthAt(c.rateB), input, sideCancel("B"));
         if (ra.sound.cancelled || rb.sound.cancelled)
         {
-            c.error = (ra.sound.cancelled ? "A: " + ra.session->cancelWords() : "B: " + rb.session->cancelWords()) + " Nothing was compared.";
+            c.error = (ra.sound.cancelled ? ra.session->cancelWords() : rb.session->cancelWords()) + " Nothing was compared.";
             return c;
         }
         if (!ra.errors.empty() || !rb.errors.empty())

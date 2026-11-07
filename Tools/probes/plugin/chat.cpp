@@ -168,8 +168,10 @@
 //   LONG     measure_output held 300 s through MCP: its numbers (the level as a 1 s render's), its time printed and
 //            bounded; refused in words past the caps: hold_seconds 301, view_sound's 11 (naming the tools that take 300
 //            s), tail_seconds 11, a scenario's move at 301 s (tune_dials), compare's picture with one at 11 s, trace's
-//            hold 301, 200 s at 192 kHz; Claude Desktop's cancel mid-render (the activity counting the seconds first):
-//            what it reached, nothing measured, back within 2 s, the next call free
+//            hold 301; at 192 kHz a hold of 200 s or 150 s (past 145 s, the times' cap there) and a window to 160 s (past
+//            the 155 s a render holds), and compare's B at b_rate 192000 with a move at 150 s (A at 48 kHz fits); Claude
+//            Desktop's cancel mid-render (the activity counting the seconds first): what it reached, nothing measured,
+//            back within 2 s, the next call free (its numbers measured)
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
@@ -3207,9 +3209,21 @@ PROBE(plugin, chat)
                      refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "picture", true }, { "scenario", pastPicture } }),
                              "scenario.automate[0]: at is 0 to 10 s (a picture's render: "), 1);
                 P.eq("long.trace_takes_300", refused("trace", held(301.0), "hold_seconds is at most 300 s"), 1);
-                P.eq("long.rate_refused", refused("measure_output", with(held(200.0), "scenario", input({ { "rate", 192000 } })),
-                                                  "The render would last 200.2 s at 192000 Hz, past the 155 s a render holds at that rate "
-                                                  "(310 s up to 96000 Hz): render it shorter, or at a lower rate."), 1);
+                // At 192 kHz the times end by 145 s (a render holds 155 s there with its tail), refused past it, never cut.
+                const char* const highTimes = "At 192000 Hz a render's times (hold_seconds, the scenario's) end by 145 s, so that it "
+                                              "holds 155 s with the tail (300 s and 310 s up to 96000 Hz); this one's last is at ";
+                const juce::var high = input({ { "rate", 192000 } });
+                P.eq("long.rate_refused", refused("measure_output", with(held(200.0), "scenario", high),
+                                                  std::string(highTimes) + "200 s: render it shorter, or at a lower rate."), 1);
+                P.eq("long.rate_gap_refused", refused("measure_output", with(held(150.0), "scenario", high),
+                                                      std::string(highTimes) + "150 s: render it shorter, or at a lower rate."), 1);
+                P.eq("long.rate_window_refused",
+                     refused("measure_output", with(with(held(1.0), "scenario", high), "window", input({ { "from", 0.0 }, { "to", 160.0 } })),
+                             "The render would last 160 s at 192000 Hz, past the 155 s a render holds at that rate (310 s up to "
+                             "96000 Hz): render it shorter, or at a lower rate."), 1);
+                const juce::var at150 = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 150.0 }, { "to", -6.0 } }) } } });
+                P.eq("long.b_rate_refused", refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 192000 }, { "scenario", at150 } }),
+                                                    "B at b_rate: " + std::string(highTimes) + "150 s: render it shorter, or at a lower rate."), 1);
                 // Cancelled mid-render (Claude Desktop's cancel): what it reached, at once; the activity said how far.
                 pg::ChatAgent::McpResult cut;
                 std::atomic<bool> finished{ false };
@@ -3235,7 +3249,8 @@ PROBE(plugin, chat)
                                                                                               : " into the sine's render (300.00 s long), ")
                                                    && has(cutText, "Nothing was measured.") && !has(cutText, "Metrics:") ? 1 : 0, 1);
                 P.le("long.cancel_at_once", back, 2.0);
-                P.eq("long.cancel_then_free", !sa.mcpCall("measure_output", held(1.0)).isError ? 1 : 0, 1);
+                const pg::ChatAgent::McpResult next = sa.mcpCall("measure_output", held(1.0));
+                P.eq("long.cancel_then_free", !next.isError && has(allText(next), "Metrics: ") && !has(allText(next), "Cancelled") ? 1 : 0, 1);
             }
 
             // ---- SPECTRUM ----------------------------------------------------------------------------------------------

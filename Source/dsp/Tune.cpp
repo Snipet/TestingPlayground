@@ -258,11 +258,7 @@ namespace playground::measure
             return out;
         }
         // Each render asks the cancel, and the time limit, as it goes (a long render: Measure.h).
-        session.setCancel({ request.cancelled,
-                            request.seconds > 0.0
-                                ? std::max(1e-3, request.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count())
-                                : 0.0,
-                            nullptr });
+        session.setCancel({ request.cancelled, request.seconds, nullptr, t0, {}, nullptr });   // its limit from its start
         const Controls& controls = session.controls();
         std::vector<int> slots;
         std::vector<std::string> names;

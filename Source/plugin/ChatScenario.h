@@ -26,7 +26,9 @@
 // picture), measure::kMaxLongSeconds (300 s) for a call that returns numbers alone (measure_output, a check, tune_dials,
 // compare, trace). The scenario's times and hold_seconds stop there, tail_seconds at measure::kMaxTailSeconds, a
 // window at both (Request::endSeconds); one past its cap is refused, naming it (a picture's naming the tools that take
-// 300 s). resolve() refuses a render longer than measure::kMaxRenderSamples a channel at its rate (155 s at 192 kHz).
+// 300 s). At a rate above 96 kHz less fits (measure::kMaxRenderSamples a channel): fits() (resolve's last step, and
+// compare's for B at b_rate) refuses times past measure::longestAt the rate (145 s at 192 kHz) and a render, its tail
+// and its window longer than it holds (155 s at 192 kHz), so a Session never re-times a request the tools take.
 //
 // dials_from: current | defaults, measure_output's, view_sound's and trace's: the dials a render does not name as they
 // are in the plugin now (the default; the caller fills Request::current) or at the program's defaults (it leaves it
@@ -74,10 +76,12 @@ namespace playground::scenario
     juce::var toVar(const measure::Request& request);
     struct Captured;
     // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there, or when
-    // the render would hold more than measure::kMaxRenderSamples a channel at its rate (above). With
+    // the render does not fit at its rate (fits(), below). With
     // `recording` given, that one (compare reads the recording once for both its sides), else captured()'s.
     bool resolve(measure::Request& request, ChatHost& host, std::string& why);
     bool resolve(measure::Request& request, ChatHost& host, std::string& why, const Captured* recording);
+    // Whether a request's render fits at its rate (above, "How long"): false with why, naming the rate's caps.
+    bool fits(const measure::Request& request, std::string& why);
     // The checks measured as measure::evaluate measures them, each resolved first (one that cannot be is not measured,
     // saying why).
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,

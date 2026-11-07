@@ -478,12 +478,30 @@ namespace playground::scenario
             moves.insert(moves.end(), r.automate.begin(), r.automate.end());
             r.automate = std::move(moves);
         }
+        return fits(r, why);
+    }
+
+    bool fits(const measure::Request& r, std::string& why)
+    {
+        // Two decimals, rounded down for a cap (so that what it names fits) and to the nearest for what was asked.
+        const auto down = [](double x) { return std::floor(x * 100.0 + 1e-6) / 100.0; };
+        const auto near = [](double x) { return std::round(x * 100.0) / 100.0; };
+        const double holds = measure::kMaxRenderSamples / r.rate;
+        // Its times end by measure::longestAt its rate, where a Session would cut them (above 96 kHz: 145 s at 192 kHz).
+        if (const double last = measure::latestTime(r), most = measure::longestAt(r.longest, r.rate); last > most + 1e-9)
+        {
+            why = "At " + number(r.rate) + " Hz a render's times (hold_seconds, the scenario's) end by " + number(down(most))
+                + " s, so that it holds " + number(down(holds)) + " s with the tail (" + number(measure::kMaxLongSeconds) + " s and "
+                + number(measure::kMaxRenderSamples / 96000.0) + " s up to 96000 Hz); this one's last is at " + number(near(last))
+                + " s: render it shorter, or at a lower rate.";
+            return false;
+        }
         // A render holds measure::kMaxRenderSamples a channel at most: a long one at a high rate is refused.
         if (const double seconds = measure::renderSeconds(r); seconds * r.rate > measure::kMaxRenderSamples)
         {
-            why = "The render would last " + number(std::round(seconds * 100.0) / 100.0) + " s at " + number(r.rate)
-                + " Hz, past the " + number(std::floor(measure::kMaxRenderSamples / r.rate)) + " s a render holds at that rate ("
-                + number(measure::kMaxRenderSamples / 96000.0) + " s up to 96000 Hz): render it shorter, or at a lower rate.";
+            why = "The render would last " + number(near(seconds)) + " s at " + number(r.rate) + " Hz, past the "
+                + number(down(holds)) + " s a render holds at that rate (" + number(measure::kMaxRenderSamples / 96000.0)
+                + " s up to 96000 Hz): render it shorter, or at a lower rate.";
             return false;
         }
         return true;

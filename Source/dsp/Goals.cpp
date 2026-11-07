@@ -2,7 +2,6 @@
 #include "dsp/Goals.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -143,8 +142,8 @@ namespace playground::measure
         if (checks.empty())
             return out;
         // One compile a sample rate the checks render at (a check's scenario may name one), each asking the cancel,
-        // its time limit over them all from here.
-        const auto t0 = std::chrono::steady_clock::now();
+        // its time limit the call's over them all (Cancel::started).
+        const Cancel shared = cancel != nullptr ? cancel->started() : Cancel{};
         std::map<double, std::unique_ptr<Session>> sessions;
         const auto sessionFor = [&](double rate) -> Session& {
             std::unique_ptr<Session>& s = sessions[rate];
@@ -152,12 +151,7 @@ namespace playground::measure
             {
                 s = std::make_unique<Session>(files, rate);
                 if (cancel != nullptr)
-                {
-                    Cancel k = *cancel;
-                    if (k.seconds > 0.0)
-                        k.seconds = std::max(1e-3, k.seconds - std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-                    s->setCancel(std::move(k));
-                }
+                    s->setCancel(shared);
             }
             return *s;
         };

@@ -1681,32 +1681,41 @@ namespace playground::measure
 
     std::string windowText(const Window& w) { return fmt("%.2f", w.from) + " to " + fmt("%.2f s", w.to); }
 
-    double renderSeconds(const Request& r)
+    double latestTime(const Request& r)
     {
-        const double rate = r.rate > 1000.0 ? r.rate : 48000.0;
-        const double hold = std::clamp(static_cast<double>(r.holdSeconds), 0.05, r.longest);
-        const double tail = std::clamp(static_cast<double>(r.tailSeconds), 0.0, kMaxTailSeconds);
         const auto at = [&](double t) { return std::clamp(t, 0.0, r.longest); };
-        double end = 0.0;                                    // the last moment: the held part's end, a move's, an edit's
+        double end = 0.0;                                    // the held part's end, a note-off's, a move's, an edit's
+        if (!kInstrument || (r.phrase.empty() && r.events.empty()))
+            end = std::clamp(static_cast<double>(r.holdSeconds), 0.05, r.longest);
         if constexpr (kInstrument)
         {
-            if (!r.phrase.empty())
-                for (const PhraseNote& n : r.phrase)
-                    end = std::max(end, at(n.at + std::max(n.length, 0.0)));
-            else if (r.events.empty())
-                end = hold;
-            for (const auto& [sample, e] : r.events)
-                end = std::max(end, static_cast<double>(sample) / rate);
+            for (const PhraseNote& n : r.phrase)
+                end = std::max(end, at(n.at + std::max(n.length, 0.0)));
             for (const WheelMove& w : r.wheels)
                 end = std::max(end, at(w.at));
         }
-        else
-            end = r.input != nullptr ? std::min(static_cast<double>(r.input->l.size()) / rate, r.endSeconds()) : hold;
         for (const DialMove& m : r.automate)
             end = std::max(end, at(m.at + m.over));
         for (const double t : { r.hostEdits.stopAt, r.hostEdits.jumpAt })
             if (t >= 0.0)
                 end = std::max(end, at(t));
+        return end;
+    }
+
+    double longestAt(double longest, double rate) { return std::min(longest, kMaxRenderSamples / rate - kMaxTailSeconds); }
+
+    double renderSeconds(const Request& r)
+    {
+        const double rate = r.rate > 1000.0 ? r.rate : 48000.0;
+        const double tail = std::clamp(static_cast<double>(r.tailSeconds), 0.0, kMaxTailSeconds);
+        double end = latestTime(r);                          // and what a recording plays, an effect's own input
+        if constexpr (kInstrument)
+        {
+            for (const auto& [sample, e] : r.events)
+                end = std::max(end, static_cast<double>(sample) / rate);
+        }
+        else if (r.input != nullptr)                         // beside the test signals, which play for holdSeconds
+            end = std::max(end, std::min(static_cast<double>(r.input->l.size()) / rate, r.endSeconds()));
         for (const auto& [sample, t] : r.transport)
             end = std::max(end, static_cast<double>(sample) / rate);
         return std::max(end + tail, r.window.set() ? std::min(r.window.to, r.endSeconds()) : 0.0);
@@ -2391,11 +2400,12 @@ namespace playground::measure
             tl.plain = length == 0 && tl.length > natural ? natural : 0;
         }
 
-        // A request's times cut to what kMaxRenderSamples holds at `rate` with its tail (145 s at 192 kHz), so that every
-        // span its render's analysis reads lies inside it (the plugin refuses a longer one: ChatScenario.h's resolve).
+        // A request's times cut to longestAt `rate` (what kMaxRenderSamples holds there less a whole tail: 145 s at 192
+        // kHz), so that every span its render's analysis reads lies inside it; the plugin refuses a request past it
+        // (ChatScenario.h's fits), so one it takes is never re-timed.
         const Request& fitted(const Request& r, double rate, Request& spare)
         {
-            const double most = kMaxRenderSamples / rate - kMaxTailSeconds;
+            const double most = longestAt(r.longest, rate);
             if (r.longest <= most)
                 return r;
             spare = r;
@@ -2418,21 +2428,35 @@ namespace playground::measure
         Patch::Method stopCall = Patch::Method::none;
         double stopSeconds = 0.0;
         Patch::Bounds stopBounds;
-        // The cancel (Session::setCancel): asked every kCancelSamples samples of a render; the first render it stops
-        // (`cut`: what was rendering, how far, after how long), which every render after it stops at once, until the
-        // next setCancel. `what` names the render that runs, `done` the seconds of sound rendered since setCancel.
+        // The cancel (Session::setCancel, started: its start and its record of what the renders spent set): asked every
+        // kCancelSamples samples of a render; the first render it stops (`cut`: what was rendering, how far, after how
+        // long), which every render after it stops at once, until the next setCancel. `what` names the render that
+        // runs (named(): whose, Cancel::who), `began` when it began.
         Cancel cancel;
         bool asking = false;
-        std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
         std::string what = "the render";
-        double done = 0.0;
+        std::chrono::steady_clock::time_point began{};
         struct Cut
         {
             bool hit = false, late = false;          // late: the time limit, else a cancel
             std::string what;
             double reached = 0.0, length = 0.0;      // seconds of the render
-            double after = 0.0, sound = 0.0;         // seconds since setCancel, and of sound rendered by then
+            double after = 0.0, sound = 0.0;         // seconds since the cancel's start, and of sound rendered by then
+            double took = 0.0;                       // seconds of the clock the render cut had taken
         } cut;
+
+        static double secondsSince(std::chrono::steady_clock::time_point t)
+        {
+            return std::chrono::duration<double>(std::chrono::steady_clock::now() - t).count();
+        }
+
+        // `what`, whose it is (Cancel::who): "the render" as "A's render", "a short render after it" as "... (A)".
+        std::string named(const std::string& w) const
+        {
+            if (cancel.who.empty())
+                return w;
+            return w.rfind("the ", 0) == 0 ? cancel.who + "'s " + w.substr(4) : w + " (" + cancel.who + ")";
+        }
 
         // Whether the render at `pos` of `total` samples stops here (the progress said first).
         bool stopsAt(std::size_t pos, std::size_t total)
@@ -2442,13 +2466,30 @@ namespace playground::measure
             const double at = static_cast<double>(pos) / rate, length = static_cast<double>(total) / rate;
             if (cancel.progress)
                 cancel.progress(at, length);
-            const double after = std::chrono::duration<double>(std::chrono::steady_clock::now() - since).count();
+            const double after = secondsSince(cancel.start);
             const bool asked = cancel.asked && cancel.asked();
             const bool late = !asked && cancel.seconds > 0.0 && after > cancel.seconds;
             if (!asked && !late)
                 return false;
-            cut = { true, late, what, at, length, after, done + at };
+            cut = { true, late, named(what), at, length, after, (cancel.spent ? cancel.spent->sound : 0.0) + at, secondsSince(began) };
             return true;
+        }
+
+        // A render that ran to its end, `total` samples, in the record of what the cancel's renders spent.
+        void spend(std::size_t total)
+        {
+            if (!asking || !cancel.spent)
+                return;
+            Cancel::Spent& s = *cancel.spent;
+            const double took = secondsSince(began), length = static_cast<double>(total) / rate;
+            s.sound += length;
+            ++s.renders;
+            if (took > s.longestSeconds)
+            {
+                s.longest = named(what);
+                s.longestLength = length;
+                s.longestSeconds = took;
+            }
         }
 
         // An instrument's plan: the request's scenario (or keys held until offAt) over `length` samples (0: as long as it
@@ -2520,6 +2561,8 @@ namespace playground::measure
             std::size_t timedFrom = 0;
             bool timing = false;
             std::size_t pos = 0, ask = 0;
+            if (asking)
+                began = std::chrono::steady_clock::now();
             while (pos < total)
             {
                 if (asking && pos >= ask)                        // the cancel (Session::setCancel)
@@ -2627,7 +2670,8 @@ namespace playground::measure
                 r.cpuMs = threadMs() - t0;
                 r.cpuSamples = pos - timedFrom;
             }
-            done += static_cast<double>(pos) / rate;
+            if (!r.cancelled)
+                spend(pos);
             r.alerts |= engine.takeAlerts();
             if (Engine::Stopped st; engine.stops() != stops && engine.lastStop(st))
             {
@@ -2733,13 +2777,21 @@ namespace playground::measure
         return out;
     }
 
+    Cancel Cancel::started() const
+    {
+        Cancel c = *this;
+        if (c.start == std::chrono::steady_clock::time_point{})
+            c.start = std::chrono::steady_clock::now();
+        if (!c.spent)
+            c.spent = std::make_shared<Spent>();
+        return c;
+    }
+
     void Session::setCancel(Cancel cancel)
     {
-        impl_->cancel = std::move(cancel);
+        impl_->cancel = cancel.started();
         impl_->asking = impl_->cancel.asked || impl_->cancel.seconds > 0.0 || impl_->cancel.progress;
-        impl_->since = std::chrono::steady_clock::now();
         impl_->cut = {};
-        impl_->done = 0.0;
     }
 
     bool Session::cancelled() const noexcept { return impl_->cut.hit; }
@@ -2749,15 +2801,25 @@ namespace playground::measure
         const Impl::Cut& c = impl_->cut;
         if (!c.hit)
             return "";
-        // How fast it rendered: the sound rendered since setCancel, a second of the clock.
+        const auto secs = [](double s) { return fmt(s < 1.0 ? "%.2f s" : "%.1f s", s); };
+        // How fast it rendered: the sound rendered since the cancel's start, a second of the clock.
         const std::string pace = c.after > 0.01 && c.sound > 0.0 ? ", about " + fmt(c.sound / c.after < 10.0 ? "%.2g" : "%.0f", c.sound / c.after)
                                                                      + " s of sound a second"
                                                                  : std::string();
-        if (c.late)
-            return "Stopped at the time limit (" + fmt("%g s", impl_->cancel.seconds) + "): " + c.what + " had reached "
-                 + fmt("%.2f s", c.reached) + " of its " + fmt("%.2f s", c.length) + pace + "; a shorter render fits.";
-        return "Cancelled " + fmt("%.2f s", c.reached) + " into " + c.what + " (" + fmt("%.2f s", c.length) + " long), "
-             + fmt(c.after < 1.0 ? "%.2f s" : "%.1f s", c.after) + " after it began" + pace + ".";
+        if (!c.late)
+            return "Cancelled " + fmt("%.2f s", c.reached) + " into " + c.what + " (" + fmt("%.2f s", c.length) + " long), "
+                 + secs(c.after) + " after it began" + pace + ".";
+        // The call's whole limit; and when the render cut took little of it, the renders before it that spent it.
+        const std::string limit = "Stopped at the time limit (" + fmt("%g s", impl_->cancel.seconds) + ")";
+        const Cancel::Spent* s = impl_->cancel.spent.get();
+        if (s == nullptr || s->renders == 0 || c.took >= 0.5 * c.after)
+            return limit + ": " + c.what + " had reached " + fmt("%.2f s", c.reached) + " of its " + fmt("%.2f s", c.length) + pace
+                 + "; a shorter render fits.";
+        const std::string longest = s->longest + " (" + fmt("%.2f s", s->longestLength) + " long)";
+        return limit + " " + fmt("%.2f s", c.reached) + " into " + c.what + " (" + fmt("%.2f s", c.length) + " long): "
+             + (s->renders == 1 ? "the render before it, " + longest + ", took " + secs(c.after - c.took) + "; a shorter render fits."
+                                : "the " + std::to_string(s->renders) + " renders before it took " + secs(c.after - c.took)
+                                      + ", the longest " + longest + " taking " + secs(s->longestSeconds) + "; fewer or shorter renders fit.");
     }
 
     std::string Session::stopWords(Patch::Method call, double seconds, const Patch::Bounds* bounds) const
@@ -2878,14 +2940,16 @@ namespace playground::measure
         // What the CPU figures are is the metrics' (cpu_percent's line in the guide): the report gives the numbers, and
         // says when the scenario moved a dial (which costs more than one held still).
         const std::string cpuMoving = request.automate.empty() ? "" : " (the scenario's dials moving)";
-        // A render cancelled (setCancel): nothing is measured, and the report says how far it got. Asked after each
-        // long render (the held one's, each test signal's), so that none of them is analysed, and at the end.
+        // A render cancelled (setCancel): nothing is measured, and the report says how far it got, after what was asked
+        // (the lines so far, the renders' before the cut among them, left out). Asked after each long render (the held
+        // one's, each test signal's), so that none of them is analysed, and at the end.
+        const std::size_t header = out.size();
         const auto halted = [&] {
             res.values.clear();
             res.unmeasured.clear();
             res.cancelled = true;
             res.stopped = impl_->stopCall;
-            res.report = out + cancelWords() + " Nothing was measured.\n";
+            res.report = out.substr(0, header) + cancelWords() + " Nothing was measured.\n";
             return res;
         };
 

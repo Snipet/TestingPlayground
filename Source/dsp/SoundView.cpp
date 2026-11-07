@@ -247,7 +247,7 @@ namespace playground::measure
         out.compiled = true;
         const double rate = out.rate;
         const float hold = static_cast<float>(std::clamp(static_cast<double>(request.render.holdSeconds), 0.05,
-                                                         std::min(request.render.longest, kMaxRenderSamples / out.rate - kMaxTailSeconds)));
+                                                         longestAt(request.render.longest, out.rate)));
         const float tail = static_cast<float>(std::clamp(static_cast<double>(request.render.tailSeconds), 0.0, kMaxTailSeconds));
         const std::size_t holdN = static_cast<std::size_t>(hold * rate);
         std::size_t total = holdN + static_cast<std::size_t>(tail * rate);

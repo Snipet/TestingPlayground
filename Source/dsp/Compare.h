@@ -88,7 +88,8 @@ namespace playground::measure
         bool detail = false;                      // the 32-part envelope
         bool metrics = true;                      // measure both and compare the metrics
         Cancel cancel;                            // both sides' renders cancelled as it says (Measure.h's Session::setCancel,
-                                                  // its time limit over both): then an error that says how far it got
+                                                  // its time limit the call's over both, each side's renders named "A's",
+                                                  // "B's"): then an error that says how far it got
     };
 
     Comparison compare(const CompareSide& a, const CompareSide& b, const CompareOptions& options = {});

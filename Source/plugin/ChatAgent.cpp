@@ -1955,7 +1955,8 @@ namespace playground
     {
         measure::Cancel c;
         c.asked = [this] { return cancel_.load(); };
-        c.seconds = measure::kRenderSeconds;
+        c.seconds = measure::kRenderSeconds;                // the call's, from now: every Session it renders in shares it
+        c.start = std::chrono::steady_clock::now();
         auto said = std::make_shared<std::chrono::steady_clock::time_point>();
         c.progress = [this, what = std::move(doing), said](double done, double length) {
             const auto now = std::chrono::steady_clock::now();
