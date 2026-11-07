@@ -947,6 +947,36 @@ namespace playground
                         break;
                     }
         }
+        // The racing wheel's shift lights (lightsTap): the main module's shiftLights, else Shared's (its tap is named
+        // through the Shared* field: "shared->shiftLights"). A field of the name that no tap reads is a note.
+        {
+            const std::string lights = kLightsField, viaShared = std::string("->") + kLightsField;
+            const auto lightsName = [&](const std::string& n, bool shared) {
+                return shared ? n.size() > viaShared.size() && n.compare(n.size() - viaShared.size(), viaShared.size(), viaShared) == 0
+                              : n == lights;
+            };
+            for (const bool shared : { false, true })
+            {
+                for (const auto& [name, t] : reading.taps)
+                    if (lightsName(name, shared))
+                    {
+                        patch->lights_ = t;
+                        patch->hasLights_ = true;
+                        break;
+                    }
+                if (patch->hasLights_)
+                    break;
+            }
+            if (!patch->hasLights_)
+                for (const PanelField& pf : fields)
+                    if (lightsName(pf.name, false) || lightsName(pf.name, true))
+                    {
+                        r.notes += file + ": note: " + pf.name + " is "
+                                 + (pf.type.rfind("param", 0) == 0 ? std::string("a dial") : "a " + pf.type)
+                                 + ": a racing wheel's shift lights follow a float, int or bool field the program writes\n";
+                        break;
+                    }
+        }
         for (const SourceFile* f : compiled)
             reading.read.push_back(f->name);
         // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do, as FMinus

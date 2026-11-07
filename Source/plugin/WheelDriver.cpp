@@ -122,6 +122,14 @@ namespace playground::wheel
             if (reading_ != nullptr)
                 flush();
         }
+        else if (t == Timer::lights)
+        {
+            if (reading_ != nullptr)
+            {
+                pollLights();
+                t_.arm(Timer::lights, kLightsInterval);
+            }
+        }
         else if (switch_ == Switch::pending)
         {
             endSwitch(Switch::failed);                       // kSwitchSeconds and no G29 came
@@ -147,6 +155,30 @@ namespace playground::wheel
                 take(v);
         t_.listen(d);
         flush();
+        lightsSent_ = 0;                                     // none lit, as the wheel starts
+        pollLights();
+        t_.arm(Timer::lights, kLightsInterval);
+    }
+
+    // The shift lights the program asks for, sent when they differ from what was (none asked: none lit).
+    void Driver::pollLights()
+    {
+        const int want = std::clamp(t_.lights(), 0, kAllLights);
+        if (reading_ == nullptr || want == lightsSent_)
+            return;
+        lightsSent_ = want;                                  // a failure is not tried again until the mask changes
+        if (const int r = t_.report(reading_, lightsReport(want)); r != 0 && problem_.empty())
+        {
+            problem_ = "its shift lights were not set (" + hex(r) + ")";
+            t_.changed();
+        }
+    }
+
+    void Driver::lightsOff()
+    {
+        if (reading_ != nullptr && lightsSent_ != 0)
+            t_.report(reading_, lightsReport(0));
+        lightsSent_ = 0;
     }
 
     // Reading ends: the spring stops (when the wheel is still there to be told), and what was sent goes back to rest.
@@ -157,8 +189,13 @@ namespace playground::wheel
         t_.listen(nullptr);
         problem_.clear();
         if (stillThere)
+        {
             if (const int r = t_.report(reading_, kSpringOff); r != 0)
                 problem_ = "its spring may still be on (" + hex(r) + "): unplug it to stop it";
+            lightsOff();
+        }
+        lightsSent_ = 0;                                     // unplugged: they went with it
+        t_.disarm(Timer::lights);
         reading_ = nullptr;
         t_.disarm(Timer::flush);
         flushArmed_ = false;
@@ -240,10 +277,12 @@ namespace playground::wheel
             t_.listen(nullptr);
             if (const int r = t_.report(reading_, kSpringOff); r != 0)   // the wheel turns freely again
                 problem_ = "its spring may still be on (" + hex(r) + "): unplug it to stop it";
+            lightsOff();
             reading_ = nullptr;
         }
         t_.disarm(Timer::flush);
         t_.disarm(Timer::switched);
+        t_.disarm(Timer::lights);
         flushArmed_ = false;
     }
 }

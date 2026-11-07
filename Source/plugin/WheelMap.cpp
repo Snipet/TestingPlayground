@@ -2,6 +2,7 @@
 #include "plugin/WheelMap.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace playground::wheel
 {
@@ -94,6 +95,22 @@ namespace playground::wheel
         a >>= 1;                                             // "Adjust for non-MOMO wheels"
         const auto k = static_cast<uint8_t>(a / 0xAAAAu), clip = static_cast<uint8_t>(b / 0xAAAAu);
         return { { { 0xfe, 0x0d, k, k, clip, 0x00, 0x00 }, { 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } } };
+    }
+
+    Report lightsReport(int mask) noexcept
+    {
+        return { 0xf8, 0x12, static_cast<uint8_t>(mask & kAllLights), 0x00, 0x00, 0x00, kLightsLast };
+    }
+
+    int lightsMask(float value, bool isMask) noexcept
+    {
+        if (!std::isfinite(value))
+            return 0;
+        if (isMask)
+            return static_cast<int>(static_cast<int64_t>(value) & kAllLights);   // an int's (exact to 2^24)
+        // A share of the five, a hair over so that 0.6 (2.9999998 times 5 in float) lights three.
+        const float lit = std::floor(std::clamp(value, 0.0f, 1.0f) * static_cast<float>(kLights) + 1.0e-4f);
+        return (1 << static_cast<int>(lit)) - 1;
     }
 
     void normalise(int64_t& value, int64_t& min, int64_t& max, uint32_t reportSize) noexcept

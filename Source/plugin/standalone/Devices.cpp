@@ -1,6 +1,9 @@
 // Source/plugin/standalone/Devices.cpp: see Devices.h.
 #include "plugin/standalone/Devices.h"
 
+#include "dsp/Meters.h"
+#include "plugin/Processor.h"
+
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -84,6 +87,17 @@ namespace playground::standalone
                 const double now = juce::Time::getMillisecondCounterHiRes() * 0.001;
                 for (const wheel::Message& m : ccs)               // channel 1's status bytes
                     collector.addMessageToQueue(juce::MidiMessage(m.status, m.number, m.value).withTimeStamp(now));
+            };
+            hooks.lights = [this, last = -1]() mutable {
+                // The program's shiftLights, as the Engine's meters last said (a read that meets a write keeps the
+                // last answer); none while no processor is there (Reset to Default State makes another).
+                auto* processor = dynamic_cast<Processor*>(holder_.processor.get());
+                if (processor == nullptr)
+                    return last = -1;
+                Meters m;
+                if (processor->engine().meters(m))
+                    last = m.lightsKind == Meters::kNoLights ? -1 : wheel::lightsMask(m.lights, m.lightsKind == Meters::kLightsMask);
+                return last;
             };
             juce::PropertySet* settings = holder_.settings.get();
             const bool on = settings != nullptr && settings->getBoolValue(kWheelKey, false);

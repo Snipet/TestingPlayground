@@ -51,6 +51,12 @@ namespace playground
         uint64_t tapTable = 0;                        // the table they were read by: 0 the program's own taps, else a
                                                       // panel's edit's (Engine::setTaps' count; PanelSpec::tapTable)
         float rate = 48000.0f;                        // the sample rate (a spectrum's frequencies)
+        // The program's shiftLights field (Patch::lightsTap), for a racing wheel's shift lights (plugin/WheelMap.h's
+        // lightsMask), read as a display's field is (an instrument's main-module one from its newest sounding voice, 0
+        // while none sounds), whoever reads: its value, and its kind.
+        static constexpr uint8_t kNoLights = 0, kLightsLevel = 1, kLightsMask = 2;   // none; a float or a bool; an int
+        float lights = 0.0f;
+        uint8_t lightsKind = kNoLights;               // kNoLights while none plays, or the program has no such field
         // The player and the host, as of the last block, for a tool that listens (whoever reads; the counts run on
         // from the Engine's making, so a reader takes differences):
         uint64_t samples = 0;                         // processed so far

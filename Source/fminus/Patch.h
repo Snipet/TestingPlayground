@@ -482,6 +482,12 @@ namespace playground
         // since (Engine::setTaps). After a block, on the audio thread.
         float tapOf(const Tap& k, int i) const noexcept;
         const std::vector<Tap>& tapList() const noexcept { return taps_; }   // compile()'s (any thread)
+        // A racing wheel's shift lights (plugin/WheelMap.h's lightsMask; the Standalone's G29): the field kLightsField
+        // the program writes, the main module's, else Shared's through its Shared* field, a float, an int or a bool;
+        // null when it has none (a field of that name of another type, or a dial, is a note). The Engine reads it as it
+        // reads a display's tap (tapOf), each block, into Meters::lights.
+        static constexpr const char* kLightsField = "shiftLights";
+        const Tap* lightsTap() const noexcept { return hasLights_ ? &lights_ : nullptr; }
 
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
@@ -532,6 +538,8 @@ namespace playground
         DialCarry carry_{};
         PanelSpec panel_;
         std::vector<Tap> taps_;                        // its displays' (readPanel's), in order
+        Tap lights_{};                                 // its shiftLights field's (lightsTap), when hasLights_
+        bool hasLights_ = false;
         // The probe table (above, "Probes"): per field, its offset in an instance and an element's size, its elements,
         // the probe fields' offsets in an element, and which of its nodes a probe reads.
         struct ProbeEntry

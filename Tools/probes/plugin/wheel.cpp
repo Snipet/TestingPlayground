@@ -7,6 +7,9 @@
 //             compatibility mode by its bcdDevice (0x1350 under 0xFFF8, 0x8900 under 0xFF00; a G27's 0x1230 is none),
 //             0xC260 its PS4 mode, another vendor none
 //   COMMANDS  hid-lg4ff's bytes: the switch to its own mode, 900 degrees, the spring (moderate and full), the spring off
+//   LIGHTS    the shift lights' report (f8 12, the mask's low five bits, 00 00 00 01) and a program's shiftLights as the
+//             mask: an int's low five bits (-1 all five); a float's floor(5 v) from bit 0 (0 none, 0.2 one, 0.6 three,
+//             0.99 four, 1 and past it all five, below 0 none, NaN none); a bool's 1 all five
 //   FIRST     a fresh map's first flush says the whole state (at rest: steering 64, the rest 0; an LSB of 0 never
 //             follows its MSB), and a second sends nothing
 //   STEERING  16-bit X to 14 bits: full right 127/127, the centre 64 alone (its LSB reset by the MSB), a few steps right
@@ -55,6 +58,13 @@
 //     DENIED    macOS refusing the manager: nothing switched, the card says where to allow it
 //     QUIT      quit() with a G29 read: the spring off and nothing else; after it nothing is sent, switched or read
 //     RESEND    resend() while read: the whole state again; nothing while off
+//     LIGHTS    the shift lights: read with a program that asks none, none sent and the timer kept every
+//               kLightsInterval; a mask asked goes at the timer's next firing, once (asked again: nothing), a change
+//               goes, a program that then asks none (-1) turns them off once; switched off with lights lit: the spring
+//               off, then the lights off; unplugged: nothing sent, and plugged in again none assumed lit; a report that
+//               fails is said on the card, not tried again while the mask holds, and tried when it changes; quit() with
+//               lights lit: the spring off, the lights off, the timer disarmed; a program that never lights them sends
+//               no lights report through any of it
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -70,6 +80,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -130,8 +141,14 @@ namespace
         std::vector<std::string> log;
         int failing = 0;                                     // a report whose first two bytes are `failing`'s fails
         double clock = 100.0;
-        bool armed[2] = { false, false };
+        bool armed[3] = { false, false, false };
         int changes = 0;
+        int asked = -1;                                      // the shift lights the program asks for (lights())
+
+        static const char* timerName(wh::Timer t)
+        {
+            return t == wh::Timer::flush ? "flush" : t == wh::Timer::switched ? "switch" : "lights";
+        }
 
         std::string name(wh::Device d) const { return d == nullptr ? "none" : names.at(d); }
 
@@ -146,13 +163,13 @@ namespace
         {
             armed[static_cast<int>(t)] = true;
             char b[64];
-            std::snprintf(b, sizeof b, "arm %s %.3f", t == wh::Timer::flush ? "flush" : "switch", seconds);
+            std::snprintf(b, sizeof b, "arm %s %.3f", timerName(t), seconds);
             log.emplace_back(b);
         }
         void disarm(wh::Timer t) override
         {
             if (armed[static_cast<int>(t)])
-                log.push_back(std::string("disarm ") + (t == wh::Timer::flush ? "flush" : "switch"));
+                log.push_back(std::string("disarm ") + timerName(t));
             armed[static_cast<int>(t)] = false;
         }
         double now() override { return clock; }
@@ -164,6 +181,7 @@ namespace
         }
         void send(const std::vector<wh::Message>& m) override { log.push_back("send " + text(m)); }
         void changed() override { ++changes; }
+        int lights() override { return asked; }
 
         // The lines since the last look, joined by " | " (the timers' and changed's left out unless asked).
         std::string take(bool timers = false)
@@ -240,6 +258,24 @@ PROBE(plugin, wheel)
     same(P, "commands.spring_full", text(wh::springReports(0xFFFF)[0]), "fe 0d 07 07 ff 00 00");
     same(P, "commands.spring_on", text(wh::springReports(wh::kSpring)[1]), "14 00 00 00 00 00 00");
     same(P, "commands.spring_off", text(wh::kSpringOff), "f5 00 00 00 00 00 00");
+
+    // ---- LIGHTS ------------------------------------------------------------------------------------------------------
+    same(P, "lights.report", text(wh::lightsReport(0x15)), "f8 12 15 00 00 00 01");
+    same(P, "lights.report_low_bits", text(wh::lightsReport(0xFF)), "f8 12 1f 00 00 00 01");
+    same(P, "lights.report_off", text(wh::lightsReport(0)), "f8 12 00 00 00 00 01");
+    P.eq("lights.int_mask", wh::lightsMask(21.0f, true), 21);
+    P.eq("lights.int_low_bits", wh::lightsMask(35.0f, true), 3);
+    P.eq("lights.int_minus_one", wh::lightsMask(-1.0f, true), 31);
+    P.eq("lights.level_none", wh::lightsMask(0.0f, false), 0);
+    P.eq("lights.level_fifth", wh::lightsMask(0.2f, false), 1);
+    P.eq("lights.level_under_a_fifth", wh::lightsMask(0.19f, false), 0);
+    P.eq("lights.level_three", wh::lightsMask(0.6f, false), 7);
+    P.eq("lights.level_four", wh::lightsMask(0.99f, false), 15);
+    P.eq("lights.level_all", wh::lightsMask(1.0f, false), 31);
+    P.eq("lights.level_past", wh::lightsMask(7.5f, false), 31);
+    P.eq("lights.level_below", wh::lightsMask(-0.5f, false), 0);
+    P.eq("lights.level_nan", wh::lightsMask(std::numeric_limits<float>::quiet_NaN(), false), 0);
+    P.eq("lights.bool_all", wh::lightsMask(1.0f, false), 31);
 
     // ---- FIRST, STEERING, PEDALS, GEAR, BUTTONS, HAT, CHANGE -----------------------------------------------------------
     wh::Map map;
@@ -669,11 +705,12 @@ PROBE(plugin, wheel)
         same(P, "driver.switch.still_said", d.status(), "switching to its full mode");
         same(P, "driver.switch.timer_kept", f.take(true), "");
         d.added(g29, wh::Kind::g29);
-        same(P, "driver.switch.back_read", f.take(true), "disarm switch | " + range + " | " + spring + " | listen g29 | " + whole);
+        same(P, "driver.switch.back_read", f.take(true),
+             "disarm switch | " + range + " | " + spring + " | listen g29 | " + whole + " | arm lights 0.025");
         same(P, "driver.switch.done", d.status(), "");
         d.removed(g29);                                              // unplugged and plugged in again: compatibility mode
         d.added(compat2, wh::Kind::compat);
-        same(P, "driver.switch.once_each_on", f.take(true), "listen none | send 16:64");
+        same(P, "driver.switch.once_each_on", f.take(true), "listen none | disarm lights | send 16:64");
         same(P, "driver.switch.once_said", d.status(), "back in its PS3 mode: turn this off and on to switch it");
         d.setOn(false);
         same(P, "driver.switch.off_said", d.status(), "in its PS3 mode: switched to its full mode when on");
@@ -725,9 +762,56 @@ PROBE(plugin, wheel)
         d.resend();
         same(P, "driver.resend.whole", f.take(true), "send 16:96 17:127 49:127 18:0 19:0 20:0 21:0 22:0 23:0 24:0");
 
+        // LIGHTS (still read, from RESEND)
+        {
+            const std::string lights = "g29: f8 12 ";
+            f.fire(d, wh::Timer::lights);                        // the program asks none
+            same(P, "driver.lights.none_asked", f.take(true), "arm lights 0.025");
+            f.asked = 0x07;
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.sent", f.take(true), lights + "07 00 00 00 01 | arm lights 0.025");
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.held_nothing", f.take(), "");
+            f.asked = 0x1F;
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.changed", f.take(), lights + "1f 00 00 00 01");
+            f.asked = -1;
+            f.fire(d, wh::Timer::lights);
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.none_then_off_once", f.take(), lights + "00 00 00 00 01");
+            f.asked = 0x03;
+            f.fire(d, wh::Timer::lights);
+            f.take();
+            d.setOn(false);
+            same(P, "driver.lights.off_spring_then_lights", f.take(true),
+                 "listen none | " + off + " | " + lights + "00 00 00 00 01 | disarm lights | send 16:64 17:0");
+            P.eq("driver.lights.off_disarmed", f.armed[static_cast<int>(wh::Timer::lights)] ? 0 : 1, 1);
+            d.setOn(true);                                       // read again: the lights asked go at once
+            same(P, "driver.lights.on_again_at_once", f.take(true),
+                 range + " | " + spring + " | listen g29 | " + whole + " | " + lights + "03 00 00 00 01 | arm lights 0.025");
+            d.removed(g29);
+            same(P, "driver.lights.unplug_nothing_to_it", f.take(true), "listen none | disarm lights | send 16:64");
+            f.asked = 0;
+            d.added(g29, wh::Kind::g29);                         // none lit assumed: nothing sent for 0
+            same(P, "driver.lights.plugged_none_assumed", f.take(true),
+                 range + " | " + spring + " | listen g29 | " + whole + " | arm lights 0.025");
+            f.failing = 0xf812;
+            f.asked = 0x01;
+            f.fire(d, wh::Timer::lights);
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.failing_once", f.take(), lights + "01 00 00 00 01");
+            same(P, "driver.lights.failing_said", d.status(), "its shift lights were not set (0xe00002bc)");
+            f.failing = 0;
+            f.asked = 0x02;
+            f.fire(d, wh::Timer::lights);
+            same(P, "driver.lights.tried_on_change", f.take(), lights + "02 00 00 00 01");
+        }
+
         // QUIT
         d.quit();
-        same(P, "driver.quit.spring_off_only", f.take(true), "listen none | " + off);
+        same(P, "driver.quit.spring_off_lights_off", f.take(true), "listen none | " + off + " | g29: f8 12 00 00 00 00 01 | disarm lights");
+        f.asked = 0x1F;
+        f.fire(d, wh::Timer::lights);
         d.value(g29, hid(kDesk, kZ, 255, 0, 255, 21));
         f.fire(d, wh::Timer::flush);
         d.added(compat, wh::Kind::compat);

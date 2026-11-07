@@ -66,8 +66,9 @@
 //
 // Meters. Each block the Engine reads the fields the program's displays show (Patch::tap: an effect's instance, an
 // instrument's newest sounding voice, and the module Shared's one, whether a voice sounds or not; once a panel's edit
-// gave the program others, setTaps' table, through Patch::tapOf) and publishes them (Meters) through a seqlock, which the editor reads at its frame
-// rate. While someone reads them (readers(): an editor shown, which lets go while its window is minimised or hidden,
+// gave the program others, setTaps' table, through Patch::tapOf), and so its shiftLights field (Patch::lightsTap: a
+// racing wheel's shift lights, which the Standalone reads), and publishes them (Meters) through a seqlock, which the
+// editor reads at its frame rate. While someone reads them (readers(): an editor shown, which lets go while its window is minimised or hidden,
 // Panel.h; a tool that listens; addReader), it also measures what came in (an effect's input) and what goes out (each
 // side's peak and energy in lanes, Levels.h), and keeps the last kScopeLength samples of each for the scopes; with no
 // reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program

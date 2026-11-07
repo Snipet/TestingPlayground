@@ -981,7 +981,12 @@ namespace playground
         const int tapCount = current_ == nullptr ? 0
                            : edited              ? static_cast<int>(std::min<uint32_t>(tapWant_.count, kMaxDisplays))
                                                  : std::min(current_->taps(), kMaxDisplays);
-        if (current_ != nullptr && tapCount > 0)
+        const Patch::Tap* lights = current_ != nullptr ? current_->lightsTap() : nullptr;
+        frame_.lights = 0.0f;
+        frame_.lightsKind = lights == nullptr                           ? Meters::kNoLights
+                          : lights->type == Patch::Tap::Type::integer ? Meters::kLightsMask
+                                                                      : Meters::kLightsLevel;
+        if (current_ != nullptr && (tapCount > 0 || lights != nullptr))
         {
             int instance = -1;
             if constexpr (kInstrument)
@@ -999,6 +1004,8 @@ namespace playground
             for (int t = 0; t < tapCount; ++t)
                 frame_.taps[t] = edited ? current_->tapOf(tapWant_.taps[static_cast<std::size_t>(t)], instance)
                                         : current_->tap(t, instance);
+            if (lights != nullptr)
+                frame_.lights = current_->tapOf(*lights, instance);   // the wheel's shift lights (Meters::lights)
         }
         // The player and the host (Meters' second part): the transport, the keys held, the voices.
         frame_.samples += static_cast<uint64_t>(n);
