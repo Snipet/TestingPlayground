@@ -409,11 +409,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **Platform code is named for its platform**: `Source/plugin/standalone/*Win.cpp` (Windows' title bar, a JUCE menu bar
   in the window: `NativeWindow.h`'s `menuBarModel()`) and `*None.cpp` (no racing wheel) beside the macOS `.mm` and IOKit
   sources, chosen by CMakeLists.txt's filter; elsewhere `#if defined(_WIN32)` beside the POSIX code (SelfTester's thread
-  priority, Measure's CPU clock (`QueryThreadCycleTime` over the measured TSC rate), Profile's sampler (`SuspendThread`,
-  a high-resolution waitable timer), Shaders' process and temp folder, ChatStore's crypto (CNG: the same FPK1 file),
-  Patch's aligned memory, the projects' folder (`Documents\Funk\<name>`), the chat's (`%APPDATA%\Funk\Playground`)).
-  Include `windows.h` only in a `.cpp` (or `mcp/McpProtocol.h`, which undefines its `near` and `far`), after `NOMINMAX=`
-  and `WIN32_LEAN_AND_MEAN=1` (global definitions, JUCE's own values).
+  priority, Measure's CPU clock (`QueryThreadCycleTime` over the measured TSC rate, `profile::tscPerMs`), Profile's
+  sampler (`SuspendThread`, a high-resolution waitable timer, no stack walked), Shaders' process and temp folder,
+  ChatStore's crypto (CNG: the same FPK1 file), Patch's aligned memory, the projects' folder (`Documents\Funk\<name>`),
+  the chat's (`%APPDATA%\Funk\Playground`)). Include `windows.h` only in a `.cpp` (or `mcp/McpProtocol.h`, which
+  undefines its `near` and `far`), after `NOMINMAX=` and `WIN32_LEAN_AND_MEAN=1` (global definitions, JUCE's own
+  values).
 - **The MCP sockets on Windows** are Winsock's AF_UNIX, reached only through `mcp/McpProtocol.h`'s platform functions
   (`PollFd`, `pollFds`, `recvSome`, `sendSome`, `closeFd`, `acceptOn`, `socketPair`, `peerAlive`, ...): a socket is an
   int on both. What is no socket there (the server's stdin, the sandbox's helper's pipes) is bridged to one by a thread
@@ -732,13 +733,21 @@ place (its `products/<key>.cmake`, and its names in the docs).
   inlined into it (FMinus's `CodeRange::inlined`: a function inlined everywhere has no share of its own), the share
   outside the program's code (on macOS split by `dladdr` into the plugin's own code and the system's libraries, named),
   and the modules' when more than one has a share; `Result::profile` has the numbers. Sampled, not instrumented: a
-  thread of the `Sampler`'s own suspends the thread that renders about every 0.1 ms, reads its program counter and
-  its CPU time (Mach's calls on macOS: no signal handler, nothing process-wide; `SuspendThread` on Windows) and
-  resumes it, each sample weighed by the thread's CPU time since the one before, so a thread put aside weighs nothing;
-  between the suspend and the resume it allocates and locks nothing (the thread it stopped may hold malloc's lock).
-  Off the audio thread only: a Sampler samples the thread that made it, a Session's, never the one that plays.
+  thread of the `Sampler`'s own suspends the thread that renders about every 0.1 ms, reads its registers and its CPU
+  time (Mach's calls on macOS: no signal handler, nothing process-wide; `SuspendThread` on Windows) and resumes it,
+  each sample weighed by the thread's CPU time since the one before (the first since `arm()`, which reads its own), so
+  a thread put aside weighs nothing; between the suspend and the resume it allocates and locks nothing (the thread it
+  stopped may hold malloc's lock). A sample in what the program called out of its code (FMinus's runtime: an FFT, a
+  called math function, the pool; the system's libraries) is charged to the program's function that called it, on
+  macOS by its return address and up to `kWalked` frame records up the stack (each checked to lie between its stack
+  pointer and its stack's top, aligned, before it is read; `profile::chargesCalls()`), said apart (`Share::calls`: "in
+  its calls out of the program's code"); Windows walks no stack, so that time is outside. Only this thread is sampled:
+  a parallel region's work on the pool's other threads is not (`CodeRange::parallel`: the line says so when a function
+  with a region has a share). Off the audio thread only: a Sampler samples the thread that made it, a Session's,
+  never the one that plays.
   Opt-in: without it no Sampler is made, no thread started and no code listed (`profile::made`), and the render's
-  bits are the same either way; `dsp.profile` checks both, and that a deliberately heavy function tops it.
+  bits are the same either way; `dsp.profile` checks both, that a deliberately heavy function tops it, that an FFT's
+  time is its caller's, and the parallel region's note.
 - **Long renders and the cancel** (Measure.h, "How long a render may be"): a request's `longest` bounds its times
   (hold_seconds and the scenario's): `kMaxPlaySeconds` (10 s, the default) for a picture's render (view_sound,
   view_panel's `at`, compare's picture), `kMaxLongSeconds` (300 s) for a call that returns numbers alone
