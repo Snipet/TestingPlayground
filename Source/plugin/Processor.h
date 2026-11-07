@@ -32,6 +32,9 @@
 //     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
 //     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
 //     put back, and a session loaded ends it.
+//   - the presets in turn (EditorPort::presetCycle, stepPreset): the project open's presets, which the top bar steps
+//     through and which are the host's programs (getNumPrograms ...: a VST3's list a fixed kVst3Programs, the rest the
+//     presets themselves) and what MIDI's program change on channel 1 chooses (the synth's). Applied as any preset is.
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -39,8 +42,8 @@
 //   - more than kMaxEventsPerBlock events in a block: the block is played in parts, cut at the event that does not
 //     fit, so no event is lost;
 //   - MIDI: note-on (at velocity 0 a note-off), note-off, the controllers All Sound Off (120) and All Notes Off (123),
-//     both an allNotesOff event, the mod wheel (1) and the sustain pedal (64), pitch bend and channel pressure; the
-//     rest is ignored. The host's transport (tempo, position, signature, playing) goes to the Engine once a block,
+//     both an allNotesOff event, the mod wheel (1) and the sustain pedal (64), pitch bend and channel pressure, and a
+//     program change on channel 1 (a preset of the project open, applied by poll()); the rest is ignored. The host's transport (tempo, position, signature, playing) goes to the Engine once a block,
 //     for the program's Host block (host.fm). The panel's keyboard's notes (playNote) come
 //     through a lock-free queue and play at the start of the next block, before its MIDI;
 //   - bypass (processBlockBypassed; there is no bypass parameter): each edge is a 20 ms smootherstep crossfade between
@@ -261,6 +264,10 @@ namespace playground
         bool savePreset(const std::string& preset, std::string& why) override;
         bool applyPreset(const std::string& project, const std::string& preset, std::string& why) override;
         bool deletePreset(const std::string& project, const std::string& preset, std::string& why) override;
+        bool setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                               std::string& why) override;
+        PresetCycle presetCycle() const override;
+        bool stepPreset(int step, std::string& why) override;
         ProjectInfo projectInfo(const std::string& project) const override;
         bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) override;
         bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) override;
@@ -370,6 +377,38 @@ namespace playground
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
+        // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
+        // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
+        // goes to reader_), read again by poll() every kPresetsPollMs and at once after this processor changed them
+        // or the project open (presetsStale_), and by a state load. `hostCurrent_` is the program the host is told
+        // (getCurrentProgram): the preset applied or matched last, kept while the dials match none, so a host that
+        // sets the program it saved changes nothing. A program asked off the message thread (a host's
+        // setCurrentProgram) or by MIDI (the audio thread: a program change on channel 1, its count in the top bits,
+        // the synth's) is applied by poll().
+        static constexpr double kPresetsPollMs = 500.0;
+        static constexpr int kVst3Programs = 128;                // a VST3 host's list: fixed when the plugin is made
+        mutable std::mutex presetsMutex_;
+        std::string heldProject_;
+        std::vector<projectstore::PresetSummary> heldPresets_;
+        uint64_t heldNames_ = 0;                                 // a hash of the project's and the presets' names
+        uint64_t heldRead_ = 0;                                  // reader_'s revision when they were read
+        double heldAt_ = -1.0e12;                                // ms (poll's clock)
+        std::atomic<bool> presetsStale_{ true };
+        std::atomic<int> hostCurrent_{ 0 };
+        int hostTold_ = -1;                                      // the program the host was last told of (poll)
+        uint64_t namesTold_ = 0;                                 // ... and the names then
+        std::atomic<int> hostProgramAsked_{ -1 };
+        std::atomic<uint32_t> midiProgram_{ 0 };                 // (count << 8) | program, written by the audio thread
+        uint32_t midiProgramSeen_ = 0;
+        void refreshPresets(bool force);
+        bool choosePreset(int index, const char* who);           // a program by number (the host's, MIDI's)
+        int currentPreset(const std::vector<projectstore::PresetSummary>& list, bool& applied) const;   // any thread
+        // How `dials` (a version's, a preset's: by name) stand against the dials now: how many of them the program
+        // has, and whether every one of those is where it is (within a ten-thousandth of its range).
+        std::pair<int, bool> dialsAgainst(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                          const std::vector<projectstore::Dial>& dials) const;
+        bool applyPresetAs(const std::string& project, const std::string& preset, Journal::Who who, std::string& why);
+        int programCount() const;
         // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
         std::vector<projectstore::Dial> projectDials_;
         uint64_t dialsRequest_ = 0;

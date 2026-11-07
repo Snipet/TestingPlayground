@@ -90,7 +90,14 @@
 //   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
 //                     opened and compiled
-//   deletePreset()    a preset deleted
+//   deletePreset()    a preset deleted; setPresetCategory() its category alone ("" for none), which the top bar's
+//                     list groups by (a factory project's refused)
+//   presetCycle()     the project open's presets in turn (PresetCycle below): the one applied (edited or not) or the
+//                     one the dials match, by its index; the list read from the store's cache only, never a file
+//                     whole, so it is cheap at every frame
+//   stepPreset()      the next preset (step +1) or the one before (-1) of the project open applied, wrapping at the
+//                     ends; from none, the first or the last. Its dials glide there as any dial change does; changes
+//                     to the one applied are not kept (save it first), as when the browser applies another
 //   projectInfo()     a project's description, author, category, tags and genres; setProjectInfo() keeps them (tidied)
 //   setProjectCategory() its category alone ("" for none: Uncategorised), as PROJECTS sets it (a menu, a drag, typed)
 //   projectsView()    how PROJECTS shows them (ProjectsView): the projects starred, the groups folded, the search, the
@@ -316,7 +323,21 @@ namespace playground
         std::string name;
         std::string when;
         int from = 0;                            // the version it was saved with
+        std::string category = {};               // "" for none: the top bar's list groups by it (editor/PresetList.h)
         friend bool operator==(const PresetEntry&, const PresetEntry&) = default;
+    };
+
+    // The open project's presets in turn (presetCycle()): what the top bar's arrows step through and its list shows,
+    // what [ and ] step, what MIDI's program change and the host's programs choose by number.
+    struct PresetCycle
+    {
+        std::string project;                     // the project open ("" for none: nothing to cycle)
+        std::vector<PresetEntry> presets;        // its presets, by name, case aside (a number is an index here)
+        int current = -1;                        // the preset applied (project().preset), else the first whose every
+                                                 // dial the program has is where the dials are now; -1: none
+        bool applied = false;                    // current is the preset applied, not a match
+        bool edited = false;                     // ... and a dial moved since (the modified dot)
+        friend bool operator==(const PresetCycle&, const PresetCycle&) = default;
     };
 
     struct ProjectState
@@ -520,6 +541,10 @@ namespace playground
         virtual bool savePreset(const std::string& preset, std::string& why) = 0;
         virtual bool applyPreset(const std::string& project, const std::string& preset, std::string& why) = 0;
         virtual bool deletePreset(const std::string& project, const std::string& preset, std::string& why) = 0;
+        virtual bool setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                                       std::string& why) = 0;
+        virtual PresetCycle presetCycle() const = 0;
+        virtual bool stepPreset(int step, std::string& why) = 0;
         virtual ProjectInfo projectInfo(const std::string& project) const = 0;
         virtual bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) = 0;
         virtual bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) = 0;

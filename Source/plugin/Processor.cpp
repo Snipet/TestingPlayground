@@ -492,6 +492,12 @@ namespace playground
             uiNoteTail_.store(tail, std::memory_order_release);
             for (const juce::MidiMessageMetadata m : midi)
             {
+                if (m.numBytes >= 2 && m.data[0] == 0xc0)        // a program change on channel 1: poll() applies it
+                {
+                    const uint32_t before = midiProgram_.load(std::memory_order_relaxed);
+                    midiProgram_.store((((before >> 8) + 1u) << 8) | (m.data[1] & 0x7fu), std::memory_order_release);
+                    continue;
+                }
                 Event e;
                 if (!toEvent(m, e) || (bypassed && e.kind == EventKind::noteOn))
                     continue;
@@ -914,10 +920,29 @@ namespace playground
         return playground::createEditor(*this);
     }
 
-    int Processor::getNumPrograms() { return 1; }
-    int Processor::getCurrentProgram() { return 0; }
-    void Processor::setCurrentProgram(int) {}
-    const juce::String Processor::getProgramName(int) { return {}; }
+    // The host's programs: the project open's presets (refreshPresets keeps them; never a file read here).
+    int Processor::getNumPrograms() { return programCount(); }
+    int Processor::getCurrentProgram() { return std::clamp(hostCurrent_.load(), 0, programCount() - 1); }
+
+    void Processor::setCurrentProgram(int index)
+    {
+        // A host may ask on another thread: the message thread applies it (poll), as it applies every preset.
+        if (juce::MessageManager::existsAndIsCurrentThread())
+            (void)choosePreset(index, "the host");
+        else
+            hostProgramAsked_.store(index);
+    }
+
+    const juce::String Processor::getProgramName(int index)
+    {
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        if (index >= 0 && index < static_cast<int>(heldPresets_.size()))
+            return juce::String::fromUTF8(heldPresets_[static_cast<std::size_t>(index)].name.c_str());
+        if (heldPresets_.empty() && index == 0)
+            return heldProject_.empty() ? "(no project open)" : "(no presets)";
+        return "-";
+    }
+
     void Processor::changeProgramName(int, const juce::String&) {}
 
     Control Processor::control(int c) const
@@ -1246,6 +1271,32 @@ namespace playground
             {
                 abDials_.clear();
                 abDialsRequest_ = 0;
+            }
+        }
+        // The presets in turn: a program MIDI or the host asked for, the list read again, the host told of a change.
+        if constexpr (product::kIsInstrument)
+            if (const uint32_t m = midiProgram_.load(std::memory_order_acquire); (m >> 8) != (midiProgramSeen_ >> 8))
+            {
+                midiProgramSeen_ = m;
+                (void)choosePreset(static_cast<int>(m & 0x7fu), "MIDI's program change");
+            }
+        if (const int asked = hostProgramAsked_.exchange(-1); asked >= 0)
+            (void)choosePreset(asked, "the host");
+        refreshPresets(false);
+        {
+            const int now = hostCurrent_.load();
+            uint64_t names = 0;
+            {
+                const std::lock_guard<std::mutex> lock(presetsMutex_);
+                names = heldNames_;
+            }
+            if (now != hostTold_ || names != namesTold_)
+            {
+                const bool first = hostTold_ < 0;
+                hostTold_ = now;
+                namesTold_ = names;
+                if (!first)
+                    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withProgramChanged(true));
             }
         }
         abMatched();                                             // the A/B's loudness, once measured
@@ -1667,6 +1718,7 @@ namespace playground
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
         abStateLoaded_.store(std::max<uint64_t>(1, s.request));
+        refreshPresets(true);                                    // the session's project's, its preset the host's program
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -1853,7 +1905,7 @@ namespace playground
         std::vector<PresetEntry> out;
         if (const auto ps = projectstore::presetsCached(project, unread))
             for (const projectstore::PresetSummary& pr : *ps)
-                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from, pr.category });
         if (!unread.empty())
             reader_->request(unread);
         return out;
@@ -1902,20 +1954,30 @@ namespace playground
         }
         // The dials against the ones the version or the preset set (not while its compile is on its way).
         if (dialsRequest_ == 0)
-            for (int c = 0; c < kMaxControls && !st.dialsEdited; ++c)
-            {
-                const Control& k = cs[static_cast<std::size_t>(c)];
-                if (!k.used)
-                    continue;
-                const auto it = std::find_if(base.begin(), base.end(), [&](const projectstore::Dial& d) { return d.name == k.name; });
-                if (it == base.end())
-                    continue;
-                const float norm = raw_[static_cast<std::size_t>(c)]->load();
-                const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
-                const float saved = projectstore::valueOf(*it, k, options[static_cast<std::size_t>(c)]);
-                st.dialsEdited = std::fabs(plain - saved) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min));
-            }
+            st.dialsEdited = !dialsAgainst(cs, options, base).second;
         return st;
+    }
+
+    std::pair<int, bool> Processor::dialsAgainst(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                                 const std::vector<projectstore::Dial>& dials) const
+    {
+        int found = 0;
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const Control& k = cs[static_cast<std::size_t>(c)];
+            if (!k.used)
+                continue;
+            const auto it = std::find_if(dials.begin(), dials.end(), [&](const projectstore::Dial& d) { return d.name == k.name; });
+            if (it == dials.end())
+                continue;
+            ++found;
+            const float norm = raw_[static_cast<std::size_t>(c)]->load();
+            const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
+            const float saved = projectstore::valueOf(*it, k, options[static_cast<std::size_t>(c)]);
+            if (std::fabs(plain - saved) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min)))
+                return { found, false };
+        }
+        return { found, true };
     }
 
     std::vector<VersionEntry> Processor::versions(const std::string& project) const
@@ -1932,7 +1994,7 @@ namespace playground
         std::vector<PresetEntry> out;
         if (const auto ps = projectstore::presetsOf(project))   // its file read only when it changed
             for (const projectstore::PresetSummary& pr : *ps)
-                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from, pr.category });
         return out;
     }
 
@@ -2080,6 +2142,7 @@ namespace playground
         if (!openVersion(*p, *v, why))
             return false;
         journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        refreshPresets(true);
         return true;
     }
 
@@ -2111,6 +2174,7 @@ namespace playground
         userRun_.store(id);
         journal_.dialsNote(Journal::Who::user,
                            "started afresh from " + what + " (its files only, every dial at its default)");
+        refreshPresets(true);
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
@@ -2154,6 +2218,7 @@ namespace playground
         projectLatest_ = r->number;
         projectFiles_ = files;
         baseDials_ = dials;
+        presetsStale_.store(true);                               // the next poll reads its presets (refreshPresets)
         return true;
     }
 
@@ -2209,6 +2274,7 @@ namespace playground
                 if (b.name == d.name && b.value != d.value)
                     projectPreset_.clear();
         baseDials_ = dials;
+        presetsStale_.store(true);
         return true;
     }
 
@@ -2224,6 +2290,7 @@ namespace playground
             projectPreset_.clear();
             baseDials_.clear();
         }
+        presetsStale_.store(true);
         return true;
     }
 
@@ -2266,13 +2333,21 @@ namespace playground
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
         journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        projectPreset_ = projectstore::tidyName(preset);
-        baseDials_ = dials;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            projectPreset_ = projectstore::tidyName(preset);
+            baseDials_ = dials;
+        }
+        refreshPresets(true);
         return true;
     }
 
     bool Processor::applyPreset(const std::string& project, const std::string& preset, std::string& why)
+    {
+        return applyPresetAs(project, preset, Journal::Who::user, why);
+    }
+
+    bool Processor::applyPresetAs(const std::string& project, const std::string& preset, Journal::Who who, std::string& why)
     {
         const std::optional<projectstore::Project> p = projectstore::load(project, &why);
         if (!p)
@@ -2304,20 +2379,207 @@ namespace playground
         else
             setDialsByName(cs, options, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.dialsNote(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        projectPreset_ = pr->name;
-        baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
+        journal_.dialsNote(who, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            projectPreset_ = pr->name;
+            baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
+        }
+        refreshPresets(true);
         return true;
+    }
+
+    bool Processor::setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                                      std::string& why)
+    {
+        if (!projectstore::setPresetCategory(project, preset, category, &why))
+            return false;
+        refreshPresets(true);
+        return true;
+    }
+
+    // ---- the presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change) -------------------
+    // The preset applied (by name, in `list`), else the first whose dials (at least one the program has) are all where
+    // the dials are; -1: none. Any thread: the dials' values are atomics, the rest under programMutex_.
+    int Processor::currentPreset(const std::vector<projectstore::PresetSummary>& list, bool& applied) const
+    {
+        applied = false;
+        Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
+        std::string preset;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            preset = projectPreset_;
+            if (preset.empty())
+            {
+                cs = controls_;
+                options = panel_.options;
+            }
+        }
+        if (!preset.empty())
+        {
+            for (std::size_t i = 0; i < list.size(); ++i)
+                if (projectstore::sameName(list[i].name, preset))
+                {
+                    applied = true;
+                    return static_cast<int>(i);
+                }
+            return -1;                                           // deleted since: none, not another that matches
+        }
+        for (std::size_t i = 0; i < list.size(); ++i)
+            if (const auto [found, all] = dialsAgainst(cs, options, list[i].dials); found > 0 && all)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    // The project open's presets from the store's cache (never a file read whole: one it lacks goes to the Reader, and
+    // the next read has it), when `force` or after kPresetsPollMs; and the program the host is told.
+    void Processor::refreshPresets(bool force)
+    {
+        std::string project;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            project = projectName_;
+        }
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        bool read = false;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            read = force || presetsStale_.exchange(false) || heldProject_ != project || now - heldAt_ >= kPresetsPollMs
+                || reader_->revision() != heldRead_;
+            if (read)
+            {
+                heldAt_ = now;
+                heldRead_ = reader_->revision();
+            }
+        }
+        if (read)
+        {
+            std::vector<projectstore::PresetSummary> list;
+            if (!project.empty())
+            {
+                std::vector<std::string> unread;
+                if (auto ps = projectstore::presetsCached(project, unread))
+                    list = std::move(*ps);
+                if (!unread.empty())
+                    reader_->request(unread);
+            }
+            uint64_t names = 1469598103934665603ull;             // FNV-1a over the project's and the presets' names
+            const auto mix = [&names](const std::string& t) {
+                for (const char ch : t)
+                    names = (names ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+                names = (names ^ 0xffu) * 1099511628211ull;
+            };
+            mix(project);
+            for (const projectstore::PresetSummary& pr : list)
+                mix(pr.name);
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            heldProject_ = project;
+            heldPresets_ = std::move(list);
+            heldNames_ = names;
+        }
+        std::vector<projectstore::PresetSummary> list;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            list = heldPresets_;
+        }
+        bool applied = false;
+        if (const int at = currentPreset(list, applied); at >= 0 && at < programCount())
+            hostCurrent_.store(at);                              // kept while the dials match none
+        else if (list.empty())
+            hostCurrent_.store(0);
+    }
+
+    PresetCycle Processor::presetCycle() const
+    {
+        PresetCycle out;
+        std::vector<projectstore::PresetSummary> list;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            out.project = heldProject_;
+            list = heldPresets_;
+        }
+        if (out.project.empty())
+            return out;
+        for (const projectstore::PresetSummary& pr : list)
+            out.presets.push_back({ pr.name, {}, pr.from, pr.category });
+        out.current = currentPreset(list, out.applied);
+        if (out.applied)
+        {
+            Controls cs;
+            std::array<std::vector<std::string>, kMaxControls> options;
+            std::vector<projectstore::Dial> base;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                cs = controls_;
+                options = panel_.options;
+                base = baseDials_;
+            }
+            out.edited = dialsRequest_ == 0 && !dialsAgainst(cs, options, base).second;
+        }
+        return out;
+    }
+
+    bool Processor::stepPreset(int step, std::string& why)
+    {
+        refreshPresets(false);
+        const PresetCycle c = presetCycle();
+        if (c.project.empty())
+        {
+            why = "open a project first: the arrows step through its presets";
+            return false;
+        }
+        const int n = static_cast<int>(c.presets.size());
+        if (n == 0)
+        {
+            why = "\"" + ownName(c.project) + "\" has no presets yet";
+            return false;
+        }
+        const int at = c.current < 0 ? (step >= 0 ? 0 : n - 1) : ((c.current + step) % n + n) % n;
+        return applyPreset(c.project, c.presets[static_cast<std::size_t>(at)].name, why);
+    }
+
+    // A program by number (the host's list, MIDI's program change): the project open's preset at that index.
+    bool Processor::choosePreset(int index, const char* who)
+    {
+        refreshPresets(false);
+        std::string project, name;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            if (index < 0 || index >= static_cast<int>(heldPresets_.size()) || heldProject_.empty())
+                return false;
+            project = heldProject_;
+            name = heldPresets_[static_cast<std::size_t>(index)].name;
+        }
+        std::string why;
+        if (!applyPresetAs(project, name, Journal::Who::host, why))
+        {
+            journal_.note(Journal::Who::host, std::string(who) + " chose preset " + std::to_string(index + 1) + ", not applied: " + why);
+            return false;
+        }
+        return true;
+    }
+
+    // The host's list: the project open's presets. A VST3 host reads how many when the plugin is made and never again
+    // (JUCE's program parameter), so it is told kVst3Programs, those past the presets named "-".
+    int Processor::programCount() const
+    {
+        if (wrapperType == wrapperType_VST3)
+            return kVst3Programs;
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        return std::max(1, static_cast<int>(heldPresets_.size()));
     }
 
     bool Processor::deletePreset(const std::string& project, const std::string& preset, std::string& why)
     {
         if (!projectstore::removePreset(project, preset, &why))
             return false;
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
-            projectPreset_.clear();
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
+                projectPreset_.clear();
+        }
+        refreshPresets(true);
         return true;
     }
 
