@@ -8,7 +8,9 @@
 //   gui.dump.edited.png  after the EXAMPLES menu: another example, running, its dials
 //   gui.dump.files.png   two files, the second shown, after a run whose error is in it: its tab's mark, the problem
 //   gui.dump.dials.png   a program of sixteen dials, in two rows of eight; .dials.small.png at the least size;
-//                        .dials.most.png the most (32), .dials.most.small.png at the least size
+//                        .dials.most.png the host's most (32), .dials.most.small.png at the least size; .dials.panel.png
+//                        the most (64); at the least size .dials.panel.least.png folded into the bar under the code,
+//                        .dials.panel.shown.png the bar's SHOW, .dials.panel.view.png the PANEL view
 //   gui.dump.panel.png   the same dials in the sections its #pragma panel lines ask for; .panel.paper.png in PAPER,
 //                        .panel.small.png at the least size
 //   gui.dump.example.png the program Claude's instructions build from the library (ChatAgent::promptExample)
@@ -56,8 +58,14 @@
 //   ROWS      a program of sixteen dials shows them all, in order, in rows: two of eight at the default size and at
 //             the least, one of sixteen on a wide panel, each row's dials evenly spaced, none overlapping another,
 //             all of them in the left column (left of the chat's card) and under the problems list; the editor
-//             gives up the second row's height. The most, 32: full size in three or four rows at the default size,
-//             all small at the least, the same checks. Back to a program of fewer dials, one row again, and the
+//             gives up the second row's height. The host's most, 32: full size in three or four rows at the default
+//             size, all small at the least, the same checks. The most, 64 (the host's 32 and the panel's own 32:
+//             Controls.h): each shown, in order, the same checks at the default size. At the least size (eight small
+//             rows would cover the editor, the tabs and the actions) folded into the bar under the code, the editor
+//             keeping 120 px at least and the bar inside the card; SHOW shows the last rows, each under the editor
+//             (80 px at least) and the problems list and over the bar, the first dial hidden and the bar saying how
+//             many are shown; HIDE folds them again; the PANEL view has all 64 in eight rows, the same checks, each
+//             under the actions and inside the card. Back to a program of fewer dials, one row again, and the
 //             editor's height back
 //   PANEL     the sixteen dials in five sections (#pragma panel): two rows of frames, as the row line asks, their
 //             titles in order; each dial inside its section's frame, in its order; no frame over another, all in the
@@ -174,11 +182,16 @@ namespace
     // A program of this plugin's kind with the first `count` of these parameters and no panel line.
     std::string dialsProgram(int count)
     {
-        static_assert(pg::kMaxControls == 32, "the names below");
+        static_assert(pg::kMaxControls == 64, "the names below");
         const char* const names[] = { "shape",   "detune",   "sub",     "noise",  "cutoff", "resonance", "envamount", "keytrack",
                                       "lforate", "lfodepth", "attack",  "decay",  "sustain", "release",  "glide",     "level",
                                       "shape2",  "detune2",  "sub2",    "noise2", "cutoff2", "drive",    "fenvattack", "fenvdecay",
-                                      "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix" };
+                                      "lfo2rate", "lfo2depth", "pan",   "spread", "chorus", "delaytime", "feedback",  "mix",
+                                      // the panel's own (Controls.h's isPanelDial)
+                                      "shape3",  "detune3",  "sub3",    "noise3", "cutoff3", "drive3",   "fenv3",     "keytrack3",
+                                      "lfo3rate", "lfo3depth", "attack3", "decay3", "sustain3", "release3", "glide3",   "level3",
+                                      "eqlow",   "eqmid",    "eqhigh",  "width",  "reverb", "size",      "damping",   "predelay",
+                                      "crush",   "rate",     "bits",    "tilt",   "tune",   "octave",    "bend",      "trim" };
         std::string params;
         for (int k = 0; k < count && k < pg::kMaxControls; ++k)
             params += std::string("    param float ") + names[k] + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
@@ -713,7 +726,7 @@ PROBE(gui, dump)
         for (int c = 0; c < pg::kMaxControls; ++c)
         {
             const pg::Control& k = now.controls[static_cast<std::size_t>(c)];
-            const float want = k.used ? pg::normOf(k, k.def) : processor.getParameters()[c]->getDefaultValue();
+            const float want = k.used ? pg::normOf(k, k.def) : processor.ports()[static_cast<std::size_t>(c)]->default01();
             moved += std::fabs(processor.ports()[static_cast<std::size_t>(c)]->value01() - want) > 1e-6f ? 1 : 0;
         }
         P.eq("examples.dials_at_defaults", moved, 0);
@@ -878,13 +891,13 @@ PROBE(gui, dump)
         checkRows(P, "rows.wide", panel, shownDials(panel), 1);
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
-        // The most, 32: full-size rows at the default size; at the least size every one small, still in rows.
+        // The host's most, 32: full-size rows at the default size; at the least size every one small, still in rows.
         editor.selectAll();
-        editor.insert(dialsProgram(pg::kMaxControls));
+        editor.insert(dialsProgram(pg::kHostControls));
         host.keys("cmd+return");
         settleRun(processor, host);
         dials = shownDials(panel);
-        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
+        P.eq("rows.most_shown", static_cast<int64_t>(dials.size()), pg::kHostControls);
         std::printf("32 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
         P.eq("rows.most_full_size", panel.dialsLayout().allSmall ? 0 : 1, 1);
         checkRows(P, "rows.most", panel, dials, panel.dialRows());
@@ -898,6 +911,83 @@ PROBE(gui, dump)
         writePng(P, host, "gui.dump.dials.most.small.png", "rows.most_least");
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
+        // The most, 64: the panel's own 32 after the host's.
+        editor.selectAll();
+        editor.insert(dialsProgram(pg::kMaxControls));
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        dials = shownDials(panel);
+        std::printf("64 dials: %d rows, %s\n", panel.dialRows(), panel.dialsLayout().allSmall ? "small" : "full size");
+        P.eq("rows.panel_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
+        checkRows(P, "rows.panel", panel, dials, panel.dialRows(), panel.dialsLayout().allSmall);
+        writePng(P, host, "gui.dump.dials.panel.png", "rows.panel");
+        {
+            // At the least size eight small rows would cover the editor, the tabs and the actions: under the code they
+            // fold into the bar, the editor keeping its room.
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            host.settle();
+            const funkgui::Rect card = panel.programCard();
+            std::printf("64 dials at the least size: %d rows, folded %d, the editor %.0f px tall\n", panel.dialRows(),
+                        panel.dialsFolded() ? 1 : 0, static_cast<double>(panel.editorArea().h));
+            P.eq("rows.panel_least_folded", panel.dialsBarShown() && panel.dialsFolded() && shownDials(panel).empty() ? 1 : 0, 1);
+            P.ge("rows.panel_least_editor", static_cast<double>(panel.editorArea().h), 120.0);
+            const funkgui::Point bar = panel.centreOfDialsBar();
+            P.eq("rows.panel_least_bar_inside", bar.y + 12.0f <= card.bottom() - 10.0f + 0.5f && bar.y - 12.0f > panel.editorArea().bottom() ? 1 : 0, 1);
+            writePng(P, host, "gui.dump.dials.panel.least.png", "rows.panel_least");
+            // SHOW: the rows under the editor's 80 px floor and the problems list, over the bar; the bar says how many.
+            host.click(bar.x, bar.y);
+            host.settle();
+            dials = shownDials(panel);
+            const funkgui::Rect ed = panel.editorArea();
+            const float listBottom = panel.centreOfProblem(3).y + 7.5f;
+            bool under = !dials.empty();
+            for (const funkgui::Point& d : dials)
+            {
+                const float left = d.x - 27.0f, top = d.y - 20.0f;          // a small knob's cell: 54 x 52
+                under = under && top >= ed.bottom() && top >= listBottom && top + 52.0f <= bar.y - 12.0f && left >= card.x
+                     && left + 54.0f <= panel.chatCard().x;
+            }
+            std::printf("64 dials shown at the least size: %zu shown, the editor %.0f px tall\n", dials.size(), static_cast<double>(ed.h));
+            P.in("rows.panel_least_shown", static_cast<double>(dials.size()), 8.0, 56.0);
+            P.eq("rows.panel_least_under", under ? 1 : 0, 1);
+            P.ge("rows.panel_least_shown_editor", static_cast<double>(ed.h), 80.0);
+            P.eq("rows.panel_least_last_shown", panel.centreOfDial(pg::kMaxControls - 1) && !panel.centreOfDial(0) ? 1 : 0, 1);
+            {
+                std::vector<funkgui::A11yItem> items;
+                panel.accessibility(items);
+                bool said = false;
+                for (const funkgui::A11yItem& it : items)
+                    said = said || (it.bounds.contains(bar) && it.title == "Hide the dials"
+                                    && it.value == "64 dials, " + std::to_string(dials.size()) + " shown");
+                P.eq("rows.panel_least_bar_says", said ? 1 : 0, 1);
+            }
+            writePng(P, host, "gui.dump.dials.panel.shown.png", "rows.panel_least_shown");
+            host.click(bar.x, bar.y);
+            host.settle();
+            P.eq("rows.panel_least_hides", panel.dialsFolded() && shownDials(panel).empty() ? 1 : 0, 1);
+            // The PANEL view has every one: eight small rows closer together, inside the column under the actions.
+            const funkgui::Point toPanel = panel.centreOfView(true);
+            host.click(toPanel.x, toPanel.y);
+            host.settle();
+            dials = shownDials(panel);
+            std::printf("64 dials in the PANEL view at the least size: %d rows, %s\n", panel.dialRows(),
+                        panel.dialsLayout().allSmall ? "small" : "full size");
+            P.eq("rows.panel_view_shown", static_cast<int64_t>(dials.size()), pg::kMaxControls);
+            checkRows(P, "rows.panel_view", panel, dials, panel.dialRows(), true);
+            const float actions = panel.centreOfRun().y + 13.0f;
+            bool inCard = !dials.empty();
+            for (const funkgui::Point& d : dials)
+                inCard = inCard && d.y - 20.0f >= actions && d.y - 20.0f + 52.0f <= card.bottom() - 10.0f + 0.01f;
+            P.eq("rows.panel_view_in_card", panel.panelView() && !panel.dialsBarShown() && inCard ? 1 : 0, 1);
+            writePng(P, host, "gui.dump.dials.panel.view.png", "rows.panel_view");
+            const funkgui::Point toCode = panel.centreOfView(false);
+            host.click(toCode.x, toCode.y);
+            host.settle();
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            host.settle();
+            P.eq("rows.panel_back", !panel.panelView() && !panel.dialsBarShown()
+                                        && static_cast<int64_t>(shownDials(panel).size()) == pg::kMaxControls ? 1 : 0, 1);
+        }
         // Back to three dials: one row, and the editor's height back.
         editor.selectAll();
         editor.insert(dialsProgram(3));

@@ -5,7 +5,8 @@
 //   - its size and its first sample, counted from the recording's start (a block of 0 samples too);
 //   - the events the Engine got (an instrument's MIDI after toEvent, and the panel keyboard's, at their samples; a
 //     note-on dropped while bypassed is not among them, since the Engine never got it);
-//   - the dials' 32 normalised values as the Engine got them (setControls, once a block);
+//   - the dials' 64 normalised values as the Engine got them (setControls, once a block: the host's 32 and the panel's
+//     own, Controls.h);
 //   - the Engine's mod wheel, pitch wheel, pressure and pedal at its start (its Host block: a replay from there starts
 //     on them), and a racing wheel's control changes as they stood (Engine::wheelCcs);
 //   - the host's transport as the Engine got it (setTransport), and the bypass;

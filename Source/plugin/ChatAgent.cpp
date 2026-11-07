@@ -328,7 +328,7 @@ namespace playground
                     range += ")";
                 }
                 out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
-                     + ", now " + said(host.chatDialValue(c)) + "\n";
+                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "") + "\n";
             }
             return out.empty() ? "none\n" : out;
         }
@@ -3450,7 +3450,7 @@ namespace playground
             "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
             "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
             "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
-            ".gui file or a program's folder the user named, its .fm, .gui and .sc files, read only, 256 KB a file), or text "
+            ".gui file or a program's folder the user named, its .fm, .gui, .sc and .sh files, read only, 256 KB a file), or text "
             "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
             "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
             "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "
@@ -3462,7 +3462,8 @@ namespace playground
             "none), and dials to change. It answers with the plugin's notes on the .gui, by line, and a layout report: the "
             "natural size against the area (render's last size; after open the PANEL view at the plugin's default size, "
             "853 x 612), a line an element (its line in the file, kind and name, x,y wxh in the area), then overlaps, what "
-            "sticks out of its container, text cut, what scrolls, controls that name no dial and dials no control names; "
+            "sticks out of its container, text cut, what scrolls and what is out of view until scrolled (run_program "
+            "makes the same check), controls that name no dial and dials no control names; "
             "detail \"high\" lists every line.\n"
             "- render: a PNG of the panel as the plugin's PANEL view draws it (the same layout, controls, looks, fonts and "
             "shaders, drawn by the GPU), width x height px (the last render's, 853 x 612 after open; 160 to 2400), theme "
@@ -3475,7 +3476,8 @@ namespace playground
             "fit, unless detail \"high\".\n"
             "- apply: only when the user asks for the design in their plugin, with sandbox (its number: needed). It writes "
             "the .gui into the open plugin's program (its own .gui file when it has one, else panel.gui) and runs it "
-            "there, which the user sees at once; it says what changed and what the run said. With no plugin open it gives "
+            "there, which the user sees at once (as the program plays, when the .gui is all that changed); it says what "
+            "changed and what the run said. With no plugin open it gives "
             "the .gui's text back: tell the user to open the plugin and ask again, or to paste it in place of the "
             "program's .gui (a new tab panel.gui when it has none).\n"
             "- close: when you are done. Claude Desktop's conversations share the sandbox's server: each open makes a "
@@ -4258,6 +4260,7 @@ namespace playground
             std::array<float, kMaxControls> was{};
             for (int c = 0; c < kMaxControls; ++c)
                 was[static_cast<std::size_t>(c)] = before[static_cast<std::size_t>(c)].used ? host_.chatDialValue(c) : 0.0f;
+            const Sources ran = host_.chatRunning();       // what played: a panel's edit names what it changed
             const CompileStatus s = host_.chatRun(d.files);
             if (s.ok)
             {
@@ -4265,9 +4268,27 @@ namespace playground
                 for (const Control& c : s.controls)
                     dials += c.used ? 1 : 0;
                 const Reported told = reported(s.notes);
-                note("ran it: compiled in " + number(std::round(s.ms)) + " ms, " + std::to_string(dials) + " dial"
-                     + (dials == 1 ? "" : "s")
-                     + (told.count > 0 ? ", " + std::to_string(told.count) + " warning" + (told.count == 1 ? "" : "s") : ""));
+                const std::string ms = number(std::round(s.ms));
+                std::string head = "Compiled in " + ms + " ms; it plays now.\n";
+                if (s.panelOnly)
+                {
+                    // Compiler.h, "A panel's edit": nothing compiled, nothing restarted.
+                    std::string changed;
+                    for (const SourceFile& f : s.sources)
+                        if (const SourceFile* old = playground::findFile(ran, f.name); old == nullptr || old->text != f.text)
+                            changed += (changed.empty() ? "" : ", ") + f.name;
+                    for (const SourceFile& f : ran)
+                        if (playground::findFile(s.sources, f.name) == nullptr)
+                            changed += (changed.empty() ? "" : ", ") + f.name + " (gone)";
+                    note("ran it: a panel edit, applied in " + ms + " ms as it plays");
+                    head = "Applied in " + ms + " ms as the program plays: only its panel's files changed"
+                         + (changed.empty() ? std::string() : " (" + changed + ")")
+                         + ", so nothing was compiled or restarted; the sound, its voices and the dials' values are as "
+                           "they were.\n";
+                }
+                else
+                    note("ran it: compiled in " + ms + " ms, " + std::to_string(dials) + " dial" + (dials == 1 ? "" : "s")
+                         + (told.count > 0 ? ", " + std::to_string(told.count) + " warning" + (told.count == 1 ? "" : "s") : ""));
                 const std::string checks = evaluateChecks();
                 const bool same = dialDeclarations(s.controls, s.panel.options) == declared;
                 std::vector<measure::Check> set;
@@ -4275,12 +4296,14 @@ namespace playground
                     const std::lock_guard<std::mutex> lock(mutex_);
                     set = checks_;
                 }
-                return "Compiled in " + number(std::round(s.ms)) + " ms; it plays now.\n"
+                // The panel's layout, as gui_sandbox checks it: a line when it is larger than the PANEL view.
+                const std::string fit = host_.chatPanelFit(s.panel, s.controls);
+                return head
                      + (same ? "Its dials: unchanged (" + std::to_string(dials) + ").\n"
                              : "Its dials:\n" + dialLines(s.controls, host_)
                                    + carriedLines(before, beforeOptions, was, s.controls, s.panel.options, host_)
                                    + orphanLines(set, before, s.controls))
-                     + panelLine(s.panel, s.controls) + capped(told.warnings)
+                     + panelLine(s.panel, s.controls) + (fit.empty() ? "" : fit + "\n") + capped(told.warnings)
                      + (told.notes.empty() ? "" : "Notes:\n" + capped(told.notes)) + (checks.empty() ? "" : "\n" + checks);
             }
             isError = true;

@@ -27,10 +27,11 @@
 // pedal, which the Engine applies itself: a key let go while it is down keeps its voice until the pedal comes up,
 // which then stops it.
 //
-// Dials. setControls() takes the host's normalised values (P1 to P32) once a block. A real control glides to its new
-// value over 20 ms, sample by sample, and while it moves the program reads it as a stream of those samples (a null
-// stream, and the value, while it holds still: FMinus's flat copy of the method); an integer or a toggle is set once a
-// block. A new program starts on the dials' values, without a glide.
+// Dials. setControls() takes the dials' normalised values once a block (Controls.h: the host's P1 to P32, then the
+// panel's own dials). A real control glides to its new value over 20 ms, sample by sample, and while it moves the
+// program reads it as a stream of those samples (a null stream, and the value, while it holds still: FMinus's flat copy
+// of the method); an integer or a toggle is set once a block. A new program starts on the dials' values, without a
+// glide.
 //
 // The dials' carry (Controls.h's DialCarry, Compiler.h). The host's values are normalised, and a new program's
 // declarations (a range, a taper, an int's options) would give an old value another meaning; the processor writes the
@@ -64,8 +65,10 @@
 // a program's state stays there: running the program again starts it from scratch.
 //
 // Meters. Each block the Engine reads the fields the program's displays show (Patch::tap: an effect's instance, an
-// instrument's newest sounding voice, and the module Shared's one, whether a voice sounds or not) and publishes them (Meters) through a seqlock, which the editor reads at its frame
-// rate. While someone reads them (readers(): an editor shown, which lets go while its window is minimised or hidden,
+// instrument's newest sounding voice, and the module Shared's one, whether a voice sounds or not; once a panel's edit
+// gave the program others, setTaps' table, through Patch::tapOf), and so its shiftLights field (Patch::lightsTap: a
+// racing wheel's shift lights, which the Standalone reads), and publishes them (Meters) through a seqlock, which the
+// editor reads at its frame rate. While someone reads them (readers(): an editor shown, which lets go while its window is minimised or hidden,
 // Panel.h; a tool that listens; addReader), it also measures what came in (an effect's input) and what goes out (each
 // side's peak and energy in lanes, Levels.h), and keeps the last kScopeLength samples of each for the scopes; with no
 // reader the levels read 0 and the scopes stand still, which saves an effect about as much as a light program
@@ -231,6 +234,21 @@ namespace playground
         uint64_t revertible() const noexcept { return revertible_.load(std::memory_order_acquire); }
         void offerFrozen(std::unique_ptr<Patch::Frozen> frozen);   // taken at a block's start if it fits (above)
         void collect();                               // destroys the programs (and copies) the audio thread handed back
+        // A panel's edit (Compiler.h, "A panel's edit"; above, "Meters"): the fields program `program`'s displays read
+        // from now on, in place of the taps it was compiled with (Patch::taps), until another program plays; one
+        // writer (the compiler's thread). Read at the end of the next block, as the probes' set is; a table of another
+        // program than the one that plays reads nothing, and that program its own taps. Its count (from 1) is returned,
+        // and tapsRead() says the newest the audio thread has read (after the block's meters are published); each
+        // frame names the table it was read by (Meters::tapTable: this count, or 0 for the program's own taps).
+        struct TapTable
+        {
+            uint64_t program = 0;
+            uint32_t count = 0;                       // taps used, at most kMaxDisplays
+            uint32_t spare = 0;
+            std::array<Patch::Tap, kMaxDisplays> taps{};
+        };
+        uint64_t setTaps(const TapTable& table) noexcept;
+        uint64_t tapsRead() const noexcept { return tapsRead_.load(std::memory_order_acquire); }
 
         // ---- any thread ------------------------------------------------------------------------------------------
         // A program's stop (above, "A program that stops").
@@ -460,7 +478,7 @@ namespace playground
         std::array<float, kMaxControls> norm_{};
         bool normSet_ = false;                        // setControls has run since prepare()
         uint64_t meaning_ = 0;                        // setControls': whose controls norm_ is in (0: current_'s)
-        uint32_t carryOver_ = 0;                      // the slots whose carry ended (bit c), for current_
+        uint64_t carryOver_ = 0;                      // the slots whose carry ended (slotBit(c)), for current_
         std::array<Glide, kMaxControls> glide_{};
         std::array<bool, kMaxControls> streaming_{};
         const Patch* fedPatch_ = nullptr;             // the program the glides were last aimed for
@@ -522,7 +540,7 @@ namespace playground
         // took their streams), and its carry's ended slots, when the glides were aimed for it (heldFor_): what a revert
         // after the block's glides goes on from.
         std::array<float, kMaxControls> heldDials_{};
-        uint32_t heldCarryOver_ = 0;
+        uint64_t heldCarryOver_ = 0;
         const Patch* heldFor_ = nullptr;
         std::atomic<int> largestBlock_{ 0 };
         fsdsp::Seqlock<Stopped> stopped_;
@@ -572,5 +590,13 @@ namespace playground
         std::array<std::array<std::atomic<float>, kScopeLength>, 4> probeRings_{};
         std::atomic<uint64_t> probeAt_{ 0 }, probeFrom_{ 0 };
         std::atomic<uint8_t> probeMask_{ 0 };
+
+        // A panel's taps (setTaps): the table and its count, the table as the audio thread last read it and the count
+        // it read, published after the block's meters.
+        fsdsp::Seqlock<TapTable> tapSet_;
+        std::atomic<uint64_t> tapGenIn_{ 0 };
+        TapTable tapWant_{};
+        uint64_t tapSeen_ = 0;
+        std::atomic<uint64_t> tapsRead_{ 0 };
     };
 }

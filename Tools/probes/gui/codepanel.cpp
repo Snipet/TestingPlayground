@@ -11,7 +11,7 @@
 //   gui.codepanel.interface.png  ... its panel.gui shown, the interface under it (that choice's own)
 //   gui.codepanel.schematic.png  a netlist's Schematic view with the panel hidden: no dials, no fold's bar
 // and checks:
-//   FILES      the interface's files (.gui, a shader's .sc) and the code's (.fm, .cir, a name that only ends so)
+//   FILES      the interface's files (.gui, a shader's .sc and .sh) and the code's (.fm, .cir, a name that only ends so)
 //   DEFAULT    a new instance: shown under the code and under the interface's files; the switch at the status line's
 //              right end, its word beside its icon, the hand over it; a toggle button to a screen reader, checked
 //   CLICK      a click on the switch hides the dials: none shown, the editor down to the problems list, the session's
@@ -178,10 +178,10 @@ PROBE(gui, codepanel)
 
     // ---- FILES ---------------------------------------------------------------------------------------------------------
     P.eq("files.interface", pg::ui::isInterfaceFile("panel.gui") && pg::ui::isInterfaceFile("glow.sc")
-                                && pg::ui::isInterfaceFile("my panel.gui") ? 1 : 0, 1);
+                                && pg::ui::isInterfaceFile("gauge.sh") && pg::ui::isInterfaceFile("my panel.gui") ? 1 : 0, 1);
     P.eq("files.code", !pg::ui::isInterfaceFile("program.fm") && !pg::ui::isInterfaceFile("amp.cir")
                            && !pg::ui::isInterfaceFile("gui.fm") && !pg::ui::isInterfaceFile("panel.gui.fm")
-                           && !pg::ui::isInterfaceFile(".gui") && !pg::ui::isInterfaceFile(".sc")
+                           && !pg::ui::isInterfaceFile(".gui") && !pg::ui::isInterfaceFile(".sc") && !pg::ui::isInterfaceFile(".sh")
                            && !pg::ui::isInterfaceFile("sc") ? 1 : 0, 1);
 
     pg::Processor processor;

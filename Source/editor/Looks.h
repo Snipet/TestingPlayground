@@ -61,7 +61,12 @@ namespace playground::ui::looks
         funkgui::Col color{};
         bool tinted = false;
     };
-    // meter: `levels` 0..1 (a bar's fill), one or two; `holds` their held peaks; `readout` under them.
+    // meter: `levels` 0..1 (a bar's fill), one or two; `holds` their held peaks; `readout` under them. Laid out in its
+    // cell, whatever its size: the label at its top, the readout at its bottom (smaller when it would not fit the
+    // cell's width, half size at least, and past that from its left, cut at its right), the bars between them and no
+    // wider than the cell; a cell too short for bars of kMeterLeast px and the readout drops the readout. In a cell
+    // 80 px high (the #pragma panel's, a .gui file's own size) the bars are 46 px, as they always were.
+    inline constexpr float kMeterLeast = 15.0f;
     void meter(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, int count, const float* levels,
                const float* holds, const char* readout);
     // vu: the needle's position 0..1 along the scale; `audio`: the VU scale printed, else the range's ends.
@@ -73,6 +78,10 @@ namespace playground::ui::looks
     // .gui file's layout measures a number's cell with.
     inline constexpr funkgui::TextStyle kReadout{ 15.0f, 0.6f, 0.14f, true };
     void number(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const char* text);
+    // A formatted number's widest usual readout, as formatValue writes it (DisplayItem): a sign and four digits, its
+    // decimals (0 to 4), its unit (Hz's as kHz): what a layout measures its cell with in kReadout (the box keeps 3 px
+    // each side, and the cell 2 more).
+    std::string readoutSample(const std::string& unit, int decimals);
     // scope: `ys` in -1..1 (the screen's height), `n` of them across its width.
     void scope(funkgui::Canvas& c, const funkgui::Theme& th, const Display& d, const float* ys, int n);
     // The px a scope in `cell` draws a value of 1 from its middle (a change of a value by 0.5 / scopeScale is half a

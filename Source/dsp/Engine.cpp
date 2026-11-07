@@ -400,13 +400,13 @@ namespace playground
         const DialCarry& carry = current_->carry();
         if (snap)
             carryOver_ = 0;
-        const uint32_t carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program()
+        const uint64_t carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program()
                                       ? carry.slots & ~carryOver_
                                       : 0u;
         bool streaming = false;
         // The circuit dials (Engine.h): the block's last sample at which a bound value changes (-1: none), and whether
         // a switch did (its ramp's window).
-        const uint32_t bound = current_->circuitSlots();
+        const uint64_t bound = current_->circuitSlots();
         int lastChange = -1;
         bool switched = false;
         for (int c = 0; c < kMaxControls; ++c)
@@ -416,14 +416,14 @@ namespace playground
             streaming_[static_cast<std::size_t>(c)] = false;
             if (!info.used)
                 continue;
-            const bool circuit = ((bound >> c) & 1u) != 0;
+            const bool circuit = (bound & slotBit(c)) != 0;
             float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
-            if (((carrying >> c) & 1u) != 0)
+            if ((carrying & slotBit(c)) != 0)
             {
                 if (norm_[static_cast<std::size_t>(c)] == carry.fromNorm[static_cast<std::size_t>(c)])
                     target = carry.plain[static_cast<std::size_t>(c)];
                 else
-                    carryOver_ |= 1u << c;               // moved since: as the host's value says, from now on
+                    carryOver_ |= slotBit(c);               // moved since: as the host's value says, from now on
             }
             if (snap || info.type != ControlType::real)
             {
@@ -474,7 +474,7 @@ namespace playground
         {
             bool home = true;
             for (int c = 0; c < kMaxControls; ++c)
-                if (((bound >> c) & 1u) != 0 && cs[static_cast<std::size_t>(c)].used && cs[static_cast<std::size_t>(c)].type != ControlType::real)
+                if ((bound & slotBit(c)) != 0 && cs[static_cast<std::size_t>(c)].used && cs[static_cast<std::size_t>(c)].type != ControlType::real)
                     home = home && glide_[static_cast<std::size_t>(c)].cur == cs[static_cast<std::size_t>(c)].def;
             switchGen_ = home ? 0 : ++switchCount_;
         }
@@ -513,10 +513,10 @@ namespace playground
     {
         if (current_ == nullptr)
             return;
-        const uint32_t bound = current_->circuitSlots();
+        const uint64_t bound = current_->circuitSlots();
         const int s = std::clamp(at, 0, std::max(maxBlock_ - 1, 0));
         for (int c = 0; c < kMaxControls; ++c)
-            if (((bound >> c) & 1u) != 0)
+            if ((bound & slotBit(c)) != 0)
                 circuitPlain_[static_cast<std::size_t>(c)] =
                     streaming_[static_cast<std::size_t>(c)] && at >= 0
                         ? streamBuf_[static_cast<std::size_t>(c) * static_cast<std::size_t>(maxBlock_) + static_cast<std::size_t>(s)]
@@ -966,7 +966,27 @@ namespace playground
             t = 0.0f;
         frame_.program = current_ != nullptr ? current_->program() : 0;
         frame_.rate = fs_;
-        if (current_ != nullptr && current_->taps() > 0)
+        // A panel's edit's taps (setTaps), when they are of the program that plays; else the program's own.
+        if (const uint64_t g = tapGenIn_.load(std::memory_order_acquire); g != tapSeen_)
+        {
+            TapTable t;
+            if (tapSet_.read(t))                         // else one is being written: the next block reads it
+            {
+                tapWant_ = t;
+                tapSeen_ = g;
+            }
+        }
+        const bool edited = current_ != nullptr && tapWant_.program != 0 && tapWant_.program == current_->program();
+        frame_.tapTable = edited ? tapSeen_ : 0;         // which table the taps are of (Meters::tapTable)
+        const int tapCount = current_ == nullptr ? 0
+                           : edited              ? static_cast<int>(std::min<uint32_t>(tapWant_.count, kMaxDisplays))
+                                                 : std::min(current_->taps(), kMaxDisplays);
+        const Patch::Tap* lights = current_ != nullptr ? current_->lightsTap() : nullptr;
+        frame_.lights = 0.0f;
+        frame_.lightsKind = lights == nullptr                           ? Meters::kNoLights
+                          : lights->type == Patch::Tap::Type::integer ? Meters::kLightsMask
+                                                                      : Meters::kLightsLevel;
+        if (current_ != nullptr && (tapCount > 0 || lights != nullptr))
         {
             int instance = -1;
             if constexpr (kInstrument)
@@ -981,8 +1001,11 @@ namespace playground
             }
             else
                 instance = 0;
-            for (int t = 0; t < std::min(current_->taps(), kMaxDisplays); ++t)
-                frame_.taps[t] = current_->tap(t, instance);
+            for (int t = 0; t < tapCount; ++t)
+                frame_.taps[t] = edited ? current_->tapOf(tapWant_.taps[static_cast<std::size_t>(t)], instance)
+                                        : current_->tap(t, instance);
+            if (lights != nullptr)
+                frame_.lights = current_->tapOf(*lights, instance);   // the wheel's shift lights (Meters::lights)
         }
         // The player and the host (Meters' second part): the transport, the keys held, the voices.
         frame_.samples += static_cast<uint64_t>(n);
@@ -1023,6 +1046,14 @@ namespace playground
         publishProbes(n);
         ++frame_.frame;
         meters_.publish(frame_);
+        tapsRead_.store(tapSeen_, std::memory_order_release);   // a panel's taps, in the meters now (setTaps)
+    }
+
+    // ---- a panel's taps (Engine.h, setTaps) ------------------------------------------------------------------------------
+    uint64_t Engine::setTaps(const TapTable& table) noexcept
+    {
+        tapSet_.publish(table);
+        return tapGenIn_.fetch_add(1, std::memory_order_release) + 1;
     }
 
     // ---- the probes (Engine.h, "Probes") ---------------------------------------------------------------------------------

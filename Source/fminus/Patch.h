@@ -101,10 +101,18 @@
 // by, appended to the program and marked nonblocking (compile() below), so FMinus checks the method's types and its
 // effects, and a method of another type is an error, not a crash.
 //
-// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials: a float
-// is bound as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null
-// while it holds still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main
-// module holds, keep their fminus::default (they are set, in every instance, before init runs).
+// Controls. The main module's first kMaxControls parameters, in declaration order, are the plugin's dials (the first
+// 32 the host's parameters, the next 32 the panel's own: Controls.h; the Patch treats both alike): a float is bound
+// as a stream (Program::Binding::stream; the Engine smooths it and passes a buffer while it moves, null while it holds
+// still), an int and a bool as knobs. Parameters past kMaxControls, and those of the modules the main module holds,
+// keep their fminus::default (they are set, in every instance, before init runs).
+//
+// The panel. A .gui file (GuiSpec.h), the first one, gives the interface, the tapers, units and scales of the dials, and
+// the taps: where each field a display reads sits (in an instance, or in Shared). What reading it needs of the
+// compile is kept (Recipe::panel, PanelBase: the fields a display may name and their taps, the files FMinus read,
+// whether they hold #pragma panel lines), so readPanel() reads a .gui file again with no compile: the Compiler applies
+// an edit of the panel's files alone so to the program that plays (Compiler.h, "A panel's edit"), and its new taps go
+// to the Engine (Engine::setTaps, read through tapOf()) rather than into this Patch, which the audio thread reads.
 //
 // Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
@@ -195,6 +203,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace fminus
@@ -256,6 +265,26 @@ namespace playground
         // `bounds` that failed "process() went outside an array (program.fm:14:33: index -188 out of bounds for ...)".
         static std::string stopWhy(Method call, const Bounds* bounds = nullptr);
 
+        // ---- the panel (above) --------------------------------------------------------------------------------------
+        // Where a field a display reads sits: plain data, so a table of them crosses to the audio thread by value
+        // (Engine::setTaps).
+        struct Tap
+        {
+            enum class Type : uint8_t { real, integer, boolean };
+            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes
+            Type type = Type::real;
+            bool shared = false;                       // a field of the module Shared ("shared->level")
+            friend bool operator==(const Tap&, const Tap&) = default;
+        };
+        // What reading the program's panel again needs of its compile (readPanel).
+        struct PanelBase
+        {
+            std::vector<PanelField> fields;            // the fields a display may name (PanelSpec.h's displayFields)
+            std::vector<std::pair<std::string, Tap>> taps;   // each one's tap, by that name ("env", "shared->level")
+            std::vector<std::string> read;             // the files FMinus read: the program and what it #includes
+            bool pragmas = false;                      // they hold #pragma panel lines (left out under a .gui file)
+        };
+
         struct Result
         {
             std::unique_ptr<Patch> patch;     // null when the program does not compile or does not fit the plugin
@@ -289,6 +318,13 @@ namespace playground
         // second pass finds (a method the audio thread calls that could allocate, a method declared otherwise than
         // the plugin calls it) waits for RUN. Off the audio thread; `patch` is always null.
         static Result check(const Sources& files);
+        // The panel `files`' first .gui file gives (above, "The panel"), as compile() reads it, over `base` and
+        // `declared` (a compile's Recipe::panel and Recipe::controls, the dials as the program declares them): the
+        // interface, `controls` the dials with its tapers, units and scales, `taps` its displays' taps in order (a
+        // display's PanelDisplay::tap indexes them), and its notes appended to `notes` (each on an interface file's line).
+        // No .gui file: an empty spec, `controls` the declared ones. Any thread.
+        static PanelSpec readPanel(const PanelBase& base, const Controls& declared, const Sources& files, Controls& controls,
+                                   std::vector<Tap>& taps, std::string& notes);
 
         ~Patch();
         Patch(const Patch&) = delete;
@@ -351,7 +387,8 @@ namespace playground
             std::string source;                        // the program with the plugin's calls appended
             std::array<std::string, kMaxControls> names{};   // each control's parameter, qualified ("" for none)
             std::array<bool, kMaxControls> streams{};        // bound as a stream (a float), else a knob
-            Controls controls{};
+            Controls controls{};                       // as the program declares them (before a .gui file's tapers)
+            PanelBase panel;                           // what reading its panel again needs (above, "The panel")
             uint64_t program = 0;                      // Patch::program
             std::size_t size = 0, alignment = 0;       // the main module's, which the copy must keep
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
@@ -407,7 +444,7 @@ namespace playground
         // argument at plain[c] for its control c (the controls' plain values at the call's sample) or at its default
         // when it has none. No allocation.
         bool circuits() const noexcept { return !circuitCalls_.empty(); }
-        uint32_t circuitSlots() const noexcept { return circuitMask_; }
+        uint64_t circuitSlots() const noexcept { return circuitMask_; }
         bool circuitRamps() const noexcept { return circuitRamps_; }   // a dial drives a switch (its set() ramps)
         void setCircuits(const float* plain, int i) noexcept;
         // The bindings, checked, with their slots (Recipe::bindings): the status's (CompileStatus::circuitDials).
@@ -441,6 +478,16 @@ namespace playground
         // no instance i. After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
+        // The field at `k` in instance i, as tap() reads it: the Engine's, for the taps a panel's edit gave the program
+        // since (Engine::setTaps). After a block, on the audio thread.
+        float tapOf(const Tap& k, int i) const noexcept;
+        const std::vector<Tap>& tapList() const noexcept { return taps_; }   // compile()'s (any thread)
+        // A racing wheel's shift lights (plugin/WheelMap.h's lightsMask; the Standalone's G29): the field kLightsField
+        // the program writes, the main module's, else Shared's through its Shared* field, a float, an int or a bool;
+        // null when it has none (a field of that name of another type, or a dial, is a note). The Engine reads it as it
+        // reads a display's tap (tapOf), each block, into Meters::lights.
+        static constexpr const char* kLightsField = "shiftLights";
+        const Tap* lightsTap() const noexcept { return hasLights_ ? &lights_ : nullptr; }
 
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
@@ -490,14 +537,9 @@ namespace playground
         Controls controls_{};
         DialCarry carry_{};
         PanelSpec panel_;
-        struct Tap
-        {
-            enum class Type : uint8_t { real, integer, boolean };
-            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes
-            Type type = Type::real;
-            bool shared = false;                       // a field of the module Shared ("shared->level")
-        };
-        std::vector<Tap> taps_;
+        std::vector<Tap> taps_;                        // its displays' (readPanel's), in order
+        Tap lights_{};                                 // its shiftLights field's (lightsTap), when hasLights_
+        bool hasLights_ = false;
         // The probe table (above, "Probes"): per field, its offset in an instance and an element's size, its elements,
         // the probe fields' offsets in an element, and which of its nodes a probe reads.
         struct ProbeEntry
@@ -533,7 +575,7 @@ namespace playground
         };
         std::vector<CircuitCall> circuitCalls_;
         std::vector<float> circuitArgs_;               // the arguments of one call (sized at compile)
-        uint32_t circuitMask_ = 0;
+        uint64_t circuitMask_ = 0;
         bool circuitRamps_ = false;
         Sources sources_;
         float rate_ = 48000.0f;

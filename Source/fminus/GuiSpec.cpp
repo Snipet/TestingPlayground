@@ -1528,7 +1528,7 @@ namespace playground
                         continue;
                     if (p.key == "inputs")
                     {
-                        // Parameters (their 0..1), fields (their values), in and out (their levels), up to eight.
+                        // Parameters (their 0..1), fields (their values), in and out (their levels), kMaxShaderInputs.
                         names.clear();
                         std::size_t k = 0, at = 0;
                         const std::string& all = p.value.value;
@@ -1541,7 +1541,7 @@ namespace playground
                                 continue;
                             if (k >= n.inputs.size())
                             {
-                                note(p.value, "a shader takes eight inputs at most: " + one + " is left out");
+                                note(p.value, "a shader takes " + std::to_string(kMaxShaderInputs) + " inputs at most: " + one + " is left out");
                                 break;
                             }
                             const std::size_t before = k;

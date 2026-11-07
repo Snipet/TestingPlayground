@@ -363,7 +363,7 @@ namespace
         for (const auto& p : others)
         {
             const std::string ext = p.extension().string();
-            if (p.filename() != pg::kProgramName && (ext == ".fm" || ext == ".cir" || ext == ".gui" || ext == ".sc"))
+            if (p.filename() != pg::kProgramName && (ext == ".fm" || ext == ".cir" || ext == ".gui" || ext == ".sc" || ext == ".sh"))
                 add(p);
         }
         return files;

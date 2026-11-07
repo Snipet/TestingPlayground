@@ -4,7 +4,10 @@
 //   - thirty-two host parameters, P1 to P32, normalised 0..1, which the running program's first 32 parameters take
 //     (Controls.h). Each is a ControlParameter: its name and its text are the program's ("2 cutoff", "1200.0"), and a
 //     host is told when they change (parameterInfoChanged). One FunkGui ParamPort each, what the editor's dials write
-//     through. A run that brings a parameter the program did not have in that slot moves it to its default, and one
+//     through. The next 32 parameters are the panel's own dials (Controls.h's isPanelDial): no host parameter, their
+//     values the processor's (panelValues_, kept in the session as <PANEL><DIAL slot=".." value=".."/></PANEL>), a
+//     port each as well; everything else (the carry, Claude, the projects and presets, A/B) treats both alike
+//     (writeDial). A run that brings a parameter the program did not have in that slot moves it to its default, and one
 //     of the name the slot had keeps its value in its units (Controls.h: clamped to a new range, an int's option by
 //     its name), from the new program's first block (the dials' carry: Compiler.h, Engine.h, apply());
 //   - the program: the files of the one that plays, and the editor's draft (its files, a tab each, and the tab it
@@ -124,7 +127,7 @@ namespace playground
 
         // ---- for the editor (message thread) and the probes ------------------------------------------------------
         juce::AudioProcessorValueTreeState& parameters() noexcept { return apvts_; }
-        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32
+        std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32, then the panel's
         EditorPort& editorPort() noexcept { return *this; }
         ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
         // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.
@@ -191,13 +194,15 @@ namespace playground
         // state's), so nothing played before it (chatPrevious).
         struct Given
         {
-            uint32_t slots = 0;
+            uint64_t slots = 0;                                  // slotBit(c)
             std::array<float, kMaxControls> plain{};
         };
         void apply(const CompileStatus& s, bool run, bool loaded, const Given& given);
         // The dials' carry (Compiler::setDialCarrier): how the host's values, in the controls of meaningProgram_, come
         // across to a program of `controls`. On the thread that offers.
         DialCarry carryFor(const Controls& controls, const PanelSpec& panel);
+        // Whether a RUN now may be a panel's edit (Compiler.h, "A panel's edit"): not while an A/B is on. Any thread.
+        bool panelEdits() const;
         // The carry of `s` (or `given`) written as host gestures, a slot whose value the host or the user moved since
         // left as it is; then the values' meaning is `s`'s program (unless a carry was made since: it writes instead).
         // A carry writes once: `s` applied again (a new revision, the same program) writes only `given`.
@@ -333,6 +338,7 @@ namespace playground
         int chatHostBlock() const override;
         std::string chatProject() const override;
         std::string chatAb() const override;
+        std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -440,8 +446,16 @@ namespace playground
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
 
         juce::AudioProcessorValueTreeState apvts_;
+        // The panel's own dials' normalised values (Controls.h's isPanelDial: slot kHostControls + k's is k's), as a
+        // host parameter's atomic holds its value: written on the message thread (writeDial, their ports, a state load),
+        // read by the audio thread (readParameters) and any reader of raw_.
+        std::array<std::atomic<float>, kPanelControls> panelValues_{};
         std::array<std::atomic<float>*, kMaxControls> raw_{};   // the normalised values the audio thread reads
-        std::array<juce::RangedAudioParameter*, kMaxControls> params_{};
+        std::array<juce::RangedAudioParameter*, kHostControls> params_{};
+        // Slot c's value written (message thread): a host parameter's as a gesture, the host told; a panel dial's into
+        // panelValues_, the host told its state changed (no parameter moved). Whether it moved.
+        bool writeDial(int c, float norm);
+        float dialDefault01(int c) const;                        // an unused slot's value (a new instance's)
         // The values' meaning (the dials' carry, apply()): the program whose controls the host's values are in, its
         // controls and options, the carries made (each a ticket) and the last one written. The audio thread and
         // chatDialValue read meaningProgram_ before the values (release after apply's writes); the rest under
@@ -479,6 +493,11 @@ namespace playground
         std::atomic<uint64_t> chatStopJournaled_{ 0 };           // the program whose stop chatRun journalled
         std::atomic<uint32_t> alerts_{ 0 };
         std::atomic<int> editorW_{ 0 }, editorH_{ 0 };
+        // The panel's fit (chatPanelFit, EditorPort.h's panelFitReady): the font made (on the message thread, poll()'s
+        // once a program with a .gui file compiled, or a fit asked there), and this Mac's chat width as poll() read it.
+        std::atomic<bool> fitFonts_{ false };
+        std::atomic<int> fitChatWidth_{ 0 };
+        void readyFit();                                         // message thread
         std::atomic<bool> panelView_{ false };                       // the editor's PANEL view, in the session
         std::atomic<bool> codePanelHidden_{ false };                 // its CODE view's panel hidden under the code,
         std::atomic<bool> guiPanelHidden_{ false };                  // ... under the interface's files, in the session
@@ -576,7 +595,7 @@ namespace playground
         std::atomic<uint64_t> userRun_{ 0 };                     // the request of the editor's last RUN
         void journalPoll();                                      // poll(): the dials moved since, the bypass, the transport
         void syncDials();                                        // the dials as they are now, seen (moves the plugin made)
-        std::atomic<uint32_t> ownDials_{ 0 };                    // the slots the plugin set since (bits; poll()'s writes)
+        std::atomic<uint64_t> ownDials_{ 0 };                    // the slots the plugin set since (slotBit; poll()'s writes)
         void syncOwnDials();                                     // those as they are now, seen: any other move is journalled
         void journalDraft(const Draft& before, const Draft& after, Journal::Who who);
         void journalPrepare(double rate, int block);             // prepareToPlay's settings, when they change

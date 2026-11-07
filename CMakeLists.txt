@@ -204,8 +204,8 @@ file(GLOB FP_FMINUS_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/fminus/*.cpp)
 file(GLOB FP_SANDBOX_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/sandbox/*.cpp)
 set(FP_SANDBOX_SHARED "")
 foreach(_f editor/GuiView editor/GuiItems editor/GuiLayout editor/Looks editor/DisplayItem editor/Items editor/PictureDraw
-           editor/Theme
-           fminus/GuiSpec fminus/PanelSpec fminus/Lang fminus/LangConditionals fminus/HostFile fminus/Shaders)
+           editor/Theme editor/ShaderFont
+           fminus/GuiSpec fminus/PanelSpec fminus/Lang fminus/LangConditionals fminus/HostFile fminus/Shaders fminus/ShaderLib)
   list(APPEND FP_SANDBOX_SHARED ${FP_SOURCE_ROOT}/${_f}.cpp)
 endforeach()
 # The Standalone app (Source/plugin/standalone/, its Standalone target only): our sources' warnings, and ARC for its

@@ -32,19 +32,20 @@ namespace playground
             return out;
         }
 
-        // The jobs for `shaders`, each from its file among `files` (one with no file is left out: GuiSpec said so);
-        // `which`, when given, gets each job's shader.
+        // The jobs for `shaders`, each from its file among `files` (one with no file is left out: GuiSpec said so), with
+        // the program's .sh files it may include; `which`, when given, gets each job's shader.
         std::vector<ShaderJob> shaderJobs(const std::vector<PanelShader>& shaders, const Sources& files,
                                           std::vector<std::size_t>* which = nullptr)
         {
             std::vector<ShaderJob> jobs;
+            const Sources headers = shaderHeaders(files);
             for (std::size_t k = 0; k < shaders.size(); ++k)
             {
                 const PanelShader& sh = shaders[k];
                 const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& s) { return s.name == sh.file; });
                 if (f == files.end())
                     continue;
-                jobs.push_back({ sh.file, f->text, sh.inputs });
+                jobs.push_back({ sh.file, f->text, sh.inputs, headers });
                 if (which != nullptr)
                     which->push_back(k);
             }
@@ -120,6 +121,80 @@ namespace playground
         private:
             std::thread thread_;
         };
+
+        // Whether `after` is a panel's edit of `before` (Compiler.h, "A panel's edit"): the same files but the panel's
+        // (isPanelFile), in the same order, at least one of those changed, added or gone and none that FMinus read
+        // (`read`), and both with the same first .gui file.
+        bool panelEditOf(const Sources& before, const Sources& after, const std::vector<std::string>& read)
+        {
+            const auto program = [](const Sources& files) {
+                std::vector<const SourceFile*> out;
+                for (const SourceFile& f : files)
+                    if (!isPanelFile(f.name))
+                        out.push_back(&f);
+                return out;
+            };
+            const std::vector<const SourceFile*> a = program(before), b = program(after);
+            if (a.size() != b.size() || a.empty() || before.front().name != after.front().name)
+                return false;
+            for (std::size_t k = 0; k < a.size(); ++k)
+                if (!(*a[k] == *b[k]))
+                    return false;
+            const auto gui = [](const Sources& files) -> const SourceFile* {
+                for (const SourceFile& f : files)
+                    if (isGuiFile(f.name))
+                        return &f;
+                return nullptr;
+            };
+            const SourceFile* ga = gui(before);
+            const SourceFile* gb = gui(after);
+            if (ga == nullptr || gb == nullptr || ga->name != gb->name)
+                return false;
+            bool changed = false;
+            const auto touched = [&](const std::string& name) {
+                changed = true;
+                return std::find(read.begin(), read.end(), name) != read.end();
+            };
+            for (const SourceFile& f : before)
+                if (isPanelFile(f.name))
+                {
+                    const SourceFile* now = findFile(after, f.name);
+                    if ((now == nullptr || now->text != f.text) && touched(f.name))
+                        return false;
+                }
+            for (const SourceFile& f : after)
+                if (isPanelFile(f.name) && findFile(before, f.name) == nullptr && touched(f.name))
+                    return false;
+            return changed;
+        }
+
+        // Whether two declarations of a dial mean the same values (a panel's edit keeps them): all but how a value
+        // reads (its unit, decimals and scale).
+        bool sameMeaning(const Control& a, const Control& b)
+        {
+            return a.used == b.used && sameName(a, b) && a.type == b.type && a.min == b.min && a.max == b.max
+                && a.def == b.def && a.taper == b.taper;
+        }
+
+        // A status's notes with the panel's read again: the lines of the panel's files of before and of after left
+        // out ("panel.gui:12:5: note: ..."), `panel` (its notes now) after the rest.
+        std::string withPanelNotes(const std::string& notes, const Sources& before, const Sources& after,
+                                   const std::string& panel)
+        {
+            std::string out;
+            for (std::size_t at = 0; at < notes.size();)
+            {
+                const std::size_t end = std::min(notes.find('\n', at), notes.size());
+                const std::string line = notes.substr(at, end - at);
+                const std::size_t colon = line.find(':');
+                const std::string file = colon == std::string::npos ? std::string() : line.substr(0, colon);
+                const bool panelLine = isPanelFile(file) && (findFile(before, file) != nullptr || findFile(after, file) != nullptr);
+                if (!panelLine && !line.empty())
+                    out += line + "\n";
+                at = end + 1;
+            }
+            return out + panel;
+        }
 
         std::string fileOf(const CompileStatus& s)
         {
@@ -395,12 +470,13 @@ namespace playground
         }
     }
 
-    uint64_t Compiler::request(Sources files)
+    uint64_t Compiler::request(Sources files, bool panelEdits)
     {
         uint64_t id = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             queued_ = std::move(files);
+            queuedPanel_ = panelEdits;
             hasQueued_ = true;
             id = queuedId_ = ++nextId_;
         }
@@ -510,18 +586,88 @@ namespace playground
                           / kSlowLoopsPerSecond;
         const auto cap = duration<double>(std::max(10.0, most));
         const auto start = steady_clock::now();
-        const auto idle = [this] {
-            const int64_t began = engine_.lastBlockStartNs(), ended = engine_.lastBlockNs();
-            if (began > ended)
-                return false;
-            const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
-            const double gap = std::max(0.02, 3.0 * engine_.lastBlockSeconds());
-            return static_cast<double>(now - ended) * 1e-9 > gap;
-        };
-        while (engine_.settledProgram() != program && engine_.revertible() == program && !idle()
+        while (engine_.settledProgram() != program && engine_.revertible() == program && !audioIdle()
                && steady_clock::now() - start < cap)
             std::this_thread::sleep_for(milliseconds(1));
         return engine_.settle(program);
+    }
+
+    bool Compiler::audioIdle() const
+    {
+        using namespace std::chrono;
+        const int64_t began = engine_.lastBlockStartNs(), ended = engine_.lastBlockNs();
+        if (began > ended)
+            return false;
+        const int64_t now = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
+        const double gap = std::max(0.02, 3.0 * engine_.lastBlockSeconds());
+        return static_cast<double>(now - ended) * 1e-9 > gap;
+    }
+
+    // ---- a panel's edit (Compiler.h) ---------------------------------------------------------------------------------
+    bool Compiler::editPanel(const Sources& files, uint64_t id, const ShaderTools& tools)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        Patch::Recipe base;
+        CompileStatus was;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (recipe_.program == 0 || recipe_.program == stoppedProgram_ || held_ || !status_.ok
+                || status_.program != recipe_.program)
+                return false;                          // nothing plays, it stopped, a refine waits, or the status is
+                                                       // not of what plays
+            base = recipe_;
+            was = status_;
+        }
+        if (!panelEditOf(base.files, files, base.panel.read))
+            return false;
+        // The panel as it plays (its taps: the program's own, or a panel's edit's before this one), and as it is now.
+        Controls before, after;
+        std::vector<Patch::Tap> tapsBefore, tapsAfter;
+        std::string ignored, notes;
+        (void)Patch::readPanel(base.panel, base.controls, base.files, before, tapsBefore, ignored);
+        PanelSpec panel = Patch::readPanel(base.panel, base.controls, files, after, tapsAfter, notes);
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const auto i = static_cast<std::size_t>(c);
+            if (!sameMeaning(was.controls[i], after[i]) || (after[i].used && was.panel.options[i] != panel.options[i]))
+                return false;                          // a dial's declaration changed: the carry's, a compile's
+        }
+        if (!panel.shaders.empty())
+            buildShaders(panel, files, tools, shaders_, notes);
+        CompileStatus s = std::move(was);
+        uint64_t taps = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (recipe_.program != base.program || held_)
+                return false;                          // (nothing offers meanwhile: this thread compiles)
+            if (tapsAfter != tapsBefore)
+            {
+                Engine::TapTable t;
+                t.program = base.program;
+                t.count = static_cast<uint32_t>(std::min<std::size_t>(tapsAfter.size(), kMaxDisplays));
+                std::copy_n(tapsAfter.begin(), t.count, t.taps.begin());
+                taps = engine_.setTaps(t);
+            }
+            recipe_.files = files;                     // what plays now: a refine, a restore and the freezer read them
+        }
+        s.request = id;
+        s.notes = withPanelNotes(s.notes, base.files, files, notes);
+        s.sources = files;
+        s.controls = after;
+        panel.tapTable = taps != 0 ? taps : s.panel.tapTable;   // the table its displays' taps index (Engine::setTaps)
+        s.panel = std::move(panel);
+        // The carry stays the program's: when poll() never saw its compile's status (this one came first), this one
+        // writes it, and when it did, writes nothing again (a carry writes once).
+        s.refined = false;
+        s.panelOnly = true;
+        // The displays' new fields read by the audio thread before the status is out, unless it is idle (a block, or
+        // a few of its own at most).
+        while (taps != 0 && engine_.tapsRead() < taps && !audioIdle()
+               && std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(500))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        s.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        finish(std::move(s));
+        return true;
     }
 
     void Compiler::checkStops(std::unique_lock<std::mutex>& lock)
@@ -685,11 +831,14 @@ namespace playground
                 const uint64_t id = queuedId_;
                 const ShaderTools tools = tools_;
                 const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
+                const bool panelEdits = queuedPanel_;
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
                 const uint64_t landed = circuits::answers().landed();
-                land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed, true, true);
+                // An edit of the panel's files alone plays on (Compiler.h, "A panel's edit"); else a compile.
+                if (!(panelEdits && editPanel(files, id, tools)))
+                    land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed, true, true);
                 lock.lock();
                 compiling_ = false;
                 compiled = true;

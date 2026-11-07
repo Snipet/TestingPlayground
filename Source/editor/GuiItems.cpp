@@ -1253,7 +1253,7 @@ namespace playground::ui
         animated_ = animated;
     }
 
-    void GuiShaderItem::setInputs(const std::array<float, 8>& v)
+    void GuiShaderItem::setInputs(const std::array<float, kMaxShaderInputs>& v)
     {
         for (std::size_t k = 0; k < v.size(); ++k)
             if (std::fabs(v[k] - inputs_[k]) > 1e-6f || std::isfinite(v[k]) != std::isfinite(inputs_[k]))

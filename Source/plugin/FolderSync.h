@@ -30,7 +30,7 @@
 // in place) is read once whole; and a write of the plugin's goes only right after a look that found the file as last
 // seen, so a save the sync has not taken yet is never overwritten. The sync's own writes come back as the text both
 // sides agree on: nothing to take. Names the folder takes: a draft file's, else a valid name (Sources.h) with an
-// extension the editor knows (.fm, .gui, .cir, .sc); anything else is not the program's (an editor's swap and
+// extension the editor knows (.fm, .gui, .cir, .sc, .sh); anything else is not the program's (an editor's swap and
 // backup files: .x.swp, x~, #x#, 4913, x___jb_tmp___), and a new file with a known extension but a name the plugin
 // cannot take, or past kMaxFiles, is left there, with a note. The text taken is the editor's (TextEditor::sanitise:
 // CR LF as LF, printable ASCII and tabs), as Claude's writes are.

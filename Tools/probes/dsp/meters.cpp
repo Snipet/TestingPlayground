@@ -6,13 +6,20 @@
 //           output's 0.4 and 0.283, within 1 %; an instrument: a voice at 0.25 out
 //   FALL    after the sound stops the peaks fall 20 dB a second (half a second: 10 dB), and the RMS (its power
 //           smoothed over 50 ms) more than 40 dB in half a second
-//   TAPS    the fields the displays show, in display order: a float, an int, a bool, as the program wrote them last
+//   TAPS    the fields the displays show, in display order: a float, an int, a bool, as the program wrote them last;
+//           a program of kMaxDisplays (32) number displays, each of its own field (field k holding k), reads each,
+//           the last one's 32
 //   VOICE   an instrument's fields come from its newest sounding voice (a second note's while both sound, the first's
 //           after the second's voice has ended), 0 once none sounds
 //   SHARED  a display of a field of the module Shared (#pragma panel number shared->held) reads its one Shared: the
 //           keys its voices count while they sound, and a field its init set, whether a voice sounds or not (before any
 //           note and after the last has ended, while the main module's field reads 0); an effect's as its process
 //           writes it
+//   LIGHTS  a racing wheel's shift lights (Patch::lightsTap, Meters::lights): a main-module float shiftLights read as a
+//           display's field is (a level; an instrument's from its newest sounding voice, 0 while none sounds, still
+//           declared), Shared's int one through its pointer (a mask, whether a voice sounds or not), the main module's
+//           taken before Shared's when both have one, none without the field; a float[5] and a dial of the name are
+//           none, each a note naming it
 //   SCOPE   the last samples of the output are the Engine's output, bit for bit (mono: the sides' mean); an effect's
 //           input likewise
 //   FRAME   the frame counts the blocks (a last, shorter one too)
@@ -599,6 +606,37 @@ PROBE(dsp, meters)
     P.near("taps.int", static_cast<double>(m.taps[1]), 7.0, 1e-6);
     P.near("taps.bool", static_cast<double>(m.taps[2]), 1.0, 1e-6);
     P.near("taps.note", static_cast<double>(m.taps[3]), 60.0, 1e-6);
+    {
+        // The most displays a panel has, each its own field.
+        std::string lines, fields, writes;
+        for (int k = 1; k <= pg::kMaxDisplays; ++k)
+        {
+            const std::string f = "f" + std::to_string(k);
+            lines += "#pragma panel number " + f + " 0 64\n";
+            fields += "    float " + f + ";\n";
+            writes += "        " + f + " = " + std::to_string(k) + ";\n";
+        }
+        const std::string program = kInstrument
+            ? lines + "module Voice\n{\n" + fields + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + writes + "        return true;\n    }\n};\n"
+            : lines + "module Effect\n{\n" + fields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                  + writes + "    }\n};\n";
+        probe::Rig many(kFs, kBlock);
+        std::string errors;
+        const bool loaded = many.load(program, &errors);
+        if (!loaded)
+            std::printf("%s", errors.c_str());
+        pg::Meters mm;
+        std::vector<probe::Note> on;
+        if constexpr (kInstrument)
+            on.push_back({ 0, pg::EventKind::noteOn, 60, 0.8f });
+        many.run(probe::Stereo(4 * kBlock), kBlock, on);
+        bool each = loaded && many.engine().meters(mm) && static_cast<int>(many.panel().displays.size()) == pg::kMaxDisplays;
+        for (int k = 0; each && k < pg::kMaxDisplays; ++k)
+            each = mm.taps[k] == static_cast<float>(k + 1);
+        P.eq("taps.most_each", each ? 1 : 0, 1);
+        P.near("taps.most_last", static_cast<double>(mm.taps[pg::kMaxDisplays - 1]), pg::kMaxDisplays, 0.0);
+    }
 
     // SCOPE: the last 512 samples, as the Engine wrote them.
     {
@@ -683,6 +721,65 @@ PROBE(dsp, meters)
             P.near("shared.as_process_writes", static_cast<double>(sm.taps[0]), 5.0, 0.0);
             P.near("shared.main_field", static_cast<double>(sm.taps[1]), 2.0, 0.0);
         }
+    }
+
+    // LIGHTS: a program's shiftLights, as the Standalone's wheel reads it.
+    {
+        // A program of this kind: `shared` (a module Shared, or ""), then a main module with `fields` whose process (an
+        // instrument's while its note sounds) runs `body`.
+        const auto program = [](const std::string& shared, const std::string& fields, const std::string& body) {
+            const std::string pointer = shared.empty() ? "" : "    Shared* shared;\n";
+            return kInstrument
+                       ? shared + "module Voice\n{\n" + pointer + fields + "    bool on;\n"
+                             "    void start(float n, float v) { on = true; }\n    void stop() { on = false; }\n"
+                             "    bool process(float* restrict left, float* restrict right, int n) { " + body + " return on; }\n};\n"
+                       : shared + "module Effect\n{\n" + pointer + fields
+                             + "    void process(float* restrict left, float* restrict right, int n) { " + body + " }\n};\n";
+        };
+        // Loaded and played a few blocks (an instrument's with a note held when `held`): its meters.
+        const auto played = [](const std::string& text, bool held, std::string& said) {
+            probe::Rig r(kFs, kBlock);
+            pg::Meters got;
+            if (!r.load(text, &said))
+                return got;
+            std::vector<probe::Note> on;
+            if (kInstrument && held)
+                on.push_back({ 0, pg::EventKind::noteOn, 60, 0.8f });
+            r.run(probe::Stereo(static_cast<std::size_t>(kBlock) * 4), kBlock, on);
+            r.engine().meters(got);
+            return got;
+        };
+        std::string said;
+        const std::string mainLevel = program("", "    float shiftLights;\n", "shiftLights = 0.6f;");
+        pg::Meters lm = played(mainLevel, true, said);
+        P.eq("lights.main_level_kind", lm.lightsKind, pg::Meters::kLightsLevel);
+        P.near("lights.main_level", static_cast<double>(lm.lights), 0.6, 1e-6);
+        if constexpr (kInstrument)
+        {
+            lm = played(mainLevel, false, said);
+            P.eq("lights.main_no_voice_declared", lm.lightsKind, pg::Meters::kLightsLevel);
+            P.near("lights.main_no_voice_none", static_cast<double>(lm.lights), 0.0, 0.0);
+        }
+        const std::string sharedMask = "module Shared\n{\n    int shiftLights;\n    void init(float rate) { shiftLights = 21; }\n};\n";
+        for (const bool held : { false, true })
+        {
+            lm = played(program(sharedMask, "", ""), held, said);
+            const std::string at = held ? "lights.shared_mask_sounding" : "lights.shared_mask_silent";
+            P.eq(at + "_kind", lm.lightsKind, pg::Meters::kLightsMask);
+            P.near(at, static_cast<double>(lm.lights), 21.0, 0.0);
+        }
+        lm = played(program(sharedMask, "    float shiftLights;\n", "shiftLights = 0.4f;"), true, said);
+        P.eq("lights.main_before_shared", lm.lightsKind == pg::Meters::kLightsLevel && lm.lights == 0.4f ? 1 : 0, 1);
+        lm = played(program("", "    float rpm;\n", "rpm = 1;"), true, said);
+        P.eq("lights.none", lm.lightsKind, pg::Meters::kNoLights);
+        said.clear();
+        lm = played(program("", "    float shiftLights[5];\n", "shiftLights[0] = 1;"), true, said);
+        P.eq("lights.array_none", lm.lightsKind, pg::Meters::kNoLights);
+        P.eq("lights.array_noted", said.find("note: shiftLights is a float[5]: a racing wheel's shift lights follow") != std::string::npos ? 1 : 0, 1);
+        said.clear();
+        lm = played(program("", "    param float shiftLights [[fminus::default(1)]];\n", ""), true, said);
+        P.eq("lights.dial_none", lm.lightsKind, pg::Meters::kNoLights);
+        P.eq("lights.dial_noted", said.find("note: shiftLights is a dial: a racing wheel's shift lights follow") != std::string::npos ? 1 : 0, 1);
     }
 
     // FALL: half a second of silence (an instrument's voices have ended above).

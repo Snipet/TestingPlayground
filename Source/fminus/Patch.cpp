@@ -279,7 +279,8 @@ namespace playground
                         if (b.slots[static_cast<std::size_t>(a)] < 0)
                             notes += file + ": note: " + b.field + "'s " + (a < static_cast<int>(b.pots.size()) ? "pot " : "switch ")
                                    + b.names[static_cast<std::size_t>(a)] + " has no dial (the plugin has "
-                                   + std::to_string(kMaxControls) + "): it stays at its default\n";
+                                   + std::to_string(kMaxControls) + ": the host's " + std::to_string(kHostControls)
+                                   + " and the panel's " + std::to_string(kPanelControls) + "): it stays at its default\n";
             return d.bindings;
         }
 
@@ -650,7 +651,7 @@ namespace playground
             return r;
         }
 
-        // The dials: the first kMaxControls parameters, a float a stream.
+        // The dials: the first kMaxControls parameters (the host's, then the panel's own: Controls.h), a float a stream.
         auto patch = std::unique_ptr<Patch>(new Patch());
         std::array<std::string, kMaxControls> names{};
         std::array<bool, kMaxControls> streams{};
@@ -661,7 +662,8 @@ namespace playground
             if (k >= static_cast<std::size_t>(kMaxControls))
             {
                 r.notes += file + ": note: " + p.module + "::" + p.name + " has no dial (the plugin has " +
-                           std::to_string(kMaxControls) + "): it stays at its default\n";
+                           std::to_string(kMaxControls) + ": the host's " + std::to_string(kHostControls) + " and the panel's " +
+                           std::to_string(kPanelControls) + "): it stays at its default\n";
                 continue;
             }
             patch->controls_[k] = controlOf(p);
@@ -705,7 +707,7 @@ namespace playground
                     }
                 }
                 if (slot >= 0)
-                    patch->circuitMask_ |= 1u << slot;
+                    patch->circuitMask_ |= slotBit(slot);
             }
             mostArgs = std::max(mostArgs, call.slots.size());
             patch->circuitCalls_.push_back(std::move(call));
@@ -921,53 +923,91 @@ namespace playground
             for (const fminus::Program::Module::Field& f : sharedModule->fields)
                 sharedFields.push_back({ f.name, f.type });
         fields = displayFields(fields, sharedFields);
-        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do, as FMinus
-        // read the files (a skipped group's lines are none).
-        const std::vector<SourceFile> readTexts = asRead(compiled, files);
-        std::vector<const SourceFile*> asFmRead;
-        for (const SourceFile& f : readTexts)
-            asFmRead.push_back(&f);
-        const SourceFile* gui = nullptr;
-        for (const SourceFile& f : files)
-            if (isGuiFile(f.name))
-            {
-                if (gui == nullptr)
-                    gui = &f;
-                else
-                    r.notes += f.name + ": note: the interface is " + gui->name + "'s (the first .gui file); this one is "
-                                                                                 "left out\n";
-            }
-        if (gui != nullptr)
+        // What reading the panel needs (Patch.h, "The panel"), kept in the recipe so that an edit of the panel's files
+        // is read again with no compile: the fields, each one's tap (the main module's, or Shared's through its Shared*
+        // field: "shared->level"), the files FMinus read.
+        PanelBase& reading = patch->recipe_.panel;
+        reading.fields = fields;
+        for (const PanelField& pf : fields)
         {
-            std::string ignored;
-            const PanelSpec pragmas = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, ignored);
-            if (!pragmas.sections.empty() || !pragmas.displays.empty())
-                r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
-            std::vector<std::string> fileNames;
-            for (const SourceFile& f : files)
-                fileNames.push_back(f.name);
-            patch->panel_ = readGuiSpec(*gui, patch->controls_, fields, kInstrument, fileNames, r.notes);
-        }
-        else
-            patch->panel_ = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, r.notes);
-        for (const PanelDisplay& d : patch->panel_.displays)
-        {
-            if (d.tap < 0)
-                continue;
-            const std::size_t arrow = d.source.find("->");
+            if (pf.type != "float" && pf.type != "int" && pf.type != "bool")
+                continue;                              // a display takes these alone (GuiSpec's, PanelSpec's)
+            const std::size_t arrow = pf.name.find("->");
             const fminus::Program::Module* home = arrow == std::string::npos ? s.module : sharedModule;
-            const std::string name = arrow == std::string::npos ? d.source : d.source.substr(arrow + 2);
+            const std::string name = arrow == std::string::npos ? pf.name : pf.name.substr(arrow + 2);
             if (home != nullptr)
                 for (const fminus::Program::Module::Field& f : home->fields)
                     if (f.name == name)
                     {
                         Tap t;
                         t.offset = f.offset;
-                        t.type = f.type == "float" ? Tap::Type::real : (f.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
+                        t.type = pf.type == "float" ? Tap::Type::real : (pf.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
                         t.shared = home != s.module;
-                        patch->taps_.push_back(t);
+                        reading.taps.emplace_back(pf.name, t);
                         break;
                     }
+        }
+        // The racing wheel's shift lights (lightsTap): the main module's shiftLights, else Shared's (its tap is named
+        // through the Shared* field: "shared->shiftLights"). A field of the name that no tap reads is a note.
+        {
+            const std::string lights = kLightsField, viaShared = std::string("->") + kLightsField;
+            const auto lightsName = [&](const std::string& n, bool shared) {
+                return shared ? n.size() > viaShared.size() && n.compare(n.size() - viaShared.size(), viaShared.size(), viaShared) == 0
+                              : n == lights;
+            };
+            for (const bool shared : { false, true })
+            {
+                for (const auto& [name, t] : reading.taps)
+                    if (lightsName(name, shared))
+                    {
+                        patch->lights_ = t;
+                        patch->hasLights_ = true;
+                        break;
+                    }
+                if (patch->hasLights_)
+                    break;
+            }
+            if (!patch->hasLights_)
+                for (const PanelField& pf : fields)
+                    if (lightsName(pf.name, false) || lightsName(pf.name, true))
+                    {
+                        r.notes += file + ": note: " + pf.name + " is "
+                                 + (pf.type.rfind("param", 0) == 0 ? std::string("a dial") : "a " + pf.type)
+                                 + ": a racing wheel's shift lights follow a float, int or bool field the program writes\n";
+                        break;
+                    }
+        }
+        for (const SourceFile* f : compiled)
+            reading.read.push_back(f->name);
+        // A .gui file (GuiSpec.h), the first one, makes the interface; else the #pragma panel lines do, as FMinus
+        // read the files (a skipped group's lines are none).
+        const std::vector<SourceFile> readTexts = asRead(compiled, files);
+        std::vector<const SourceFile*> asFmRead;
+        for (const SourceFile& f : readTexts)
+            asFmRead.push_back(&f);
+        const auto gui = std::find_if(files.begin(), files.end(), [](const SourceFile& f) { return isGuiFile(f.name); });
+        if (gui != files.end())
+        {
+            std::string ignored;
+            const PanelSpec pragmas = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, ignored);
+            reading.pragmas = !pragmas.sections.empty() || !pragmas.displays.empty();
+            if (reading.pragmas)
+                r.notes += file + ": note: the interface is " + gui->name + "'s: the #pragma panel lines are left out\n";
+            const Controls declared = patch->controls_;
+            patch->panel_ = readPanel(reading, declared, files, patch->controls_, patch->taps_, r.notes);
+        }
+        else
+        {
+            patch->panel_ = readPanelSpec(asFmRead, patch->controls_, fields, kInstrument, r.notes);
+            reading.pragmas = !patch->panel_.sections.empty() || !patch->panel_.displays.empty();
+            for (const PanelDisplay& d : patch->panel_.displays)
+                if (d.tap >= 0)
+                    for (const auto& [name, t] : reading.taps)
+                        if (name == d.source)
+                        {
+                            patch->taps_.push_back(t);
+                            break;
+                        }
         }
         // The probe table (Patch.h, "Probes"): each main-module field of a netlist's module (a scalar or an array), its
         // elements and the probe fields' offsets in one, each checked against its type and the sizes; the netlists'
@@ -1058,6 +1098,38 @@ namespace playground
         r.compileMs = msSince(t0);
         r.patch = std::move(patch);
         return r;
+    }
+
+    PanelSpec Patch::readPanel(const PanelBase& base, const Controls& declared, const Sources& files, Controls& controls,
+                               std::vector<Tap>& taps, std::string& notes)
+    {
+        controls = declared;
+        taps.clear();
+        const SourceFile* gui = nullptr;
+        for (const SourceFile& f : files)
+            if (isGuiFile(f.name))
+            {
+                if (gui == nullptr)
+                    gui = &f;
+                else
+                    notes += f.name + ": note: the interface is " + gui->name + "'s (the first .gui file); this one is "
+                                                                               "left out\n";
+            }
+        if (gui == nullptr)
+            return {};
+        std::vector<std::string> fileNames;
+        for (const SourceFile& f : files)
+            fileNames.push_back(f.name);
+        PanelSpec panel = readGuiSpec(*gui, controls, base.fields, kInstrument, fileNames, notes);
+        for (const PanelDisplay& d : panel.displays)
+            if (d.tap >= 0)
+                for (const auto& [name, t] : base.taps)
+                    if (name == d.source)
+                    {
+                        taps.push_back(t);
+                        break;
+                    }
+        return panel;
     }
 
     void Patch::setDefaults(void* instance, std::string_view moduleName, int depth) const
@@ -1530,7 +1602,11 @@ namespace playground
     {
         if (t < 0 || t >= static_cast<int>(taps_.size()))
             return 0.0f;
-        const Tap& k = taps_[static_cast<std::size_t>(t)];
+        return tapOf(taps_[static_cast<std::size_t>(t)], i);
+    }
+
+    float Patch::tapOf(const Tap& k, int i) const noexcept
+    {
         const void* home = k.shared ? shared_ : i >= 0 && i < static_cast<int>(instances_.size()) ? instances_[static_cast<std::size_t>(i)] : nullptr;
         if (home == nullptr)
             return 0.0f;

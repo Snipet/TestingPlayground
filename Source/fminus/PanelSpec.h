@@ -19,7 +19,8 @@
 //   #pragma panel meter out "OUTPUT"                       LED bars
 //   #pragma panel vu out                                   an analog VU meter, a needle
 //   #pragma panel led gate "GATE"                          a light
-//   #pragma panel number cutoffHz "HZ"                     a readout
+//   #pragma panel number cutoffHz "HZ"                     a readout; a field's unit=, decimals= (0 to 4) and scale= as
+//                                                          a knob's value reads (number speed unit=rpm decimals=0)
 //   #pragma panel scope out                                an oscilloscope
 // Their source: `in` or `out`, the plugin's audio (an effect's input, the output; left and right, in dBFS), or a
 // float, int or bool field that the program writes, shown between a range given after it (default 0 1: #pragma panel
@@ -29,6 +30,8 @@
 // number. A section names a display by its name, the source's unless
 // `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
 // "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
+//
+// A key=value is written with no space around its = (unit="rpm", unit=Hz, decimals=1).
 //
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the
@@ -52,7 +55,9 @@ namespace playground
     inline constexpr std::size_t kMaxSectionTitle = 24;   // characters; longer ones are cut
     inline constexpr std::size_t kMaxDialLabel = 14;
     inline constexpr std::size_t kMaxOptionLabel = 10;
-    inline constexpr int kMaxDisplays = 16;               // displays (and so field taps) a program may have
+    inline constexpr int kMaxDisplays = 32;               // displays (and so field taps) a program may have: the
+                                                          // Panel's masks hold a bit each (32 at most)
+    inline constexpr int kMaxShaderInputs = 16;           // a shader's inputs: FunkGui's u_params, 4 vec4s
     inline constexpr int kMaxOptions = 8;                 // values a switch or buttons may name
 
     enum class DisplayKind : uint8_t { meter, vu, led, number, scope, spectrum };   // spectrum: a .gui file's
@@ -168,7 +173,7 @@ namespace playground
         int from = 48, keys = 25;                           // a keyboard's lowest note and its keys
         bool wheels = false;                                // and its pitch and mod wheels, at its left
         std::string file;                                   // a shader's source file
-        std::array<std::string, 8> inputs{};                // a shader's inputs: parameters, fields, in, out
+        std::array<std::string, kMaxShaderInputs> inputs{}; // a shader's inputs: parameters, fields, in, out
         int shader = -1;                                    // a shader's program (PanelSpec::shaders)
         bool operator==(const GuiNode&) const = default;
     };
@@ -204,6 +209,10 @@ namespace playground
         std::array<DialStyle, kMaxControls> styles{};
         std::array<std::vector<std::string>, kMaxControls> options{};   // an int's or a bool's values' names
         std::array<std::string, kMaxControls> colors{};
+        // The tap table its displays' `tap` indices are of: 0 the program's own (Patch::taps), else a panel's edit's
+        // (the count dsp/Engine.h's setTaps gave it; dsp/Compiler.h, "A panel's edit"). A frame read by another table
+        // (Meters::tapTable) holds other fields at those indices.
+        uint64_t tapTable = 0;
         bool operator==(const PanelSpec&) const = default;
     };
 

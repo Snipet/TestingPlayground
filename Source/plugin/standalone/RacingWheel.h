@@ -15,6 +15,8 @@
 //     the first report) go through a wheel::Map, and the messages that come out (control changes, and the start key's
 //     note) are handed to Hooks::send, a report's values together, at most 125 times a second;
 //   - a G29 at PS4 (0xC260) is not read (status: "set the switch on the wheel to PS3").
+// Its shift lights follow the program's shiftLights field (Hooks::lights, looked at 40 times a second while it is read,
+// sent only when they change: WheelDriver.h), off again when it is switched off or the app quits.
 // Switched off, or the wheel leaving: the spring stops (wheel::kSpringOff) and what it sent goes back to rest
 // (Map::rest: centred, released, neutral, no button, the start key's note off), so the synth holds no throttle open. On
 // quitting, the spring stops (a crash or a force-quit leaves it on until the wheel is unplugged). Off, the device is
@@ -41,6 +43,7 @@ namespace playground::standalone
         {
             std::function<void()> changed;
             std::function<void(const std::vector<wheel::Message>&)> send;   // channel 1's messages, in order
+            std::function<int()> lights;         // the shift lights the program asks for: their mask, -1 none
         };
 
         static constexpr const char* kIdentifier = wheel::kIdentifier;        // its MidiInputDevice::identifier
