@@ -18,10 +18,11 @@
 //            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
 //            its number acts on the first (put back in the helper), a render naming the second shows the second as it
 //            was; a number no sandbox has refused; apply without a number refused
-//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc; its dials declared, a `param enum` an int
+//   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc, the .sh; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an enumeration's an int as FMinus makes it, Shared's through its pointer, shared->tone):
-//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png);
+//            the shader drawn by the GPU in its colour, not FunkGui's striped placeholder (gui.sandbox.shader.png), its
+//            colour from the folder's .sh file (read with the rest), its title in the library's text (funk/text.sh);
 //            values naming the field the shader reads (an input with no display of its own) changes its colour
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
@@ -515,8 +516,11 @@ PROBE(plugin, sandbox)
         std::ofstream(folder / pg::kProgramName) << program();
         std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
-        std::ofstream(folder / "glow.sc") << "void main()\n{\n    gl_FragColor = mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), "
-                                             "step(100.0, in1));\n}\n";
+        // The shader takes its colour from a .sh file of the program's own and writes its title with the library's text.
+        std::ofstream(folder / "glow.sc") << "#include \"funk/text.sh\"\n#include \"tint.sh\"\n\nvoid main()\n{\n"
+                                             "    gl_FragColor = mix(tint(in1), vec4(1.0, 1.0, 1.0, 1.0), text(v_px, vec2(6.0, 10.0), 10.0, 0.0, \"GLOW\"));\n}\n";
+        std::ofstream(folder / "tint.sh") << "// tint.sh: magenta, green once shine passes 100.\nvec4 tint(float shine)\n{\n"
+                                             "    return mix(vec4(0.9, 0.1, 0.6, 1.0), vec4(0.1, 0.8, 0.2, 1.0), step(100.0, shine));\n}\n";
         const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
         std::printf("folder:\n%s", r.text.c_str());
         shaderNumber = numberIn(r.text);
@@ -531,7 +535,7 @@ PROBE(plugin, sandbox)
         float x = 0, y = 0, w = 0, h = 0;
         const bool found = rectOf(r.text, "shader \"glow.sc\"", x, y, w, h);
         const juce::Image img = decode(pic.png);
-        int magenta = 0, placeholder = 0, n = 0;
+        int magenta = 0, placeholder = 0, n = 0, title = 0;
         if (found && img.isValid())
             for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
                 for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
@@ -540,8 +544,13 @@ PROBE(plugin, sandbox)
                     ++n;
                     magenta += c.getRed() > 200 && c.getGreen() < 60 && c.getBlue() > 120 ? 1 : 0;
                     placeholder += (c.getRed() == 28 && c.getGreen() == 30 && c.getBlue() == 34) || (c.getRed() == 46 && c.getGreen() == 49 && c.getBlue() == 55) ? 1 : 0;
+                    // GLOW's letters, white over the magenta (its green up), in the band of the cell's top 16 px
+                    title += py < static_cast<int>((y + 16) * pg::sandbox::kDpi) && c.getGreen() > 100 ? 1 : 0;
                 }
-        std::printf("shader cell: %d pixels, %d in its colour, %d the placeholder's\n", n, magenta, placeholder);
+        std::printf("shader cell: %d pixels, %d in its colour, %d the placeholder's, %d of its title's\n", n, magenta, placeholder, title);
+        // Built, so the folder's tint.sh was read (an #include of no file is a note, and no build); its colour drawn.
+        P.eq("shader.header_read", has(r.text, "Shaders: 1 of 1 built") && !has(r.text, "tint.sh") ? 1 : 0, 1);
+        P.ge("shader.text_drawn", title, 60);
         P.eq("shader.gpu", found && has(pic.text, "drawn by the GPU") && n > 0 ? 1 : 0, 1);
         P.ge("shader.drawn", magenta, n * 9 / 10);
         P.eq("shader.no_placeholder", placeholder, 0);
