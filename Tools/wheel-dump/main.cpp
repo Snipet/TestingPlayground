@@ -14,6 +14,11 @@
 //   wheel-dump --spring     a G29 in its own mode: 900 degrees and the Standalone's autocentre spring while it runs
 //                           (off again when it ends: Ctrl-C, SIGTERM or SIGHUP; Ctrl-Z stops it with the spring off,
 //                           and fg sets it again; a SIGKILL or a crash leaves it on until the wheel is unplugged)
+//   wheel-dump --leds       a G29 in its own mode: its shift lights (WheelMap.h's lightsReport), each alone for a
+//                           second (bit 0, the first a tach lights, to bit 4), then all five, then none; then the
+//                           throttle lights them as a program's shiftLights does (a fifth of its travel a light), all
+//                           five flashing four times a second at the floor (a limiter); each report printed as it goes,
+//                           only when the lights change; off again when it ends, as the spring is
 //
 // IOKit's HID manager on the main run loop, opened shared: a game (or the Standalone) may read the wheel meanwhile.
 #include "plugin/WheelMap.h"
@@ -39,7 +44,7 @@ namespace
 
     struct Options
     {
-        bool list = false, toNative = false, spring = false;
+        bool list = false, toNative = false, spring = false, leds = false;
     };
 
     struct Element
@@ -55,6 +60,8 @@ namespace
         IOHIDManagerRef manager = nullptr;
         IOHIDDeviceRef device = nullptr;                     // the one watched (retained)
         bool springOn = false;
+        int lightsSent = 0;                                  // the shift lights' mask last sent (--leds)
+        int lightsTick = 0;                                  // the lights' ticks since the wheel came
         std::map<IOHIDElementRef, Element> elements;
         wheel::Map map;
         std::vector<wheel::Message> ccs;
@@ -177,6 +184,46 @@ namespace
         }
     }
 
+    // --leds: the mask, sent when it differs from the last.
+    void lightsTo(int mask)
+    {
+        if (tool.device == nullptr || mask == tool.lightsSent)
+            return;
+        char what[64];
+        std::snprintf(what, sizeof what, "the shift lights, mask 0x%02x", mask);
+        report(tool.device, wheel::lightsReport(mask), what);
+        tool.lightsSent = mask;
+    }
+
+    // Every kLightsInterval: the test (each light a second, all five, none), then the throttle as a tach.
+    void onLights(CFRunLoopTimerRef, void*)
+    {
+        if (tool.device == nullptr || !tool.options.leds)
+            return;
+        constexpr int kSecond = 40;                          // ticks of 25 ms
+        constexpr int kSteps[] = { 1, 2, 4, 8, 16, wheel::kAllLights, 0 };
+        const int step = tool.lightsTick / kSecond;
+        if (tool.lightsTick % kSecond == 0 && step < static_cast<int>(std::size(kSteps)))
+            std::printf("shift lights: %s\n", step < wheel::kLights ? ("bit " + std::to_string(step) + " alone").c_str()
+                                                 : step == wheel::kLights ? "all five" : "none; now the throttle lights them");
+        ++tool.lightsTick;
+        if (step < static_cast<int>(std::size(kSteps)))
+        {
+            lightsTo(kSteps[step]);
+            return;
+        }
+        const float throttle = tool.map.pedal(wheel::Axis::throttle);
+        const bool limiter = throttle >= 0.999f;
+        lightsTo(limiter ? ((tool.lightsTick / 5) % 2 == 0 ? wheel::kAllLights : 0) : wheel::lightsMask(throttle, false));
+    }
+
+    void lightsOff()
+    {
+        if (tool.device != nullptr && tool.lightsSent != 0)
+            report(tool.device, wheel::lightsReport(0), "the shift lights off");
+        tool.lightsSent = 0;
+    }
+
     void list(IOHIDDeviceRef device)
     {
         const int vendor = intProperty(device, CFSTR(kIOHIDVendorIDKey)), product = intProperty(device, CFSTR(kIOHIDProductIDKey));
@@ -257,6 +304,11 @@ namespace
         }
         if (kind == wheel::Kind::g29 && tool.options.spring)
             springOn();
+        tool.lightsSent = 0;                                 // none lit, as the wheel starts
+        tool.lightsTick = 0;
+        if (tool.options.leds && kind != wheel::Kind::g29)
+            std::printf("--leds: not a G29 in its own mode; its lights are left alone\n");
+        tool.options.leds = tool.options.leds && kind == wheel::Kind::g29;
         tool.map.forget();
         for (auto& [ref, el] : tool.elements)
             if (el.known)
@@ -283,6 +335,7 @@ namespace
         CFRelease(tool.device);
         tool.device = nullptr;
         tool.springOn = false;
+        tool.lightsSent = 0;                                 // they went with it
         tool.elements.clear();
         tool.map.rest(tool.ccs);
     }
@@ -368,9 +421,11 @@ int main(int argc, char** argv)
             tool.options.toNative = true;
         else if (std::strcmp(argv[i], "--spring") == 0)
             tool.options.spring = true;
+        else if (std::strcmp(argv[i], "--leds") == 0)
+            tool.options.leds = true;
         else
         {
-            std::fprintf(stderr, "usage: wheel-dump [--list] [--switch] [--spring]\n");
+            std::fprintf(stderr, "usage: wheel-dump [--list] [--switch] [--spring] [--leds]\n");
             return 2;
         }
     }
@@ -400,10 +455,14 @@ int main(int argc, char** argv)
     CFRunLoopTimerContext context{ 0, nullptr, nullptr, nullptr, nullptr };
     const CFRunLoopTimerRef tick = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.1, 0.1, 0, 0, onTick, &context);
     CFRunLoopAddTimer(CFRunLoopGetMain(), tick, kCFRunLoopDefaultMode);
+    const CFRunLoopTimerRef lights = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 0.025, 0.025, 0, 0,
+                                                          onLights, &context);
+    CFRunLoopAddTimer(CFRunLoopGetMain(), lights, kCFRunLoopDefaultMode);
 
-    // The signals that end or stop it, on the main queue (the run loop's): the spring off first. Ctrl-C ends it here;
-    // SIGTERM and SIGHUP then take their default action (the process ends as they say); Ctrl-Z (SIGTSTP) stops it with
-    // SIGSTOP (which reaches no handler), and when it goes on (fg) the spring is set again.
+    // The signals that end or stop it, on the main queue (the run loop's): the spring and the lights off first. Ctrl-C
+    // ends it here; SIGTERM and SIGHUP then take their default action (the process ends as they say); Ctrl-Z (SIGTSTP)
+    // stops it with SIGSTOP (which reaches no handler), and when it goes on (fg) the spring is set again (the lights at
+    // their next change).
     std::vector<dispatch_source_t> sources;
     for (const int sig : { SIGINT, SIGTERM, SIGHUP, SIGTSTP })
     {
@@ -413,6 +472,7 @@ int main(int argc, char** argv)
         dispatch_source_set_event_handler(source, ^{
             const bool spring = tool.springOn;
             springOff();
+            lightsOff();
             if (sig == SIGINT)
                 CFRunLoopStop(CFRunLoopGetMain());
             else if (sig == SIGTSTP)
@@ -436,8 +496,11 @@ int main(int argc, char** argv)
     CFRunLoopRun();
 
     springOff();
+    lightsOff();
     CFRunLoopTimerInvalidate(tick);
     CFRelease(tick);
+    CFRunLoopTimerInvalidate(lights);
+    CFRelease(lights);
     if (tool.device != nullptr)
         CFRelease(tool.device);
     IOHIDManagerClose(tool.manager, kIOHIDOptionsTypeNone);
