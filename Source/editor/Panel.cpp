@@ -2539,21 +2539,25 @@ namespace playground::ui
             bool shown() const override { return !hidden_; }
         };
 
-        // ---- the dials folded under a netlist's Schematic view: "32 DIALS   SHOW" -------------------------------------
-        // A 24 px bar at the program's column's bottom when the dials do not fit beside the drawing's room; its button
-        // shows them (small, the editor keeping 192 px) and hides them again. The PANEL view always shows them all.
+        // ---- the dials folded under a netlist's Schematic view, or the code: "32 DIALS   SHOW" -----------------------
+        // A 24 px bar at the program's column's bottom when the dials do not fit beside the drawing's room (or, under
+        // the code, when they would leave the editor less than its floor: 64 in the least window); its button shows
+        // them (small; the editor keeping 192 px beside a drawing, its floor beside the code) and hides them again. The
+        // PANEL view always shows them all. A panel of displays alone counts its displays.
         class DialsBarItem final : public Item
         {
         public:
             DialsBarItem(uint32_t id, std::function<void()> toggle) : id_(id), toggle_(std::move(toggle)) {}
 
-            void place(funkgui::Rect r, int dials, int hidden, bool open, bool shown)
+            void place(funkgui::Rect r, int dials, int displays, int hidden, bool open, bool shown, bool schematic)
             {
                 bounds_ = r;
-                dials_ = dials;
+                displays_ = dials == 0;
+                dials_ = dials == 0 ? displays : dials;
                 hidden_ = hidden;
                 open_ = open;
                 shown_ = shown;
+                schematic_ = schematic;
             }
             funkgui::Rect button() const { return { bounds_.right() - 64.0f, bounds_.y + 2.0f, 60.0f, bounds_.h - 4.0f }; }
 
@@ -2564,7 +2568,7 @@ namespace playground::ui
             }
             uint64_t drawKey() const override
             {
-                return DrawKey{}.mix(bounds_).mix(dials_).mix(hidden_).mix(open_).mix(hovered_).mix(pointer_).h;
+                return DrawKey{}.mix(bounds_).mix(dials_).mix(displays_).mix(hidden_).mix(open_).mix(hovered_).mix(pointer_).h;
             }
             void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override
             {
@@ -2572,10 +2576,11 @@ namespace playground::ui
                 const chat::Palette p = chat::palette(th);
                 c.rrect(bounds_.x, bounds_.y, bounds_.w, bounds_.h, 6.0f, p.raised, 1.0f, p.cardEdge);
                 char text[64];
+                const char* what = displays_ ? "DISPLAY" : "DIAL";
                 if (open_ && hidden_ > 0)                // more than the window has room for: the PANEL view has all
-                    std::snprintf(text, sizeof text, "%d OF %d DIALS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_);
+                    std::snprintf(text, sizeof text, "%d OF %d %sS SHOWN: THE PANEL VIEW HAS ALL", dials_ - hidden_, dials_, what);
                 else
-                    std::snprintf(text, sizeof text, "%d DIAL%s", dials_, dials_ == 1 ? "" : "S");
+                    std::snprintf(text, sizeof text, "%d %s%s", dials_, what, dials_ == 1 ? "" : "S");
                 c.text(text, bounds_.x + 10.0f, c.capCentreTop(bounds_.centreY(), funkgui::type::kMicro), funkgui::type::kMicro, th.ink52);
                 const funkgui::Rect b = button();
                 const bool hot = hovered_ && bounds_.contains(pointer_);
@@ -2604,8 +2609,9 @@ namespace playground::ui
                 it.id = id_;
                 it.role = funkgui::A11yRole::button;
                 it.bounds = bounds_;
-                it.title = open_ ? "Hide the dials" : "Show the dials";
-                it.value = std::to_string(dials_) + " dials" + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
+                const std::string what = displays_ ? "displays" : "dials";
+                it.title = (open_ ? "Hide the " : "Show the ") + what;
+                it.value = std::to_string(dials_) + " " + what + (open_ && hidden_ > 0 ? ", " + std::to_string(dials_ - hidden_) + " shown" : "");
                 out.push_back(std::move(it));
             }
             bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override
@@ -2618,8 +2624,9 @@ namespace playground::ui
             }
             void specLine(char* out, std::size_t n) const override
             {
-                std::snprintf(out, n, "%d DIALS   %s   THE PANEL VIEW SHOWS THEM ALL", dials_,
-                              open_ ? "HIDE GIVES THE DRAWING THEIR ROOM" : "SHOW PUTS THEM UNDER THE DRAWING, SMALL");
+                const char* where = schematic_ ? "THE DRAWING" : "THE CODE";
+                std::snprintf(out, n, "%d %s   %s %s%s   THE PANEL VIEW SHOWS THEM ALL", dials_, displays_ ? "DISPLAYS" : "DIALS",
+                              open_ ? "HIDE GIVES" : "SHOW PUTS THEM UNDER", where, open_ ? " THEIR ROOM" : ", SMALL");
             }
             funkgui::Point centre() const override { return { button().centreX(), button().centreY() }; }
             bool shown() const override { return shown_; }
@@ -2628,8 +2635,9 @@ namespace playground::ui
             uint32_t id_;
             std::function<void()> toggle_;
             funkgui::Rect bounds_;
-            int dials_ = 0, hidden_ = 0;                 // the program's, and those over the editor's floor
-            bool open_ = false, shown_ = false, hovered_ = false;
+            int dials_ = 0, hidden_ = 0;                 // the program's (its displays' when it has no dial), and those over the editor's floor
+            bool displays_ = false;                      // a panel of displays alone: dials_ counts them
+            bool open_ = false, shown_ = false, hovered_ = false, schematic_ = true;
             funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         };
 
@@ -3302,6 +3310,8 @@ namespace playground::ui
         // and the info strip's count carry them), and the dials, laid out in what is left, folded into a 24 px bar when
         // they do not fit ("32 DIALS   SHOW": shown small then, the editor keeping 192 px, or less, down to its 80 px
         // floor, for rows that need it: every dial shows unless even that is too little, which the bar then says).
+        // Under the code the bar comes only when the dials, all small, would leave the editor less than its 80 px
+        // floor over the problems list (64 in the least window): SHOW then shows the rows under that line.
         const float problemsH = kProblemRowH * static_cast<float>(kProblemRows);
         const float inBottom = bottom - kInset;          // the program's card's inside
         const bool schematic = !full() && files().schematicShown();
@@ -3376,18 +3386,43 @@ namespace playground::ui
             guiView_->clear(panelSpec_);
             if (full())
             {
-                // The PANEL view: the dials from the column's top, as tall as they would be with all its room.
-                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, inBottom - kTabsY);
-                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY);
+                // The PANEL view: the dials from the column's top, as tall as they would be with all its room (small
+                // rows closing up to fit it: 64 dials in the least window, eight rows of eight; it has no fold).
+                const DialsLayout first = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, inBottom - kTabsY, 0.0f, kTightRowGap);
+                dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, kTabsY + (inBottom - first.top), inBottom - kTabsY, 0.0f,
+                                     kTightRowGap);
             }
             else
                 dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, inBottom, roomForDials, schematic ? kTightGap : 0.0f);
             panelTop = dials_.top;
-            if (schematic && used > 0 && inBottom - dials_.top > roomForDials + 0.5f)
+            // The code view folds them into the bar too when, all small, they would leave the editor less than its
+            // 80 px floor over the problems list (64 dials in the least window): never over the editor, the tabs or
+            // the actions.
+            const float keepsFloor = kEditorY + kEditorFloor + 8.0f + problemsH + 16.0f;
+            const bool codeFold = !full() && !schematic && (used > 0 || !panelSpec_.displays.empty()) && dials_.top < keepsFloor - 0.5f;
+            if ((schematic && used > 0 && inBottom - dials_.top > roomForDials + 0.5f) || codeFold)
             {
                 dialsBar_ = true;
                 const float barTop = inBottom - kDialsBarH;
-                if (dialsOpen_)
+                if (dialsOpen_ && codeFold)
+                {
+                    // shown small over the bar; the rows over the editor's floor and the problems list are hidden (the
+                    // bar says how many: the PANEL view has all), and the list sits over the first row shown, the
+                    // editor taking the rest
+                    dials_ = layoutDials(panelSpec_, controls_, measure, inX, inW, barTop - 8.0f, roomForDials - kDialsBarH - 8.0f);
+                    hideAbove = keepsFloor;
+                    panelTop = barTop;
+                    for (int c = 0; c < kMaxControls; ++c)
+                        if (const float t = dials_.dials[static_cast<std::size_t>(c)].top; controls_[static_cast<std::size_t>(c)].used && t >= hideAbove)
+                            panelTop = std::min(panelTop, t);
+                    for (std::size_t d = 0; d < panelSpec_.displays.size() && d < dials_.displays.size(); ++d)
+                        if (dials_.displays[d].top >= hideAbove)
+                            panelTop = std::min(panelTop, dials_.displays[d].top);
+                    for (const SectionFrame& f : dials_.sections)
+                        if (f.r.y >= hideAbove)
+                            panelTop = std::min(panelTop, std::max(hideAbove, f.r.y - kSectionTitleTop));
+                }
+                else if (dialsOpen_)
                 {
                     // shown small for the room the editor's 192 px leave; rows past it take the editor's room down to
                     // its 80 px floor, and only rows past that are hidden (the bar says how many: the PANEL view has all)
@@ -3427,8 +3462,12 @@ namespace playground::ui
         for (int c = 0; c < kMaxControls; ++c)
             hiddenDials += dialsBar_ && !dialsFolded_ && controls_[static_cast<std::size_t>(c)].used
                                    && dials_.dials[static_cast<std::size_t>(c)].top < hideAbove ? 1 : 0;
+        const int displays = std::min(static_cast<int>(panelSpec_.displays.size()), kMaxDisplays);
+        if (used == 0)                                   // a panel of displays alone: the bar counts those
+            for (int d = 0; d < displays; ++d)
+                hiddenDials += dialsBar_ && !dialsFolded_ && dials_.displays[static_cast<std::size_t>(d)].top < hideAbove ? 1 : 0;
         static_cast<DialsBarItem&>(*items_[static_cast<std::size_t>(dialsBarItem_)])
-            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, hiddenDials, dialsOpen_, dialsBar_);
+            .place({ inX, inBottom - kDialsBarH, inW, kDialsBarH }, used, displays, hiddenDials, dialsOpen_, dialsBar_, schematic);
         for (int c = 0; c < kMaxControls; ++c)
             if (const int i = itemOfSlot_[static_cast<std::size_t>(c)]; i >= 0)
             {
