@@ -35,8 +35,8 @@
 //   DIALS        a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //                set(): dials drive, tone and level after its own param, real 0 to 1 shown 0-100 %, linear, at the .pot
 //                defaults, one set for both elements, slots 1 to 3, one nonblocking shim; a param named drive gives
-//                amp_drive; two scalar fields two sets; with 31 params drive takes the 32nd slot and a note each says
-//                tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
+//                amp_drive; two scalar fields two sets; with 63 params drive takes the 64th slot (the panel's own
+//                last) and a note each says tone and level have none; a glide from sample 21312 (a block boundary of 64 and of 333) and another
 //                from 42624, 2 s: the same bits and the same calls in blocks of 64 and 333; still pots no call (an
 //                instrument's note on a free instance whose values are current none either); an effect's host->beat
 //                at each 16-sample call's first sample while a pot glides (no step; in 64 and 333 the circuit the same
@@ -672,18 +672,19 @@ namespace
             P.eq("dials.clash_field_pot", a == "drive amp_drive tone level" ? 1 : 0, 1);
             P.eq("dials.two_fields_two_sets", b == "a_drive a_tone a_level b_drive b_tone b_level" ? 1 : 0, 1);
         }
-        // 31 params: drive takes the 32nd slot, the note covers tone and level.
+        // 63 params: drive takes the 64th slot (the panel's own last: Controls.h), the note covers tone and level.
         {
             std::string params;
-            for (int k = 0; k < 31; ++k)
+            for (int k = 0; k < pg::kMaxControls - 1; ++k)
                 params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0)]];\n";
             const pg::Patch::Result full = pg::Patch::compile({ { pg::kProgramName, undriven("screamer.cir", params, { "Screamer amp" }) },
                                                                 { "screamer.cir", screamer } }, 48000.0f);
-            std::printf("31 params: %s%s", full.errors.c_str(), full.notes.c_str());
-            P.eq("dials.past_32_note", full.patch != nullptr && std::string(full.patch->controls()[31].name) == "drive"
-                                           && full.notes == "program.fm: note: amp's pot tone has no dial (the plugin has 32): it stays at "
-                                                            "its default\nprogram.fm: note: amp's pot level has no dial (the plugin has 32): "
-                                                            "it stays at its default\n" ? 1 : 0, 1);
+            std::printf("63 params: %s%s", full.errors.c_str(), full.notes.c_str());
+            const std::string has = " has no dial (the plugin has 64: the host's 32 and the panel's 32): it stays at its default\n";
+            P.eq("dials.past_64_note", full.patch != nullptr && std::string(full.patch->controls()[pg::kMaxControls - 1].name) == "drive"
+                                           && (full.patch->circuitSlots() & pg::slotBit(pg::kMaxControls - 1)) != 0
+                                           && full.notes == "program.fm: note: amp's pot tone" + has + "program.fm: note: amp's pot level" + has
+                                           ? 1 : 0, 1);
         }
 
         // 2 s, a pot gliding from sample 21312 (a block boundary of both: 64 x 333; the Engine starts a program on the
