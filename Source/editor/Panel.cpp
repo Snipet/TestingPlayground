@@ -7038,7 +7038,9 @@ namespace playground::ui
         return out;
     }
 
-    // Ten looks a second at most (EditorPort::recording never waits): a frame when what the notice says changes.
+    // Ten looks a second at most (EditorPort::recording never waits): a frame when what the notice says changes. Mark
+    // is placed again at each (as the muted notice's button is): the zoom's pill beside it shows once the host offers
+    // steps, with no layout of its own.
     void Panel::syncRecording(double nowSec)
     {
         if (recordingAt_ >= 0.0 && nowSec - recordingAt_ < 0.1 && nowSec >= recordingAt_)
@@ -7050,9 +7052,10 @@ namespace playground::ui
         if (const std::string text = recordText(); text != recordShownText_ || shownBefore != recordShown())
         {
             recordShownText_ = text;
-            placeRecordNotice();
             dirty_ = true;
         }
+        if (recordShown())
+            placeRecordNotice();
     }
 
     // The Mark button at the status bar's right (left of the muted notice and the zoom); REC's words left of it.
@@ -7079,6 +7082,8 @@ namespace playground::ui
     }
 
     funkgui::Point Panel::centreOfMark() const { return centreOf(markItem_); }
+
+    funkgui::Point Panel::centreOfZoom() const { return centreOf(zoomItem_); }
 
     void Panel::markNow()
     {

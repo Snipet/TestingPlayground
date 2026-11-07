@@ -2007,6 +2007,10 @@ PROBE(gui, dump)
             paperHost.tick(8);
             paperHost.settle();
             P.eq("record.paper_shown", paper.recordShown() ? 1 : 0, 1);
+            // Mark clear of the zoom's pill, which shows once the host offers its steps (after the Panel's first layout).
+            const funkgui::Point m = paper.centreOfMark(), z = paper.centreOfZoom();
+            std::printf("record, paper: Mark at %.1f, the zoom at %.1f\n", static_cast<double>(m.x), static_cast<double>(z.x));
+            P.ge("record.clear_of_zoom", static_cast<double>(z.x - m.x), 60.0);
             writePng(P, paperHost, "gui.dump.recording.paper.png", "recording.paper");
             funkgui::UiPreferences::get().setTheme(0);
         }

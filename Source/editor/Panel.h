@@ -540,6 +540,7 @@ namespace playground::ui
         bool recordShown() const noexcept { return recording_.stage != RecordingState::Stage::off; }
         std::string recordText() const;
         funkgui::Point centreOfMark() const;
+        funkgui::Point centreOfZoom() const;             // the status bar's zoom pill
         void markNow();
 
         // funkgui::Panel
