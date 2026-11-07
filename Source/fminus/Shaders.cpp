@@ -1,6 +1,7 @@
 // Source/fminus/Shaders.cpp: see Shaders.h.
 #include "fminus/Shaders.h"
 #include "fminus/PanelSpec.h"
+#include "fminus/ShaderLib.h"
 
 #include "Product.h"
 
@@ -142,16 +143,19 @@ namespace playground
             return shaderc + ' ' + std::to_string(size) + ' ' + std::to_string(static_cast<long long>(ns));
         }
 
-        // Everything a build's bytes come from (Shaders.h, "The cache").
+        // Everything a build's bytes come from (Shaders.h, "The cache"): `body` as shaderc reads it, and each file it
+        // includes, its name and its text as written beside it.
         std::string keyOf(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
-                          const ShaderTools& tools)
+                          const ShaderTools& tools, const std::vector<std::pair<std::string, std::string>>& included)
         {
-            std::string key = "playground shader 1\n";
+            std::string key = "playground shader 2\n";
             key += tools.platform + ' ' + tools.profile + '\n';
             key += shadercIdentity(tools.shaderc) + '\n';
             key += hex64(fnv64(tools.varyingDef)) + ' ' + hex64(fnv64(tools.bgfxShaderSh)) + '\n';
             key += file + '\n';
             key += shaderSource(body, inputs, tools);
+            for (const auto& [name, text] : included)
+                key += "#include " + name + ' ' + std::to_string(text.size()) + '\n' + text;
             return key;
         }
 
@@ -477,14 +481,21 @@ namespace playground
         }
 #endif
 
+        // A file shaderc reads, as a note cites it: its name and its text (shaderText's).
+        struct Cited
+        {
+            std::string name;
+            std::string text;
+        };
+
         // shaderc's log as a note: its first ERROR's message, on the line of the file it is about. shaderc reports
-        // lines of its own rewritten listing (bgfx's HLSL), so the line is found in the file instead: the first one
-        // with the name the error names, else the one whose text the listing's marked line has.
-        std::string noteOf(const std::string& file, const std::string& body, int bodyLine, const std::string& log)
+        // lines of its own rewritten listing (bgfx's HLSL), so the line is found in the files instead (the shader's,
+        // then the program's .sh files it includes, `cited` in that order): the first one with the name the error
+        // names, else the one whose text the listing's marked line has.
+        std::string noteOf(const std::vector<Cited>& cited, const std::string& log)
         {
             std::istringstream in(log);
             std::string line, message, marked;
-            int at = 0;
             while (std::getline(in, line))
             {
                 if (marked.empty() && line.rfind(">>> ", 0) == 0)
@@ -521,11 +532,13 @@ namespace playground
             if (const std::size_t q = message.find('\''); q != std::string::npos)
                 if (const std::size_t e = message.find('\'', q + 1); e != std::string::npos)
                     name = message.substr(q + 1, e - q - 1);
-            std::vector<std::string> lines;
+            std::vector<std::vector<std::string>> lines;
+            for (const Cited& c : cited)
             {
-                std::istringstream b(body);
+                std::vector<std::string>& these = lines.emplace_back();
+                std::istringstream b(c.text);
                 while (std::getline(b, line))
-                    lines.push_back(line);
+                    these.push_back(line);
             }
             const auto word = [](const std::string& s, const std::string& w) {
                 for (std::size_t p = s.find(w); p != std::string::npos; p = s.find(w, p + 1))
@@ -538,13 +551,19 @@ namespace playground
                 }
                 return false;
             };
+            std::size_t which = 0;                   // the file cited
+            int at = 0;
             if (identifier(name))
-                for (std::size_t k = 0; k < lines.size() && at == 0; ++k)
-                    if (word(lines[k], name))
-                        at = static_cast<int>(k) + 1;
+                for (std::size_t f = 0; f < lines.size() && at == 0; ++f)
+                    for (std::size_t k = 0; k < lines[f].size() && at == 0; ++k)
+                        if (word(lines[f][k], name))
+                        {
+                            which = f;
+                            at = static_cast<int>(k) + 1;
+                        }
             if (at == 0 && !marked.empty())
             {
-                // The listing's line in bgfx's words, back in the shader's: the longest of the file's lines it holds.
+                // The listing's line in bgfx's words, back in the shader's: the longest of the files' lines it holds.
                 std::string m = marked;
                 const auto swap = [&m](const std::string& from, const std::string& to) {
                     for (std::size_t p = m.find(from); p != std::string::npos; p = m.find(from, p + to.size()))
@@ -555,22 +574,266 @@ namespace playground
                 swap("float3", "vec3");
                 swap("float2", "vec2");
                 std::size_t best = 0;
-                for (std::size_t k = 0; k < lines.size(); ++k)
-                {
-                    std::string t = lines[k];
-                    t.erase(0, t.find_first_not_of(" \t"));
-                    while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r'))
-                        t.pop_back();
-                    if (t.size() > 3 && t.size() > best && m.find(t) != std::string::npos)
+                for (std::size_t f = 0; f < lines.size(); ++f)
+                    for (std::size_t k = 0; k < lines[f].size(); ++k)
                     {
-                        best = t.size();
-                        at = static_cast<int>(k) + 1;
+                        std::string t = lines[f][k];
+                        t.erase(0, t.find_first_not_of(" \t"));
+                        while (!t.empty() && (t.back() == ' ' || t.back() == '\t' || t.back() == '\r'))
+                            t.pop_back();
+                        if (t.size() > 3 && t.size() > best && m.find(t) != std::string::npos)
+                        {
+                            best = t.size();
+                            which = f;
+                            at = static_cast<int>(k) + 1;
+                        }
+                    }
+            }
+            return (cited.empty() ? std::string("shader") : cited[which].name) + ":" + std::to_string(at > 0 ? at : 1)
+                 + ":1: note: the shader does not compile: " + message + " (it draws nothing until it does)\n";
+        }
+
+        // ---- text and includes (Shaders.h) ---------------------------------------------------------------------------
+        // A note of the pre-pass's: the shader does not compile, for `why`, at a line and column of `file`.
+        std::string prepassNote(const std::string& file, int line, int column, const std::string& why)
+        {
+            return file + ":" + std::to_string(line) + ":" + std::to_string(column) + ": note: the shader does not compile: "
+                 + why + " (it draws nothing until it does)\n";
+        }
+
+        // Walks a shader's text as shaderc's preprocessor reads it: its comments (// to the line's end, a backslash at
+        // its end going on; /* */), its #include lines and the rest. `include` hears each #include's file name and
+        // place; `string` each string literal's place and inner text (between its quotes, as written), and returns
+        // what replaces the literal. The text, each literal replaced; a literal with no end on its line goes to
+        // `string` with `ended` false.
+        template <typename Include, typename String>
+        std::string walk(const std::string& text, Include&& include, String&& string)
+        {
+            std::string out;
+            out.reserve(text.size());
+            const std::size_t n = text.size();
+            std::size_t i = 0, lineStart = 0;
+            int line = 1;
+            bool blank = true;                       // only spaces since the line's start (a directive may begin)
+            const auto newline = [&](std::size_t at) {
+                ++line;
+                lineStart = at + 1;
+                blank = true;
+            };
+            while (i < n)
+            {
+                const char c = text[i];
+                if (c == '\n')
+                {
+                    out += c;
+                    newline(i);
+                    ++i;
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && text[i + 1] == '/')
+                {
+                    for (; i < n && text[i] != '\n'; ++i)
+                    {
+                        out += text[i];
+                        if (text[i] == '\\' && i + 1 < n && text[i + 1] == '\n')
+                        {
+                            out += '\n';
+                            newline(i + 1);
+                            ++i;
+                        }
+                    }
+                    continue;
+                }
+                if (c == '/' && i + 1 < n && text[i + 1] == '*')
+                {
+                    const std::size_t end = text.find("*/", i + 2);
+                    const std::size_t stop = end == std::string::npos ? n : end + 2;
+                    for (; i < stop; ++i)
+                    {
+                        out += text[i];
+                        if (text[i] == '\n')
+                            newline(i);
+                    }
+                    blank = false;
+                    continue;
+                }
+                if (c == '#' && blank)
+                {
+                    // A directive: an #include's name heard and its line copied as it is.
+                    std::size_t k = i + 1;
+                    while (k < n && (text[k] == ' ' || text[k] == '\t'))
+                        ++k;
+                    if (text.compare(k, 7, "include") == 0 && (k + 7 >= n || !std::isalnum(static_cast<unsigned char>(text[k + 7]))))
+                    {
+                        std::size_t e = text.find('\n', k);
+                        if (e == std::string::npos)
+                            e = n;
+                        std::size_t q = k + 7;
+                        while (q < e && (text[q] == ' ' || text[q] == '\t'))
+                            ++q;
+                        if (q < e && (text[q] == '"' || text[q] == '<'))
+                        {
+                            const char close = text[q] == '"' ? '"' : '>';
+                            const std::size_t z = text.find(close, q + 1);
+                            if (z != std::string::npos && z < e)
+                                include(text.substr(q + 1, z - q - 1), line, static_cast<int>(q - lineStart) + 1);
+                        }
+                        out.append(text, i, e - i);
+                        i = e;
+                        continue;
                     }
                 }
+                if (c == '"')
+                {
+                    std::size_t k = i + 1;
+                    while (k < n && text[k] != '"' && text[k] != '\n')
+                        k += text[k] == '\\' && k + 1 < n && text[k + 1] != '\n' ? 2 : 1;
+                    const bool ended = k < n && text[k] == '"';
+                    out += string(std::string_view(text).substr(i + 1, k - i - 1), line, static_cast<int>(i - lineStart) + 1, ended);
+                    i = ended ? k + 1 : k;
+                    blank = false;
+                    continue;
+                }
+                if (c != ' ' && c != '\t' && c != '\r')
+                    blank = false;
+                out += c;
+                ++i;
             }
-            (void)bodyLine;
-            return file + ":" + std::to_string(at > 0 ? at : 1) + ":1: note: the shader does not compile: " + message
-                 + " (it draws nothing until it does)\n";
+            return out;
+        }
+
+        // A string literal's glyph codes (ShaderLib.h), from its inner text; false, with why, when one cannot be.
+        bool codesOf(std::string_view s, std::vector<int>& codes, std::string& why)
+        {
+            for (std::size_t i = 0; i < s.size();)
+            {
+                uint32_t cp = static_cast<unsigned char>(s[i]);
+                std::size_t len = 1;
+                if (cp == '\\')
+                {
+                    const char e = i + 1 < s.size() ? s[i + 1] : '\0';
+                    if (e == '\\' || e == '"')
+                    {
+                        cp = static_cast<uint32_t>(e);
+                        len = 2;
+                    }
+                    else if (e == 'u' && i + 6 <= s.size()
+                             && std::all_of(s.begin() + static_cast<std::ptrdiff_t>(i + 2), s.begin() + static_cast<std::ptrdiff_t>(i + 6),
+                                            [](char h) { return std::isxdigit(static_cast<unsigned char>(h)) != 0; }))
+                    {
+                        cp = static_cast<uint32_t>(std::strtoul(std::string(s.substr(i + 2, 4)).c_str(), nullptr, 16));
+                        len = 6;
+                    }
+                    else
+                    {
+                        why = "a string's backslash escapes a backslash, a quote or a code point (a u and four hex digits), "
+                              "not this";
+                        return false;
+                    }
+                }
+                else if (cp >= 0x80)
+                {
+                    // UTF-8
+                    const int more = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : -1;
+                    if (more < 0 || i + static_cast<std::size_t>(more) >= s.size())
+                    {
+                        why = "a string holds a byte that is no character";
+                        return false;
+                    }
+                    cp &= more == 3 ? 0x07u : more == 2 ? 0x0Fu : 0x1Fu;
+                    for (int k = 1; k <= more; ++k)
+                    {
+                        const auto b = static_cast<unsigned char>(s[i + static_cast<std::size_t>(k)]);
+                        if ((b & 0xC0u) != 0x80u)
+                        {
+                            why = "a string holds a byte that is no character";
+                            return false;
+                        }
+                        cp = (cp << 6) | (b & 0x3Fu);
+                    }
+                    len = static_cast<std::size_t>(more) + 1;
+                }
+                const int code = shaderlib::glyphCode(cp);
+                if (code < 0)
+                {
+                    char hex[16];
+                    std::snprintf(hex, sizeof hex, "U+%04X", static_cast<unsigned>(cp));
+                    why = std::string("the font has no ") + hex + ": a string holds printable ASCII, and these by their "
+                          "codes: \\u00B0 for the degree sign; \\u00B1, \\u00D7, \\u00B5, \\u2212 (minus), \\u2026, \\u2264, \\u2265, "
+                          "\\u2248, \\u0394, \\u2013, \\u2014, \\u2022, \\u00B7, \\u2190 to \\u2193 (arrows), \\u221E";
+                    return false;
+                }
+                codes.push_back(code);
+                i += len;
+            }
+            if (codes.size() > static_cast<std::size_t>(shaderlib::kMaxString))
+            {
+                why = "a string holds " + std::to_string(shaderlib::kMaxString) + " characters at most (this one "
+                    + std::to_string(codes.size()) + ")";
+                return false;
+            }
+            return true;
+        }
+
+        // The codes as a vec4 (up to 12) or a mat4 (up to 48), three a float, the first the lowest byte.
+        std::string packed(const std::vector<int>& codes)
+        {
+            const std::size_t floats = codes.size() <= 12 ? 4 : 16;
+            std::vector<uint32_t> v(floats, 0u);
+            for (std::size_t k = 0; k < codes.size(); ++k)
+                v[k / 3] |= static_cast<uint32_t>(codes[k]) << (8 * (k % 3));
+            std::string out = floats == 4 ? "vec4(" : "mat4(";
+            for (std::size_t k = 0; k < floats; ++k)
+                out += (k == 0 ? "" : ", ") + std::to_string(v[k]) + ".0";
+            return out + ")";
+        }
+
+        // A file's include guard's name, from its name.
+        std::string guardOf(const std::string& name)
+        {
+            return "FP_INCLUDED_" + hex64(fnv64(name));
+        }
+
+        // A shader made ready for shaderc: its text as shaderc reads it, the files it includes as written beside it,
+        // and what a note cites (the shader, then the program's .sh files it includes).
+        struct Prepared
+        {
+            std::string body;
+            std::vector<std::pair<std::string, std::string>> files;   // each included file's name and text, as written
+            std::vector<Cited> cited;
+            std::string error;
+        };
+
+        Prepared prepare(const std::string& file, const std::string& body, const Sources& headers)
+        {
+            Prepared out;
+            out.body = shaderText(file, body, out.error);
+            out.cited.push_back({ file, out.body });
+            if (!out.error.empty())
+                return out;
+            for (const std::string& name : shaderIncludes(file, body, headers, out.error))
+            {
+                if (const shaderlib::LibraryFile* lib = shaderlib::libraryFile(name))
+                {
+                    out.files.emplace_back(name, lib->text);
+                    continue;
+                }
+                const SourceFile* h = findFile(headers, name);
+                if (h == nullptr)
+                    continue;
+                std::string error;
+                const std::string text = shaderText(name, h->text, error);
+                if (!error.empty())
+                {
+                    out.error = error;
+                    return out;
+                }
+                const std::string guard = guardOf(name);
+                out.files.emplace_back(name, "#ifndef " + guard + "\n#define " + guard + "\n" + text
+                                                 + (text.empty() || text.back() == '\n' ? "" : "\n") + "#endif\n");
+                out.cited.push_back({ name, text });
+            }
+            return out;
         }
     }
 
@@ -582,7 +845,8 @@ namespace playground
             s += '\n';
         s += "// The plugin's names (Source/fminus/Shaders.h).\n"
              "#define u_time (u_viewSize.w)\n"
-             "#define u_size (u_rect.zw)\n";
+             "#define u_size (u_rect.zw)\n"
+             "#define u_px (u_viewSize.z)\n";
         static constexpr const char* kSwizzle[4] = { "x", "y", "z", "w" };
         for (int k = 0; k < kMaxShaderInputs; ++k)
             s += "#define in" + std::to_string(k) + " (u_params[" + std::to_string(k / 4) + "]." + kSwizzle[k % 4] + ")\n";
@@ -601,11 +865,16 @@ namespace playground
     {
         // buildShader(); `kept` false when the build failed for a reason of the moment (no temporary folder, its files
         // not written, shaderc not run or timed out), which a cache must not keep.
-        ShaderBuild buildOnce(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
+        ShaderBuild buildOnce(const std::string& file, const Prepared& ready, const std::vector<std::string>& inputs,
                               const ShaderTools& tools, bool& kept)
         {
             kept = false;
             ShaderBuild out;
+            if (!ready.error.empty())
+            {
+                out.error = ready.error;             // the pre-pass's note (prepare)
+                return out;
+            }
             if (!tools.usable())
             {
                 out.error = file + ":1:1: note: this plugin cannot build shaders (no shaderc beside it): the shader draws "
@@ -626,10 +895,17 @@ namespace playground
                 return out;
             }
             const std::filesystem::path dir = pattern;
-            int bodyLine = 1;
-            const std::string source = shaderSource(body, inputs, tools, &bodyLine);
-            const bool written = writeFile(dir / "fs.sc", source) && writeFile(dir / "varying.def.sc", tools.varyingDef)
-                              && (tools.bgfxShaderSh.empty() || writeFile(dir / "bgfx_shader.sh", tools.bgfxShaderSh));
+            const std::string source = shaderSource(ready.body, inputs, tools);
+            bool written = writeFile(dir / "fs.sc", source) && writeFile(dir / "varying.def.sc", tools.varyingDef)
+                        && (tools.bgfxShaderSh.empty() || writeFile(dir / "bgfx_shader.sh", tools.bgfxShaderSh));
+            for (const auto& [name, text] : ready.files)
+            {
+                // Beside fs.sc, for shaderc's -i: the program's by their names, the library's under funk/.
+                const std::filesystem::path to = dir / std::filesystem::path(name);
+                std::error_code made;
+                std::filesystem::create_directories(to.parent_path(), made);
+                written = written && !made && writeFile(to, text);
+            }
             if (!written)
                 out.error = file + ":1:1: note: the shader cannot be built: its files cannot be written\n";
             else
@@ -648,7 +924,7 @@ namespace playground
                 else
                     out.error = status < 0 && readFile(dir / "log.txt").empty()
                                   ? file + ":1:1: note: the shader cannot be built: shaderc did not run\n"
-                                  : noteOf(file, body, bodyLine, readFile(dir / "log.txt"));
+                                  : noteOf(ready.cited, readFile(dir / "log.txt"));
                 kept = status >= 0;                  // a time-out, or a shaderc that never ran: try again next time
             }
             std::filesystem::remove_all(dir, ec);
@@ -657,18 +933,22 @@ namespace playground
     }
 
     ShaderBuild buildShader(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
-                            const ShaderTools& tools)
+                            const ShaderTools& tools, const Sources& headers)
     {
         bool kept = false;
-        return buildOnce(file, body, inputs, tools, kept);
+        return buildOnce(file, prepare(file, body, headers), inputs, tools, kept);
     }
 
     ShaderBuild ShaderCache::build(const std::string& file, const std::string& body, const std::vector<std::string>& inputs,
-                                   const ShaderTools& tools)
+                                   const ShaderTools& tools, const Sources& headers)
     {
-        if (!tools.usable())
-            return buildShader(file, body, inputs, tools);   // its note, at once
-        const std::string key = keyOf(file, body, inputs, tools);
+        const Prepared ready = prepare(file, body, headers);
+        if (!tools.usable() || !ready.error.empty())
+        {
+            bool kept = false;
+            return buildOnce(file, ready, inputs, tools, kept);   // its note, at once
+        }
+        const std::string key = keyOf(file, ready.body, inputs, tools, ready.files);
         std::promise<ShaderBuild> promise;
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -703,7 +983,7 @@ namespace playground
                 }
             if (!fromDisk)
             {
-                b = buildOnce(file, body, inputs, tools, kept);
+                b = buildOnce(file, ready, inputs, tools, kept);
                 if (b.ok() && !entry.empty())
                     writeEntry(tools.cacheDir, entry, key, b.binary, tools.cacheBytes);
             }
@@ -744,7 +1024,7 @@ namespace playground
         const auto one = [&](std::size_t k) {
             try
             {
-                ShaderBuild b = build(jobs[k].file, jobs[k].body, jobs[k].inputs, tools);
+                ShaderBuild b = build(jobs[k].file, jobs[k].body, jobs[k].inputs, tools, jobs[k].headers);
                 if (b.ok() && tools.check)
                     b.refused = !tools.check(b.binary, b.refusal);
                 out[k] = std::move(b);
@@ -854,6 +1134,16 @@ namespace playground
                 i = end == std::string::npos ? n : end + 2;
                 continue;
             }
+            if (c == '"')
+            {
+                // A string (shaderText's), to its end on its line.
+                for (++i; i < n && body[i] != '"' && body[i] != '\n'; ++i)
+                    if (body[i] == '\\' && i + 1 < n && body[i + 1] != '\n')
+                        ++i;
+                if (i < n && body[i] == '"')
+                    ++i;
+                continue;
+            }
             const auto digit = [&](std::size_t k) { return k < n && std::isdigit(static_cast<unsigned char>(body[k])) != 0; };
             if (digit(i) || (c == '.' && digit(i + 1)))
             {
@@ -874,5 +1164,83 @@ namespace playground
             ++i;
         }
         return false;
+    }
+
+    bool shaderAnimates(const std::string& file, const std::string& body, const Sources& headers)
+    {
+        if (shaderAnimates(body))
+            return true;
+        std::string error;
+        for (const std::string& name : shaderIncludes(file, body, headers, error))
+            if (const SourceFile* h = findFile(headers, name); h != nullptr && shaderAnimates(h->text))
+                return true;
+        return false;
+    }
+
+    Sources shaderHeaders(const Sources& files)
+    {
+        Sources out;
+        for (const SourceFile& f : files)
+            if (f.name.size() > 3 && f.name.compare(f.name.size() - 3, 3, ".sh") == 0)
+                out.push_back(f);
+        return out;
+    }
+
+    std::string shaderText(const std::string& file, const std::string& text, std::string& error)
+    {
+        error.clear();
+        return walk(
+            text, [](const std::string&, int, int) {},
+            [&](std::string_view inner, int line, int column, bool ended) -> std::string {
+                std::vector<int> codes;
+                std::string why;
+                if (!ended)
+                    why = "a string has no closing quote on its line";
+                else if (!codesOf(inner, codes, why))
+                    codes.clear();
+                if (!why.empty())
+                {
+                    if (error.empty())
+                        error = prepassNote(file, line, column, why);
+                    return "vec4(0.0, 0.0, 0.0, 0.0)";
+                }
+                return packed(codes);
+            });
+    }
+
+    std::vector<std::string> shaderIncludes(const std::string& file, const std::string& body, const Sources& headers,
+                                            std::string& error)
+    {
+        error.clear();
+        std::vector<std::string> out;
+        // The files to read, in the order they are reached: the shader's, then each of the program's it includes.
+        std::vector<std::pair<std::string, const std::string*>> queue{ { file, &body } };
+        for (std::size_t q = 0; q < queue.size(); ++q)
+        {
+            const std::string from = queue[q].first;
+            walk(
+                *queue[q].second,
+                [&](const std::string& name, int line, int column) {
+                    if (name == "bgfx_shader.sh" || std::find(out.begin(), out.end(), name) != out.end())
+                        return;
+                    if (shaderlib::libraryFile(name) != nullptr)
+                    {
+                        out.push_back(name);
+                        return;
+                    }
+                    if (const SourceFile* h = findFile(headers, name))
+                    {
+                        out.push_back(name);
+                        queue.emplace_back(name, &h->text);
+                        return;
+                    }
+                    if (error.empty())
+                        error = prepassNote(from, line, column,
+                                            "there is no file " + name + " to #include (the program's .sh files, "
+                                            "funk/text.sh and funk/shapes.sh)");
+                },
+                [](std::string_view, int, int, bool) { return std::string(); });
+        }
+        return out;
     }
 }

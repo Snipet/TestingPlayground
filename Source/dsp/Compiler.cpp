@@ -32,19 +32,20 @@ namespace playground
             return out;
         }
 
-        // The jobs for `shaders`, each from its file among `files` (one with no file is left out: GuiSpec said so);
-        // `which`, when given, gets each job's shader.
+        // The jobs for `shaders`, each from its file among `files` (one with no file is left out: GuiSpec said so), with
+        // the program's .sh files it may include; `which`, when given, gets each job's shader.
         std::vector<ShaderJob> shaderJobs(const std::vector<PanelShader>& shaders, const Sources& files,
                                           std::vector<std::size_t>* which = nullptr)
         {
             std::vector<ShaderJob> jobs;
+            const Sources headers = shaderHeaders(files);
             for (std::size_t k = 0; k < shaders.size(); ++k)
             {
                 const PanelShader& sh = shaders[k];
                 const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& s) { return s.name == sh.file; });
                 if (f == files.end())
                     continue;
-                jobs.push_back({ sh.file, f->text, sh.inputs });
+                jobs.push_back({ sh.file, f->text, sh.inputs, headers });
                 if (which != nullptr)
                     which->push_back(k);
             }
