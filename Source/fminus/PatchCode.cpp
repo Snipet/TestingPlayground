@@ -30,6 +30,7 @@ namespace playground
             c.address = r.address;
             c.size = r.size;
             c.module = r.module;
+            c.parallel = r.kind == fminus::Program::CodeRange::Kind::Parallel;
             const std::string_view f = r.function;
             if (r.kind == fminus::Program::CodeRange::Kind::Support || f.empty())
                 c.function = "FMinus's math";

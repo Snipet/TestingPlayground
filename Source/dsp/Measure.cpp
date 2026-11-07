@@ -25,9 +25,6 @@
 #include <time.h>
 
 #if defined(_WIN32)
-#include <chrono>
-#include <thread>
-#include <intrin.h>
 #include <windows.h>
 #undef near                                          // windows.h's: this file names a flag so
 #undef far
@@ -452,28 +449,12 @@ namespace playground::measure
 #if defined(_WIN32)
         // Windows: the thread's cycles (QueryThreadCycleTime, the time-stamp counter's while the thread ran: exact,
         // where GetThreadTimes counts whole scheduler ticks of about 15.6 ms) over the counter's rate, measured once
-        // against the performance counter.
-        double tscPerMs()
-        {
-            static const double rate = [] {
-                LARGE_INTEGER f{}, a{}, b{};
-                QueryPerformanceFrequency(&f);
-                QueryPerformanceCounter(&a);
-                const unsigned long long t0 = __rdtsc();
-                std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                QueryPerformanceCounter(&b);
-                const unsigned long long t1 = __rdtsc();
-                const double ms = static_cast<double>(b.QuadPart - a.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
-                return ms > 0.0 ? static_cast<double>(t1 - t0) / ms : 1.0e6;
-            }();
-            return rate;
-        }
-
+        // against the performance counter (profile::tscPerMs, which the profile's words share).
         double threadMs()
         {
             ULONG64 cycles = 0;
             QueryThreadCycleTime(GetCurrentThread(), &cycles);
-            return static_cast<double>(cycles) / tscPerMs();
+            return static_cast<double>(cycles) / profile::tscPerMs();
         }
 #else
         double threadMs()

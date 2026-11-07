@@ -558,14 +558,17 @@ namespace playground
         // is what the program calls it ("Svf::tick", "softclip"; the plugin's appended calls the method they call,
         // "Voice::process"; a circuit dial's shim "the circuit dials' set()"; FMinus's own "FMinus's math"), `module`
         // a method's ("Svf"; "" otherwise) and `inlined` the program's functions the optimiser folded into it, whose
-        // time is this code's (an appended call's own method left out). Off the audio thread (it allocates); empty,
-        // with why, when the code does not link. The code stays where it says while the Patch lives.
+        // time is this code's (an appended call's own method left out); `parallel` a parallel region's body, which
+        // the pool's threads run as well as the caller's (FMinus's Kind::Parallel; `function` the one it is in). Off
+        // the audio thread (it allocates); empty, with why, when the code does not link. The code stays where it says
+        // while the Patch lives.
         struct CodeRange
         {
             std::uintptr_t address = 0;
             std::size_t size = 0;
             std::string function, module;
             std::vector<std::string> inlined;
+            bool parallel = false;
         };
         std::vector<CodeRange> codeRanges(std::string& errors) const;
 
