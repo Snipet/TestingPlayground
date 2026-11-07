@@ -3,6 +3,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
+#include "plugin/Launch.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/WheelMap.h"
@@ -771,9 +772,18 @@ namespace playground
         }
         if (app == FolderApp::files)
         {
+#if defined(__linux__)
+            // xdg-open given the path as its one argument (Launch.h): JUCE's startAsProcess goes through /bin/sh there,
+            // where a project's name holding $(...) or a backtick would run.
+            std::string launchWhy;
+            if (launch::detached(launch::openerArgs(path), launchWhy))
+                return true;
+            why = "the folder did not open: " + launchWhy;
+#else
             if (juce::File(juce::String::fromUTF8(path.c_str())).startAsProcess())
                 return true;
             why = "the folder did not open";
+#endif
             return false;
         }
         // VS Code by its URL scheme, vscode://file/<path>/ (a folder), which the system hands to VS Code when it is
@@ -797,9 +807,16 @@ namespace playground
             }
         }
         url += '/';
+#if defined(__linux__)
+        std::string launchWhy;                           // no shell, and no zombie left in the host
+        if (launch::detached(launch::openerArgs(url), launchWhy))
+            return true;
+        why = "VS Code did not open: " + launchWhy;
+#else
         if (juce::Process::openDocument(juce::String::fromUTF8(url.c_str()), {}))
             return true;
         why = "VS Code did not open (is it installed?)";
+#endif
         return false;
     }
 

@@ -46,11 +46,17 @@
 //            with the same folder; a state of another folder's name moves it there, the folder it left as it was (not
 //            given the state's files); open in VS Code and Show in Finder go to the launcher with the folder's path, and
 //            under a probe nothing is launched without one; off, the folder stays as it was
+//   LAUNCH   (POSIX) how Linux opens the folder (plugin/Launch.h): xdg-open's arguments are its name and the folder's
+//            path as it is; a program started from a list gets a folder named with $(...), backticks, quotes and a
+//            semicolon as one argument, unchanged, and no shell runs any of it; the call returns at once while the
+//            program runs, and leaves no child of this process; a program not found, or one whose exec fails, is a
+//            false with why
 #include "Probe.h"
 
 #include "fminus/Patch.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FolderSync.h"
+#include "plugin/Launch.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
 
@@ -61,6 +67,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -69,6 +76,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace fs = std::filesystem;
@@ -627,6 +639,58 @@ PROBE(plugin, folder)
     }
 #endif
     sync.stop();
+
+#if !defined(_WIN32)
+    // ---- LAUNCH --------------------------------------------------------------------------------------------------------
+    {
+        // A folder named as a shell would run it: had a shell come between, it would make the markers (in this
+        // process's folder, the program's too) and the program would get some other path.
+        const std::string marker = std::string(pg::product::kEnvPrefix) + "launch-marker-" + std::to_string(::getpid());
+        const std::string odd = "a$(touch " + marker + ")`touch " + marker + "-2` \"q\" 'r'; echo $HOME";
+        const fs::path launchDir = fs::path(tempDir.getFullPathName().toStdString()) / "Launch";
+        const fs::path folder = launchDir / odd;
+        std::error_code ec;
+        fs::create_directories(folder, ec);
+        const fs::path here = fs::current_path(ec);
+        P.eq("launch.opener_args", pg::launch::openerArgs(folder.string()) == std::vector<std::string>{ "xdg-open", folder.string() }
+                                       ? 1 : 0, 1);
+        const fs::path opened = folder / "opened";
+        why.clear();
+        const bool started = pg::launch::detached({ "touch", opened.string() }, why);
+        bool arrived = false;
+        for (int i = 0; i < 500 && !arrived; ++i)
+        {
+            arrived = there(opened);
+            if (!arrived)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::printf("launch: started %d (%s), arrived %d\n", started ? 1 : 0, why.c_str(), arrived ? 1 : 0);
+        P.eq("launch.argument_whole", started && arrived ? 1 : 0, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        P.eq("launch.no_shell", !there(here / marker) && !there(here / (marker + "-2")) && !there(launchDir / marker) ? 1 : 0, 1);
+        // A program that runs on: the call is back long before it ends, and neither it nor the intermediate child is
+        // left this process's (nothing to wait for, no zombie).
+        const auto from = std::chrono::steady_clock::now();
+        why.clear();
+        const bool slow = pg::launch::detached({ "sleep", "1" }, why);
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+        std::printf("launch: sleep started %d in %.3f s\n", slow ? 1 : 0, took);
+        P.eq("launch.returns_at_once", slow && took < 0.5 ? 1 : 0, 1);
+        errno = 0;
+        P.eq("launch.no_child_left", ::waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD ? 1 : 0, 1);
+        why.clear();
+        P.eq("launch.not_found", !pg::launch::detached({ std::string(pg::product::kEnvPrefix) + "no-such-program" }, why)
+                                     && why.find("not found") != std::string::npos ? 1 : 0, 1);
+        // An executable file that is no program (no #!, no binary format): found, but its exec fails, and says so.
+        const fs::path junk = launchDir / "not-a-program";
+        writeFile(junk, "this is no program\n");
+        fs::permissions(junk, fs::perms::owner_all, fs::perm_options::replace, ec);
+        why.clear();
+        P.eq("launch.exec_fails", !pg::launch::detached({ junk.string() }, why) && why.find("could not start") != std::string::npos
+                                      ? 1 : 0, 1);
+        std::printf("launch: exec failure says \"%s\"\n", why.c_str());
+    }
+#endif
 
     // ---- PORT ----------------------------------------------------------------------------------------------------------
     {
