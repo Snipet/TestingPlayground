@@ -94,12 +94,26 @@ namespace playground
                     : call.action == A::applyPreset ? "Applying the preset"
                                                     : "Saving");
         const ProjectAnswer r = host_.chatProjects(call);
-        if (!r.entry.empty())
+        std::string text = r.text;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            addEntry(ChatEntry::Kind::tool, r.entry);
+            if (!r.entry.empty())
+                addEntry(ChatEntry::Kind::tool, r.entry);
+            // Another project opened: the checks were the program's before it, so they go, as at a fresh start
+            // (Processor::startAfresh), and nothing measures the project the user asked for against them.
+            if (const std::size_t n = checks_.size(); r.ok && r.another && n > 0)
+            {
+                checks_.clear();
+                checksFailing_ = false;
+                addEntry(ChatEntry::Kind::note, "The checks are cleared: they were for the program before the project opened.");
+                touch();
+                text += n == 1 ? "\nThe check you set was for the program before it, so the plugin cleared it (set_checks sets "
+                                 "new ones, if this one needs them)."
+                               : "\nThe " + std::to_string(n) + " checks you set were for the program before it, so the plugin "
+                                 "cleared them (set_checks sets new ones, if this one needs them).";
+            }
         }
         isError = !r.ok;
-        return r.text;
+        return text;
     }
 }

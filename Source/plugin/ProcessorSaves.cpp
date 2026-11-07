@@ -8,9 +8,11 @@
 // project: the factory's is never written); a preset of the name is replaced only with `replace`, and the result gives
 // its old values; opening a project or applying a preset while the editor holds unsaved changes (its files changed
 // since they were opened, saved or loaded; a dial moved from the version's or the preset's value, or from its default
-// when no project is open) is refused unless `discard`; nothing is deleted. Each save, open and preset goes to the
-// editor's status (claudeNotice: "CLAUDE SAVED VERSION 5 OF ENGINE"), and, the plugin's own chat's, to the journal
-// (get_status since): Claude Desktop's are not journalled (Journal.h: it knows what it did).
+// when no project is open) is refused unless `discard`; a save or a preset while an A/B plays is refused (what plays is
+// a side's, not the editor's); nothing is deleted. Each save, open and preset goes to the editor's status (claudeNotice:
+// "CLAUDE SAVED VERSION 5 OF ENGINE", which the status line says in its sentence case, as it says every notice), and,
+// the plugin's own chat's, to the journal (get_status since): Claude Desktop's are not journalled (Journal.h: it knows
+// what it did).
 #include "plugin/Processor.h"
 
 #include "Product.h"
@@ -100,7 +102,7 @@ namespace playground
         claudeJobDone_.wait(lock, [this] { return !claudeJob_ && !claudeJobRunning_; });   // one at a time
         claudeJob_ = std::move(job);
         const uint64_t ticket = claudeJobsDone_ + 1;
-        if (!claudeJobDone_.wait_for(lock, std::chrono::seconds(kClaudeJobSeconds),
+        if (!claudeJobDone_.wait_for(lock, std::chrono::milliseconds(claudeJobMs_),
                                      [&] { return claudeJobRunning_ || claudeJobsDone_ >= ticket; }))
         {
             claudeJob_ = nullptr;                                // never taken: withdrawn, nothing done
@@ -109,6 +111,12 @@ namespace playground
         }
         claudeJobDone_.wait(lock, [&] { return claudeJobsDone_ >= ticket; });   // taken: it finishes
         return true;
+    }
+
+    bool Processor::claudeJobWaiting() const
+    {
+        const std::lock_guard<std::mutex> lock(claudeJobMutex_);
+        return static_cast<bool>(claudeJob_);
     }
 
     void Processor::runClaudeJob()
@@ -149,11 +157,11 @@ namespace playground
     ProjectAnswer Processor::chatProjects(const ProjectCall& call)
     {
         if (call.action == ProjectCall::Action::list)
-            return { true, claudeProjectList(call), call.name.empty() ? "looked at the projects" : "looked at " + inQuotes(call.name) };
+            return { true, claudeProjectList(call), call.name.empty() ? "looked at the projects" : "looked at " + inQuotes(call.name), false };
         ProjectAnswer out;
         uint64_t compile = 0;
         if (!onMessageThread([&] { out = claudeProjectAction(call, compile); }))
-            return { false, "The plugin did not get to it in time (its host may be busy): nothing was done. Try again.", {} };
+            return { false, "The plugin did not get to it in time (its host may be busy): nothing was done. Try again.", {}, false };
         if (out.ok && compile != 0)
         {
             // An open: its compile, then a poll() (a job of its own) that has set its dials, so what the next tool
@@ -184,9 +192,21 @@ namespace playground
     ProjectAnswer Processor::claudeProjectAction(const ProjectCall& call, uint64_t& compile)
     {
         using A = ProjectCall::Action;
-        const auto fail = [](std::string why) { return ProjectAnswer{ false, std::move(why), {} }; };
+        const auto fail = [](std::string why) { return ProjectAnswer{ false, std::move(why), {}, false }; };
         const std::optional<Journal::Who> who =
             call.desktop ? std::nullopt : std::optional<Journal::Who>(Journal::Who::chat);
+        // An A/B plays a side's files and dials while the editor keeps its own (ProcessorAb.cpp), and until Keep's or
+        // Close's compile lands what plays is still a side's: a save would keep the editor's files with a side's dials,
+        // and a preset would move dials the A/B puts back. The user cannot save then either (the A/B card is modal);
+        // an open ends it, as any program that lands does.
+        if (call.action != A::open && call.action != A::list && (ab_.st.on || abEnding_ != 0))
+        {
+            const std::string none = call.action == A::applyPreset ? "Not applied: " : "Nothing was saved: ";
+            return fail(ab_.st.on ? none + "the user is comparing A and B (A/B), so what plays is a side, not the editor's "
+                                           "files and dials. Ask them to Keep a side or Close it first."
+                                  : none + "the A/B the user just ended is still putting back what played before. Try "
+                                           "again in a moment.");
+        }
         const ProjectState st = project();
         Controls cs;
         std::array<std::vector<std::string>, kMaxControls> options;
@@ -271,24 +291,36 @@ namespace playground
                          + ". Every version is kept: the user opens any in PROJECTS.";
                 if (!note.empty() && !saved.unchanged)
                     text += " Its note: Claude: " + note + ".";
-                if (!call.category.empty() && !saved.unchanged)
+                // The category, whether or not a version was added (an unchanged project's is set all the same: it is
+                // the only way Claude sets one), and said either way.
+                std::string category;
+                if (!call.category.empty())
                 {
                     const std::string was = projectInfo(into).category, now = projectstore::tidyCategory(call.category);
-                    if (!now.empty() && !projectstore::sameName(was, now))
+                    if (now.empty())
+                        text += " Its category stays " + (was.empty() ? std::string("unset") : was) + ": the category given names none.";
+                    else if (projectstore::sameName(was, now))
+                        text += " Its category is " + was + " already.";
+                    else if (projectstore::setCategory(into, now, &why))
                     {
-                        if (projectstore::setCategory(into, now, &why))
-                            text += " Its category: " + now + (was.empty() ? "" : " (was " + was + ")") + ".";
-                        else
-                            text += " Its category was not set: " + why + ".";
+                        text += " Its category: " + now + (was.empty() ? "" : " (was " + was + ")") + ".";
+                        category = now;
                     }
+                    else
+                        text += " Its category was not set: " + why + ".";
                 }
                 if (saved.unchanged)
-                    return { true, text, "nothing new to save in " + inQuotes(into) };
+                {
+                    if (category.empty())
+                        return { true, text, "nothing new to save in " + inQuotes(into), false };
+                    noticeClaude("CLAUDE PUT " + upper(into) + " IN " + upper(category));
+                    return { true, text, "put " + inQuotes(into) + " in " + category + " (nothing new to save)", false };
+                }
                 const std::string at = saved.copied || saved.created ? inQuotes(into) : "version " + std::to_string(saved.number) + " of " + inQuotes(into);
                 noticeClaude(saved.copied    ? "CLAUDE SAVED " + upper(into) + ", YOUR OWN COPY (THE FACTORY'S STAYS AS IT IS)"
                              : saved.created ? "CLAUDE SAVED " + upper(into) + " (A NEW PROJECT)"
                                              : "CLAUDE SAVED VERSION " + std::to_string(saved.number) + " OF " + upper(into));
-                return { true, text, "saved " + at };
+                return { true, text, "saved " + at, false };
             }
             case A::savePreset:
             {
@@ -333,9 +365,9 @@ namespace playground
                     text += " Its old values: " + (changed.empty() ? std::string("the same") : changed)
                           + (same > 0 && !changed.empty() ? "; " + std::to_string(same) + " more the same" : "") + ".";
                 }
-                if (!call.category.empty())
+                // A category that tidies to nothing is none given: a preset replaced keeps its own.
+                if (const std::string cat = projectstore::tidyCategory(call.category); !cat.empty())
                 {
-                    const std::string cat = projectstore::tidyCategory(call.category);
                     if (projectstore::setPresetCategory(st.name, name, cat, &why))
                     {
                         text += " Its category: " + cat + (old && !old->category.empty() && !projectstore::sameName(old->category, cat)
@@ -352,7 +384,7 @@ namespace playground
                     text += " The editor's files differ from version " + std::to_string(st.version)
                           + ", which the preset names as its own: save_version keeps them, if the user wants.";
                 noticeClaude((old ? "CLAUDE REPLACED PRESET " : "CLAUDE SAVED PRESET ") + upper(name) + " IN " + upper(st.name));
-                return { true, text, (old ? "replaced preset " : "saved preset ") + inQuotes(name) + " of " + inQuotes(st.name) };
+                return { true, text, (old ? "replaced preset " : "saved preset ") + inQuotes(name) + " of " + inQuotes(st.name), false };
             }
             case A::applyPreset:
             {
@@ -384,7 +416,7 @@ namespace playground
                 if (!lost.empty())
                     text += " What the editor held is dropped, as the user asked: " + lost + ".";
                 noticeClaude("CLAUDE APPLIED PRESET " + upper(pr->name));
-                return { true, text, "applied preset " + inQuotes(pr->name) };
+                return { true, text, "applied preset " + inQuotes(pr->name), false };
             }
             case A::open:
             {
@@ -422,7 +454,10 @@ namespace playground
                 if (!lost.empty())
                     text += " What the editor held is dropped, as the user asked: " + lost + ".";
                 noticeClaude("CLAUDE OPENED " + upper(ownName(p->name)) + " V" + std::to_string(v->number));
-                return { true, text, "opened version " + std::to_string(v->number) + " of " + inQuotes(p->name) };
+                // Another project's program (or the first project over the editor's own files): Claude's checks were the
+                // one before's (the agent clears them, as a fresh start does).
+                const bool another = st.name.empty() || !projectstore::sameName(st.name, p->name);
+                return { true, text, "opened version " + std::to_string(v->number) + " of " + inQuotes(p->name), another };
             }
         }
         return fail("Nothing was done.");

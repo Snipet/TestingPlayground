@@ -46,11 +46,11 @@ namespace playground
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them
-        // (set_checks without checks only lists them, tune_dials with a sweep only measures, and projects changes what
-        // plays only when it opens a project or applies a preset).
+        // (set_checks without checks only lists them, and tune_dials with a sweep only measures). projects is none of
+        // them: what it opens or applies is what the user asked for, never Claude's work for the checks to judge (an
+        // open of another project clears them: ChatProjects.cpp).
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
-                                                   "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks",
-                                                   "projects" };
+                                                   "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
         constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
         constexpr std::size_t kCircuitTextBytes = 4000;   // edit_circuit gives a netlist this size or less back whole
         constexpr bool kInstrument = product::kIsInstrument;
@@ -3003,11 +3003,8 @@ namespace playground
                 const bool listing = str(use, "name") == "set_checks" && (asked.isVoid() || asked.isUndefined());
                 const juce::var swept = use.getProperty("input", juce::var()).getProperty("sweep", juce::var());
                 const bool sweep = str(use, "name") == "tune_dials" && !swept.isVoid() && !swept.isUndefined();
-                const juce::String act = use.getProperty("input", juce::var()).getProperty("action", juce::var()).toString();
-                const bool keeps = str(use, "name") == "projects" && act != "open" && act != "apply_preset";
-                // set_checks' list, tune_dials' sweep and a list or a save of projects change nothing (the handlers' own
-                // tests)
-                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep && !keeps)
+                // set_checks' list and tune_dials' sweep change nothing (the handlers' own tests)
+                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep)
                     for (const char* c : kChangingTools)
                         worked = worked || str(use, "name") == c;
                 results.add(result);

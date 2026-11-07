@@ -166,6 +166,8 @@ namespace playground
         bool ok = false;
         std::string text;                        // the tool's result (why, when not ok)
         std::string entry;                       // the chat's line ("saved version 5 of \"Engine\""), "" for none
+        bool another = false;                    // open: another project's program is the editor's now (Claude's checks
+                                                 // were the one before's: the agent clears them)
     };
 
     // What Claude's tools act on. Every call may come from the agent's worker thread.
@@ -223,7 +225,7 @@ namespace playground
         virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
         // The projects tool (ProjectCall below): the projects and presets listed, or one saved, opened or applied as the
         // editor's PROJECTS would (on the message thread: this thread waits), and the answer in words. Never a delete.
-        virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {} }; }
+        virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {}, false }; }
     };
 
     class ChatAgent final : public ChatPort

@@ -167,6 +167,10 @@ namespace playground
         // the picture Claude's view_panel asks for, there.
         void poll();
         void settle();
+        // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
+        // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
+        bool claudeJobWaiting() const;
+        void setClaudeJobWaitForTests(int ms) noexcept { claudeJobMs_ = ms > 0 ? ms : kClaudeJobSeconds * 1000; }
 
         // Who reads the meters and the scopes (Engine::readers): the audio thread measures them only while someone does.
         // The editor's Panel is a reader while it lives (EditorPort); a tool that listens to the plugin (Claude
@@ -521,7 +525,8 @@ namespace playground
         // caller's thread (never a file read whole on the message thread), the project open's state from a job. What
         // it did goes to the editor's status (claudeNotice_, which EditorPort::claudeNotice gives).
         static constexpr int kClaudeJobSeconds = 10;
-        std::mutex claudeJobMutex_;
+        int claudeJobMs_ = kClaudeJobSeconds * 1000;             // (setClaudeJobWaitForTests)
+        mutable std::mutex claudeJobMutex_;
         std::condition_variable claudeJobDone_;
         std::function<void()> claudeJob_;                        // asked, not taken yet
         bool claudeJobRunning_ = false;

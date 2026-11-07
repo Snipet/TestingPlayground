@@ -10,11 +10,14 @@
 //   LIST     with no project open: says so, the user's none yet, the factory's (read-only) named; an action it does not
 //            take (delete) refused, nothing changed
 //   VERSION  save_version with no project open and no name refused; with a name a new project (version 1, its note
-//            "Claude: <note> (first save)"), the project open; a dial moved, saved again: version 2 of it (the first kept
-//            as it was); again unchanged: nothing added; a category given: the project's
+//            "Claude: <note> (first save)"), the project open; set_dial and save_version back to back on one worker
+//            with no poll() between (the job waits, the dial not yet set): version 2 at the dial set (the first kept as
+//            it was); again unchanged: nothing added; a category given: the project's, with nothing new to save too
+//            (said, and a notice); a job no poll() takes: withdrawn after its wait, nothing saved, a poll() after it
+//            doing nothing
 //   PRESET   save_preset with a category: the preset (its dials, its category), applied; a name it has refused without
-//            replace (the preset as it was); with replace: its old values in the result, the new ones kept, its category
-//            kept; no project open: refused
+//            replace (the preset as it was); with replace (and a category of blanks, none): its old values in the
+//            result, the new ones kept, its category kept; no project open: refused
 //   APPLY    apply_preset while a dial moved off the preset: refused, naming the dial, nothing applied; with discard:
 //            applied (its value back); a preset the project lacks: refused, naming its presets
 //   OPEN     open of another project with nothing unsaved: its files the editor's, its dials once it compiled (the
@@ -22,13 +25,17 @@
 //            opened (that version's files and dials); a version not kept refused, naming those kept
 //   FACTORY  a factory project opened (read-only, said); save_preset refused (save_version first); save_version: the
 //            user's own copy (a new project, its presets with it), the factory's as it was
+//   AB       while an A/B is on, save_version, save_preset and apply_preset refused (the user compares A and B: Keep or
+//            Close first), nothing saved, no notice; closed, a save goes through
 //   NOTICE   each save, open and preset applied: the editor's status says it once (EditorPort::claudeNotice: "CLAUDE
 //            SAVED VERSION 2 OF GLASS SONG"); a refusal and a list say nothing
 //   JOURNAL  Claude Desktop's saves are not journalled (it knows); the plugin's chat's are ("the plugin's own chat
 //            saved version 3 of ...", "... saved preset ...")
 //   CHAT     a turn: list, save_version with a note, save_preset with a category, then the answer: the tool is in the
 //            request (22 tools), its results no errors, the chat's lines say what it saved, the version's note is
-//            Claude's; a second turn's open over moved dials comes back an error, nothing opened
+//            Claude's; a second turn's open over moved dials comes back an error, nothing opened; with a check set that
+//            fails, a turn whose only tool applies a preset ends with its answer (no nudge, the check kept), and one
+//            that opens another project clears the check, its result saying so, and ends with its answer too
 #include "FakeClaude.h"
 #include "Probe.h"
 
@@ -266,9 +273,29 @@ PROBE(plugin, saves)
         const std::string since = textOf(a.chatAgent().mcpCall("get_status", object({ { "since", juce::String(token) } })));
         P.eq("journal.desktop_not", has(since, "saved version") || has(since, "saved \"Glass Song\"") ? 0 : 1, 1);
 
-        // A dial moved (Claude's set_dial, applied at the next poll: the save is after it), saved again.
-        (void)call(a, "set_dial", object({ { "name", "level" }, { "value", 0.7 } }));
-        const pg::ChatAgent::McpResult r2 = projects(a, { { "action", "save_version" } });
+        // A dial moved by Claude's set_dial and a save straight after it, on one worker with no poll() between them (as
+        // the link runs Claude Desktop's calls): this thread polls only once the save's job waits, so the dial and the
+        // job meet in one poll(), which applies the dial first. Saved again: version 2, at the dial set.
+        pg::ChatAgent::McpResult r2;
+        {
+            std::atomic<bool> done{ false };
+            std::thread t([&] {
+                (void)a.chatAgent().mcpCall("set_dial", object({ { "name", "level" }, { "value", 0.7 } }));
+                r2 = a.chatAgent().mcpCall("projects", object({ { "action", "save_version" } }));
+                done.store(true);
+            });
+            for (int k = 0; k < 5000 && !a.claudeJobWaiting() && !done.load(); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            P.eq("version.job_waits", a.claudeJobWaiting() ? 1 : 0, 1);
+            P.near("version.dial_not_yet", static_cast<double>(dial(a, 0)), 0.3, 1e-4);   // no poll() since the set_dial
+            for (int k = 0; k < 20000 && !done.load(); ++k)
+            {
+                a.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            t.join();
+            a.settle();
+        }
         const std::optional<ps::Project> p2 = ps::load("Glass Song");
         std::printf("save_version (again): %s\n", textOf(r2).c_str());
         P.eq("version.second", !r2.isError && p2 && p2->versions.size() == 2 && p2->latest().number == 2
@@ -282,6 +309,34 @@ PROBE(plugin, saves)
         const pg::ChatAgent::McpResult r3 = projects(a, { { "action", "save_version" } });
         P.eq("version.unchanged", !r3.isError && has(textOf(r3), "Nothing new to save") && ps::load("Glass Song")->versions.size() == 2 ? 1 : 0, 1);
         P.eq("notice.unchanged_none", static_cast<int64_t>(pa.claudeNotice().count), static_cast<int64_t>(notices));
+        // A category given with nothing new to save: set all the same (it is how Claude sets one), and said.
+        const pg::ChatAgent::McpResult cat = projects(a, { { "action", "save_version" }, { "category", "Keys" } });
+        std::printf("save_version (unchanged, a category): %s\n", textOf(cat).c_str());
+        const std::optional<ps::Project> keys = ps::load("Glass Song");
+        P.eq("version.category_unchanged", !cat.isError && has(textOf(cat), "Nothing new to save") && has(textOf(cat), "Its category: Keys (was Pads)")
+                                               && keys && keys->info.category == "Keys" && keys->versions.size() == 2 ? 1 : 0, 1);
+        P.eq("notice.category", pa.claudeNotice().count == notices + 1 && pa.claudeNotice().text == "CLAUDE PUT GLASS SONG IN KEYS" ? 1 : 0, 1);
+        notices = pa.claudeNotice().count;
+
+        // A job poll() never takes (a host that holds the message thread): withdrawn once its wait is over, nothing
+        // saved, and a poll() after it does nothing.
+        {
+            setDial(a, 1, 5000.0f);
+            a.setClaudeJobWaitForTests(150);
+            pg::ChatAgent::McpResult w;
+            std::thread t([&] { w = a.chatAgent().mcpCall("projects", object({ { "action", "save_version" } })); });
+            t.join();                                        // nothing polls meanwhile
+            a.setClaudeJobWaitForTests(0);
+            const bool waiting = a.claudeJobWaiting();
+            a.poll();
+            std::printf("save_version (never taken): %s\n", textOf(w).c_str());
+            const std::optional<ps::Project> after = ps::load("Glass Song");
+            P.eq("version.withdrawn", w.isError && has(textOf(w), "did not get to it in time") && has(textOf(w), "nothing was done")
+                                          && !waiting && after && after->versions.size() == 2 ? 1 : 0, 1);
+            P.eq("notice.withdrawn_none", static_cast<int64_t>(pa.claudeNotice().count), static_cast<int64_t>(notices));
+            setDial(a, 1, 1000.0f);                          // back where version 2 has it
+            a.settle();
+        }
     }
 
     // ---- PRESET --------------------------------------------------------------------------------------------------------
@@ -305,7 +360,9 @@ PROBE(plugin, saves)
         P.eq("preset.refused", again.isError && has(textOf(again), "has a preset \"Warm\" already") && has(textOf(again), "replace: true") ? 1 : 0, 1);
         P.near("preset.kept", warm() && !warm()->dials.empty() ? static_cast<double>(warm()->dials[0].value) : -1.0, 0.7, 1e-4);
         P.eq("notice.refused_none", static_cast<int64_t>(pa.claudeNotice().count), static_cast<int64_t>(notices));
-        const pg::ChatAgent::McpResult over = projects(a, { { "action", "save_preset" }, { "name", "Warm" }, { "replace", true } });
+        // Replaced, with a category that tidies to nothing (none given): the preset keeps its own.
+        const pg::ChatAgent::McpResult over = projects(a, { { "action", "save_preset" }, { "name", "Warm" }, { "replace", true },
+                                                            { "category", "  " } });
         std::printf("save_preset (replace): %s\n", textOf(over).c_str());
         P.eq("preset.replaced", !over.isError && has(textOf(over), "Replaced the preset \"Warm\"") && has(textOf(over), "Its old values: level 0.7")
                                     && has(textOf(over), "(now 0.2") && has(textOf(over), "Its category stays Soft") ? 1 : 0, 1);
@@ -383,6 +440,27 @@ PROBE(plugin, saves)
         P.eq("notice.copy", has(pa.claudeNotice().text, "YOUR OWN COPY") ? 1 : 0, 1);
     }
 
+    // ---- AB: while the user compares two versions, what plays is a side's: no save, no preset ---------------------------
+    {
+        const std::optional<ps::Project> before = ps::load(pa.project().name);
+        notices = pa.claudeNotice().count;
+        P.eq("ab.started", pa.startAb("Glass Song", 1, 2, why) && pa.ab().on ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult v = projects(a, { { "action", "save_version" }, { "note", "during the A/B" } });
+        const pg::ChatAgent::McpResult pr = projects(a, { { "action", "save_preset" }, { "name", "During" } });
+        const pg::ChatAgent::McpResult ap = projects(a, { { "action", "apply_preset" }, { "name", "Warm" } });
+        std::printf("save_version (A/B on): %s\n", textOf(v).c_str());
+        const std::optional<ps::Project> after = ps::load(pa.project().name);
+        P.eq("ab.refused", v.isError && has(textOf(v), "comparing A and B") && pr.isError && has(textOf(pr), "Nothing was saved")
+                               && ap.isError && has(textOf(ap), "Not applied") && pa.ab().on ? 1 : 0, 1);
+        P.eq("ab.nothing_saved", before && after && after->versions.size() == before->versions.size()
+                                     && after->presets.size() == before->presets.size() ? 1 : 0, 1);
+        P.eq("notice.ab_none", static_cast<int64_t>(pa.claudeNotice().count), static_cast<int64_t>(notices));
+        pa.endAb();
+        a.settle();
+        const pg::ChatAgent::McpResult again = projects(a, { { "action", "save_version" } });
+        P.eq("ab.closed_saves", !pa.ab().on && !again.isError ? 1 : 0, 1);
+    }
+
     // ---- CHAT: the plugin's own chat, a turn against a scripted API --------------------------------------------------
     {
         pg::ChatAgent& agent = a.chatAgent();
@@ -438,6 +516,34 @@ PROBE(plugin, saves)
         turn(a, *script, 2, "open Other Song");
         const Result open = resultOf(script->body(script->postCount() - 1), "toolu_p4");
         P.eq("chat.open_refused", open.error && has(open.text, "unsaved changes") && pa.project().name == "Glass Song" ? 1 : 0, 1);
+
+        // Checks Claude set for the program (one that fails) never judge what the user asked to open or apply: a turn
+        // whose only tool applies a preset ends with its answer, the checks kept; one that opens another project clears
+        // them (they were the program's before it), its result saying so, and ends with its answer too.
+        juce::Array<juce::var> impossible;
+        impossible.add(object({ { "label", "Impossibly loud" }, { "metric", kInstrument ? "rms_db" : "sine_rms_db" }, { "min", 30.0 } }));
+        const std::string set = textOf(call(a, "set_checks", object({ { "checks", juce::var(impossible) } })));
+        P.eq("checks.set_failing", agent.chatState().checks && has(set, "FAIL") ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_p5", "projects", object({ { "action", "apply_preset" }, { "name", "Warm" },
+                                                                                                  { "discard", true } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Warm is on.").end()));
+        const int b5 = script->postCount();
+        turn(a, *script, 2, "try the Warm preset, my changes can go");
+        const Result applied = resultOf(script->body(script->postCount() - 1), "toolu_p5");
+        std::printf("checks, apply_preset turn: %d posts, %s\n", script->postCount() - b5, applied.text.c_str());
+        P.eq("checks.apply_no_nudge", !applied.error && script->postCount() - b5 == 2 && agent.chatState().checks
+                                          && pa.project().preset == "Warm" ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().tool("toolu_p6", "projects", object({ { "action", "open" }, { "name", "Other Song" },
+                                                                                                  { "discard", true } })).end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Other Song is open.").end()));
+        const int b6 = script->postCount();
+        turn(a, *script, 2, "open Other Song");
+        const Result opened = resultOf(script->body(script->postCount() - 1), "toolu_p6");
+        std::printf("checks, open turn: %d posts, %s\n", script->postCount() - b6, opened.text.c_str());
+        P.eq("checks.open_cleared", !opened.error && has(opened.text, "Opened version 1 of \"Other Song\"")
+                                        && has(opened.text, "The check you set was for the program before it, so the plugin cleared it")
+                                        && script->postCount() - b6 == 2 && !agent.chatState().checks
+                                        && pa.project().name == "Other Song" ? 1 : 0, 1);
     }
 
     ps::setDirectoryForTests({});
