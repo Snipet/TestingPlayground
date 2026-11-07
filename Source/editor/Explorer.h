@@ -11,6 +11,11 @@
 //             it on; on, Open in VS Code, Show in Finder (the folder's name), Run on save (ticked when on), a row a
 //             conflict (a red dot: a click asks which side to keep), and its notes as captions; the header's cross
 //             turns it off
+//   CLAUDE DESKTOP  this instance as Claude Desktop knows it (EditorPort::desktop; plugin/McpLink.h): its name (a click
+//             renames it), Use with Claude Desktop (ticked while it is the target: chosen, or the only one open; a click
+//             chooses it, or clears the choice), what Claude Desktop's last call here did and when (lit while one acts
+//             on it; a click opens the chat, where it shows), and the other instances open (the target ticked; a click
+//             chooses one); none without a socket
 //   LLVM IR   what FMinus made of the program (IrView.h), none of its files: a caption saying so, then a row a view
 //             (optimised, lowered, and the frozen copy's while it plays; the one shown marked): a click opens the
 //             read-only IR tab on it
@@ -43,8 +48,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder, assets };
-        static constexpr int kSections = 8;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder, assets, desktop };
+        static constexpr int kSections = 9;
 
         struct Row
         {
@@ -83,7 +88,7 @@ namespace playground::ui
             std::function<void(Section)> action;                // the header's button
         };
 
-        // a11yBase: the first of its accessibility ids (it uses up to 4096 of them).
+        // a11yBase: the first of its accessibility ids (it uses up to kSections * 512 of them).
         ExplorerItem(uint32_t a11yBase, Hooks hooks);
 
         void setBounds(funkgui::Rect r);
@@ -148,7 +153,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true, true, true, true };
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

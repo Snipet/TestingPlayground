@@ -117,6 +117,7 @@
 #include "editor/Explorer.h"
 #include "editor/AbCard.h"
 #include "editor/ExportCard.h"
+#include "editor/NameCard.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
 
@@ -211,6 +212,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
     inline constexpr funkgui::Tag kLogoTag = funkgui::tags::firstProduct + 14;        // the top bar's mark (LogoMark.h)
     inline constexpr funkgui::Tag kAbTag = funkgui::tags::firstProduct + 15;          // A/B's card
+    inline constexpr funkgui::Tag kNameTag = funkgui::tags::firstProduct + 16;        // the name card
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -344,6 +346,12 @@ namespace playground::ui
         // panel), each a project of its own, PROJECTS then open on it.
         void openExport(const std::string& project);
         ExportCard& exportCard() noexcept { return export_; }
+        NameCard& nameCard() noexcept { return name_; }
+        // Claude Desktop as this Panel shows it (probes): the chat header's subtitle and badge ("" for none), and where
+        // the badge is while it shows.
+        const std::string& desktopLine() const noexcept { return desktop_; }
+        const std::string& desktopBadge() const noexcept { return desktopBadge_; }
+        std::optional<funkgui::Point> centreOfDesktopBadge() const;
         void chooseImport();
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
@@ -714,7 +722,7 @@ namespace playground::ui
         void importFiles(const std::vector<std::string>& paths);
         bool dialogOpen() const noexcept
         {
-            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen();
+            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -793,7 +801,23 @@ namespace playground::ui
         double busySince_ = -1.0;                        // when the turn under way began
         ChatState chat_;
         std::string activity_;                           // the line under the message box
-        std::string desktop_;                            // Claude Desktop's name for this instance, while connected
+        // Claude Desktop (EditorPort::desktop): what this Panel last read of it (syncDesktop, each refresh: a copy); the
+        // chat header's subtitle (what a call does here now, else the name Claude Desktop calls it by while it is the
+        // target) and its badge, while Claude Desktop is connected and its calls go to another or to none (a click makes
+        // this one the target); the explorer's CLAUDE DESKTOP rows (desktopRow: what a row does); the name card.
+        DesktopState desktopState_;
+        std::string desktop_;                            // the subtitle ("" for none)
+        std::string desktopBadge_;                       // the badge's label ("" for none)
+        std::string desktopAgo_;                         // when the last call was, in words ("now", "just now", "4 min ago")
+        std::string desktopSeen_;                        // what the explorer's rows show of it, as text
+        uint64_t desktopRevision_ = 0;                   // bumps when that changes
+        int desktopItem_ = -1;                           // the badge
+        void syncDesktop();
+        void placeDesktopBadge();
+        void desktopRow(const ExplorerItem::Row& row);
+        NameCard name_{ port_ };
+        int focusBeforeName_ = -1;
+        void afterName(bool wasOpen);                    // its notice to the status, the focus back once it closed
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
         std::string pendingSend_;                        // a message waiting for a key
 
