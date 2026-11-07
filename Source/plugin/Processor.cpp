@@ -3,6 +3,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
+#include "plugin/Launch.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/WheelMap.h"
@@ -29,6 +30,36 @@
 
 namespace playground
 {
+    std::string bundledShaderc(bool standalone)
+    {
+        // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, its
+        // Contents/x86_64-linux/<Name>.so, the AU's), or the Standalone's.
+        juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+#if defined(__linux__)
+        // JUCE's currentExecutableFile on Linux is dladdr's name for this code, which for a program (not a shared
+        // object) is its argv[0] as typed, taken against the working folder: started by name through PATH (the
+        // package's ~/.local/bin link), <cwd>/<Name>, no such file. The Standalone's own file is /proc/self/exe's; a
+        // plug-in's (the VST3's .so) is dladdr's, the path the host loaded it by.
+        if (standalone)
+            if (const juce::File self("/proc/self/exe"); self.isSymbolicLink())
+                exe = self.getLinkedTarget();
+#else
+        (void)standalone;
+#endif
+#if defined(_WIN32)
+        juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc.exe");
+        if (!bundled.existsAsFile())
+            bundled = exe.getSiblingFile("shaderc.exe");
+#elif !defined(__APPLE__)
+        juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+        if (!bundled.existsAsFile())
+            bundled = exe.getSiblingFile("shaderc");
+#else
+        const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+#endif
+        return bundled.existsAsFile() ? bundled.getFullPathName().toStdString() : std::string();
+    }
+
     namespace
     {
         // The program in the plugin state, beside the parameters: <PROGRAM active=".."> with <RUN> (the files that
@@ -116,25 +147,14 @@ namespace playground
         }
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
-        // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
-        // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
-        // prelude, varyings and bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
-        ShaderTools shaderTools()
+        // (bundledShaderc), else where <prefix>SHADERC says (the probes'); FunkGui's prelude, varyings and
+        // bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
+        ShaderTools shaderTools(bool standalone)
         {
             ShaderTools t;
-            // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, the AU's), or the
-            // Standalone's.
-            const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
-#if defined(_WIN32)
-            juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc.exe");
-            if (!bundled.existsAsFile())
-                bundled = exe.getSiblingFile("shaderc.exe");
-#else
-            const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
-#endif
             const char* env = std::getenv((std::string(product::kEnvPrefix) + "SHADERC").c_str());
-            if (bundled.existsAsFile())
-                t.shaderc = bundled.getFullPathName().toStdString();
+            if (std::string bundled = bundledShaderc(standalone); !bundled.empty())
+                t.shaderc = std::move(bundled);
             else if (env != nullptr && *env != '\0')
                 t.shaderc = env;
             t.prelude = funkgui::shaders::fragmentPrelude();
@@ -387,7 +407,7 @@ namespace playground
         // defaults.
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
-        compiler_.setShaderTools(shaderTools());
+        compiler_.setShaderTools(shaderTools(wrapperType == wrapperType_Standalone));
         compiler_.setDialCarrier([this](const Controls& controls, const PanelSpec& panel) { return carryFor(controls, panel); });
         capture_.setOwnCode([this](bool on) { engine_.setOwnCode(on); });
         const CompileStatus s = compiler_.compileNow(draft_.files);
@@ -766,9 +786,18 @@ namespace playground
         }
         if (app == FolderApp::files)
         {
+#if defined(__linux__)
+            // xdg-open given the path as its one argument (Launch.h): JUCE's startAsProcess goes through /bin/sh there,
+            // where a project's name holding $(...) or a backtick would run.
+            std::string launchWhy;
+            if (launch::detached(launch::openerArgs(path), launchWhy))
+                return true;
+            why = "the folder did not open: " + launchWhy;
+#else
             if (juce::File(juce::String::fromUTF8(path.c_str())).startAsProcess())
                 return true;
             why = "the folder did not open";
+#endif
             return false;
         }
         // VS Code by its URL scheme, vscode://file/<path>/ (a folder), which the system hands to VS Code when it is
@@ -792,9 +821,16 @@ namespace playground
             }
         }
         url += '/';
+#if defined(__linux__)
+        std::string launchWhy;                           // no shell, and no zombie left in the host
+        if (launch::detached(launch::openerArgs(url), launchWhy))
+            return true;
+        why = "VS Code did not open: " + launchWhy;
+#else
         if (juce::Process::openDocument(juce::String::fromUTF8(url.c_str()), {}))
             return true;
         why = "VS Code did not open (is it installed?)";
+#endif
         return false;
     }
 

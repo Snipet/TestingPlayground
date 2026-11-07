@@ -1,7 +1,7 @@
 // Source/plugin/standalone/NativeWindow.h: the Standalone app's platform side (macOS: NativeWindow.mm, Objective-C++;
-// Windows: NativeWindowWin.cpp, Windows' own title bar and a JUCE menu bar in the window, menuBarModel()), for
-// App.cpp. Each call takes a JUCE peer's native handle (ComponentPeer::getNativeHandle: its NSView) and acts on its
-// NSWindow. Message thread only.
+// Windows and Linux: NativeWindowWin.cpp, the system's own title bar and a JUCE menu bar in the window,
+// menuBarModel()), for App.cpp. Each call takes a JUCE peer's native handle (ComponentPeer::getNativeHandle: its
+// NSView) and acts on its NSWindow. Message thread only.
 //
 //   styleWindow()   the unified look: the title bar transparent over the content, which fills the window (full-size
 //                   content), and the title hidden, so the window's close, minimise and zoom buttons sit over the
@@ -47,8 +47,8 @@ namespace playground::standalone::native
     void showAbout(const char* name, const char* version, const char* credits);
 
 #if !defined(__APPLE__)
-    // Windows (NativeWindowWin.cpp): the menu bar installMenuBar made, as a JUCE model the window shows (macOS's is
-    // the system's, outside the window).
+    // Windows and Linux (NativeWindowWin.cpp): the menu bar installMenuBar made, as a JUCE model the window shows
+    // (macOS's is the system's, outside the window).
     juce::MenuBarModel* menuBarModel();
 #endif
 }

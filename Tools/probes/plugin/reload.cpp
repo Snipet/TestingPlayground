@@ -30,7 +30,8 @@
 //           what played before Q (before poll() and after: only panel.gui differs from what plays), and a dial moved
 //           under Q (1.0) keeps its value across the next compile (its meaning Q's, not the program's before)
 //   WAIT    an edit that adds a display while the audio thread plays blocks of its own, a millisecond apart: when its
-//           status is out, the newest frame was read by the edit's table already (editPanel waited for that block)
+//           status is out, the newest frame was read by the edit's table already (editPanel waited for that block);
+//           skipped, saying so, when a gap between blocks passed audioIdle's 20 ms (the thread idle: no wait is right)
 //   OPEN    a project version opened whose files differ from what plays only in panel.gui compiles (as it was saved)
 //   AB      a RUN of the panel's files alone while an A/B is on compiles. Not covered: a held refine, a stopped
 //           program and a .sc that FMinus #includes, which also compile (Compiler::editPanel's first checks)
@@ -48,6 +49,7 @@
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -498,18 +500,32 @@ PROBE(plugin, reload)
     // ---- WAIT: an edit's new table read before its status is out, the audio thread playing ---------------------------
     {
         std::atomic<bool> stop{ false };
+        std::atomic<int64_t> longestGapUs{ 0 };      // between a block's end and the next one's start
+        std::atomic<int> blocks{ 0 };
         std::thread audio([&] {
             juce::AudioBuffer<float> buffer(2, kBlock);
             juce::MidiBuffer midi;
+            std::chrono::steady_clock::time_point ended{};
             while (!stop.load())
             {
                 buffer.clear();
+                const auto began = std::chrono::steady_clock::now();
+                if (ended != std::chrono::steady_clock::time_point{})
+                {
+                    const int64_t gap = std::chrono::duration_cast<std::chrono::microseconds>(began - ended).count();
+                    longestGapUs.store(std::max(longestGapUs.load(), gap));
+                }
                 skip.p.processBlock(buffer, midi);
+                ended = std::chrono::steady_clock::now();
+                blocks.fetch_add(1);
                 // A millisecond apart: an edit's status out with no wait would most often find the frame before its
                 // table, and the gap far under the 20 ms that make the audio thread idle (Compiler::audioIdle).
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         });
+        // Playing before the edit: a thread just started may not have played a block yet (it is idle until it has).
+        for (int k = 0; k < 5000 && blocks.load() < 4; ++k)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         std::string more = relabelled(kGuiTaper, "\"LEVEL\"", "\"DRIVE\"");
         more = relabelled(more, "        meter level", "        number ph\n        meter level");
         pg::EditorPort& port = skip.p.editorPort();
@@ -519,12 +535,19 @@ PROBE(plugin, reload)
         skip.p.compiler().wait();
         const pg::CompileStatus s = port.status();
         const pg::Meters m = skip.meters();          // the newest frame as the status comes out
+        const double gapMs = static_cast<double>(longestGapUs.load()) / 1000.0;
         stop.store(true);
         audio.join();
         P.eq("wait.panel_only", s.ok && s.panelOnly && s.panel.tapTable != 0 ? 1 : 0, 1);
-        P.eq("wait.table_read_first", m.program == s.program && m.tapTable == s.panel.tapTable ? 1 : 0, 1);
-        std::printf("wait: the edit out in %.1f ms (its table %llu, the newest frame's %llu)\n", s.ms,
-                    static_cast<unsigned long long>(s.panel.tapTable), static_cast<unsigned long long>(m.tapTable));
+        // Only while the blocks came closer than audioIdle's 20 ms: a longer gap (a machine's scheduling, an emulator's
+        // pause) is the audio thread idle, for which the edit rightly does not wait.
+        if (gapMs <= 20.0)
+            P.eq("wait.table_read_first", m.program == s.program && m.tapTable == s.panel.tapTable ? 1 : 0, 1);
+        else
+            probe::skip(P, "wait.table_read_first", "the audio thread's blocks came " + std::to_string(static_cast<int>(gapMs))
+                                                        + " ms apart once, past the 20 ms after which it is idle (Compiler::audioIdle)");
+        std::printf("wait: the edit out in %.1f ms (its table %llu, the newest frame's %llu); the blocks %.1f ms apart at most\n",
+                    s.ms, static_cast<unsigned long long>(s.panel.tapTable), static_cast<unsigned long long>(m.tapTable), gapMs);
         skip.p.poll();
     }
 

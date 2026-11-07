@@ -1,6 +1,7 @@
 // Source/plugin/standalone/RacingWheelNone.cpp: RacingWheel.h where the Standalone has no racing wheel (Windows: the
-// G29 is read over macOS's IOKit, RacingWheel.cpp). None is ever present, so Devices lists none and sends nothing; the
-// synth still reads a wheel's control changes from any MIDI input (dsp/Events.h's wheelcc).
+// G29 is read over macOS's IOKit, RacingWheel.cpp, and Linux's evdev, RacingWheelLinux.cpp). None is ever present, so
+// Devices lists none and sends nothing; the synth still reads a wheel's control changes from any MIDI input
+// (dsp/Events.h's wheelcc).
 #include "plugin/standalone/RacingWheel.h"
 
 namespace playground::standalone

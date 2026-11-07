@@ -9,9 +9,9 @@
 // is the editor's, which the session keeps; the editor stays resizable within its limits; and an effect starts with its
 // input muted (JUCE's guard against a feedback loop).
 //
-// Windows (NativeWindowWin.cpp): the window keeps Windows' title bar, the editor keeps no room for buttons, and the
-// menu bar (File, Edit, Help) is a JUCE one inside the window; the editor runs on the CPU there (FP_SOFT_EDITOR:
-// editor/nogpu/SoftEditorHost.h).
+// Windows and Linux (NativeWindowWin.cpp, JUCE's own window): the window keeps the system's title bar, the editor
+// keeps no room for buttons, and the menu bar (File, Edit, Help) is a JUCE one inside the window; with FP_WITH_GPU off
+// the editor runs on the CPU (FP_SOFT_EDITOR: editor/nogpu/SoftEditorHost.h).
 //
 // What is new: the window is macOS's own (NativeWindow.mm) without a title bar of its own: its buttons sit over the
 // editor's top bar, which keeps them room (EditorPort::windowButtons, through Processor::setWindowHooks), and the top

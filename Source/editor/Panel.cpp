@@ -175,8 +175,10 @@ namespace playground::ui
         }
 #if defined(_WIN32)
         constexpr const char* kShowFolder = "Show in Explorer";
-#else
+#elif defined(__APPLE__)
         constexpr const char* kShowFolder = "Show in Finder";
+#else
+        constexpr const char* kShowFolder = "Show in File Manager";
 #endif
         // The problems as the code editor marks them.
         std::vector<Diagnostic> diagnosticsOf(const std::vector<Problem>& problems)

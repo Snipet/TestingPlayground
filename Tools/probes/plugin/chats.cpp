@@ -5,7 +5,8 @@
 // the network, and the key's, the chats' and the projects' folders are the probe's own.
 //   STORE    a chat written: its .chat and .meta sealed ("FPC1"), 0600 in 0700 folders, the store's salt 0600, no word
 //            of it in clear anywhere under the folder; it loads back; a byte changed: refused, saying why; another
-//            writer's change since it was read: a conflict, nothing written; an owner or an id that is no folder's
+//            writer's change since it was read, of the same size and time (only the file's identity tells it): a
+//            conflict, nothing written; an owner or an id that is no folder's
 //            name (../, upper case, a slash) is refused before it reaches a path
 //   ID       a project gets a UUID when it is first saved, kept by its next save; renamed in the Finder it keeps it
 //            (load, idOf), and nameOfId finds it by it; a copy made in the Finder gets an id of its own when opened,
@@ -251,7 +252,6 @@ PROBE(plugin, chats)
         {
             const auto now = cs::loadChat(owner, meta.id);   // as the file is now (restored above)
             cs::Stamp mine = now ? now->stamp : cs::Stamp{}, theirs = mine;
-            juce::Thread::sleep(5);
             std::string whyNot;
             const cs::Stamp was = theirs;
             const cs::SaveResult written = cs::saveChat(owner, meta, state + " ", theirs, &whyNot);
@@ -260,6 +260,12 @@ PROBE(plugin, chats)
                             static_cast<long long>(was.modified), static_cast<long long>(was.size),
                             static_cast<long long>(chatFile.getLastModificationTime().toMilliseconds()), static_cast<long long>(chatFile.getSize()));
             P.eq("store.theirs_written", written == cs::SaveResult::ok ? 1 : 0, 1);
+            // Their save given back the time mine read: of the same sealed size, it then differs from mine by its
+            // identity alone (each save renames a new file in), as two saves within one tick of a file clock do (JUCE
+            // reads whole seconds on Linux), so the conflict below rests on that alone.
+            chatFile.setLastModificationTime(juce::Time(mine.modified));
+            P.eq("store.theirs_alike", chatFile.getLastModificationTime().toMilliseconds() == mine.modified && chatFile.getSize() == mine.size
+                                           && chatFile.getFileIdentifier() != mine.id && chatFile.getFileIdentifier() != 0 ? 1 : 0, 1);
             const std::string after = bytesOf(chatFile);
             P.eq("store.conflict", cs::saveChat(owner, meta, state, mine) == cs::SaveResult::conflict ? 1 : 0, 1);
             P.eq("store.conflict_writes_nothing", bytesOf(chatFile) == after ? 1 : 0, 1);

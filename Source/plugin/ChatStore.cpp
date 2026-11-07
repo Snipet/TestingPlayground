@@ -1,5 +1,7 @@
 // Source/plugin/ChatStore.cpp: see ChatStore.h.
 #include "plugin/ChatStore.h"
+#include "plugin/SecretStore.h"
+#include "fminus/Xdg.h"
 
 #include "Product.h"
 
@@ -8,7 +10,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <bcrypt.h>
-#else
+#elif defined(__APPLE__)
 #include <CommonCrypto/CommonCryptor.h>
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonKeyDerivation.h>
@@ -16,10 +18,20 @@
 
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+
+#include <climits>
+#include <pwd.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -36,13 +48,13 @@ namespace playground::chatstore
         constexpr std::size_t kSaltBytes = 16, kIvBytes = 16, kMacBytes = 32, kBlockBytes = 16;   // SHA-256, AES
         constexpr unsigned kRounds = 100000;
         // Another machine, as the user's error names it ("made on another Mac or account").
-#if defined(_WIN32)
-        constexpr const char* kAnotherMachine = "another computer";
-#else
+#if defined(__APPLE__)
         constexpr const char* kAnotherMachine = "another Mac";
+#else
+        constexpr const char* kAnotherMachine = "another computer";
 #endif
 
-        // ---- the four primitives the file needs: CommonCrypto on macOS, CNG (bcrypt) on Windows ------------------
+        // ---- the four primitives the file needs: CommonCrypto (macOS), CNG (Windows), OpenSSL's libcrypto (Linux) ---
 #if defined(_WIN32)
         // A CNG algorithm provider, opened once and kept for the process (CNG's providers are thread-safe).
         BCRYPT_ALG_HANDLE provider(const wchar_t* algorithm, ULONG flags)
@@ -114,6 +126,63 @@ namespace playground::chatstore
 
         // The account's part of the secret (macOS's uid): the user's name is in the secret already.
         std::string accountId() { return "win"; }
+#elif !defined(__APPLE__)
+        bool randomBytes(uint8_t* out, std::size_t n)
+        {
+            return n <= static_cast<std::size_t>(INT_MAX) && RAND_bytes(out, static_cast<int>(n)) == 1;
+        }
+
+        bool pbkdf2(const std::string& secret, const uint8_t* salt, uint8_t* out, std::size_t n)
+        {
+            return secret.size() <= static_cast<std::size_t>(INT_MAX) && n <= static_cast<std::size_t>(INT_MAX)
+                && PKCS5_PBKDF2_HMAC(secret.data(), static_cast<int>(secret.size()), salt, static_cast<int>(kSaltBytes),
+                                     static_cast<int>(kRounds), EVP_sha256(), static_cast<int>(n), out)
+                       == 1;
+        }
+
+        std::array<uint8_t, kMacBytes> hmac(const std::array<uint8_t, 32>& key, const uint8_t* data, std::size_t n)
+        {
+            std::array<uint8_t, kMacBytes> out{};
+            unsigned written = 0;
+            if (HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), data, n, out.data(), &written) == nullptr
+                || written != kMacBytes)
+                out.fill(0);
+            return out;
+        }
+
+        // AES-256-CBC with PKCS#7 padding (EVP's default); `out` is sized to what was written. False when it fails (a
+        // bad pad).
+        bool aesCbc(bool encrypt, const std::array<uint8_t, 32>& key, const uint8_t* iv, const uint8_t* in,
+                    std::size_t n, std::vector<uint8_t>& out)
+        {
+            out.clear();
+            if (n > static_cast<std::size_t>(INT_MAX) - kBlockBytes)
+                return false;
+            EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+            if (ctx == nullptr)
+                return false;
+            out.assign(n + kBlockBytes, 0);
+            int body = 0, tail = 0;
+            const bool ok = EVP_CipherInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key.data(), iv, encrypt ? 1 : 0) == 1
+                         && EVP_CipherUpdate(ctx, out.data(), &body, in, static_cast<int>(n)) == 1
+                         && EVP_CipherFinal_ex(ctx, out.data() + body, &tail) == 1;
+            EVP_CIPHER_CTX_free(ctx);
+            out.resize(ok ? static_cast<std::size_t>(body + tail) : 0);
+            return ok;
+        }
+
+        std::string accountId() { return std::to_string(static_cast<unsigned>(::getuid())); }
+
+        // The account's name from the password database (never $USER, which a launcher may set otherwise).
+        std::string logonName()
+        {
+            std::vector<char> buf(16384);
+            passwd pw{};
+            passwd* found = nullptr;
+            if (getpwuid_r(::getuid(), &pw, buf.data(), buf.size(), &found) == 0 && found != nullptr && pw.pw_name != nullptr)
+                return pw.pw_name;
+            return {};
+        }
 #else
         bool randomBytes(uint8_t* out, std::size_t n) { return CCRandomGenerateBytes(out, n) == kCCSuccess; }
 
@@ -174,11 +243,17 @@ namespace playground::chatstore
             return true;
         }
 
-        // The encryption key and the MAC key, from this computer and account and the salt.
+        // The encryption key and the MAC key, from this computer and account and the salt. Linux: the machine's key
+        // (machineKey: JUCE's device id there starts processes, cat and lscpu, and reads what identical machines share)
+        // and the account's name from the password database.
         bool deriveKeys(const uint8_t* salt, std::array<uint8_t, 32>& enc, std::array<uint8_t, 32>& mac)
         {
+#if defined(__linux__)
+            const std::string secret = "funk-playground-key-v1|" + machineKey() + "|" + logonName() + "|" + accountId();
+#else
             const std::string secret = "funk-playground-key-v1|" + juce::SystemStats::getUniqueDeviceID().toStdString()
                                      + "|" + juce::SystemStats::getLogonName().toStdString() + "|" + accountId();
+#endif
             std::array<uint8_t, 64> both{};
             if (!pbkdf2(secret, salt, both.data(), both.size()))
                 return false;
@@ -246,11 +321,14 @@ namespace playground::chatstore
         return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
             .getChildFile("Funk")
             .getChildFile("Playground");
-#else
+#elif defined(__APPLE__)
         return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
             .getChildFile("Application Support")
             .getChildFile("Funk")
             .getChildFile("Playground");
+#else
+        // Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/Playground (fminus/Xdg.h), beside the projects' folders.
+        return juce::File(juce::String::fromUTF8(xdg::dataHome().c_str())).getChildFile("Funk").getChildFile("Playground");
 #endif
     }
 
@@ -406,7 +484,206 @@ namespace playground::chatstore
         }
     }
 
-    bool hasKey() { return keyFile().existsAsFile(); }
+    // ---- where a key is kept: the desktop's keyring (Linux), else its file -------------------------------------------
+    namespace
+    {
+        std::mutex storeMutex;
+        secrets::Store* storeOverride = nullptr;     // a probe's (setSecretStoreForTests)
+        bool storeOverridden = false;
+        // What the store said of an item lately (has()), by kind and origin, so that hasKey (the chat card's state,
+        // asked every frame) asks it at most every kSeenFor: another process's save shows within that.
+        struct Seen
+        {
+            bool kept = false;
+            std::chrono::steady_clock::time_point at;
+        };
+        std::map<std::string, Seen> seen;
+        constexpr auto kSeenFor = std::chrono::seconds(3);
+
+        const secrets::Item kAnthropic{ "anthropic", "https://api.anthropic.com" };
+
+        std::string itemKey(const secrets::Item& item) { return item.kind + "\n" + item.origin; }
+
+        void remember(const secrets::Item& item, bool kept)
+        {
+            const std::lock_guard<std::mutex> lock(storeMutex);
+            seen[itemKey(item)] = { kept, std::chrono::steady_clock::now() };
+        }
+
+        // The store keys go to, when it can be asked now: a probe's; else none while the folder is a test's or a
+        // probe's sandbox (a test never reaches the user's keyring); else the desktop's (SecretStore.h: Linux).
+        secrets::Store* usableStore()
+        {
+            secrets::Store* s = nullptr;
+            {
+                const std::lock_guard<std::mutex> lock(storeMutex);
+                if (storeOverridden)
+                    s = storeOverride;
+                else
+                {
+                    const std::lock_guard<std::mutex> dirLock(overrideMutex);
+                    const std::string sandbox = std::string(product::kEnvPrefix) + "PREFS_DIR";
+                    const char* dir = std::getenv(sandbox.c_str());
+                    if (overrideDir == juce::File() && (dir == nullptr || *dir == '\0'))
+                        s = secrets::desktop();
+                }
+            }
+            return s != nullptr && s->available(nullptr) ? s : nullptr;
+        }
+
+        // Whether the store keeps `item` (no prompt; what it said within kSeenFor, else asked again).
+        bool keptInStore(secrets::Store& store, const secrets::Item& item)
+        {
+            {
+                const std::lock_guard<std::mutex> lock(storeMutex);
+                if (const auto it = seen.find(itemKey(item));
+                    it != seen.end() && std::chrono::steady_clock::now() - it->second.at < kSeenFor)
+                    return it->second.kept;
+            }
+            const int has = store.has(item, nullptr);
+            remember(item, has == 1);                // one that could not be asked (no service behind the bus) is
+            return has == 1;                         // asked again only after kSeenFor too: the file decides
+        }
+
+        // A key kept: in the store when there is one (its file, if any, deleted: one place), else sealed into its file
+        // (`sealed`: what the file holds) with the machine's key. A store that refuses it (a keyring left locked) falls
+        // back to the file, which readKey then reads before the store: the store may still hold an older key, which a
+        // locked keyring would not let clear() remove either.
+        bool keepKey(const secrets::Item& item, const std::string& label, std::string_view key, const juce::File& file,
+                     std::string_view sealed, std::string* why)
+        {
+            if (secrets::Store* store = usableStore())
+            {
+                if (store->store(item, label, key, nullptr))
+                {
+                    remember(item, true);
+                    if (!file.existsAsFile() || file.deleteFile())
+                        return true;
+                    // A file it cannot delete would be read first, an older key: the new one sealed into it too.
+                }
+            }
+            return seal(file, sealed, why);
+        }
+
+        // A key read (`opened`: the file's text made the key). The file first: there is one only when the last save did
+        // not reach the store (none ran, or it refused: a keyring left locked), since a save the store takes and the
+        // move below both delete it, so it is newer than whatever the store holds; it moves into the store when there
+        // is one that takes it. Else the store's. A store that keeps the key but left it locked (the user dismissed the
+        // prompt to unlock it: libsecret's lookup then finds nothing and says nothing) is said so, and the key counted
+        // kept. Nothing, with why.
+        std::optional<std::string> readKey(const secrets::Item& item, const std::string& label, const juce::File& file,
+                                           const std::function<std::optional<std::string>(std::string*)>& opened,
+                                           std::string* why)
+        {
+            secrets::Store* store = usableStore();
+            if (store == nullptr || file.existsAsFile())
+            {
+                std::optional<std::string> k = opened(why);
+                if (k && store != nullptr && store->store(item, label, *k, nullptr))
+                {
+                    remember(item, true);
+                    file.deleteFile();
+                }
+                return k;
+            }
+            std::string storeWhy;
+            if (std::optional<std::string> k = store->lookup(item, &storeWhy))
+            {
+                remember(item, true);
+                return k;
+            }
+            if (!storeWhy.empty())
+            {
+                if (why != nullptr)
+                    *why = store->name() + ": " + storeWhy;
+                return std::nullopt;
+            }
+            if (store->has(item, nullptr) == 1)
+            {
+                remember(item, true);
+                if (why != nullptr)
+                    *why = store->name() + " is locked: send again, and unlock it when it asks";
+                return std::nullopt;
+            }
+            remember(item, false);
+            return opened(why);                      // no file: its words for none
+        }
+
+        bool keyKept(const secrets::Item& item, const juce::File& file)
+        {
+            if (file.existsAsFile())
+                return true;
+            secrets::Store* store = usableStore();
+            return store != nullptr && keptInStore(*store, item);
+        }
+
+        // Both places emptied: the store's item and the file, each whatever the other did. False, with why, when either
+        // still holds the key: the store's is looked for again after clear() (a keyring the user left locked keeps it,
+        // and its clear says nothing: SecretStore.h).
+        bool dropKey(const secrets::Item& item, const juce::File& file, std::string* why)
+        {
+            std::string problem;
+            if (secrets::Store* store = usableStore())
+            {
+                std::string w;
+                const bool cleared = store->clear(item, &w);
+                const int has = store->has(item, nullptr);
+                const bool left = has == 1 || (has < 0 && !cleared);   // not asked again either: as it was, kept
+                remember(item, left);
+                if (!cleared)
+                    problem = store->name() + ": " + (w.empty() ? std::string("it failed") : w);
+                else if (left)
+                    problem = store->name() + " still holds it (it is locked: remove the key again, and unlock it when it asks)";
+            }
+            if (file.existsAsFile() && !file.deleteFile())
+                problem += (problem.empty() ? "" : "; ") + std::string("cannot delete ") + file.getFullPathName().toStdString();
+            if (!problem.empty() && why != nullptr)
+                *why = problem;
+            return problem.empty();
+        }
+
+        std::string labelFor(const secrets::Item& item)
+        {
+            return item.kind == kAnthropic.kind ? std::string("Funk Playground: Anthropic API key")
+                                                : "Funk Playground: API key for " + item.origin;
+        }
+    }
+
+    void setSecretStoreForTests(secrets::Store* store, bool overridden)
+    {
+        const std::lock_guard<std::mutex> lock(storeMutex);
+        storeOverride = store;
+        storeOverridden = overridden;
+        seen.clear();
+    }
+
+    std::string keyPlace()
+    {
+        secrets::Store* store = usableStore();
+        return store != nullptr ? store->name() : std::string();
+    }
+
+    std::string machineKey()
+    {
+#if defined(__linux__)
+        // systemd's (and D-Bus's) id of this installation: 32 hex digits made at its first boot, readable by every
+        // account; else the host's name.
+        for (const char* path : { "/etc/machine-id", "/var/lib/dbus/machine-id" })
+        {
+            const juce::String id = juce::File(path).loadFileAsString().trim();
+            if (id.isNotEmpty())
+                return id.toStdString();
+        }
+        char host[256] = {};
+        if (::gethostname(host, sizeof host - 1) == 0 && host[0] != '\0')
+            return std::string("host:") + host;
+        return "host:";
+#else
+        return juce::SystemStats::getUniqueDeviceID().toStdString();
+#endif
+    }
+
+    bool hasKey() { return keyKept(kAnthropic, keyFile()); }
 
     bool saveKey(std::string_view key, std::string* why)
     {
@@ -416,12 +693,13 @@ namespace playground::chatstore
                 *why = "that is not an Anthropic API key (they start with sk-ant-)";
             return false;
         }
-        return seal(keyFile(), key, why);
+        return keepKey(kAnthropic, labelFor(kAnthropic), key, keyFile(), key, why);
     }
 
     std::optional<std::string> loadKey(std::string* why)
     {
-        std::optional<std::string> key = unseal(keyFile(), "key", why);
+        std::optional<std::string> key = readKey(kAnthropic, labelFor(kAnthropic), keyFile(),
+                                                 [](std::string* w) { return unseal(keyFile(), "key", w); }, why);
         if (key && !plausibleKey(*key))
         {
             if (why != nullptr)
@@ -435,11 +713,7 @@ namespace playground::chatstore
         return key;
     }
 
-    bool forgetKey()
-    {
-        const juce::File f = keyFile();
-        return !f.existsAsFile() || f.deleteFile();
-    }
+    bool forgetKey(std::string* why) { return dropKey(kAnthropic, keyFile(), why); }
 
     // ---- the other providers' keys (ChatStore.h) -------------------------------------------------------------------------
     namespace
@@ -467,7 +741,8 @@ namespace playground::chatstore
 
     bool hasProviderKey(std::string_view kind, std::string_view origin)
     {
-        return plainKind(kind) && !origin.empty() && providerKeyFile(kind, origin).existsAsFile();
+        return plainKind(kind) && !origin.empty()
+            && keyKept({ std::string(kind), std::string(origin) }, providerKeyFile(kind, origin));
     }
 
     std::optional<std::string> loadProviderKey(std::string_view kind, std::string_view origin, std::string* why)
@@ -478,27 +753,32 @@ namespace playground::chatstore
                 *why = "no API key saved";
             return std::nullopt;
         }
-        std::optional<std::string> sealed = unseal(providerKeyFile(kind, origin), "key", why);
-        if (!sealed)
-        {
-            if (why != nullptr && why->find(kAnotherMachine) != std::string::npos)
-                *why += ": add it again";
-            if (why != nullptr && *why == "no key saved")
-                *why = "no API key saved";
-            return std::nullopt;
-        }
-        // The origin it was saved for, a line, then the key: another server's (a copied file) is none.
-        const std::size_t nl = sealed->find('\n');
-        if (nl == std::string::npos || std::string_view(*sealed).substr(0, nl) != origin || nl + 1 >= sealed->size())
-        {
+        const juce::File file = providerKeyFile(kind, origin);
+        const auto opened = [&](std::string* w) -> std::optional<std::string> {
+            std::optional<std::string> sealed = unseal(file, "key", w);
+            if (!sealed)
+            {
+                if (w != nullptr && w->find(kAnotherMachine) != std::string::npos)
+                    *w += ": add it again";
+                if (w != nullptr && *w == "no key saved")
+                    *w = "no API key saved";
+                return std::nullopt;
+            }
+            // The origin it was saved for, a line, then the key: another server's (a copied file) is none.
+            const std::size_t nl = sealed->find('\n');
+            if (nl == std::string::npos || std::string_view(*sealed).substr(0, nl) != origin || nl + 1 >= sealed->size())
+            {
+                std::fill(sealed->begin(), sealed->end(), '\0');
+                if (w != nullptr)
+                    *w = "the saved key is for another server";
+                return std::nullopt;
+            }
+            std::string key = sealed->substr(nl + 1);
             std::fill(sealed->begin(), sealed->end(), '\0');
-            if (why != nullptr)
-                *why = "the saved key is for another server";
-            return std::nullopt;
-        }
-        std::string key = sealed->substr(nl + 1);
-        std::fill(sealed->begin(), sealed->end(), '\0');
-        return key;
+            return key;
+        };
+        const secrets::Item item{ std::string(kind), std::string(origin) };
+        return readKey(item, labelFor(item), file, opened, why);
     }
 
     bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why)
@@ -511,17 +791,17 @@ namespace playground::chatstore
             return false;
         }
         std::string secret = std::string(origin) + "\n" + std::string(key);
-        const bool ok = seal(providerKeyFile(kind, origin), secret, why);
+        const secrets::Item item{ std::string(kind), std::string(origin) };
+        const bool ok = keepKey(item, labelFor(item), key, providerKeyFile(kind, origin), secret, why);
         std::fill(secret.begin(), secret.end(), '\0');
         return ok;
     }
 
-    bool forgetProviderKey(std::string_view kind, std::string_view origin)
+    bool forgetProviderKey(std::string_view kind, std::string_view origin, std::string* why)
     {
         if (!plainKind(kind) || origin.empty())
             return true;
-        const juce::File f = providerKeyFile(kind, origin);
-        return !f.existsAsFile() || f.deleteFile();
+        return dropKey({ std::string(kind), std::string(origin) }, providerKeyFile(kind, origin), why);
     }
 
     std::string modelKey(std::string_view kind, std::string_view base)
@@ -719,7 +999,7 @@ namespace playground::chatstore
         {
             if (!f.existsAsFile())
                 return {};
-            return { f.getLastModificationTime().toMilliseconds(), f.getSize() };
+            return { f.getLastModificationTime().toMilliseconds(), f.getSize(), static_cast<uint64_t>(f.getFileIdentifier()) };
         }
 
         juce::File chatFile(const juce::File& dir, std::string_view id) { return dir.getChildFile(juce::String(std::string(id)) + kChatExtension); }

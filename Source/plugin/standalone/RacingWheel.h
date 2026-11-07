@@ -1,7 +1,9 @@
 // Source/plugin/standalone/RacingWheel.h: a Logitech G29 racing wheel (its pedals and the Driving Force Shifter on its
 // one cable) as a MIDI input of the Standalone, over IOKit's IOHIDManager (C API, no JUCE), scheduled on the main run
 // loop: the message thread, in every run loop mode (a menu or a drag open, it still reads). Compiled into the
-// Standalone only, like App.cpp; Devices.h owns one (an instrument's only) and lists it among the MIDI inputs.
+// Standalone only, like App.cpp; Devices.h owns one (an instrument's only) and lists it among the MIDI inputs. On Linux
+// RacingWheelLinux.cpp is its body: the kernel's hid-lg4ff drives the wheel there, read and commanded through evdev and
+// sysfs (plugin/WheelEvdev.h) on JUCE's message loop; what follows holds there too, but for the switch (the kernel's).
 //
 // It watches for a G29 (plugin/WheelMap.h's kindOf: vendor 0x046D, any of its three product ids) and hands what it sees
 // to a wheel::Driver (plugin/WheelDriver.h), which decides; this is its transport (the reports, the values, two timers

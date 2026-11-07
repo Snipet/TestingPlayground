@@ -118,7 +118,8 @@ namespace playground::sandbox
         }
 
         // Where the plugin keeps shaderc: <ENV_PREFIX>SHADERC (the probes'), beside this helper, else in an installed
-        // plugin's bundle (Contents/Resources/shaderc: the AU, the VST3 or the app, the user's or the system's).
+        // plugin's bundle (Contents/Resources/shaderc: the AU, the VST3 or the app, the user's or the system's; Linux's
+        // places below).
         std::string findShaderc()
         {
 #if defined(_WIN32)
@@ -158,6 +159,22 @@ namespace playground::sandbox
             places.push_back(exe.getSiblingFile("shaderc").getFullPathName().toStdString());
             const std::string name = product::kName;
             const char* home = std::getenv("HOME");
+#if defined(__linux__)
+            // Linux: the folder above this helper's (the Linux installer's <lib>/<Name>/server/ is beside the
+            // Standalone and its shaderc), else an installed VST3's Contents/Resources (the user's ~/.vst3, the
+            // system's), else the installer's folder (~/.local/lib/<Company>/<Name>/).
+            places.push_back(exe.getParentDirectory().getSiblingFile("shaderc").getFullPathName().toStdString());
+            if (home != nullptr && *home != '\0')
+                places.push_back(std::string(home) + "/.vst3/" + name + ".vst3/Contents/Resources/shaderc");
+            for (const char* sys : { "/usr/local/lib/vst3/", "/usr/lib/vst3/" })
+                places.push_back(sys + name + ".vst3/Contents/Resources/shaderc");
+            if (home != nullptr && *home != '\0')
+                places.push_back(std::string(home) + "/.local/lib/" + product::kCompany + "/" + name + "/shaderc");
+            for (const std::string& p : places)
+                if (access(p.c_str(), X_OK) == 0)
+                    return p;
+            return {};
+#else
             std::vector<std::string> roots;
             if (home != nullptr && *home != '\0')
                 roots.push_back(std::string(home) + "/Library/Audio/Plug-Ins");
@@ -174,6 +191,7 @@ namespace playground::sandbox
                 if (access(p.c_str(), X_OK) == 0)
                     return p;
             return {};
+#endif
 #endif
         }
 

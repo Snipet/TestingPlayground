@@ -12,8 +12,9 @@
 //   IN       a save in the folder waits for the folder to hold still, then lands in the draft in one write (two files
 //            saved together, still one); with run on save it runs
 //   ATOMIC   a save that renames a temporary file over the file lands; a save in JetBrains' steps (the file moved
-//            aside, the new one renamed in) lands once, and the draft never loses the file meanwhile; a save written
-//            in two parts lands whole, never the half
+//            aside, the new one renamed in) lands once, and the draft never loses the file meanwhile (both of the old
+//            file's size and, but on Windows, given its time back: only the file's identity tells them, as within one
+//            tick of a file clock); a save written in two parts lands whole, never the half
 //   SWAP     an editor's swap, backup and lock files (.x.swp, x~, #x#, .#x, 4913, x.crswap) are never taken
 //   FOLDER   a new file there is appended to the draft; renamed, it keeps its place (its tab still shown); deleted,
 //            it goes; the program deleted there is written back (a note says so), renamed there it is renamed in the
@@ -39,18 +40,25 @@
 //            writable, no conflict; the project before opened again: the copies written again quietly (nothing kept
 //            aside, no note)
 //   GONE     the folder deleted: made again with the draft's files, the draft untouched
-//   WATCH    (macOS) FSEvents: a save lands well before the look kept for a missed event (kWatchedSeconds)
+//   WATCH    macOS, FSEvents: a save lands well before the look kept for a missed event (kWatchedSeconds); elsewhere
+//            no watcher: a save lands at the first look kPollSeconds after the last, once it has held still, never sooner
 //   PORT     the processor: off at first; on, a folder under the projects' Folders/ (the path shown from ~), the
 //            project open's name when there is one; a save there lands in the draft (draftRevision moves) and, with run
 //            on save, compiles; the session keeps it on, its name and run on save, and a processor that loads it syncs
 //            with the same folder; a state of another folder's name moves it there, the folder it left as it was (not
 //            given the state's files); open in VS Code and Show in Finder go to the launcher with the folder's path, and
 //            under a probe nothing is launched without one; off, the folder stays as it was
+//   LAUNCH   (POSIX) how Linux opens the folder (plugin/Launch.h): xdg-open's arguments are its name and the folder's
+//            path as it is; a program started from a list gets a folder named with $(...), backticks, quotes and a
+//            semicolon as one argument, unchanged, and no shell runs any of it; the call returns at once while the
+//            program runs, and leaves no child of this process; a program not found, or one whose exec fails, is a
+//            false with why
 #include "Probe.h"
 
 #include "fminus/Patch.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FolderSync.h"
+#include "plugin/Launch.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
 
@@ -61,6 +69,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -69,6 +78,12 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace fs = std::filesystem;
@@ -131,10 +146,20 @@ namespace
         std::ifstream in(p, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
-    void writeFile(const fs::path& p, const std::string& text)   // in place, as VS Code saves
+    // In place, as VS Code saves. Its time after the file's last one: on Linux before 6.13 a file's time moves by the
+    // kernel's tick (1 to 10 ms), so two of the probe's saves of one size within a tick would look alike to FolderSync,
+    // as a person's saves, further apart, never do.
+    void writeFile(const fs::path& p, const std::string& text)
     {
-        std::ofstream out(p, std::ios::binary | std::ios::trunc);
-        out << text;
+        std::error_code ec;
+        const fs::file_time_type was = fs::last_write_time(p, ec);
+        const bool existed = !ec;
+        {
+            std::ofstream out(p, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        if (existed && fs::last_write_time(p, ec) <= was && !ec)
+            fs::last_write_time(p, was + std::chrono::milliseconds(1), ec);
     }
     void writeAtomic(const fs::path& dir, const std::string& name, const std::string& text)
     {
@@ -142,6 +167,37 @@ namespace
         writeFile(temp, text);
         fs::rename(temp, dir / name);
     }
+#if !defined(_WIN32)
+    // A file as it was before a save: its time, size and inode.
+    struct Was
+    {
+        fs::file_time_type time{};
+        std::uintmax_t size = 0;
+        ino_t inode = 0;
+    };
+    Was wasOf(const fs::path& p)
+    {
+        Was w;
+        std::error_code ec;
+        w.time = fs::last_write_time(p, ec);
+        w.size = fs::file_size(p, ec);
+        struct stat st{};
+        if (::stat(p.c_str(), &st) == 0)
+            w.inode = st.st_ino;
+        return w;
+    }
+    // A save that renamed a new file in, given back the time the old file had: its size and time are then the old
+    // one's, as two saves of one size within one tick of the kernel's file clock are (Linux before 6.13), and only its
+    // identity tells it apart, as FolderSync must. Whether that holds. (Not on Windows, where FolderSync keeps no
+    // identity and a file's time moves by 100 ns.)
+    bool onlyIdentityDiffers(const fs::path& p, const Was& was)
+    {
+        std::error_code ec;
+        fs::last_write_time(p, was.time, ec);
+        const Was now = wasOf(p);
+        return !ec && now.time == was.time && now.size == was.size && now.inode != was.inode && now.inode != 0;
+    }
+#endif
     bool there(const fs::path& p)
     {
         std::error_code ec;
@@ -283,20 +339,34 @@ PROBE(plugin, folder)
     sync.setRunOnSave(false);
 
     // ---- ATOMIC --------------------------------------------------------------------------------------------------------
+    // Each save of the same size as the file before it, and (but on Windows) given back that file's time, so that only
+    // the file's identity tells FolderSync it changed: as within one tick of the file clock, on every machine.
     {
         const std::string atomic = program("float a = 5.0f;");
+#if !defined(_WIN32)
+        const Was beforeAtomic = wasOf(dir / "program.fm");
+#endif
         writeAtomic(dir, "program.fm", atomic);
+#if !defined(_WIN32)
+        P.eq("atomic.rename_over_alike", onlyIdentityDiffers(dir / "program.fm", beforeAtomic) ? 1 : 0, 1);
+#endif
         passFor(sync, t, 0.5);
         P.eq("atomic.rename_over", *fake.text("program.fm") == atomic ? 1 : 0, 1);
         // JetBrains' safe write: the new text beside, the old moved aside, the new renamed in, the old deleted.
         const std::string jb = program("float a = 6.0f;");
         const int writes = fake.writes;
         writeFile(dir / "program.fm___jb_tmp___", jb);
+#if !defined(_WIN32)
+        const Was beforeJb = wasOf(dir / "program.fm");
+#endif
         fs::rename(dir / "program.fm", dir / "program.fm___jb_old___");
         passFor(sync, t, 0.05);
         const bool kept = fake.text("program.fm") != nullptr;
         fs::rename(dir / "program.fm___jb_tmp___", dir / "program.fm");
         fs::remove(dir / "program.fm___jb_old___");
+#if !defined(_WIN32)
+        P.eq("atomic.jetbrains_alike", onlyIdentityDiffers(dir / "program.fm", beforeJb) ? 1 : 0, 1);
+#endif
         passFor(sync, t, 0.5);
         P.eq("atomic.mid_save_kept", kept ? 1 : 0, 1);
         P.eq("atomic.jetbrains", *fake.text("program.fm") == jb && fake.writes == writes + 1 ? 1 : 0, 1);
@@ -625,8 +695,81 @@ PROBE(plugin, folder)
         std::printf("watch: landed after %.3f s\n", landedAfter);
         P.in("watch.prompt_s", landedAfter, 0.0, 1.5);
     }
+#else
+    // No watcher here: the folder is looked at every kPollSeconds (of the probe's clock), and a save lands at the first
+    // look after it once its listing has held still kSettleSeconds, never sooner.
+    {
+        P.eq("watch.watching", sync.watching() ? 1 : 0, 0);
+        passFor(sync, t, 0.3);
+        sync.pass(t, true);                                  // a look: the next is kPollSeconds on
+        const double lookedAt = t;
+        const std::string polled = program("float w = 1.0f;");
+        writeFile(dir / "program.fm", polled);
+        double landedAfter = -1.0;
+        for (t += 0.05; t - lookedAt < 2.0 && landedAfter < 0.0; t += 0.05)
+        {
+            sync.pass(t);
+            if (*fake.text("program.fm") == polled)
+                landedAfter = t - lookedAt;
+        }
+        std::printf("watch: no watcher; landed %.2f s after the last look\n", landedAfter);
+        P.in("watch.poll_s", landedAfter, pg::FolderSync::kPollSeconds - 0.01,
+             pg::FolderSync::kPollSeconds + pg::FolderSync::kSettleSeconds + 0.2);
+    }
 #endif
     sync.stop();
+
+#if !defined(_WIN32)
+    // ---- LAUNCH --------------------------------------------------------------------------------------------------------
+    {
+        // A folder named as a shell would run it: had a shell come between, it would make the markers (in this
+        // process's folder, the program's too) and the program would get some other path.
+        const std::string marker = std::string(pg::product::kEnvPrefix) + "launch-marker-" + std::to_string(::getpid());
+        const std::string odd = "a$(touch " + marker + ")`touch " + marker + "-2` \"q\" 'r'; echo $HOME";
+        const fs::path launchDir = fs::path(tempDir.getFullPathName().toStdString()) / "Launch";
+        const fs::path folder = launchDir / odd;
+        std::error_code ec;
+        fs::create_directories(folder, ec);
+        const fs::path here = fs::current_path(ec);
+        P.eq("launch.opener_args", pg::launch::openerArgs(folder.string()) == std::vector<std::string>{ "xdg-open", folder.string() }
+                                       ? 1 : 0, 1);
+        const fs::path opened = folder / "opened";
+        why.clear();
+        const bool started = pg::launch::detached({ "touch", opened.string() }, why);
+        bool arrived = false;
+        for (int i = 0; i < 500 && !arrived; ++i)
+        {
+            arrived = there(opened);
+            if (!arrived)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::printf("launch: started %d (%s), arrived %d\n", started ? 1 : 0, why.c_str(), arrived ? 1 : 0);
+        P.eq("launch.argument_whole", started && arrived ? 1 : 0, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        P.eq("launch.no_shell", !there(here / marker) && !there(here / (marker + "-2")) && !there(launchDir / marker) ? 1 : 0, 1);
+        // A program that runs on: the call is back long before it ends, and neither it nor the intermediate child is
+        // left this process's (nothing to wait for, no zombie).
+        const auto from = std::chrono::steady_clock::now();
+        why.clear();
+        const bool slow = pg::launch::detached({ "sleep", "1" }, why);
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+        std::printf("launch: sleep started %d in %.3f s\n", slow ? 1 : 0, took);
+        P.eq("launch.returns_at_once", slow && took < 0.5 ? 1 : 0, 1);
+        errno = 0;
+        P.eq("launch.no_child_left", ::waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD ? 1 : 0, 1);
+        why.clear();
+        P.eq("launch.not_found", !pg::launch::detached({ std::string(pg::product::kEnvPrefix) + "no-such-program" }, why)
+                                     && why.find("not found") != std::string::npos ? 1 : 0, 1);
+        // An executable file that is no program (no #!, no binary format): found, but its exec fails, and says so.
+        const fs::path junk = launchDir / "not-a-program";
+        writeFile(junk, "this is no program\n");
+        fs::permissions(junk, fs::perms::owner_all, fs::perm_options::replace, ec);
+        why.clear();
+        P.eq("launch.exec_fails", !pg::launch::detached({ junk.string() }, why) && why.find("could not start") != std::string::npos
+                                      ? 1 : 0, 1);
+        std::printf("launch: exec failure says \"%s\"\n", why.c_str());
+    }
+#endif
 
     // ---- PORT ----------------------------------------------------------------------------------------------------------
     {

@@ -40,6 +40,27 @@
       "displayName": "windows-release: Release, x64, clang-cl; both products' Standalone and VST3",
       "inherits": [ "windows-base" ],
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++", "CMAKE_LINKER_TYPE": "LLD",
+                          "FP_PRODUCTS": "" }
+    },
+    {
+      "name": "linux-dev",
+      "displayName": "linux-dev: RelWithDebInfo, x86-64, clang and lld; both products' Standalone, VST3 and probes",
+      "inherits": [ "linux-base" ],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "linux-release: Release, LTO, x86-64, clang and lld; both products' Standalone and VST3",
+      "inherits": [ "linux-base" ],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "FP_LTO": "ON" }
     }
   ],
   "buildPresets": [
@@ -53,7 +74,11 @@
     { "name": "windows-dev",        "configurePreset": "windows-dev",     "targets": [ "all", "probes" ], "jobs": 6 },
     { "name": "windows-dev-effect", "configurePreset": "windows-dev",     "targets": [ "effect" ],        "jobs": 6 },
     { "name": "windows-dev-synth",  "configurePreset": "windows-dev",     "targets": [ "synth" ],         "jobs": 6 },
-    { "name": "windows-release",    "configurePreset": "windows-release", "targets": [ "all" ],           "jobs": 6 }
+    { "name": "windows-release",    "configurePreset": "windows-release", "targets": [ "all" ],           "jobs": 6 },
+    { "name": "linux-dev",          "configurePreset": "linux-dev",       "targets": [ "all", "probes" ], "jobs": 6 },
+    { "name": "linux-dev-effect",   "configurePreset": "linux-dev",       "targets": [ "effect" ],        "jobs": 6 },
+    { "name": "linux-dev-synth",    "configurePreset": "linux-dev",       "targets": [ "synth" ],         "jobs": 6 },
+    { "name": "linux-release",      "configurePreset": "linux-release",   "targets": [ "all" ],           "jobs": 6 }
   ],
   "testPresets": [
     {
@@ -101,6 +126,26 @@
     {
       "name": "windows-dev-synth",
       "configurePreset": "windows-dev",
+      "filter": { "include": { "label": "^synth$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-dev",
+      "configurePreset": "linux-dev",
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-dev-effect",
+      "configurePreset": "linux-dev",
+      "filter": { "include": { "label": "^effect$" } },
+      "execution": { "jobs": 6, "noTestsAction": "error" },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "linux-dev-synth",
+      "configurePreset": "linux-dev",
       "filter": { "include": { "label": "^synth$" } },
       "execution": { "jobs": 6, "noTestsAction": "error" },
       "output": { "outputOnFailure": true }
@@ -173,6 +218,41 @@
       "steps": [
         { "type": "configure", "name": "windows-release" },
         { "type": "build", "name": "windows-release" }
+      ]
+    },
+    {
+      "name": "linux-verify",
+      "displayName": "Linux: configure, build (both products) and run every test (GUI probes need an X display)",
+      "steps": [
+        { "type": "configure", "name": "linux-dev" },
+        { "type": "build", "name": "linux-dev" },
+        { "type": "test", "name": "linux-dev" }
+      ]
+    },
+    {
+      "name": "linux-effect-verify",
+      "displayName": "Linux: the effect alone",
+      "steps": [
+        { "type": "configure", "name": "linux-dev" },
+        { "type": "build", "name": "linux-dev-effect" },
+        { "type": "test", "name": "linux-dev-effect" }
+      ]
+    },
+    {
+      "name": "linux-synth-verify",
+      "displayName": "Linux: the synth alone",
+      "steps": [
+        { "type": "configure", "name": "linux-dev" },
+        { "type": "build", "name": "linux-dev-synth" },
+        { "type": "test", "name": "linux-dev-synth" }
+      ]
+    },
+    {
+      "name": "linux-release-build",
+      "displayName": "Linux: Release build of both products",
+      "steps": [
+        { "type": "configure", "name": "linux-release" },
+        { "type": "build", "name": "linux-release" }
       ]
     }
   ]

@@ -28,6 +28,7 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -81,6 +82,18 @@ namespace playground
             char buf[17];
             std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(h));
             return buf;
+        }
+
+        // A file's identity for Stat::id: its inode (a link followed, as file_size does); 0 on Windows or when it cannot
+        // be read.
+        uint64_t fileId([[maybe_unused]] const fs::path& p)
+        {
+#if defined(_WIN32)
+            return 0;
+#else
+            struct stat st{};
+            return ::stat(p.c_str(), &st) == 0 ? static_cast<uint64_t>(st.st_ino) : 0;
+#endif
         }
 
         bool readAll(const fs::path& p, std::string& out, std::size_t limit, bool& large)
@@ -394,6 +407,7 @@ namespace playground
             Stat s;
             s.size = static_cast<int64_t>(it->file_size(e2));
             s.time = static_cast<int64_t>(it->last_write_time(e2).time_since_epoch().count());
+            s.id = fileId(it->path());
             out[name] = s;
         }
         return out;
@@ -493,6 +507,7 @@ namespace playground
         Stat s;
         s.size = static_cast<int64_t>(fs::file_size(target, ec));
         s.time = static_cast<int64_t>(fs::last_write_time(target, ec).time_since_epoch().count());
+        s.id = fileId(target);
         listing_[name] = s;                              // its own write: nothing to read back
         seen_[name] = Seen{ s, editorHash(text), false };
         return true;

@@ -18,6 +18,8 @@ namespace playground::wheel
         constexpr const char* kWhatToDo = ": plug it in again, then turn this off and on";
     }
 
+    std::string Transport::describe(int error) { return hex(error); }
+
     const Driver::Known* Driver::find(Kind kind) const noexcept
     {
         for (const Known& k : devices_)
@@ -37,10 +39,17 @@ namespace playground::wheel
     {
         if (!present())
             return {};
+#if defined(__APPLE__)
         if (opened_ == kNotPermitted)
             return "macOS keeps it from this app: allow it in Privacy & Security, Input Monitoring";
         if (opened_ != 0)
-            return "macOS could not open it (" + hex(opened_) + ")";
+            return "macOS could not open it (" + t_.describe(opened_) + ")";
+#else
+        if (opened_ == kNotPermitted)
+            return "the system keeps it from this app: its device needs your read and write access (see the README)";
+        if (opened_ != 0)
+            return "it could not be opened (" + t_.describe(opened_) + ")";
+#endif
         if (find(Kind::g29) != nullptr)
             return problem_;                                 // on: its range and spring; off: its spring's stop
         if (on_ && switch_ == Switch::failed)
@@ -142,12 +151,11 @@ namespace playground::wheel
     void Driver::startReading(Device d)
     {
         problem_.clear();
-        int r = t_.report(d, rangeReport(kRange));
-        for (const Report& s : springReports(kSpring))
-            if (r == 0)
-                r = t_.report(d, s);
+        int r = t_.setRange(d, kRange);
+        if (r == 0)
+            r = t_.setSpring(d, kSpring);
         if (r != 0)
-            problem_ = "its range and spring were not set (" + hex(r) + ")";
+            problem_ = "its range and spring were not set (" + t_.describe(r) + ")";
         reading_ = d;
         map_.forget();
         for (const Value& v : t_.values(d))
@@ -167,9 +175,9 @@ namespace playground::wheel
         if (reading_ == nullptr || want == lightsSent_)
             return;
         lightsSent_ = want;                                  // a failure is not tried again until the mask changes
-        if (const int r = t_.report(reading_, lightsReport(want)); r != 0 && problem_.empty())
+        if (const int r = t_.setLights(reading_, want); r != 0 && problem_.empty())
         {
-            problem_ = "its shift lights were not set (" + hex(r) + ")";
+            problem_ = "its shift lights were not set (" + t_.describe(r) + ")";
             t_.changed();
         }
     }
@@ -177,7 +185,7 @@ namespace playground::wheel
     void Driver::lightsOff()
     {
         if (reading_ != nullptr && lightsSent_ != 0)
-            t_.report(reading_, lightsReport(0));
+            t_.setLights(reading_, 0);
         lightsSent_ = 0;
     }
 
@@ -190,8 +198,8 @@ namespace playground::wheel
         problem_.clear();
         if (stillThere)
         {
-            if (const int r = t_.report(reading_, kSpringOff); r != 0)
-                problem_ = "its spring may still be on (" + hex(r) + "): unplug it to stop it";
+            if (const int r = t_.setSpring(reading_, 0); r != 0)
+                problem_ = "its spring may still be on (" + t_.describe(r) + "): unplug it to stop it";
             lightsOff();
         }
         lightsSent_ = 0;                                     // unplugged: they went with it
@@ -210,13 +218,12 @@ namespace playground::wheel
     void Driver::switchToNative(Device d)
     {
         switchUsed_ = true;
-        if (const int r = t_.report(d, kToNative[0]); r != 0)
+        if (const int r = t_.toNative(d); r != 0)
         {
-            problem_ = "it could not be switched to its full mode (" + hex(r) + ")";
+            problem_ = "it could not be switched to its full mode (" + t_.describe(r) + ")";
             switch_ = Switch::failed;
             return;
         }
-        t_.report(d, kToNative[1]);
         switch_ = Switch::pending;
         t_.arm(Timer::switched, kSwitchSeconds);
     }
@@ -275,8 +282,8 @@ namespace playground::wheel
         if (reading_ != nullptr)
         {
             t_.listen(nullptr);
-            if (const int r = t_.report(reading_, kSpringOff); r != 0)   // the wheel turns freely again
-                problem_ = "its spring may still be on (" + hex(r) + "): unplug it to stop it";
+            if (const int r = t_.setSpring(reading_, 0); r != 0)       // the wheel turns freely again
+                problem_ = "its spring may still be on (" + t_.describe(r) + "): unplug it to stop it";
             lightsOff();
             reading_ = nullptr;
         }

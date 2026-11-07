@@ -72,10 +72,13 @@ namespace playground
         std::string shaderc;                  // the executable's path ("" for none: shaders are left out, with a note)
 #if defined(_WIN32)
         std::string platform = "windows";     // shaderc's --platform and -p for the renderer (ShaderLibrary's target():
-        std::string profile = "s_5_0";        // Direct3D 11 on Windows, Metal on macOS)
-#else
+        std::string profile = "s_5_0";        // Direct3D 11 on Windows, Metal on macOS, Vulkan's SPIR-V on Linux)
+#elif defined(__APPLE__)
         std::string platform = "osx";         // shaderc's --platform and -p for the renderer (ShaderLibrary's target())
         std::string profile = "metal";
+#else
+        std::string platform = "linux";
+        std::string profile = "spirv";
 #endif
         std::string prelude;                  // funkgui::shaders::fragmentPrelude()
         std::string varyingDef;               // funkgui::shaders::varyingDef()
@@ -176,9 +179,12 @@ namespace playground
 
     // The user's folder for the disk cache (ShaderTools::cacheDir): ~/Library/Caches/<Company>/<Name>/Shaders on macOS,
     // %LOCALAPPDATA%\<Company>\<Name>\Shaders on Windows, $XDG_CACHE_HOME (else ~/.cache)/<Company>/<Name>/Shaders
-    // elsewhere (Product.h's names); under CTest (<ENV_PREFIX>PREFS_DIR set) that folder's shaders/, never the user's.
-    // Empty when there is none.
+    // elsewhere (Product.h's names; fminus/Xdg.h); under CTest (<ENV_PREFIX>PREFS_DIR set) that folder's shaders/, never
+    // the user's. Empty when there is none.
     std::filesystem::path shaderCacheFolder();
+    // Where a build makes its own temporary folder (shaderc's input, mkdtemp's): the system's temporary folder; on Linux
+    // $XDG_RUNTIME_DIR (fminus/Xdg.h) when $TMPDIR is not set and it is the user's.
+    std::filesystem::path shaderTempBase(std::error_code& ec);
 
     // The times this process started shaderc (buildShader), for the probes.
     uint64_t shadercRuns();

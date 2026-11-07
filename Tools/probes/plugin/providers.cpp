@@ -50,6 +50,10 @@
 //             provider's, its request and its model both (never one's request with the other's model)
 //   REDIRECT  the real transport (ClaudeApi.cpp) against two servers of the probe's own on 127.0.0.1: a 307 from
 //             the first is returned as it came, its location said, and the second is never reached
+//   TRANSPORT the real transport against the probe's own server: an https:// address is spoken to in TLS (its first
+//             byte a handshake record: on Linux JUCE's own client never connected to one); a 429's body whole and its
+//             retry-after; a stream stopped by `cancel` ends soon, "stopped"; (Linux) a 200's body reaches onChunk
+//             piece by piece as it comes, the first piece before the server sends the next
 #include "Probe.h"
 
 #include "FakeClaude.h"
@@ -69,6 +73,8 @@
 #include <juce_graphics/juce_graphics.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -81,6 +87,34 @@ namespace pr = playground::providers;
 
 namespace
 {
+    // A request read whole from the probe's own server's connection: its headers, then its body by its length ("" when
+    // it did not come within the time).
+    std::string readRequest(juce::StreamingSocket& c)
+    {
+        std::string got;
+        char buffer[4096];
+        std::size_t need = std::string::npos;
+        while (need == std::string::npos || got.size() < need)
+        {
+            if (c.waitUntilReady(true, 5000) != 1)
+                return {};
+            const int n = c.read(buffer, static_cast<int>(sizeof buffer), false);
+            if (n <= 0)
+                break;
+            got.append(buffer, static_cast<std::size_t>(n));
+            if (const std::size_t end = got.find("\r\n\r\n"); need == std::string::npos && end != std::string::npos)
+            {
+                std::size_t length = 0;
+                const juce::String head = juce::String(got.substr(0, end)).toLowerCase();
+                if (const int at = head.indexOf("content-length:"); at >= 0)
+                    length = static_cast<std::size_t>(head.substring(at + 15).getIntValue());
+                need = end + 4 + length;
+            }
+        }
+        return got;
+    }
+
+    void sendText(juce::StreamingSocket& c, const std::string& text) { c.write(text.data(), static_cast<int>(text.size())); }
 
     std::string str(const juce::var& v, const char* key) { return v.getProperty(key, "").toString().toStdString(); }
 
@@ -851,29 +885,8 @@ PROBE(plugin, providers)
                 if (first.waitUntilReady(true, 20000) != 1)
                     return;
                 const std::unique_ptr<juce::StreamingSocket> c(first.waitForNextConnection());
-                if (c == nullptr)
+                if (c == nullptr || readRequest(*c).empty())   // the request whole, then the redirect
                     return;
-                // The request whole (its headers, then its body by its length), then the redirect.
-                std::string got;
-                char buffer[4096];
-                std::size_t need = std::string::npos;
-                while (need == std::string::npos || got.size() < need)
-                {
-                    if (c->waitUntilReady(true, 5000) != 1)
-                        return;
-                    const int n = c->read(buffer, static_cast<int>(sizeof buffer), false);
-                    if (n <= 0)
-                        break;
-                    got.append(buffer, static_cast<std::size_t>(n));
-                    if (const std::size_t end = got.find("\r\n\r\n"); need == std::string::npos && end != std::string::npos)
-                    {
-                        std::size_t length = 0;
-                        const juce::String head = juce::String(got.substr(0, end)).toLowerCase();
-                        if (const int at = head.indexOf("content-length:"); at >= 0)
-                            length = static_cast<std::size_t>(head.substring(at + 15).getIntValue());
-                        need = end + 4 + length;
-                    }
-                }
                 const std::string reply = "HTTP/1.1 307 Temporary Redirect\r\nLocation: " + to
                                         + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 c->write(reply.data(), static_cast<int>(reply.size()));
@@ -888,6 +901,114 @@ PROBE(plugin, providers)
             P.eq("redirect.returned", r.status, 307);
             P.eq("redirect.location", r.location == to ? 1 : 0, 1);
             P.eq("redirect.not_followed", second.waitUntilReady(true, 500), 0);   // 1: a connection came
+        }
+    }
+
+    // ---- TRANSPORT ---------------------------------------------------------------------------------------------------------
+    {
+        const auto post = [](const std::string& host, const std::function<bool(std::string_view)>& onChunk,
+                             const std::atomic<bool>& cancel) {
+            return claude::httpsTransport()->post(host, "/v1/messages", "{\"probe\":true}",
+                                                  { { "content-type", "application/json" } }, onChunk, cancel);
+        };
+        // https://: the transport opens a TLS connection (the server, plain TCP, sees a handshake record and closes).
+        {
+            juce::StreamingSocket listener;
+            const bool listening = listener.createListener(0, "127.0.0.1");
+            std::atomic<int> firstByte{ -1 };
+            std::thread server([&] {
+                if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                listener.close();                        // a second try is refused at once, never left waiting
+                unsigned char b = 0;
+                if (c != nullptr && c->waitUntilReady(true, 5000) == 1 && c->read(&b, 1, false) == 1)
+                    firstByte = b;
+            });
+            const std::atomic<bool> cancel{ false };
+            const claude::HttpResult r = post("https://127.0.0.1:" + std::to_string(listener.getBoundPort()), {}, cancel);
+            server.join();
+            std::printf("transport: https first byte %d, status %d, error %s\n", firstByte.load(), r.status, r.error.c_str());
+            P.eq("transport.https_speaks_tls", listening && firstByte.load() == 0x16 ? 1 : 0, 1);
+            P.eq("transport.https_refused_plain", r.status == 0 && !r.error.empty() ? 1 : 0, 1);
+        }
+        // A 429: its body whole (never to onChunk) and its retry-after.
+        {
+            juce::StreamingSocket listener;
+            const bool listening = listener.createListener(0, "127.0.0.1");
+            const std::string body = "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"slow down\"}}";
+            std::thread server([&] {
+                if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                if (c == nullptr || readRequest(*c).empty())
+                    return;
+                sendText(*c, "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 7\r\nContent-Type: application/json\r\nContent-Length: "
+                             + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+            });
+            int chunks = 0;
+            const std::atomic<bool> cancel{ false };
+            const claude::HttpResult r = post("http://127.0.0.1:" + std::to_string(listener.getBoundPort()),
+                                              [&chunks](std::string_view) { ++chunks; return true; }, cancel);
+            server.join();
+            P.eq("transport.error_status", r.status, 429);
+            P.eq("transport.error_body", r.body == body && chunks == 0 ? 1 : 0, 1);
+            P.eq("transport.retry_after", r.retryAfterSeconds, 7);
+        }
+        // A stream: one event, then the server waits. On Linux the first piece reaches onChunk before the next is sent
+        // (JUCE's macOS client fills its whole read first); then `cancel` ends the call soon.
+        {
+            juce::StreamingSocket listener;
+            const bool listening = listener.createListener(0, "127.0.0.1");
+            std::atomic<bool> firstGot{ false }, secondSent{ false }, release{ false };
+            std::atomic<bool> gotBeforeSecond{ false };
+            std::thread server([&] {
+                if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                if (c == nullptr || readRequest(*c).empty())
+                    return;
+                sendText(*c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\nevent: ping\ndata: {}\n\n");
+                for (int i = 0; i < 300 && !firstGot.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                gotBeforeSecond = firstGot.load();
+                sendText(*c, "event: ping\ndata: {}\n\n");
+                secondSent = true;
+                for (int i = 0; i < 1000 && !release.load(); ++i)     // held open until the probe is done
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            });
+            std::atomic<bool> cancel{ false };
+            std::string streamed;
+            claude::HttpResult r;
+            std::atomic<bool> returned{ false };
+            std::thread client([&] {
+                r = post("http://127.0.0.1:" + std::to_string(listener.getBoundPort()),
+                         [&](std::string_view piece) {
+                             streamed.append(piece);
+                             firstGot = true;
+                             return true;
+                         },
+                         cancel);
+                returned = true;
+            });
+            for (int i = 0; i < 1000 && !secondSent.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));   // the second piece read; the server holds on
+            const auto from = std::chrono::steady_clock::now();
+            cancel = true;
+            for (int i = 0; i < 500 && !returned.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count();
+            release = true;
+            client.join();
+            server.join();
+            std::printf("transport: stream got before the second %d, stopped in %.3f s (%s), %zu bytes\n",
+                        gotBeforeSecond.load() ? 1 : 0, took, r.error.c_str(), streamed.size());
+            P.eq("transport.stream_status", r.status, 200);
+            P.eq("transport.cancel_soon", returned.load() && took < 0.5 && r.error == "stopped" ? 1 : 0, 1);
+#if defined(__linux__)
+            P.eq("transport.piece_by_piece", gotBeforeSecond.load() && streamed.rfind("event: ping\ndata: {}\n\n", 0) == 0 ? 1 : 0, 1);
+#endif
         }
     }
     pg::chatstore::setDirectoryForTests(juce::File());

@@ -11,9 +11,9 @@
 // and checks:
 //   OFF      the section after FILES: one row, Edit in a folder; no header button
 //   ON       its click turns the processor's folder on, named for the instance; a caption naming it (its path in the
-//            status line under the pointer), then the rows Open in VS Code, Show in Finder and Run on save; the
-//            header's cross; the status names it
-//   LAUNCH   VS Code's row and the Finder's go to the processor's launcher (VS Code, the Finder)
+//            status line under the pointer), then the rows Open in VS Code, Show in Finder (Explorer on Windows, File
+//            Manager on Linux) and Run on save; the header's cross; the status names it
+//   LAUNCH   VS Code's row and the Finder's go to the processor's launcher (VS Code, the Finder: FolderApp::files)
 //   RUN      Run on save's click ticks it (the processor's choice), a second unticks it
 //   SAVE     a save in the folder lands in the editor's tab, the status says so ("FROM THE FOLDER: PROGRAM.FM"), and
 //            one Cmd-Z gives the text before it back (one undo step); typing in the editor reaches the folder
@@ -112,8 +112,10 @@ namespace
 
 #if defined(_WIN32)
     constexpr const char* kShow = "Show in Explorer";
-#else
+#elif defined(__APPLE__)
     constexpr const char* kShow = "Show in Finder";
+#else
+    constexpr const char* kShow = "Show in File Manager";   // xdg-open's
 #endif
 
     // The processor's timer, as the plugin runs it: a poll every 25 ms of real time, the Panel's frames between,

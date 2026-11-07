@@ -23,6 +23,12 @@ namespace playground::chatimages
     inline constexpr std::size_t kMaxFileBytes = 64u << 20;  // a file larger is not read
     inline constexpr int kMaxPerMessage = 6;
     inline constexpr int kMaxInChat = 20;                    // in the history: a request carries them all
+    // The formats this build reads, as its notes name them: ImageIO's on macOS (BMP too), JUCE's elsewhere.
+#if defined(__APPLE__)
+    inline constexpr const char* kFormats = "PNG, JPEG, GIF, WebP, HEIC or TIFF";
+#else
+    inline constexpr const char* kFormats = "PNG, JPEG or GIF";
+#endif
 
     struct Prepared
     {

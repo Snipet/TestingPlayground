@@ -809,7 +809,7 @@ namespace playground::providers
                 const juce::var modalities = m.getProperty("architecture", juce::var()).getProperty("input_modalities", juce::var());
                 if (const juce::Array<juce::var>* list = modalities.getArray())
                     cm.images = std::any_of(list->begin(), list->end(), [](const juce::var& x) { return x.toString() == "image"; });
-                found.emplace_back(static_cast<int64_t>(m.getProperty("created", 0)), std::move(cm));
+                found.emplace_back(static_cast<juce::int64>(m.getProperty("created", 0)), std::move(cm));
             }
         }
         std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -948,9 +948,9 @@ namespace playground::providers
                 const juce::var u = v.getProperty("usage", juce::var());
                 if (u.isObject())
                 {
-                    input_ = static_cast<int64_t>(u.getProperty("prompt_tokens", 0));
-                    output_ = static_cast<int64_t>(u.getProperty("completion_tokens", 0));
-                    cached_ = static_cast<int64_t>(u.getProperty("prompt_tokens_details", juce::var()).getProperty("cached_tokens", 0));
+                    input_ = static_cast<juce::int64>(u.getProperty("prompt_tokens", 0));
+                    output_ = static_cast<juce::int64>(u.getProperty("completion_tokens", 0));
+                    cached_ = static_cast<juce::int64>(u.getProperty("prompt_tokens_details", juce::var()).getProperty("cached_tokens", 0));
                 }
                 const juce::Array<juce::var> choices = arrayOf(v.getProperty("choices", juce::var()));
                 if (choices.isEmpty())
@@ -1052,10 +1052,10 @@ namespace playground::providers
                 const juce::var u = v.getProperty("usageMetadata", juce::var());
                 if (u.isObject())
                 {
-                    input_ = static_cast<int64_t>(u.getProperty("promptTokenCount", 0));
-                    cached_ = static_cast<int64_t>(u.getProperty("cachedContentTokenCount", 0));
-                    output_ = static_cast<int64_t>(u.getProperty("candidatesTokenCount", 0))
-                            + static_cast<int64_t>(u.getProperty("thoughtsTokenCount", 0));
+                    input_ = static_cast<juce::int64>(u.getProperty("promptTokenCount", 0));
+                    cached_ = static_cast<juce::int64>(u.getProperty("cachedContentTokenCount", 0));
+                    output_ = static_cast<juce::int64>(u.getProperty("candidatesTokenCount", 0))
+                            + static_cast<juce::int64>(u.getProperty("thoughtsTokenCount", 0));
                 }
                 if (const std::string blocked = str(v.getProperty("promptFeedback", juce::var()), "blockReason"); !blocked.empty())
                     finish_ = "SAFETY";

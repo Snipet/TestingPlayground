@@ -238,7 +238,7 @@ namespace playground::chatimages
         }
         if (!sized.isValid() || sized.getWidth() < 1 || sized.getHeight() < 1)
         {
-            out.why = name + " is not a picture this plugin can read (PNG, JPEG, GIF, WebP, HEIC, TIFF).";
+            out.why = name + " is not a picture this plugin can read (" + kFormats + ").";
             return out;
         }
         const bool kept = !turned && sized.getWidth() == fileW && sized.getHeight() == fileH && bytes.size() <= kMaxBytes

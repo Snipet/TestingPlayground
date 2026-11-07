@@ -121,6 +121,7 @@ namespace playground
             }
             if (changed || !key.empty())
             {
+                ++keyGeneration_;                  // a read begun before is not kept
                 otherKey_.clear();                 // read again, for this server (a new key may list more models)
                 otherKeyFor_.clear();
                 otherKeyProblem_.clear();
@@ -183,8 +184,10 @@ namespace playground
             forgetKey();
             return;
         }
-        chatstore::forgetProviderKey(p.kind, originOf(p));
+        std::string why;
+        const bool removed = chatstore::forgetProviderKey(p.kind, originOf(p), &why);
         const std::lock_guard<std::mutex> lock(mutex_);
+        ++keyGeneration_;
         if (sameServer(provider_, p))
         {
             otherKey_.clear();
@@ -192,13 +195,16 @@ namespace playground
             otherKeyProblem_.clear();
             otherListError_.clear();
         }
-        addEntry(ChatEntry::Kind::note, "API key for " + providers::nameOf(p) + " removed from " + kThisMachine + ".");
+        if (removed)
+            addEntry(ChatEntry::Kind::note, "API key for " + providers::nameOf(p) + " removed from " + kThisMachine + ".");
+        else
+            addEntry(ChatEntry::Kind::error, "The API key for " + providers::nameOf(p) + " could not be removed: " + why + ".");
     }
 
     // ---- its state ------------------------------------------------------------------------------------------------------------
-    void ChatAgent::otherState(ChatState& s) const
+    void ChatAgent::otherState(ChatState& s, bool kept) const
     {
-        s.hasKey = !otherKey_.empty() || chatstore::hasProviderKey(provider_.kind, originOf(provider_));
+        s.hasKey = !otherKey_.empty() || kept;
         s.keyless = providers::keyless(provider_);
         s.keyProblem = otherKeyProblem_;
         // The model chosen; with none, the list's first where a turn takes it (picksFirst), else none (the user chooses).
@@ -232,40 +238,59 @@ namespace playground
         return turnProvider_.kind != "anthropic";
     }
 
-    // The key for the provider chosen (mutex held): read once for its server, again when it changed or was saved anew.
-    void ChatAgent::loadOtherKey()
+    bool ChatAgent::keyKept(const ChatProvider& p) const
     {
-        const std::string origin = originOf(provider_);
-        const std::string forServer = provider_.kind + " " + origin;
-        if (otherKeyFor_ == forServer && !otherKey_.empty())
-            return;
-        otherKey_.clear();
-        otherKeyFor_ = forServer;
-        if (!chatstore::hasProviderKey(provider_.kind, origin))
-            return;
-        std::string why;
-        if (const auto k = chatstore::loadProviderKey(provider_.kind, origin, &why))
+        return p.kind == "anthropic" ? chatstore::hasKey() : chatstore::hasProviderKey(p.kind, originOf(p));
+    }
+
+    // The key of `p`'s server, read with mutex_ released (ChatAgent.h): the one read before while `p` is the provider
+    // chosen (read once for its server, again when it changed or was saved anew); else read, and kept for the provider
+    // chosen when `p` still is and no key was saved or removed meanwhile, with why it cannot be used.
+    std::string ChatAgent::otherKeyOf(const ChatProvider& p)
+    {
+        const std::string origin = originOf(p);
+        const std::string forServer = p.kind + " " + origin;
+        uint64_t generation = 0;
         {
-            otherKey_ = *k;
-            otherKeyProblem_.clear();
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (sameServer(provider_, p) && otherKeyFor_ == forServer && !otherKey_.empty())
+                return otherKey_;
+            generation = keyGeneration_;
         }
-        else
-            otherKeyProblem_ = why;
+        std::string key, why;
+        const bool kept = chatstore::hasProviderKey(p.kind, origin);
+        if (kept)
+            if (const auto k = chatstore::loadProviderKey(p.kind, origin, &why))
+                key = *k;
+        const std::lock_guard<std::mutex> lock(mutex_);
+        if (sameServer(provider_, p) && keyGeneration_ == generation)
+        {
+            otherKey_ = key;
+            otherKeyFor_ = forServer;
+            if (!key.empty())
+                otherKeyProblem_.clear();
+            else if (kept)
+                otherKeyProblem_ = why;
+        }
+        return key;
     }
 
     // ---- its models -------------------------------------------------------------------------------------------------------
     void ChatAgent::fetchOtherModels(const std::atomic<bool>& cancel)
     {
         ChatProvider p;
-        std::string key;
         claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (otherFetched_ || provider_.kind == "anthropic")
                 return;
-            loadOtherKey();
             p = provider_;
-            key = otherKey_;
+        }
+        const std::string key = otherKeyOf(p);     // without the lock: the keyring may ask to be unlocked
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (otherFetched_ || !sameServer(provider_, p))
+                return;                            // listed meanwhile, or another provider chosen: its own job
             transport = transport_.get();
             if (key.empty() && !providers::keyless(p))
                 return;                            // asked again once a key is there
@@ -314,14 +339,21 @@ namespace playground
     {
         for (int look = 0; look < 3; ++look)
         {
-            std::string missing;
+            ChatProvider chosen;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 turnProvider_ = provider_;
                 if (provider_.kind == "anthropic")
                     return Start::anthropic;
-                loadOtherKey();
-                if (otherKey_.empty() && !providers::keyless(turnProvider_))
+                chosen = provider_;
+            }
+            const std::string key = otherKeyOf(chosen);   // without the lock: the keyring may ask to be unlocked
+            std::string missing;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (!sameServer(provider_, chosen))
+                    continue;                      // chosen meanwhile, before anything was sent: the turn's now
+                if (key.empty() && !providers::keyless(turnProvider_))
                     missing = otherKeyProblem_.empty()
                                   ? "Add your " + providers::nameOf(turnProvider_) + " API key (KEY, above) to chat."
                                   : "The saved " + providers::nameOf(turnProvider_) + " key cannot be used: " + otherKeyProblem_;
@@ -426,19 +458,16 @@ namespace playground
                                 int& retryAfter)
     {
         ChatProvider p;
-        std::string key;
         claude::Transport* transport = nullptr;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            p = turnProvider_;
-            // The key of the turn's own server, never another's (the provider may have changed since the turn began).
-            if (sameServer(provider_, p))
-            {
-                loadOtherKey();
-                key = otherKey_;
-            }
-            else if (const auto k = chatstore::loadProviderKey(p.kind, originOf(p)))
-                key = *k;
+            p = turnProvider_;                     // the worker's own, set at the turn's start
+        }
+        // The key of the turn's own server, never another's (the provider may have changed since the turn began), read
+        // without the lock (the keyring may ask to be unlocked).
+        const std::string key = otherKeyOf(p);
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
             transport = transport_.get();
             if (key.empty() && !providers::keyless(p))
             {

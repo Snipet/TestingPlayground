@@ -26,7 +26,8 @@
 //             and after forget one plays again
 //   SIZE      20 s at 48 kHz: what an armed recording holds (at most 30 MB: each block's ring entry keeps 64 dials, the
 //             panel's own 32 too, 3.8 MB more than the host's 32 alone did), and the live status and stop each within
-//             a quarter of a second (they copy what was published), the take its 20 s
+//             a quarter of a second (they copy what was published; skipped under emulation: probe::emulated), the take
+//             its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
 //             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
@@ -1369,8 +1370,14 @@ PROBE(plugin, capture)
         std::printf("size: armed for 20 s it holds %.1f MB; status (its report) took %.1f ms, stop %.1f ms; the take %.2f s, %.1f MB\n",
                     heldMb, statusMs, stopMs, stopped.take != nullptr ? stopped.take->seconds() : 0.0, takeMb);
         P.le("size.held_mb", heldMb, 30.0);
-        P.le("size.status_ms", statusMs, 250.0);
-        P.le("size.stop_ms", stopMs, 250.0);
+        if (const std::string emulated = probe::emulated(); emulated.empty())
+        {
+            P.le("size.status_ms", statusMs, 250.0);
+            P.le("size.stop_ms", stopMs, 250.0);
+        }
+        else
+            for (const char* row : { "size.status_ms", "size.stop_ms" })
+                probe::skip(P, row, "a time budget: " + emulated);
         P.ge("size.take_seconds", stopped.take != nullptr ? stopped.take->seconds() : 0.0, 20.0 - 512.0 / kFs);
     }
 

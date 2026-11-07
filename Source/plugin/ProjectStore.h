@@ -1,8 +1,9 @@
 // Source/plugin/ProjectStore.h: the projects on this Mac. A project is a program (the editor's files, the tab shown)
 // and its dials' values, under a name, kept as versions (every save adds one, numbered 1, 2, 3, ...: an older one
 // opens again), and its presets: dial settings for its program, no code. One file each, in
-// ~/Library/Audio/Presets/Funk/<this plugin's name>/<name>.fmproject, the effect's apart from the synth's (one's
-// programs do not play in the other). A file is JSON:
+// ~/Library/Audio/Presets/Funk/<this plugin's name>/<name>.fmproject (Windows: Documents\Funk\<name>\; Linux:
+// $XDG_DATA_HOME, else ~/.local/share, /Funk/<name>/), the effect's apart from the synth's (one's programs do not play
+// in the other). A file is JSON:
 //
 //   { "format": "funk-playground-project", "version": 1, "plugin": "<product name>", "kind": "instrument",
 //     "name": "Glass Bloom", "id": "8c1f4e2a-...",
