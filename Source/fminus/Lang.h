@@ -66,7 +66,8 @@
 //                      names (the pot's when no other dial has it, else <field>_<pot>). The plugin's compile (Patch)
 //                      and the GUI sandbox both take them from here, so a panel drawn for a circuit program has its dials
 //   sharedHooks()      the methods of an instrument's module Shared that the Engine calls as it plays (Patch.h's
-//                      "Shared on its own": tick, noteOn, noteOff), each declared as the plugin calls it or otherwise
+//                      "Shared on its own": tick, noteOn, noteOff), each declared as the plugin calls it or otherwise;
+//                      legatoHook(), a mono program's Voice::legato (Patch.h's "Mono"), the same way
 //   format()           the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
 //                      a level, a single statement under its if/for/while/else a level deeper, continuation lines
 //                      under their open parenthesis (else a level deeper), C's spacing (binary operators and commas
@@ -425,6 +426,9 @@ namespace playground::lang
     };
     inline constexpr int kSharedHooks = 3;       // tick, noteOn, noteOff, in that order
     std::array<SharedHook, kSharedHooks> sharedHooks(const Service& s);
+    // Voice's legato, which the Engine calls in a mono program (Patch.h's "Mono"), in the same shape: whether module
+    // Voice declares `void legato(float note, float velocity)`, or a legato otherwise.
+    SharedHook legatoHook(const Service& s);
 
     // ---- the formatter (LangFormat.cpp) -----------------------------------------------------------------------------
     struct Formatted
