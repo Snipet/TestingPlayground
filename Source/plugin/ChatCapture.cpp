@@ -256,7 +256,8 @@ namespace playground
         juce::var schema = claude::object({ { "type", "object" },
                                             { "properties", props },
                                             { "required", juce::Array<juce::var>{ "action" } } });
-        const char* description =
+        // Its shortcut as the user's keyboard names it (Ctrl-Shift-M on Windows).
+        const juce::String description(shortcutText(
             "Record what the user plays live, in the plugin's memory, and report it in numbers. Tell the user before "
             "arming; arm returns at once, then they play and you call stop.\n\n"
             "Only numbers come back (picture: true adds view_sound's picture); the audio and MIDI stay in the plugin's "
@@ -269,8 +270,8 @@ namespace playground
             "nearest recorded moment, and how closely a replay matches what played; the take replays as a render's "
             "scenario (CHECKING YOUR WORK). The user can mark moments while it records (the status bar's Mark, or "
             "Cmd-Shift-M: ask them to, at what they hear): the report lists each, m1, m2, ..., at its time and nearest "
-            "recorded moment, and a scenario's from and to take one by its name (from \"m1\", to \"m2\"). While armed the program's own code plays, not its frozen copy: the CPU may "
-            "rise a little.";
+            "recorded moment, and a scenario's from and to take one by its name (from \"m1\", to \"m2\"). While armed "
+            "the program's own code plays, not its frozen copy: the CPU may rise a little."));
         return claude::object({ { "name", "capture" },
                                 { "description", description },
                                 { "eager_input_streaming", true },
