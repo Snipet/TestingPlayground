@@ -1215,9 +1215,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   band), and inharmonic_db under its -90 dB floor on both sides agreeing; an effect's input the sweep, noise and the
   impulse refused, and never a recording (its events are at its own rate). A `b_rate` equal to A's rate is the
   ordinary comparison, none of these refused; the picture places each spectrum column by its own view's frequency.
-  A side `wav:` is a target sound (reference audio): a WAV, AIFF or FLAC on this Mac by its whole path
+  A side `wav:` is a target sound (reference audio): a WAV, AIFF or FLAC on this machine by its whole path
   (`assetfiles::read`, with a sample's caps: 8 MB, 60 s; local files only, nothing fetched) or one of the program's
-  samples by its name, its sound at the render's rate (`Asset::at`, resampled), cut to what a render may hold there (a
+  samples by its name (`assetfiles::namesAFile` tells them apart alike on every platform: a '/', a '\' or a ':', or a
+  leading '~', is a path, so a Windows path is never looked up as a sample; the refusals' example path is the
+  platform's), its sound at the render's rate (`Asset::at`, resampled), cut to what a render may hold there (a
   picture's 10 s, saying so), handed to `measure::compare` as a recorded side (`CompareSide::recordedL`), so the other
   renders as long as it is; the result adds both spectra's centroid and correlation (`capture::spectrumOf`), no metrics
   (the file is no render), no dials' or files' line, and no thumbnail kept in the chat; refused: both sides without a
@@ -1520,8 +1522,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   worker). The user's marks (`Recorder::mark`, `capture::Mark`): while it records, the status bar's REC (its seconds,
   the marks) and Mark (`ui::Panel`'s `markItem_`, Cmd-Shift-M; `EditorPort::recording` and `markRecording`, the
   recorder's `glance` a try-lock that never waits for a call copying a take) mark the moment: what the audio thread
-  announced last, under the recorder's mutex, into the ring's own list (never the audio thread's), numbered in order,
-  `kMaxMarks` at most; a take keeps those inside it at their samples (`Take::marks`, `marksBefore`), the report lists
+  announced last, under the recorder's mutex (Mark waits for a call copying a take: a mark late by that wait beats one
+  refused), into the ring's own list (never the audio thread's), numbered in order, its number returned for the
+  status's notice (never read back from a glance), `kMaxMarks` at most in what a take could still hold (a long `last`
+  recording lets go of the oldest once they have left the ring, counted); a take keeps those inside it at their
+  samples and numbers (`Take::marks`, `marksBefore`: those before the part kept and those let go), the report lists
   them with their nearest recorded moments, and a scenario's from and to take one by its name ("m2":
   `Request::captureFromMark`, `captureToMark`, resolved against the take in `scenario::captured`). `plugin.capture`
   checks it (MARKS); `gui.dump` RECORD the notice, its keys and its PNGs.
