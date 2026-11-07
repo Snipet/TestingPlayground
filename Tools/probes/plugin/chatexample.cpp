@@ -13,7 +13,8 @@
 //            the program built from the library and its panel.gui, word for word; the program's other files are the
 //            library's, as it has them; the metrics (CHECKING YOUR WORK): the terms, then a line each with the metric's
 //            own words, its tolerance in words Goals' (toleranceOf), none of the tolerance words of before, and
-//            tune_dials' time limit
+//            tune_dials' time limit; the synth's #pragma mono in a line of its contract and in full in BUILDING A LARGE
+//            PROGRAM (Voice's legato), the effect's nowhere
 //   EXAMPLE  that program (ChatAgent::promptExample, this plugin's kind) compiles with no message (its panel.gui
 //            too); its dials are named, with ranges and defaults inside them, every one a control of its interface in
 //            a titled section, with two displays at least; it plays two seconds finite and audible with no alert (an effect over noise, an instrument a
@@ -312,6 +313,15 @@ PROBE(plugin, chatexample)
     P.eq("prompt.fft", has(prompt, "fft_create(n)") && has(prompt, "fft_forward(plan, in, bins)")
                            && has(prompt, "fft_inverse(plan, bins, out)") ? 1 : 0, 1);
     P.eq("prompt.shared", has(prompt, "module Shared") && has(prompt, "Shared*") ? 1 : 0, 1);
+    {
+        // Mono (Patch.h): the instrument's contract names it in a line (the guide's start), BUILDING A LARGE PROGRAM says
+        // it all; the effect's prompt never.
+        const std::size_t large = prompt.find("\nBUILDING A LARGE PROGRAM\n"), line = prompt.find("\n- #pragma mono [bool dial]: "),
+                          rules = prompt.find("\n- Mono, built in: #pragma mono plays one voice");
+        P.eq("prompt.mono", kInstrument ? (large != std::string::npos && line < large && rules != std::string::npos && rules > large
+                                           && has(prompt, "void legato(float note, float velocity)") ? 1 : 0)
+                                        : (has(prompt, "#pragma mono") ? 0 : 1), 1);
+    }
     // FMINUS, THE LANGUAGE says what FMinus compiles: the newer constructs among what it has and none of them among what
     // it has not, and its example compiles (FMinus alone, with no message) and computes what it says.
     {
