@@ -145,11 +145,14 @@ namespace playground::chatstore
                                                                  // first message
         int64_t createdMs = 0, updatedMs = 0;                    // ms since 1970
     };
-    // A chat's file as this process last wrote or read it (its time and size): another writer's change (another
-    // instance with the same chat open) shows as a file that is not as it was.
+    // A chat's file as this process last wrote or read it (its time, size and identity): another writer's change (another
+    // instance with the same chat open) shows as a file that is not as it was. Each save renames a new file into place,
+    // so its identity (juce::File::getFileIdentifier: the inode, Windows' file index) tells a save of the same sealed size
+    // within one tick of the kernel's file clock (Linux before 6.13: 1 to 10 ms), where the time alone would not.
     struct Stamp
     {
         int64_t modified = -1, size = -1;
+        uint64_t id = 0;
         bool none() const noexcept { return size < 0; }
         friend bool operator==(const Stamp&, const Stamp&) = default;
     };

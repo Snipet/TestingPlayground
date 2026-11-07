@@ -999,7 +999,7 @@ namespace playground::chatstore
         {
             if (!f.existsAsFile())
                 return {};
-            return { f.getLastModificationTime().toMilliseconds(), f.getSize() };
+            return { f.getLastModificationTime().toMilliseconds(), f.getSize(), static_cast<uint64_t>(f.getFileIdentifier()) };
         }
 
         juce::File chatFile(const juce::File& dir, std::string_view id) { return dir.getChildFile(juce::String(std::string(id)) + kChatExtension); }
