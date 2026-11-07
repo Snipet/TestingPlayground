@@ -1,16 +1,22 @@
 // Source/plugin/ChatCompare.cpp: the chat's compare (ChatAgent.h): two of the program's sources rendered offline
 // alike and compared (dsp/Compare.h), read-only. A side is the editor's files, what plays, what played before the last
 // run that changed it (previous_run, ChatHost::chatPrevious), a saved version of the project open (or another
-// project's), a preset of it or a dial setting over the editor's files, or the user's recording ("capture",
-// ChatScenario.h); each renders with its own dials (a version's, a preset's) over the plugin's, unless `dials` is
+// project's), a preset of it or a dial setting over the editor's files, the user's recording ("capture",
+// ChatScenario.h), or a target sound ("wav:": a WAV, AIFF or FLAC on this Mac by its path, or one of the program's
+// samples by its name, read with plugin/AssetFiles.h and resampled to the render's rate; local files only: nothing is
+// fetched, kept or written, and no thumbnail of it stays in the chat); each renders with its own dials (a version's, a
+// preset's) over the plugin's, unless `dials` is
 // "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
 // defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
 // Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
 // rate). Each side renders with its own samples (dsp/Assets.h): what plays and previous_run the ones they compiled
 // with, a version its own (as opening it makes them), the others the plugin's as they are. Its result is at most
-// thirteen lines (each side's render hash one of them), and a picture when asked (SoundPicture.h's drawPair).
+// fourteen lines (each side's render hash one of them; a target sound's spectra another), and a picture when asked
+// (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
+#include "plugin/AssetFiles.h"
+#include "plugin/CaptureReplay.h"
 #include "plugin/ChatScenario.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/SoundPicture.h"
@@ -49,6 +55,8 @@ namespace playground
             std::map<std::string, float> dials;   // its own (a version's, a preset's, those given)
             bool given = false;                   // its dials are what it is ({dials}, preset:): "current" keeps them
             bool playing = false, capture = false;
+            // A target sound (wav:): its file's sound, rendered against in place of a program.
+            std::shared_ptr<const assets::Asset> target;
             // The samples it compiled with or keeps (what plays, previous_run, a version), in place of the plugin's
             // as they are now (scenario::resolve's): `own`.
             Assets samples;
@@ -77,8 +85,8 @@ namespace playground
 
         bool sideOf(const juce::var& v, const char* which, ChatHost& host, Side& out, std::string& why)
         {
-            const std::string forms = "editor, playing, previous_run, version:N, project:Name@N, preset:Name, capture, or "
-                                      "{\"dials\": {...}}";
+            const std::string forms = "editor, playing, previous_run, version:N, project:Name@N, preset:Name, capture, wav:path, "
+                                      "or {\"dials\": {...}}";
             if (const auto* o = v.getDynamicObject(); o != nullptr)
             {
                 const juce::var dials = v.getProperty("dials", juce::var());
@@ -136,6 +144,46 @@ namespace playground
             {
                 out.capture = true;
                 out.words = "the user's recording (what played)";
+                return true;
+            }
+            if (s.rfind("wav:", 0) == 0)
+            {
+                // A target sound: a file on this Mac by its whole path, or one of the program's samples by its name.
+                std::string path = juce::String(s.substr(4)).trim().toStdString();
+                if (path.find('/') == std::string::npos && path != "~")
+                {
+                    const Assets samples = host.chatAssets();
+                    out.target = samples != nullptr ? samples->find(path) : nullptr;
+                    if (out.target == nullptr)
+                    {
+                        std::string have;
+                        if (samples != nullptr)
+                            for (const auto& a : samples->items)
+                                have += (have.empty() ? "" : ", ") + a->name();
+                        why = std::string(which) + " is " + s + ": the program has no sample " + path + " ("
+                            + (have.empty() ? std::string("it has none") : "its samples: " + have)
+                            + "). A file on this Mac is wav: and its whole path (/Users/... or ~/...).";
+                        return false;
+                    }
+                    out.words = "the target sound " + path + " (a sample of the program's: " + out.target->describe() + ")";
+                    return true;
+                }
+                if (path.rfind("~/", 0) == 0)
+                    path = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString() + path.substr(1);
+                if (!juce::File::isAbsolutePath(juce::String::fromUTF8(path.c_str())))
+                {
+                    why = std::string(which) + " is " + s + ": wav: takes a file on this Mac, whole (/Users/... or ~/...), or a sample's name.";
+                    return false;
+                }
+                std::string readWhy;
+                out.target = assetfiles::read(nullptr, path, {}, readWhy);
+                if (out.target == nullptr)
+                {
+                    why = std::string(which) + " is " + s + ", which cannot be read: " + readWhy + ".";
+                    return false;
+                }
+                out.words = "the target sound " + juce::File(juce::String::fromUTF8(path.c_str())).getFileName().toStdString() + " ("
+                          + out.target->describe() + ")";
                 return true;
             }
             const auto version = [&](const std::string& project, const std::string& n) {
@@ -245,7 +293,7 @@ namespace playground
     {
         juce::var props = claude::object(
             { { "a", claude::object({ { "description", "editor, playing, previous_run, version:N, project:Name@N, "
-                                                       "preset:Name, capture or {dials}" } }) },
+                                                       "preset:Name, capture, wav:path or {dials}" } }) },
               { "b", claude::object({ { "description", "Like a" } }) },
               { "b_rate", claude::object({ { "type", "number" } }) },
               { "scenario", scenario::schema() },
@@ -265,8 +313,13 @@ namespace playground
                 "previous_run what played before the last run that changed it ({a: \"previous_run\", b: \"playing\"}: "
                 "what that run changed); version:N is the open project's (one not kept lists those kept); project:Name@N, "
                 "@N left out its newest; preset:Name and {dials: {...}} lay dials over the editor's files; capture is the "
-                "user's recording. dials: own (each side's saved values over the plugin's, the default), current (the "
-                "plugin's; a preset's and {dials} still apply) or defaults (each side's own over the program's defaults). "
+                "user's recording; wav:path is a target sound, a WAV, AIFF or FLAC on this Mac by its whole path (one the user "
+                "named or gave you; nothing else is read, and nothing of it is kept) or one of the program's samples by its "
+                "name: the other side renders as long as it is (60 s at most, a picture's 10), at the render's rate (the file "
+                "resampled), and the levels, the gain and lag that fit, the octave bands and both spectra's centroid say how "
+                "near it comes (no metrics: the file is no render); an effect plays its scenario's input into it. dials: "
+                "own (each side's saved values over the plugin's, the default), current (the plugin's; a preset's and "
+                "{dials} still apply) or defaults (each side's own over the program's defaults). "
                 "An effect's input: the scenario's, else noise. try_edits apply to b; detail adds the difference over "
                 "time; picture draws both (about 1,000 tokens). b_rate renders b at another rate (40000 to 192000 Hz; "
                 "both \"editor\" at 96000: does it sound the same?), compared by the levels, octave bands and metrics "
@@ -296,6 +349,10 @@ namespace playground
             return done(why, true);
         if (a.capture && b.capture)
             return done("a and b are both the recording: compare it with a program (editor, playing, version:N, ...).", true);
+        const bool target = a.target != nullptr || b.target != nullptr;
+        if ((a.capture || a.target != nullptr) && (b.capture || b.target != nullptr))
+            return done("Neither a nor b is a program: compare the recording or a target sound (wav:) with one (editor, "
+                        "playing, version:N, ...).", true);
         if (input.hasProperty("window"))
             return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
                         "tune_dials measure one).", true);
@@ -307,7 +364,7 @@ namespace playground
         scenario::Captured recording;
         if (a.capture || b.capture)
         {
-            if (!scenario::captured(host_, recording, why, req.captureFrom, req.captureTo))
+            if (!scenario::captured(host_, recording, why, req))
                 return done((a.capture ? "a" : "b") + std::string(" is the recording, but ") + why + ".", true);
             req.fromCapture = true;
         }
@@ -333,6 +390,8 @@ namespace playground
             if (a.capture || b.capture || req.fromCapture)
                 return done("b_rate takes no recording: what played, and its events, are at its own rate (compare two "
                             "programs, or the same one twice, at two rates).", true);
+            if (target)
+                return done("b_rate takes no target sound (wav:): it is compared at the render's rate, resampled to it.", true);
             if (req.signal == static_cast<int>(measure::ViewInput::noise) || req.signal == static_cast<int>(measure::ViewInput::impulse))
                 return done("b_rate takes the sweep (its input at two rates), a sine or silence: white noise's and an "
                             "impulse's level per hertz change with the rate, so every band would differ.", true);
@@ -342,6 +401,28 @@ namespace playground
             return done("dials is own (each side's saved values over the plugin's), current (the plugin's) or defaults (each "
                         "side's own over the program's defaults).", true);
         const bool current = which == "current", defaults = which == "defaults";
+        // A target sound at the render's rate (resampled once a rate, Assets.h), as long as a render may be; mono twice.
+        struct Target
+        {
+            std::vector<float> l, r;
+            bool cut = false;
+        };
+        Target targetA, targetB;
+        for (const auto& [side, into] : { std::pair<const Side*, Target*>{ &a, &targetA }, { &b, &targetB } })
+            if (side->target != nullptr)
+            {
+                const std::shared_ptr<const assets::Audio> sound = side->target->at(req.rate);
+                if (sound == nullptr || sound->frames <= 0)
+                    return done("The target sound " + side->target->name() + " holds no sound.", true);
+                const auto most = static_cast<std::size_t>(std::floor(std::min(req.longest, measure::kMaxRenderSamples / req.rate) * req.rate));
+                const auto frames = static_cast<std::size_t>(sound->frames);
+                const std::size_t n = std::min(frames, most);
+                into->cut = n < frames;
+                into->l.assign(sound->data.begin(), sound->data.begin() + static_cast<std::ptrdiff_t>(n));
+                into->r = sound->channels > 1 ? std::vector<float>(sound->data.begin() + static_cast<std::ptrdiff_t>(frames),
+                                                                   sound->data.begin() + static_cast<std::ptrdiff_t>(frames + n))
+                                              : into->l;
+            }
         measure::CompareSide A, B;
         const std::map<std::string, float> now = defaults ? std::map<std::string, float>{} : currentDials();
         for (const auto& [side, from] : { std::pair<measure::CompareSide*, Side*>{ &A, &a }, { &B, &b } })
@@ -359,13 +440,20 @@ namespace playground
                 side->recordedL = &recording.l;
                 side->recordedR = &recording.r;
             }
+            if (from->target != nullptr)
+            {
+                const Target& t = from == &a ? targetA : targetB;
+                side->recordedL = &t.l;
+                side->recordedR = &t.r;
+            }
         }
         B.request.rate = rateB;
         if (!scenario::fits(B.request, why))             // resolve() held A's to A's rate; B's at its own
             return done("B at b_rate: " + why, true);
         int trials = 0;
-        if (input.hasProperty("try_edits") && b.capture)
-            return done("try_edits apply to b, which is the recording: put the program in b.", true);
+        if (input.hasProperty("try_edits") && (b.capture || b.target != nullptr))
+            return done(std::string("try_edits apply to b, which is ") + (b.capture ? "the recording" : "the target sound")
+                            + ": put the program in b.", true);
         if (!scenario::tryEdits(input, B.files, trials, why))
             return done(why, true);
         measure::CompareOptions options;
@@ -375,7 +463,7 @@ namespace playground
         if (!c.error.empty())
             return done(scenario::trialLine(trials) + c.error, true);
 
-        const measure::Sound& rendered = a.capture ? c.b : c.a;
+        const measure::Sound& rendered = a.capture || a.target != nullptr ? c.b : c.a;
         std::string out = scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture);
         out += "Compared offline (nothing that plays changed): A is " + a.words + "; B is " + b.words + (trials > 0 ? " with the trial edits" : "")
              + ". Both: " + rendered.title + ", "
@@ -386,12 +474,29 @@ namespace playground
                    "whose last bits differ, which this does not render.)\n";
         if ((a.capture || b.capture) && rendered.title.find(recording.about) == std::string::npos)
             out += "(The recording: " + recording.about + ")\n";
+        for (const Target* t : { &targetA, &targetB })
+            if (!t->l.empty() && !t->cut)
+                out += "(Rendered as long as the target sound: " + number(static_cast<double>(t->l.size()) / req.rate) + " s.)\n";
+            else if (t->cut)
+                out += "(The target sound is longer than a render may be here: its first " + number(static_cast<double>(t->l.size()) / req.rate)
+                     + " s are compared" + (picture ? std::string("; without the picture, up to 60 s") : std::string()) + ".)\n";
         for (const std::string& line : c.lines)
             out += line + "\n";
+        if (target)
+        {
+            // How near the program comes to the target in its spectrum's balance (no metrics: the file is no render).
+            const capture::Spectrum sa = capture::spectrumOf(c.a.l, c.a.r, c.rate), sb = capture::spectrumOf(c.b.l, c.b.r, c.rateB);
+            const auto words = [](const capture::Spectrum& x) {
+                char buf[96];
+                std::snprintf(buf, sizeof buf, "centroid %.0f Hz, left/right correlation %.2f", x.centroidHz, x.correlation);
+                return x.silent ? std::string("silent") : std::string(buf);
+            };
+            out += "Spectra: A " + words(sa) + "; B " + words(sb) + ".\n";
+        }
         // What each rendered, as bits (Export.h): a render elsewhere with either hash is the same.
         out += "Render hashes: A " + c.hashA.substr(0, measure::kHashShown) + ", B " + c.hashB.substr(0, measure::kHashShown)
              + " (SHA-256 of each side's float32 samples, L R interleaved).\n";
-        if (!a.capture && !b.capture)
+        if (!a.capture && !b.capture && !target)
         {
             std::string dials;
             int moved = 0;
@@ -441,7 +546,7 @@ namespace playground
         block.getDynamicObject()->setProperty("content", content);
         const std::lock_guard<std::mutex> lock(mutex_);
         addEntry(ChatEntry::Kind::tool, "compared two sounds");
-        if (!req.fromCapture && !a.capture && !b.capture)   // the user's recording (a side or the scenario): no thumbnail kept
+        if (!req.fromCapture && !a.capture && !b.capture && !target)   // the user's recording or file: no thumbnail kept
             entries_.back().pictures.push_back(d.thumb);
         touch();
         return block;

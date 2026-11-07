@@ -265,7 +265,7 @@ namespace playground::measure
             if (options.metrics && ra.session != nullptr && rb.session != nullptr)
                 compareMetrics(c, *ra.session, *rb.session, sa.request, sb.request);
             else if (options.metrics)
-                c.lines.push_back("The metrics are not compared: a side is a recording, not a render.");
+                c.lines.push_back("The metrics are not compared: a side is a recording or a file, not a render.");
             if (options.detail && na > 0 && nb > 0)
             {
                 std::string env;
@@ -445,7 +445,7 @@ namespace playground::measure
         if (options.metrics && ra.session != nullptr && rb.session != nullptr)
             compareMetrics(c, *ra.session, *rb.session, sa.request, sb.request);
         else if (options.metrics)
-            c.lines.push_back("The metrics are not compared: a side is a recording, not a render.");
+            c.lines.push_back("The metrics are not compared: a side is a recording or a file, not a render.");
 
         if (options.detail && n > 0)
         {
