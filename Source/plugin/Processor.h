@@ -244,6 +244,9 @@ namespace playground
         ProjectState project() const override;
         std::vector<VersionEntry> versions(const std::string& project) const override;
         std::vector<PresetEntry> presets(const std::string& project) const override;
+        std::vector<ProjectEntry> projectsPolled() const override;
+        std::vector<PresetEntry> presetsPolled(const std::string& project) const override;
+        uint64_t projectsRead() const override;
         bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) override;
         bool openProject(const std::string& name, int version, std::string& why) override;
         void startAfresh(const Sources& files, const std::string& what) override;
@@ -353,6 +356,10 @@ namespace playground
         std::string projectPreset_;
         Sources projectFiles_;
         std::vector<projectstore::Dial> baseDials_;
+        // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
+        // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
+        std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();
+        std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
         // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
         std::vector<projectstore::Dial> projectDials_;
         uint64_t dialsRequest_ = 0;
