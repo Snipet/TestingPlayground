@@ -4503,11 +4503,21 @@ namespace playground::ui
         }
         if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
         {
-            projectsReadSeen_ = read;
-            std::vector<ProjectEntry> projects = port_.projectsPolled();
+            // The two lists of one state of the store's cache: a Reader's read that lands between them (the listing as
+            // it was, the presets as it is) would make the rows twice, so a poll that saw the revision move is made
+            // again (the Reader moves it under the cache's lock, with its read), a few times at most.
+            std::vector<ProjectEntry> projects;
+            std::vector<PresetEntry> presets;
+            for (int tries = 0; tries < 3; ++tries)
+            {
+                projectsReadSeen_ = port_.projectsRead();
+                projects = port_.projectsPolled();
+                presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
+                if (port_.projectsRead() == projectsReadSeen_)
+                    break;
+            }
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
-            std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
             ProjectsView view = port_.projectsView();    // the stars and the groups folded (a look at a small file)
             if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name || view != projectsView_)
                 ++listsRevision_;

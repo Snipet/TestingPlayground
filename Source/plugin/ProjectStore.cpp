@@ -1748,32 +1748,33 @@ namespace playground::projectstore
                     path = std::move(queue.front());
                     queue.pop_front();
                 }
-                if (read(path))
-                    revision.fetch_add(1, std::memory_order_release);
+                read(path);
                 const std::lock_guard<std::mutex> lock(mutex);
                 asked.erase(path);
             }
         }
 
         // The file read whole into the cache, unless the cache holds it as it is already (another caller read it since
-        // it was asked for) or it is gone. Whether the cache took a read.
-        static bool read(const std::string& path)
+        // it was asked for) or it is gone. A read the cache takes moves the revision under the cache's lock, with it:
+        // whoever finds the read in the cache finds the revision moved too (Panel::syncExplorer polls again when it
+        // moved while it polled, so its lists never straddle a read).
+        void read(const std::string& path)
         {
             const juce::File f(juce::String::fromUTF8(path.c_str()));
             juce::int64 modified = 0, size = 0;
             FileId id;
             if (!look(f, modified, size, id))
-                return false;
+                return;
             {
                 const std::lock_guard<std::mutex> lock(cacheMutex);
                 if (const auto it = cache.find(path); it != cache.end() && it->second.modified == modified && it->second.size == size)
-                    return false;
+                    return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
             const std::optional<Project> p = parse(f, nullptr);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
-            return true;
+            revision.fetch_add(1, std::memory_order_release);
         }
     };
 

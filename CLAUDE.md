@@ -1794,7 +1794,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   its own apart from the other product's run (the product's prefix in its name). Use spec rows (`P.near`, `P.le`,
   `P.ge`, `P.in`, `P.eq`); helpers are in `Tools/probes/common/Audio.h`, `Tools/probes/common/Rig.h` and
   `Tools/probes/common/Cadence.h` (an editor's frames at FramePump's cadence, 60 a second or 12 when calm: a frame
-  rate's row takes it rather than a cadence of its own).
+  rate's row takes it rather than a cadence of its own). A row that bounds how long work takes times it with
+  `probe::threadMs()` (the thread's CPU time: a busy machine's waits for a core are not counted) or against a
+  calibration on the same thread, never the wall clock; a row whose condition a stalled thread can defeat (a wait
+  that rightly takes a 20 ms gap for an idle audio thread) tells that try apart and makes it again (`plugin.reload`
+  WAIT), so the suite passes under load without hiding a real slowdown.
 - **The logo** (the mark, the app and extension icons, the README's header, the top bar's mark): change
   `Tools/logo/logo.swift` (or the instrument's accent in `Theme.h`), run `swift Tools/logo/logo.swift`, and look at
   `Assets/logo/sheet.png`, `construction.png` and the sizes you changed; then build (the bundles take the new

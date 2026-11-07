@@ -29,6 +29,10 @@
 #include <system_error>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <ctime>
+#endif
+
 #if defined(_WIN32)
 #include <atomic>
 #include <csignal>
@@ -67,6 +71,22 @@ namespace probe
     std::string outPath(const std::string& name)
     {
         return (outDir() / name).string();
+    }
+
+    double threadMs()
+    {
+#if defined(_WIN32)
+        FILETIME created{}, ended{}, kernel{}, user{};
+        GetThreadTimes(GetCurrentThread(), &created, &ended, &kernel, &user);
+        const auto ticks = [](const FILETIME& f) {
+            return static_cast<double>((static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime);
+        };
+        return (ticks(kernel) + ticks(user)) * 1e-4;   // 100 ns ticks
+#else
+        timespec ts{};
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+        return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
+#endif
     }
 }
 

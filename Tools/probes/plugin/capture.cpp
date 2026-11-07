@@ -26,7 +26,8 @@
 //             and after forget one plays again
 //   SIZE      20 s at 48 kHz: what an armed recording holds (at most 30 MB: each block's ring entry keeps 64 dials, the
 //             panel's own 32 too, 3.8 MB more than the host's 32 alone did), and the live status and stop each within
-//             a quarter of a second (they copy what was published), the take its 20 s
+//             a quarter of a second of this thread's CPU time (they copy what was published; a busy machine's waits
+//             not counted), the take its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
 //             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
@@ -1477,17 +1478,22 @@ PROBE(plugin, capture)
                 midi.addEvent(juce::MidiMessage::noteOn(1, 60 + static_cast<int>((pos / 24576) % 12), static_cast<juce::uint8>(100)), 0);
             p.processBlock(b, midi);
         }
+        // Both run on this thread (the tool's handler, the recorder's stop): their cost is this thread's CPU time, which
+        // a busy machine does not stretch as it does the wall clock's (printed beside it).
         const auto ms = [](auto t0) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); };
         auto t0 = std::chrono::steady_clock::now();
+        double c0 = probe::threadMs();
         const std::string status = textOf(tool(p, object({ { "action", "status" } })));
-        const double statusMs = ms(t0);
+        const double statusMs = probe::threadMs() - c0, statusWall = ms(t0);
         t0 = std::chrono::steady_clock::now();
+        c0 = probe::threadMs();
         const cap::Reply stopped = p.recorder().act(cap::Action::stop, {});
-        const double stopMs = ms(t0);
+        const double stopMs = probe::threadMs() - c0, stopWall = ms(t0);
         const double heldMb = static_cast<double>(armed.bytes) / 1e6;
         const double takeMb = stopped.take != nullptr ? static_cast<double>(stopped.take->bytes) / 1e6 : 0.0;
-        std::printf("size: armed for 20 s it holds %.1f MB; status (its report) took %.1f ms, stop %.1f ms; the take %.2f s, %.1f MB\n",
-                    heldMb, statusMs, stopMs, stopped.take != nullptr ? stopped.take->seconds() : 0.0, takeMb);
+        std::printf("size: armed for 20 s it holds %.1f MB; status (its report) took %.1f ms of CPU (%.1f ms on the clock), stop "
+                    "%.1f ms (%.1f ms); the take %.2f s, %.1f MB\n",
+                    heldMb, statusMs, statusWall, stopMs, stopWall, stopped.take != nullptr ? stopped.take->seconds() : 0.0, takeMb);
         P.le("size.held_mb", heldMb, 30.0);
         P.le("size.status_ms", statusMs, 250.0);
         P.le("size.stop_ms", stopMs, 250.0);
