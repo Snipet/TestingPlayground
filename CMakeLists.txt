@@ -38,7 +38,7 @@
 # Linux (x86-64, clang and lld; the linux-* presets): the VST3, the Standalone, the MCP server and its extension, the
 # GUI sandbox's helper, the headless renderer and the probes; no AU, no installer app. The editor draws on the GPU
 # (FunkGui: bgfx on Vulkan, in an X11 child window of JUCE's peer, XWayland on a Wayland desktop), or with FP_WITH_GPU
-# off on the CPU as on Windows. The Standalone takes Windows' *Win.cpp window and *None.cpp racing wheel.
+# off on the CPU as on Windows. The Standalone takes Windows' *Win.cpp window and its own *Linux.cpp racing wheel.
 # Every list is a CONFIGURE_DEPENDS glob: a new source file needs no CMake edit. Nothing outside products/ (and the
 # docs) names a product: the C++ namespace is `playground` in both, and every product-specific value comes from the
 # product's file, through Product.h or the variables below.
@@ -251,11 +251,14 @@ set(FP_RENDER_SHARED ${FP_SOURCE_ROOT}/plugin/ChatScenario.cpp)
 file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
                                                   ${FP_SOURCE_ROOT}/plugin/standalone/*.mm)
 # Each platform's own: macOS the window in Objective-C++ and the racing wheel over IOKit; Windows and Linux *Win.cpp
-# (JUCE's window with a menu bar: nothing in it is Windows') and *None.cpp (no racing wheel).
+# (JUCE's window with a menu bar: nothing in it is Windows'); Windows *None.cpp (no racing wheel), Linux *Linux.cpp (the
+# racing wheel over the kernel's evdev and sysfs: plugin/WheelEvdev.h).
 if(APPLE)
-  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(Win|None)\\.cpp$")
+  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(Win|None|Linux)\\.cpp$")
+elseif(FP_LINUX)
+  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(\\.mm|/RacingWheel\\.cpp|/RacingWheelNone\\.cpp)$")
 else()
-  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(\\.mm|/RacingWheel\\.cpp)$")
+  list(FILTER FP_STANDALONE_SOURCES EXCLUDE REGEX "(\\.mm|/RacingWheel\\.cpp|Linux\\.cpp)$")
 endif()
 fp_warn_sources(${FP_STANDALONE_SOURCES})
 foreach(_f IN LISTS FP_STANDALONE_SOURCES)

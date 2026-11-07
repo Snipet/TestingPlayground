@@ -35,6 +35,9 @@
 //     unplugged, as it leaves the spring. A report that fails says so on the card and is not tried again until the
 //     mask changes.
 //
+// The commands go through the transport's setRange, setSpring, setLights and toNative: IOKit's transport sends
+// hid-lg4ff's reports (their defaults), Linux's has the kernel's hid-lg4ff do it (sysfs and evdev: WheelEvdev.h).
+//
 // Message thread only (or a probe's). Transport::changed is called whenever present() or status() may have changed,
 // never from inside a Transport::send.
 #pragma once
@@ -66,6 +69,31 @@ namespace playground::wheel
     public:
         virtual ~Transport() = default;
         virtual int report(Device d, const Report& r) = 0;  // an output report: 0 when it went, else its error (IOReturn)
+        // The wheel's commands, each through report() by default (hid-lg4ff's bytes, WheelMap.h); a transport whose
+        // kernel drives the wheel (Linux's evdev, plugin/WheelEvdev.h) gives each its own way. 0 when it went, else
+        // its error.
+        virtual int setRange(Device d, int degrees) { return report(d, rangeReport(degrees)); }
+        // The spring at `magnitude` (0: off, kSpringOff), its reports in order, stopping at the first that fails.
+        virtual int setSpring(Device d, uint16_t magnitude)
+        {
+            if (magnitude == 0)
+                return report(d, kSpringOff);
+            for (const Report& r : springReports(magnitude))
+                if (const int e = report(d, r); e != 0)
+                    return e;
+            return 0;
+        }
+        virtual int setLights(Device d, int mask) { return report(d, lightsReport(mask)); }
+        // The switch to its own mode (kToNative): the first report's error; the second may fail as the wheel detaches.
+        virtual int toNative(Device d)
+        {
+            if (const int e = report(d, kToNative[0]); e != 0)
+                return e;
+            report(d, kToNative[1]);
+            return 0;
+        }
+        // An error of the transport's in words for the card ("0x...", IOKit's code, by default).
+        virtual std::string describe(int error);
         virtual std::vector<Value> values(Device d) = 0;    // its input elements' values now (the seed)
         virtual void listen(Device d) = 0;                  // its values to Driver::value from now on (nullptr: none's)
         virtual void arm(Timer t, double seconds) = 0;      // Driver::fire(t) once, `seconds` from now (armed again: moved)
