@@ -139,8 +139,7 @@ namespace playground::providers
         const std::string host = hostOnly(u.authority);
         if (u.scheme == "http" && !localHost(host))
         {
-            why = "http:// is only for a server on this Mac or the local network (the conversation would cross the "
-                  "internet unencrypted): use https://";
+            why = "http:// is only for a server on this Mac or the local network: use https://";
             return {};
         }
         std::string path = u.path;
