@@ -4,7 +4,8 @@
 // over a real processor, which a host thread plays as an audio thread would (48 kHz, blocks of 256; an instrument's note
 // held):
 //   CALL     a function of each scalar type, bit for bit as written (a float's tanhf, an int, a double's 17 digits, a
-//            bool); arrays: one written in place and given back, a buffer of {extent} filled, a const one read, one
+//            bool); arrays: one written in place and given back, a buffer of {extent} filled (a double's elements in
+//            17 digits, an int's whole), a const one read, one
 //            written past what it was given (said so), one of a single element written at the length given beside it
 //            (its buffer that long: the write landed in it, said so); a method on a fresh instance of the editor's
 //            files (init run at the host's rate, the dials as they are: an int dial set to 5 reads 5), a field's method
@@ -114,7 +115,9 @@ namespace
                "void ramp(float* out, int n) { for (int i = 0; i < n; ++i) out[i] = i; }\n"
                "void spill(float* x) { for (int i = 0; i < 6; ++i) x[i] = 1; }\n"
                "float sum(const float* x, int n) { float s = 0; for (int i = 0; i < n; ++i) s = s + x[i]; return s; }\n"
-               "void last(float* x, int n) { x[n - 1] = 1; }\n\n"
+               "void last(float* x, int n) { x[n - 1] = 1; }\n"
+               "void fine(double* c, int n) { for (int i = 0; i < n; ++i) { double k = i; c[i] = 1.0 - 1e-12 * k; } }\n"
+               "void big(int* x, int n) { for (int i = 0; i < n; ++i) x[i] = 2000000000 + i; }\n\n"
              + mainModule("    param int steps [[fminus::range(0, 8)]] [[fminus::default(3)]];\n"
                           "    Counter counter;\n    Counter many[3];\n    float rate;\n    int count;\n    int spins;\n"
                           "    float taps[4];\n"
@@ -263,6 +266,11 @@ PROBE(plugin, function)
         P.eq("call.extent", has(t, "out (float *), after the call: [0, 1, 2, 3, 4, 5, 6, 7]") ? 1 : 0, 1);
         t = call(object({ { "name", "sum" }, { "args", list({ object({ { "extent", 4 }, { "values", list({ 1, 2 }) } }), 4 }) } }));
         P.eq("call.const_array", has(t, "Returned 3.") && has(t, "x (const float *): [1, 2, 0, 0]") ? 1 : 0, 1);
+        // An array's elements in its type's digits: a double's 17 (as a double result's), an int's whole.
+        t = call(object({ { "name", "fine" }, { "args", list({ object({ { "extent", 3 } }), 3 }) } }));
+        P.eq("call.double_array", has(t, "c (double *), after the call: [1, 0.99999999999900002, 0.99999999999800004]") ? 1 : 0, 1);
+        t = call(object({ { "name", "big" }, { "args", list({ object({ { "extent", 2 } }), 2 }) } }));
+        P.eq("call.int_array", has(t, "x (int *), after the call: [2000000000, 2000000001]") ? 1 : 0, 1);
         t = call(object({ { "name", "spill" }, { "args", list({ list({ 0, 0 }) }) } }));
         P.eq("call.past", has(t, "[1, 1]") && has(t, "It wrote past the 2 elements given") ? 1 : 0, 1);
         // C's (buffer, n) with a buffer of one: the buffer is n long, so x[n - 1] lands in it (and is seen there), far past

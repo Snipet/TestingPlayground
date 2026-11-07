@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,20 +97,33 @@ namespace playground
             return which + " is no number, bool or array";
         }
 
-        std::string number(double v)
+        // An array's elements by its type as declared ("double *", "const float *", "int *"): a double's 17 digits
+        // (as a double result's), a float's 9, an int's whole.
+        enum class Element : uint8_t { real, real64, whole };
+        Element elementOf(const std::string& type)
+        {
+            return type.find("double") != std::string::npos ? Element::real64
+                 : type.find("int") != std::string::npos    ? Element::whole
+                                                            : Element::real;
+        }
+
+        std::string number(double v, Element e)
         {
             char b[40];
-            std::snprintf(b, sizeof b, "%.9g", v);
+            if (e == Element::whole && std::isfinite(v) && std::fabs(v) < 1e18)
+                std::snprintf(b, sizeof b, "%lld", static_cast<long long>(v));
+            else
+                std::snprintf(b, sizeof b, e == Element::real64 ? "%.17g" : "%.9g", v);
             return b;
         }
 
         // An array as the result shows it: its elements, kShownElements at most, then how many more and their range.
-        std::string listed(const std::vector<double>& e)
+        std::string listed(const std::vector<double>& e, Element kind)
         {
             std::string out = "[";
             const std::size_t shown = std::min(e.size(), kShownElements);
             for (std::size_t i = 0; i < shown; ++i)
-                out += (i == 0 ? "" : ", ") + number(e[i]);
+                out += (i == 0 ? "" : ", ") + number(e[i], kind);
             if (shown < e.size())
             {
                 double lo = e[shown], hi = e[shown];
@@ -118,7 +132,7 @@ namespace playground
                     lo = std::min(lo, e[i]);
                     hi = std::max(hi, e[i]);
                 }
-                out += ", ... " + std::to_string(e.size() - shown) + " more, from " + number(lo) + " to " + number(hi);
+                out += ", ... " + std::to_string(e.size() - shown) + " more, from " + number(lo, kind) + " to " + number(hi, kind);
             }
             return out + "]";
         }
@@ -367,7 +381,7 @@ namespace playground
         for (const Patch::CallOutcome::Array& a : o.arrays)
         {
             text += (a.name.empty() ? std::string("an array") : a.name) + " (" + a.type + ")" + (a.written ? ", after the call: " : ": ")
-                  + listed(a.elements) + "\n";
+                  + listed(a.elements, elementOf(a.type)) + "\n";
             if (a.past)
                 text += "  It wrote past the " + std::to_string(a.elements.size()) + " elements given, into the zeros after them: "
                         "give it more (extent), or check its loop's bounds.\n";
