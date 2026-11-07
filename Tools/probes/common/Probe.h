@@ -70,6 +70,10 @@ namespace probe
     // end the process, even for a menu shown inside a component (gui.menus' and gui.midi's pictures). The rows that need
     // one are skipped there (skip); the rest of the probe runs.
     std::string noDisplay();
+
+    // The calling thread's CPU time, ms (Windows: GetThreadTimes, in the scheduler's ticks of about 15.6 ms): what a
+    // cost row times, so that the time a busy machine keeps the thread waiting for a core is not counted.
+    double threadMs();
 }
 
 #define PROBE_FN_(layer, name)  probeFn_##layer##_##name

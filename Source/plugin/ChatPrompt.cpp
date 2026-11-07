@@ -207,7 +207,7 @@ FMINUS, THE LANGUAGE
 
 FMinus is a subset of C (C's syntax and semantics, clang's error messages) with modules, parameters and vectors added. What the compiler has:
 
-- Types: float (32-bit; an unsuffixed constant like 1.5 is a float), double (64-bit, for slow state; a constant is one only beside a double), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, double, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one or two dimensions (float h[16]; int k[3] = {1, 2, 3}; float g[4][16]), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
+- Types: float (32-bit; an unsuffixed constant like 1.5 is a float), double (64-bit; a constant is one only beside a double), int (32-bit, signed; overflow is undefined), bool, void. Pointers to float, double, int, float2/float4/float8 and modules, one level deep, const and restrict. Arrays of one or two dimensions (float h[16]; int k[3] = {1, 2, 3}; float g[4][16]), also of modules (Osc osc[4];). float2, float4, float8 are OpenCL-style vectors: (float4)(a, b, c, d), swizzles v.x v.wzyx, math applied lane by lane.
 - Not in FMinus: long, unsigned, char and strings, printf, struct/union (use a module), typedef, do-while, goto, global variables (state goes in a module's fields; data for the whole program in a module Shared), function pointers, pointers to pointers.
 - Statements: blocks, if/else, while, for, switch (C's), break, continue, return. Declarations anywhere in a block, block-scoped. And FMinus's own threads, parallel for and parallel { } (THREADS, below); parallel is a keyword.
 - Operators: C's, with C's precedence: arithmetic (% works on floats too, as fmodf), comparisons, && || ! (short-circuit), ?: (only the taken branch runs), & | ^ ~ << >> on ints (>> keeps the sign: mask it for a logical shift), = += -= *= /= %= &= |= ^= <<= >>=, ++ --, casts (float)i (int)x (bool)x. Integer division truncates (1 / 2 is 0): write 1.0f / 2 or (float)a / b.
@@ -242,6 +242,7 @@ DSP PRACTICE IN THIS PLUGIN
 - Oscillators: phase accumulators in [0, 1), phase += freq / rate, wrap with if (phase >= 1) phase -= 1. Band-limit saw and square waves (osc.fm does, with polyBLEP); a plain sinf per sample is fine for sines. Wavetables: wavetable.fm band-limits each frame with the FFT into copies a half octave apart, so nothing aliases at any pitch; build the table once in a module Shared. Frequency of a MIDI note: 440 * expf(0.0577622650f * (note - 69)) (noteToHz in util.fm).
 - Filters: a topology-preserving filter stays stable under modulation (svf.fm, ladder.fm, onepole.fm); g = tan(pi * fc / rate) as sinf(w) / cosf(w) with w kept below about 1.5 (svfG, ladderG and onePoleG compute it, for a cutoff that moves every sample: Cost, below). biquad.fm for an equalizer's bells and shelves set once a call.
 - Envelopes: exponential segments (env *= coefficient, or env += a * (target - env)) per sample (adsr.fm). A release must reach silence so process can return false.
+- Slow state (a temperature, a long fade) in a double: a float drops a step under 2^-24 of its value.
 - Noise: noise.fm (white, pink, brown); its white is randf of a count of samples.
 - Delays: a ring buffer from calloc in init, freed in end (delay.fm, reverb.fm), or a fixed array field; read between samples for modulated delays.
 - Saturation: tanhf; for gentler curves x / (1 + fabsf(x)) (shaper.fm has these and more).
@@ -760,6 +761,73 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
 }
 )GUI";
 
+        // The guide's cheat sheet (part "cheatsheet", mcp::guide::kCheatSheet): FMinus and DSP on a page, for an assistant
+        // working from outside (ChatAgent::mcpGuide); the plugin's own chat has the whole prompt and never gets it.
+        const char* const kCheatInstrument = R"(THE PROGRAM (an instrument: module Voice, one instance a note, sixteen at once; #pragma mono: one)
+  param float cutoff [[fminus::range(20, 20000)]] [[fminus::default(2000)]];   a dial: cutoff[i] a sample (it glides 20 ms), cutoff[0] once a call
+  param int wave [[fminus::range(0, 3)]];     an int or bool dial: read once a call
+  Shared* shared;  Host* host;                the plugin sets them: module Shared, made once (tables); #include "host.fm" (bpm, beat, the wheels; read only)
+  void init(float rate)                       off the audio thread: allocate (calloc) and set what the rate decides
+  void start(float note, float velocity)      69 is A 440 Hz, velocity 0 to 1: set everything the note needs (the voice played before)
+  void stop()                                 the note-off: begin the release
+  bool process(float* restrict left, float* restrict right, int n)   add n samples (16 at most) into both; false once silent for good
+  void end()                                  free what init allocated
+  A voice peaks near 0.2 to 0.3 (sixteen are summed); never allocate in start, stop or process; let the release end.
+)";
+
+        const char* const kCheatEffect = R"(THE PROGRAM (an effect: module Effect, one instance, stereo in place)
+  param float mix [[fminus::range(0, 1)]] [[fminus::default(0.5)]];   a dial: mix[i] a sample (it glides 20 ms), mix[0] once a call
+  param int mode [[fminus::range(0, 3)]];     an int or bool dial: read once a call
+  Host* host;                                 the plugin sets it: #include "host.fm" (bpm, beat, playing; read only)
+  void init(float rate)                       off the audio thread: allocate (calloc) and set what the rate decides
+  void process(float* restrict left, float* restrict right, int n)   n samples in place (the host's block): read left[i], write it back
+  void end()                                  free what init allocated
+  Peaks near 1; never allocate in process.
+)";
+
+        const char* const kCheatCommon = R"(  The first 32 params are the host's dials P1 to P32, the next 32 the panel's alone; 16 files at most. The output is kept finite and within +-4; a call that loops far too long or indexes outside an array is stopped and the program before plays. Subnormals are flushed.
+
+FMINUS
+  Types      float (32-bit; 1.5 is a float), double (slow state), int (32-bit), bool; float2 float4 float8: (float4)(a, b, c, d), v.x, v.wzyx, math lane by lane
+  Arrays     float h[16]; int k[3] = {1, 2, 3}; float g[4][16]; Osc osc[4];   pointers one level deep: float* p; Osc* o; o->tick()
+  Modules    module Name { fields (no initializers, start at 0); params; methods };  a module holds those declared before it
+  Top level  functions (callable before they are defined), enum { STEPS = 8 }; const float kTable[STEPS] = { ... };  no globals
+  Statements if/else, while, for, switch, break, continue, return; parallel for and parallel { } (THREADS, part "large-program")
+  Operators  C's: % on floats too, ints truncate (1 / 2 is 0), >> keeps the sign, ?: runs only its branch, casts (float)i (int)x
+  Not there  long, unsigned, char, strings, printf, struct, typedef, do-while, goto, function pointers, pointers to pointers
+  Builtins   fabsf sqrtf floorf fminf fmaxf (exact); sinf cosf tanf expf logf tanhf (a few ulp; one call computes four samples
+             in a loop with no state); on doubles sqrt fabs floor fmin fmax fma; hash(n), randf(n) in [-1, 1); calloc malloc
+             free (init and end); reduce_add reduce_min reduce_max; sizeof; fft_create(n) fft_forward fft_inverse fft_destroy
+  libm       float powf(float x, float y) [[clang::nonblocking]];   declared so, any other C math function (prefer the builtins)
+  Attributes float gr [[ui::unit("dB"), ui::label("GR"), ui::decimals(1), fminus::range(0, 24)]];   on a field: its displays, trace
+  Directives #include "file.fm" (once); #if, #ifdef DEBUG, #else, #endif; #pragma panel ...; #pragma sample kick "kick.wav"%PRAGMAS%
+
+DSP: THE NUMBERS
+  A note's pitch       hz = 440 * expf(0.0577622650f * (note - 69))          (noteToHz, util.fm; 0.0577622650 is ln 2 / 12)
+  Octaves, cents       ratio = expf(0.693147181f * octaves);  expf(0.000577622650f * cents)
+  Decibels             gain = expf(0.115129255f * db);  db = 8.68588964f * logf(gain)      (dbToGain, gainToDb)
+  A phase              phase += hz / rate; if (phase >= 1) phase -= 1;  sinf(6.28318531f * phase)
+  A one-pole smoother  y += a * (x - y), a = 1 - expf(-1 / (seconds * rate)): 63 % of the way in `seconds`
+  Down 60 dB in T s    each sample *= expf(-6.90775528f / (T * rate)); a loop of f Hz, each pass *= expf(-6.90775528f / (T * f))
+  A filter's cutoff    g = tanf(3.14159265f * fc / rate), fc below 0.49 rate (svfG, ladderG, onePoleG: per sample in a loop of its own)
+  A ramp               20 ms: step = 1 / (0.02f * rate); nothing a user hears may step (a gain, a mix, a switch)
+  A delay              samples = seconds * rate; tempo: beats * 60 / host->bpm seconds; an LFO in time: host->bpm / 60 / beats Hz
+  Equal power          left = cosf(0.785398163f * (pan + 1)), right = sinf(...): pan -1 to 1 (panLeft, panRight, crossfade)
+  Sample counts        an int (exact for 12 hours at 48 kHz); a float counts only to 2^24 (6 minutes)
+
+DSP: THE PITFALLS
+  Slow state in float  an increment under half a float's step is lost: 1.0f + 1e-8f is 1.0f, and a level, a temperature or a
+                       clock that moves a millionth a block stands still. Keep it in a double (double temp; temp += rise * dt;)
+                       or step it less often by more; the audio stays float.
+  Aliasing             a naive saw or square, a shaper's harmonics: osc.fm, wavetable.fm, oversample.fm; measure inharmonic_db
+  Clicks               a dial or a gain stepped, a voice's state reset while it sounds, a delay's length jumped: ramp, crossfade
+  Subnormals           flushed to zero: a decaying feedback costs nothing more
+  DC                   feedback, folding and asymmetric shaping leave it: DcBlock (onepole.fm)
+  Cost                 math calls are most of it: compute coefficients in loops of their own, once a call where they hold still
+
+THE LIBRARY'S FILES (part "library" gives their usage)
+%LIBRARY%)";
+
         std::string replaceAll(std::string s, const std::string& from, const std::string& to)
         {
             for (std::size_t p = s.find(from); p != std::string::npos; p = s.find(from, p + to.size()))
@@ -915,6 +983,23 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
         else
             add(kEffectUses);
         return out;
+    }
+
+    std::string ChatAgent::cheatSheet()
+    {
+        const bool instrument = product::kIsInstrument;
+        std::string library;
+        for (const LibraryFile& f : kLibrary)
+        {
+            const std::string first(std::string_view(f.source).substr(0, std::string_view(f.source).find('\n')));
+            const std::size_t colon = first.find(": ");
+            library += std::string("  ") + f.name + (colon == std::string::npos ? std::string() : " " + first.substr(colon + 2)) + "\n";
+        }
+        std::string s = std::string(mcp::guide::kCheatSheet) + "\n\nThe forms and the numbers of the guide on one page, to look up while "
+                        "you write; \"start\" says why, and where this page and the guide differ, the guide is right.\n\n";
+        s += instrument ? kCheatInstrument : kCheatEffect;
+        s += replaceAll(replaceAll(kCheatCommon, "%PRAGMAS%", instrument ? "; #pragma mono" : ""), "%LIBRARY%", library);
+        return s;
     }
 
     const std::string& ChatAgent::systemPrompt()

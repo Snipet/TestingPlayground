@@ -67,6 +67,8 @@ namespace playground
         uint8_t released = 0, pedalHeld = 0;          // released, and let go while the pedal holds them
         uint8_t fading = 0;                           // voices fading out (stolen, or of a program swapped out)
         uint8_t held = 0;                             // keys down
+        bool mono = false;                            // the program plays one voice at a time (its #pragma mono, and
+                                                      // the dial it names on), as of the block's end: Engine::monoNow
         int8_t lastNote = -1;                         // the last note-on's key (-1: none yet)
         float lastVelocity = 0.0f;
         uint32_t heldKeys[4] = {};                    // the keys down, a bit each (key k: word k / 32, bit k % 32)

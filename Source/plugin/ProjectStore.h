@@ -256,6 +256,25 @@ namespace playground::projectstore
     std::vector<Entry> listCached(std::vector<std::string>& unread);
     std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread,
                                                             std::string* why = nullptr);
+    // A project's versions (each its number, when and what changed, oldest first), its presets and its info, from the same
+    // cache, for PROJECTS and EXPORT on the message thread: as presetsCached, a file the cache does not hold as it is now
+    // goes to `unread` and what the cache last held of it is given, `read` false for one never read (nothing yet); none,
+    // with why, for no such project or a damaged one. A factory project's from what is compiled in.
+    struct VersionSummary
+    {
+        int number = 0;
+        int64_t savedMs = 0;
+        std::string note;
+        friend bool operator==(const VersionSummary&, const VersionSummary&) = default;
+    };
+    struct Detail
+    {
+        bool read = false;
+        std::vector<VersionSummary> versions;
+        std::vector<PresetSummary> presets;
+        Info info;
+    };
+    std::optional<Detail> detailCached(std::string_view name, std::vector<std::string>& unread, std::string* why = nullptr);
 
     // Reads the project files listCached and presetsCached could not serve into the cache, on a thread of its own,
     // one at a time, each path asked once until it is read; revision() counts the files it read into the cache, so a

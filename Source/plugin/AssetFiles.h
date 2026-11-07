@@ -31,6 +31,14 @@ namespace playground::assetfiles
     std::shared_ptr<const assets::Asset> read(const assets::Set* to, const std::string& path, std::string name, std::string& why);
     uint64_t decodes() noexcept;
 
+    // Whether text that names a sample or a file (compare's "wav:") names a file by its path, the same on every
+    // platform: it holds a '/', a '\' or a ':' (/Users/..., C:\..., \\server\share\..., C:/...) or starts with '~'. A
+    // sample's name holds none of them (assets::validName), so anything else is one.
+    inline bool namesAFile(std::string_view text) noexcept
+    {
+        return text.find_first_of("/\\:") != std::string_view::npos || (!text.empty() && text.front() == '~');
+    }
+
     std::string toBase64(const std::string& bytes);
     std::optional<std::string> fromBase64(std::string_view text);
 }

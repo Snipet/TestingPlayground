@@ -23,6 +23,12 @@
 //             saving it as it is adds none, opening it makes them the plugin's, the edited mark follows them; compare's
 //             sides each with their own (a version's, what plays, previous_run after a run that changed only a
 //             sample); a .fmpack and a .zip carry them out and back
+//   TARGET    compare's wav: (a target sound): a WAV on this Mac by its path, against the program that plays it,
+//             identical bits; one of the program's samples by its name the same; a 44.1 kHz file resampled to the
+//             render's 48 kHz, its spectra's centroids side by side; with a picture, a 12 s file cut to 10 s, saying so;
+//             refused in words: a path not whole, a file that is not there, a sample the program lacks, no program on
+//             either side, b_rate, try_edits on it; a path told from a sample's name alike on every platform (a
+//             Windows path, a drive's or a share's, is a path, never a sample looked up)
 //   TOOLS     write_file's path adds one (its name tidied), get_status lists it (and which the program reads),
 //             rename_file and delete_file act on it, content for an audio file's name refused
 //   EXAMPLE   sample.fm's one-shot (readAt: the index and the fraction apart): the synth's voice plays the hit at note
@@ -694,6 +700,70 @@ PROBE(plugin, samples)
                 (void)ps::remove(name);
         }
         (void)ps::remove("Drum Kit");
+    }
+
+    // ---- TARGET ------------------------------------------------------------------------------------------------------
+    {
+        pg::Processor p;
+        p.setRateAndBufferSizeDetails(48000.0, kBlock);
+        p.prepareToPlay(48000.0, kBlock);
+        (void)dir.getChildFile("target").createDirectory();
+        const juce::File k48 = writeFile(dir.getChildFile("target"), "kick.wav", floatWav(kick, 48000));
+        const juce::File k44 = writeFile(dir.getChildFile("target"), "Kick 44.wav", floatWav(hit(2205, 44100.0), 44100));
+        const juce::File longer = writeFile(dir.getChildFile("target"), "long.wav", floatWav(hit(12 * 48000), 48000));
+        std::string why;
+        (void)p.editorPort().addAssets({ k48.getFullPathName().toStdString() }, why);
+        run(p, withLibrary(player("kick.wav")));
+        // The synth plays its note 60 from the first sample (the player's voice plays the sample as it is); the effect
+        // plays the sample in place of its input.
+        const juce::var scenario = kInstrument ? object({ { "phrase", juce::Array<juce::var>{ object({ { "note", 60 }, { "at", 0 }, { "len", 1 } }) } } })
+                                               : juce::var();
+        const auto compared = [&](const juce::var& a, const juce::var& b, std::initializer_list<std::pair<const char*, juce::var>> more = {}) {
+            juce::var in = object({ { "a", a }, { "b", b } });
+            if (!scenario.isVoid())
+                in.getDynamicObject()->setProperty("scenario", scenario);
+            for (const auto& [k, v] : more)
+                in.getDynamicObject()->setProperty(k, v);
+            return textOf(p.chatAgent().mcpCall("compare", in));
+        };
+        const std::string file = compared(juce::String("wav:") + k48.getFullPathName(), "editor");
+        std::printf("compare against a target file:\n%s\n", file.c_str());
+        P.eq("target.file_identical", has(file, "A is the target sound kick.wav (0.05 s, mono, 48 kHz") && has(file, "Identical bits")
+                                          && has(file, "Spectra: A centroid") ? 1 : 0, 1);
+        const std::string sample = compared("wav:kick.wav", "editor");
+        P.eq("target.sample_identical", has(sample, "a sample of the program's") && has(sample, "Identical bits") ? 1 : 0, 1);
+        const std::string resampled = compared("editor", juce::String("wav:") + k44.getFullPathName());
+        std::printf("compare against a 44.1 kHz target:\n%s\n", resampled.c_str());
+        P.eq("target.resampled", has(resampled, "B is the target sound Kick 44.wav (0.05 s, mono, 44.1 kHz") && has(resampled, "at 48000 Hz")
+                                     && !has(resampled, "Identical bits") && has(resampled, "Spectra: A centroid")
+                                     && has(resampled, "Octave bands, B against A") ? 1 : 0, 1);
+        const std::string pictured = textOf(p.chatAgent().mcpCall("compare", object({ { "a", "editor" }, { "b", juce::String("wav:") + longer.getFullPathName() },
+                                                                                     { "picture", true } })));
+        P.eq("target.picture_cut", has(pictured, "its first 10 s are compared; without the picture, up to 60 s") ? 1 : 0, 1);
+        const auto refusal = [&](const juce::var& a, const juce::var& b, std::initializer_list<std::pair<const char*, juce::var>> more = {}) {
+            juce::var in = object({ { "a", a }, { "b", b } });
+            for (const auto& [k, v] : more)
+                in.getDynamicObject()->setProperty(k, v);
+            const pg::ChatAgent::McpResult r = p.chatAgent().mcpCall("compare", in);
+            return r.isError ? textOf(r) : std::string();
+        };
+        P.eq("target.refused_relative", has(refusal("wav:target/kick.wav", "editor"), "whole (/Users/... or ~/...)") ? 1 : 0, 1);
+        // A path or a sample's name, the same on every platform: a Windows path (a drive's, a share's, with either slash)
+        // is a path, never looked up as a sample (here it is no whole path on the Mac, and says so).
+        bool pathOrName = !pg::assetfiles::namesAFile("kick.wav") && !pg::assetfiles::namesAFile("Kick_44-b.flac");
+        for (const char* path : { "C:\\Users\\me\\Music\\target.wav", "\\\\server\\share\\x.wav", "C:/Music/x.wav", "D:x.wav",
+                                  "~/x.wav", "~\\x.wav", "~", "/Volumes/Music/x.wav", "target/kick.wav" })
+            pathOrName = pathOrName && pg::assetfiles::namesAFile(path);
+        P.eq("target.path_or_name", pathOrName ? 1 : 0, 1);
+        const std::string windows = refusal("wav:C:\\Users\\me\\Music\\target.wav", "editor");
+        P.eq("target.windows_path_not_a_sample", has(windows, "whole (/Users/... or ~/...)") && !has(windows, "has no sample") ? 1 : 0, 1);
+        P.eq("target.refused_missing", has(refusal(juce::String("wav:") + dir.getChildFile("none.wav").getFullPathName(), "editor"),
+                                           "there is no file at") ? 1 : 0, 1);
+        P.eq("target.refused_no_sample", has(refusal("wav:snare.wav", "editor"), "the program has no sample snare.wav (its samples: kick.wav)") ? 1 : 0, 1);
+        P.eq("target.refused_no_program", has(refusal("wav:kick.wav", juce::String("wav:") + k48.getFullPathName()), "Neither a nor b is a program") ? 1 : 0, 1);
+        P.eq("target.refused_b_rate", has(refusal("wav:kick.wav", "editor", { { "b_rate", 96000 } }), "b_rate takes no target sound") ? 1 : 0, 1);
+        P.eq("target.refused_try_edits", has(refusal("editor", "wav:kick.wav", { { "try_edits", juce::Array<juce::var>{} } }),
+                                             "try_edits apply to b, which is the target sound") ? 1 : 0, 1);
     }
 
     // ---- TOOLS -------------------------------------------------------------------------------------------------------

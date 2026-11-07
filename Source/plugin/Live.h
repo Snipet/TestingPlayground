@@ -40,7 +40,9 @@ namespace playground
         float load = 0.0f;                        // Engine::load: the busiest recent block's share
         uint32_t alerts = 0;                      // the output guard's alerts of the last two seconds (Engine::Alert)
         uint64_t program = 0;                     // the program that plays (its compile, as Meters::program names it)
-        std::vector<PanelDisplay> displays;       // its displays
+        uint64_t tapTable = 0;                    // the tap table its displays' taps index (PanelSpec::tapTable)
+        std::vector<PanelDisplay> displays;       // its displays: a frame's taps are theirs only when the frame is of
+                                                  // this program and this table (Meters::program, Meters::tapTable)
     };
 
     struct Changes

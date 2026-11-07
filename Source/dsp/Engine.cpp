@@ -1175,6 +1175,7 @@ namespace playground
             frame_.pedalHeld = pedal;
             frame_.fading = fading;
             frame_.held = held;
+            frame_.mono = monoNow();                     // one voice at a time, at the block's end (Meters::mono)
         }
         publishProbes(n);
         ++frame_.frame;

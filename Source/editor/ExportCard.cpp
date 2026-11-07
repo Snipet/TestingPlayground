@@ -115,7 +115,24 @@ namespace playground::ui
         open_ = true;
         project_ = project;
         readOnly_ = isFactoryName(project);
-        saved_ = port_.projectInfo(project);
+        allVersions_ = true;
+        focus_ = Field::description;
+        want_ = Want::none;
+        why_.clear();
+        failed_ = false;
+        read();
+        ++revision_;
+    }
+
+    // Its info and counts from the store's cache (projectPolled, projectsPolled): never a project's file read whole here.
+    // One the cache lacks is read on the store's Reader; until then the fields are empty and take nothing (reading_),
+    // and poll() fills them once it has read it.
+    void ExportCard::read()
+    {
+        readSeen_ = port_.projectsRead();
+        const ProjectDetail d = port_.projectPolled(project_);
+        reading_ = d.exists && !d.read;
+        saved_ = d.info;
         // One of the kind's in another case ("pad", kept so elsewhere) is that one, its pill lit: the file keeps its
         // spelling until the info changes.
         for (const std::string& c : categories())
@@ -129,20 +146,28 @@ namespace playground::ui
         category_ = saved_.category;
         genres_ = saved_.genres;
         versions_ = latest_ = presets_ = 0;
-        const std::vector<ProjectEntry> all = readOnly_ ? port_.factoryProjects() : port_.projects();
+        const std::vector<ProjectEntry> all = readOnly_ ? port_.factoryProjects() : port_.projectsPolled();
         for (const ProjectEntry& e : all)
-            if (e.name == project)
+            if (e.name == project_)
             {
                 versions_ = e.versions;
                 latest_ = e.latest;
                 presets_ = e.presets;
             }
-        allVersions_ = true;
-        focus_ = Field::description;
-        want_ = Want::none;
-        why_.clear();
-        failed_ = false;
+    }
+
+    bool ExportCard::poll()
+    {
+        if (!open_ || port_.projectsRead() == readSeen_)
+            return false;
+        if (!reading_ && !(info() == saved_))
+        {
+            readSeen_ = port_.projectsRead();            // the fields being edited stay as typed
+            return false;
+        }
+        read();
         ++revision_;
+        return true;
     }
 
     void ExportCard::close()
@@ -164,8 +189,8 @@ namespace playground::ui
     bool ExportCard::keepInfo()
     {
         const ProjectInfo now = info();
-        if (readOnly_ || now == saved_)                  // a factory project's info stays as it is
-            return true;
+        if (locked() || now == saved_)                   // a factory project's info stays as it is (and one not read yet
+            return true;                                 // has none to keep)
         std::string why;
         if (!port_.setProjectInfo(project_, now, why))
         {
@@ -174,7 +199,7 @@ namespace playground::ui
             ++revision_;
             return false;
         }
-        saved_ = port_.projectInfo(project_);
+        saved_ = port_.projectPolled(project_).info;    // the store keeps what it wrote: no file read
         return true;
     }
 
@@ -281,11 +306,11 @@ namespace playground::ui
     void ExportCard::pointerDown(funkgui::Point p, float width, float height)
     {
         const Places at = places(width, height);
-        if (!readOnly_ && at.description.contains(p))
+        if (!locked() && at.description.contains(p))
             focusOn(Field::description);
-        else if (!readOnly_ && at.author.contains(p))
+        else if (!locked() && at.author.contains(p))
             focusOn(Field::author);
-        else if (!readOnly_ && at.tags.contains(p))
+        else if (!locked() && at.tags.contains(p))
             focusOn(Field::tags);
         else if (at.versions.contains(p))
             allVersions_ = !allVersions_;
@@ -295,7 +320,7 @@ namespace playground::ui
             ask(Want::source);
         else if (at.package.contains(p))
             ask(Want::package);
-        else if (!readOnly_)
+        else if (!locked())
         {
             const std::vector<std::string> cats = choices();
             for (std::size_t i = 0; i < at.categories.size(); ++i)
@@ -321,7 +346,7 @@ namespace playground::ui
         funkgui::text::LineEdit& f = field(focus_);
         if (e.key == Key::escape)
             close();
-        else if (readOnly_)
+        else if (locked())
             return;                                      // no field takes a key
         else if (e.key == Key::tab || e.key == Key::enter)
         {
@@ -347,7 +372,7 @@ namespace playground::ui
         const Places at = places(width, height);
         if (at.versions.contains(p) || at.done.contains(p) || at.source.contains(p) || at.package.contains(p))
             return funkgui::Cursor::pointingHand;
-        if (readOnly_)
+        if (locked())
             return funkgui::Cursor::normal;
         for (const auto* list : { &at.categories, &at.genres })
             for (const funkgui::Rect& r : *list)
@@ -476,8 +501,9 @@ namespace playground::ui
                 chat::drawIcon(c, chat::Icon::check, r.x + 15.0f, r.centreY(), 10.0f, p.onAccent);
             c.text(label.c_str(), r.x + 30.0f, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.soft);
         }
-        if (!why_.empty())
-            c.text(fitText(c, why_, chat::kSmall, box.w - 2.0f * kPad).c_str(), x + 2.0f, c.capCentreTop(at.done.y - 16.0f, chat::kSmall),
+        const std::string said = why_.empty() && reading_ ? std::string(kReading) : why_;
+        if (!said.empty())
+            c.text(fitText(c, said, chat::kSmall, box.w - 2.0f * kPad).c_str(), x + 2.0f, c.capCentreTop(at.done.y - 16.0f, chat::kSmall),
                    chat::kSmall, failed_ ? p.danger : p.soft);
 
         // The buttons.
@@ -501,7 +527,10 @@ namespace playground::ui
         box.role = funkgui::a11yrole::group;
         box.bounds = at.box;
         box.title = "Export " + project_;
-        box.description = why_.empty() && readOnly_ ? "A factory project, read-only: its info goes with it as it is" : why_;
+        box.description = !why_.empty() ? why_
+                        : reading_      ? std::string(kReading)
+                        : readOnly_     ? "A factory project, read-only: its info goes with it as it is"
+                                        : std::string();
         box.help = std::string("A description, tags and genres go with it; its chats with Claude never do: they stay on ") + kThisMachine;
         out.push_back(box);
         const auto text = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {

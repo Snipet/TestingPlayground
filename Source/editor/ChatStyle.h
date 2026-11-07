@@ -74,7 +74,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search
+        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag
     };
 
     // A convex polygon filled (its vertices in order): cut at its vertices' x into the canvas's trapezoids.
@@ -482,6 +482,15 @@ namespace playground::ui::chat
                 c.segment(cx - s * 0.75f, cy + s * 0.75f, cx - s * 0.35f, cy + s * 0.35f, w, ink);
                 c.segment(cx - s * 0.35f, cy + s * 0.35f, cx + s * 0.3f, cy - s * 0.3f, w * 2.0f, ink);
                 c.disc(cx + s * 0.55f, cy - s * 0.55f, s * 0.28f, ink.withAlpha(0.0f), w, ink);
+                break;
+            }
+            case Icon::flag:
+            {
+                // A flag on its mast: a moment marked (the recording's Mark).
+                c.segment(cx - s * 0.55f, cy - s * 0.85f, cx - s * 0.55f, cy + s * 0.85f, w, ink);
+                const float xs[3] = { cx - s * 0.55f, cx + s * 0.75f, cx - s * 0.55f };
+                const float ys[3] = { cy - s * 0.85f, cy - s * 0.4f, cy + s * 0.05f };
+                fillConvex(c, xs, ys, 3, ink);
                 break;
             }
         }

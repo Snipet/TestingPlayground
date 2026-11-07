@@ -107,6 +107,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace playground
@@ -181,7 +182,12 @@ namespace playground
         // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
         // the picture Claude's view_panel asks for, there.
         void poll();
-        void settle();
+        void settle();                                           // a save in flight (startSave) lands too
+        // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
+        // shows meanwhile can be checked; open, it goes on (poll() lands it). saveWritten: the last one started has done
+        // its store's work (the next poll() lands it), so a probe can time the landing alone.
+        void setSaveGate(bool shut);
+        bool saveWritten() const noexcept { return saverDone_.load(std::memory_order_acquire); }
         // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
         // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
         bool claudeJobWaiting() const;
@@ -269,6 +275,8 @@ namespace playground
         int probe(int slot, float* out, int n) const override { return engine_.probe(slot, out, n); }
         float load() const override;
         bool frozen() const override;
+        RecordingState recording() const override;
+        int markRecording(std::string& why) override;
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
         std::vector<ProjectEntry> factoryProjects() const override;
@@ -279,8 +287,11 @@ namespace playground
         std::vector<PresetEntry> presets(const std::string& project) const override;
         std::vector<ProjectEntry> projectsPolled() const override;
         std::vector<PresetEntry> presetsPolled(const std::string& project) const override;
+        ProjectDetail projectPolled(const std::string& project) const override;
         uint64_t projectsRead() const override;
         bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) override;
+        bool startSave(const std::string& name, std::string& why) override;
+        SaveState saving() const override;
         bool openProject(const std::string& name, int version, std::string& why) override;
         void startAfresh(const Sources& files, const std::string& what) override;
         bool deleteProject(const std::string& name, std::string& why) override;
@@ -453,6 +464,10 @@ namespace playground
         // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
         // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).
         std::optional<std::vector<midilearn::Mapping>> midiOpened_;
+        // How many times a project, a version or none was opened (a version, a fresh start, a session, the open one
+        // deleted, A/B's Keep of a version): a save in flight lands as the project open only when none was since,
+        // the same version opened again included (landSave).
+        uint64_t projectOpens_ = 0;
         // The chats (ChatAgent.h, "The chats"; programMutex_): the project open's id (ProjectStore.h: the session keeps it,
         // to find the project renamed in the Finder since), and this instance's own (its chats while no project is open;
         // kept in the session, <CHAT instance>; no two live processors of this process hold one: Processor.cpp's
@@ -509,6 +524,47 @@ namespace playground
                            std::string& why);
         bool saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
                            SavedVersion& saved, std::string& why);
+        // A save in three parts (saveVersionAs runs them in turn; startSave the second on a thread of its own): what it
+        // keeps, taken on the message thread (takeSave); the store's read and write (runSave, any thread); the project
+        // open made the one saved (landSave, the message thread). A factory project's copy is saveCopy's, whole.
+        struct SaveJob
+        {
+            std::string name, lead;
+            std::optional<Journal::Who> who;
+            Sources files;
+            int active = 0;
+            std::string open;                                    // the project open as it was taken, its version and
+            int openVersion = 0;                                 // projectOpens_ then (landSave: none opened since)
+            uint64_t opens = 0;
+            std::string knownId, knownIdName;                    // projectId_ and projectIdName_ as it was taken
+            std::string ownerId;                                 // runSave's: the project saved's id as chatOwnerNow
+                                                                 // finds it, looked up when knownId is not it
+            std::vector<projectstore::Dial> dials;
+            std::vector<projectstore::Answer> answers;
+            projectstore::VersionMidi midi;
+            Assets samples;
+            bool copy = false;                                   // a factory project's copy (saveCopy's arguments)
+            std::string copyFrom, copyAs;
+            std::optional<projectstore::Saved> result;          // runSave's (none: why)
+            std::string why;
+        };
+        SaveJob takeSave(const std::string& name, const std::string& lead, std::optional<Journal::Who> who);
+        void runSave(SaveJob& job);
+        bool landSave(SaveJob& job, SavedVersion& saved, std::string& why);
+        // The editor's save in flight (EditorPort::startSave), the message thread's: its job (the saver thread reads its
+        // inputs and writes its result, then saverDone_), the one asked for meanwhile, and what saving() says.
+        std::unique_ptr<SaveJob> saveJob_;
+        std::thread saver_;
+        std::atomic<bool> saverDone_{ false };
+        std::optional<std::string> saveAgain_;
+        SaveState saveState_;
+        mutable std::mutex saveGateMutex_;                       // setSaveGate (probes): the saver waits while shut
+        std::condition_variable saveGateOpen_;
+        bool saveGateShut_ = false;
+        void endSave(bool ok, const SavedVersion& saved, const std::string& why);
+        void pollSave();
+        void finishSave();                                       // the destructor's: the gate opened, the saver joined,
+                                                                 // it lands, and the one asked for meanwhile saves
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;
@@ -662,6 +718,7 @@ namespace playground
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
         // What the host plays, recorded for Claude (Capture.h; the audio thread writes it in hostBlock and play).
         capture::Recorder capture_;
+        mutable capture::Glance glanced_;                // the recorder as recording() saw it last (the message thread's)
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.

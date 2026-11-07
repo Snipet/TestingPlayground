@@ -11,6 +11,7 @@
 //           one of the notes; a racing wheel's fields off rest (steering, throttle, gear, buttons; the brake at rest
 //           left out); the CPU per block; the text and the JSON; the meters' readers raised while it listens and back
 //           after
+//   MONO    an instrument's: a #pragma mono program's voices are one at a time (of 1: mono), where LISTEN's are of 16
 //   BYPASS  the host's bypass: listen says so
 //   SILENT  a host that calls nothing: listen says the host is not calling the plugin, and measures nothing
 //   LINK    through the socket: a listen of 5 s, get_status answered meanwhile (before the listen's reply), then a cancel
@@ -346,6 +347,8 @@ PROBE(plugin, live)
             P.eq("listen.velocity", static_cast<int>(midi["velocity_min"]) == 100 && static_cast<int>(midi["velocity_max"]) == 100 ? 1 : 0, 1);
             P.eq("listen.held", midi["held"].size(), 3);
             P.eq("listen.voices_at_once", static_cast<int>(voices["most"]), 3);
+            P.eq("listen.voices_of_sixteen", static_cast<int>(voices["of"]) == pg::Patch::kVoices && voices["mono"].isVoid()
+                                                 && has(t, " at once (of 16), ") ? 1 : 0, 1);
             P.eq("listen.none_stolen_or_dropped", static_cast<int>(voices["steals"]) == 0 && static_cast<int>(voices["dropped"]) == 0 ? 1 : 0, 1);
             const bool atANote = std::fabs(top - 440.0) < 9.0 || std::fabs(top - 523.25) < 10.0 || std::fabs(top - 659.26) < 13.0;
             P.eq("listen.peak_at_a_note", atANote ? 1 : 0, 1);
@@ -376,6 +379,24 @@ PROBE(plugin, live)
         P.eq("listen.text_host", has(t, "Host: 100.0 BPM, playing at bar 2") && has(t, "7/8; 48 kHz, blocks up to 256 samples; not bypassed") ? 1 : 0, 1);
         P.eq("listen.text_plays_the_editor", has(t, "What plays is the editor's files.") ? 1 : 0, 1);
         P.eq("listen.readers_back", readersAfter == 0 && p.meterReaders() == 0 ? 1 : 0, 1);
+    }
+
+    // ---- MONO: a mono program's voices, one at a time -------------------------------------------------------------------
+    if constexpr (kInstrument)
+    {
+        P.eq("mono.compiles", load(p, pg::singleFile("#pragma mono\n" + listenProgram())) ? 1 : 0, 1);
+        Host host(p);
+        host.start();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const std::string j = listen(0.8, true);
+        host.end();
+        const juce::var voices = juce::JSON::parse(juce::String::fromUTF8(j.c_str()))["voices"];
+        std::printf("listen, a mono program's voices: %s\n", juce::JSON::toString(voices, true).toRawUTF8());
+        P.eq("mono.one_voice", static_cast<int>(voices["of"]) == 1 && voices["mono"].toString() == "always"
+                                   && static_cast<int>(voices["most"]) >= 1 ? 1 : 0, 1);
+        const std::string t = listen(0.2, false);
+        P.eq("mono.text", has(t, " at once (of 1: mono), ") ? 1 : 0, 1);
+        P.eq("mono.back", load(p, pg::singleFile(listenProgram())) ? 1 : 0, 1);
     }
 
     // ---- BYPASS and SILENT ---------------------------------------------------------------------------------------------

@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <tuple>
 
 namespace playground::scenario
 {
@@ -35,6 +36,15 @@ namespace playground::scenario
 
     bool captured(ChatHost& host, Captured& out, std::string& why, double from, double to)
     {
+        measure::Request part;
+        part.captureFrom = from;
+        part.captureTo = to;
+        return captured(host, out, why, part);
+    }
+
+    bool captured(ChatHost& host, Captured& out, std::string& why, const measure::Request& part)
+    {
+        double from = part.captureFrom, to = part.captureTo;
         const capture::Reply reply = host.chatCapture(capture::Action::take, {});
         if (reply.take == nullptr)
         {
@@ -44,6 +54,31 @@ namespace playground::scenario
             return false;
         }
         const capture::Take& t = *reply.take;
+        // The user's marks the part names, at their times in the take.
+        for (const auto& [mark, into, key] : { std::tuple<int, double*, const char*>{ part.captureFromMark, &from, "from" },
+                                               { part.captureToMark, &to, "to" } })
+        {
+            if (mark <= 0)
+                continue;
+            const int wanted = mark;
+            const auto m = std::find_if(t.marks.begin(), t.marks.end(), [wanted](const capture::Mark& x) { return x.number == wanted; });
+            if (m == t.marks.end())
+            {
+                std::string have;
+                for (const capture::Mark& x : t.marks)
+                    have += (have.empty() ? "" : ", ") + ("m" + std::to_string(x.number));
+                why = std::string(key) + " is m" + std::to_string(mark) + ", but the recording "
+                    + (have.empty() ? std::string("has no marks") : "has " + have)
+                    + (t.marksBefore > 0 ? " (" + std::to_string(t.marksBefore) + " fell before the part it kept)" : std::string());
+                return false;
+            }
+            *into = static_cast<double>(m->sample) / t.rate;
+        }
+        if (part.captureFromMark > 0 && part.captureToMark > 0 && !(to > from))
+        {
+            why = "to's mark is not after from's";
+            return false;
+        }
         capture::Replay replay;
         if (!capture::replayOf(t, from, to, replay, why))
         {
@@ -123,7 +158,7 @@ namespace playground::scenario
             Captured c;
             if (recording == nullptr)
             {
-                if (!captured(host, c, why, r.captureFrom, r.captureTo))
+                if (!captured(host, c, why, r))
                     return false;
                 recording = &c;
             }

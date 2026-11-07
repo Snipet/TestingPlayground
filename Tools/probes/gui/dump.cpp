@@ -22,6 +22,8 @@
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen, the line that its chats never go with it;
 //                        .export.factory.png a factory project's, read-only
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.recording.png the capture tool recording for Claude: REC, its seconds and two marks in the status bar,
+//                        Mark beside them; .recording.paper.png
 //   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
 //                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
 //   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
@@ -97,12 +99,15 @@
 //             asking nothing, which runs with no note; over sixteen tabs of other files, its own are all that is left
 //   PROJECTS  (a folder of the probe's own) the PROJECTS pill opens the card, the program's title in its field; a name
 //             typed and Return save the program and its dials as a new project: the card closes, the status says so,
-//             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2, and again nothing
-//             new; two more projects; a preset saved in the one open (the card opened for a preset: its field "Preset
+//             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2 (off the message
+//             thread: held before the store's work, the status says SAVING MY PATCH..., the pill still EDITED:
+//             gui.dump.saving.png), and again nothing new; two more projects; a preset saved in the one open (the card opened for a preset: its field "Preset
 //             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
-//             version to it; Delete asks, then deletes a project, and a version; Escape closes. FACTORY: the factory
+//             version to it; Delete asks, then deletes a project, and a version; a save of the editor's landing while
+//             Delete asks leaves the question when it changes nothing the card shows, and withdraws it (saying the
+//             save did) when it adds a version; Escape closes. FACTORY: the factory
 //             projects' group on top, by name, the user's after it under UNCATEGORISED; a click on its header folds
 //             it, choosing nothing, another opens it; one chosen (not the one open), its one version, the field left
 //             at the project open's (Save version) with a line saying to open it first, Delete refused (it says so);
@@ -116,6 +121,11 @@
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
 //             accessibility title saying what it means) and its load's text no longer says FROZEN
+//   RECORD    the capture tool's recorder armed (as its arm arms it): before any block, REC waiting and Mark shown but
+//             not taking a click; once blocks play, REC with the seconds recorded; Mark (a click) and Cmd-Shift-M mark
+//             the moment (the status confirms "MARKED M2"), REC counts them, and the take keeps both, numbered in order,
+//             each within a block of the samples played when it was made; Mark's accessibility title says what it
+//             does; stopped (the take kept), the notice goes and Cmd-Shift-M is no key of the panel's
 //   STOPPED   a program whose process never ends once it plays (its loop budget: Patch.h), run: once blocks play it
 //             stops, the status says so and that the program before plays again, which the processor plays (its
 //             files), and the problems list has the message at process's line; one that writes outside its array (its
@@ -1581,6 +1591,12 @@ PROBE(gui, dump)
             host.click(at.x, at.y);
             host.settle();
         };
+        // A save (Cmd-S, PROJECTS' Save) reads and writes the project's file off the message thread: it lands at the
+        // processor's poll, and the Panel says so at its next frame.
+        const auto saved = [&] {
+            processor.settle();
+            host.tick(2);
+        };
         const auto versionsOf = [](const std::string& name) {
             const std::optional<pg::projectstore::Project> p = pg::projectstore::load(name);
             return p ? static_cast<int64_t>(p->versions.size()) : int64_t{ -1 };
@@ -1601,6 +1617,7 @@ PROBE(gui, dump)
         typeText(host, "My Patch");
         host.keys("return");
         host.tick(1);
+        saved();
         P.eq("projects.saved_closes", !browser.isOpen() && pg::projectstore::exists("My Patch") ? 1 : 0, 1);
         P.eq("projects.status_says", panel.statusText().find("PROJECT SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
         P.eq("projects.pill_names_it", panel.projectText() == "PROJECT  MY PATCH  V1" ? 1 : 0, 1);
@@ -1610,13 +1627,21 @@ PROBE(gui, dump)
         typeText(host, " ");
         host.tick(2);
         P.eq("projects.edited", panel.projectText() == "PROJECT  MY PATCH  V1  EDITED" ? 1 : 0, 1);
+        // Held before the store's work (Processor::setSaveGate), the save in flight shows: SAVING, the pill as it was.
+        processor.setSaveGate(true);
         host.keys("cmd+s");
         host.tick(2);
+        std::printf("cmd-s, in flight: %s / %s\n", panel.statusText().c_str(), panel.projectText().c_str());
+        P.eq("projects.cmd_s_in_flight", panel.statusText().find("SAVING MY PATCH...") != std::string::npos
+                                             && panel.projectText() == "PROJECT  MY PATCH  V1  EDITED" && versionsOf("My Patch") == 1 ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.saving.png", "saving");
+        processor.setSaveGate(false);
+        saved();
         std::printf("cmd-s: %s / %s\n", panel.statusText().c_str(), panel.projectText().c_str());
         P.eq("projects.cmd_s", panel.statusText().find("SAVED: MY PATCH V2") != std::string::npos
                                    && panel.projectText() == "PROJECT  MY PATCH  V2" && versionsOf("My Patch") == 2 ? 1 : 0, 1);
         host.keys("cmd+s");
-        host.tick(2);
+        saved();
         P.eq("projects.cmd_s_nothing_new", panel.statusText().find("NOTHING NEW TO SAVE: MY PATCH V2") != std::string::npos
                                                && versionsOf("My Patch") == 2 ? 1 : 0, 1);
         // DRAW: the status's notice runs out (4 s) with no input: that frame draws (Panel.h "Unchanged frames").
@@ -1640,6 +1665,7 @@ PROBE(gui, dump)
             typeText(host, name);
             host.keys("return");
             host.tick(1);
+            saved();
         }
         P.eq("projects.three_saved", static_cast<int64_t>(pg::projectstore::list().size()), 3);
         // A preset of the project open (Zebra Pad).
@@ -1688,6 +1714,7 @@ PROBE(gui, dump)
         click(browser.places(W, H).save);
         P.eq("projects.add_asks", browser.isOpen() && browser.why().find("Add version") != std::string::npos ? 1 : 0, 1);
         click(browser.places(W, H).save);
+        saved();
         P.eq("projects.added", !browser.isOpen() && versionsOf("zebra pad") == 2 && pg::projectstore::list().size() == 3 ? 1 : 0, 1);
         // Delete: a project, then a version, each asked first; Escape closes.
         host.click(open.x, open.y);
@@ -1702,6 +1729,35 @@ PROBE(gui, dump)
         click(browser.places(W, H).remove);
         click(browser.places(W, H).remove);
         P.eq("projects.version_deleted", versionsOf("My Patch") == 1 && browser.versionList().size() == 1 ? 1 : 0, 1);
+        // A save of the editor's lands while Delete asks (the code window's Cmd-S, through the port): one that changes
+        // nothing the card shows leaves the question standing; one that adds a version withdraws it, saying the save
+        // changed the lists (never Claude), and deletes nothing.
+        {
+            clickRow(BL::projects, browser.rowOf("My Patch"));
+            click(browser.places(W, H).remove);
+            const bool asked = browser.removeLabel() == "Delete it";
+            const std::string openName = port.project().name;
+            const int openVersion = port.project().version;
+            std::string why;
+            const bool same = port.startSave(openName, why);
+            saved();
+            std::printf("save lands, nothing new, Delete asked: %s / [%s] / %s\n", browser.removeLabel().c_str(),
+                        browser.why().c_str(), panel.statusText().c_str());
+            P.eq("projects.save_lands_question_stands", asked && same && browser.isOpen() && port.project().version == openVersion
+                                                            && browser.removeLabel() == "Delete it"
+                                                            && browser.why().find("The lists changed") == std::string::npos ? 1 : 0, 1);
+            pg::Draft d = port.draft();
+            d.files[0].text += "\n// a line the saved version lacks\n";
+            port.setDraft(d);
+            const bool more = port.startSave(openName, why);
+            saved();
+            std::printf("save lands, a version more, Delete asked: %s / [%s]\n", browser.removeLabel().c_str(), browser.why().c_str());
+            P.eq("projects.save_lands_question_withdrawn", more && browser.isOpen() && port.project().version == openVersion + 1
+                                                               && browser.removeLabel() == "Delete"
+                                                               && browser.why().find("your save finished") != std::string::npos
+                                                               && browser.why().find("Claude") == std::string::npos
+                                                               && pg::projectstore::exists("My Patch") ? 1 : 0, 1);
+        }
         // FACTORY: its group on top (its header, then the factory projects by name), the user's two after it under
         // UNCATEGORISED.
         {
@@ -1754,6 +1810,7 @@ PROBE(gui, dump)
                 clickRow(BL::projects, browser.rowOf(first));
                 const std::size_t projectsBefore = pg::projectstore::list().size();
                 click(browser.places(W, H).save);
+                saved();
                 std::printf("factory chosen, Save: %s\n", panel.statusText().c_str());
                 P.eq("factory.save_keeps_program", !browser.isOpen() && pg::projectstore::list().size() == projectsBefore
                                                        && !pg::projectstore::exists(pg::ownName(first))
@@ -1938,6 +1995,91 @@ PROBE(gui, dump)
             funkgui::UiPreferences::get().setTheme(0);
         }
         processor.compiler().setFreezing(true);                  // back to its own delay
+    }
+
+    // RECORD: the capture tool's recorder, armed as its arm arms it (mode last); the status bar's REC and Mark.
+    {
+        constexpr double kRate = 48000.0;
+        constexpr int kBlock = 256;
+        processor.prepareToPlay(kRate, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        const auto blocks = [&](int count) {
+            for (int k = 0; k < count; ++k)
+            {
+                juce::MidiBuffer midi;
+                buffer.clear();
+                processor.processBlock(buffer, midi);
+            }
+        };
+        const auto has = [](const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; };
+        P.eq("record.off", panel.recordShown() ? 0 : 1, 1);
+        const pg::capture::Reply armed = processor.recorder().act(pg::capture::Action::arm, {});
+        P.eq("record.armed", armed.armedNow ? 1 : 0, 1);
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s\n", panel.recordText().c_str());
+        P.eq("record.waiting", panel.recordShown() && panel.recordText() == "REC   WAITING TO START" ? 1 : 0, 1);
+        std::string why;
+        P.eq("record.waiting_no_mark", port.markRecording(why) ? 0 : 1, 1);
+        blocks(100);                                             // 25,600 samples: 0.53 s
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s\n", panel.recordText().c_str());
+        P.eq("record.shown", panel.recordText() == "REC   0.5 S" ? 1 : 0, 1);
+        const funkgui::Point mark = panel.centreOfMark();
+        host.click(mark.x, mark.y);                              // m1 at 25,600
+        host.tick(1);
+        P.eq("record.click_marks", has(panel.statusText(), "MARKED M1") ? 1 : 0, 1);
+        blocks(60);
+        host.keys("cmd+shift+m");                                // m2 at 40,960
+        host.tick(1);
+        P.eq("record.key_marks", has(panel.statusText(), "MARKED M2") ? 1 : 0, 1);
+        blocks(40);
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s; status: %s\n", panel.recordText().c_str(), panel.statusText().c_str());
+        P.eq("record.counts", panel.recordText() == "REC   1.1 S   2 MARKS" ? 1 : 0, 1);
+        const funkgui::PrimList& frame = host.draw();
+        P.ge("record.drawn", countTag(frame, pg::ui::kRecordTag), 2.0);   // the dot and the words
+        P.eq("record.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        bool titled = false;
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        for (const funkgui::A11yItem& it : items)
+            titled = titled || (it.bounds.contains(mark) && it.title == "Mark this moment in the recording for Claude");
+        P.eq("record.a11y_title", titled ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.recording.png", "recording");
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.setZoom({ 100, 125, 150, 200 }, 100);
+            paperHost.tick(8);
+            paperHost.settle();
+            P.eq("record.paper_shown", paper.recordShown() ? 1 : 0, 1);
+            // Mark clear of the zoom's pill, which shows once the host offers its steps (after the Panel's first layout).
+            const funkgui::Point m = paper.centreOfMark(), z = paper.centreOfZoom();
+            std::printf("record, paper: Mark at %.1f, the zoom at %.1f\n", static_cast<double>(m.x), static_cast<double>(z.x));
+            P.ge("record.clear_of_zoom", static_cast<double>(z.x - m.x), 60.0);
+            writePng(P, paperHost, "gui.dump.recording.paper.png", "recording.paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        const pg::capture::Reply stopped = processor.recorder().act(pg::capture::Action::stop, {});
+        const std::vector<pg::capture::Mark> marks = stopped.take != nullptr ? stopped.take->marks : std::vector<pg::capture::Mark>{};
+        for (const pg::capture::Mark& m : marks)
+            std::printf("mark m%d at sample %llu\n", m.number, static_cast<unsigned long long>(m.sample));
+        const auto near = [](uint64_t at, uint64_t want) { return at + kBlock >= want && at <= want + kBlock; };
+        P.eq("record.take_marks", marks.size() == 2 && marks[0].number == 1 && marks[1].number == 2
+                                      && near(marks[0].sample, 100 * kBlock) && near(marks[1].sample, 160 * kBlock) ? 1 : 0, 1);
+        host.tick(8);
+        host.settle();
+        P.eq("record.gone_when_kept", panel.recordShown() ? 0 : 1, 1);
+        funkgui::KeyEvent cmdShiftM;
+        cmdShiftM.ch = U'm';
+        cmdShiftM.mods.cmd = true;
+        cmdShiftM.mods.shift = true;
+        P.eq("record.key_idle", !panel.key(cmdShiftM) && processor.recorder().act(pg::capture::Action::take, {}).take->marks.size() == 2 ? 1 : 0, 1);
+        processor.recorder().act(pg::capture::Action::forget, {});
     }
 
     // STOPPED: a program whose process never ends, run while blocks play (Compiler.h, "A program that stops"): it

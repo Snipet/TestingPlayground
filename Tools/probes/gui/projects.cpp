@@ -43,6 +43,9 @@
 //   EXPORT    a project's category goes out with its export and comes back with its import (.fmpack and .zip); the
 //             factory projects carry theirs (their info's); EXPORT offers a project's own category as a pill, and
 //             lights the kind's for one kept in another case (writing nothing)
+//   READS     PROJECTS and EXPORT read the store's cache: a project another process wrote (a version more, then its
+//             author) is read by the store's Reader alone, none on the message thread, and shows once read (its new
+//             version first in PROJECTS; EXPORT's fields filled, then nothing written as it closes)
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -792,6 +795,69 @@ PROBE(gui, projects)
         card.close();
         host.settle();
         P.eq("export.case_kept", port.projectInfo("Night Choir").category == gr::lower(c2) ? 1 : 0, 1);
+    }
+
+    // ---- READS: PROJECTS and EXPORT read the store's cache; a file another process wrote, its Reader -------------------
+    {
+        // Another process writes "Sketch 3": a version more and its info's author. Neither card reads the file on the
+        // message thread (its parses all the Reader's), and each shows it once the Reader has it (poll()).
+        const juce::File f = folder.getChildFile("Sketch 3.fmproject");
+        const auto rewrite = [&](const std::function<void(juce::var&)>& change) {
+            juce::var root = juce::JSON::parse(f.loadFileAsString());
+            change(root);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));   // its time moves on a coarse clock too
+            return f.replaceWithText(juce::JSON::toString(root));
+        };
+        int latest = 0;
+        const bool wrote = rewrite([&](juce::var& root) {
+            if (juce::Array<juce::var>* versions = root["versions"].getArray(); versions != nullptr && !versions->isEmpty())
+            {
+                juce::var v = versions->getLast().clone();
+                latest = static_cast<int>(v["number"]) + 1;
+                v.getDynamicObject()->setProperty("number", latest);
+                v.getDynamicObject()->setProperty("note", "written elsewhere");
+                versions->add(v);
+            }
+        });
+        const auto waitFor = [&](const std::function<bool()>& done) {
+            for (int k = 0; k < 2000 && !done(); ++k)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                host.tick(1);
+            }
+            return done();
+        };
+        const int parsed0 = pg::projectstore::parses(), reader0 = pg::projectstore::readerParses();
+        panel.openProjects();
+        host.settle();
+        b.chooseProjectNamed("Sketch 3", W, H);               // shown first: a filter off, its group open
+        host.settle();
+        const bool shown = waitFor([&] {
+            return b.chosenRead() && !b.versionList().empty() && b.versionList().front().number == latest;
+        });
+        const int onThread = (pg::projectstore::parses() - parsed0) - (pg::projectstore::readerParses() - reader0);
+        std::printf("reads: PROJECTS, %d file(s) read on the message thread, %d by the Reader\n", onThread,
+                    pg::projectstore::readerParses() - reader0);
+        P.eq("reads.projects_setup", wrote && latest > 1 ? 1 : 0, 1);
+        P.eq("reads.projects_none_on_the_message_thread", onThread, 0);
+        P.eq("reads.projects_shown_once_read", shown && b.versionList().front().note == "written elsewhere" ? 1 : 0, 1);
+        b.close();
+        host.settle();
+        const bool wroteInfo = rewrite([](juce::var& root) {
+            if (auto* info = root["info"].getDynamicObject())
+                info->setProperty("author", "Elsewhere");
+        });
+        const int parsed1 = pg::projectstore::parses(), reader1 = pg::projectstore::readerParses();
+        pg::ui::ExportCard& card = panel.exportCard();
+        card.open("Sketch 3");
+        host.settle();
+        const bool filled = waitFor([&] { return !card.reading() && card.info().author == "Elsewhere"; });
+        P.eq("reads.export_none_on_the_message_thread",
+             (pg::projectstore::parses() - parsed1) - (pg::projectstore::readerParses() - reader1), 0);
+        P.eq("reads.export_filled_once_read", wroteInfo && filled ? 1 : 0, 1);
+        card.close();
+        host.settle();
+        P.eq("reads.export_nothing_written", port.projectPolled("Sketch 3").info.author == "Elsewhere" ? 1 : 0, 1);
     }
 
     pg::projectstore::setDirectoryForTests({});

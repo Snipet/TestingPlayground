@@ -314,6 +314,7 @@ namespace playground
             // After the source, in any order: a range (two numbers), `as` and a name, a "label"; a number's unit=,
             // decimals= and scale=.
             bool ranged = false, named = false, labelled = false, extra = false;
+            bool unitGiven = false;                          // unit= said, "" too: it beats the field's ui::unit
             const Token* format = nullptr;                   // the first of a number's unit=, decimals=, scale=
             for (std::size_t k = 2; k < l.words.size(); ++k)
             {
@@ -330,11 +331,12 @@ namespace playground
                         else
                         {
                             d.unit = t.value;
+                            unitGiven = true;
                             if (d.unit.size() > sizeof(Control::unit) - 1)
                             {
                                 noteAt(l, "the unit \"" + d.unit + "\" is cut to " + std::to_string(sizeof(Control::unit) - 1)
                                               + " characters");
-                                d.unit.resize(sizeof(Control::unit) - 1);
+                                d.unit = cutText(d.unit, sizeof(Control::unit) - 1);
                             }
                         }
                     }
@@ -454,7 +456,7 @@ namespace playground
                     d.label = fit(look.label, kMaxDialLabel, "label");
                 if (d.kind == DisplayKind::number)
                 {
-                    if (d.unit.empty() && !look.unit.empty())
+                    if (d.unit.empty() && !unitGiven && !look.unit.empty())
                         d.unit = fit(look.unit, sizeof(Control::unit) - 1, "unit");
                     if (d.decimals < 0)
                         d.decimals = look.decimals;
@@ -507,7 +509,7 @@ namespace playground
                     if (s.title.size() > kMaxSectionTitle)
                     {
                         noteAt(l, "the title \"" + s.title + "\" is cut to " + std::to_string(kMaxSectionTitle) + " characters");
-                        s.title.resize(kMaxSectionTitle);
+                        s.title = cutText(s.title, kMaxSectionTitle);
                     }
                 }
                 for (; k < w.size(); ++k)
@@ -570,7 +572,7 @@ namespace playground
                 if (label.size() > kMaxDialLabel)
                 {
                     noteAt(l, "the label \"" + label + "\" is cut to " + std::to_string(kMaxDialLabel) + " characters");
-                    label.resize(kMaxDialLabel);
+                    label = cutText(label, kMaxDialLabel);
                 }
                 spec.labels[static_cast<std::size_t>(c)] = label;
             }
@@ -672,7 +674,7 @@ namespace playground
                     if (n.size() > kMaxOptionLabel)
                     {
                         noteAt(l, "the option \"" + n + "\" is cut to " + std::to_string(kMaxOptionLabel) + " characters");
-                        n.resize(kMaxOptionLabel);
+                        n = cutText(n, kMaxOptionLabel);
                     }
                     names.push_back(std::move(n));
                 }

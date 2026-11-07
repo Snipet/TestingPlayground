@@ -1000,7 +1000,7 @@ namespace
                                                         { "description", "The part: start (the default), large-program, "
                                                                          "interface, library, library:<file>, "
                                                                          "library:<file>:code, debugging, examples, "
-                                                                         "projects, circuits or all" } }) } })));
+                                                                         "projects, circuits, cheatsheet or all" } }) } })));
             out.add(sandboxDefinition());
             listedPlain_ = tools.isVoid();
             if (const juce::Array<juce::var>* a = tools.getArray())

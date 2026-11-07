@@ -3853,9 +3853,8 @@ namespace playground
         return std::string(mcp::guide::kOutside) + "\n\n" + "You are driving " + product::kName + " (an " + (kInstrument ? "instrument" : "effect")
              + " plugin) through MCP, from Claude Desktop, as its own chat would: the tools are the chat's, but ask_user and "
                "ask_planner (ask the user here instead) and the web tools (use your own). The user hears the plugin in "
-               "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
-               "use. The plugin does not send you its state with each message, as it does its own chat (its "
-               "<plugin_state>): call get_status for the files, the dials and the last run, and read_file before editing a file. "
+               "their DAW and sees your work in its editor. The plugin does not send you its state with each message, as it "
+               "does its own chat: call get_status for the files, the dials and the last run, and read_file before editing a file. "
                "A call without `instance` goes to the target, the instance the user chose in the plugin, else the only "
                "one open (list_instances says which); for another, pass `instance`: the one meant, by its name (\""
              + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the user's words. "
@@ -3865,8 +3864,10 @@ namespace playground
              + ", at the end of the part that needs it; and a setting described in one tool's schema without a number is "
                "not described again in a later one's (a check's and tune_dials' render settings are as measure_output's, "
                "their goals as set_checks', whose metric lists the names tune_dials' takes). "
-               "What follows is the guide the plugin's chat works from, but for what only that chat has.\n\n"
+               "The rest is the plugin's chat's guide, less what only it has.\n\n"
              + guidePrompt() + "\n" + mcp::guide::kNotes + "\n\n" + notes
+             // The cheat sheet (part "cheatsheet"): MCP's alone, the plugin's chat has the whole prompt.
+             + "\n" + cheatSheet()
              // Last, in part "all" alone (every other part ends before it): the lines only the plugin's chat needs.
              + "\n" + mcp::guide::kChatOnly + "\n\n"
                "The plugin's own chat also works from these lines of How you work; they are not for you here (none of what "

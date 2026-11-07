@@ -1235,7 +1235,7 @@ namespace playground
                     if (n.size() > kMaxOptionLabel)
                     {
                         note(a, "the name \"" + n + "\" is cut to " + std::to_string(kMaxOptionLabel) + " characters");
-                        n.resize(kMaxOptionLabel);
+                        n = cutText(n, kMaxOptionLabel);
                     }
                     names.push_back(std::move(n));
                 }

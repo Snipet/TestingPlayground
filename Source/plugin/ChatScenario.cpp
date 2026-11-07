@@ -352,15 +352,34 @@ namespace playground::scenario
             if (sc.hasProperty("from") || sc.hasProperty("to"))
             {
                 double from = 0.0, to = -1.0;
+                int fromMark = 0, toMark = 0;
                 if (!r.fromCapture)
                     return in.fail(sc.hasProperty("from") ? "from" : "to", std::string("a part of the recording: with ")
                                                                          + (kInstrument ? "phrase" : "input") + " \"capture\"");
-                if (!in.num(sc, "from", "from", 0.0, 3600.0, from) || !in.num(sc, "to", "to", 0.0, 3600.0, to))
+                // A time in seconds of the recording, or one of the user's marks in it by its name ("m2").
+                const auto markOf = [&](const char* key, int& mark) {
+                    const juce::var v = sc[key];
+                    if (!v.isString())
+                        return true;
+                    const juce::String word = v.toString().trim();
+                    if (!(word.startsWithIgnoreCase("m") && word.length() > 1 && word.substring(1).containsOnly("0123456789")
+                          && word.substring(1).getIntValue() >= 1 && word.substring(1).getIntValue() <= 999))
+                        return in.fail(key, "seconds of the recording, or one of the user's marks by its name (\"m1\")");
+                    mark = word.substring(1).getIntValue();
+                    return true;
+                };
+                if (!markOf("from", fromMark) || !markOf("to", toMark))
                     return false;
-                if (to >= 0.0 && to <= from)
+                if ((fromMark == 0 && !in.num(sc, "from", "from", 0.0, 3600.0, from)) || (toMark == 0 && !in.num(sc, "to", "to", 0.0, 3600.0, to)))
+                    return false;
+                if (fromMark == 0 && toMark == 0 && to >= 0.0 && to <= from)
                     return in.fail("to", "after from");
+                if (fromMark > 0 && toMark > 0 && toMark <= fromMark)
+                    return in.fail("to", "a mark after from's");
                 r.captureFrom = from;
                 r.captureTo = to;
+                r.captureFromMark = fromMark;
+                r.captureToMark = toMark;
             }
             return true;
         }();
@@ -423,9 +442,13 @@ namespace playground::scenario
             o->setProperty("block", r.block);
         if (!kInstrument && r.fromCapture)
             o->setProperty("input", "capture");
-        if (r.fromCapture && r.captureFrom > 0.0)
+        if (r.fromCapture && r.captureFromMark > 0)
+            o->setProperty("from", "m" + juce::String(r.captureFromMark));
+        else if (r.fromCapture && r.captureFrom > 0.0)
             o->setProperty("from", r.captureFrom);
-        if (r.fromCapture && r.captureTo >= 0.0)
+        if (r.fromCapture && r.captureToMark > 0)
+            o->setProperty("to", "m" + juce::String(r.captureToMark));
+        else if (r.fromCapture && r.captureTo >= 0.0)
             o->setProperty("to", r.captureTo);
         else if (!kInstrument && r.signal >= 0 && r.signal < 5)
             o->setProperty("input", kInputs[r.signal]);
