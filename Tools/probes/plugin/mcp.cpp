@@ -734,9 +734,8 @@ PROBE(plugin, mcp)
             }
         const juce::String circuitLead = editCircuit["description"].toString();
         std::printf("edit_circuit: %s\nview_panel: %s\n", circuitLead.toRawUTF8(), viewPanel["description"].toString().toRawUTF8());
-        P.eq("link.edit_circuit_lead", circuitLead == "Change a .cir netlist the way the schematic editor does: add, place, connect, "
-                                                      "disconnect, set, rename, delete and lay out parts, one command a line in ops, "
-                                                      "applied together as one step the user can undo." ? 1 : 0, 1);
+        P.eq("link.edit_circuit_lead", circuitLead == "Change a .cir netlist's parts and wires as the schematic editor does, one "
+                                                      "command a line in ops, as one step the user can undo." ? 1 : 0, 1);
         P.eq("link.edit_circuit_schema", static_cast<int>(editCircuit["inputSchema"]["properties"]["ops"]["maxItems"]) == 64
                                              && editCircuit["inputSchema"]["properties"]["ops"].hasProperty("description")
                                              && !editCircuit["inputSchema"]["properties"]["name"].hasProperty("description")
