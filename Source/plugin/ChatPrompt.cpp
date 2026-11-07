@@ -874,7 +874,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                  "dial settings for its program, no code, applied at once. Saving and opening projects and presets is the user's: "
                  "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
                  "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
-                 "code is a project of its own. Its A/B plays two versions (or the editor's files and a version) in turn "
+                 "code is a project of its own. The factory projects (FACTORY in both, \"Factory: <name>\") come with the plugin, "
+                 "read-only: saving one makes the user's own copy. Its A/B plays two versions (or the editor's files and a version) in turn "
                  "while the user plays, the louder turned down to match, until they keep one: get_status says when one is on, "
                  "its sides and which plays, and compare renders a version (version:N, project:Name@N).\n";
             s += kCircuits;
