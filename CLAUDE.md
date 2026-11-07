@@ -193,18 +193,24 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `.sh`) is applied to the program that plays with no compile and nothing offered: no crossfade and no fade (the same
   samples, `plugin.reload` GUI), the dials untouched, the status the program's (`panelOnly`, `program` the same,
   `request` the RUN's, `sources` and the recipe's files the new ones, the panel's notes read again:
-  `withPanelNotes`). It is one only while a program plays (the status ok and of the recipe's program, not stopped, no
-  refine held), the other files are the same in their order, a panel file changed and none was read by FMinus
-  (`PanelBase::read`), both sides have the same first .gui file, and every dial means what it meant (type, range,
-  default, taper; an int's option names: the carry keeps a value's name): else it compiles, as does a RUN that changes
-  nothing (it starts the program afresh). `request(files, false)` never edits (the A/B's sides and its end, a
-  recording's restart, a fresh start); the processor asks for edits only while no A/B is on (`panelEdits`), never
-  in compileNow. Displays that read other fields send their taps to the Engine (`Engine::setTaps`: a seqlock and a
-  count, read at the end of the next block as the probes' set is, only for that program; another program reads its
-  own), and the compiler's thread waits for that block (`tapsRead`, unless the audio thread is idle) before the status
-  is out, so the panel reads its fields at once. `Patch::readPanel` is the one reader of a .gui file's panel (compile's
-  too): keep it so. The editor says PANEL UPDATED IN N MS, run_program "Applied ... as the program plays", the journal
-  a note (no dials set).
+  `withPanelNotes`; its `carry` the program's: poll() may see the edit's status and never its compile's, and then
+  `apply` writes that carry, once, and moves previous_run, as for the compile: a panel-only status is a run's unless
+  its program is the one `apply` last took, `plugin.reload` SKIPPED). It is one only while a program plays (the status
+  ok and of the recipe's program, not stopped, no refine held), the other files are the same in their order, a panel
+  file changed and none was read by FMinus (`PanelBase::read`), both sides have the same first .gui file, and every
+  dial means what it meant (type, range, default, taper; an int's option names: the carry keeps a value's name): else
+  it compiles, as does a RUN that changes nothing (it starts the program afresh). `request(files, false)` never edits
+  (the A/B's sides and its end, a recording's restart, a fresh start, a project version opened: `plugin.reload`
+  OPEN); the processor asks for edits only while no A/B is on (`panelEdits`), never in compileNow. Displays that read
+  other fields send their taps to the Engine (`Engine::setTaps`: a seqlock and a count, read at the end of the next
+  block as the probes' set is, only for that program; another program reads its own), and the compiler's thread waits
+  for that block (`tapsRead`, unless the audio thread is idle) before the status is out, so the panel reads its fields
+  at once. The table is named on both sides (`PanelSpec::tapTable`, the edit's count; `Meters::tapTable`, each
+  frame's; 0 the program's own taps), and a Panel reads a frame's fields only when both are its own
+  (`ui::TapsShown`: a frame of its program but another table, its last fields held; else 0), so neither the edit's
+  status reaching the editor late nor the audio thread idle shows a display another's field. `Patch::readPanel` is
+  the one reader of a .gui file's panel (compile's too): keep it so. The editor says PANEL UPDATED IN N MS,
+  run_program "Applied ... as the program plays", the journal a note (no dials set).
 - **A/B listening** (`plugin/ProcessorAb.cpp`, `EditorPort::ab`, `editor/AbCard.h`): a side plays as a run of its
   files (`Compiler::request`), never a second Engine nor a Patch held back, and the draft stays as it is until a side
   is kept (`keepAb`: its files the draft, an open editor merging them as one undo step; a version's the project open);

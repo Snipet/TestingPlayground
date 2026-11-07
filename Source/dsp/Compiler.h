@@ -96,10 +96,13 @@
 // program's compile kept (Patch::readPanel, Recipe::panel), its shaders built as a compile's are, and the status is the
 // program's with the new panel: `panelOnly`, `program` the same, `request` the RUN's, `sources` the new files (the
 // recipe's too, so a refine, a stop's restore of it and the freezer go on from them), `controls` with the .gui file's
-// units and scales, the notes of the panel's files read again; when the displays read other fields (a display or a
-// live= mark or a shader's input added, moved or gone), their taps go to the Engine for that program (Engine::setTaps)
-// and the thread waits for the audio thread's next block to read them (unless it is idle), so the panel that shows the
-// status reads its own fields at once. It is panel-only when all of these hold, and else a compile as any RUN is:
+// units and scales, the notes of the panel's files read again, and `carry` the program's (the processor may have seen
+// this status and not its compile's: it then writes that carry, once, as it would have); when the displays read other
+// fields (a display or a live= mark or a shader's input added, moved or gone), their taps go to the Engine for that
+// program (Engine::setTaps), the panel names that table (PanelSpec::tapTable, as each frame does: Meters::tapTable, so
+// that a panel reads only the fields of its own table, editor/DisplayItem.h's TapsShown), and the thread waits for the
+// audio thread's next block to read them (unless it is idle), so the panel that shows the status reads its own fields
+// at once. It is panel-only when all of these hold, and else a compile as any RUN is:
 //   - a program plays, as the last status says (it compiled; not stopped; no refine compiled and held);
 //   - the files other than the panel's are the same, in the same order, and at least one panel file changed (an
 //     unchanged RUN compiles: it starts the program afresh), none of them one that FMinus read (an #include of it);
@@ -107,8 +110,8 @@
 //     changes where the panel comes from: the #pragma panel lines);
 //   - the .gui file leaves each dial's declaration as it plays: its type, range, default and taper (a taper= changes
 //     what a value means: the carry's), and an int's or a bool's option names (a value keeps its name across a run).
-// request(files, false) never applies one (the A/B's sides, a recording's restart, a fresh start: each wants the
-// program compiled), nor does compileNow.
+// request(files, false) never applies one (the A/B's sides and its end, a recording's restart, a fresh start, a project
+// version opened: each wants the program compiled, as it was saved), nor does compileNow.
 //
 // The dials' carry (Controls.h's DialCarry). Just before it offers a program (a RUN's, compileNow's unless told not to,
 // a refine's), the compiler asks the carrier setDialCarrier gave (the processor's) how the dials come across: what each
