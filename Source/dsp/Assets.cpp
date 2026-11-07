@@ -286,17 +286,31 @@ namespace playground::assets
         return {};
     }
 
-    std::string refusal(std::string_view name, const Audio& audio)
+    std::string refusal(std::string_view name, double rate, int64_t channels, int64_t frames)
     {
         const std::string n(name);
-        if (audio.frames <= 0 || audio.channels <= 0 || !(audio.rate > 0.0))
+        if (frames <= 0 || channels <= 0 || !(rate > 0.0))
             return n + " holds no sound";
-        if (audio.channels > kMaxChannels)
-            return n + " has " + std::to_string(audio.channels) + " channels: a sample has one or two";
-        if (audio.seconds() > kMaxSeconds)
-            return n + " is " + number("%.1f s", audio.seconds()) + " long: a sample may be " + number("%.0f s", kMaxSeconds)
+        if (channels > kMaxChannels)
+            return n + " has " + std::to_string(channels) + " channels: a sample has one or two";
+        if (!(rate >= kMinRate && rate <= kMaxRate))     // a damaged header's rate, or none a sample is made at
+            return n + " says its rate is " + rateText(rate) + ": a sample's is " + rateText(kMinRate) + " to "
+                 + rateText(kMaxRate);
+        const double seconds = static_cast<double>(frames) / rate;
+        if (seconds > kMaxSeconds)
+            return n + " is " + number("%.1f s", seconds) + " long: a sample may be " + number("%.0f s", kMaxSeconds)
                  + " at most";
+        // Within 60 s at 768 kHz, so no product below overflows.
+        if (const auto sound = static_cast<std::size_t>(frames) * static_cast<std::size_t>(channels) * sizeof(float);
+            sound > kMaxSoundBytes)
+            return n + " would take " + sizeText(sound) + " decoded: a sample's sound may take "
+                 + sizeText(kMaxSoundBytes) + " at most";
         return {};
+    }
+
+    std::string refusal(std::string_view name, const Audio& audio)
+    {
+        return refusal(name, audio.rate, audio.channels, audio.frames);
     }
 
     std::shared_ptr<const Set> with(const std::shared_ptr<const Set>& set, std::shared_ptr<const Asset> asset)

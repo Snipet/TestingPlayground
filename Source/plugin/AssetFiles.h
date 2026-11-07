@@ -19,7 +19,9 @@
 namespace playground::assetfiles
 {
     // The sound of a file's bytes (its name in the words), or nothing, with why: a file JUCE's WAV, AIFF and FLAC readers
-    // cannot read, or a sound refusal() refuses (no frames, too many channels, too long).
+    // cannot read, a sound refusal() refuses (no frames, too many channels, a rate outside 1 to 768 kHz, too long, too
+    // large decoded: what the header claims, before anything is allocated), or a WAV or AIFF whose header names more
+    // sound than its bytes hold (damaged, or cut short).
     std::optional<assets::Audio> decode(const std::string& bytes, std::string_view name, std::string& why);
     // A sample of those bytes under `name`, checked against what `to` holds (refusal()'s caps) and decoded: null, with
     // why, when it cannot be one.

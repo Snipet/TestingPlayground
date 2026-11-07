@@ -8,10 +8,11 @@
 // lives: the audio thread only reads it.
 //
 // The sound is planar: channel c's frame i at data[c * frames + i], one or two channels, at most kMaxSeconds. What a
-// program may hold is capped (kMaxFileBytes a file as added, kMaxTotalBytes all of a program's, kMaxAssets of them),
-// and refusal() says in words why a file does not fit. A set of samples is immutable once made (`Assets`, shared):
-// adding, removing or renaming one makes a new set, so a compile, a render and the audio thread each keep the one they
-// started with.
+// program may hold is capped (kMaxFileBytes a file as added, kMaxTotalBytes all of a program's, kMaxAssets of them;
+// a sound's rate, length and size decoded), and refusal() says in words why a file does not fit: a file's header is
+// checked before anything is read or allocated. A set of samples is immutable once made (`Assets`, shared): adding,
+// removing or renaming one makes a new set, so a compile, a render and the audio thread each keep the one they started
+// with.
 #pragma once
 
 #include <atomic>
@@ -26,10 +27,14 @@ namespace playground::assets
 {
     inline constexpr std::size_t kMaxFileBytes = std::size_t{ 8 } << 20;    // a file as added: 8 MB
     inline constexpr std::size_t kMaxTotalBytes = std::size_t{ 32 } << 20;  // a program's in all (a session's, a
-                                                                            // version's, a project's): 32 MB
+                                                                            // version's): 32 MB; a project's files:
+                                                                            // projectstore::kMaxSampleBytes
     inline constexpr std::size_t kMaxAssets = 16;                           // a program's samples
     inline constexpr double kMaxSeconds = 60.0;                             // a sample's length
     inline constexpr int kMaxChannels = 2;
+    inline constexpr double kMinRate = 1000.0, kMaxRate = 768000.0;         // a file's rate: 1 kHz to 768 kHz
+    inline constexpr std::size_t kMaxSoundBytes = std::size_t{ 64 } << 20;  // a sound decoded, as floats: 64 MB (60 s
+                                                                            // of stereo at 96 kHz takes 44 MB)
 
     // Whether `name` is an audio file's name: .wav, .wave, .aif, .aiff or .flac, any case.
     bool isAudioName(std::string_view name);
@@ -102,7 +107,11 @@ namespace playground::assets
     // Why a file of `bytes` named `name` cannot be added to `to` (in place of one of its name): its name, its size, the
     // set's size or count; "" when it can.
     std::string refusal(const Set* to, std::string_view name, std::size_t bytes);
-    // Why a decoded sound cannot be a sample (no frames, more than kMaxChannels, longer than kMaxSeconds); "" when it can.
+    // Why a sound of `frames` frames (each channel's) of `channels` at `rate` cannot be a sample: no frames, more than
+    // kMaxChannels, a rate outside kMinRate to kMaxRate, longer than kMaxSeconds, more than kMaxSoundBytes decoded; ""
+    // when it can. What a file's header claims, checked before anything is read or allocated (AssetFiles.h).
+    std::string refusal(std::string_view name, double rate, int64_t channels, int64_t frames);
+    // The same of a decoded sound.
     std::string refusal(std::string_view name, const Audio& audio);
     // "9.4 MB", "37 KB", "512 bytes"
     std::string sizeText(std::size_t bytes);

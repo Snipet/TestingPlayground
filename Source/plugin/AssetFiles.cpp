@@ -3,6 +3,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include <algorithm>
 #include <atomic>
 
 namespace playground::assetfiles
@@ -17,8 +18,10 @@ namespace playground::assetfiles
         decoded.fetch_add(1, std::memory_order_relaxed);
         const std::string n(name);
         juce::AudioFormatManager formats;
-        formats.registerFormat(new juce::WavAudioFormat(), true);
-        formats.registerFormat(new juce::AiffAudioFormat(), false);
+        auto* const wav = new juce::WavAudioFormat();
+        auto* const aiff = new juce::AiffAudioFormat();
+        formats.registerFormat(wav, true);
+        formats.registerFormat(aiff, false);
         formats.registerFormat(new juce::FlacAudioFormat(), false);
         auto stream = std::make_unique<juce::MemoryInputStream>(bytes.data(), bytes.size(), false);
         const std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(std::move(stream)));
@@ -27,34 +30,40 @@ namespace playground::assetfiles
             why = n + " is not a WAV, AIFF or FLAC file this plugin can read";
             return std::nullopt;
         }
+        // What the header claims, refused before anything is read or allocated: JUCE's readers take a header's rate
+        // and length as given, and give silence for whatever the bytes lack, so a damaged file of 50 bytes could ask
+        // for gigabytes. The rate, the length and the size decoded within the caps (Assets.h's refusal()), and a WAV's
+        // or an AIFF's sound (uncompressed: its frames times its bytes a frame) within the bytes after its least header
+        // (44 bytes, 54), which a file cut short does not have. A FLAC's size decoded is its cap alone.
+        const int64_t length = reader->lengthInSamples;
+        const auto channels = static_cast<int64_t>(reader->numChannels);
+        if (std::string refused = assets::refusal(name, reader->sampleRate, channels, length); !refused.empty())
+        {
+            why = std::move(refused);
+            return std::nullopt;
+        }
+        const bool isWav = reader->getFormatName() == wav->getFormatName();
+        if (isWav || reader->getFormatName() == aiff->getFormatName())
+        {
+            const int64_t frameBytes = std::max<int64_t>(1, channels * static_cast<int64_t>(reader->bitsPerSample) / 8);
+            const auto room = static_cast<int64_t>(bytes.size()) - (isWav ? 44 : 54);
+            if (length > room / frameBytes)
+            {
+                why = n + " is damaged or cut short: its header names more sound than its "
+                    + assets::sizeText(bytes.size()) + " hold";
+                return std::nullopt;
+            }
+        }
         assets::Audio a;
         a.rate = reader->sampleRate;
-        a.channels = static_cast<int>(reader->numChannels);
-        const int64_t length = reader->lengthInSamples;
-        // Refused before it is read: a header that claims more than a sample may hold reads nothing.
-        if (length <= 0 || a.channels <= 0 || !(a.rate > 0.0) || a.channels > assets::kMaxChannels
-            || static_cast<double>(length) > assets::kMaxSeconds * a.rate + 1.0)
-        {
-            a.frames = length > 0 && length < (int64_t{ 1 } << 30) ? static_cast<int>(length) : (length > 0 ? 1 << 30 : 0);
-            why = assets::refusal(name, a);
-            if (why.empty())
-                why = n + " holds no sound";
-            return std::nullopt;
-        }
+        a.channels = static_cast<int>(channels);
         a.frames = static_cast<int>(length);
-        juce::AudioBuffer<float> buffer(a.channels, a.frames);
-        if (!reader->read(&buffer, 0, a.frames, 0, true, a.channels > 1))
+        a.data.resize(static_cast<std::size_t>(a.channels) * static_cast<std::size_t>(a.frames));
+        // Planar, straight into the sound: channel c at data + c * frames.
+        float* planes[assets::kMaxChannels] = { a.data.data(), a.channels > 1 ? a.data.data() + a.frames : nullptr };
+        if (!reader->read(planes, a.channels, 0, a.frames))
         {
             why = n + " could not be read to its end (a damaged file?)";
-            return std::nullopt;
-        }
-        a.data.resize(static_cast<std::size_t>(a.channels) * static_cast<std::size_t>(a.frames));
-        for (int c = 0; c < a.channels; ++c)
-            std::copy_n(buffer.getReadPointer(c), a.frames,
-                        a.data.begin() + static_cast<std::ptrdiff_t>(static_cast<std::size_t>(c) * static_cast<std::size_t>(a.frames)));
-        if (const std::string refused = assets::refusal(name, a); !refused.empty())
-        {
-            why = refused;
             return std::nullopt;
         }
         return a;
