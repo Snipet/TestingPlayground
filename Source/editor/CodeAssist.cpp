@@ -349,7 +349,7 @@ namespace playground::ui
 
     CodeHighlighter::CodeHighlighter(std::shared_ptr<const TypeNames> types, std::shared_ptr<const Conditionals> conditionals,
                                      std::string_view file)
-        : types_(std::move(types)), conditionals_(std::move(conditionals))
+        : types_(std::move(types)), conditionals_(std::move(conditionals)), file_(file)
     {
         if (conditionals_ != nullptr)
             if (const auto f = conditionals_->files.find(file); f != conditionals_->files.end())
@@ -364,11 +364,14 @@ namespace playground::ui
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
         bool inComment = (stateIn & 1u) != 0;
-        uint32_t met = stateIn >> 1;                     // the conditional directives before this line
+        uint32_t met = (stateIn >> 1) & kMetMax;         // the conditional directives before this line
+        uint32_t seen = stateIn >> 17;                   // the uses of the shadows' names before it
         std::vector<lang::Token>& toks = toks_;
         toks.clear();
         lang::lexLine(l, 0, inComment, toks);
-        const auto state = [&] { return (inComment ? 1u : 0u) | (std::min<uint32_t>(met, 0x7FFFFFFFu) << 1); };
+        const auto state = [&] {
+            return (inComment ? 1u : 0u) | (std::min(met, kMetMax) << 1) | (std::min(seen, kSeenMax) << 17);
+        };
         const auto flag = [&](uint32_t k) -> uint8_t {
             return flags_ != nullptr && k < flags_->size() ? (*flags_)[k] : uint8_t{ 0 };
         };
@@ -415,6 +418,15 @@ namespace playground::ui
                 case lang::Tok::unknown:   st = csPlain; break;
                 case lang::Tok::identifier:
                 {
+                    // A name of the shadows (TypeNames): this use's flag, counted whatever its style; 1 is no constant.
+                    bool other = false;
+                    if (types_ != nullptr && !types_->shadows.empty()
+                        && std::binary_search(types_->shadows.begin(), types_->shadows.end(), t.text, std::less<>{}))
+                    {
+                        if (const auto f = types_->shadowed.find(file_); f != types_->shadowed.end() && seen < f->second.size())
+                            other = f->second[seen] != 0;
+                        ++seen;
+                    }
                     const bool call = next != nullptr && next->text == "(";
                     if (prev != nullptr && (prev->text == "." || prev->text == "->"))
                         st = call ? csFunction : csMember;
@@ -424,9 +436,9 @@ namespace playground::ui
                         st = csType;                         // an enumeration's tag
                     else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), t.text, std::less<>{}))
                         st = csType;
-                    else if (types_ != nullptr
+                    else if (types_ != nullptr && !other
                              && std::binary_search(types_->constants.begin(), types_->constants.end(), t.text, std::less<>{}))
-                        st = csConstant;
+                        st = csConstant;                     // a local's, an argument's, ... of its name: plain
                     break;
                 }
                 case lang::Tok::directive:
@@ -697,12 +709,22 @@ namespace playground::ui
         service_.setFiles(files);
         std::vector<std::string> names = service_.typeNames();
         std::vector<std::string> constants = service_.constantNames();
-        if (names == types_->names && constants == types_->constants)
+        std::vector<std::string> shadows = service_.shadowNames();
+        std::map<std::string, std::vector<uint8_t>, std::less<>> shadowed;
+        if (!shadows.empty())
+            for (int i = 0; i < tabs_.count(); ++i)
+                if (fmFile(i))
+                    if (std::vector<uint8_t> flags = service_.shadowed(i); !flags.empty())
+                        shadowed[tabs_.name(i)] = std::move(flags);
+        if (names == types_->names && constants == types_->constants && shadows == types_->shadows && shadowed == types_->shadowed)
             return;
         types_->names = std::move(names);
         types_->constants = std::move(constants);
+        types_->shadows = std::move(shadows);
+        types_->shadowed = std::move(shadowed);
         // The editors keep each line's spans (FunkGui's TextEditor, v0.25.0) and highlight again only the lines an edit
-        // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too).
+        // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too), and
+        // so does a local that came or went with a constant's name (what a use of it is).
         for (int i = 0; i < tabs_.count(); ++i)
         {
             funkgui::TextEditor& e = tabs_.editor(i);
@@ -2603,8 +2625,16 @@ namespace playground::ui
             c.rrect(r.x, r.y, r.w, r.h, 7.0f, p.raised, 1.0f, p.composerEdge);
         };
         const std::vector<funkgui::text::HighlightStyle>& pal = palette_.empty() ? codePalette(th) : palette_;
-        // A line of code, highlighted as the editor does.
-        const auto codeLine = [&](const std::string& text, float x, float top, float maxW, const funkgui::TextStyle& style) {
+        // A line of code, highlighted as the editor does; one wider than maxW cut with "..." where it still fits (a
+        // hover's lines fit already: lang::kHoverWidth), never a piece of it left out further on.
+        const auto codeLine = [&](const std::string& whole, float x, float top, float maxW, const funkgui::TextStyle& style) {
+            std::string text = whole;
+            if (widthOf(text, style) > maxW)
+            {
+                while (!text.empty() && widthOf(text + "...", style) > maxW)
+                    text.pop_back();
+                text += "...";
+            }
             CodeHighlighter hl(types_);
             std::vector<funkgui::text::Span> spans;
             hl.line(text, 0, spans);
@@ -2614,7 +2644,7 @@ namespace playground::ui
                 if (b <= a)
                     return;
                 const std::string piece = text.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a));
-                if (pen - x + widthOf(piece, style) > maxW)
+                if (pen - x + widthOf(piece, style) > maxW + 0.5f)   // (the pieces' widths' sum: a rounding's room)
                     return;
                 c.text(piece.c_str(), pen, top, style, ink);
                 pen += widthOf(piece, style);

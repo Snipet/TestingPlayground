@@ -104,7 +104,24 @@
 //             with both sizes; hover on the field (its attributes in its declaration), on an attribute's name (the
 //             plugin's ui::unit), on `double` and on sqrt (a double's builtin); completion after `[[` (ui::unit); the
 //             highlighter (`double` a type, "dB" a string in an attribute); the formatter leaves it as it is; an
-//             attribute without a namespace is FMinus's warning in the check's messages, and in no symbol's list
+//             attribute without a namespace is FMinus's warning in the check's messages, and in no symbol's list; the
+//             field's hover, 76 columns, on two lines (its second attribute under the first)
+//   ORDER     another module's enumerations and their constants are the file's from their place on, in the order the
+//             compile reads the files (FMinus's error before it, its check clean without the uses before): a use before
+//             module Tables (a function's, a constant's of the top level) neither folds, hovers, goes to nor is offered
+//             (nor its tag after `enum `), one after it does all of these; its occurrences are its list's and the uses
+//             after; a circuit field of the main module sized by a constant of a module after it is unknown; across
+//             files, a function before the #include of the file that holds Tables does not see CH, one after it does
+//   SHADOW    a local, an argument and a field named as a constant of the top level (Patch::check clean): the shadows'
+//             names and each use's flag (Service::shadowed); hover says the local; the highlighter with those flags
+//             colours the local, the argument and the field (their declarations and uses) plain and the constant's own
+//             uses as constants, and a highlighter for a tab the flags are not for colours them all as constants; a
+//             program with no shadow has no flag
+//   PASSES    the constants' folds bounded (lang::kFoldPasses): a chain of 301 constants each naming the one after it
+//             (FMinus's error) folds kFoldPasses of them, a link a pass; 301 in the order the compile reads fold in one
+//   HOVERS    a declaration wider than the card (lang::kHoverWidth): a function of eight parameters on two lines, the
+//             second under its parenthesis, that join back to it; one of forty on kHoverLines lines, the last cut with
+//             " ..."; an unfolded constant of a long expression one line cut with " ..."; a short one as it was
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -122,6 +139,7 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -1967,7 +1985,9 @@ PROBE(fminus, lang)
         P.eq("doubles.local_2d", g != nullptr && g->type == "float[2][3]" ? 1 : 0, 1);
         P.eq("doubles.table_2d", table != nullptr && table->type.find("float[2][3]") != std::string::npos ? 1 : 0, 1);
         const std::optional<lg::Hover> hf = n.hover(0, posOf(text, "level = (float)", 1));
-        P.eq("doubles.hover_field", hf && hf->code == "float level [[ui::unit(\"dB\"), ui::label(\"LEVEL\")]] [[fminus::range(-60, 0)]]" ? 1 : 0, 1);
+        // (76 columns: past the card's kHoverWidth, broken before its second attribute, under the first's `[[`)
+        P.eq("doubles.hover_field", hf && hf->code == "float level [[ui::unit(\"dB\"), ui::label(\"LEVEL\")]]\n"
+                                                      "            [[fminus::range(-60, 0)]]" ? 1 : 0, 1);
         const std::optional<lg::Hover> ha = n.hover(0, posOf(text, "unit(\"dB", 1));
         P.eq("doubles.hover_attribute", ha && ha->code == "[[ui::unit]]" && ha->doc.find("unit") != std::string::npos
                                             && ha->doc.find("trace") != std::string::npos ? 1 : 0, 1);
@@ -2013,6 +2033,240 @@ PROBE(fminus, lang)
         P.eq("doubles.unknown_warned", warned.errors.find("warning: unknown attribute 'range' ignored [-Wunknown-attributes]")
                                            != std::string::npos ? 1 : 0, 1);
         P.eq("doubles.unknown_dropped", dropped != nullptr && dropped->type == "float[4][16]" && dropped->attributes.empty() ? 1 : 0, 1);
+    }
+
+    // ---- ORDER: another module's enumerations and constants are the file's from their place on ------------------------
+    {
+        const std::string init = pg::kExamples[0].source;
+        // Before module Tables: a function reads its CH and its enum Mode's MONO, and a constant of the top level names
+        // CH; after it, the same again.
+        const std::string early = "int early()\n{\n    enum Mode m = MONO;\n    return CH + (int)m;\n}\nenum { EARLY = CH + 1 };\n";
+        const std::string tables = "module Tables\n{\n    enum Mode { MONO, STEREO };\n    enum { CH = 2 };\n    float x;\n};\n";
+        const std::string late = "enum { LATE = CH + 1 };\nint late()\n{\n    enum Mode n = STEREO;\n    return CH - (int)n;\n}\n";
+        const std::string text = init + early + tables + late;
+        const pg::Patch::Result before = pg::Patch::check(pg::singleFile(text));
+        const pg::Patch::Result after = pg::Patch::check(pg::singleFile(init + tables + late));
+        std::printf("order: check with uses before Tables: %s", before.errors.c_str());
+        std::printf("order: check without: %s\n", after.errors.empty() ? "clean" : after.errors.c_str());
+        // (FMinus stops at its first: the tag Mode before its module, "forward references to 'enum' types"; CH alone
+        // before it, below, an undeclared identifier.)
+        P.eq("order.fminus_refuses_before", before.errors.find("program.fm:") != std::string::npos
+                                                && before.errors.find("forward references to 'enum' types") != std::string::npos ? 1 : 0, 1);
+        P.eq("order.fminus_after_clean", after.errors.empty() ? 1 : 0, 1);
+        lg::Service o;
+        o.setFiles(pg::singleFile(text));
+        const auto valueOf = [&](const lg::Service& svc, std::string_view name) -> std::optional<int64_t> {
+            for (const lg::Symbol& x : svc.symbols())
+                if (x.name == name && x.kind == lg::Kind::constant)
+                    return x.value;
+            return std::nullopt;
+        };
+        P.eq("order.fold_before", !valueOf(o, "EARLY") && valueOf(o, "LATE") == 3 ? 1 : 0, 1);
+        const std::optional<lg::Hover> hb = o.hover(0, posOf(text, "CH + (int)m", 1));
+        const std::optional<lg::Hover> ha = o.hover(0, posOf(text, "CH - (int)n", 1));
+        std::printf("order: hover CH before %s, after %s\n", hb ? hb->code.c_str() : "-", ha ? ha->code.c_str() : "-");
+        P.eq("order.hover_before", !hb && ha && ha->code == "CH = 2" ? 1 : 0, 1);
+        const std::optional<lg::Hover> mb = o.hover(0, posOf(text, "Mode m = MONO", 1));
+        const std::optional<lg::Hover> ma = o.hover(0, posOf(text, "Mode n = STEREO", 1));
+        const std::optional<lg::Hover> cb = o.hover(0, posOf(text, "MONO;", 1));
+        P.eq("order.tag_before", !mb && !cb && ma && ma->code == "enum Mode { MONO, STEREO }" ? 1 : 0, 1);
+        const std::optional<lg::Location> db = o.definition(0, posOf(text, "CH + (int)m", 1));
+        const std::optional<lg::Location> da = o.definition(0, posOf(text, "CH - (int)n", 1));
+        P.eq("order.define_before", !db && da && da->at == posOf(text, "CH = 2") ? 1 : 0, 1);
+        const std::vector<lg::Range> uses = o.occurrences(0, posOf(text, "CH = 2", 1));
+        P.eq("order.occurrences_after", static_cast<int64_t>(uses.size()), 3);   // its list's, LATE's, late()'s
+        // Completion: in early() a prefix of CH finds no CH, nor MONO's tag after `enum `; in late() both.
+        const auto completeAt = [&](const std::string& from, const std::string& to) {
+            std::string t2 = text;
+            const std::size_t at = t2.find(from);
+            t2.replace(at, from.size(), to);
+            lg::Pos p;                                   // the end of `to`
+            for (std::size_t k = 0; k < at + to.size(); ++k)
+                p = t2[k] == '\n' ? lg::Pos{ p.line + 1, 0 } : lg::Pos{ p.line, p.col + 1 };
+            lg::Service c;
+            c.setFiles(pg::singleFile(t2));
+            return c.complete(0, p);
+        };
+        const lg::CompletionList c0 = completeAt("    return CH + (int)m;", "    return C");
+        const lg::CompletionList c1 = completeAt("    return CH - (int)n;", "    return C");
+        const lg::CompletionList t0 = completeAt("    enum Mode m = MONO;", "    enum ");
+        const lg::CompletionList t1 = completeAt("    enum Mode n = STEREO;", "    enum ");
+        std::printf("order: offered before %s; after %s; tags before %s; after %s\n", labels(c0).c_str(), labels(c1).c_str(),
+                    labels(t0).c_str(), labels(t1).c_str());
+        P.eq("order.complete_before", item(c0, "CH") == nullptr && item(c1, "CH") != nullptr ? 1 : 0, 1);
+        P.eq("order.complete_tag_before", item(t0, "Mode") == nullptr && item(t1, "Mode") != nullptr ? 1 : 0, 1);
+        // A circuit field of the main module sized by a constant of a module after it: unknown (FMinus refuses it).
+        const char* const kMain = pg::product::kIsInstrument ? "Voice" : "Effect";
+        const std::string circuit = std::string("#include \"screamer.cir\"\nmodule ") + kMain + "\n{\n    Screamer amp[CH];\n};\n" + tables;
+        lg::Service cs;
+        cs.setFiles({ { "program.fm", circuit }, { "screamer.cir", libraryText("screamer.cir") } });
+        const lg::CircuitDials dials = lg::circuitDials(cs, pg::product::kIsInstrument);
+        P.eq("order.circuit_extent_before", dials.bindings.size() == 1 && dials.bindings[0].dims == std::vector<int>{ 0 } ? 1 : 0, 1);
+        // Across files, in the order the compile reads them: a file #included between two functions holds Tables.
+        const std::string two = init + "int early()\n{\n    return CH;\n}\n#include \"tables.fm\"\nint late()\n{\n    return CH;\n}\n";
+        const pg::Sources files{ { "program.fm", two }, { "tables.fm", tables } };
+        lg::Service f;
+        f.setFiles(files);
+        const std::optional<lg::Hover> fb = f.hover(0, posOf(two, "CH;", 1));
+        const std::optional<lg::Hover> fa = f.hover(0, posOf(two, "CH;", 1, 1));
+        const pg::Patch::Result fc = pg::Patch::check(files);
+        std::printf("order: across files: before %s, after %s; check %s", fb ? fb->code.c_str() : "-", fa ? fa->code.c_str() : "-",
+                    fc.errors.c_str());
+        P.eq("order.other_file", !fb && fa && fa->code == "CH = 2" && fc.errors.find("program.fm:") != std::string::npos
+                                     && fc.errors.find("undeclared identifier 'CH'") != std::string::npos ? 1 : 0, 1);
+    }
+
+    // ---- SHADOW: a local, an argument or a field named as a constant is coloured as what it is -------------------------
+    {
+        const std::string text = std::string(pg::kExamples[0].source)
+                               + "enum { GAIN = 2 };\n"
+                                 "float scaled(float x)\n{\n    float GAIN = 0.5f;\n    return GAIN * x;\n}\n"
+                                 "float louder(float x)\n{\n    return GAIN * x;\n}\n"
+                                 "float twice(float GAIN)\n{\n    return GAIN * 2;\n}\n"
+                                 "module Mix\n{\n    float GAIN;\n    float get()\n    {\n        return GAIN;\n    }\n};\n";
+        const pg::Patch::Result check = pg::Patch::check(pg::singleFile(text));
+        std::printf("shadow: check %s\n", check.errors.empty() ? "clean" : check.errors.c_str());
+        P.eq("shadow.check_clean", check.errors.empty() ? 1 : 0, 1);
+        lg::Service sh;
+        sh.setFiles(pg::singleFile(text));
+        const std::vector<uint8_t> flags = sh.shadowed(0);
+        std::string seen;
+        for (const uint8_t x : flags)
+            seen += x != 0 ? '1' : '0';
+        std::printf("shadow: names %zu, flags %s\n", sh.shadowNames().size(), seen.c_str());
+        P.eq("shadow.names", sh.shadowNames() == std::vector<std::string>{ "GAIN" } ? 1 : 0, 1);
+        // GAIN's declaration, scaled's local and its use, louder's use (the constant), twice's argument and its use, Mix's
+        // field and its use in get().
+        P.eq("shadow.flags", seen == "01101111" ? 1 : 0, 1);
+        const std::optional<lg::Hover> hl = sh.hover(0, posOf(text, "GAIN * x", 1));
+        const std::optional<lg::Hover> hc = sh.hover(0, posOf(text, "GAIN * x", 1, 1));
+        P.eq("shadow.hover", hl && hl->doc.find("a local") == 0 && hc && hc->code == "GAIN = 2" ? 1 : 0, 1);
+        // The highlighter, with the service's names and this file's flags (CodeAssist::sync's TypeNames), line by line.
+        auto names = std::make_shared<pg::ui::TypeNames>();
+        names->names = sh.typeNames();
+        names->constants = sh.constantNames();
+        names->shadows = sh.shadowNames();
+        names->shadowed[pg::kProgramName] = flags;
+        const std::vector<std::string_view> ls = lg::splitLines(text);
+        const auto styles = [&](const pg::ui::CodeHighlighter& hl2) {
+            std::vector<std::vector<funkgui::text::Span>> spans(ls.size());
+            uint32_t st = 0;
+            for (std::size_t k = 0; k < ls.size(); ++k)
+                st = hl2.line(ls[k], st, spans[k]);
+            return spans;
+        };
+        const auto styleAt = [&](const std::vector<std::vector<funkgui::text::Span>>& spans, lg::Pos p) -> int {
+            if (p.line < 0)
+                return -1;
+            for (const funkgui::text::Span& sp : spans[static_cast<std::size_t>(p.line)])
+                if (sp.start == p.col && sp.end == p.col + 4)
+                    return sp.style;
+            return pg::ui::csPlain;                      // no span: plain
+        };
+        const auto withFlags = styles(pg::ui::CodeHighlighter(names, {}, pg::kProgramName));
+        const auto stale = styles(pg::ui::CodeHighlighter(names, {}, "other.fm"));
+        P.eq("shadow.highlight_local", styleAt(withFlags, posOf(text, "GAIN = 0.5f")) == pg::ui::csPlain
+                                           && styleAt(withFlags, posOf(text, "GAIN * x")) == pg::ui::csPlain ? 1 : 0, 1);
+        P.eq("shadow.highlight_constant", styleAt(withFlags, posOf(text, "GAIN = 2")) == pg::ui::csConstant
+                                              && styleAt(withFlags, posOf(text, "GAIN * x", 0, 1)) == pg::ui::csConstant ? 1 : 0, 1);
+        P.eq("shadow.highlight_argument_field", styleAt(withFlags, posOf(text, "GAIN)")) == pg::ui::csPlain
+                                                    && styleAt(withFlags, posOf(text, "GAIN * 2")) == pg::ui::csPlain
+                                                    && styleAt(withFlags, posOf(text, "GAIN;\n    float get")) == pg::ui::csPlain
+                                                    && styleAt(withFlags, posOf(text, "GAIN;\n    }")) == pg::ui::csPlain ? 1 : 0, 1);
+        // A tab the flags are not for (as before the index has them): every GAIN a constant, as before shadows were known.
+        P.eq("shadow.highlight_without_flags", styleAt(stale, posOf(text, "GAIN * x")) == pg::ui::csConstant
+                                                   && styleAt(stale, posOf(text, "GAIN * 2")) == pg::ui::csConstant ? 1 : 0, 1);
+        // No shadow: no flag, and a constant's use costs the highlighter's state nothing.
+        lg::Service plain;
+        plain.setFiles(pg::singleFile(std::string(pg::kExamples[0].source) + "enum { GAIN = 2 };\nfloat louder(float x)\n{\n    return GAIN * x;\n}\n"));
+        P.eq("shadow.none", plain.shadowNames().empty() && plain.shadowed(0).empty() ? 1 : 0, 1);
+    }
+
+    // ---- PASSES: the constants' folds bounded --------------------------------------------------------------------------
+    {
+        // B0 = B1 + 1, ..., B299 = B300 + 1, B300 = 0: each names the one after it (FMinus's error), a pass a link; and
+        // F0 = 0, F1 = F0 + 1, ..., F300 = F299 + 1, in the order the compile reads them: one pass.
+        std::string back = "enum\n{\n", forward = "enum\n{\n    F0 = 0,\n";
+        for (int k = 0; k < 300; ++k)
+        {
+            back += "    B" + std::to_string(k) + " = B" + std::to_string(k + 1) + " + 1,\n";
+            forward += "    F" + std::to_string(k + 1) + " = F" + std::to_string(k) + " + 1" + (k + 1 < 300 ? ",\n" : "\n");
+        }
+        back += "    B300 = 0\n};\n";
+        forward += "};\n";
+        lg::Service ps;
+        const auto t0 = std::chrono::steady_clock::now();
+        ps.setFiles(pg::singleFile(std::string(pg::kExamples[0].source) + back + forward));
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        int backFolded = 0, forwardFolded = 0;
+        std::optional<int64_t> last;
+        for (const lg::Symbol& x : ps.symbols())
+            if (x.kind == lg::Kind::constant && x.value)
+            {
+                backFolded += x.name[0] == 'B' ? 1 : 0;
+                forwardFolded += x.name[0] == 'F' ? 1 : 0;
+                if (x.name == "F300")
+                    last = x.value;
+            }
+        std::printf("passes: indexed in %.2f ms; the backward chain %d of 301 folded, the forward %d of 301 (F300 = %s)\n", ms,
+                    backFolded, forwardFolded, last ? std::to_string(*last).c_str() : "-");
+        P.eq("passes.backward_bounded", backFolded, lg::kFoldPasses);
+        P.eq("passes.forward_whole", forwardFolded == 301 && last == 300 ? 1 : 0, 1);
+    }
+
+    // ---- LONG HOVERS: a declaration wider than the card in lines of its own ----------------------------------------------
+    {
+        std::string many = "float many(";
+        for (int k = 0; k < 40; ++k)
+            many += (k == 0 ? "" : ", ") + std::string("float a") + std::to_string(k);
+        many += ")";
+        std::string wide = "enum { WIDE = ";
+        for (int k = 0; k < 60; ++k)
+            wide += "1 + ";
+        wide += "NOPE };\n";
+        const std::string louder = "float louder(float x, float wet, float dry, float left, float right, float spread, float width, float depth)";
+        const std::string text = std::string(pg::kExamples[0].source) + louder + "\n{\n    return x;\n}\n" + many + "\n{\n    return a0;\n}\n" + wide;
+        lg::Service hs;
+        hs.setFiles(pg::singleFile(text));
+        const auto linesOf = [](const std::string& code) {
+            std::vector<std::string> out;
+            for (const std::string_view l : lg::splitLines(code))
+                out.emplace_back(l);
+            return out;
+        };
+        const auto fits = [&](const std::vector<std::string>& ls) {
+            return std::all_of(ls.begin(), ls.end(), [](const std::string& l) { return l.size() <= static_cast<std::size_t>(lg::kHoverWidth); });
+        };
+        // The lines joined again (a break and the blanks after it one space): the declaration as written.
+        const auto rejoined = [](const std::string& code) {
+            std::string out;
+            for (std::size_t k = 0; k < code.size(); ++k)
+                if (code[k] == '\n')
+                {
+                    while (k + 1 < code.size() && code[k + 1] == ' ')
+                        ++k;
+                    out += ' ';
+                }
+                else
+                    out += code[k];
+            return out;
+        };
+        const std::optional<lg::Hover> hl = hs.hover(0, posOf(text, "louder(", 1));
+        const std::vector<std::string> ll = hl ? linesOf(hl->code) : std::vector<std::string>{};
+        std::printf("hovers: louder\n%s\n", hl ? hl->code.c_str() : "-");
+        P.eq("hovers.wrapped", ll.size() == 2 && fits(ll) && ll[1].rfind(std::string(13, ' ') + "float", 0) == 0
+                                   && rejoined(hl->code) == louder ? 1 : 0, 1);
+        const std::optional<lg::Hover> hm = hs.hover(0, posOf(text, "many(", 1));
+        const std::vector<std::string> lm = hm ? linesOf(hm->code) : std::vector<std::string>{};
+        std::printf("hovers: many\n%s\n", hm ? hm->code.c_str() : "-");
+        P.eq("hovers.lines_bounded", lm.size() == static_cast<std::size_t>(lg::kHoverLines) && fits(lm)
+                                         && lm.back().size() > 4 && lm.back().compare(lm.back().size() - 4, 4, " ...") == 0 ? 1 : 0, 1);
+        const std::optional<lg::Hover> hw = hs.hover(0, posOf(text, "WIDE", 1));
+        std::printf("hovers: wide %s\n", hw ? hw->code.c_str() : "-");
+        P.eq("hovers.cut", hw && hw->code.find('\n') == std::string::npos && hw->code.size() <= static_cast<std::size_t>(lg::kHoverWidth)
+                               && hw->code.rfind("WIDE = 1 + 1", 0) == 0 && hw->code.compare(hw->code.size() - 4, 4, " ...") == 0 ? 1 : 0, 1);
+        const std::optional<lg::Hover> hx = hs.hover(0, posOf(text, "x;\n}\nfloat many", 0));
+        P.eq("hovers.short_kept", hx && hx->code == "float x" ? 1 : 0, 1);
     }
     return P.finish();
 }

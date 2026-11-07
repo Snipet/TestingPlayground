@@ -14,7 +14,9 @@
 //   gui.code.conditional.png an #if 0 and an #ifndef DEBUG group dimmed, #ifdef DEBUG's group read, the directives'
 //                            parts, a -Wswitch warning's squiggle and mark after RUN and its row in the problems
 //   gui.code.doubles.png     a module with a double, a 2-D array and a field's attributes: its strings coloured, the
-//                            hover card of the field with its attributes
+//                            hover card of the field with its attributes (on two lines: lang::kHoverWidth)
+//   gui.code.hover_long.png  the hover card of a function of eight parameters, on two lines; a local named as a
+//                            constant drawn plain, the constant's uses in the constants' colour
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -64,6 +66,10 @@
 //             Panel asking for that frame; the same through Claude's write_file while the editor has not the keys
 //             (the check's sync, the files rested, recolours it: no caret rests in it, no pointer hovers it); the Code
 //             view's tick, recording and highlighter costs printed; idle, the Code view asks for no frame
+//   SHADOW    a local named as a constant of the top level: its declaration and its use drawn plain (an identifier's
+//             ink), the constant's declaration and its use in another function in the constants' colour, once the
+//             check's sync has the index; a function of eight parameters hovered: its card's code on two lines, the
+//             second under its parenthesis (gui.code.hover_long.png)
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -1074,6 +1080,60 @@ PROBE(gui, code)
             }
             P.eq("types.write_rehighlighted", code.highlights() != was && drawAsked ? 1 : 0, 1);
             P.eq("types.write_recoloured", inkOf(host.draw(), "Quux") == thing ? 1 : 0, 1);
+        }
+
+        // SHADOW: a local named as a constant drawn as a local (plain) where it is in scope, the constant's own uses in the
+        // constants' colour, once the index has them (the check's sync); and a declaration wider than the hover card
+        // hovered: its lines (lang::kHoverWidth), the second under its parenthesis.
+        {
+            const std::string mainModule = pg::product::kIsInstrument
+                ? "module Voice\n{\n    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+                : "module Effect\n{\n    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+            ed.selectAll();
+            ed.insert("// Shadow probe.\nenum { GAIN = 2 };\n\n"
+                      "float scaled(float x)\n{\n    float GAIN = 0.5f;\n    return GAIN * x;\n}\n\n"
+                      "float louder(float x)\n{\n    return x * GAIN;\n}\n\n"
+                      "// spread: a declaration wider than the hover card, which shows it on two lines, the second\n"
+                      "// under its parenthesis (a blank line under this, so the card has no documentation).\n\n"
+                      "float spread(float x, float wet, float dry, float left, float right, float width, float depth, float mix)\n"
+                      "{\n    return x;\n}\n\n" + mainModule);
+            ed.setCaret({ 0, 0 });
+            ed.scrollToCaret();
+            settleChecks(panel, host);
+            const funkgui::PrimList& frame = host.draw();
+            // The first glyph's colour at a place, as drawn (0: none).
+            const auto inkAt = [&](funkgui::TextPos at) -> uint32_t {
+                if (at.line < 0)
+                    return 0;
+                const funkgui::Point a = ed.pointOf(at), b = ed.pointOf({ at.line, at.col + 1 });
+                for (const funkgui::Prim& p : frame.prims)
+                {
+                    if (p.tag != funkgui::tags::editText || static_cast<int>(p.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                        continue;
+                    const float cx = 0.5f * (p.x0 + p.x1), cy = 0.5f * (p.y0 + p.y1);
+                    if (cx >= a.x && cx < b.x && cy >= a.y && cy < a.y + ed.rowHeight())
+                        return p.c0;
+                }
+                return 0;
+            };
+            const uint32_t plain = inkAt(posIn(ed, "    return x;", 11)), decl = inkAt(posIn(ed, "GAIN = 2"));
+            const uint32_t local = inkAt(posIn(ed, "GAIN = 0.5f")), use = inkAt(posIn(ed, "GAIN * x"));
+            const uint32_t constant = inkAt(posIn(ed, "x * GAIN", 4));
+            std::printf("shadow: plain %08x, the constant %08x and its use %08x, the local %08x and its use %08x\n", plain, decl,
+                        constant, local, use);
+            P.eq("shadow.local_plain", plain != 0 && local == plain && use == plain ? 1 : 0, 1);
+            P.eq("shadow.constant_coloured", decl != 0 && constant == decl && decl != plain ? 1 : 0, 1);
+            const funkgui::Point over = ed.pointOf(posIn(ed, "spread(", 2));
+            host.move(over.x + 2.0f, over.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            std::printf("shadow: hover %s\n", code.hoverText().c_str());
+            P.eq("shadow.hover_wrapped", code.hoverOpen()
+                                             && code.hoverText().find("float left, float right,\n             float width, float depth, float mix)")
+                                                    != std::string::npos ? 1 : 0, 1);
+            writePng(P, host, "gui.code.hover_long.png", "shadow");
+            host.move(10.0f, 10.0f);
+            host.tick(2);
         }
 
         // The Code view's cost (printed, not checked: the machine is shared): a frame's tick and recording, and the
