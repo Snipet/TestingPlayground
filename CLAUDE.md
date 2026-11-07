@@ -1535,7 +1535,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   compare; apart from those, 22,599 and 21,225 with run_function, write_file's files, from and to, and
   measure_output's profile, paid in part by shorter first sentences of add_library_file, edit_circuit, get_status,
   tune_dials and compare, whose words moved into their guide parts or went; 23,343 and 21,969 with all of them, the
-  shorter kept where both had cut a first sentence). `plugin.mcp`
+  shorter kept where both had cut a first sentence; 23,400 and 22,026 with compare's target sound (wav:) and
+  capture's marks). `plugin.mcp`
   checks, and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
@@ -1640,7 +1641,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes and before `kChatOnly`: the contract of this kind, the language, the DSP numbers and pitfalls, the library a
   line a file; MCP's alone, never in the chat's prompt; a guide.md from before it has none), all. A heading
   renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails. Its start is at most 9,200 tokens for the synth
-  and 8,100 for the effect (bytes / 4: 8,693 and 7,510 now; `plugin.mcp` prints them).
+  and 8,100 for the effect (bytes / 4: 8,701 and 7,517 now; `plugin.mcp` prints them).
 - **The GUI sandbox** (`gui_sandbox`, the server's own tool, `mcp/Main.cpp`; its helper `<Name>GuiSandbox`,
   `Source/sandbox/`): Claude Desktop designs a panel.gui and sees it drawn as the plugin's PANEL view draws it, with no
   plugin open and nothing of an open one touched until the user asks to apply it. Its rules:
