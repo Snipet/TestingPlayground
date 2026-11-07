@@ -852,4 +852,10 @@ namespace playground
     // FunkGui editor); Source/plugin/CreateEditorGeneric.cpp in the probes (JUCE's generic editor; the probes run the
     // FunkGui Panel headless instead).
     juce::AudioProcessorEditor* createEditor(Processor& processor);
+
+    // The shaderc this binary carries (a .gui file's shaders): in the plug-in (the VST3's and the AU's
+    // Contents/Resources: CMakeLists.txt copies the pinned bgfx's there), else beside the Standalone's executable
+    // (Windows' shaderc.exe, Linux's shaderc); "" when there is none. `standalone`: the code runs in the Standalone,
+    // whose own file on Linux is /proc/self/exe's (JUCE's currentExecutableFile there is argv[0] as typed).
+    std::string bundledShaderc(bool standalone);
 }
