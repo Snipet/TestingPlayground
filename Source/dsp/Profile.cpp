@@ -20,6 +20,9 @@
 #elif defined(_WIN32) && defined(_M_X64)
 #include <windows.h>
 #define FP_PROFILE_WIN 1
+#if !defined(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002   // Windows 10 1803's, which older SDKs lack
+#endif
 #endif
 
 namespace playground::profile
@@ -67,6 +70,7 @@ namespace playground::profile
         thread_act_t target = MACH_PORT_NULL;
 #elif defined(FP_PROFILE_WIN)
         HANDLE target = nullptr;
+        HANDLE timer = nullptr;   // the sampler's: a high-resolution waitable timer, where Sleep waits 1 ms at best
 #endif
         bool baseSet = false;
         uint64_t lastCpu = 0;
@@ -153,10 +157,39 @@ namespace playground::profile
             }
         }
 
+        // The sampler's wait between two samples.
+        void pause() noexcept
+        {
+#if defined(FP_PROFILE_WIN)
+            if (timer != nullptr)
+            {
+                LARGE_INTEGER due{};
+                due.QuadPart = -static_cast<LONGLONG>(kIntervalMicros) * 10;   // relative, in 100 ns
+                if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) != 0)
+                {
+                    WaitForSingleObject(timer, INFINITE);
+                    return;
+                }
+            }
+#endif
+            std::this_thread::sleep_for(std::chrono::microseconds(kIntervalMicros));
+        }
+
         void run()
         {
 #if defined(FP_PROFILE_MACH)
             pthread_setname_np("measure profile");
+#elif defined(FP_PROFILE_WIN)
+            timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            struct Close
+            {
+                HANDLE& h;
+                ~Close()
+                {
+                    if (h != nullptr)
+                        CloseHandle(h);
+                }
+            } closing{ timer };
 #endif
             std::unique_lock<std::mutex> lock(mutex);
             for (;;)
@@ -169,7 +202,7 @@ namespace playground::profile
                 lock.unlock();
                 while (going.load(std::memory_order_acquire))
                 {
-                    std::this_thread::sleep_for(std::chrono::microseconds(kIntervalMicros));
+                    pause();
                     if (!going.load(std::memory_order_acquire))
                         break;
                     sample();

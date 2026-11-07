@@ -4,13 +4,14 @@
 // A sampler thread interrupts the thread that renders (the one that made the Sampler: the chat's worker, the MCP
 // link's, the headless renderer's main thread) while the calls cpu_percent times run (arm, disarm), about every
 // kIntervalMicros: it suspends the thread, reads its program counter and its own CPU time, and lets it go on (macOS:
-// Mach's thread_suspend, thread_get_state and thread_info, then thread_resume; Windows: SuspendThread,
-// GetThreadContext and QueryThreadCycleTime, then ResumeThread). No signal handler, nothing process-wide; nothing is
-// added to the program's code, which runs as it always does (FMinus's recipe 37), and the thread's own time is
-// barely touched (the sampler's time is its own). Between the suspend and the resume the sampler only reads the
-// thread's state: it allocates and locks nothing there, so a thread suspended inside malloc or holding a lock cannot
-// stall it. Each sample weighs the thread's CPU time since the one before (the first of each armed stretch only sets
-// where that starts), so a thread the system put aside meanwhile weighs nothing, and the shares are of its own time.
+// Mach's thread_suspend, thread_get_state and thread_info, then thread_resume; Windows: SuspendThread, GetThreadContext
+// and QueryThreadCycleTime, then ResumeThread, between samples a high-resolution waitable timer). No signal handler,
+// nothing process-wide; nothing is added to the program's code, which runs as it always does (FMinus's recipe 37), and
+// the thread's own time is barely touched (the sampler's time is its own). Between the suspend and the resume the
+// sampler only reads the thread's state: it allocates and locks nothing there, so a thread suspended inside malloc or
+// holding a lock cannot stall it. Each sample weighs the thread's CPU time since the one before (the first of each
+// armed stretch only sets where that starts), so a thread the system put aside meanwhile weighs nothing, and the shares
+// are of its own time.
 //
 // A sample's address is mapped to the program's code (Patch::codeRanges: FMinus's code ranges, sorted; a binary
 // search on the sampler's thread, nothing allocated) and counted against its function; the shares then group by the

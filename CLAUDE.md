@@ -406,14 +406,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   in `editor/nogpu/SoftEditorHost` (EditorHost's input, zoom, resizing, menus and chooser rules: change them together;
   it draws through SoftRaster only when the frame's primitives change), Picture.cpp's pictures take SoftRaster's path
   (`FUNKGUI_HAS_BGFX` unset), a shader draws as its placeholder, and `gui.shaders` is left out.
-- **Platform code is named for its platform**: `Source/plugin/standalone/*Win.cpp` (Windows' title bar, a JUCE menu
-  bar in the window: `NativeWindow.h`'s `menuBarModel()`) and `*None.cpp` (no racing wheel) beside the macOS `.mm` and
-  IOKit sources, chosen by CMakeLists.txt's filter; elsewhere `#if defined(_WIN32)` beside the POSIX code
-  (SelfTester's thread priority, Measure's CPU clock (`QueryThreadCycleTime` over the measured TSC rate), Shaders'
-  process and temp folder, ChatStore's crypto (CNG: the same FPK1 file), Patch's aligned memory, the projects' folder
-  (`Documents\Funk\<name>`), the chat's (`%APPDATA%\Funk\Playground`)). Include `windows.h` only in a `.cpp` (or
-  `mcp/McpProtocol.h`, which undefines its `near` and `far`), after `NOMINMAX=` and `WIN32_LEAN_AND_MEAN=1` (global
-  definitions, JUCE's own values).
+- **Platform code is named for its platform**: `Source/plugin/standalone/*Win.cpp` (Windows' title bar, a JUCE menu bar
+  in the window: `NativeWindow.h`'s `menuBarModel()`) and `*None.cpp` (no racing wheel) beside the macOS `.mm` and IOKit
+  sources, chosen by CMakeLists.txt's filter; elsewhere `#if defined(_WIN32)` beside the POSIX code (SelfTester's thread
+  priority, Measure's CPU clock (`QueryThreadCycleTime` over the measured TSC rate), Profile's sampler (`SuspendThread`,
+  a high-resolution waitable timer), Shaders' process and temp folder, ChatStore's crypto (CNG: the same FPK1 file),
+  Patch's aligned memory, the projects' folder (`Documents\Funk\<name>`), the chat's (`%APPDATA%\Funk\Playground`)).
+  Include `windows.h` only in a `.cpp` (or `mcp/McpProtocol.h`, which undefines its `near` and `far`), after `NOMINMAX=`
+  and `WIN32_LEAN_AND_MEAN=1` (global definitions, JUCE's own values).
 - **The MCP sockets on Windows** are Winsock's AF_UNIX, reached only through `mcp/McpProtocol.h`'s platform functions
   (`PollFd`, `pollFds`, `recvSome`, `sendSome`, `closeFd`, `acceptOn`, `socketPair`, `peerAlive`, ...): a socket is an
   int on both. What is no socket there (the server's stdin, the sandbox's helper's pipes) is bridged to one by a thread
