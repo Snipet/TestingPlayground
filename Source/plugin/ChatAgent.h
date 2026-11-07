@@ -190,6 +190,9 @@ namespace playground
         // run_program's line on a .gui file's layout (EditorPort.h's panelFitLine): its content larger than the PANEL view
         // at the editor's size, in words; "" when it fits, or when it cannot be said now. The worker's.
         virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
+        // MIDI learn (plugin/MidiLearn.h): each dial's control, the dial learning, the mappings waiting for a dial of
+        // their name. Any thread (under its own mutex): the dial lines and get_status say them.
+        virtual midilearn::View chatMidi() const { return {}; }
     };
 
     class ChatAgent final : public ChatPort

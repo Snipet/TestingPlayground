@@ -104,6 +104,10 @@
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
 //   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
+//   midi()            MIDI learn (MidiLearn.h): each dial's MIDI control, the dial learning and learning's note
+//                     (midiRevision() moves when any changes); learnMidi() a dial learns the next control moved,
+//                     cancelMidiLearn(), forgetMidi() a dial's control, forgetAllMidi() every one. The instrument's
+//                     alone: midiLearnable() is false in an effect, which gets no MIDI
 #pragma once
 
 #include <array>
@@ -112,6 +116,7 @@
 
 #include "plugin/ChatPort.h"
 #include "plugin/DevicePort.h"
+#include "plugin/MidiLearn.h"
 
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
@@ -607,5 +612,15 @@ namespace playground
         //                    found when it was made)
         virtual DevicePort* devices() { return nullptr; }
         virtual uint64_t settingsAsked() const { return 0; }
+
+        // MIDI learn (above; plugin/MidiLearn.h). learnMidi: false when the slot has no dial (or nothing learns here);
+        // forgetMidi: false when the dial had no control; forgetAllMidi: how many went.
+        virtual bool midiLearnable() const { return false; }
+        virtual midilearn::View midi() const { return {}; }
+        virtual uint64_t midiRevision() const { return 0; }
+        virtual bool learnMidi(int slot) { (void)slot; return false; }
+        virtual void cancelMidiLearn() {}
+        virtual bool forgetMidi(int slot) { (void)slot; return false; }
+        virtual int forgetAllMidi() { return 0; }
     };
 }

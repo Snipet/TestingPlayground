@@ -109,6 +109,34 @@ namespace playground::projectstore
             return out;
         }
 
+        juce::var midiVar(const std::vector<midilearn::Mapping>& midi)
+        {
+            juce::Array<juce::var> out;
+            for (const midilearn::Mapping& m : midi)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("dial", str(m.dial));
+                o->setProperty("channel", m.channel);
+                o->setProperty("cc", m.cc);
+                if (m.fine)
+                    o->setProperty("fine", true);
+                out.add(juce::var(o));
+            }
+            return out;
+        }
+
+        // A version's MIDI mappings, tidied (MidiLearn.h's tidy: a damaged one left out).
+        std::vector<midilearn::Mapping> midiOf(const juce::var& v)
+        {
+            std::vector<midilearn::Mapping> out;
+            if (const juce::Array<juce::var>* a = v.getArray())
+                for (const juce::var& e : *a)
+                    if (e.isObject() && out.size() < static_cast<std::size_t>(4 * kMaxControls))
+                        out.push_back({ e["dial"].toString().substring(0, 64).toStdString(), static_cast<int>(e["channel"]),
+                                        e.hasProperty("cc") ? static_cast<int>(e["cc"]) : -1, static_cast<bool>(e["fine"]) });
+            return midilearn::tidy(std::move(out));
+        }
+
         juce::var answersVar(const std::vector<Answer>& answers)
         {
             juce::Array<juce::var> out;
@@ -258,6 +286,7 @@ namespace playground::projectstore
                     ver.files = filesOf(v["files"]);
                     ver.dials = dialsOf(v["dials"]);
                     ver.circuits = answersOf(v["circuits"]);
+                    ver.midi = midiOf(v["midi"]);
                     if (!ver.files.empty() && ver.number > 0)
                         p.versions.push_back(std::move(ver));
                 }
@@ -503,6 +532,8 @@ namespace playground::projectstore
                 o->setProperty("dials", dialsVar(v.dials));
                 if (!v.circuits.empty())
                     o->setProperty("circuits", answersVar(v.circuits));
+                if (!v.midi.empty())
+                    o->setProperty("midi", midiVar(v.midi));
                 versions.add(juce::var(o));
             }
             root->setProperty("versions", versions);
@@ -871,7 +902,8 @@ namespace playground::projectstore
     }
 
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits, std::string* why)
+                                     const std::vector<Answer>& circuits, const std::vector<midilearn::Mapping>& midi,
+                                     std::string* why)
     {
         const std::string tidy = tidyName(name);
         if (tidy.empty())
@@ -893,7 +925,7 @@ namespace playground::projectstore
                 return std::nullopt;
             p = std::move(*old);
             Version& last = p.versions.back();
-            if (last.files == files && last.active == active && sameDials(last.dials, dials))
+            if (last.files == files && last.active == active && sameDials(last.dials, dials) && last.midi == midilearn::tidy(midi))
             {
                 saved.number = last.number;
                 saved.unchanged = true;
@@ -918,7 +950,8 @@ namespace playground::projectstore
         Version v;
         v.number = p.versions.empty() ? 1 : p.latest().number + 1;
         v.savedMs = juce::Time::currentTimeMillis();
-        v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials);
+        v.midi = midilearn::tidy(midi);
+        v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials, &v.midi);
         v.files = files;
         v.active = active;
         v.dials = dials;
@@ -1104,7 +1137,8 @@ namespace playground::projectstore
         return name;
     }
 
-    std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials)
+    std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials,
+                               const std::vector<midilearn::Mapping>* midi)
     {
         if (before == nullptr)
             return "first save";
@@ -1137,6 +1171,8 @@ namespace playground::projectstore
             out += ", " + std::to_string(parts.size() - shown) + " more files";
         if (moved > 0)
             out += (out.empty() ? "" : ", ") + std::to_string(moved) + (moved == 1 ? " dial" : " dials");
+        if (midi != nullptr && *midi != before->midi)
+            out += (out.empty() ? "" : ", ") + std::string("MIDI map");
         return out.empty() ? "the tab shown" : out;
     }
     // ---- the Reader ------------------------------------------------------------------------------------------------

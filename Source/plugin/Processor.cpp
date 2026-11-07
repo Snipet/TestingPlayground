@@ -62,6 +62,10 @@ namespace playground
         // <PANEL><DIAL slot="32" value="0.5"/>...</PANEL>, normalised in the program's controls as those are (a state
         // from before them has none: their defaults).
         const juce::Identifier kPanelTag{ "PANEL" }, kDialTag{ "DIAL" }, kSlot{ "slot" };
+        // MIDI learn's mappings (MidiLearn.h): <MIDI><MAP dial="cutoff" channel="1" cc="74" fine="1"/>...</MIDI> (a
+        // state without it has none)
+        const juce::Identifier kMidiTag{ "MIDI" }, kMapTag{ "MAP" }, kDial{ "dial" }, kChannel{ "channel" }, kCc{ "cc" },
+            kFine{ "fine" };
         constexpr int kMaxEditorSide = 16384;
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
@@ -390,6 +394,8 @@ namespace playground
     {
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
+        midiTimer_.stopTimer();
+        endMidiGestures();                                       // a touch of MIDI's still open, closed for the host
     }
 
     const juce::String Processor::getName() const { return product::kName; }
@@ -860,6 +866,7 @@ namespace playground
         hostBlocks_.store(hostBlocks_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
         if (buffer.getNumSamples() > largestHostBlock_.load(std::memory_order_relaxed))
             largestHostBlock_.store(buffer.getNumSamples(), std::memory_order_relaxed);
+        midiControls(midi);                                      // MIDI learn's (bypassed or not, as automation)
         if (!prepared_)
         {
             runUnprepared(buffer);
@@ -893,6 +900,16 @@ namespace playground
         capture_.begin(buffer.getNumSamples(), bypassed, t, values_, engine_);
         play(buffer, midi, bypassed);
         capture_.end(engine_);
+    }
+
+    // The block's control changes to MIDI learn (MidiLearn.h), while it listens: a dial learning, or a mapping bound.
+    void Processor::midiControls(const juce::MidiBuffer& midi) noexcept
+    {
+        if (!learn_.listening())
+            return;
+        for (const juce::MidiMessageMetadata m : midi)
+            if (m.numBytes >= 3 && (m.data[0] & 0xf0) == 0xb0)
+                learn_.controlChange(m.data[0] & 0x0f, m.data[1] & 0x7f, m.data[2] & 0x7f);
     }
 
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -957,6 +974,7 @@ namespace playground
                 previous_ = running_;
                 running_ = s.restored;
             }
+            learn_.bind(s.controls);                             // MIDI learn's mappings follow the dials by name
             if (run)
                 writeCarry(s, s.controls, s.panel.options, given);
             updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
@@ -1001,6 +1019,7 @@ namespace playground
                 previous_ = running_;
             running_ = s.sources;
         }
+        learn_.bind(s.controls);
         if (run)
             writeCarry(s, s.controls, s.panel.options, given);
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
@@ -1264,6 +1283,8 @@ namespace playground
             (void)writeDial(slot, normOf(c, plain));
         }
         capture_.housekeep();                                    // frees what the audio thread handed back
+        if ((learn_.listening() || midiGestures_ != 0) && !midiTimer_.isTimerRunning())
+            midiTimer_.startTimerHz(kMidiHz);                    // MIDI learn's, while it has anything to do
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
         {
@@ -1472,6 +1493,21 @@ namespace playground
                 state.appendChild(folder, nullptr);
             }
         }
+        if (const std::vector<midilearn::Mapping> maps = learn_.mappings(); !maps.empty())
+        {
+            juce::ValueTree midi{ kMidiTag };
+            for (const midilearn::Mapping& m : maps)
+            {
+                juce::ValueTree map{ kMapTag };
+                map.setProperty(kDial, juce::String::fromUTF8(m.dial.c_str()), nullptr);
+                map.setProperty(kChannel, m.channel, nullptr);
+                map.setProperty(kCc, m.cc, nullptr);
+                if (m.fine)
+                    map.setProperty(kFine, 1, nullptr);
+                midi.appendChild(map, nullptr);
+            }
+            state.appendChild(midi, nullptr);
+        }
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -1559,6 +1595,19 @@ namespace playground
                 folderWanted_ = k;
             }
             state.removeChild(folder, nullptr);
+        }
+        // MIDI learn's mappings (a state from before them, or saved with none, has none), bound when its program applies.
+        {
+            std::vector<midilearn::Mapping> maps;
+            const juce::ValueTree midi = state.getChildWithName(kMidiTag);
+            for (int k = 0; midi.isValid() && k < midi.getNumChildren() && k < 4 * kMaxControls; ++k)
+                if (const juce::ValueTree map = midi.getChild(k); map.hasType(kMapTag))
+                    maps.push_back({ map.getProperty(kDial).toString().substring(0, 64).toStdString(),
+                                     static_cast<int>(map.getProperty(kChannel, 0)), static_cast<int>(map.getProperty(kCc, -1)),
+                                     static_cast<int>(map.getProperty(kFine, 0)) != 0 });
+            learn_.setMappings(std::move(maps));
+            if (midi.isValid())
+                state.removeChild(midi, nullptr);
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
@@ -2015,6 +2064,82 @@ namespace playground
         return moved;
     }
 
+    // ---- MIDI learn (MidiLearn.h) ------------------------------------------------------------------------------------
+    bool Processor::midiLearnable() const { return product::kIsInstrument; }
+
+    void Processor::pollMidi(double nowMs)
+    {
+        midilearn::Learn::Tick t;
+        learn_.tick(nowMs, t);
+        if (t.learned)
+            journal_.note(Journal::Who::user, "learned MIDI " + midilearn::describe(t.mapping) + " for " + t.mapping.dial);
+        // The touches that ended close their gestures first, so a slot's next touch is a gesture of its own; then the
+        // moves, through the dial's port as the editor's hand writes (an int's or a bool's on one of its values), a
+        // gesture beginning with the first that moves it.
+        for (int c = 0; c < kMaxControls; ++c)
+            if ((t.ended & midiGestures_ & slotBit(c)) != 0)
+            {
+                ports_[static_cast<std::size_t>(c)]->endGesture();
+                midiGestures_ &= ~slotBit(c);
+            }
+        for (const midilearn::Learn::Move& m : t.moves)
+        {
+            const Control k = control(m.slot);
+            if (!k.used || !std::isfinite(m.value))
+                continue;
+            const float v = std::clamp(m.value, 0.0f, 1.0f);
+            const float to = k.type == ControlType::real ? v : normOf(k, plainOf(k, v));
+            funkgui::ParamPort& port = *ports_[static_cast<std::size_t>(m.slot)];
+            if (port.value01() == to)
+                continue;
+            if ((midiGestures_ & slotBit(m.slot)) == 0)
+            {
+                port.beginGesture();
+                midiGestures_ |= slotBit(m.slot);
+            }
+            port.setValue01(to);
+        }
+        if (!learn_.listening() && midiGestures_ == 0 && learn_.touching() == 0)
+            midiTimer_.stopTimer();                              // poll() starts it again when there is something
+    }
+
+    void Processor::endMidiGestures()
+    {
+        for (int c = 0; c < kMaxControls; ++c)
+            if ((midiGestures_ & slotBit(c)) != 0)
+                ports_[static_cast<std::size_t>(c)]->endGesture();
+        midiGestures_ = 0;
+    }
+
+    bool Processor::learnMidi(int slot)
+    {
+        if (!midiLearnable() || !learn_.arm(slot))
+            return false;
+        if (!midiTimer_.isTimerRunning())
+            midiTimer_.startTimerHz(kMidiHz);
+        return true;
+    }
+
+    void Processor::cancelMidiLearn() { learn_.cancel(); }
+
+    bool Processor::forgetMidi(int slot)
+    {
+        const midilearn::View v = learn_.view();
+        const std::string words = slot >= 0 && slot < kMaxControls ? v.words[static_cast<std::size_t>(slot)] : std::string();
+        if (!learn_.forget(slot))
+            return false;
+        journal_.note(Journal::Who::user, "forgot the MIDI control of " + std::string(control(slot).name) + " (" + words + ")");
+        return true;
+    }
+
+    int Processor::forgetAllMidi()
+    {
+        const int n = learn_.forgetAll();
+        if (n > 0)
+            journal_.note(Journal::Who::user, "forgot every MIDI control learned (" + std::to_string(n) + ")");
+        return n;
+    }
+
     float Processor::dialDefault01(int c) const
     {
         return isPanelDial(c) || c < 0 || c >= kHostControls ? 0.5f : params_[static_cast<std::size_t>(c)]->getDefaultValue();
@@ -2044,6 +2169,8 @@ namespace playground
         projectDials_ = v.dials;
         for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
             circuits::restore(a.key, a.text);
+        if (!v.midi.empty())                                     // its MIDI learn's mappings, when it has some (a
+            learn_.setMappings(v.midi);                          // version with none leaves those there are)
         // The version as it was saved: compiled (its netlists' answers in, its program from its init), never a panel's
         // edit (Compiler.h).
         const uint64_t id = compiler_.request(d.files, false);
@@ -2112,7 +2239,8 @@ namespace playground
         std::vector<projectstore::Answer> answers;
         for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
             answers.push_back({ std::move(key), std::move(text) });
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why);
+        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers,
+                                                                               learn_.mappings(), &why);
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };

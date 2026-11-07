@@ -377,11 +377,13 @@ namespace playground
     }
 
     // ---- GesturePort ---------------------------------------------------------------------------------------------------
+    // Gestures nest (the editor's hand and a MIDI control's touch on one dial at once): the host sees one, from the
+    // first begin to the last end.
     void GesturePort::beginGesture()
     {
-        ++gestures_;
         moved_ = true;
-        inner_->beginGesture();
+        if (gestures_++ == 0)
+            inner_->beginGesture();
     }
 
     void GesturePort::setValue01(float v)
@@ -392,8 +394,10 @@ namespace playground
 
     void GesturePort::endGesture()
     {
-        inner_->endGesture();
-        gestures_ = std::max(0, gestures_ - 1);
+        if (gestures_ == 0)
+            return;                                  // none open: nothing to end
+        if (--gestures_ == 0)
+            inner_->endGesture();
     }
 
     bool GesturePort::takeMoved() noexcept

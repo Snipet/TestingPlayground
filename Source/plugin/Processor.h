@@ -32,6 +32,11 @@
 //     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
 //     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
 //     put back, and a session loaded ends it.
+//   - MIDI learn (MidiLearn.h; the instrument's): a dial learns a MIDI controller's control, which then moves it
+//     through its port as the editor's hand does (a host gesture a touch). The audio thread notes the control changes
+//     (learn_), the message thread writes them (pollMidi, on a timer of its own while there is anything to listen for).
+//     The mappings are kept in the session (<MIDI><MAP dial=".." channel=".." cc=".." fine="1"/></MIDI>; a state
+//     without them has none) and with each project version saved (ProjectStore.h).
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -64,6 +69,7 @@
 #include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
+#include "plugin/MidiLearn.h"
 #include "plugin/ProjectStore.h"
 
 #include "dsp/Compiler.h"
@@ -175,6 +181,11 @@ namespace playground
         // Slot c's dial as the program that plays has it (ControlParameter's name and text).
         Control control(int c) const;
         std::vector<std::string> controlOptions(int c) const;   // its values' names (#pragma panel options), maybe none
+
+        // MIDI learn (MidiLearn.h): the control changes noted since, learned and written as the dials' gestures, a
+        // touch's gesture ended kTouchMs after its last. `nowMs` a clock in ms: its timer's, a probe's own. Message thread.
+        void pollMidi(double nowMs);
+        uint64_t midiGestures() const noexcept { return midiGestures_; }   // the slots in a gesture of MIDI's (probes)
 
     private:
         static BusesProperties buses();                          // the kind's buses (product::kIsInstrument)
@@ -314,6 +325,13 @@ namespace playground
         void dragWindow(int clicks) override;
         DevicePort* devices() override { return windowHooks_.devices; }
         uint64_t settingsAsked() const override { return settingsAsked_; }
+        bool midiLearnable() const override;
+        midilearn::View midi() const override { return learn_.view(); }
+        uint64_t midiRevision() const override { return learn_.revision(); }
+        bool learnMidi(int slot) override;
+        void cancelMidiLearn() override;
+        bool forgetMidi(int slot) override;
+        int forgetAllMidi() override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -342,6 +360,7 @@ namespace playground
         std::string chatProject() const override;
         std::string chatAb() const override;
         std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
+        midilearn::View chatMidi() const override { return learn_.view(); }
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -550,6 +569,21 @@ namespace playground
         std::array<Event, kUiNotes> uiNotes_{};
         std::atomic<uint32_t> uiNoteHead_{ 0 }, uiNoteTail_{ 0 };   // written: head by the writer, tail by the reader
         void pushUiEvent(const Event& e);                         // into that ring (the writer's side)
+        // MIDI learn (MidiLearn.h): the mappings, learning and the control changes noted (the audio thread's side, in
+        // hostBlock); the slots in a gesture of MIDI's (pollMidi's, message thread), and its timer, which runs while
+        // there is anything to listen for or a gesture to end (poll() starts it, pollMidi stops it).
+        midilearn::Learn learn_;
+        uint64_t midiGestures_ = 0;
+        void midiControls(const juce::MidiBuffer& midi) noexcept;   // the audio thread: control changes to learn_
+        void endMidiGestures();
+        struct MidiTimer final : juce::Timer
+        {
+            explicit MidiTimer(Processor& p) : owner(p) {}
+            void timerCallback() override { owner.pollMidi(juce::Time::getMillisecondCounterHiRes()); }
+            Processor& owner;
+        };
+        MidiTimer midiTimer_{ *this };
+        static constexpr int kMidiHz = 60;
         bool prepared_ = false;
         int maxBlock_ = 1;
         int largestCall_ = 0;
