@@ -53,20 +53,21 @@
 //            definition, set aside and named, the detail's parts within 0.2 dB, the effect's input the sweep; one that
 //            counts in samples (compare's: an envelope a step a sample, a delay of 64 samples) not, the metrics that
 //            move named side by side; B at 22050 Hz refused (two rates are 40 kHz or more), both at it compared
-//   LONG     a render that returns numbers (Request::longest kMaxLongSeconds): 300 s held, measured, every metric as
-//            a 1 s render's (an instrument's level, attack and release, its pitch; an effect's gains and its clean THD),
+//   LONG     a render that returns numbers (Request::longest kMaxLongSeconds): 300 s held, measured, every metric as a
+//            1 s render's (an instrument's level, attack and release, its pitch; an effect's gains and its clean THD),
 //            in a time printed and bounded; the same request with a picture's cap renders 10 s; its length as
-//            renderSeconds says; at 192 kHz its times cut to 145 s (longestAt: kMaxRenderSamples less a whole tail), one
-//            within it never re-timed, latestTime naming its last time; an effect's render with its own input as long
-//            as its test signals when they are longer. Cancelled halfway (Session::setCancel, from its progress):
+//            renderSeconds says; at 192 kHz its times cut to 145 s (longestAt: kMaxRenderSamples less a whole tail),
+//            one within it never re-timed, latestTime naming its last time; an effect's render with its own input as
+//            long as its test signals when they are longer. Cancelled halfway (Session::setCancel, from its progress):
 //            nothing measured, the report saying how far it got (150 s of the note held's 301.5 s; the effect's sine's
-//            300 s) and back within a second; the cut sticks until the next setCancel, which measures again; a time
-//            limit stops it saying so, naming the call's whole limit (its start shared), and when it lands in a short
-//            render after a long one, the one that spent it (the report keeping no line of what was measured before
-//            the cut); run() says it was cancelled; tune_dials cancelled in its first render tunes nothing, saying how
-//            far, and a sweep cut in its second value's render keeps the first row; compare cancelled compares
-//            nothing, naming the side; a check cancelled is not measured, saying so, and one after it in a render of
-//            its own is not measured either, through the cut
+//            300 s) and back within a second (this bound and the long render's time skipped under emulation, where
+//            timings are not a machine's: probe::emulated); the cut sticks until the next setCancel, which measures
+//            again; a time limit stops it saying so, naming the call's whole limit (its start shared), and when it
+//            lands in a short render after a long one, the one that spent it (the report keeping no line of what was
+//            measured before the cut); run() says it was cancelled; tune_dials cancelled in its first render tunes
+//            nothing, saying how far, and a sweep cut in its second value's render keeps the first row; compare
+//            cancelled compares nothing, naming the side; a check cancelled is not measured, saying so, and one after
+//            it in a render of its own is not measured either, through the cut
 #include "Probe.h"
 
 #include "dsp/Compare.h"
@@ -1273,7 +1274,10 @@ PROBE(dsp, tune)
             P.near("long.noise_gain_db", at(m.values, "noise_gain_db"), 6.0, 0.1);
             P.le("long.clean_thd", at(m.values, "thd_db"), -80.0);
         }
-        P.le("long.seconds", took, 90.0);
+        if (const std::string emulated = probe::emulated(); emulated.empty())
+            P.le("long.seconds", took, 90.0);
+        else
+            probe::skip(P, "long.seconds", "a time budget: " + emulated);
         // A picture's cap (the default) renders 10 s of it; the numbers' its 300 s and the tail; 192 kHz holds 155 s.
         ms::Request capped = longer;
         capped.longest = ms::kMaxPlaySeconds;
@@ -1329,7 +1333,10 @@ PROBE(dsp, tune)
                                                             : "Cancelled 150.02 s into the sine's render (300.00 s long), ")
                                       && has(c.report, " after it began, about ") && has(c.report, " s of sound a second. Nothing was measured.\n")
                                       && !has(c.report, "Metrics:") ? 1 : 0, 1);
-        P.le("long.cancel_at_once", back, 1.0);
+        if (const std::string emulated = probe::emulated(); emulated.empty())
+            P.le("long.cancel_at_once", back, 1.0);
+        else
+            probe::skip(P, "long.cancel_at_once", "a time budget: " + emulated);
         P.eq("long.cancel_sticks", cut.measure(shorter).cancelled ? 1 : 0, 1);
         cut.setCancel({});
         const ms::Result cleared = cut.measure(shorter);
