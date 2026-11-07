@@ -1,0 +1,69 @@
+// Placeholder Pad: a simple pad, two detuned sawtooths through a gentle low-pass under a slow envelope. A placeholder
+// among the factory projects, made up to show how they work: the factory import (scripts/import-factory.py) replaces
+// it with the chosen ones.
+#pragma panel section "TONE" detune cutoff
+#pragma panel section "ENVELOPE" attack release
+#pragma panel section "OUTPUT" level
+#pragma panel style attack release fader
+
+module Voice
+{
+    param float detune [[fminus::range(0, 30)]] [[fminus::default(8)]];          // cents between the two
+    param float cutoff [[fminus::range(200, 8000)]] [[fminus::default(1800)]];   // Hz
+    param float attack [[fminus::range(10, 3000)]] [[fminus::default(600)]];     // ms
+    param float release [[fminus::range(10, 4000)]] [[fminus::default(1200)]];   // ms
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-18)]];        // dB
+    float rate;
+    float phaseA;
+    float phaseB;
+    float freq;
+    float velocity;
+    float env;
+    float low;       // the low-pass's state
+    bool held;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float vel)
+    {
+        freq = 440 * expf(0.0577622650f * (note - 69));
+        velocity = vel;
+        env = 0;         // an instance a stolen voice left: start from silence
+        low = 0;
+        phaseA = 0;
+        phaseB = 0.5f;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            if (held)
+                env = fminf(env + 1000 / (attack[i] * rate), 1);
+            else
+                env *= expf(-6907.7553f / (release[i] * rate));      // -60 dB in `release` ms
+            const float spread = expf(0.000288811325f * detune[i]);  // half the detune, as a ratio
+            phaseA += freq * spread / rate;
+            phaseB += freq / spread / rate;
+            if (phaseA >= 1)
+                phaseA -= 1;
+            if (phaseB >= 1)
+                phaseB -= 1;
+            const float saws = phaseA + phaseB - 1;
+            low += (1 - expf(-6.28318531f * cutoff[i] / rate)) * (saws - low);
+            const float out = velocity * env * expf(0.115129255f * level[i]) * low;
+            left[i] += out;
+            right[i] += out;
+        }
+        return held || env > 0.0001f;
+    }
+};

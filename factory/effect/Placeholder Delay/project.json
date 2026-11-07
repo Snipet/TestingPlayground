@@ -1,0 +1,87 @@
+{
+  "format": "funk-playground-project",
+  "version": 1,
+  "plugin": "TestingPlayground",
+  "kind": "effect",
+  "name": "Placeholder Delay",
+  "versions": [
+    {
+      "number": 1,
+      "saved": 1762400000000,
+      "note": "factory version",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm"
+        }
+      ],
+      "dials": [
+        {
+          "name": "time",
+          "value": 300
+        },
+        {
+          "name": "feedback",
+          "value": 0.35
+        },
+        {
+          "name": "tone",
+          "value": 4000
+        },
+        {
+          "name": "mix",
+          "value": 0.3
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "name": "Long",
+      "saved": 1762400500000,
+      "from": 1,
+      "dials": [
+        {
+          "name": "time",
+          "value": 750
+        },
+        {
+          "name": "feedback",
+          "value": 0.6
+        },
+        {
+          "name": "tone",
+          "value": 2500
+        }
+      ]
+    },
+    {
+      "name": "Slapback",
+      "saved": 1762400400000,
+      "from": 1,
+      "dials": [
+        {
+          "name": "time",
+          "value": 90
+        },
+        {
+          "name": "feedback",
+          "value": 0.1
+        },
+        {
+          "name": "mix",
+          "value": 0.4
+        }
+      ]
+    }
+  ],
+  "info": {
+    "description": "A placeholder: a simple stereo delay whose repeats darken. The factory import replaces it.",
+    "author": "",
+    "category": "Delay",
+    "tags": [
+      "placeholder"
+    ],
+    "genres": []
+  }
+}

@@ -1,0 +1,57 @@
+// Placeholder Bass: a simple bass, a sine and a square an octave down, through a soft clip (shape.fm) under a short
+// decay. A placeholder among the factory projects, made up to show how they work: the factory import
+// (scripts/import-factory.py) replaces it with the chosen ones.
+#include "shape.fm"
+#pragma panel section "TONE" sub drive
+#pragma panel section "ENVELOPE" decay
+#pragma panel section "OUTPUT" level
+
+module Voice
+{
+    param float sub [[fminus::range(0, 1)]] [[fminus::default(0.5)]];         // the square an octave down
+    param float drive [[fminus::range(1, 8)]] [[fminus::default(2)]];
+    param float decay [[fminus::range(50, 3000)]] [[fminus::default(600)]];   // ms
+    param float level [[fminus::range(-36, 0)]] [[fminus::default(-14)]];     // dB
+    float rate;
+    float phase;
+    float freq;
+    float velocity;
+    float env;
+    bool held;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+    }
+
+    void start(float note, float vel)
+    {
+        freq = 440 * expf(0.0577622650f * (note - 69));
+        velocity = vel;
+        env = 1;
+        phase = 0;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            env *= expf(-6907.7553f / ((held ? decay[i] : 40) * rate));   // a quick release once let go
+            phase += 0.5f * freq / rate;                                   // the sub's phase: the note's every other
+            if (phase >= 1)
+                phase -= 1;
+            const float sine = sinf(12.5663706f * phase);
+            const float square = phase < 0.5f ? 1 : -1;
+            const float out = velocity * env * expf(0.115129255f * level[i]) * softClip(drive[i] * (sine + sub[i] * square));
+            left[i] += out;
+            right[i] += out;
+        }
+        return env > 0.0001f;
+    }
+};
