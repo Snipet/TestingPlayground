@@ -31,7 +31,7 @@ namespace playground::measure
         constexpr double kFirstSeconds = 0.01;
         constexpr std::size_t kAfter = 64;                 // pass 2's window goes on past the problem's call
         constexpr long kNear = 32;                         // samples: the events near a problem
-        constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (floats)
+        constexpr std::size_t kMaxValues = std::size_t{ 4 } << 20;   // pass 2 keeps at most this many (doubles: 32 MB)
         constexpr std::size_t kMaxScanned = 2048;          // fields pass 1 reads after each call
         constexpr std::size_t kMaxTracked = 16;            // instances pass 2 keeps
         constexpr std::size_t kMaxProblems = 3;
@@ -126,6 +126,10 @@ namespace playground::measure
                 return fmt("%.12g", v);
             return num(v);
         }
+
+        // A mean of a field's values (voices pooled, a call's): a double's to its 12 digits, any other's as a number
+        // (an int's mean need not be whole).
+        std::string meanVal(const Patch::Field& f, double v) { return f.type == Patch::Field::Type::real64 ? val(f, v) : num(v); }
 
         // What a field's attributes say (PanelSpec.h's FieldLook), as trace's lines add it after its path:
         // ` ("LEVEL", dB, -60 to 0)`, "" for none.
@@ -445,7 +449,7 @@ namespace playground::measure
                   const std::vector<float>& r, Clock& clock)
                 : pairs(std::move(kept)), w0(from), w1(to), patch_(patch), refL_(l), refR_(r), clock_(clock)
             {
-                values.assign((w1 - w0) * pairs.size(), 0.0f);
+                values.assign((w1 - w0) * pairs.size(), 0.0);
                 alerts.assign(w1 - w0, 0);
                 voiceAt.assign(w1 - w0, {});
             }
@@ -481,7 +485,7 @@ namespace playground::measure
                     if constexpr (kInstrument)
                         c.engine.voices(voiceAt[s]);
                     for (std::size_t t = 0; t < pairs.size(); ++t)
-                        values[s * pairs.size() + t] = static_cast<float>(patch_.read(patch_.fieldMap()[pairs[t].field], pairs[t].slot));
+                        values[s * pairs.size() + t] = patch_.read(patch_.fieldMap()[pairs[t].field], pairs[t].slot);
                     reached = c.at + 1;
                 }
                 else if (c.length == 0 && c.at >= w0 && c.at < w1)
@@ -498,7 +502,7 @@ namespace playground::measure
             // whose voice the Engine drops whole (16 samples), where pass 2 drops it at the sample. Before w0 the two
             // passes make the same calls.
             std::size_t checkUntil = static_cast<std::size_t>(-1);
-            std::vector<float> values;
+            std::vector<double> values;                    // samples x pairs, as read (a double's whole)
             std::vector<uint32_t> alerts;
             std::vector<std::vector<Voice>> voiceAt;
             bool differs = false;
@@ -554,7 +558,7 @@ namespace playground::measure
                         if (ts[i].kind != lang::Tok::identifier || ts[i].text != name)
                             continue;
                         std::size_t j = i + 1;
-                        if (text(ts, j) == "[")                // an element: past its index
+                        while (text(ts, j) == "[")             // an element: past its indexes, one a dimension
                         {
                             int depth = 0;
                             for (; j < ts.size(); ++j)
@@ -1275,7 +1279,7 @@ namespace playground::measure
                         if (const double ratio = std::fabs(v) / (usual + 1e-12); ratio > best)
                         {
                             best = ratio;
-                            precursor = x.map[p.pairs[t].field].path + " was " + num(v) + " (usually about " + num(usual) + ")";
+                            precursor = x.map[p.pairs[t].field].path + " was " + val(x.map[p.pairs[t].field], v) + " (usually about " + num(usual) + ")";
                         }
                     }
                 }
@@ -1443,7 +1447,7 @@ namespace playground::measure
                     pr.verdict = ended ? "the voice ends while its key is held: its process returned false (it said it was silent for good)."
                                : cs.empty() ? "no field steps with it: what feeds the output stops (a gain, a gate, a "
                                                        "buffer, a condition that holds)."
-                                                     : cs[0].path + " steps to " + num(cs[0].after.empty() ? 0.0 : cs[0].after[0])
+                                                     : cs[0].path + " steps to " + val(*cs[0].field, cs[0].after.empty() ? 0.0 : cs[0].after[0])
                                                            + " there" + (cs[0].writes.empty() ? std::string() : " (" + joined(cs[0].writes) + ")") + ".";
                 else
                     pr.verdict = "a mean offset of " + num(f.dc) + " (" + fmt("%.1f dBFS", 20.0 * std::log10(std::max(std::fabs(f.dc), 1e-12)))
@@ -1586,7 +1590,7 @@ namespace playground::measure
                     out.push_back(line);
                     continue;
                 }
-                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + (f.type == Field::Type::real64 ? val(f, n > 0 ? sum / static_cast<double>(n) : 0.0) : num(n > 0 ? sum / static_cast<double>(n) : 0.0)) + ", first "
+                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + meanVal(f, n > 0 ? sum / static_cast<double>(n) : 0.0) + ", first "
                       + val(f, first) + ", last " + val(f, last);
                 line += badFrom < 0 ? std::string("; never non-finite") : "; non-finite from " + seconds(static_cast<double>(badFrom) / x.rate);
                 if (p.jumpSize[w] > 0.0)
@@ -2038,7 +2042,7 @@ namespace playground::measure
                                 if (p.pairs[t].field == watch[w]
                                     && (p.pairs[t].slot < 0 || (!picked.empty() && p.pairs[t].slot == picked.front())))
                                 {
-                                    v = num(p.value(s, t));
+                                    v = val(map[watch[w]], p.value(s, t));
                                     break;
                                 }
                             vals.push_back(v);
@@ -2057,7 +2061,7 @@ namespace playground::measure
                     {
                         const std::size_t c = points > 1 ? k * (calls - 1) / (points - 1) : 0;
                         const Pass1::Watch& v = p1.watched[c * W + w];
-                        vals.push_back(v.bad ? std::string("nan") : v.count == 0 ? std::string("-") : num(v.v));
+                        vals.push_back(v.bad ? std::string("nan") : v.count == 0 ? std::string("-") : meanVal(map[watch[w]], v.v));
                     }
                     const double step = points > 1 ? static_cast<double>(p1.calls.back().at) / rate / static_cast<double>(points - 1) : 0.0;
                     out.lines.push_back("  " + map[watch[w]].path + " every " + seconds(step) + " from 0: " + joined(vals, " "));

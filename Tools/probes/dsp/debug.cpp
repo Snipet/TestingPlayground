@@ -31,8 +31,12 @@
 //   NAN0    a NaN from the first sample: the self-check says it had nothing to compare
 //   DOUBLE  a double accumulator (90 + 1e-6 a sample) and its float twin, a 2-D grid of 2 x 3 and one of 4 x 16, and a
 //           field's attributes: listed as a double with its label, unit and range, the grid's rows by its two indexes
-//           and the large one left out with its shape; watched, the double moves (to 12 digits) where the float stays
-//           at 90, and an element of the grid is read where the program put it
+//           and the large one left out with its shape; watched, the double moves (to 12 digits, as the program sums it)
+//           where the float stays at 90, and an element of the grid is read where the program put it; its raw values,
+//           evenly and a sample each around a moment, keep its 1e-6 steps
+//   GRID    CLICK's phase reset with the phase a double in a 2-D array: the element is the culprit, with the line that
+//           writes it by its two indexes, its values a double's; a double beside it that moves 1e-6 a sample is no
+//           culprit
 #include "Probe.h"
 
 #include "Examples.h"
@@ -870,6 +874,95 @@ module Effect
 };
 )";
 
+    // GRID: CLICK's phase reset (at sample 10005), the phase a double in a 2-D array (written ph[1][2] = ...) that adds
+    // a float step a sample, beside a double that moves 1e-6 a sample from 90: rounded to a float it would stand still
+    // for 7 or 8 samples and step one ulp (7.6e-6), and it does in sample 10005, which would make it a culprit.
+    const char* const kGridVoice = R"(module Voice
+{
+    float rate;
+    float level;
+    int count;
+    bool held;
+    double ph[2][3];
+    double temp;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        level = 0.3f;
+        held = true;
+        temp = 90;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            temp += 1e-6;
+            if (count >= 10006)
+            {
+                count = 0;
+                ph[1][2] = 0.75;
+            }
+            if (!held)
+                level *= 0.999f;
+            const float y = level * sinf(6.28318531f * (float)ph[1][2]);
+            ph[1][2] += 0.003f;
+            if (ph[1][2] >= 1)
+                ph[1][2] -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held || level > 0.0001f;
+    }
+};
+)";
+
+    const char* const kGridEffect = R"(module Effect
+{
+    float rate;
+    int count;
+    double ph[2][3];
+    double temp;
+
+    void init(float r)
+    {
+        rate = r;
+        temp = 90;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            temp += 1e-6;
+            if (count >= 10006)
+            {
+                count = 0;
+                ph[1][2] = 0.25;
+            }
+            const float gain = 0.5f + 0.5f * sinf(6.28318531f * (float)ph[1][2]);
+            ph[1][2] += 0.0000625f;
+            if (ph[1][2] >= 1)
+                ph[1][2] -= 1;
+            left[i] *= gain;
+            right[i] *= gain;
+        }
+    }
+};
+)";
+
     const char* const kSharedPart = R"(module Shared
 {
     float gain;
@@ -1399,15 +1492,98 @@ PROBE(dsp, debug)
                         return std::strtod(x.c_str() + at + 7, nullptr);
             return -1.0;
         };
-        // 1e-6 a sample from 90: 0.7 s at 48 kHz is 33,600 samples (the synth's voice its 0.5 s held and its last call).
+        // The significant digits of the last value temp's line gives ("90.0335999999": 12).
+        const auto lastDigits = [&](const std::string& path) {
+            int digits = 0;
+            for (const std::string& x : w.lines)
+                if (x.rfind(path + " (", 0) == 0 || x.rfind(path + ":", 0) == 0)
+                    if (const std::size_t at = x.find(", last "); at != std::string::npos)
+                    {
+                        bool lead = true;
+                        for (std::size_t k = at + 7; k < x.size() && x[k] != ';' && x[k] != 'e'; ++k)
+                        {
+                            if (x[k] < '0' || x[k] > '9' || (lead && x[k] == '0'))
+                                continue;
+                            lead = false;
+                            ++digits;
+                        }
+                    }
+            return static_cast<double>(digits);
+        };
+        // 1e-6 a sample from 90, summed as the program sums it: 0.7 s at 48 kHz is 33,600 samples; the synth's voice
+        // sounds its 0.5 s held, 24,000.
+        double expected = 90.0;
+        for (int k = 0; k < (kInstrument ? 24000 : 33600); ++k)
+            expected += 1e-6;
         const double moved = last("temp"), stuck = last("ftemp");
-        std::printf("DOUBLE: temp last %.12g, ftemp last %.9g\n", moved, stuck);
+        std::printf("DOUBLE: temp last %.12g (expected %.15g), ftemp last %.9g\n", moved, expected, stuck);
         P.eq("double.watched", w.watched.size() == 3 ? 1 : 0, 1);
         P.eq("double.its_look_in_the_line", anyHas(w.lines, "temp (\"TEMP\", C, 80 to 100): min 90") ? 1 : 0, 1);
-        P.in("double.moves", moved, 90.02, 90.04);
-        P.eq("double.twelve_digits", anyHas(w.lines, ", last 90.02") || anyHas(w.lines, ", last 90.03") ? 1 : 0, 1);
+        P.near("double.moves", moved, expected, 1e-9);
+        P.ge("double.twelve_digits", lastDigits("temp"), 10.0);
         P.near("double.float_stays", stuck, 90.0, 0.0);
         P.eq("double.grid_element", anyHas(w.lines, "gain[1][2]: min 1.5, max 1.5") ? 1 : 0, 1);
+
+        // Its raw values: 8 evenly over the render, then 8 around 0.25 s, a sample each; each to its 12 digits.
+        const auto points = [&](const ms::TraceResult& r, const std::string& head) {
+            std::vector<double> v;
+            for (const std::string& x : r.lines)
+                if (x.rfind("  temp ", 0) == 0 && x.find(head) != std::string::npos)
+                {
+                    const char* s = x.c_str() + x.rfind(": ") + 2;
+                    for (char* end = nullptr;; s = end)
+                    {
+                        const double d = std::strtod(s, &end);
+                        if (end == s)
+                            break;
+                        v.push_back(d);
+                    }
+                }
+            return v;
+        };
+        q.fields = { "temp" };
+        q.points = 8;
+        const ms::TraceResult even = ms::trace(files, q);
+        print("DOUBLE points", even);
+        // (The synth's voice sounds for the first 0.5 s of the 0.7: its last points are "-", where the numbers end.)
+        const std::vector<double> e = points(even, " every ");
+        bool rising = e.size() >= (kInstrument ? 5u : 8u);
+        for (std::size_t k = 1; k < e.size(); ++k)
+            rising = rising && e[k] > e[k - 1];
+        P.eq("double.points_rise", rising ? 1 : 0, 1);
+        q.around = 0.25;
+        const ms::TraceResult around = ms::trace(files, q);
+        print("DOUBLE around", around);
+        const std::vector<double> a = points(around, ", a sample each: ");
+        double worst = a.size() == 8 ? 0.0 : 1.0;
+        for (std::size_t k = 1; k < a.size(); ++k)
+            worst = std::max(worst, std::fabs(a[k] - a[k - 1] - 1e-6));
+        P.le("double.around_steps", worst, 1e-9);
+    }
+
+    // ---- GRID: a click whose culprit is a double in a 2-D array, written by its two indexes ------------------------------
+    {
+        const std::string program = kInstrument ? kGridVoice : kGridEffect;
+        const ms::TraceResult r = ms::trace(pg::singleFile(program), clickReq);
+        print("GRID", r);
+        const ms::TraceProblem* c = firstOf(r, ms::TraceFind::click);
+        const ms::TraceCulprit* ph = nullptr;
+        bool tempBlamed = false;
+        if (c != nullptr)
+            for (const ms::TraceCulprit& k : c->culprits)
+            {
+                ph = ph == nullptr && k.path == "ph[1][2]" ? &k : ph;
+                tempBlamed = tempBlamed || k.path == "temp";
+            }
+        P.eq("grid.found", c != nullptr ? 1 : 0, 1);
+        P.near("grid.at_sample", c != nullptr ? static_cast<double>(c->at) : -1.0, 10005.0, 1.0);
+        P.eq("grid.culprit_element", ph != nullptr ? 1 : 0, 1);
+        P.eq("grid.written_by_its_indexes", ph != nullptr && has(ph->writes, lineOf(program, kInstrument ? "ph[1][2] = 0.75;" : "ph[1][2] = 0.25;"))
+                                                && anyHas(r.lines, "  ph[1][2]: steps ") && !anyHas(r.lines, "no line found that writes it") ? 1 : 0, 1);
+        // A double's values as it holds them: the reset's value plus one float step (a float's is off in its 8th digit).
+        const double reset = kInstrument ? 0.75 + static_cast<double>(0.003f) : 0.25 + static_cast<double>(0.0000625f);
+        P.near("grid.values_double", ph != nullptr && !ph->after.empty() ? ph->after[0] : -1.0, reset, 1e-12);
+        P.eq("grid.no_double_blamed", c != nullptr && !tempBlamed ? 1 : 0, 1);
     }
 
     // ---- STOP: a cancel or the time limit says so, and claims nothing it did not check ---------------------------------
