@@ -29,9 +29,11 @@
 // (sharedKeys_: the keys whose note is on for the program's Shared, those let go under the pedal apart). Before each
 // tick and each note hook, the params of Shared named as dials get the dials' values at that sample (a gliding dial's
 // stream there, else its value; for a program that came this block and has had no glides yet, the values its first
-// glides snap to). While a swap's old program goes, its Shared gets none of this; the new one's hears the held keys
-// start again (a noteOn each). A program gone back to (a stop's revert) takes up the keys its Shared had at the swap:
-// those let go since get their noteOff, and the held ones a noteOff and a noteOn as they start again.
+// glides snap to). While a swap's old program goes, its Shared gets none of this but the noteOff of a key let go under
+// the pedal before the swap, as the pedal's going up stops that key's voice (a going program's though it is); the new
+// one's hears the held keys start again (a noteOn each). A program gone back to (a stop's revert) takes up the keys its
+// Shared had at the swap: those let go since get their noteOff (or at the pedal's going up), and the held ones a noteOff
+// and a noteOn as they start again.
 //
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
@@ -522,8 +524,8 @@ namespace playground
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
         // Shared on its own (above): each key's note for the program's Shared (kKeyOff; kKeyOn; kKeyPedal, on and let
-        // go while the pedal is down), and the old program's as the swap left them (what a revert takes up again); the
-        // values setSharedDials passes.
+        // go while the pedal is down), and the old program's as the swap left them (what a revert takes up again, less
+        // those the pedal's going up ended since); the values setSharedDials passes.
         static constexpr uint8_t kKeyOff = 0, kKeyOn = 1, kKeyPedal = 2;
         std::array<uint8_t, 128> sharedKeys_{}, oldSharedKeys_{};
         std::array<float, kMaxControls> sharedPlain_{};

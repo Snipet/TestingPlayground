@@ -815,8 +815,10 @@ namespace playground
                 resumeGlides(resume);
             callAt_ = resume;                        // -1: a circuit's first call at the dials the last block left
             // Its Shared's notes as the swap left them (Engine.h, "Shared on its own"): those let go since end now (or
-            // when the pedal comes up); the held keys' end and begin again as they start again below.
+            // when the pedal comes up); the held keys' end and begin again as they start again below. (Those let go
+            // under the pedal before the swap ended at its going up, if it went up since: controller.)
             sharedKeys_ = oldSharedKeys_;
+            oldSharedKeys_.fill(kKeyOff);            // the stopped one's Shared is called no more
             for (int k = 0; k < 128; ++k)
                 if (sharedKeys_[static_cast<std::size_t>(k)] == kKeyOn && !held_[static_cast<std::size_t>(k)])
                 {
@@ -825,8 +827,6 @@ namespace playground
                     else
                         sharedNoteOff(k, callAt_);
                 }
-                else if (sharedKeys_[static_cast<std::size_t>(k)] == kKeyPedal && !host_.sustain)
-                    sharedNoteOff(k, callAt_);
             for (int k = 0; k < 128; ++k)
                 if (held_[static_cast<std::size_t>(k)])
                     noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
@@ -1602,8 +1602,18 @@ namespace playground
             const bool down = e.velocity >= 0.5f;
             if (host_.sustain && !down)
                 for (int k = 0; k < 128; ++k)        // the pedal up: their notes end for the program's Shared first
-                    if (sharedKeys_[static_cast<std::size_t>(k)] == kKeyPedal)
+                {
+                    const auto s = static_cast<std::size_t>(k);
+                    if (sharedKeys_[s] == kKeyPedal)
                         sharedNoteOff(k, callAt_);
+                    // A swap's old program's too, let go under the pedal before the swap: the loop below stops their
+                    // voices, a going program's though they are (Engine.h, "Shared on its own").
+                    if (old_ != nullptr && oldSharedKeys_[s] == kKeyPedal)
+                    {
+                        oldSharedKeys_[s] = kKeyOff;
+                        old_->sharedNoteOff(static_cast<float>(k));
+                    }
+                }
             if (host_.sustain && !down)
                 for (Voice& v : voices_)             // the pedal up: the keys let go meanwhile stop now
                     if (v.patch != nullptr && v.pedal && !v.released)

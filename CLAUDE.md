@@ -223,23 +223,25 @@ place (its `products/<key>.cmake`, and its names in the docs).
   every instance taken, process returning false while held, a drop for going non-finite, prepare()); only a program
   swap fades the old program's voices with none. A new path that frees a voice of `current_` calls `stopVoice` first,
   so a program's Shared (a key stack) stays right; `dsp.swap` STOPS checks it.
-- **Shared on its own** (Patch.h's and Engine.h's "Shared on its own"; the synth's only): an instrument's Shared may have
-  `tick(int n)`, `noteOn(float note, float velocity)` and `noteOff(float note)`, each appended as a nonblocking shim of
-  its own only when `lang::sharedHooks` reads it declared so (a method of the name declared otherwise is the program's
-  own, never called, with a note: a program that has one plays as it did), and params named as dials, which `reset()`
-  sets to the dials' defaults before Shared's init (init runs at compile, before any value is known) and the Engine to
-  the dials' values at the sample (`setSharedDials`; the snap's for a program that came this block) before each tick
-  and each note hook. The tick runs at each absolute multiple of `kGrid` at the start of the part that begins there
-  (after the events at that sample, before the voices), never per part: so it moves the same at any block size, and
-  trace's calls of one sample give pass 1's bits. The note hooks come before the voice's start and stop; `sharedKeys_`
-  makes each noteOn get one noteOff before that key's next (a retrigger: noteOff, then noteOn; the pedal's notes at its
-  going up; All Notes Off and `prepare()`: every note on, before the voices' stops); a swap starts the new program's
-  keys empty (the held keys' restarts give the noteOns) and keeps the old one's for a revert, which takes them up again
-  (those let go meanwhile get their noteOff). A new path that ends a note calls `sharedNoteOff` before the voice's
-  stop. The frozen copy looks the hooks up (`freeze`), and a hook that runs past its budget stops the Patch as any call
-  does (`Method::sharedTick`, ...). A program with none of them gets no call and no write. A program whose Shared ticks
-  is never refined (below, the self-test: its answer waits for the next RUN). A recording whose program's Shared ticks
-  never replays from a fresh state (its tick ran before the take): CaptureReplay says so. `dsp.shared` checks it all.
+- **Shared on its own** (Patch.h's and Engine.h's "Shared on its own"; the synth's only): an instrument's Shared may
+  have `tick(int n)`, `noteOn(float note, float velocity)` and `noteOff(float note)`, each appended as a nonblocking
+  shim of its own only when `lang::sharedHooks` reads it declared so (a method of the name declared otherwise is the
+  program's own, never called, with a note: a program that has one plays as it did), and params named as dials, which
+  `reset()` sets to the dials' defaults before Shared's init (init runs at compile, before any value is known) and the
+  Engine to the dials' values at the sample (`setSharedDials`; the snap's for a program that came this block) before
+  each tick and each note hook. The tick runs at each absolute multiple of `kGrid` at the start of the part that begins
+  there (after the events at that sample, before the voices), never per part: so it moves the same at any block size,
+  and trace's calls of one sample give pass 1's bits. The note hooks come before the voice's start and stop;
+  `sharedKeys_` makes each noteOn get one noteOff before that key's next (a retrigger: noteOff, then noteOn; the pedal's
+  notes at its going up; All Notes Off and `prepare()`: every note on, before the voices' stops); a swap starts the new
+  program's keys empty (the held keys' restarts give the noteOns) and keeps the old one's for a revert, which takes them
+  up again (those let go meanwhile get their noteOff), and the old one's Shared hears nothing more while it goes but the
+  noteOff of a key let go under the pedal before the swap, before the pedal's going up stops that voice
+  (`oldSharedKeys_`). A new path that ends a note calls `sharedNoteOff` before the voice's stop. The frozen copy looks
+  the hooks up (`freeze`), and a hook that runs past its budget stops the Patch as any call does (`Method::sharedTick`,
+  ...). A program with none of them gets no call and no write. A program whose Shared ticks is never refined (below, the
+  self-test: its answer waits for the next RUN). A recording whose program's Shared ticks never replays from a fresh
+  state (its tick ran before the take): CaptureReplay says so. `dsp.shared` checks it all.
 - The circuit dials (Patch.h's "Circuits", Engine.h's "Circuit dials"): a circuit's pot or switch that is a dial reaches
   its module through `set()`, which the Engine calls through the program's shim (`Patch::setCircuits`: no allocation,
   the values into a buffer the compile sized) on the absolute 16-sample grid, with the glided values at that sample,
