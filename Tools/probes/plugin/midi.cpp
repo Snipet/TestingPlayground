@@ -20,6 +20,8 @@
 //           open writes nothing over the automation until its control moves again
 //   NEST    the editor's hand and a learned control on one dial at once: one host gesture, from the first begin to the
 //           last end (GesturePort)
+//   WRITE   Claude's set_dial written while a MIDI touch holds the dial: nested in the touch's gesture (no begin or end
+//           of its own), the touch going on and its one end when it ends
 //   FORGET  forgetMidi: that dial's control moves it no more, the others still do; forgetAllMidi: none
 //   CHAT    get_status's dial lines name each dial's control ("moved by MIDI CC 74 on channel 3"); a mapping whose dial
 //           the program lacks is named as waiting, and moves nothing until a program has that dial again
@@ -391,6 +393,31 @@ PROBE(plugin, midi)
         P.eq("nest.one_begin", host.begins - begins == 1 && host.ends == ends ? 1 : 0, 1);
         p.pollMidi(now += ml::kTouchMs + 1.0);
         P.eq("nest.one_end", host.begins - begins == 1 && host.ends - ends == 1 ? 1 : 0, 1);
+    }
+
+    // ---- WRITE ---------------------------------------------------------------------------------------------------------
+    {
+        // Claude's set_dial lands (poll(): Processor::writeDial) while a MIDI touch holds cutoff: a gesture of the
+        // processor's own nested in the touch's, so the host sees one gesture, which goes on, and one end.
+        juce::AudioProcessorParameter& param = *p.getParameters()[cutoff];
+        const int begins = host.begins, ends = host.ends;
+        block(p, { { 3, 74, 20 } });
+        p.pollMidi(now += 10.0);
+        P.eq("write.touch_begun", host.begins - begins, 1);
+        const pg::ChatAgent::McpResult set = p.chatAgent().mcpCall("set_dial", object({ { "name", "cutoff" }, { "value", 0.75 } }));
+        p.poll();
+        P.near("write.set", static_cast<double>(param.getValue()), 0.75, 1e-6);
+        P.eq("write.nested", !set.isError && host.begins - begins == 1 && host.ends == ends ? 1 : 0, 1);
+        block(p, { { 3, 74, 40 } });
+        p.pollMidi(now += 10.0);
+        P.near("write.touch_goes_on", static_cast<double>(param.getValue()), 40.0 / 127.0, 1e-6);
+        P.eq("write.still_one", host.begins - begins == 1 && host.ends == ends ? 1 : 0, 1);
+        p.pollMidi(now += ml::kTouchMs + 1.0);
+        P.eq("write.one_end", host.begins - begins == 1 && host.ends - ends == 1 && p.midiGestures() == 0 ? 1 : 0, 1);
+        // With no touch, set_dial's write is a gesture of its own, begun and ended.
+        (void)p.chatAgent().mcpCall("set_dial", object({ { "name", "cutoff" }, { "value", 0.5 } }));
+        p.poll();
+        P.eq("write.alone", host.begins - begins == 2 && host.ends - ends == 2 ? 1 : 0, 1);
     }
 
     // ---- CHAT ----------------------------------------------------------------------------------------------------------

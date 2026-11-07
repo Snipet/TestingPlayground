@@ -2056,11 +2056,15 @@ namespace playground
             updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
             return true;
         }
+        // A gesture of its own, through the dial's port: nested in one the editor's hand or a MIDI touch holds open (the
+        // host sees that one go on, never ended under it, and its own end then the last), and not the editor's move in
+        // the journal (GesturePort::beginOwnGesture).
         juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+        GesturePort& port = *portStore_[static_cast<std::size_t>(c)];
         const bool moved = p.getValue() != norm;
-        p.beginChangeGesture();
+        port.beginOwnGesture();
         p.setValueNotifyingHost(norm);
-        p.endChangeGesture();
+        port.endGesture();
         return moved;
     }
 

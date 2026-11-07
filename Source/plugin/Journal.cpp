@@ -382,6 +382,11 @@ namespace playground
     void GesturePort::beginGesture()
     {
         moved_ = true;
+        beginOwnGesture();
+    }
+
+    void GesturePort::beginOwnGesture()
+    {
         if (gestures_++ == 0)
             inner_->beginGesture();
     }
