@@ -493,7 +493,7 @@ namespace playground
         bool sharedNotes() const noexcept { return recipe_.sharedNoteOn || recipe_.sharedNoteOff; }
         // The dials a param of Shared reads (bit c: control c), and their values into those params: plain[c] for each
         // (the controls' plain values at the hook's sample). No allocation.
-        uint32_t sharedDials() const noexcept { return sharedDialMask_; }
+        uint64_t sharedDials() const noexcept { return sharedDialMask_; }
         void setSharedDials(const float* plain) noexcept;
         // The hooks, each within its budget (n samples' for a tick, kBudgetFloor's for a note's); nothing when the
         // program has none, or has stopped.
@@ -640,7 +640,7 @@ namespace playground
         // Per control, the param of Shared named as its dial (above, "Shared on its own"): its slot in Shared, and the
         // controls that have one (bit c).
         std::array<Slot, kMaxControls> sharedSlots_{};
-        uint32_t sharedDialMask_ = 0;
+        uint64_t sharedDialMask_ = 0;
         bool mono_ = false;                            // mono(), monoDial() (above, "Mono")
         int monoDial_ = -1;
         static void store(void* instance, const Slot& slot, float plain) noexcept;

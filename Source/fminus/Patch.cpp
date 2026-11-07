@@ -1077,7 +1077,7 @@ namespace playground
                     slot.stream = p.streamOffset;
                     slot.value = p.valueOffset;
                     slot.kind = p.type == "int" ? Slot::Kind::integer : p.type == "bool" ? Slot::Kind::boolean : Slot::Kind::real;
-                    patch->sharedDialMask_ |= 1u << dial;
+                    patch->sharedDialMask_ |= slotBit(dial);
                 }
         }
         // The module Host's one instance (host.fm), the fields that point at it (the main module's and Shared's), and
@@ -1401,7 +1401,7 @@ namespace playground
             std::memset(shared_, 0, sharedSize_);
             setDefaults(shared_, kSharedModule, 0);
             for (int c = 0; c < kMaxControls; ++c)   // a param named as a dial: at the dial's default, as the instances'
-                if (((sharedDialMask_ >> c) & 1u) != 0)
+                if ((sharedDialMask_ & slotBit(c)) != 0)
                     store(shared_, sharedSlots_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
             for (const std::size_t at : sharedHostFields_)
                 std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
@@ -1729,7 +1729,7 @@ namespace playground
     {
         if (shared_ == nullptr)
             return;
-        for (uint32_t m = sharedDialMask_; m != 0; m &= m - 1)
+        for (uint64_t m = sharedDialMask_; m != 0; m &= m - 1)
         {
             const int c = std::countr_zero(m);
             store(shared_, sharedSlots_[static_cast<std::size_t>(c)], plain[c]);

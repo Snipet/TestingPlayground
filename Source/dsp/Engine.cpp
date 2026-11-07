@@ -520,10 +520,10 @@ namespace playground
 
     void Engine::sharedDialsAt(int at) noexcept
     {
-        const uint32_t mask = current_->sharedDials();
+        const uint64_t mask = current_->sharedDials();
         if (mask == 0 || current_->stopped() != Patch::Method::none)
             return;
-        for (uint32_t m = mask; m != 0; m &= m - 1)
+        for (uint64_t m = mask; m != 0; m &= m - 1)
         {
             const int c = std::countr_zero(m);
             sharedPlain_[static_cast<std::size_t>(c)] = dialAt(c, at);

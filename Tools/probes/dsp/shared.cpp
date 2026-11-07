@@ -15,7 +15,8 @@
 //           tick the value set before the first block (a float's, an int's, a bool's); a dial moved glides in Shared as
 //           its stream does, tick by tick, from the block it moves in to exactly its value 20 ms later, never back; a
 //           param of Shared that no dial is named as keeps its own default, with a note; one named as a circuit's pot
-//           (a netlist's module whose set() the program never calls) reads that pot's dial, its default in init
+//           (a netlist's module whose set() the program never calls) reads that pot's dial, its default in init; one
+//           named as a panel's own dial (the 40th, slot 39: past the host's 32) reads it as the others do
 //   SWAP    a new program's Shared hears the held key start again (its noteOn, then the voice's start), and that key's
 //           release (its noteOff, then the stop); its noteOn there reads the dials its first glides snap to (the host's
 //           value, not the old program's glide under way) and, carried (Controls.h's DialCarry), the carry's value
@@ -254,6 +255,36 @@ module Voice
     bool process(float* restrict left, float* restrict right, int n) { return held; }
 };
 )";
+
+    // DIALS: a param of Shared named as the voice's 40th dial, one of the panel's own (slot 39), after 39 others.
+    std::string farDials()
+    {
+        std::string voice = "module Voice\n{\n";
+        for (int c = 0; c < 39; ++c)
+            voice += "    param float d" + std::to_string(c) + ";\n";
+        voice += "    param float far [[fminus::range(0, 10)]] [[fminus::default(4)]];\n"
+                 "    Shared* shared;\n"
+                 "    bool held;\n"
+                 "    void start(float note, float velocity) { held = true; }\n"
+                 "    void stop() { held = false; }\n"
+                 "    bool process(float* restrict left, float* restrict right, int n) { return held; }\n"
+                 "};\n";
+        return R"(module Shared
+{
+    param float far;
+    float atInit, atTick;
+    int ticks;
+    void init(float rate) { atInit = far[0]; }
+    void tick(int n)
+    {
+        if (ticks == 0)
+            atTick = far[0];
+        ticks += 1;
+    }
+};
+
+)" + voice;
+    }
 
     // DIALS: a param of Shared named as a circuit's pot, AutoClipper.h's potclip.cir (its pot drive, 0.5 by default), whose
     // set() the voice never calls: the pot is a dial.
@@ -631,12 +662,25 @@ PROBE(dsp, shared)
             if (rig.controls()[static_cast<std::size_t>(c)].used && std::string(rig.controls()[static_cast<std::size_t>(c)].name) == "drive")
                 pot = c;
         const pg::Patch* p = rig.engine().playingPatch();
-        P.eq("dials.circuit_pot", pot >= 0 && p != nullptr && p->sharedDials() == (1u << pot) && !has(notes, "Shared::drive") ? 1 : 0, 1);
+        P.eq("dials.circuit_pot", pot >= 0 && p != nullptr && p->sharedDials() == pg::slotBit(pot) && !has(notes, "Shared::drive") ? 1 : 0, 1);
         exactly(P, "dials.circuit_init_default", field(p, "shared->atInit"), 0.5);
         if (pot >= 0)
             rig.norm()[static_cast<std::size_t>(pot)] = dialNorm(rig, pot, 0.25f);
         rig.run(silence(512), 256);
         exactly(P, "dials.circuit_first_tick", field(p, "shared->atTick"), 0.25);
+    }
+    {
+        // A param of Shared named as a panel's own dial: its slot (39) is past the host's 32, in the mask's high half.
+        probe::Rig rig(kFs, 512);
+        std::string notes;
+        P.eq("dials.panel_compiles", loaded(rig, farDials(), &notes) ? 1 : 0, 1);
+        const pg::Patch* p = rig.engine().playingPatch();
+        P.eq("dials.panel_slot", std::string(rig.controls()[39].name) == "far" && pg::isPanelDial(39) ? 1 : 0, 1);
+        P.eq("dials.panel_mask", p != nullptr && p->sharedDials() == pg::slotBit(39) && !has(notes, "Shared::far") ? 1 : 0, 1);
+        exactly(P, "dials.panel_init_default", field(p, "shared->atInit"), 4.0);
+        rig.norm()[39] = dialNorm(rig, 39, 9.0f);
+        rig.run(silence(512), 256);
+        exactly(P, "dials.panel_first_tick", field(p, "shared->atTick"), 9.0);
     }
 
     // ---- SWAP ----------------------------------------------------------------------------------------------------------
