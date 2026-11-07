@@ -864,7 +864,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   own readers (`plugin/ChatScenario.cpp`): a property a tool gains that the renderer should take is read there and
   named in its `kKnown`, and a change to what measure_output or trace's export renders reaches it with no change of
   its own. It drops the window for its trace (a window is the metrics'), takes no time limit (`TraceRequest::seconds`
-  huge) and writes nothing when pass 1 stopped short (`stoppedFirst`: its records past 256 MB).
+  huge) and writes nothing when pass 1 stopped short (`stoppedFirst`: its records past 256 MB). What a request names
+  and the program lacks is a note on stderr and in the metrics, never silent, since a script may keep no report: a
+  dial (`Result::unknown`, or the controls and `Session::timeline`'s `unknown` with `--no-measure`: `unknown_dials`), a
+  field pattern and the fields past the CSV's columns (`TraceResult::unmatched`, `more`). In a folder it leaves out
+  FolderSync's read-only copies (its manifest's `copy` lines, `.fmsync`; and a host.fm of `Patch::hostSource()`'s
+  text), before kMaxFiles. An effect's own input (`readWav`: formats 1 and 3, plain or WAVE_FORMAT_EXTENSIBLE) longer
+  than a render plays of it (`longestAt` and the tail) is refused, never cut; a request may come through a pipe; a
+  signal removes the `.part` it was writing.
 - **set_checks** (`dsp/Goals.h`): checks are goals (a metric with min, max or a target and a tolerance) with a label
   and a render; `ChatAgent::evaluateChecks` measures them all (one compile, one render for checks that share one) on
   the editor's files and the plugin's dials after every run_program that compiles (the results end its result: the
