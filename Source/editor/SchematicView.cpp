@@ -118,7 +118,7 @@ namespace playground::ui
         float dist(funkgui::Point a, funkgui::Point b) noexcept { return std::hypot(a.x - b.x, a.y - b.y); }
 
         // A menu's commands written "Label   Key": each key in the shortcut column (Dropdown.h), as the user's keyboard
-        // names it (Ctrl- on Windows).
+        // names it (Ctrl- on Windows and Linux).
         void withKeys(funkgui::MenuRequest& request)
         {
             for (funkgui::MenuItem& item : request.items)

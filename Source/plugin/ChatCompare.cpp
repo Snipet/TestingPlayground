@@ -41,6 +41,8 @@ namespace playground
         // A whole path as the user's machine writes one (wav:'s refusals).
 #if defined(_WIN32)
         constexpr const char* kWholePath = "C:\\... or ~\\...";
+#elif !defined(__APPLE__)
+        constexpr const char* kWholePath = "/home/... or ~/...";
 #else
         constexpr const char* kWholePath = "/Users/... or ~/...";
 #endif

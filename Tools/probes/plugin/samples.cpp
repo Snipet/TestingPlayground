@@ -747,16 +747,30 @@ PROBE(plugin, samples)
             const pg::ChatAgent::McpResult r = p.chatAgent().mcpCall("compare", in);
             return r.isError ? textOf(r) : std::string();
         };
-        P.eq("target.refused_relative", has(refusal("wav:target/kick.wav", "editor"), "whole (/Users/... or ~/...)") ? 1 : 0, 1);
+        // A whole path as this platform writes one (ChatCompare.cpp's kWholePath).
+#if defined(_WIN32)
+        const std::string whole = "whole (C:\\... or ~\\...)";
+#elif !defined(__APPLE__)
+        const std::string whole = "whole (/home/... or ~/...)";
+#else
+        const std::string whole = "whole (/Users/... or ~/...)";
+#endif
+        P.eq("target.refused_relative", has(refusal("wav:target/kick.wav", "editor"), whole) ? 1 : 0, 1);
         // A path or a sample's name, the same on every platform: a Windows path (a drive's, a share's, with either slash)
-        // is a path, never looked up as a sample (here it is no whole path on the Mac, and says so).
+        // is a path, never looked up as a sample (on the Mac and Linux no whole path, and says so; on Windows a whole one,
+        // and not there).
         bool pathOrName = !pg::assetfiles::namesAFile("kick.wav") && !pg::assetfiles::namesAFile("Kick_44-b.flac");
         for (const char* path : { "C:\\Users\\me\\Music\\target.wav", "\\\\server\\share\\x.wav", "C:/Music/x.wav", "D:x.wav",
                                   "~/x.wav", "~\\x.wav", "~", "/Volumes/Music/x.wav", "target/kick.wav" })
             pathOrName = pathOrName && pg::assetfiles::namesAFile(path);
         P.eq("target.path_or_name", pathOrName ? 1 : 0, 1);
         const std::string windows = refusal("wav:C:\\Users\\me\\Music\\target.wav", "editor");
-        P.eq("target.windows_path_not_a_sample", has(windows, "whole (/Users/... or ~/...)") && !has(windows, "has no sample") ? 1 : 0, 1);
+#if defined(_WIN32)
+        const bool refusedAsPath = has(windows, "there is no file at");
+#else
+        const bool refusedAsPath = has(windows, whole);
+#endif
+        P.eq("target.windows_path_not_a_sample", refusedAsPath && !has(windows, "has no sample") ? 1 : 0, 1);
         P.eq("target.refused_missing", has(refusal(juce::String("wav:") + dir.getChildFile("none.wav").getFullPathName(), "editor"),
                                            "there is no file at") ? 1 : 0, 1);
         P.eq("target.refused_no_sample", has(refusal("wav:snare.wav", "editor"), "the program has no sample snare.wav (its samples: kick.wav)") ? 1 : 0, 1);

@@ -256,7 +256,7 @@ namespace playground
         juce::var schema = claude::object({ { "type", "object" },
                                             { "properties", props },
                                             { "required", juce::Array<juce::var>{ "action" } } });
-        // Its shortcut as the user's keyboard names it (Ctrl-Shift-M on Windows).
+        // Its shortcut as the user's keyboard names it (Ctrl-Shift-M on Windows and Linux).
         const juce::String description(shortcutText(
             "Record what the user plays live, in the plugin's memory, and report it in numbers. Tell the user before "
             "arming; arm returns at once, then they play and you call stop.\n\n"
