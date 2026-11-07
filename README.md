@@ -6,32 +6,182 @@
 
 # TestingPlayground
 
-Two plugins (AU, VST3 and Standalone on macOS on Apple silicon; VST3 and Standalone on Windows x64 and on Linux
-x86-64, newer: "Windows" and "Linux" below) whose DSP you write while they run, built from one
-source tree: **TestingPlayground**, an effect, and **TestingPlaygroundSynth**, an instrument. The editor of each is a
-text field holding an [FMinus](https://github.com/Snipet/FMinus) program; the plugin compiles it when you press RUN
-(or Cmd-Return), and the next block plays it: the effect's crossfaded from the last, the synth's with the keys you
-hold started again on the new program while the old one's voices fade out. The program's parameters become the dials
-under the text. A chat with Claude at the right of the editor writes and changes the program for you: describe an
-effect or a sound and it writes the FMinus, runs it, fixes what does not compile and leaves the dials at good
-settings, so a sentence does what a preset did. Built on JUCE 8.0.4, with a GPU editor made with
-[FunkGui](https://github.com/Snipet/FunkGui) (its `TextEditor`) and FMinus, the JIT compiler for DSP, linked in.
+Two audio plugins whose sound is a program you write while it plays: **TestingPlayground**, an effect, and
+**TestingPlaygroundSynth**, a synth. You type the DSP in [FMinus](https://github.com/Snipet/FMinus), a small C for
+audio, and press RUN; or you ask Claude, and it writes the program for you.
+
+- **macOS** on Apple silicon (macOS 14 or later): AU, VST3 and a Standalone app.
+- **Windows** x64 (Windows 10 1803 or later, 11) and **Linux** x86-64: VST3 and a Standalone app.
+
+Built on JUCE 8.0.4, with a GPU editor made with [FunkGui](https://github.com/Snipet/FunkGui) and FMinus's JIT compiler
+linked in. [CHANGELOG.md](CHANGELOG.md) says what changed, day by day.
+
+## What it does
+
+- **Write DSP while it plays.** RUN (Cmd-Return) compiles the program in the editor and the next block plays it: the
+  effect crossfades from the last program, the synth starts the keys you hold again on the new one.
+- **A chat that writes it.** Describe an effect or a sound, and Claude writes the FMinus, runs it, fixes what does not
+  compile, measures and looks at the result, and leaves the dials at good settings: a sentence does what a preset did.
+- **Dials and panels.** The program's parameters become dials and host parameters; a `.gui` file makes a whole
+  interface, with knobs, pads, displays and shaders.
+- **Projects.** Every save is a version, with presets, A/B between versions and export; factory projects come with
+  each plugin (placeholders for now).
+- **The synth's voices.** Sixteen at once, MIDI with its wheels and pedal, MIDI learn, mono and legato, and a Logitech
+  G29 racing wheel in the Standalone.
+- **Analog circuits.** A SPICE netlist (`.cir`) becomes a module the program plays, with a schematic you can edit and
+  live probes on its nets.
+- **Claude Desktop and Claude Code.** Each plugin comes with an MCP server, packed as a Claude Desktop extension:
+  Claude works on the plugin open in your DAW, on your Claude plan, and designs panels with no plugin open.
+- **A headless renderer.** Render and measure a program from the command line, with the plugin's own compiler.
+- **Safe to try things.** A loop that never ends, or an index outside its array, stops the program and says where, and
+  what leaves the plugin is always finite.
+
+## Building from a clone
+
+### On macOS
+
+**You need** a Mac with Apple silicon on macOS 14 or later, Xcode or its command-line tools
+(`xcode-select --install`, which brings Git and Python 3 too), CMake 3.30 or later and Ninja (with Homebrew:
+`brew install cmake ninja`). The first builds download what they need (LLVM's source, JUCE, bgfx), so they need the
+network.
+
+**1. Clone** TestingPlayground and its two sibling libraries. The build looks for FMinus and FunkGui in
+`~/audio/libraries/` (or `~/audio/`); TestingPlayground itself can live anywhere.
+
+```sh
+git clone https://github.com/Snipet/FMinus.git            ~/audio/libraries/FMinus
+git clone https://github.com/Snipet/FunkGui.git           ~/audio/libraries/FunkGui    # optional
+git clone https://github.com/Snipet/TestingPlayground.git ~/audio/plugins/TestingPlayground
+```
+
+Without a FunkGui clone, the build fetches FunkGui from GitHub. JUCE and bgfx come from the cache `~/audio/.deps` when
+it has them, else from GitHub. Each dependency is used at the version `cmake/Deps.cmake` pins, which a clone you
+already had must hold (`git pull` in it).
+
+**2. Build FMinus once.** Its build makes the LLVM, Bison and Flex this one links; TestingPlayground reads them from
+FMinus's `.deps/` folder and never builds them itself.
+
+```sh
+cd ~/audio/libraries/FMinus
+cmake --workflow --preset dev      # LLVM: 10 to 30 minutes, the first time only; then FMinus and its tests
+```
+
+`cmake/Deps.cmake` pins FMinus's commit (`FP_FMINUS_SHA`) and its LLVM (`FP_FMINUS_LLVM`): if FMinus's `main` has
+moved on to another LLVM since, check that commit out before this step.
+
+**3. Build both plugins**, and run every test:
+
+```sh
+cd ~/audio/plugins/TestingPlayground
+cmake --workflow --preset dev-verify
+```
+
+`cmake --preset dev && cmake --build --preset dev` builds without running the tests. The first configure also builds
+bgfx's shader compiler (about 2,000 CPU-seconds) unless `~/audio/.deps` has one. Everything lands in `build-dev/`:
+
+| What | Where, in `build-dev/` |
+| --- | --- |
+| the effect's app, AU and VST3 | `TestingPlayground_artefacts/RelWithDebInfo/`: `Standalone/`, `AU/`, `VST3/` |
+| the synth's | `TestingPlaygroundSynth_artefacts/RelWithDebInfo/` |
+| the Claude Desktop extensions | `TestingPlayground.mcpb`, `TestingPlaygroundSynth.mcpb` |
+| the headless renderers | `TestingPlaygroundRender`, `TestingPlaygroundSynthRender` |
+| the installer | `Installer_artefacts/RelWithDebInfo/TestingPlayground Installer.app` |
+| pictures of both editors (after the tests) | `probe-out/effect/gui.dump.png`, `probe-out/synth/gui.dump.png` |
+
+**4. Try it:**
+
+```sh
+open build-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPlayground.app
+open build-dev/TestingPlaygroundSynth_artefacts/RelWithDebInfo/Standalone/TestingPlaygroundSynth.app
+```
+
+**5. Install** into your DAW, from a Release build:
+
+```sh
+cmake --workflow --preset release-build   # Release with LTO, both products, in build-release/
+scripts/install.sh                        # the AU and VST3 into ~/Library/Audio/Plug-Ins, the apps into /Applications
+```
+
+For another Mac, `scripts/package.sh --installer` makes the installer's disk image,
+`build-release/dist/TestingPlayground-Installer-<version>.dmg` (and `scripts/package.sh` alone a `.pkg`). The details
+are in [Install](#install), and the whole build in [Build and run](#build-and-run).
+
+### On Windows
+
+**You need** Windows 10 (1803 or later) or 11 on x64, Visual Studio 2022 with "Desktop development with C++" and its
+**C++ Clang tools for Windows**, CMake 3.30 or later, Ninja (Visual Studio's), Git and Python 3. In an **x64 Native
+Tools Command Prompt for VS**:
+
+```bat
+git clone https://github.com/Snipet/FMinus.git %USERPROFILE%\audio\libraries\FMinus
+git clone https://github.com/Snipet/TestingPlayground.git %USERPROFILE%\audio\plugins\TestingPlayground
+cd /d %USERPROFILE%\audio\libraries\FMinus
+cmake --preset dev
+cd /d %USERPROFILE%\audio\plugins\TestingPlayground
+cmake --workflow --preset windows-verify
+```
+
+FMinus's configure builds its LLVM and WinFlexBison, the long step and all this build needs of it. The apps land in
+`build-windows-dev\<Name>_artefacts\RelWithDebInfo\Standalone\`, and `cmake --workflow --preset windows-release-build`
+makes the installer (`build-windows-release\Installer_artefacts\Release\`). The details: [Windows](#windows).
+
+### On Linux
+
+**You need** an x86-64 processor with AVX2 and FMA, a Vulkan driver, and these packages (Arch Linux's names; other
+distributions have the same under their own):
+
+```sh
+sudo pacman -S --needed base-devel clang lld cmake ninja git python alsa-lib freetype2 fontconfig libx11 libxext \
+    libxrandr libxinerama libxcursor libxrender libxcomposite glib2 vulkan-icd-loader vulkan-headers libglvnd mesa \
+    openssl curl xdg-utils libsecret
+```
+
+Then, in your desktop session:
+
+```sh
+git clone https://github.com/Snipet/FMinus.git            ~/audio/libraries/FMinus
+git clone https://github.com/Snipet/TestingPlayground.git ~/audio/plugins/TestingPlayground
+cd ~/audio/libraries/FMinus && CC=clang CXX=clang++ cmake --workflow --preset dev   # about half an hour on 8 cores
+cd ~/audio/plugins/TestingPlayground && cmake --workflow --preset linux-verify
+```
+
+To install, `cmake --workflow --preset linux-release-build`, then `scripts/package-linux.sh` makes a `.tar.gz` whose
+`./install.sh` installs both plugins for you alone (`~/.vst3`, `~/.local`). The details: [Linux](#linux).
+
+## Using it
+
+- **Open** the Standalone app, or load TestingPlayground (an effect) or TestingPlaygroundSynth (an instrument) in your
+  DAW.
+- **Play a program.** The editor opens on Init, a plain starting point. Change it and press **RUN** (Cmd-Return,
+  Ctrl-Return on Windows and Linux): the parameters it declares become the dials. **Examples**, **Library** and
+  **Random** give you a start.
+- **Ask Claude.** In the chat at the right, **Add your API key** (from console.anthropic.com; or choose another
+  provider), then describe a sound: "a tape delay with wow and flutter", "a warm detuned pad".
+- **Or use Claude Desktop.** Open the product's `.mcpb` (from the build, or the copy the installer puts in place) and
+  Claude Desktop offers to add it; then, with the plugin open, ask Claude Desktop for an effect or a sound.
+- In the effect's Standalone, **Settings…** (Cmd-, on macOS) picks the audio input, which starts muted: unmute it with
+  headphones on.
+
+## Contents
+
+- [Writing a program](#writing-a-program): [the effect](#the-effect-module-effect), [the synth](#the-synth-module-voice)
+  and [what both share](#both): dials, MIDI learn, frozen dials, loops and bounds, the host's tempo and wheels,
+  samples, circuits, `.gui` interfaces, the examples.
+- [The editor](#the-editor): the explorer, Examples, Library and Random, projects and presets, A/B, export, the code
+  editor, the schematic, the IR view, the Standalone and the racing wheel.
+- [The chat](#the-chat): Claude in the plugin, checking its work, recording what you play, other model providers,
+  Claude Desktop (MCP) and the panel sandbox.
+- [The headless renderer](#the-headless-renderer): render and measure from the command line.
+- [Build and run](#build-and-run): the whole build, [Windows](#windows), [Linux](#linux) and [Install](#install).
+- [Test](#test): the probes. [FMinus](#fminus): how the compiler comes in. [What is where](#what-is-where): the
+  source tree.
+- [A new plugin, or a new product](#a-new-plugin-or-a-new-product), [Update the DSP core](#update-the-dsp-core),
+  [Theme, zoom, diagnostics](#theme-zoom-diagnostics).
 
 The two are one code base compiled twice, once for each product (`products/effect.cmake`, `products/synth.cmake`):
 what differs is the program each plays (below), its examples and its identity (name, codes, bundle id, its own
 folders). The editor, the chat, the projects, the library and the Claude Desktop extension work the same in both.
 Where this guide says "the effect" or "the synth", it means that product; the rest holds for both.
-
-<!-- origin -->
-The effect began as a feedback delay network reverb (made from FunkPluginTemplate, its FDN ported from the Visage
-version, git tag `legacy-visage`), and the synth as the sine voice synth of the Visage version, ported onto FSynth's
-DSP core; each one's history before the branch `fminus-editor` holds that plugin and the file-watching script that ran
-after it. They were two repositories, TestingPlayground and TestingPlaygroundSynth, until this one took both: the
-synth's history is merged in.
-<!-- /origin -->
-
-After a build, `build-dev/probe-out/effect/gui.dump.png` and `build-dev/probe-out/synth/gui.dump.png` are pictures of
-the two editors.
 
 ## Writing a program
 
@@ -2523,8 +2673,8 @@ the synth's examples for it to change, and its icon (it keeps the kind of the pr
 kind's, `Assets/logo/<kind>/`, and `swift Tools/logo/logo.swift` writes its extension's icon from the same mark). It
 refuses a plugin code another product here or another of your plugins already uses (any project in `~/audio/plugins`):
 two plugins with one code hide each other in a host. `scripts/plugin.py rename --product effect --name ...` gives a
-product a new identity in place (its file, and its names in the docs); an installed product renamed is a new plugin to
-hosts, with new folders.
+product a new identity in place (its file, and its names in the docs, but not in CHANGELOG.md, whose history keeps the
+old names); an installed product renamed is a new plugin to hosts, with new folders.
 
 ## Update the DSP core
 
@@ -2574,3 +2724,15 @@ again. While the plugin is processing,
 the top bar's CPU figure changes four times a second at most, and that is drawn. The code editor keeps each line's
 colours and works them out again only for the lines an edit touches (and every line when a module's or a constant's
 name comes or goes, or a local of a constant's name).
+
+<!-- origin -->
+## History
+
+The effect began as a feedback delay network reverb (made from FunkPluginTemplate, its FDN ported from the Visage
+version, git tag `legacy-visage`), and the synth as the sine voice synth of the Visage version, ported onto FSynth's
+DSP core; each one's history before the branch `fminus-editor` holds that plugin and the file-watching script that ran
+after it. They were two repositories, TestingPlayground and TestingPlaygroundSynth, until this one took both: the
+synth's history is merged in.
+
+What changed since, day by day: [CHANGELOG.md](CHANGELOG.md).
+<!-- /origin -->
