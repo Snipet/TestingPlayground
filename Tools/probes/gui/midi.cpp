@@ -16,7 +16,8 @@
 //   HOST    the host's menu item opens the host's own menu for that parameter
 //   FORGET  Forget CC 74 on channel 2: no dot, no MIDI in the footer
 //   GUI     a .gui file's knob: its right-click opens the same menu; learned, its dot and its footer line; learning, its
-//           ring
+//           ring; its switch: a right-click and a screen reader's menu action both open the menu, writing nothing, its
+//           press still flipping it
 //   EFFECT  the effect's dial: a right-click opens the host's menu, as before (the effect learns no MIDI)
 #include "Probe.h"
 
@@ -46,6 +47,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -452,6 +454,34 @@ PROBE(gui, midi)
         P.eq("gui.clear_of_text", clearOfText(host.draw(), knob.midiMarkAt()) && clearOfText(host.draw(), reso.midiMarkAt()) ? 1 : 0, 1);
         writePng(P, host, "gui.midi.gui.png");
         port.cancelMidiLearn();
+        // The switch (sync): a right-click and a screen reader's menu action alike open the dial's menu, and neither
+        // writes; its press still flips it.
+        {
+            const pg::ui::GuiControlItem& sw = panel.guiControl(2);
+            const funkgui::Point c{ sw.cell().centreX(), sw.cell().centreY() };
+            const float was = processor.ports()[2]->value01();
+            host.click(c.x, c.y, funkgui::Mods{ false, false, false, true });
+            host.tick(1);
+            const funkgui::MenuRequest* r = host.pendingMenu();
+            P.eq("gui.switch_menu", r != nullptr && itemOf(*r, "Learn MIDI CC") != nullptr && processor.ports()[2]->value01() == was ? 1 : 0, 1);
+            host.cancelMenu();
+            host.tick(1);
+            std::optional<funkgui::A11yItem> item;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                if (a.visible && a.bounds.contains(c) && a.role == funkgui::A11yRole::toggleButton)
+                    item = a;
+            if (item)
+                panel.a11yAction(item->id, funkgui::A11yAction::showMenu);
+            host.tick(1);
+            r = host.pendingMenu();
+            P.eq("gui.switch_a11y_menu", item && r != nullptr && itemOf(*r, "Learn MIDI CC") != nullptr && processor.ports()[2]->value01() == was ? 1 : 0, 1);
+            host.cancelMenu();
+            host.tick(1);
+            if (item)
+                panel.a11yAction(item->id, funkgui::A11yAction::press);
+            settle(processor, host);
+            P.eq("gui.switch_press_flips", item && processor.ports()[2]->value01() != was && host.pendingMenu() == nullptr ? 1 : 0, 1);
+        }
         (void)port.forgetAllMidi();
     }
 

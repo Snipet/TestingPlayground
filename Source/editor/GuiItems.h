@@ -98,7 +98,8 @@ namespace playground::ui
                 .mix(menuOpenNow()).mix(midiMapped_).mix(midiLearning_).mix(midiSpec_).h;
         }
         // MIDI learn (the plugin's editor, editor/Panel.cpp; none in the GUI sandbox): what a right-click, a ctrl-click
-        // or a screen reader's menu action on a knob or a slider opens at a point (none: nothing, as before), its mark
+        // and a screen reader's menu action open at a point, alike, on a knob, a slider, a switch or buttons (none:
+        // nothing, as before; never on a dropdown, whose menu action opens its own list as its press does), its mark
         // (looks::midiMark: a MIDI control moves it, it learns one) and what its footer line says after its own.
         void setMenu(std::function<void(funkgui::Point)> menu) { dialMenu_ = std::move(menu); }
         void setMidi(bool mapped, bool learning, std::string spec)
@@ -136,6 +137,7 @@ namespace playground::ui
 
     private:
         bool clicks() const noexcept { return kind_ == GuiKind::toggle || kind_ == GuiKind::buttons || kind_ == GuiKind::menu; }
+        bool dialMenuHere() const noexcept { return dialMenu_ && kind_ != GuiKind::menu && shown(); }   // setMenu's
         void drawControl(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const;
         void drawKnob(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void drawSlider(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;

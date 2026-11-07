@@ -609,8 +609,8 @@ namespace playground::ui
 
     void GuiControlItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h)
     {
-        if (e.popup && dialMenu_ && shown())
-            dialMenu_({ e.x, e.y });                     // MIDI learn's menu, never a write
+        if (e.popup && dialMenuHere())
+            dialMenu_({ e.x, e.y });                     // MIDI learn's menu, never a write (as the menu action's)
         if (e.popup || !shown())
             return;
         const funkgui::Point p{ e.x, e.y };
@@ -775,12 +775,12 @@ namespace playground::ui
             case funkgui::A11yAction::decrement: g.tap(value_.port(), clamp01(now - value_.step())); break;
             case funkgui::A11yAction::setValue:  g.tap(value_.port(), clamp01(static_cast<float>(v))); break;
             case funkgui::A11yAction::showMenu:
-                if (!clicks() && dialMenu_)
+                if (dialMenuHere())
                 {
-                    dialMenu_({ cell_.centreX(), cell_.centreY() });
+                    dialMenu_({ cell_.centreX(), cell_.centreY() });   // as its right-click: MIDI learn's menu
                     break;
                 }
-                [[fallthrough]];
+                [[fallthrough]];                          // a dropdown's: its list, as its press
             case funkgui::A11yAction::press:
             case funkgui::A11yAction::toggle:
                 if (clicks() && !openMenuFromHost(g))

@@ -3759,9 +3759,6 @@ namespace playground::ui
             port_.removeIrViewer();                      // its IR tab goes with it: nothing kept for it
     }
 
-    // ---- the folder (plugin/FolderSync.h) ----------------------------------------------------------------------------
-    // What the port says of the folder, read again when its revision moves; a save that landed and a new conflict say
-    // so in the status (not what this Panel found when it was made).
     // ---- MIDI learn ---------------------------------------------------------------------------------------------------
     void Panel::syncMidi()
     {
@@ -3801,9 +3798,7 @@ namespace playground::ui
         const midilearn::View v = port_.midi();
         const std::string& words = v.words[static_cast<std::size_t>(slot)];
         const bool learning = v.learning == slot;
-        int mapped = static_cast<int>(v.waiting.size());
-        for (const std::string& w : v.words)
-            mapped += w.empty() ? 0 : 1;
+        const int mapped = static_cast<int>(v.mappings.size());
         enum : int { kLearn = 1, kStop, kForget, kForgetAll, kHost };
         funkgui::MenuRequest request;
         funkgui::MenuItem title;
@@ -3865,6 +3860,9 @@ namespace playground::ui
         return item >= 0 && static_cast<const DialItem&>(*items_[static_cast<std::size_t>(item)]).midiLearning();
     }
 
+    // ---- the folder (plugin/FolderSync.h) ----------------------------------------------------------------------------
+    // What the port says of the folder, read again when its revision moves; a save that landed and a new conflict say
+    // so in the status (not what this Panel found when it was made).
     void Panel::syncFolder()
     {
         const uint64_t r = port_.folderRevision();
