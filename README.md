@@ -25,7 +25,7 @@ linked in. [CHANGELOG.md](CHANGELOG.md) says what changed, day by day.
 - **Dials and panels.** The program's parameters become dials and host parameters; a `.gui` file makes a whole
   interface, with knobs, pads, displays and shaders.
 - **Projects.** Every save is a version, with presets, A/B between versions and export; factory projects come with
-  each plugin.
+  each plugin (placeholders for now).
 - **The synth's voices.** Sixteen at once, MIDI with its wheels and pedal, MIDI learn, mono and legato, and a Logitech
   G29 racing wheel in the Standalone.
 - **Analog circuits.** A SPICE netlist (`.cir`) becomes a module the program plays, with a schematic you can edit and
@@ -176,7 +176,7 @@ To install, `cmake --workflow --preset linux-release-build`, then `scripts/packa
 - [Test](#test): the probes. [FMinus](#fminus): how the compiler comes in. [What is where](#what-is-where): the
   source tree.
 - [A new plugin, or a new product](#a-new-plugin-or-a-new-product), [Update the DSP core](#update-the-dsp-core),
-  [Theme, zoom, diagnostics](#theme-zoom-diagnostics), [History](#history).
+  [Theme, zoom, diagnostics](#theme-zoom-diagnostics).
 
 The two are one code base compiled twice, once for each product (`products/effect.cmake`, `products/synth.cmake`):
 what differs is the program each plays (below), its examples and its identity (name, codes, bundle id, its own
@@ -2725,14 +2725,14 @@ the top bar's CPU figure changes four times a second at most, and that is drawn.
 colours and works them out again only for the lines an edit touches (and every line when a module's or a constant's
 name comes or goes, or a local of a constant's name).
 
+<!-- origin -->
 ## History
 
-<!-- origin -->
 The effect began as a feedback delay network reverb (made from FunkPluginTemplate, its FDN ported from the Visage
 version, git tag `legacy-visage`), and the synth as the sine voice synth of the Visage version, ported onto FSynth's
 DSP core; each one's history before the branch `fminus-editor` holds that plugin and the file-watching script that ran
 after it. They were two repositories, TestingPlayground and TestingPlaygroundSynth, until this one took both: the
 synth's history is merged in.
-<!-- /origin -->
 
 What changed since, day by day: [CHANGELOG.md](CHANGELOG.md).
+<!-- /origin -->
