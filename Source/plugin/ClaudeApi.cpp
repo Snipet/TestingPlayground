@@ -4,6 +4,14 @@
 #include <chrono>
 #include <thread>
 
+#if defined(__linux__)
+#include <curl/curl.h>
+
+#include <cctype>
+#include <cstdlib>
+#include <mutex>
+#endif
+
 namespace playground::claude
 {
     // ---- JSON helpers ------------------------------------------------------------------------------------------------
@@ -63,6 +71,172 @@ namespace playground::claude
     // ---- the transport ---------------------------------------------------------------------------------------------
     namespace
     {
+#if defined(__linux__)
+        // Linux: libcurl. JUCE's own client there speaks plain http:// alone (an https:// address never connects), and
+        // its curl client fills a whole read before it returns. This one gives a 200's body to onChunk piece by piece
+        // as it arrives, stops within a poll (40 ms) of `cancel`, follows no redirect, and gives up a connection that
+        // stays idle for two minutes (no byte, not even the API's pings), as NSURLSession's timeout does on macOS.
+        std::once_flag curlStarted;
+
+        struct CurlCall
+        {
+            CURL* easy = nullptr;
+            const std::function<bool(std::string_view)>* onChunk = nullptr;
+            HttpResult* result = nullptr;
+            long status = 0;                          // the response's, read at its body's first byte
+        };
+
+        std::size_t curlHeader(char* data, std::size_t size, std::size_t count, void* user)
+        {
+            auto& call = *static_cast<CurlCall*>(user);
+            const std::size_t bytes = size * count;
+            std::string_view line(data, bytes);
+            while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back())) != 0)
+                line.remove_suffix(1);
+            if (line.substr(0, 5) == "HTTP/")         // a response begins (another after a 100 Continue)
+            {
+                call.result->retryAfterSeconds = -1;
+                call.result->location.clear();
+            }
+            else if (const std::size_t colon = line.find(':'); colon != std::string_view::npos)
+            {
+                std::string name(line.substr(0, colon));
+                for (char& c : name)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                std::string_view value = line.substr(colon + 1);
+                while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0)
+                    value.remove_prefix(1);
+                if (name == "retry-after")
+                    call.result->retryAfterSeconds = std::atoi(std::string(value).c_str());
+                else if (name == "location")
+                    call.result->location = std::string(value);
+            }
+            return bytes;
+        }
+
+        std::size_t curlBody(char* data, std::size_t size, std::size_t count, void* user)
+        {
+            auto& call = *static_cast<CurlCall*>(user);
+            const std::size_t bytes = size * count;
+            if (call.status == 0)
+                curl_easy_getinfo(call.easy, CURLINFO_RESPONSE_CODE, &call.status);
+            if (call.status == 200 && *call.onChunk)
+                return (*call.onChunk)(std::string_view(data, bytes)) ? bytes : 0;   // 0: false from it ends the read
+            call.result->body.append(data, bytes);
+            return bytes;
+        }
+
+        class HttpsTransport final : public Transport
+        {
+        public:
+            HttpResult post(const std::string& host, const std::string& path, const std::string& body,
+                            const Headers& headers, const std::function<bool(std::string_view)>& onChunk,
+                            const std::atomic<bool>& cancel) override
+            {
+                return request(true, host, path, body, headers, onChunk, cancel);
+            }
+
+            HttpResult get(const std::string& host, const std::string& path, const Headers& headers,
+                           const std::atomic<bool>& cancel) override
+            {
+                return request(false, host, path, {}, headers, {}, cancel);
+            }
+
+        private:
+            static HttpResult request(bool post, const std::string& host, const std::string& path,
+                                      const std::string& body, const Headers& headers,
+                                      const std::function<bool(std::string_view)>& onChunk,
+                                      const std::atomic<bool>& cancel)
+            {
+                std::call_once(curlStarted, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+                HttpResult r;
+                CURL* const easy = curl_easy_init();
+                CURLM* const multi = curl_multi_init();
+                curl_slist* list = nullptr;
+                for (const auto& [k, v] : headers)
+                    list = curl_slist_append(list, (k + ": " + v).c_str());
+                list = curl_slist_append(list, "Expect:");   // a large body (pictures) sent at once, no 100 Continue
+                const auto release = [&] {
+                    if (multi != nullptr && easy != nullptr)
+                        curl_multi_remove_handle(multi, easy);
+                    if (multi != nullptr)
+                        curl_multi_cleanup(multi);
+                    if (easy != nullptr)
+                        curl_easy_cleanup(easy);
+                    curl_slist_free_all(list);
+                };
+                if (easy == nullptr || multi == nullptr || list == nullptr)
+                {
+                    release();
+                    r.error = "no connection to " + hostName(host);
+                    return r;
+                }
+                CurlCall call{ easy, &onChunk, &r, 0 };
+                const std::string url = host + path;
+                curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
+                curl_easy_setopt(easy, CURLOPT_HTTPHEADER, list);
+                curl_easy_setopt(easy, CURLOPT_NOSIGNAL, 1L);
+                // No redirect followed: the conversation and the key go to the host asked for, never to where its
+                // answer points (another origin, or plain HTTP).
+                curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 0L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+                curl_easy_setopt(easy, CURLOPT_PROTOCOLS_STR, "http,https");
+#else
+                curl_easy_setopt(easy, CURLOPT_PROTOCOLS, static_cast<long>(CURLPROTO_HTTP | CURLPROTO_HTTPS));
+#endif
+                curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 120L);
+                curl_easy_setopt(easy, CURLOPT_LOW_SPEED_LIMIT, 1L);   // idle: under a byte a second for two minutes
+                curl_easy_setopt(easy, CURLOPT_LOW_SPEED_TIME, 120L);
+                curl_easy_setopt(easy, CURLOPT_HEADERFUNCTION, curlHeader);
+                curl_easy_setopt(easy, CURLOPT_HEADERDATA, &call);
+                curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, curlBody);
+                curl_easy_setopt(easy, CURLOPT_WRITEDATA, &call);
+                if (post)
+                {
+                    curl_easy_setopt(easy, CURLOPT_POST, 1L);
+                    curl_easy_setopt(easy, CURLOPT_POSTFIELDS, body.data());
+                    curl_easy_setopt(easy, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
+                }
+                else
+                {
+                    curl_easy_setopt(easy, CURLOPT_HTTPGET, 1L);
+                }
+                curl_multi_add_handle(multi, easy);
+
+                bool stopped = false;
+                int running = 1;
+                while (running > 0)
+                {
+                    if (cancel.load())
+                    {
+                        stopped = true;
+                        break;
+                    }
+                    if (curl_multi_perform(multi, &running) != CURLM_OK)
+                        break;
+                    if (running > 0 && curl_multi_poll(multi, nullptr, 0, 40, nullptr) != CURLM_OK)
+                        break;
+                }
+                CURLcode result = CURLE_OK;
+                int left = 0;
+                while (const CURLMsg* m = curl_multi_info_read(multi, &left))
+                    if (m->msg == CURLMSG_DONE && m->easy_handle == easy)
+                        result = m->data.result;
+                long status = 0;
+                curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &status);
+                release();
+
+                r.status = static_cast<int>(status);
+                if (r.status < 300 || r.status >= 400)
+                    r.location.clear();
+                if (stopped || cancel.load())
+                    r.error = "stopped";
+                else if (r.status == 0)
+                    r.error = "no connection to " + hostName(host) + " (" + curl_easy_strerror(result) + ")";
+                return r;
+            }
+        };
+#else
         class HttpsTransport final : public Transport
         {
         public:
@@ -153,6 +327,7 @@ namespace playground::claude
                 return r;
             }
         };
+#endif
     }
 
     std::unique_ptr<Transport> httpsTransport() { return std::make_unique<HttpsTransport>(); }

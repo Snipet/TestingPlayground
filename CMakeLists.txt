@@ -194,11 +194,14 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 # Windows' system libraries the plugin, the server and the helper call: Winsock (the MCP sockets), CNG (the chat's key
 # file), the shell's folders.
 set(FP_WINDOWS_LIBS ws2_32 bcrypt shell32 ole32)
-# Linux's: OpenSSL's libcrypto (the chat's key file: AES, PBKDF2 and HMAC, as CommonCrypto and CNG give them).
+# Linux's: OpenSSL's libcrypto (the chat's key file: AES, PBKDF2 and HMAC, as CommonCrypto and CNG give them) and
+# libcurl (the chat's HTTPS: ClaudeApi.cpp's transport; JUCE's own Linux client speaks plain HTTP alone, so JUCE_USE_CURL
+# stays 0 everywhere and no JUCE target links curl).
 set(FP_LINUX_LIBS "")
 if(FP_LINUX)
   find_package(OpenSSL 3 REQUIRED COMPONENTS Crypto)
-  set(FP_LINUX_LIBS OpenSSL::Crypto)
+  find_package(CURL REQUIRED)
+  set(FP_LINUX_LIBS OpenSSL::Crypto CURL::libcurl)
 endif()
 if(FP_WITH_GPU)
   set(_fp_editor_on "GPU")
