@@ -697,9 +697,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
   those that want a GPU picture (FunkGui reads no frame back from Vulkan, so view_panel's and the sandbox's pictures
   are SoftRaster's: `gui.shaders`, `plugin.sandbox`, `plugin.chat`, `plugin.mcp`), those that assume macOS
   (`gui.shaders`' `text.spirv` sets SPIR-V against the panel's Metal; `gui.folder`'s Finder and VS Code), two rows of
-  `gui.explorer` and `gui.folder`'s, and the conflicts of `plugin.folder` and `plugin.chats`. The GUI probes need an X
-  display with a window manager: JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which
-  on a bare X server nothing has made, and the X error ends the process.
+  `gui.explorer` and `gui.folder`'s, the conflicts of `plugin.chats`, and `plugin.folder`'s saves of the same size
+  within one tick of the kernel's file clock (FolderSync tells a change by size and time, and before Linux 6.13's
+  fine-grained file times a file's time moves by the tick, 1 to 4 ms: `atomic.rename_over`, at times the conflicts;
+  seen on Docker Desktop's 6.12 kernel). Under emulation (an x86-64 container on a Mac) the rows with a time budget
+  fail too (`dsp.tune`, `plugin.capture`, `plugin.reload`). The GUI probes need an X display with a window manager:
+  JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which on a bare X server nothing has
+  made, and the X error ends the process.
 
 ## The installer
 

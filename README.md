@@ -2022,7 +2022,8 @@ build-linux-dev/TestingPlayground_artefacts/RelWithDebInfo/Standalone/TestingPla
 `build-linux-release/<Name>_artefacts/Release/Standalone/` (its `shaderc` and `licences/` beside it). The probes' GUI
 tests need an X display with a window manager (your desktop session; on a headless machine Xvfb with one, such as
 openbox); `-DFP_PROBE_TIMEOUT_SCALE=<n>` multiplies every probe's timeout, for a slow machine. Not every probe passes
-there yet: the rows that want a GPU picture, a few that assume macOS, and the folder conflicts.
+there yet: the rows that want a GPU picture, a few that assume macOS, the chats' conflicts, and the FOLDER's saves of
+the same size within a few milliseconds on a kernel before 6.13 (a file's time there moves by the kernel's tick).
 
 ### Install
 
