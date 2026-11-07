@@ -159,6 +159,9 @@ namespace playground::projectstore
         int latest = 0;                                  // its latest version's number
         int versions = 0;                                // how many it keeps
         std::vector<std::string> presets;                // their names, by name
+        std::string category;                            // its info's: what PROJECTS groups it by ("" for none)
+        std::vector<std::string> tags;                   // its info's
+        std::string description;                         // its info's (PROJECTS' search reads it)
     };
 
     // `name` as a project or a preset may have it: printable ASCII but / \ : * ? " < > | and a leading '.', its spaces
@@ -249,6 +252,28 @@ namespace playground::projectstore
     Info tidyInfo(Info info);
     std::vector<std::string> splitTags(std::string_view commaSeparated);   // "warm, analog,, Warm" -> warm, analog
     bool setInfo(std::string_view project, const Info& info, std::string* why = nullptr);
+    // Its category alone (tidied as tidyInfo does; "" for none), the rest of its info as it is: one read, one write.
+    bool setCategory(std::string_view project, std::string_view category, std::string* why = nullptr);
+
+    // How PROJECTS shows the projects (editor/ProjectBrowser.h, editor/ProjectGroups.h): the projects starred (by name,
+    // a factory one's as factoryName spells it), the groups folded (ProjectGroups' keys), the search typed, the tag
+    // filtered on and the order. The folder's own, so every instance of this plugin on the Mac (and a probe, in its
+    // folder) shares it: one small file there, kViewFile (hidden: no project's name starts with a '.'), written whole
+    // (beside, then moved over) and read again only when its time or its size changes. None, or one that does not
+    // read: the default (nothing starred or folded, no filter, by name). remove() unstars the project it deletes.
+    inline constexpr const char* kViewFile = ".projects-view.json";
+    inline constexpr std::size_t kMaxFavourites = 500, kMaxFolded = 100, kMaxSearch = 60;
+    struct View
+    {
+        std::vector<std::string> favourites;             // case aside, each once
+        std::vector<std::string> folded;
+        std::string search;                              // printable, at most kMaxSearch characters
+        std::string tag;                                 // "" for any
+        bool byDate = false;                             // the newest save first, else by name
+        friend bool operator==(const View&, const View&) = default;
+    };
+    View view();
+    bool setView(const View& v, std::string* why = nullptr);
 
     // A project as the JSON of its file, and back (`name` the project's when the JSON is a file's; nothing, with why, when
     // it is not a project of this plugin's or it is damaged). For ProjectExport.

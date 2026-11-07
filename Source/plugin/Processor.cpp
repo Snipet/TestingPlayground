@@ -1833,7 +1833,8 @@ namespace playground
     {
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : projectstore::factoryList())
-            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), true });
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), true,
+                            e.category, e.tags, e.description, e.savedMs });
         return out;
     }
 
@@ -1864,7 +1865,8 @@ namespace playground
     {
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : list)
-            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()) });
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
+                            e.category, e.tags, e.description, e.savedMs });
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))
@@ -2330,6 +2332,22 @@ namespace playground
     bool Processor::setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why)
     {
         return projectstore::setInfo(project, { info.description, info.author, info.category, info.tags, info.genres }, &why);
+    }
+
+    bool Processor::setProjectCategory(const std::string& project, const std::string& category, std::string& why)
+    {
+        return projectstore::setCategory(project, category, &why);
+    }
+
+    ProjectsView Processor::projectsView() const
+    {
+        const projectstore::View v = projectstore::view();
+        return { v.favourites, v.folded, v.search, v.tag, v.byDate };
+    }
+
+    bool Processor::setProjectsView(const ProjectsView& view, std::string& why)
+    {
+        return projectstore::setView({ view.favourites, view.folded, view.search, view.tag, view.byDate }, &why);
     }
 
     bool Processor::exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,

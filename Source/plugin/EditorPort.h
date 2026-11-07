@@ -92,6 +92,9 @@
 //                     opened and compiled
 //   deletePreset()    a preset deleted
 //   projectInfo()     a project's description, author, category, tags and genres; setProjectInfo() keeps them (tidied)
+//   setProjectCategory() its category alone ("" for none: Uncategorised), as PROJECTS sets it (a menu, a drag, typed)
+//   projectsView()    how PROJECTS shows them (ProjectsView): the projects starred, the groups folded, the search, the
+//   setProjectsView() tag filtered on and the order; this Mac's (ProjectStore.h's View), every instance's
 //   exportProject()   a project written as a .zip of its source or a .fmpack (ProjectExport.h), every version or the
 //                     newest only; exportFolder() where a chooser starts (the Desktop)
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
@@ -294,6 +297,10 @@ namespace playground
         int versions = 0;                        // how many it keeps
         int presets = 0;
         bool factory = false;                    // a factory project (factoryProjects()): read-only
+        std::string category;                    // its info's ("" for none): PROJECTS' group (editor/ProjectGroups.h)
+        std::vector<std::string> tags;           // its info's
+        std::string description;                 // its info's: PROJECTS' search reads it, with the name and the tags
+        int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -333,6 +340,19 @@ namespace playground
         std::vector<std::string> tags;
         std::vector<std::string> genres;
         friend bool operator==(const ProjectInfo&, const ProjectInfo&) = default;
+    };
+
+    // How PROJECTS shows the projects (projectsView(); ProjectStore.h's View): the projects starred (by name, a factory
+    // one's as factoryName() spells it), the groups folded (editor/ProjectGroups.h's keys), the search typed, the tag
+    // filtered on ("" for any) and the order (byDate: the newest save first, else by name).
+    struct ProjectsView
+    {
+        std::vector<std::string> favourites;
+        std::vector<std::string> folded;
+        std::string search;
+        std::string tag;
+        bool byDate = false;
+        friend bool operator==(const ProjectsView&, const ProjectsView&) = default;
     };
 
     // A file's name a project export's (ProjectExport.h): what Import offers and a drop on the panel imports.
@@ -502,6 +522,9 @@ namespace playground
         virtual bool deletePreset(const std::string& project, const std::string& preset, std::string& why) = 0;
         virtual ProjectInfo projectInfo(const std::string& project) const = 0;
         virtual bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) = 0;
+        virtual bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) = 0;
+        virtual ProjectsView projectsView() const = 0;
+        virtual bool setProjectsView(const ProjectsView& view, std::string& why) = 0;
         virtual bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;

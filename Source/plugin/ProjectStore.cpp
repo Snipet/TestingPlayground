@@ -390,6 +390,9 @@ namespace playground::projectstore
                 c.entry.presets.push_back(pr.name);
                 c.presets.push_back({ pr.name, pr.savedMs, pr.from });
             }
+            c.entry.category = p.info.category;
+            c.entry.tags = p.info.tags;
+            c.entry.description = p.info.description;
             return c;
         }
 
@@ -1050,8 +1053,18 @@ namespace playground::projectstore
             fail(why, "cannot delete the project \"" + std::string(name) + "\"");
             return false;
         }
-        const std::lock_guard<std::mutex> lock(cacheMutex);
-        cache.erase(f.getFullPathName().toStdString());
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            cache.erase(f.getFullPathName().toStdString());
+        }
+        // Its star goes with it: a project saved later under its name starts unstarred.
+        View v = view();
+        const auto starred = [&](const std::string& s) { return sameName(s, name); };
+        if (std::any_of(v.favourites.begin(), v.favourites.end(), starred))
+        {
+            v.favourites.erase(std::remove_if(v.favourites.begin(), v.favourites.end(), starred), v.favourites.end());
+            (void)setView(v);
+        }
         return true;
     }
 
@@ -1118,6 +1131,133 @@ namespace playground::projectstore
             p.info = tidyInfo(info);
             return true;
         });
+    }
+
+    bool setCategory(std::string_view project, std::string_view category, std::string* why)
+    {
+        return update(project, why, [&](Project& p) {
+            Info info = p.info;
+            info.category = std::string(category);
+            p.info = tidyInfo(std::move(info));
+            return true;
+        });
+    }
+
+    namespace
+    {
+        constexpr const char* kViewFormat = "funk-playground-projects-view";
+
+        // The view's file as last read or written (its path, time and size), so view() reads it only when it changed.
+        std::mutex viewMutex;
+        struct ViewCache
+        {
+            std::string path;
+            juce::int64 modified = -1, size = -1;
+            View view;
+        };
+        ViewCache viewCache;
+
+        juce::File viewFile() { return directory().getChildFile(kViewFile); }
+
+        // The view as it may be kept: names tidied and each once (case aside), at most so many, the search printable.
+        View tidyView(View v)
+        {
+            const auto unique = [](const std::vector<std::string>& in, std::size_t most, bool names) {
+                std::vector<std::string> out;
+                for (const std::string& s : in)
+                {
+                    const std::string t = names ? (isFactoryName(s) ? factoryName(tidyName(ownName(s))) : tidyName(s))
+                                                : tidyInfo({ {}, {}, s, {}, {} }).category;
+                    if (!t.empty() && out.size() < most && std::none_of(out.begin(), out.end(), [&](const std::string& o) { return sameName(o, t); }))
+                        out.push_back(t);
+                }
+                return out;
+            };
+            v.favourites = unique(v.favourites, kMaxFavourites, true);
+            std::vector<std::string> folded;
+            for (const std::string& k : v.folded)        // a group's key ("category:bass"): printable, case aside once
+            {
+                std::string t;
+                for (const char ch : k)
+                    if (ch >= 0x20 && ch <= 0x7E && t.size() < kMaxTag + 16)
+                        t += ch;
+                if (!t.empty() && folded.size() < kMaxFolded
+                    && std::none_of(folded.begin(), folded.end(), [&](const std::string& o) { return sameName(o, t); }))
+                    folded.push_back(t);
+            }
+            v.folded = std::move(folded);
+            std::string search;
+            for (const char ch : v.search)
+                if (search.size() < kMaxSearch)
+                    search += (ch >= 0x20 && ch <= 0x7E) ? ch : ' ';
+            v.search = std::move(search);
+            v.tag = tidyInfo({ {}, {}, v.tag, {}, {} }).category;   // a tag as the info keeps one
+            return v;
+        }
+
+        View viewOf(const juce::var& root)
+        {
+            View v;
+            if (!root.isObject() || root["format"].toString() != kViewFormat)
+                return v;
+            v.favourites = stringsOf(root["favourites"]);
+            v.folded = stringsOf(root["folded"]);
+            v.search = root["search"].toString().toStdString();
+            v.tag = root["tag"].toString().toStdString();
+            v.byDate = root["sort"].toString() == "saved";
+            return tidyView(std::move(v));
+        }
+    }
+
+    View view()
+    {
+        const juce::File f = viewFile();
+        const std::string path = f.getFullPathName().toStdString();
+        const bool there = f.existsAsFile();
+        const juce::int64 modified = there ? f.getLastModificationTime().toMilliseconds() : 0, size = there ? f.getSize() : 0;
+        {
+            const std::lock_guard<std::mutex> lock(viewMutex);
+            if (viewCache.path == path && viewCache.modified == modified && viewCache.size == size)
+                return viewCache.view;
+        }
+        View v;
+        if (there && size < 1024 * 1024)
+            v = viewOf(juce::JSON::parse(f.loadFileAsString()));
+        const std::lock_guard<std::mutex> lock(viewMutex);
+        viewCache = { path, modified, size, v };
+        return v;
+    }
+
+    bool setView(const View& wanted, std::string* why)
+    {
+        const View v = tidyView(wanted);
+        if (v == view())
+            return true;
+        const juce::File dir = directory();
+        if (!dir.isDirectory() && !dir.createDirectory())
+        {
+            fail(why, "cannot make the folder " + dir.getFullPathName().toStdString());
+            return false;
+        }
+        auto* root = new juce::DynamicObject();
+        root->setProperty("format", kViewFormat);
+        root->setProperty("version", 1);
+        root->setProperty("favourites", stringsVar(v.favourites));
+        root->setProperty("folded", stringsVar(v.folded));
+        root->setProperty("search", str(v.search));
+        root->setProperty("tag", str(v.tag));
+        root->setProperty("sort", v.byDate ? "saved" : "name");
+        const juce::File target = viewFile();
+        const juce::File temp = dir.getChildFile(juce::String(kViewFile) + ".saving");
+        if (!temp.replaceWithText(juce::JSON::toString(juce::var(root)), false, false, "\n") || !temp.moveFileTo(target))
+        {
+            temp.deleteFile();
+            fail(why, "cannot write " + target.getFullPathName().toStdString());
+            return false;
+        }
+        const std::lock_guard<std::mutex> lock(viewMutex);
+        viewCache = { target.getFullPathName().toStdString(), target.getLastModificationTime().toMilliseconds(), target.getSize(), v };
+        return true;
     }
 
     std::string toJson(const Project& p)

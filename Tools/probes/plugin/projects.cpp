@@ -43,6 +43,13 @@
 //   CAP      a project keeps its newest 100 versions, the numbers going on
 //   REFUSE   a project of the other kind is refused (the why names it), a damaged file and a missing name too, and the
 //            draft is untouched
+//   CATEGORY the listing's entries carry the info's category, tags and description (PROJECTS groups by the first and
+//            searches all three); setProjectCategory sets it alone (tidied: spaces collapsed, cut to 24), the rest of the
+//            info as it was, and "" clears it; a project that is not there is refused
+//   VIEW     PROJECTS' view (projectsView: the stars, the groups folded, the search, the tag, the order) none at first;
+//            kept, it reads back the same from another processor, from the folder's hidden file (no project listed
+//            for it), tidied (a name starred twice in two cases once, a factory project's name kept as spelt, the search
+//            cut to 60); a project deleted loses its star
 //   DELETE   a preset deleted (no longer applied); a version deleted, never the only one; a project deleted: gone from
 //            the list, project() none
 //   PANEL    a panel dial (Controls.h's isPanelDial: the 34th of 34, past the host's 32) is kept by name as a host
@@ -660,6 +667,63 @@ PROBE(plugin, projects)
         P.eq("refuse.no_version", !e.editorPort().openProject("glass bloom", 77, why) ? 1 : 0, 1);
         P.eq("refuse.draft_untouched", e.editorPort().draft() == untouched ? 1 : 0, 1);
         P.eq("refuse.not_listed", !listed(pa, "Other Kind") && !listed(pa, "Broken") ? 1 : 0, 1);
+    }
+
+    // CATEGORY
+    {
+        pg::ProjectInfo info;
+        info.description = "A bright, slow pad.";
+        info.author = "Probe";
+        info.category = "Pad";
+        info.tags = { "warm", "slow" };
+        P.eq("category.info_set", pa.setProjectInfo("glass bloom", info, why) ? 1 : 0, 1);
+        const std::optional<pg::ProjectEntry> e = listed(pa, "glass bloom");
+        P.eq("category.listed_with_info", e && e->category == "Pad" && e->tags == info.tags && e->description == info.description
+                                              && e->savedMs > 0 ? 1 : 0, 1);
+        P.eq("category.set", pa.setProjectCategory("glass bloom", "  Slow   Pads ", why) ? 1 : 0, 1);
+        const pg::ProjectInfo now = pa.projectInfo("glass bloom");
+        P.eq("category.tidied_alone", now.category == "Slow Pads" && now.description == info.description && now.author == "Probe"
+                                          && now.tags == info.tags ? 1 : 0, 1);
+        P.eq("category.cut", pa.setProjectCategory("glass bloom", std::string(40, 'c'), why)
+                                 && pa.projectInfo("glass bloom").category.size() == pg::projectstore::kMaxTag ? 1 : 0, 1);
+        P.eq("category.cleared", pa.setProjectCategory("glass bloom", "", why) && pa.projectInfo("glass bloom").category.empty()
+                                     && listed(pa, "glass bloom")->category.empty() ? 1 : 0, 1);
+        P.eq("category.missing_refused", pa.setProjectCategory("No Such Project", "Bass", why) ? 0 : 1, 1);
+        (void)pa.setProjectInfo("glass bloom", info, why);
+    }
+
+    // VIEW
+    {
+        P.eq("view.default", pa.projectsView() == pg::ProjectsView{} ? 1 : 0, 1);
+        pg::ProjectsView v;
+        v.favourites = { "glass bloom", "Glass Bloom", "Old Sound", pg::factoryName("Warm Pad") };
+        v.folded = { "category:pad", "factory" };
+        v.search = std::string(80, 's');
+        v.tag = "warm";
+        v.byDate = true;
+        P.eq("view.kept", pa.setProjectsView(v, why) ? 1 : 0, 1);
+        pg::Processor other;
+        const pg::ProjectsView back = other.editorPort().projectsView();
+        std::printf("view: %zu starred, %zu folded, search %zu, tag %s\n", back.favourites.size(), back.folded.size(), back.search.size(),
+                    back.tag.c_str());
+        P.eq("view.read_back", back.favourites == std::vector<std::string>{ "glass bloom", "Old Sound", pg::factoryName("Warm Pad") }
+                                   && back.folded == v.folded && back.tag == "warm" && back.byDate ? 1 : 0, 1);
+        P.eq("view.search_cut", static_cast<int64_t>(back.search.size()), static_cast<int64_t>(pg::projectstore::kMaxSearch));
+        const juce::var viewJson = juce::JSON::parse(dir.getChildFile(pg::projectstore::kViewFile).loadFileAsString());
+        P.eq("view.file_json", viewJson["format"].toString() == "funk-playground-projects-view" && viewJson["favourites"].size() == 3
+                                   && viewJson["sort"].toString() == "saved" ? 1 : 0, 1);
+        P.eq("view.hidden_file", dir.getChildFile(pg::projectstore::kViewFile).existsAsFile()
+                                     && juce::String(pg::projectstore::kViewFile).startsWithChar('.') && !listed(pa, ".projects-view") ? 1 : 0, 1);
+        pg::Processor scratch;
+        pg::EditorPort& sp = scratch.editorPort();
+        sp.setDraft({ files, 0 });
+        pg::SavedVersion s2;
+        P.eq("view.unstarred_saved", sp.saveVersion("Star Gone", s2, why) ? 1 : 0, 1);
+        pg::ProjectsView starred = sp.projectsView();
+        starred.favourites.push_back("Star Gone");
+        P.eq("view.starred", sp.setProjectsView(starred, why) && sp.projectsView().favourites.size() == 4 ? 1 : 0, 1);
+        P.eq("view.deleted_unstars", sp.deleteProject("Star Gone", why) && sp.projectsView().favourites.size() == 3 ? 1 : 0, 1);
+        P.eq("view.reset", pa.setProjectsView({}, why) && pa.projectsView() == pg::ProjectsView{} ? 1 : 0, 1);
     }
 
     // DELETE

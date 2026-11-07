@@ -263,6 +263,9 @@ namespace playground
         bool deletePreset(const std::string& project, const std::string& preset, std::string& why) override;
         ProjectInfo projectInfo(const std::string& project) const override;
         bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) override;
+        bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) override;
+        ProjectsView projectsView() const override;
+        bool setProjectsView(const ProjectsView& view, std::string& why) override;
         bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path, Exported& out,
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
