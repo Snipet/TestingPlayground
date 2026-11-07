@@ -700,7 +700,8 @@ namespace playground
         // sizes, and a hash of every module's fields and offsets, which the Engine's copy carries to be compared).
         // adopt() takes the copy into instance 0, Shared and Host (each as large as this Patch's; no `instance`, as an
         // instrument's copy has none while no voice sounds: instance 0 as it is, Shared and Host alone), points the main
-        // module's Shared* and Host* fields (and Shared's Host*) at this Patch's own, and the dials' streams at none;
+        // module's Shared* and Host* fields (and Shared's Host*) at this Patch's own, its samples' fields (above,
+        // "Samples") at the sounds this Patch holds, and the dials' streams at none;
         // it refuses ("" when it took it) a copy any of whose other pointers is not null: it would point at memory of
         // the program that plays (a heap block init made, Shared's table), which a call on the copy would then write
         // from this thread. Nothing of the program that plays is touched.

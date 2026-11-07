@@ -243,9 +243,16 @@ namespace playground
         if ((shared_ != nullptr) != (shared != nullptr) || (host_ != nullptr) != (host != nullptr))
             return "the copy is not of this program";
         // Every pointer the copy holds must be null, but those the plugin points (the main module's Shared* and Host*,
-        // Shared's Host*): any other points at memory of the program that plays.
+        // Shared's Host*, a sample's data): any other points at memory of the program that plays.
         std::string sharing;
-        const auto check = [&](const std::vector<std::size_t>& repointed, const char* base, const std::string& prefix) {
+        // A sample's data (#pragma sample, Patch.h's "Samples") is the plugin's too, a sound the Patch holds: this one
+        // points the copy's at its own below, as its compile with the same samples made it.
+        std::vector<std::size_t> mainSamples, sharedSamples;
+        for (const SampleUse& u : samples_)
+            for (const SamplePlace& place : u.places)
+                (place.shared ? sharedSamples : mainSamples).push_back(place.data);
+        const auto check = [&](const std::vector<std::size_t>& repointed, const std::vector<std::size_t>& sampled, const char* base,
+                               const std::string& prefix) {
             return [&, base, prefix](const fminus::Program::Module::Field& f, const fminus::Program::Module&, const std::string& path,
                                      const char* at) {
                 if (!sharing.empty() || f.type.find('*') == std::string::npos)
@@ -253,6 +260,8 @@ namespace playground
                 const std::size_t offset = static_cast<std::size_t>(at - base);
                 if (path.find('.') == std::string::npos
                     && std::find(repointed.begin(), repointed.end(), offset) != repointed.end())
+                    return;
+                if (std::find(sampled.begin(), sampled.end(), offset) != sampled.end())
                     return;
                 for (std::size_t k = 0; k < f.size; ++k)
                     if (at[k] != 0)
@@ -266,11 +275,11 @@ namespace playground
         mainPointed.insert(mainPointed.end(), hostFields_.begin(), hostFields_.end());
         const char* in = static_cast<const char*>(instance);
         if (in != nullptr)
-            walk(p, *main, in, "", 0, check(mainPointed, in, ""));
+            walk(p, *main, in, "", 0, check(mainPointed, mainSamples, in, ""));
         if (sharing.empty() && sharedModule != nullptr)
         {
             const char* sh = static_cast<const char*>(shared);
-            walk(p, *sharedModule, sh, "", 0, check(sharedHostFields_, sh, "Shared's "));
+            walk(p, *sharedModule, sh, "", 0, check(sharedHostFields_, sharedSamples, sh, "Shared's "));
         }
         if (!sharing.empty())
             return "its field " + sharing + " points at memory of the program that plays (a block its init allocated, or "
@@ -289,6 +298,9 @@ namespace playground
         if (shared_ != nullptr)
             for (const std::size_t at : sharedHostFields_)
                 std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
+        fillSamples(instances_[0], false);             // the samples' sounds this Patch holds (its data, frames, rate)
+        if (shared_ != nullptr)
+            fillSamples(shared_, true);
         // Every parameter's stream at none (a dial that glided as it was copied pointed at the Engine's samples): each
         // reads its value, as a call that holds still does.
         const auto unstream = [](const fminus::Program::Module::Field& f, const fminus::Program::Module& m, const std::string&,

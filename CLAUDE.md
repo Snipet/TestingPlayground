@@ -1620,9 +1620,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   waiting for `done` when the audio thread claimed it first), compares `Patch::layout`'s hash and `Snapshot::program`
   with that status's (a run the audio thread has not taken yet, laid out alike, is another program: refused, call it
   again), and `adopt`s it into its own Patch: every pointer of the copy but the main module's Shared* and Host* (and
-  Shared's Host*, all pointed at its own) must be null, else it is refused (a heap block init made: a call would write
-  what plays), and every parameter's stream is pointed at none. What plays is never written. `plugin.function` checks
-  it; its notes are the debugging part's (read-only to MCP: `kFaces`).
+  Shared's Host*, all pointed at its own) and a sample's `data` (`SamplePlace`: pointed again at the sound its own
+  Patch holds, `fillSamples`, with its frames, channels and rate) must be null, else it is refused (a heap block init
+  made: a call would write what plays), and every parameter's stream is pointed at none. Both compile with the samples
+  (Patch.h, "Samples"): `on: playing` with those the program that plays compiled with (`chatPlaying`), fresh with the
+  plugin's as they are (`chatAssets`), as a RUN would. What plays is never written. `plugin.function` checks it; its
+  notes are the debugging part's (read-only to MCP: `kFaces`).
 - **write_file's files in and out** (`plugin/ChatImport.cpp`): `files` writes several as one change of the draft
   (`chatSetDraft`; a netlist without `*@` lines keeps its drawing, as one written alone), all or none; `from` brings in
   a file or a folder the user named, whole (`~/` the home folder): only the editor's kinds (`isProgramFile`: .fm, .cir,
