@@ -98,7 +98,8 @@ namespace playground::ui
     // local, an argument, a field or a param has too (lang::Service::shadowNames) is a constant only where the service
     // says so: each use of one in a tab, in order, has its flag there (lang::Service::shadowed: 1, not a constant), which
     // the highlighter counts its way to as it does a file's conditionals (CodeHighlighter's state). A tab with no flags,
-    // or a use past them (as while the index is due after an edit), shows the name as a constant.
+    // or a use past them, shows the name as a constant; while the index is due after an edit (until the check's sync,
+    // CodeAssist::sync), a use after a use typed or deleted may show its neighbour's flag.
     struct TypeNames
     {
         std::vector<std::string> names;          // sorted

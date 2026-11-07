@@ -837,7 +837,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   local, an argument, a field or a param has too (`shadowNames`) is coloured as what it is at each use: `shadowed`
   gives each use's flag (`resolve`'s answer), which CodeAssist's sync puts in `TypeNames` by tab and the highlighter
   counts its way to in its state (bits 17 to 31, the conditionals' count in bits 1 to 16); a tab without flags, or a
-  use past them while the index is due, stays a constant. A hover's code is fitted to the card (`fitCode`:
+  use past them, stays a constant, and while the index is due after an edit (until the check's sync) a use after one
+  typed or deleted may show its neighbour's flag. A hover's code is fitted to the card (`fitCode`:
   `kHoverWidth` columns, `kHoverLines` lines, broken after a comma in brackets or before an attribute, outermost
   first), and the card cuts a code line still too wide with "..." (never a piece of it left out further on).
 - **The plugin's macros are every build's** (`lang::kDefines`: DEBUG; Patch.h, "Conditionals and warnings"): each of
