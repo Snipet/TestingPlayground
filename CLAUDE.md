@@ -1535,8 +1535,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   compare; apart from those, 22,599 and 21,225 with run_function, write_file's files, from and to, and
   measure_output's profile, paid in part by shorter first sentences of add_library_file, edit_circuit, get_status,
   tune_dials and compare, whose words moved into their guide parts or went; 23,343 and 21,969 with all of them, the
-  shorter kept where both had cut a first sentence; 23,400 and 22,026 with compare's target sound (wav:) and
-  capture's marks). `plugin.mcp`
+  shorter kept where both had cut a first sentence; 23,400 and 22,026 with the guide's cheatsheet part, waveguide.fm,
+  level_wobble_db and compare's wav:path, capture's marks costing none: they are past its description's first
+  paragraph, all that tools/list carries, the rest the guide's). `plugin.mcp`
   checks, and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
