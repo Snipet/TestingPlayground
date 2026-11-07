@@ -22,16 +22,35 @@
 //            another processor loading it shows the same chat; on another Mac (an empty store) a new, empty chat;
 //            a project renamed in the Finder since the session named it is found by its id, its chat with it
 //   MIGRATE  a session from before (its conversation in <CHAT json>): loaded, the chat shows and is kept on this Mac
-//            (sealed, the project's), the next session holds none of it; loaded again (or by another processor), the
-//            same chat, kept once
+//            (sealed, the instance's), the next session holds none of it; loaded again, the same instance and chat,
+//            kept once; old sessions whose chat was empty or a lone note: nothing adopted, an instance of its own each,
+//            a chat started in one in none of the others, and still in its own when its session is loaded again
+//   RENAME   a project renamed in the Finder since the session named it: found by its id, its chat with it
 //   EXPORT   a .fmpack and a .zip of a project with chats hold none of them, nor its id; the zip's README says the
 //            chats stay; the package imported is a project with an id of its own and no chat
 //   DELETE   a project deleted: its chats with it
 //   MCP      Claude Desktop's get_status holds no word of the chat
+//   COPIES   one state in several instances: a template's (from an instance that kept no chat) gives each instance its
+//            own, and a later one none of theirs; a state naming its instance's chat, in two live instances (a track
+//            duplicated): the first is that instance, the second shows a copy as its own (its thinking with it), and
+//            loaded again neither holds or lists the other's words; a new chat shown at the save: shown so again, the
+//            instance's earlier chat in the list, never in its place
+//   SHARED   one project's chat in two instances, both writing: two chats, neither's words lost
+//   SAVED    the project open's file deleted in the Finder, then a save: a new project with a new id, the chat moved to
+//            it (none left with the old id), the session naming the new id, and found by it when loaded
+//   GONE     a project deleted in another instance: this one's chat of it is not written back (the chat says why);
+//            saved as a project, it goes on with that one, and the chat says it is kept again
+//   PICTURES a view_panel picture (fake, SoftRaster): kept, sealed, in the chat's file; the project left and opened
+//            again, the next request still carries the signed thinking and the picture
+//   STOPWAIT a project opened while view_panel waits for the message thread (this one, not polling): back at once
+//   KEEPFAIL the instance's folder cannot be made: the chat says so once, nothing kept; made possible, the next save
+//            keeps it and the chat says so
+//   CLOSE    a change not kept yet (Claude Desktop's work) is kept when the processor goes
 #include "Probe.h"
 
 #include "FakeClaude.h"
 
+#include "editor/Picture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
 #include "plugin/EditorPort.h"
@@ -49,9 +68,11 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -121,6 +142,61 @@ namespace
     }
 
     pg::Sources program(const std::string& comment) { return { { "program.fm", std::string(pg::kExamples[0].source) + "\n// " + comment + "\n" } }; }
+
+    // A session as a build from before the chats wrote it: a fresh processor's state, its <CHAT> holding `json` (the
+    // conversation, as that build's saveState wrote it).
+    juce::MemoryBlock oldSession(const std::string& json)
+    {
+        pg::Processor maker;
+        juce::MemoryBlock fresh;
+        maker.getStateInformation(fresh);
+        std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(fresh.getData(), static_cast<int>(fresh.getSize()));
+        if (juce::XmlElement* c = xml->getChildByName("CHAT"))
+            xml->removeChildElement(c, true);
+        xml->createNewChildElement("CHAT")->setAttribute("json", juce::String::fromUTF8(json.c_str()));
+        juce::MemoryBlock out;
+        juce::AudioProcessor::copyXmlToBinary(*xml, out);
+        return out;
+    }
+
+    juce::MemoryBlock stateOf(pg::Processor& p)
+    {
+        juce::MemoryBlock m;
+        p.getStateInformation(m);
+        return m;
+    }
+
+    void load(pg::Processor& p, const juce::MemoryBlock& m)
+    {
+        p.setStateInformation(m.getData(), static_cast<int>(m.getSize()));
+        p.settle();
+    }
+
+    // Whether any chat of `owner`'s list (its titles) or any chat of its store holds `phrase`.
+    bool listHolds(const pg::ChatList& l, const std::string& phrase)
+    {
+        for (const pg::ChatListEntry& e : l.chats)
+            if (has(e.title, phrase))
+                return true;
+        return false;
+    }
+
+    bool storeHolds(const std::string& owner, const std::string& phrase)
+    {
+        for (const cs::ChatMeta& m : cs::chatsOf(owner))
+            if (const auto l = cs::loadChat(owner, m.id); l && has(l->state, phrase))
+                return true;
+        return false;
+    }
+
+    // The last entry of a kind's text.
+    std::string lastOf(const pg::ChatState& s, pg::ChatEntry::Kind kind)
+    {
+        for (auto it = s.entries.rbegin(); it != s.entries.rend(); ++it)
+            if (it->kind == kind)
+                return it->text;
+        return {};
+    }
 }
 
 PROBE(plugin, chats)
@@ -360,40 +436,83 @@ PROBE(plugin, chats)
         // ---- MIGRATE ------------------------------------------------------------------------------------------------
         {
             // A session from before: its <CHAT json="..."> holds the conversation (a chat's saveState, as that build wrote it).
-            pg::Processor maker;
-            const auto makerScript = wire(maker);
-            turn(maker, *makerScript, "PHRASE-M an older session", "Plan M.", "sig-m", "Answer M.");
-            const std::string json = maker.chatAgent().saveState();
-            maker.chatAgent().deleteChat();                 // nothing of it in the store but what the migration keeps
-            juce::MemoryBlock fresh;
-            maker.getStateInformation(fresh);
-            std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(fresh.getData(), static_cast<int>(fresh.getSize()));
-            if (juce::XmlElement* c = xml->getChildByName("CHAT"))
-                xml->removeChildElement(c, true);
-            auto* chat = xml->createNewChildElement("CHAT");
-            chat->setAttribute("json", juce::String::fromUTF8(json.c_str()));
-            juce::MemoryBlock oldSession;
-            juce::AudioProcessor::copyXmlToBinary(*xml, oldSession);
-            P.eq("migrate.old_holds_it", has(bytesOf(oldSession), "PHRASE-M") ? 1 : 0, 1);
+            std::string json;
+            {
+                pg::Processor maker;
+                const auto makerScript = wire(maker);
+                turn(maker, *makerScript, "PHRASE-M an older session", "Plan M.", "sig-m", "Answer M.");
+                json = maker.chatAgent().saveState();
+                maker.chatAgent().deleteChat();             // nothing of it in the store but what the migration keeps
+            }
+            const juce::MemoryBlock old = oldSession(json);
+            P.eq("migrate.old_holds_it", has(bytesOf(old), "PHRASE-M") ? 1 : 0, 1);
 
-            pg::Processor c;
-            c.setStateInformation(oldSession.getData(), static_cast<int>(oldSession.getSize()));
-            c.settle();
-            const std::string owner = c.chatAgent().chatOwner();
-            P.eq("migrate.shown", has(said(c.chatAgent().chatState()), "PHRASE-M") ? 1 : 0, 1);
-            const auto kept = cs::chatsOf(owner);
-            const std::optional<cs::Loaded> loaded = kept.empty() ? std::optional<cs::Loaded>{} : cs::loadChat(owner, kept[0].id);
-            P.eq("migrate.kept_here", kept.size() == 1 && loaded && has(loaded->state, "PHRASE-M") ? 1 : 0, 1);
-            P.eq("migrate.sealed", filesHolding(keys, "PHRASE-M"), 0);
-            juce::MemoryBlock next;
-            c.getStateInformation(next);
-            P.eq("migrate.next_session_none", has(bytesOf(next), "PHRASE-M") || has(bytesOf(next), "json=") ? 1 : 0, 0);
-            pg::Processor d;
-            d.setStateInformation(oldSession.getData(), static_cast<int>(oldSession.getSize()));
-            d.settle();
-            P.eq("migrate.again_kept_once", cs::chatsOf(d.chatAgent().chatOwner()).size() == 1
-                                                && d.chatAgent().chatRef().id == c.chatAgent().chatRef().id
-                                                && has(said(d.chatAgent().chatState()), "PHRASE-M") ? 1 : 0, 1);
+            std::string owner, chatId;
+            {
+                pg::Processor c;
+                load(c, old);
+                owner = c.chatAgent().chatOwner();
+                chatId = c.chatAgent().chatRef().id;
+                P.eq("migrate.shown", has(said(c.chatAgent().chatState()), "PHRASE-M") ? 1 : 0, 1);
+                const auto kept = cs::chatsOf(owner);
+                const std::optional<cs::Loaded> loaded = kept.empty() ? std::optional<cs::Loaded>{} : cs::loadChat(owner, kept[0].id);
+                P.eq("migrate.kept_here", kept.size() == 1 && loaded && has(loaded->state, "PHRASE-M") ? 1 : 0, 1);
+                P.eq("migrate.sealed", filesHolding(keys, "PHRASE-M"), 0);
+                const juce::MemoryBlock next = stateOf(c);
+                P.eq("migrate.next_session_none", has(bytesOf(next), "PHRASE-M") || has(bytesOf(next), "json=") ? 1 : 0, 0);
+            }
+            {
+                // The same session opened again (unsaved since): the same instance, the same chat, kept once.
+                pg::Processor d;
+                load(d, old);
+                P.eq("migrate.again_kept_once", d.chatAgent().chatOwner() == owner && cs::chatsOf(owner).size() == 1
+                                                    && d.chatAgent().chatRef().id == chatId
+                                                    && has(said(d.chatAgent().chatState()), "PHRASE-M") ? 1 : 0, 1);
+            }
+
+            // Old sessions whose chat was empty (every untouched instance's alike), or held only a note of the chat's own
+            // (the key saved): no chat to adopt, and an instance of its own each, so a chat started in one is not another's.
+            std::string empty, noted;
+            {
+                pg::Processor fresh;
+                empty = fresh.chatAgent().saveState();
+                juce::var v = juce::JSON::parse(juce::String::fromUTF8(empty.c_str()));
+                juce::Array<juce::var> entries;
+                entries.add(pg::claude::object({ { "k", "note" }, { "t", "Your API key is saved." } }));
+                v.getDynamicObject()->setProperty("entries", entries);
+                noted = juce::JSON::toString(v, true).toStdString();
+            }
+            P.eq("migrate.not_adoptable", !pg::ChatAgent::adoptable(empty) && !pg::ChatAgent::adoptable(noted)
+                                              && pg::ChatAgent::adoptable(json) ? 1 : 0, 1);
+            const juce::MemoryBlock song1 = oldSession(empty), song2 = oldSession(empty), song3 = oldSession(noted);
+            std::string owner1;
+            juce::MemoryBlock saved1;
+            {
+                pg::Processor e1;
+                const auto s1 = wire(e1);
+                load(e1, song1);
+                owner1 = e1.chatAgent().chatOwner();
+                P.eq("migrate.empty_nothing_kept", cs::chatsOf(owner1).empty() && e1.chatAgent().chatState().entries.empty() ? 1 : 0, 1);
+                turn(e1, *s1, "PHRASE-E1 in the first song", "Plan E1.", "sig-e1", "Answer E1.");
+                saved1 = stateOf(e1);
+            }
+            {
+                pg::Processor e2, e3;
+                load(e2, song2);
+                load(e3, song3);
+                const std::string owner2 = e2.chatAgent().chatOwner(), owner3 = e3.chatAgent().chatOwner();
+                P.eq("migrate.empty_own_instances", owner1 != owner2 && owner1 != owner3 && owner2 != owner3
+                                                        && owner2.rfind(cs::kInstancePrefix, 0) == 0 ? 1 : 0, 1);
+                P.eq("migrate.empty_not_shared", !has(said(e2.chatAgent().chatState()), "PHRASE-E1")
+                                                     && !listHolds(e2.chatAgent().chatList(), "PHRASE-E1")
+                                                     && !has(said(e3.chatAgent().chatState()), "PHRASE-E1")
+                                                     && !listHolds(e3.chatAgent().chatList(), "PHRASE-E1") ? 1 : 0, 1);
+                P.eq("migrate.note_nothing_kept", cs::chatsOf(owner3).empty() ? 1 : 0, 1);
+                pg::Processor e1again;
+                load(e1again, saved1);
+                P.eq("migrate.empty_first_keeps_its", e1again.chatAgent().chatOwner() == owner1
+                                                          && has(said(e1again.chatAgent().chatState()), "PHRASE-E1") ? 1 : 0, 1);
+            }
         }
 
         // ---- RENAME (a project renamed in the Finder, after the session above named it) -----------------------------
@@ -456,6 +575,255 @@ PROBE(plugin, chats)
             const std::string text = juce::JSON::toString(r.content).toStdString();
             P.eq("mcp.status_said", text.size() > 20 ? 1 : 0, 1);
             P.eq("mcp.no_chat", has(text, "PHRASE") || has(text, "Answer A") ? 1 : 0, 0);
+        }
+
+        // ---- COPIES (one state in several instances: a template, a default preset, a track duplicated) -------------
+        {
+            // A template's state, from an instance that never kept a chat: each instance made from it gets its own.
+            juce::MemoryBlock tmpl;
+            {
+                pg::Processor t;
+                tmpl = stateOf(t);
+            }
+            juce::MemoryBlock s1, s2;
+            std::string o1, o2;
+            {
+                pg::Processor p1, p2;
+                const auto w1 = wire(p1), w2 = wire(p2);
+                load(p1, tmpl);
+                load(p2, tmpl);
+                o1 = p1.chatAgent().chatOwner();
+                o2 = p2.chatAgent().chatOwner();
+                P.eq("copies.template_own_instances", o1 != o2 && o1.rfind(cs::kInstancePrefix, 0) == 0 ? 1 : 0, 1);
+                turn(p1, *w1, "PHRASE-T1 a song from the template", "Plan T1.", "sig-t1", "Answer T1.");
+                turn(p2, *w2, "PHRASE-T2 another song from it", "Plan T2.", "sig-t2", "Answer T2.");
+                s1 = stateOf(p1);
+                s2 = stateOf(p2);
+            }
+            {
+                pg::Processor q1, q2, q3;
+                load(q1, s1);
+                load(q2, s2);
+                load(q3, tmpl);                                // a later song made from it
+                const std::string w1 = said(q1.chatAgent().chatState()), w2 = said(q2.chatAgent().chatState());
+                P.eq("copies.template_apart", has(w1, "PHRASE-T1") && !has(w1, "PHRASE-T2") && !listHolds(q1.chatAgent().chatList(), "PHRASE-T2")
+                                                  && has(w2, "PHRASE-T2") && !has(w2, "PHRASE-T1")
+                                                  && !listHolds(q2.chatAgent().chatList(), "PHRASE-T1") ? 1 : 0, 1);
+                P.eq("copies.template_later_song", q3.chatAgent().chatState().entries.empty()
+                                                       && !listHolds(q3.chatAgent().chatList(), "PHRASE-T")
+                                                       && q3.chatAgent().chatOwner() != o1 && q3.chatAgent().chatOwner() != o2 ? 1 : 0, 1);
+            }
+            // A state naming its instance's chat, in two live instances (a track duplicated): the first is that instance,
+            // the second gets a copy of the chat as its own; each goes on apart.
+            juce::MemoryBlock withChat;
+            std::string x0;
+            {
+                pg::Processor x;
+                const auto w = wire(x);
+                turn(x, *w, "PHRASE-X0 the track's chat", "Plan X0.", "sig-x0", "Answer X0.");
+                withChat = stateOf(x);
+                x0 = x.chatAgent().chatOwner();
+            }
+            juce::MemoryBlock r1, r2;
+            {
+                pg::Processor p1, p2;
+                const auto w1 = wire(p1), w2 = wire(p2);
+                load(p1, withChat);
+                load(p2, withChat);
+                P.eq("copies.duplicate_first_is_it", p1.chatAgent().chatOwner() == x0 && has(said(p1.chatAgent().chatState()), "PHRASE-X0") ? 1 : 0, 1);
+                P.eq("copies.duplicate_own_copy", p2.chatAgent().chatOwner() != x0 && has(said(p2.chatAgent().chatState()), "PHRASE-X0")
+                                                      && cs::chatsOf(p2.chatAgent().chatOwner()).size() == 1 ? 1 : 0, 1);
+                turn(p1, *w1, "PHRASE-X1 on the first track", "Plan X1.", "sig-x1", "Answer X1.");
+                turn(p2, *w2, "PHRASE-X2 on the copy", "Plan X2.", "sig-x2", "Answer X2.");
+                P.eq("copies.duplicate_thinking", has(w2->body(w2->postCount() - 1), "sig-x0") ? 1 : 0, 1);
+                r1 = stateOf(p1);
+                r2 = stateOf(p2);
+            }
+            {
+                pg::Processor q1, q2;
+                load(q1, r1);
+                load(q2, r2);
+                const std::string w1 = said(q1.chatAgent().chatState()), w2 = said(q2.chatAgent().chatState());
+                P.eq("copies.duplicate_apart", has(w1, "PHRASE-X0") && has(w1, "PHRASE-X1") && !has(w1, "PHRASE-X2")
+                                                   && !listHolds(q1.chatAgent().chatList(), "PHRASE-X2") && has(w2, "PHRASE-X0")
+                                                   && has(w2, "PHRASE-X2") && !has(w2, "PHRASE-X1")
+                                                   && !listHolds(q2.chatAgent().chatList(), "PHRASE-X1") ? 1 : 0, 1);
+                P.eq("copies.duplicate_kept_once_each", cs::chatsOf(x0).size() == 1 && cs::chatsOf(q2.chatAgent().chatOwner()).size() == 1 ? 1 : 0, 1);
+            }
+            // A new chat shown when the session was saved: the instance's own, its earlier chat in the list, never shown in
+            // the new one's place.
+            {
+                juce::MemoryBlock afterNew;
+                std::string o;
+                {
+                    pg::Processor n;
+                    const auto w = wire(n);
+                    turn(n, *w, "PHRASE-N1 before a new chat", "Plan N1.", "sig-n1", "Answer N1.");
+                    n.chatAgent().newChat();
+                    afterNew = stateOf(n);
+                    o = n.chatAgent().chatOwner();
+                }
+                pg::Processor m;
+                load(m, afterNew);
+                P.eq("copies.new_chat_shown", m.chatAgent().chatOwner() == o && m.chatAgent().chatState().entries.empty()
+                                                  && listHolds(m.chatAgent().chatList(), "PHRASE-N1") ? 1 : 0, 1);
+            }
+        }
+
+        // ---- SHARED (one project's chat in two instances, both writing) ---------------------------------------------
+        {
+            P.eq("shared.made", ps::saveVersion("Shared Song", program("shared"), 0, {}).has_value() ? 1 : 0, 1);
+            const std::string idS = idInFile("Shared Song");
+            pg::Processor h1, h2;
+            const auto w1 = wire(h1), w2 = wire(h2);
+            P.eq("shared.opened", h1.editorPort().openProject("Shared Song", 0, why) ? 1 : 0, 1);
+            h1.settle();
+            turn(h1, *w1, "PHRASE-H0 the project's chat", "Plan H0.", "sig-h0", "Answer H0.");
+            load(h2, stateOf(h1));
+            P.eq("shared.same_chat", h2.chatAgent().chatOwner() == idS && h2.chatAgent().chatRef().id == h1.chatAgent().chatRef().id ? 1 : 0, 1);
+            turn(h1, *w1, "PHRASE-H1 from the first", "Plan H1.", "sig-h1", "Answer H1.");
+            turn(h2, *w2, "PHRASE-H2 from the second", "Plan H2.", "sig-h2", "Answer H2.");
+            P.eq("shared.neither_lost", cs::chatsOf(idS).size() == 2 && h1.chatAgent().chatRef().id != h2.chatAgent().chatRef().id
+                                            && storeHolds(idS, "PHRASE-H1") && storeHolds(idS, "PHRASE-H2") ? 1 : 0, 1);
+        }
+
+        // ---- SAVED (the project's file gone since it was opened: a save makes a new project, the chat goes with it) ---
+        {
+            P.eq("saved.made", ps::saveVersion("Engine", program("engine"), 0, {}).has_value() ? 1 : 0, 1);
+            const std::string x = idInFile("Engine");
+            pg::Processor g;
+            const auto w = wire(g);
+            P.eq("saved.opened", g.editorPort().openProject("Engine", 0, why) ? 1 : 0, 1);
+            g.settle();
+            turn(g, *w, "PHRASE-G before its file went", "Plan G.", "sig-g", "Answer G.");
+            P.eq("saved.kept", cs::chatsOf(x).size() == 1 ? 1 : 0, 1);
+            P.eq("saved.file_deleted", projects.getChildFile("Engine.fmproject").deleteFile() ? 1 : 0, 1);
+            pg::SavedVersion sv;
+            P.eq("saved.again", g.editorPort().saveVersion("Engine", sv, why) && sv.created ? 1 : 0, 1);
+            const std::string y = idInFile("Engine");
+            P.eq("saved.new_id", ps::validProjectId(y) && y != x && g.chatAgent().chatOwner() == y ? 1 : 0, 1);
+            P.eq("saved.chat_moved", cs::chatsOf(y).size() == 1 && storeHolds(y, "PHRASE-G") && cs::chatsOf(x).empty() ? 1 : 0, 1);
+            const std::string named = bytesOf(stateOf(g));
+            P.eq("saved.session_names_it", has(named, "projectId=\"" + y + "\"") && has(named, "owner=\"" + y + "\"") ? 1 : 0, 1);
+            pg::Processor g2;
+            load(g2, stateOf(g));
+            P.eq("saved.reload_finds_it", g2.chatAgent().chatOwner() == y && has(said(g2.chatAgent().chatState()), "PHRASE-G") ? 1 : 0, 1);
+        }
+
+        // ---- GONE (a project deleted in another instance, with its chats: not written back by this one) -------------
+        {
+            P.eq("gone.made", ps::saveVersion("Elsewhere", program("elsewhere"), 0, {}).has_value() ? 1 : 0, 1);
+            const std::string e = idInFile("Elsewhere");
+            pg::Processor k1, k2;
+            const auto w = wire(k1);
+            P.eq("gone.opened", k1.editorPort().openProject("Elsewhere", 0, why) && k2.editorPort().openProject("Elsewhere", 0, why) ? 1 : 0, 1);
+            k1.settle();
+            k2.settle();
+            turn(k1, *w, "PHRASE-K1 kept", "Plan K1.", "sig-k1", "Answer K1.");
+            P.eq("gone.kept", cs::chatsOf(e).size() == 1 ? 1 : 0, 1);
+            P.eq("gone.deleted_there", k2.editorPort().deleteProject("Elsewhere", why) && !cs::hasOwner(e) ? 1 : 0, 1);
+            turn(k1, *w, "PHRASE-K2 after the delete", "Plan K2.", "sig-k2", "Answer K2.");
+            const std::string note = lastOf(k1.chatAgent().chatState(), pg::ChatEntry::Kind::note);
+            std::printf("INFO     gone: %s\n", note.c_str());
+            P.eq("gone.not_written_back", !cs::hasOwner(e) && has(note, "could not be kept on this Mac") && has(note, "deleted") ? 1 : 0, 1);
+            pg::SavedVersion sv;
+            P.eq("gone.saved_as", k1.editorPort().saveVersion("Elsewhere Again", sv, why) ? 1 : 0, 1);
+            const std::string e2 = idInFile("Elsewhere Again");
+            P.eq("gone.goes_on_with_it", k1.chatAgent().chatOwner() == e2 && storeHolds(e2, "PHRASE-K2") && !cs::hasOwner(e)
+                                             && has(lastOf(k1.chatAgent().chatState(), pg::ChatEntry::Kind::note), "kept on this Mac again") ? 1 : 0, 1);
+        }
+
+        // ---- PICTURES (a chat's panel pictures kept with it: opened again, it keeps its thinking) --------------------
+        {
+            P.eq("pictures.made", ps::saveVersion("Pictures", program("pictures"), 0, {}).has_value()
+                                      && ps::saveVersion("Pictures B", program("pictures b"), 0, {}).has_value() ? 1 : 0, 1);
+            const std::string idV = idInFile("Pictures");
+            pg::Processor v;
+            const auto w = wire(v);
+            P.eq("pictures.opened", v.editorPort().openProject("Pictures", 0, why) ? 1 : 0, 1);
+            v.settle();
+            w->add(fake::Response::ok(fake::Sse().start().thinking("Plan V: look first.", "sig-v")
+                                          .tool("toolu_p1", "view_panel", juce::var(new juce::DynamicObject())).end("tool_use")));
+            w->add(fake::Response::ok(fake::Sse().start().text("It looks right.").end()));
+            pg::picture::forceSoftRasterForTests(true);
+            const int from = w->postCount();
+            v.chatAgent().send("PHRASE-V how does it look?");
+            // The picture is drawn on the message thread (poll): here, this one.
+            for (int k = 0; k < 4000 && (v.chatAgent().chatState().busy || w->postCount() < from + 2); ++k)
+            {
+                v.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            v.chatAgent().waitIdle();
+            pg::picture::forceSoftRasterForTests(false);
+            P.eq("pictures.looked", has(w->body(from + 1), "iVBORw0KGgo") ? 1 : 0, 1);
+            P.eq("pictures.kept_sealed", storeHolds(idV, "iVBORw0KGgo") && !storeHolds(idV, "pictures_cut")
+                                             && filesHolding(keys, "iVBORw0KGgo") == 0 ? 1 : 0, 1);
+            P.eq("pictures.away_and_back", v.editorPort().openProject("Pictures B", 0, why) && v.editorPort().openProject("Pictures", 0, why) ? 1 : 0, 1);
+            v.settle();
+            const int before = w->postCount();
+            turn(v, *w, "and now?", "Plan V2.", "sig-v2", "Now.");
+            const std::string body = w->body(before);
+            P.eq("pictures.thinking_kept", has(body, "sig-v") && has(body, "Plan V: look first.") && has(body, "iVBORw0KGgo") ? 1 : 0, 1);
+        }
+
+        // ---- STOPWAIT (a project opened while Claude's view_panel waits for the message thread, which opens it) ------
+        {
+            P.eq("stopwait.made", ps::saveVersion("Waits", program("waits"), 0, {}).has_value()
+                                      && ps::saveVersion("Waits B", program("waits b"), 0, {}).has_value() ? 1 : 0, 1);
+            pg::Processor sw;
+            const auto w = wire(sw);
+            P.eq("stopwait.opened", sw.editorPort().openProject("Waits", 0, why) ? 1 : 0, 1);
+            sw.settle();
+            w->add(fake::Response::ok(fake::Sse().start().tool("toolu_w1", "view_panel", juce::var(new juce::DynamicObject())).end("tool_use")));
+            sw.chatAgent().send("PHRASE-W look at the panel");
+            // Nothing polls: the picture waits for this thread.
+            for (int k = 0; k < 2500 && !has(sw.chatAgent().chatState().activity, "Looking at the panel"); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool opened = sw.editorPort().openProject("Waits B", 0, why);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            P.eq("stopwait.switched", opened && sw.chatAgent().chatOwner() == idInFile("Waits B") ? 1 : 0, 1);
+            P.le("stopwait.ms", ms, 3000.0);
+            sw.chatAgent().waitIdle();
+            sw.settle();
+        }
+
+        // ---- KEEPFAIL (the store cannot be written: the chat says so, once, and when it is kept again) ---------------
+        {
+            pg::Processor f;
+            const auto w = wire(f);
+            const std::string owner = f.chatAgent().chatOwner();
+            const juce::File blocker = chats.getChildFile(juce::String(owner));
+            P.eq("keepfail.blocked", blocker.replaceWithText("not a folder") ? 1 : 0, 1);    // its folder cannot be made
+            turn(f, *w, "PHRASE-F the folder is a file", "Plan F.", "sig-f", "Answer F.");
+            (void)stateOf(f);                                  // a session's save: tried again, said no more
+            int notes = 0;
+            for (const pg::ChatEntry& e : f.chatAgent().chatState().entries)
+                notes += e.kind == pg::ChatEntry::Kind::note && has(e.text, "could not be kept on this Mac") ? 1 : 0;
+            std::printf("INFO     keepfail: %s\n", lastOf(f.chatAgent().chatState(), pg::ChatEntry::Kind::note).c_str());
+            P.eq("keepfail.said_once", notes, 1);
+            P.eq("keepfail.nothing_kept", cs::chatsOf(owner).empty() ? 1 : 0, 1);
+            P.eq("keepfail.unblocked", blocker.deleteFile() ? 1 : 0, 1);
+            (void)stateOf(f);                                  // the next save keeps it
+            P.eq("keepfail.kept_after", storeHolds(owner, "PHRASE-F")
+                                            && has(lastOf(f.chatAgent().chatState(), pg::ChatEntry::Kind::note), "kept on this Mac again") ? 1 : 0, 1);
+        }
+
+        // ---- CLOSE (a change not kept yet is kept when the plugin closes) -------------------------------------------
+        {
+            std::string owner;
+            {
+                pg::Processor z;
+                const auto w = wire(z);
+                turn(z, *w, "PHRASE-Z before closing", "Plan Z.", "sig-z", "Answer Z.");
+                owner = z.chatAgent().chatOwner();
+                (void)z.chatAgent().mcpCall("run_program", juce::var(new juce::DynamicObject()));   // Claude Desktop's work
+                P.eq("close.changed_not_kept_yet", has(said(z.chatAgent().chatState()), "Claude Desktop is working")
+                                                       && !storeHolds(owner, "Claude Desktop is working") ? 1 : 0, 1);
+            }
+            P.eq("close.kept_when_closed", storeHolds(owner, "Claude Desktop is working") && storeHolds(owner, "PHRASE-Z") ? 1 : 0, 1);
         }
     }
 

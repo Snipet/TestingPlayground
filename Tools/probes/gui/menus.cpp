@@ -516,22 +516,32 @@ PROBE(gui, menus)
         pg::Processor processor;
         pg::EditorPort& port = processor.editorPort();
         processor.settle();
-        // CHATS' list: a project with three chats kept on this Mac (today, earlier this year, last year), the second shown.
+        // CHATS' list: a project with three chats kept on this Mac (today, yesterday: earlier this year but on 1 January,
+        // and last year), the second shown. Whatever the time: today's never before midnight, nor past a midnight that
+        // comes before the menu opens.
         std::vector<std::string> chatIds;
         {
             pg::SavedVersion saved;
             std::string why;
             port.saveVersion("Glass Bloom", saved, why);
             const std::string owner = processor.chatAgent().chatOwner();
-            const juce::Time now = juce::Time::getCurrentTime();
-            const int64_t today = now.toMilliseconds(), year = juce::Time(now.getYear(), 0, 1, 12, 0).toMilliseconds() - 86400000LL * 200;
+            juce::Time now = juce::Time::getCurrentTime();
+            const auto midnight = [](const juce::Time& t) { return juce::Time(t.getYear(), t.getMonth(), t.getDayOfMonth(), 0, 0).toMilliseconds(); };
+            if (midnight(juce::Time(now.toMilliseconds() + 30000)) != midnight(now))
+            {
+                juce::Thread::sleep(31000);                 // midnight within 30 s: the rows read after it
+                now = juce::Time::getCurrentTime();
+            }
+            const int64_t today = std::max(midnight(now), now.toMilliseconds() - 60000);
+            const int64_t yesterday = midnight(now) - 12LL * 3600 * 1000;           // noon the day before
+            const int64_t lastYear = juce::Time(now.getYear(), 0, 1, 12, 0).toMilliseconds() - 86400000LL * 200;
             const struct
             {
                 const char* title;
                 int64_t at;
-            } made[] = { { "A warm detuned pad with a slow sweep", today - 60000 },
-                         { "Brighter attack, less drive", juce::Time(now.getYear(), 0, 1, 12, 0).toMilliseconds() },
-                         { "Bass ideas", year } };
+            } made[] = { { "A warm detuned pad with a slow sweep", today },
+                         { "Brighter attack, less drive", yesterday },
+                         { "Bass ideas", lastYear } };
             for (const auto& c : made)
             {
                 pg::chatstore::ChatMeta meta{ pg::chatstore::newId(), c.title, false, c.at, c.at };
