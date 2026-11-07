@@ -9,9 +9,10 @@ which CMakeLists.txt compiles into the plugin, read-only (Source/plugin/Factory.
           products' (<ProductName>/<name>.fmproject: ~/Library/Audio/Presets/<Company>/ holds them so). A row's
           project is <source>/<ProductName>/<from>.fmproject, else <source>/<from>.fmproject, its name case aside.
 --names   the name map: a TSV, a row a project, three columns: product (a product's key, synth or effect, or its
-          name), from (the project's name in the source folder) and to (its name as a factory project). Blank lines,
-          lines that start with # and a first row naming the columns are skipped. The map is the user's: keep it out
-          of the repository (give it by its path).
+          name), from (the project's name in the source folder) and to (its name as a factory project), and a fourth
+          if wanted, category: the factory project's (PROJECTS shows it; its own when the column is empty or missing).
+          Blank lines, lines that start with # and a first row naming the columns are skipped. The map is the user's:
+          keep it out of the repository (give it by its path).
 --dry-run says what it would write and remove, and writes nothing. Either way it prints each project's bytes and its
           largest text (each text is one string literal in the plugin's source: over 64 KB it still compiles).
 --author  sets every project's author ("" leaves it empty); by default each keeps its own.
@@ -23,7 +24,7 @@ project: project.json (a project file's JSON, as the plugin writes one, of one v
 and each of that version's files beside it, by its name, as its text. Of a project it keeps its latest version only
 (numbered 1, its note "factory version"): its files, the tab shown, its dials (with their values' names) and its
 netlists' self-test answers; its presets (each one's "from" 1 when it was saved with that version, else 0); and its
-info (description, author, category, tags, genres). Nothing else of the file comes: its older versions, and any field
+info (description, author, category, tags, genres; the map's category over its own). Nothing else of the file comes: its older versions, and any field
 this script does not know.
 
 Re-runnable: factory/<key>/imported.txt lists what its last run wrote there, and a run removes those folders before
@@ -60,6 +61,7 @@ META = "project.json"
 MAX_NAME = 40          # ProjectStore.h's kMaxName
 MAX_FILE_NAME = 24     # Sources.h's kMaxNameLength
 NOTE = "factory version"
+MAX_CATEGORY = 24     # ProjectStore.h's kMaxTag: a category's length
 LITERAL_LIMIT = 65536  # a string literal's length a compiler must take: longer ones compile (FactoryProjects.h)
 
 # What is private (refused): a path on someone's machine, an email address, a key or a token.
@@ -147,9 +149,15 @@ def product_key(word: str, products: dict[str, dict[str, str]]) -> str | None:
     return None
 
 
-def read_map(path: Path, products: dict[str, dict[str, str]]) -> list[tuple[str, str, str, int]]:
-    """The map's rows: (product key, from, to, line number)."""
-    rows: list[tuple[str, str, str, int]] = []
+def tidy_category(text: str) -> str:
+    """A category as the plugin keeps one (ProjectStore's tidyInfo): printable ASCII, the spaces collapsed, at most 24."""
+    out = " ".join("".join(c if " " <= c <= "~" else ("?" if c not in " \t\r\n" else " ") for c in text).split())
+    return out[:MAX_CATEGORY].rstrip()
+
+
+def read_map(path: Path, products: dict[str, dict[str, str]]) -> list[tuple[str, str, str, int, str]]:
+    """The map's rows: (product key, from, to, line number, category: "" for the project's own)."""
+    rows: list[tuple[str, str, str, int, str]] = []
     errors: list[str] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -161,14 +169,19 @@ def read_map(path: Path, products: dict[str, dict[str, str]]) -> list[tuple[str,
         cols = [c.strip() for c in line.split("\t")]
         if not rows and not errors and [c.lower() for c in cols[:3]] == ["product", "from", "to"]:
             continue
-        if len(cols) != 3 or not all(cols):
-            errors.append(f"{path.name}:{n}: a row is three columns, separated by tabs: product, from, to")
+        if len(cols) not in (3, 4) or not all(cols[:3]):
+            errors.append(f"{path.name}:{n}: a row is three columns, separated by tabs: product, from, to "
+                          "(and a fourth, category, if wanted)")
+            continue
+        category = cols[3] if len(cols) == 4 else ""
+        if category and tidy_category(category) != category:
+            errors.append(f"{path.name}:{n}: {category!r} is no category (the plugin would keep {tidy_category(category)!r})")
             continue
         key = product_key(cols[0], products)
         if key is None:
             errors.append(f"{path.name}:{n}: no product {cols[0]!r} (the keys: {', '.join(products)})")
             continue
-        rows.append((key, cols[1], cols[2], n))
+        rows.append((key, cols[1], cols[2], n, category))
     if errors:
         raise Refusal("\n".join(errors))
     if not rows:
@@ -339,7 +352,7 @@ def main() -> int:
         plan: dict[str, list[tuple[str, dict, list[tuple[str, str]]]]] = {}
         tos: dict[str, set[str]] = {}
         froms: dict[str, set[str]] = {}
-        for key, src_name, to, line in rows:
+        for key, src_name, to, line, category in rows:
             product = products[key]
             where = f"{args.names.name}:{line}"
             if tidy_name(to) != to or not to:
@@ -362,6 +375,9 @@ def main() -> int:
             except Refusal as e:
                 errors.append(f"{where}: {e}")
                 continue
+            if category:                                 # the map's, over the project's own
+                info = meta.setdefault("info", {"description": "", "author": "", "category": "", "tags": [], "genres": []})
+                info["category"] = category
             found = []
             for path, text in strings_of(meta, ""):
                 found += private_findings(f"{to}: {path}", text)

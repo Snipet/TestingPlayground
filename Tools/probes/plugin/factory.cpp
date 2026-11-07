@@ -4,7 +4,8 @@
 // the import that writes them (scripts/import-factory.py), in folders of the probe's own:
 //   LIST     every one compiled in reads (no problem), at least one; each named "Factory: <its own name>" (its own a
 //            name the store keeps), one version whose files are names a tab may have, the program first; the port's
-//            factoryProjects() lists them read-only (one version, their presets counted), projects() none of them;
+//            factoryProjects() lists them read-only (one version, their presets counted, their info's category, tags
+//            and description, which PROJECTS groups and searches by), projects() none of them;
 //            what was compiled in is counted (bytes, printed)
 //   PRIVATE  no string of one (its name, its files' names and texts, its version's note, every dial's and preset's
 //            name and label, its circuits' keys and answers, every field of its info) holds what the import refuses: a
@@ -31,7 +32,8 @@
 //   IMPORT   (python3 on the PATH) the import over made-up projects of two versions: the latest only (version 1, its
 //            files, tab and dials), presets' "from" 1 for the latest's and 0 for an older one's, the info kept, a field
 //            it does not know left behind; factory::fromFolder reads it; imported.txt lists it; run again with another
-//            name: the old folder gone, the new one there, a hand-made folder untouched; a project holding an email
+//            name: the old folder gone, the new one there, a hand-made folder untouched; the map's fourth column (a
+//            category) over the project's own, one the plugin would change refused; a project holding an email
 //            address, a path in /Users and a key is refused, nothing written; a map naming a hand-made folder refused;
 //            each project's largest text said (a dry run of one over 64 KB says so, and writes nothing)
 #include "Probe.h"
@@ -370,6 +372,11 @@ PROBE(plugin, factory)
             same = entries[i].name == all[i].name && entries[i].factory && entries[i].latest == all[i].latest().number
                 && entries[i].versions == 1 && entries[i].presets == static_cast<int>(all[i].presets.size());
         P.eq("list.port", same ? 1 : 0, 1);
+        bool info = entries.size() == all.size();
+        for (std::size_t i = 0; info && i < entries.size(); ++i)
+            info = entries[i].category == all[i].info.category && entries[i].tags == all[i].info.tags
+                && entries[i].description == all[i].info.description;
+        P.eq("list.port_info", info ? 1 : 0, 1);
         P.eq("list.not_mine", port.projects().empty() ? 1 : 0, 1);
         P.eq("list.find_own_name", !all.empty() && fy::find(pg::ownName(all[0].name)) == &all[0] && fy::find(all[0].name) == &all[0]
                                        ? 1 : 0, 1);
@@ -654,6 +661,17 @@ PROBE(plugin, factory)
         P.eq("import.again_runs", code, 0);
         P.eq("import.again_replaces", !written.exists() && product.getChildFile("Second Name").getChildFile("project.json").existsAsFile()
                                           && product.getChildFile("By Hand").getChildFile("project.json").existsAsFile() ? 1 : 0, 1);
+
+        // A fourth column: the factory project's category over its own; one the plugin would change, refused.
+        map.replaceWithText(juce::String(keyWord) + "\tmade up\tSecond Name\tWarm Things\n");
+        code = runImport(src, map, fac, out);
+        const std::optional<ps::Project> categorised = fy::fromFolder(product.getChildFile("Second Name"));
+        P.eq("import.category_column", code == 0 && categorised && categorised->info.category == "Warm Things"
+                                           && categorised->info.description == "A test's own, made up." ? 1 : 0, 1);
+        map.replaceWithText(juce::String(keyWord) + "\tmade up\tSecond Name\tWarm   Things\n");
+        code = runImport(src, map, fac, out);
+        std::printf("category refused: %d\n%s", code, out.c_str());
+        P.eq("import.category_refused", code == 1 && out.find("is no category") != std::string::npos ? 1 : 0, 1);
 
         // A map naming the hand-made folder: refused, nothing changed.
         map.replaceWithText(juce::String(keyWord) + "\tmade up\tBy Hand\n");
