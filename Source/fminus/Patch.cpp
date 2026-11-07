@@ -101,6 +101,53 @@ namespace playground
         };
         constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_note_on",
                                                      "playground_shared_note_off" };
+        // A mono instrument's Voice::legato (Patch.h, "Mono"): appended only to a mono program, and only when the program
+        // declares it as here.
+        constexpr Call kLegatoCall = { "legato", false, "void legato(float note, float velocity)",
+                                       "void playground_legato(Voice* self, float note, float velocity) [[clang::nonblocking]] "
+                                       "{ self->legato(note, velocity); }" };
+
+        // A #pragma mono line (Patch.h, "Mono"): its words after "mono" (a // comment ends them) into `words`; false for
+        // any other line.
+        bool monoLine(std::string_view line, std::vector<std::string>& words)
+        {
+            const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
+            const auto nameChar = [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            };
+            std::size_t i = 0;
+            const auto skip = [&] {
+                while (i < line.size() && space(line[i]))
+                    ++i;
+            };
+            const auto word = [&](std::string_view w) {
+                if (line.substr(i, w.size()) != w || (i + w.size() < line.size() && nameChar(line[i + w.size()])))
+                    return false;
+                i += w.size();
+                return true;
+            };
+            skip();
+            if (i >= line.size() || line[i] != '#')
+                return false;
+            ++i;
+            skip();
+            if (!word("pragma"))
+                return false;
+            skip();
+            if (!word("mono"))
+                return false;
+            words.clear();
+            while (true)
+            {
+                skip();
+                if (i >= line.size() || line.compare(i, 2, "//") == 0)
+                    return true;
+                const std::size_t from = i;
+                while (i < line.size() && !space(line[i]) && line.compare(i, 2, "//") != 0)
+                    ++i;
+                words.emplace_back(line.substr(from, i - from));
+            }
+        }
 
         // A field's type as FMinus writes it ("Shared *") without its spaces.
         std::string squeezed(const std::string& type)
@@ -518,6 +565,7 @@ namespace playground
         Tick* sharedTick = nullptr;                // an instrument's Shared hooks (Patch.h, "Shared on its own")
         Start* sharedNoteOn = nullptr;
         NoteOff* sharedNoteOff = nullptr;
+        Start* legato = nullptr;                   // a mono program's Voice::legato (Patch.h, "Mono")
         std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
         bool boundsCheck = false;                  // compiled with the bounds checks (the frozen copy never is)
     };
@@ -778,6 +826,82 @@ namespace playground
             patch->circuitCalls_.push_back(std::move(call));
         }
         patch->circuitArgs_.assign(mostArgs, 0.0f);
+        // Mono (Patch.h): the first #pragma mono line of the files FMinus read, as it read them, and the dial it names;
+        // then Voice::legato's shim, for a mono program whose Voice declares it as the plugin calls it.
+        for (const SourceFile& f : asRead(compiled, files))
+        {
+            if (isCircuitFile(f.name))
+                continue;                              // a netlist's lines are SPICE's
+            std::string_view text = f.text;
+            std::vector<std::string> words;
+            for (int no = 1; !text.empty(); ++no)
+            {
+                const std::size_t end = text.find('\n');
+                const std::string_view line = text.substr(0, end);
+                text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+                if (!monoLine(line, words))
+                    continue;
+                const std::string at = f.name + ":" + std::to_string(no) + ":1: note: #pragma mono: ";
+                if (!kInstrument)
+                {
+                    r.notes += at + "the effect plays no notes, so it is left out\n";
+                    continue;
+                }
+                if (patch->mono_)
+                {
+                    r.notes += at + "the program's first such line counts, and this one is left out\n";
+                    continue;
+                }
+                patch->mono_ = true;
+                if (words.size() > 1)
+                    r.notes += at + "it names one dial at most, so what follows " + words.front() + " is left out\n";
+                if (words.empty())
+                    continue;
+                int dial = -1;
+                for (int c = 0; c < kMaxControls && dial < 0; ++c)
+                    if (patch->controls_[static_cast<std::size_t>(c)].used && words.front() == patch->controls_[static_cast<std::size_t>(c)].name)
+                        dial = c;
+                if (dial < 0)
+                    r.notes += at + "no dial is named " + words.front() + ", so the program is mono always\n";
+                else if (patch->controls_[static_cast<std::size_t>(dial)].type == ControlType::real)
+                    r.notes += at + words.front() + " is a real dial, and its switch is a bool (or an int, on when it is not "
+                                                    "0), so the program is mono always\n";
+                else
+                    patch->monoDial_ = dial;
+            }
+        }
+        bool legatoShim = false;
+        if constexpr (kInstrument)
+        {
+            if (has("legato"))
+            {
+                Sources texts;
+                for (const SourceFile& f : files)
+                    if (!isGuiFile(f.name))
+                        texts.push_back(f);
+                lang::Service service;
+                lang::Options o;
+                o.instrument = kInstrument;
+                service.setOptions(o);
+                service.setFiles(texts);
+                const lang::SharedHook h = lang::legatoHook(service);
+                const std::string at = h.file >= 0 && h.file < static_cast<int>(service.files().size())
+                                         ? service.files()[static_cast<std::size_t>(h.file)].name + ":" + std::to_string(h.at.line + 1)
+                                               + ":" + std::to_string(h.at.col + 1)
+                                         : file;
+                if (!patch->mono_)
+                    r.notes += at + ": note: " + kModule + "::legato is called only in a mono program (`#pragma mono`), so the "
+                                                         "plugin never calls it\n";
+                else if (!h.declared)
+                    r.notes += at + ": note: " + kModule + "::legato is not declared as the plugin calls it (`"
+                             + kLegatoCall.declaration + "`), so the plugin never calls it, and a new note starts a voice\n";
+                else
+                {
+                    shims.push_back(&kLegatoCall);
+                    legatoShim = true;
+                }
+            }
+        }
         fminus::Program::Options build = playOptions(file, names, streams, loopBudget, boundsCheck);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
@@ -842,6 +966,8 @@ namespace playground
             lookShared(kSharedHookShims[1], s.sharedNoteOn);
         if (hooks[2])
             lookShared(kSharedHookShims[2], s.sharedNoteOff);
+        if (legatoShim)
+            lookShared("playground_legato", s.legato);
         for (std::size_t k = 0; k < bound.size(); ++k)
         {
             std::string missing;
@@ -886,6 +1012,7 @@ namespace playground
             rc.sharedTick = s.sharedTick != nullptr;
             rc.sharedNoteOn = s.sharedNoteOn != nullptr;
             rc.sharedNoteOff = s.sharedNoteOff != nullptr;
+            rc.legato = s.legato != nullptr;
             rc.bindings = bindings;
             rc.circuitShims = static_cast<int>(bound.size());
             rc.loopBudget = loopBudget;
@@ -1327,6 +1454,7 @@ namespace playground
             case Method::sharedTick: return std::string(kSharedModule) + "'s tick()";
             case Method::sharedNoteOn: return std::string(kSharedModule) + "'s noteOn()";
             case Method::sharedNoteOff: return std::string(kSharedModule) + "'s noteOff()";
+            case Method::legato:     return "legato()";
             case Method::none:       break;
         }
         return "a call";
@@ -1362,6 +1490,7 @@ namespace playground
                            : call == Method::process                          ? "process"
                            : call == Method::start                            ? "start"
                            : call == Method::stop                             ? "stop"
+                           : call == Method::legato                           ? "legato"
                            : call == Method::sharedTick                       ? "tick"
                            : call == Method::sharedNoteOn                     ? "noteOn"
                            : call == Method::sharedNoteOff                    ? "noteOff"
@@ -1470,6 +1599,16 @@ namespace playground
         budget(c, 0);
         c.start(instances_[static_cast<std::size_t>(i)], note, velocity);
         within(c, Method::start);
+    }
+
+    void Patch::legato(int i, float note, float velocity) noexcept
+    {
+        const Compiled& c = code();
+        if (c.legato == nullptr || i < 0 || i >= static_cast<int>(instances_.size()) || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.legato(instances_[static_cast<std::size_t>(i)], note, velocity);
+        within(c, Method::legato);
     }
 
     void Patch::stop(int i) noexcept
@@ -1622,6 +1761,8 @@ namespace playground
             s.sharedNoteOn = program.function<Compiled::Start>(kSharedHookShims[1], missing);
         if (r.sharedNoteOff)
             s.sharedNoteOff = program.function<Compiled::NoteOff>(kSharedHookShims[2], missing);
+        if (r.legato)                                             // a mono program's (Patch.h, "Mono")
+            s.legato = program.function<Compiled::Start>("playground_legato", missing);
         if (!missing.empty())
         {
             why = missing;

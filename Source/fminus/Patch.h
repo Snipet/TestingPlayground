@@ -17,6 +17,8 @@
 //       void start(float note, float velocity);                 a note-on: the MIDI note number (69 is A 440 Hz) and
 //                                                               0..1; the voice may have played another note before
 //       void stop();                                            optional: the note-off (the key, or All Notes Off)
+//       void legato(float note, float velocity);                optional, a mono program's (below, "Mono"): the
+//                                                               sounding voice's new note, in place of a start
 //       bool process(float* restrict left, float* restrict right, int n);
 //                                                               the voice's next n samples into the buffers, which
 //                                                               arrive at 0 (write or add); false once it is silent
@@ -132,6 +134,21 @@
 // has none of these, its init and end only. They run in the frozen copy too (it looks their shims up), and stop the
 // Patch as any audio-thread call does. A program whose Shared ticks is never refined (Compiler.h, "The self-test"): a
 // new Patch's Shared starts afresh, so its circuits' self-test answers play from the next RUN.
+//
+// Mono (an instrument's). A line `#pragma mono` plays the program one voice at a time, and `#pragma mono <dial>` does
+// while that dial (a bool, or an int: on when it is not 0) is on, so that the panel switches it; the line is read from
+// the files FMinus read, as it read them (a group a conditional skips has none), the first such line alone (another is a
+// note, and so is a dial that is not there or is real: the program is then mono always). The Engine plays it (Engine.h,
+// "Mono"): the keys held in the order they were pressed, the newest sounding, one voice. Voice may have, optionally:
+//   legato(float note, float velocity)   the sounding voice's new note while its key (or the sustain pedal) holds it, in
+//                     place of a start and a stop: a key pressed meanwhile, or, its key let go while others are held, the
+//                     newest of those at the velocity it was pressed with. Glide is the program's: legato gives the new
+//                     note, and process moves to it as it likes. Appended as a nonblocking shim only to a mono program,
+//                     and only when declared as here (lang::legatoHook: one declared otherwise is the program's own, with
+//                     a note at its place, as is one in a program that is not mono). Without it a new note starts a voice
+//                     as a steal does (the voice that sounded gets its stop() and fades out over 2 ms).
+// Each start() still gets one stop() before its instance's next start: legato comes between them, never after the stop.
+// The effect has no notes: its #pragma mono is a note, and nothing more.
 //
 // Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
@@ -249,7 +266,7 @@ namespace playground
         // ---- the loop budget (above) -------------------------------------------------------------------------------
         // The plugin's calls into a program, by method: which one ran past its budget (stopped()).
         enum class Method : uint8_t { none, init, end, process, start, stop, circuit, sharedInit, sharedEnd, sharedTick,
-                                      sharedNoteOn, sharedNoteOff };
+                                      sharedNoteOn, sharedNoteOff, legato };
         static constexpr double kLoopsPerSecond = 4'294'967'296.0;        // 2^32: a call's budget a second of samples
         static constexpr int kBudgetFloor = 16;                           // samples: a call's least budget
         static constexpr std::int64_t kInitBudget = std::int64_t{ 1 } << 32;   // each init and end
@@ -385,6 +402,7 @@ namespace playground
             bool start = false, stop = false, render = false, process = false;   // the calls the program has
             bool sharedTick = false, sharedNoteOn = false, sharedNoteOff = false;   // and Shared's (above, "Shared on
                                                                                    // its own")
+            bool legato = false;                       // a mono program's Voice::legato (above, "Mono")
             bool loopBudget = true;                    // compiled with the loop budget (compile()'s `loopBudget`)
             bool boundsCheck = true;                   // and the bounds checks (compile()'s `boundsCheck`): ir()'s
                                                        // text has them, the frozen copy never
@@ -445,6 +463,15 @@ namespace playground
         void sharedTick(int n) noexcept;
         void sharedNoteOn(float note, float velocity) noexcept;
         void sharedNoteOff(float note) noexcept;
+
+        // ---- mono (above; an instrument's) -----------------------------------------------------------------------------
+        // Whether the program is mono (#pragma mono), the dial that switches it (-1: none, mono always), and whether its
+        // Voice has legato() as above; then legato() in instance i, within kBudgetFloor's budget (nothing when the
+        // program has none, or has stopped).
+        bool mono() const noexcept { return mono_; }
+        int monoDial() const noexcept { return monoDial_; }
+        bool legatos() const noexcept { return recipe_.legato; }
+        void legato(int i, float note, float velocity) noexcept;
 
         // The circuits' dials (above, "Circuits"): whether a dial drives a circuit's set(), which controls do (bit c:
         // control c is an argument of a shim), and the shims' calls in instance i, every bound field's set() with each
@@ -572,6 +599,8 @@ namespace playground
         // controls that have one (bit c).
         std::array<Slot, kMaxControls> sharedSlots_{};
         uint32_t sharedDialMask_ = 0;
+        bool mono_ = false;                            // mono(), monoDial() (above, "Mono")
+        int monoDial_ = -1;
         static void store(void* instance, const Slot& slot, float plain) noexcept;
         // Per shim (setCircuits): each argument's control (-1: none) and the value it has without one.
         struct CircuitCall

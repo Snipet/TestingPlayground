@@ -35,6 +35,19 @@
 // Shared had at the swap: those let go since get their noteOff (or at the pedal's going up), and the held ones a noteOff
 // and a noteOn as they start again.
 //
+// Mono (an instrument's; Patch.h). While the program that plays is mono (its #pragma mono, and the dial it names, if one,
+// not 0 at the note's sample: read at each note-on and note-off, so a switch takes effect at the next), the Engine keeps
+// the keys held in the order they were pressed and one voice sounds the newest. A note-on while that voice sounds, not
+// released (its key, or the sustain pedal, holds it), goes to it through legato(note, velocity) when the program has
+// one, with no start and no stop; else it starts a voice of its own as above. Either way every other voice of the program
+// (a released voice's tail, those from before the switch) gets its stop() when it had none and fades out over 2 ms, as a
+// steal does (none counted). The voice's key let go while others are held gives it the newest of them, at the velocity
+// it was pressed with (legato, or a voice of its own); with none held it ends as any voice does (its stop(), or the pedal
+// holds it until it comes up). A key let go that the voice does not sound changes nothing, and one let go under the pedal
+// is not held. Shared's hooks hear the keys as ever (a noteOn each key pressed, a noteOff as its note ends), whichever the
+// voice sounds. The held keys started again on a new program (or one gone back to) give its Shared a noteOn each, in the
+// order they were pressed, and one voice the newest's.
+//
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
 // Host block before each call into it (start, stop, process, every part of a block), so a call reads the position of
@@ -424,9 +437,24 @@ namespace playground
         void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
         void wheel(int cc, int value) noexcept;       // a racing wheel's control change (wheelcc), its 7-bit value
         void processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept;
-        void noteOn(int key, float velocity) noexcept;
+        void noteOn(int key, float velocity) noexcept;   // the player's: the key held, then playNote
         void noteOff(int key) noexcept;
         void allNotesOff() noexcept;
+        // A note begun on current_ (the player's, or a held key's started again): its Shared's noteOn, then its voice,
+        // by the voices' rules or mono's (below); startVoice() the voices' rules alone (the key's own voice stopped, a
+        // steal, the quietest cut), the note started on an instance of its own.
+        void playNote(int key, float velocity) noexcept;
+        void startVoice(int key, float velocity) noexcept;
+        // Mono (above): whether current_ plays mono at this event (its #pragma mono, and its dial at callAt_ not 0); its
+        // voice, the newest of it not released, fading or ending (null: none); the newest key held (-1: none); every
+        // voice of current_ but `keep` faded out as a steal's (its stop() first, when it had none); the held keys
+        // started again on a program come or gone back to (mono: their Shared's noteOns in the order they were pressed,
+        // and one voice, the newest's; else each key's playNote, in key order).
+        bool monoNow() const noexcept;
+        Voice* monoVoice() noexcept;
+        int newestHeld() const noexcept;
+        void fadeOthers(const Voice* keep) noexcept;
+        void restartHeld() noexcept;
         // Shared on its own (above): dial c's plain value at the block's sample `at` (-1: as the last block left it), its
         // target for current_ while `carrying` holds the carry's slots (glideControls'), the program's Shared's params
         // named as dials set at that sample, and a key's note beginning and ending for its Shared (the hooks, with the
@@ -531,6 +559,8 @@ namespace playground
         std::array<float, kMaxControls> sharedPlain_{};
         std::array<bool, 128> held_{};
         std::array<float, 128> heldVelocity_{};
+        std::array<uint64_t, 128> pressed_{};         // when each key was last pressed (presses_ then): mono's order
+        uint64_t presses_ = 0;
         uint64_t noteCount_ = 0;
         uint64_t clock_ = 0;                          // samples processed since prepare(): the grid's origin
         HostBlock host_;                              // what the programs' Host block holds (host.fm)

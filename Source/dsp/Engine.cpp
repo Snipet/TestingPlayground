@@ -282,9 +282,7 @@ namespace playground
                     v.fading = true;
                     v.fall = v.gain / static_cast<float>(swapFade_);
                 }
-            for (int k = 0; k < 128; ++k)
-                if (held_[static_cast<std::size_t>(k)])
-                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            restartHeld();
             stopCheck(0, -1);                        // a start() that ran past its budget
         }
         else
@@ -827,9 +825,7 @@ namespace playground
                     else
                         sharedNoteOff(k, callAt_);
                 }
-            for (int k = 0; k < 128; ++k)
-                if (held_[static_cast<std::size_t>(k)])
-                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            restartHeld();
             stopCheck(at, resume);                   // one that stops at once: no other to go back to now
         }
     }
@@ -1493,11 +1489,36 @@ namespace playground
             return;
         held_[static_cast<std::size_t>(key)] = true;
         heldVelocity_[static_cast<std::size_t>(key)] = velocity;
+        pressed_[static_cast<std::size_t>(key)] = ++presses_;
+        playNote(key, velocity);
+    }
+
+    void Engine::playNote(int key, float velocity) noexcept
+    {
         if (current_ == nullptr || maxBlock_ == 0 || current_->stopped() != Patch::Method::none)
             return;                                  // (a stopped program starts no note: Engine.h)
         sharedNoteOn(key, velocity, callAt_);        // its Shared first (Engine.h, "Shared on its own")
         if (current_->stopped() != Patch::Method::none)
             return;                                  // that call ran past its budget, or failed a bounds check
+        if (monoNow())
+        {
+            // Mono (Engine.h): the voice that sounds takes the note (legato), else the note starts a voice of its own;
+            // either way every other voice of the program fades out as a steal's does.
+            Voice* live = current_->legatos() ? monoVoice() : nullptr;
+            fadeOthers(live);
+            if (live != nullptr)
+            {
+                live->key = key;
+                live->pedal = false;                 // a key holds it now
+                current_->legato(live->instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
+                return;
+            }
+        }
+        startVoice(key, velocity);
+    }
+
+    void Engine::startVoice(int key, float velocity) noexcept
+    {
         // The key's own voice stops first; then, with every voice taken, the oldest released one (else the oldest)
         // gets its stop() (when it had none) and fades out to make room.
         int sounding = 0;
@@ -1563,6 +1584,81 @@ namespace playground
             }
     }
 
+    // ---- the audio thread: mono (Engine.h) ------------------------------------------------------------------------------
+    bool Engine::monoNow() const noexcept
+    {
+        if (current_ == nullptr || !current_->mono())
+            return false;
+        const int c = current_->monoDial();
+        return c < 0 || dialAt(c, callAt_) != 0.0f;
+    }
+
+    Engine::Voice* Engine::monoVoice() noexcept
+    {
+        Voice* live = nullptr;
+        for (Voice& v : voices_)
+            if (v.patch != nullptr && v.patch == current_ && !v.released && !v.fading && !v.ending && !v.exiting
+                && (live == nullptr || v.age > live->age))
+                live = &v;
+        return live;
+    }
+
+    int Engine::newestHeld() const noexcept
+    {
+        int newest = -1;
+        for (int k = 0; k < 128; ++k)
+            if (held_[static_cast<std::size_t>(k)]
+                && (newest < 0 || pressed_[static_cast<std::size_t>(k)] > pressed_[static_cast<std::size_t>(newest)]))
+                newest = k;
+        return newest;
+    }
+
+    void Engine::fadeOthers(const Voice* keep) noexcept
+    {
+        for (Voice& v : voices_)
+            if (&v != keep && v.patch != nullptr && v.patch == current_ && !v.fading && !v.exiting)
+            {
+                stopVoice(v);                        // its stop() first, when it had none
+                v.fading = true;
+                v.fall = v.gain / static_cast<float>(stealFade_);
+            }
+    }
+
+    void Engine::restartHeld() noexcept
+    {
+        if (!monoNow())
+        {
+            for (int k = 0; k < 128; ++k)
+                if (held_[static_cast<std::size_t>(k)])
+                    playNote(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            return;
+        }
+        // Mono: each held key's note begins again for the program's Shared, in the order the keys were pressed, then one
+        // voice sounds the newest.
+        if (maxBlock_ == 0 || current_->stopped() != Patch::Method::none)
+            return;
+        std::array<int, 128> keys{};
+        int count = 0;
+        for (int k = 0; k < 128; ++k)
+            if (held_[static_cast<std::size_t>(k)])
+                keys[static_cast<std::size_t>(count++)] = k;
+        std::sort(keys.begin(), keys.begin() + count, [this](int a, int b) {
+            return pressed_[static_cast<std::size_t>(a)] < pressed_[static_cast<std::size_t>(b)];
+        });
+        for (int i = 0; i < count; ++i)
+        {
+            const int k = keys[static_cast<std::size_t>(i)];
+            sharedNoteOn(k, heldVelocity_[static_cast<std::size_t>(k)], callAt_);
+            if (current_->stopped() != Patch::Method::none)
+                return;
+        }
+        if (count > 0)
+        {
+            const int k = keys[static_cast<std::size_t>(count - 1)];
+            startVoice(k, heldVelocity_[static_cast<std::size_t>(k)]);
+        }
+    }
+
     void Engine::noteOff(int key) noexcept
     {
         if (key < 0 || key > 127)
@@ -1576,6 +1672,24 @@ namespace playground
             else
                 sharedNoteOff(key, callAt_);
         }
+        // Mono (Engine.h): the key the voice sounds, let go while others are held, gives the voice back to the newest of
+        // them (legato, else a voice of its own), every other voice of the program fading. With none held, it ends as
+        // below.
+        if (current_ != nullptr && current_->stopped() == Patch::Method::none && monoNow())
+            if (Voice* live = monoVoice(); live != nullptr && live->key == key)
+                if (const int back = newestHeld(); back >= 0)
+                {
+                    const float velocity = heldVelocity_[static_cast<std::size_t>(back)];
+                    const bool legato = current_->legatos();
+                    fadeOthers(legato ? live : nullptr);
+                    if (legato)
+                    {
+                        live->key = back;
+                        current_->legato(live->instance, static_cast<float>(back), std::clamp(velocity, 0.0f, 1.0f));
+                    }
+                    else
+                        startVoice(back, velocity);
+                }
         for (Voice& v : voices_)
             if (v.patch != nullptr && v.patch == current_ && v.key == key && !v.released)
             {
