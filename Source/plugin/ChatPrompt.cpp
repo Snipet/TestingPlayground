@@ -873,10 +873,17 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                  "The PROJECTS button keeps programs on " + std::string(kThisMachine)
                + " as projects (the editor's files and the dials' values, under a "
                  "name): each save is a new version (Cmd-S saves one), and an older version opens again. A project's presets are "
-                 "dial settings for its program, no code, applied at once. Saving and opening projects and presets is the user's: "
-                 "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
-                 "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
-                 "code is a project of its own. Its A/B plays two versions (or the editor's files and a version) in turn "
+                 "dial settings for its program, no code, applied at once. You keep them with the projects tool, only as the user "
+                 "wants: save when they ask (\"save this\", \"keep it as a preset called Warm\") or at a milestone they agreed to "
+                 "(\"save a version each time it works\"), never on your own and never silently. Give a version a note of what "
+                 "changed, and say in a sentence what you saved (\"Saved version 5 of Engine: a brighter filter\"). A save only "
+                 "adds: every version is kept, and a preset of the name is replaced only when they asked; deleting a project, a "
+                 "version or a preset is theirs alone, in PROJECTS. Opening a project or applying a preset would drop what the "
+                 "editor holds unsaved, so the tool refuses and names it: save it first if they want it, or ask; pass discard "
+                 "only when they said to drop it. They save themselves with PROJECTS (a name in its field, then Save), Cmd-S or "
+                 "the explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
+                 "code is a project of its own. The factory projects (FACTORY in both, \"Factory: <name>\") come with the plugin, "
+                 "read-only: saving one makes the user's own copy. Its A/B plays two versions (or the editor's files and a version) in turn "
                  "while the user plays, the louder turned down to match, until they keep one: get_status says when one is on, "
                  "its sides and which plays, and compare renders a version (version:N, project:Name@N).\n";
             s += product::kIsInstrument

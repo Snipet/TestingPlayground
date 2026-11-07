@@ -1,0 +1,78 @@
+{
+  "format": "funk-playground-project",
+  "version": 1,
+  "plugin": "TestingPlaygroundSynth",
+  "kind": "instrument",
+  "name": "Placeholder Bass",
+  "versions": [
+    {
+      "number": 1,
+      "saved": 1762400000000,
+      "note": "factory version",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm"
+        },
+        {
+          "name": "shape.fm"
+        }
+      ],
+      "dials": [
+        {
+          "name": "sub",
+          "value": 0.5
+        },
+        {
+          "name": "drive",
+          "value": 2
+        },
+        {
+          "name": "decay",
+          "value": 600
+        },
+        {
+          "name": "level",
+          "value": -14
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "name": "Growl",
+      "saved": 1762400300000,
+      "from": 1,
+      "dials": [
+        {
+          "name": "drive",
+          "value": 7
+        },
+        {
+          "name": "sub",
+          "value": 0.9
+        }
+      ]
+    },
+    {
+      "name": "Short",
+      "saved": 1762400200000,
+      "from": 1,
+      "dials": [
+        {
+          "name": "decay",
+          "value": 150
+        }
+      ]
+    }
+  ],
+  "info": {
+    "description": "A placeholder: a simple bass, a sine and a square an octave down through a soft clip. The factory import replaces it.",
+    "author": "",
+    "category": "Bass",
+    "tags": [
+      "placeholder"
+    ],
+    "genres": []
+  }
+}

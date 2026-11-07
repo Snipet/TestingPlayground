@@ -28,6 +28,11 @@
 // as set_dial does; its sweep renders one dial at given values instead, a table of the goals' metrics, and sets
 // nothing.
 //
+// Projects (the projects tool, ChatProjects.cpp; ChatHost::chatProjects, ProjectCall below): Claude lists the user's
+// projects and presets and, when the user asks, saves a version or a preset, opens a project or applies a preset, as
+// the editor's PROJECTS does. Safe by design: a save only adds, a preset is replaced only with replace, unsaved changes
+// are dropped only with discard, a factory project is never written, and nothing is deleted.
+//
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
 // planTurn sends the conversation to the planner as another model sees it (forAnotherModel: no thinking, which is bound
@@ -143,6 +148,34 @@ namespace playground::projectstore
 
 namespace playground
 {
+    // Claude's projects (the projects tool: ChatProjects.cpp, ChatHost::chatProjects). Safe by design: a save only adds
+    // (a version, a preset, the user's own copy of a factory project), a preset is replaced only with `replace` (the old
+    // values said), and opening a project or applying a preset over unsaved changes (the editor's files or the dials
+    // moved since they were opened or saved) only with `discard`, which the user must have asked for; nothing is
+    // deleted (that is the user's alone).
+    struct ProjectCall
+    {
+        enum class Action : uint8_t { list, saveVersion, savePreset, applyPreset, open };
+        Action action = Action::list;
+        std::string name;                        // list: the project shown whole (none: every one); save_version: the
+                                                 // project (none: the one open; another: a new one, or a version of it);
+                                                 // save_preset, apply_preset: the preset; open: the project, Name@N a
+                                                 // version (none or "@N": the one open)
+        std::string note;                        // save_version: what changed, in Claude's words (the version's note)
+        std::string category;                    // save_preset: the preset's; save_version: the project's
+        bool replace = false;                    // save_preset: over a preset of that name
+        bool discard = false;                    // open, apply_preset: over unsaved changes
+        bool desktop = false;                    // Claude Desktop's (MCP: not journalled, it knows), else the plugin's chat
+    };
+    struct ProjectAnswer
+    {
+        bool ok = false;
+        std::string text;                        // the tool's result (why, when not ok)
+        std::string entry;                       // the chat's line ("saved version 5 of \"Engine\""), "" for none
+        bool another = false;                    // open: another project's program is the editor's now (Claude's checks
+                                                 // were the one before's: the agent clears them)
+    };
+
     // What Claude's tools act on. Every call may come from the agent's worker thread.
     class ChatHost
     {
@@ -244,6 +277,9 @@ namespace playground
             why = "this plugin keeps no samples";
             return false;
         }
+        // The projects tool (ProjectCall below): the projects and presets listed, or one saved, opened or applied as the
+        // editor's PROJECTS would (on the message thread: this thread waits), and the answer in words. Never a delete.
+        virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {}, false }; }
     };
 
     class ChatAgent final : public ChatPort
@@ -302,6 +338,7 @@ namespace playground
         static juce::var toolDefinitions();
         static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
         static juce::var traceDefinition();                         // trace's (ChatTrace.cpp)
+        static juce::var projectsDefinition();                      // projects' (ChatProjects.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
         // chat's own tools. mcpTools(): toolDefinitions() but ask_user and ask_planner, in MCP's form ({ name, title,
@@ -364,6 +401,7 @@ namespace playground
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
+        std::string projectsText(const juce::var& input, bool& isError);   // projects' (ChatProjects.cpp)
         // view_panel's values and at: the state its picture draws (at's render of the program that plays, offline, to
         // its moment, the dials not named the plugin's or, with dials_from, the defaults: `defaults`, which the result's
         // first line says); "" or why it cannot be.

@@ -14,6 +14,7 @@
 #   Source/fminus/*.cpp          a program, compiled for the plugin (Patch.h)      -> <Name>_fminus, which _dsp links
 #   Source/fminus/examples/<key> a product's EXAMPLES, the first the default      -> generated/<key>/Examples.h
 #   Source/fminus/library/       the LIBRARY, every product's (.fm, .cir)          -> generated/<key>/Library.h
+#   factory/<key>/<name>/        a product's factory projects (read-only)          -> generated/<key>/FactoryProjects.h
 #   Source/plugin/*.cpp          the JUCE AudioProcessor                           -> the plugin and the probes
 #   Source/editor/**/*.cpp       the FunkGui Panel, minus gpu/                     -> the plugin and the probes
 #   Source/editor/gpu/*.cpp      the EditorHost factory (GPU)                      -> the plugin only
@@ -393,6 +394,124 @@ namespace @FP_NAMESPACE@
         return nullptr;
     }
 }
+]=])
+
+  # The factory projects (factory/<key>/<name>/, plugin/Factory.h), compiled into the plugin read-only: a folder a
+  # project, its name the project's (as ProjectStore's tidyName leaves a name), holding project.json (a project file's
+  # JSON, ProjectStore.h, of one version, its files' texts left out) and each file that version names, by its name,
+  # beside it. scripts/import-factory.py writes them; a hand-made one keeps the same shape. Adding or editing one
+  # reconfigures. FP_FACTORY_BYTES (the texts compiled in) is printed, what each plugin binary grows by, and the largest
+  # text: each text is one string literal, which may pass the 65,536 bytes -Wpedantic warns about (the header lets it).
+  file(GLOB _factory CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/factory/${key}/*/project.json)
+  list(SORT _factory)
+  set(FP_FACTORY_FILES "")
+  set(FP_FACTORY_ROWS "")
+  set(_fp_bytes 0)
+  set(_fp_n 0)
+  set(_fp_largest 0)
+  set(_fp_largest_at "")
+  foreach(_j IN LISTS _factory)
+    get_filename_component(_dir "${_j}" DIRECTORY)
+    get_filename_component(_name "${_dir}" NAME)
+    string(LENGTH "${_name}" _len)
+    if(_name MATCHES "[/\\\\:*?\"<>|]" OR _name MATCHES "^[. ]" OR _name MATCHES " $" OR _name MATCHES "  "
+       OR _len GREATER 40 OR NOT _name MATCHES "^[ -~]+$")
+      message(FATAL_ERROR "${_dir}: a factory project's folder is its name: printable ASCII, no / \\ : * ? \" < > |, "
+                          "no leading dot or space, single spaces, at most 40 characters")
+    endif()
+    file(READ "${_j}" _json)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_j}")
+    string(JSON _nv ERROR_VARIABLE _err LENGTH "${_json}" versions)
+    if(_err OR NOT _nv EQUAL 1)
+      message(FATAL_ERROR "${_j}: a factory project keeps one version (versions: one object, its files named)")
+    endif()
+    string(JSON _nf ERROR_VARIABLE _err LENGTH "${_json}" versions 0 files)
+    if(_err OR _nf LESS 1)
+      message(FATAL_ERROR "${_j}: its version names no file")
+    endif()
+    if(_json MATCHES "\\)factory\"")
+      message(FATAL_ERROR "${_j}: the text )factory\" would end the raw string it is compiled into")
+    endif()
+    string(LENGTH "${_json}" _len)
+    math(EXPR _fp_bytes "${_fp_bytes} + ${_len}")
+    if(_len GREATER _fp_largest)
+      set(_fp_largest ${_len})
+      set(_fp_largest_at "${_name}/project.json")
+    endif()
+    set(_rows "")
+    math(EXPR _last "${_nf} - 1")
+    foreach(_i RANGE ${_last})
+      string(JSON _fname GET "${_json}" versions 0 files ${_i} name)
+      if(NOT _fname MATCHES "^[A-Za-z0-9_-][A-Za-z0-9_.-]*$" OR _fname STREQUAL "project.json")
+        message(FATAL_ERROR "${_j}: '${_fname}' is no file name a tab may have (letters, digits, _, - and .)")
+      endif()
+      if(NOT EXISTS "${_dir}/${_fname}")
+        message(FATAL_ERROR "${_j}: its version names ${_fname}, which is not beside it")
+      endif()
+      file(READ "${_dir}/${_fname}" _text)
+      set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_dir}/${_fname}")
+      if(_text MATCHES "\\)factory\"")
+        message(FATAL_ERROR "${_dir}/${_fname}: the text )factory\" would end the raw string it is compiled into")
+      endif()
+      string(LENGTH "${_text}" _len)
+      math(EXPR _fp_bytes "${_fp_bytes} + ${_len}")
+      if(_len GREATER _fp_largest)
+        set(_fp_largest ${_len})
+        set(_fp_largest_at "${_name}/${_fname}")
+      endif()
+      string(APPEND _rows "        FactoryFile{ \"${_fname}\", R\"factory(${_text})factory\" },\n")
+    endforeach()
+    string(APPEND FP_FACTORY_FILES "    inline constexpr FactoryFile kFactoryFiles${_fp_n}[] = {\n${_rows}    };\n")
+    string(APPEND FP_FACTORY_ROWS
+           "        FactoryProject{ \"${_name}\", R\"factory(${_json})factory\", kFactoryFiles${_fp_n}, ${_nf} },\n")
+    math(EXPR _fp_n "${_fp_n} + 1")
+  endforeach()
+  set(FP_FACTORY_COUNT ${_fp_n})
+  set(_fp_largest_said "")
+  if(_fp_n GREATER 0)
+    set(_fp_largest_said ", the largest text ${_fp_largest} bytes (${_fp_largest_at})")
+  endif()
+  message(STATUS "${PRODUCT_NAME}: ${_fp_n} factory projects (factory/${key}/), ${_fp_bytes} bytes compiled in${_fp_largest_said}")
+  file(CONFIGURE OUTPUT ${FP_GENERATED_DIR}/FactoryProjects.h @ONLY CONTENT [=[// Generated by CMakeLists.txt from factory/@key@/*/: the factory projects (plugin/Factory.h), as they were when
+// the plugin was built: each one's project.json (a project file's JSON, its version's files' texts left out) and
+// those files' texts, in its version's order. Each text is one raw string literal, which may be longer than the
+// 65,536 bytes a compiler must take (-Wpedantic's -Woverlength-strings), which clang and clang-cl compile as well.
+#pragma once
+
+#include <cstddef>
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Woverlength-strings"
+#endif
+
+namespace @FP_NAMESPACE@
+{
+    struct FactoryFile
+    {
+        const char* name;                   // the tab's name: "program.fm"
+        const char* text;
+    };
+
+    struct FactoryProject
+    {
+        const char* name;                   // its folder's: the project's own name
+        const char* json;                   // its project.json
+        const FactoryFile* files;           // its version's files, in its order
+        int fileCount;
+    };
+
+@FP_FACTORY_FILES@
+    inline constexpr std::size_t kFactoryCount = @FP_FACTORY_COUNT@;
+    inline constexpr std::size_t kFactoryBytes = @_fp_bytes@;   // the texts compiled in
+    inline constexpr FactoryProject kFactory[] = {
+@FP_FACTORY_ROWS@        FactoryProject{ nullptr, nullptr, nullptr, 0 },   // the end (an empty set is no empty array)
+    };
+}
+
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 ]=])
 
   # ---- FMinus: the JIT compiler, through its public API (fminus/FMinus.h), and the program (Patch.h), JUCE-free -----

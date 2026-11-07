@@ -3,8 +3,8 @@
 //
 //   DESCRIPTION  a few sentences (one field, wrapped)
 //   AUTHOR       a name                 TAGS  words, commas between ("warm, analog, slow attack")
-//   CATEGORY     one of this kind's (a synth's: Bass, Lead, Pad, ...; an effect's: Reverb, Delay, ...); a second click
-//                on the chosen one clears it
+//   CATEGORY     one of this kind's (a synth's: Bass, Lead, Pad, ...; an effect's: Reverb, Delay, ...), or the project's
+//                own when it is another (one typed in PROJECTS); a second click on the chosen one clears it
 //   GENRES       any of them
 //   VERSIONS     every version the project keeps, or the newest only
 //   Export source (.zip)       the code, a README and project.json, to read and edit anywhere
@@ -12,7 +12,8 @@
 //   Done         or Escape: the info kept with the project (when it changed), the card closed
 // An export keeps the info first, then asks the Panel for a save chooser (takeWant); the Panel writes the file and says
 // how it went (exported). Tab moves between the fields; Return to the next. While it is open it takes every pointer
-// event and key.
+// event and key. A factory project's (isFactoryName) is read-only: its info shown as it is, no field or pill taking an
+// edit, nothing kept (the store refuses its info), its exports as they are; a copy saved as the user's own changes it.
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -78,11 +79,13 @@ namespace playground::ui
         std::string takeNotice();                         // for the status line, once
 
         const std::string& project() const noexcept { return project_; }
+        bool readOnly() const noexcept { return readOnly_; }   // a factory project's: its info as it is
         bool allVersions() const noexcept { return allVersions_; }
         ProjectInfo info() const;                         // as the fields have it now
         Field focus() const noexcept { return focus_; }
         const std::string& why() const noexcept { return why_; }
         static std::vector<std::string> categories();     // this kind's
+        std::vector<std::string> choices() const;         // its pills: this kind's, and the project's own when another
 
     private:
         funkgui::text::LineEdit& field(Field f);
@@ -94,6 +97,7 @@ namespace playground::ui
         EditorPort& port_;
         bool open_ = false;
         std::string project_;
+        bool readOnly_ = false;
         int versions_ = 0, latest_ = 0, presets_ = 0;
         ProjectInfo saved_;                               // as it was read or last kept
         funkgui::text::LineEdit description_, author_, tags_;

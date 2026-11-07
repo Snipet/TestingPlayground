@@ -13,7 +13,8 @@
 //                     "midi": [ { "dial": "cutoff", "channel": 1, "cc": 74 }, { "dial": "drive", "channel": 1, "cc": 2,
 //                                 "fine": true } ] },
 //                   ... ],                                                                     oldest first
-//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "dials": [ ... ] }, ... ],  by name
+//     "presets":  [ { "name": "Bright", "saved": 1761580100000, "from": 1, "category": "Leads", "dials": [ ... ] }, ... ],
+//                                                                                                       by name
 //     "info":     { "description": "...", "author": "...", "category": "Pad", "tags": [ "warm" ], "genres": [ ... ] } }
 //
 // A version's "circuits" (optional: an older project has none, and an older build reads past it) are the circuit
@@ -46,12 +47,22 @@
 // numbers go on counting. A project's name is its file's (a file renamed in the Finder is a project renamed); names
 // are told apart case aside, as the Mac's disks tell files apart.
 //
+// A preset's "category" (optional: added later, read past by an older build; none when it has none) is what the top
+// bar's list of the presets groups it by (editor/PresetPicker.h); setPresetCategory sets it, and a preset saved over
+// one of its name keeps it.
+//
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.
 //
 // The presets of the playground before projects (<name>.fmpreset: a program and its dials) become projects of one
 // version, at the time the preset was saved, the first time the folder is read; the old files then move into the
 // folder's "Presets before projects" (never deleted).
+//
+// The factory projects (Factory.h), compiled into the plugin, are served here too, by their factory name (EditorPort.h's
+// factoryName: "Factory: Warm Pad", which tidyName never leaves, so no file here can have it): load(), exists(),
+// presetsOf() and presetsCached() read them, factoryList() lists them (list() and listCached() are this Mac's alone),
+// and every write (saveVersion, savePreset, removePreset, removeVersion, remove, setInfo) refuses one, with why. add()
+// of a project named so takes its own name.
 //
 // Any thread; the functions do their own I/O. They hold no state but the folder override and a cache of the listing
 // and of each project's presets (a file read again only when its size or its time changes; what this process writes
@@ -95,6 +106,7 @@ namespace playground::projectstore
         std::string name;
         float value = 0.0f;
         std::string label = {};                          // its value's option name, when it has one (above)
+        friend bool operator==(const Dial&, const Dial&) = default;
     };
 
     // The plain value dial `d` gives a control `c` of those options: its option's name's value, else its value, within
@@ -151,6 +163,7 @@ namespace playground::projectstore
         int64_t savedMs = 0;
         int from = 0;                                    // the version it was saved with (0: none)
         std::vector<Dial> dials;
+        std::string category = {};                       // "" for none (above)
     };
 
     inline constexpr int kMaxTags = 16;
@@ -193,6 +206,9 @@ namespace playground::projectstore
         int latest = 0;                                  // its latest version's number
         int versions = 0;                                // how many it keeps
         std::vector<std::string> presets;                // their names, by name
+        std::string category;                            // its info's: what PROJECTS groups it by ("" for none)
+        std::vector<std::string> tags;                   // its info's
+        std::string description;                         // its info's (PROJECTS' search reads it)
     };
 
     // `name` as a project or a preset may have it: printable ASCII but / \ : * ? " < > | and a leading '.', its spaces
@@ -201,6 +217,7 @@ namespace playground::projectstore
     bool sameName(std::string_view a, std::string_view b);   // case aside
 
     std::vector<Entry> list();                           // by name, case aside
+    std::vector<Entry> factoryList();                    // the factory projects (Factory.h), by name, case aside
     // A project's presets as the listing keeps them (by name): its file read whole only when its size or its time
     // changed since it was last read (here or by list(), whatever the case its name is spelt in: the same file by its
     // device and inode, on Windows by its path case aside), so a project open, whose presets the explorer asks for
@@ -211,6 +228,8 @@ namespace playground::projectstore
         std::string name;
         int64_t savedMs = 0;
         int from = 0;                                    // the version it was saved with (0: none)
+        std::string category = {};                       // "" for none
+        std::vector<Dial> dials = {};                    // what the top bar's cycle matches the dials against
         friend bool operator==(const PresetSummary&, const PresetSummary&) = default;
     };
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why = nullptr);
@@ -277,14 +296,27 @@ namespace playground::projectstore
     // latest, with the self-test's answers for its netlists (`circuits`: at most kMaxAnswers kept; when the files, the
     // tab, the dials, MIDI learn's mappings and the samples are the latest's, answers it lacks are added to it and no
     // version is), and the samples it plays (`samples`: their files kept in the project, above). Nothing, with why, when
-    // it cannot be written (or the project's sample files would pass kMaxSampleBytes).
+    // it cannot be written (or the project's sample files would pass kMaxSampleBytes). `lead` goes before the note's
+    // words, the change after it in brackets ("Claude: brighter (program.fm +12 -3)"): who saved it and why, as noteLead
+    // tidies it.
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
                                      const std::vector<Answer>& circuits = {}, const VersionMidi& midi = {},
-                                     const assets::Set* samples = nullptr, std::string* why = nullptr);
-    // A preset of the project (over one of that name, case aside, which takes the new name's case).
+                                     const assets::Set* samples = nullptr, std::string* why = nullptr,
+                                     std::string_view lead = {});
+    // A version note's words as a project keeps them: printable, one line, its spaces collapsed, at most kMaxLead
+    // characters (cut at a word, with "..."); "" when nothing is left.
+    inline constexpr std::size_t kMaxLead = 160;
+    std::string noteLead(std::string_view words);
+    // A preset of the project (over one of that name, case aside, which takes the new name's case and keeps its
+    // category).
     bool savePreset(std::string_view project, std::string_view preset, const std::vector<Dial>& dials, int from,
                     std::string* why = nullptr);
     bool removePreset(std::string_view project, std::string_view preset, std::string* why = nullptr);
+    // A preset's category alone (tidied as a project's is; "" for none): one read, one write. Nothing, with why, when
+    // the project or the preset is not there (a factory project's: read-only).
+    bool setPresetCategory(std::string_view project, std::string_view preset, std::string_view category,
+                           std::string* why = nullptr);
+    std::string tidyCategory(std::string_view category);   // as tidyInfo tidies a project's
     bool removeVersion(std::string_view project, int number, std::string* why = nullptr);   // never its only one
     bool remove(std::string_view name, std::string* why = nullptr);
 
@@ -293,6 +325,28 @@ namespace playground::projectstore
     Info tidyInfo(Info info);
     std::vector<std::string> splitTags(std::string_view commaSeparated);   // "warm, analog,, Warm" -> warm, analog
     bool setInfo(std::string_view project, const Info& info, std::string* why = nullptr);
+    // Its category alone (tidied as tidyInfo does; "" for none), the rest of its info as it is: one read, one write.
+    bool setCategory(std::string_view project, std::string_view category, std::string* why = nullptr);
+
+    // How PROJECTS shows the projects (editor/ProjectBrowser.h, editor/ProjectGroups.h): the projects starred (by name,
+    // a factory one's as factoryName spells it), the groups folded (ProjectGroups' keys), the search typed, the tag
+    // filtered on and the order. The folder's own, so every instance of this plugin on the Mac (and a probe, in its
+    // folder) shares it: one small file there, kViewFile (hidden: no project's name starts with a '.'), written whole
+    // (beside, then moved over) and read again only when its time or its size changes. None, or one that does not
+    // read: the default (nothing starred or folded, no filter, by name). remove() unstars the project it deletes.
+    inline constexpr const char* kViewFile = ".projects-view.json";
+    inline constexpr std::size_t kMaxFavourites = 500, kMaxFolded = 100, kMaxSearch = 60;
+    struct View
+    {
+        std::vector<std::string> favourites;             // case aside, each once
+        std::vector<std::string> folded;
+        std::string search;                              // printable, at most kMaxSearch characters
+        std::string tag;                                 // "" for any
+        bool byDate = false;                             // the newest save first, else by name
+        friend bool operator==(const View&, const View&) = default;
+    };
+    View view();
+    bool setView(const View& v, std::string* why = nullptr);
 
     // A project as the JSON of its file, and back (`name` the project's when the JSON is a file's; nothing, with why, when
     // it is not a project of this plugin's or it is damaged). For ProjectExport.

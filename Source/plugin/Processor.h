@@ -20,7 +20,7 @@
 //     notes as Events;
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
-//     a dial queued for poll()).
+//     a dial queued for poll(); its projects tool's saves, opens and presets a job poll() runs: ProcessorSaves.cpp).
 //   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
 //     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
 //     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element);
@@ -43,6 +43,9 @@
 //     (learn_), the message thread writes them (pollMidi, on a timer of its own while there is anything to listen for).
 //     The mappings are kept in the session (<MIDI><MAP dial=".." channel=".." cc=".." fine="1"/></MIDI>; a state
 //     without them has none) and with each project version saved (ProjectStore.h).
+//   - the presets in turn (EditorPort::presetCycle, stepPreset): the project open's presets, which the top bar steps
+//     through and which are the host's programs (getNumPrograms ...: a VST3's list a fixed kVst3Programs, the rest the
+//     presets themselves) and what MIDI's program change on channel 1 chooses (the synth's). Applied as any preset is.
 //
 // What a host may do, and what the Engine sees of it:
 //   - a block larger than prepareToPlay announced: the Engine gets it in parts of at most that size;
@@ -50,8 +53,8 @@
 //   - more than kMaxEventsPerBlock events in a block: the block is played in parts, cut at the event that does not
 //     fit, so no event is lost;
 //   - MIDI: note-on (at velocity 0 a note-off), note-off, the controllers All Sound Off (120) and All Notes Off (123),
-//     both an allNotesOff event, the mod wheel (1) and the sustain pedal (64), pitch bend and channel pressure; the
-//     rest is ignored. The host's transport (tempo, position, signature, playing) goes to the Engine once a block,
+//     both an allNotesOff event, the mod wheel (1) and the sustain pedal (64), pitch bend and channel pressure, and a
+//     program change on channel 1 (a preset of the project open, applied by poll()); the rest is ignored. The host's transport (tempo, position, signature, playing) goes to the Engine once a block,
 //     for the program's Host block (host.fm). The panel's keyboard's notes (playNote) come
 //     through a lock-free queue and play at the start of the next block, before its MIDI;
 //   - bypass (processBlockBypassed; there is no bypass parameter): each edge is a 20 ms smootherstep crossfade between
@@ -177,6 +180,10 @@ namespace playground
         // the picture Claude's view_panel asks for, there.
         void poll();
         void settle();
+        // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
+        // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
+        bool claudeJobWaiting() const;
+        void setClaudeJobWaitForTests(int ms) noexcept { claudeJobMs_ = ms > 0 ? ms : kClaudeJobSeconds * 1000; }
 
         // Who reads the meters and the scopes (Engine::readers): the audio thread measures them only while someone does.
         // The editor's Panel is a reader while it lives (EditorPort); a tool that listens to the plugin (Claude
@@ -262,6 +269,7 @@ namespace playground
         bool frozen() const override;
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
+        std::vector<ProjectEntry> factoryProjects() const override;
         std::string projectFolder() const override;
         std::string tidyName(const std::string& typed) const override { return projectstore::tidyName(typed); }
         ProjectState project() const override;
@@ -278,8 +286,16 @@ namespace playground
         bool savePreset(const std::string& preset, std::string& why) override;
         bool applyPreset(const std::string& project, const std::string& preset, std::string& why) override;
         bool deletePreset(const std::string& project, const std::string& preset, std::string& why) override;
+        bool setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                               std::string& why) override;
+        PresetCycle presetCycle() const override;
+        bool stepPreset(int step, std::string& why) override;
+        ClaudeNotice claudeNotice() const override;
         ProjectInfo projectInfo(const std::string& project) const override;
         bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) override;
+        bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) override;
+        ProjectsView projectsView() const override;
+        bool setProjectsView(const ProjectsView& view, std::string& why) override;
         bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path, Exported& out,
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
@@ -382,6 +398,7 @@ namespace playground
         bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why) override;
         Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
                                   std::vector<std::string>& refused) const override;
+        ProjectAnswer chatProjects(const ProjectCall& call) override;   // ProcessorSaves.cpp
 
         // The samples (above; dsp/Assets.h): the set as it is, under assetsMutex_ (any thread reads it), replaced whole
         // on the message thread and Claude's worker (the Compiler's with it, journalled as `who`'s: `words`).
@@ -437,6 +454,49 @@ namespace playground
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
+        // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
+        // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
+        // goes to reader_), read again by poll() every kPresetsPollMs and at once after this processor changed them
+        // or the project open (presetsStale_), and by a state load. `hostCurrent_` is the program the host is told
+        // (getCurrentProgram): the preset applied or matched last, kept while the dials match none in the project it
+        // was set in (`hostFor_`), so a host that sets the program it saved changes nothing; another project open (or
+        // none with presets) drops it, to the "-" past the presets in the VST3 (whose host would take a number it
+        // was told for the one playing and never apply it), else to the first. A state load reads its project whole
+        // (restoreProjectBase), so the cache has its presets and the host's program is the session's from that call
+        // on. A program asked off the message thread (a host's setCurrentProgram) or by MIDI (the audio thread: a
+        // program change on channel 1, its count in the top bits, the synth's) is applied by poll().
+        static constexpr double kPresetsPollMs = 500.0;
+        static constexpr int kVst3Programs = 128;                // a VST3 host's list: fixed when the plugin is made
+        mutable std::mutex presetsMutex_;
+        std::string heldProject_;
+        std::vector<projectstore::PresetSummary> heldPresets_;
+        uint64_t heldNames_ = 0;                                 // a hash of the project's and the presets' names
+        uint64_t heldRead_ = 0;                                  // reader_'s revision when they were read
+        double heldAt_ = -1.0e12;                                // ms (poll's clock)
+        std::atomic<bool> presetsStale_{ true };
+        std::atomic<int> hostCurrent_{ 0 };
+        std::string hostFor_;                                    // the project hostCurrent_ was set in (presetsMutex_)
+        int hostTold_ = -1;                                     // the program the host was last told of (poll)
+        uint64_t namesTold_ = 0;                                 // ... and the names then
+        std::atomic<int> hostProgramAsked_{ -1 };
+        std::atomic<uint32_t> midiProgram_{ 0 };                 // (count << 8) | program, written by the audio thread
+        uint32_t midiProgramSeen_ = 0;
+        void refreshPresets(bool force);
+        bool choosePreset(int index, const char* who);           // a program by number (the host's, MIDI's)
+        int currentPreset(const std::vector<projectstore::PresetSummary>& list, bool& applied) const;   // any thread
+        // How `dials` (a version's, a preset's: by name) stand against the dials now: how many of them the program
+        // has, and whether every one of those is where it is (within a ten-thousandth of its range).
+        std::pair<int, bool> dialsAgainst(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                          const std::vector<projectstore::Dial>& dials) const;
+        // The project calls as the editor's (the user's) and Claude's projects tool make them: `who` the journal's (none:
+        // Claude Desktop's, which it knows), `lead` a version's note's words ("Claude: brighter").
+        bool applyPresetAs(const std::string& project, const std::string& preset, std::optional<Journal::Who> who,
+                           std::string& why);
+        bool saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
+                           SavedVersion& saved, std::string& why);
+        bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
+        bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
+        int programCount() const;
         // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
         std::vector<projectstore::Dial> projectDials_;
         uint64_t dialsRequest_ = 0;
@@ -522,6 +582,34 @@ namespace playground
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
                             const std::vector<projectstore::Dial>& dials);
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
+        // A state load's: the project's file read whole (the store's cache then has its presets), and the dials its
+        // version and the preset applied set kept as baseDials_ (what dialsEdited and the presets' `edited` compare).
+        void restoreProjectBase();
+        bool saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
+                      const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
+                      const std::vector<midilearn::Mapping>& midi, const Assets& samples, const std::string& lead,
+                      std::optional<Journal::Who> who, SavedVersion& saved,
+                      std::string& why);                         // a factory project's: the user's own copy
+        // Claude's projects tool (ProcessorSaves.cpp; ChatHost::chatProjects). Its saves, opens and presets run on the
+        // message thread, as the editor's PROJECTS runs them: the caller's worker hands a job to poll() (after the dials
+        // Claude set, so a save keeps them) and waits for it (onMessageThread: at once on the message thread itself; a
+        // job poll() has not taken in kClaudeJobSeconds is withdrawn, nothing done). A list reads the store on the
+        // caller's thread (never a file read whole on the message thread), the project open's state from a job. What
+        // it did goes to the editor's status (claudeNotice_, which EditorPort::claudeNotice gives).
+        static constexpr int kClaudeJobSeconds = 10;
+        int claudeJobMs_ = kClaudeJobSeconds * 1000;             // (setClaudeJobWaitForTests)
+        mutable std::mutex claudeJobMutex_;
+        std::condition_variable claudeJobDone_;
+        std::function<void()> claudeJob_;                        // asked, not taken yet
+        bool claudeJobRunning_ = false;
+        uint64_t claudeJobsDone_ = 0;
+        bool onMessageThread(std::function<void()> job);         // false: not taken in time
+        void runClaudeJob();                                     // poll()
+        mutable std::mutex claudeNoticeMutex_;
+        ClaudeNotice claudeNotice_;
+        void noticeClaude(const std::string& text);              // the editor's status says it
+        ProjectAnswer claudeProjectAction(const ProjectCall& call, uint64_t& compile);   // the message thread's part
+        std::string claudeProjectList(const ProjectCall& call);                          // the caller's
 
         juce::AudioProcessorValueTreeState apvts_;
         // The panel's own dials' normalised values (Controls.h's isPanelDial: slot kHostControls + k's is k's), as a

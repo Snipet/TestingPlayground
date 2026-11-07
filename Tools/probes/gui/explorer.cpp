@@ -8,6 +8,7 @@
 //   gui.explorer.paper.png   in PAPER
 //   gui.explorer.small.png   the least size with the chat folded, scrolled to the end
 //   gui.explorer.assets.png  ASSETS with three samples, the one the program reads ticked
+//   gui.explorer.factory.png FACTORY open, a factory project open (its presets, no + to save one)
 // and checks:
 //   OPEN      open at first: its card at the left, the program's card after it and the chat's at the right, none
 //             overlapping; the sections FILES, PRESETS, PROJECTS, LIBRARY and EXAMPLES; a row a tab, the shown one
@@ -24,6 +25,11 @@
 //             the header's + opens PROJECTS to save
 //   PRESETS   the presets of the project open, the one applied marked; a click applies one (its dial at once, no
 //             compile); the header's + opens PROJECTS with a preset's name to save
+//   FACTORY   the factory projects (plugin/Factory.h), folded at first (its header there); open, a row each, by its own
+//             name; a click opens one (asking first over the editor's changes), its row marked; PRESETS then lists its
+//             presets with no + (a factory project's stay as they are), and a preset's click applies it; PROJECTS'
+//             + opens PROJECTS with the copy's name in its field (Save as mine), whose Save makes the user's own copy,
+//             then open
 //   POLL      the projects and the open one's presets are read again every 3 s: with nothing changed, no project's
 //             file is read whole (ProjectStore's parses()) and the rows are not made again (Panel::explorerBuilds); a
 //             preset this process saves shows at the next poll with no file read (the store kept what it wrote), the
@@ -361,6 +367,66 @@ PROBE(gui, explorer)
         clickAt(host, ex.centreOfAction(S::projects));
         P.eq("projects.plus_opens", panel.projectBrowser().isOpen() && !panel.projectBrowser().presetMode() ? 1 : 0, 1);
         host.keys("escape");
+        host.settle();
+    }
+
+    // ---- FACTORY -------------------------------------------------------------------------------------------------------
+    {
+        const std::vector<pg::ProjectEntry> factory = port.factoryProjects();
+        P.ge("factory.some", static_cast<double>(factory.size()), 1.0);
+        ex.scrollTo(0.0f);
+        host.settle();
+        P.eq("factory.folded_at_first", !ex.sectionOpen(S::factory) && ex.centreOfHeader(S::factory).has_value()
+                                            && !ex.centreOfRow(S::factory, 0).has_value() ? 1 : 0, 1);
+        clickAt(host, ex.centreOfHeader(S::factory));
+        P.eq("factory.opens_section", ex.sectionOpen(S::factory) ? 1 : 0, 1);
+        P.eq("factory.rows", ex.rows(S::factory), static_cast<int64_t>(factory.size()));
+        bool own = ex.rows(S::factory) == static_cast<int>(factory.size());
+        for (int i = 0; own && i < ex.rows(S::factory); ++i)
+            own = ex.row(S::factory, i)->label == pg::ownName(factory[static_cast<std::size_t>(i)].name)
+               && ex.row(S::factory, i)->key == factory[static_cast<std::size_t>(i)].name;
+        P.eq("factory.own_names", own ? 1 : 0, 1);
+        const std::string openBefore = port.project().name;
+        if (!factory.empty())
+        {
+            const std::string key = factory.front().name;
+            if (!ex.centreOfRow(S::factory, 0))
+                ex.scrollTo(ex.contentHeight());
+            host.settle();
+            clickAt(host, ex.centreOfRow(S::factory, 0));
+            if (host.pendingMenu() != nullptr)
+                host.chooseMenuItem(1);
+            settleRun(processor, host);
+            host.tick(10);
+            host.settle();
+            P.eq("factory.opened", port.project().name == key && port.project().version == 1 ? 1 : 0, 1);
+            P.eq("factory.marked", ex.row(S::factory, 0) != nullptr && ex.row(S::factory, 0)->active ? 1 : 0, 1);
+            P.eq("factory.presets_listed", ex.rows(S::presets), factory.front().presets);
+            P.eq("factory.presets_no_plus", ex.centreOfAction(S::presets).has_value() ? 0 : 1, 1);
+            ex.scrollTo(0.0f);
+            host.settle();
+            writePng(P, host, "gui.explorer.factory.png");
+            if (factory.front().presets > 0)
+            {
+                const std::string name = ex.row(S::presets, 0)->key;
+                clickAt(host, ex.centreOfRow(S::presets, 0));
+                host.settle();
+                P.eq("factory.preset_applies", port.project().preset == name ? 1 : 0, 1);
+            }
+            clickAt(host, ex.centreOfAction(S::projects));   // PROJECTS, its field the copy's name
+            const std::string mine = pg::ownName(key);
+            pg::ui::ProjectBrowser& browser = panel.projectBrowser();
+            P.eq("factory.plus_names_copy", browser.isOpen() && browser.name() == mine && browser.saveLabel() == "Save as mine" ? 1 : 0, 1);
+            const funkgui::Rect save = browser.places(static_cast<float>(pg::ui::kDefaultWidth), static_cast<float>(pg::ui::kDefaultHeight)).save;
+            clickAt(host, funkgui::Point{ save.centreX(), save.centreY() });
+            P.eq("factory.save_copies", !browser.isOpen() && port.project().name == mine && port.project().version == 1 ? 1 : 0, 1);
+            std::string gone;
+            P.eq("factory.copy_removed", port.deleteProject(mine, gone) ? 1 : 0, 1);
+        }
+        std::string why;
+        P.eq("factory.project_back", port.openProject(openBefore, 0, why) ? 1 : 0, 1);
+        settleRun(processor, host);
+        ex.setSectionOpen(S::factory, false);
         host.settle();
     }
 

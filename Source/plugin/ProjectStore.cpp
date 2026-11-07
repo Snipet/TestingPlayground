@@ -1,6 +1,9 @@
 // Source/plugin/ProjectStore.cpp: see ProjectStore.h.
 #include "plugin/ProjectStore.h"
 
+#include "plugin/EditorPort.h"
+#include "plugin/Factory.h"
+
 #include "Product.h"
 
 #include <juce_core/juce_core.h>
@@ -350,6 +353,7 @@ namespace playground::projectstore
             std::sort(b.begin(), b.end(), byName);
             return a == b;
         }
+        void sortPresets(std::vector<Preset>& presets);
 
         std::optional<Project> parseRoot(const juce::var& root, const std::string& name, const std::string& label, std::string* why)
         {
@@ -406,6 +410,7 @@ namespace playground::projectstore
                     pr.savedMs = static_cast<int64_t>(static_cast<juce::int64>(v["saved"]));
                     pr.from = static_cast<int>(v["from"]);
                     pr.dials = dialsOf(v["dials"]);
+                    pr.category = tidyCategory(v["category"].toString().toStdString());   // none in an older file
                     if (!pr.name.empty() && p.preset(pr.name) == nullptr)
                         p.presets.push_back(std::move(pr));
                 }
@@ -420,6 +425,7 @@ namespace playground::projectstore
                 p.info = tidyInfo(std::move(in));
             }
             p.samples = sampleFilesOf(root["sampleFiles"]);
+            sortPresets(p.presets);                      // by name, case aside, whoever wrote the file (their numbers)
             return p;
         }
 
@@ -515,8 +521,11 @@ namespace playground::projectstore
             for (const Preset& pr : p.presets)
             {
                 c.entry.presets.push_back(pr.name);
-                c.presets.push_back({ pr.name, pr.savedMs, pr.from });
+                c.presets.push_back({ pr.name, pr.savedMs, pr.from, pr.category, pr.dials });
             }
+            c.entry.category = p.info.category;
+            c.entry.tags = p.info.tags;
+            c.entry.description = p.info.description;
             return c;
         }
 
@@ -568,6 +577,15 @@ namespace playground::projectstore
             });
         }
 
+        // A factory project's name (Factory.h): never written, its why saying what a save does instead.
+        bool readOnly(std::string_view name, std::string* why)
+        {
+            if (!isFactoryName(name))
+                return false;
+            fail(why, "\"" + ownName(name) + "\" is a factory project: it stays as it is (saving it makes a project of your own)");
+            return true;
+        }
+
         // Writes `p` under p.name: beside, then moved over, so a project is never half written; one of the name in
         // another case goes. The cache then holds what it wrote (its entry, as the file now is): the listing after a
         // save of this process's reads nothing whole (the explorer's next poll), where it read the file it had just
@@ -575,6 +593,8 @@ namespace playground::projectstore
         // (keepRead), so it never takes this one's place.
         bool write(Project p, std::string* why)
         {
+            if (readOnly(p.name, why))
+                return false;
             p.name = tidyName(p.name);
             if (p.name.empty())
             {
@@ -647,6 +667,8 @@ namespace playground::projectstore
                 o->setProperty("name", str(pr.name));
                 o->setProperty("saved", static_cast<juce::int64>(pr.savedMs));
                 o->setProperty("from", pr.from);
+                if (!pr.category.empty())
+                    o->setProperty("category", str(pr.category));
                 o->setProperty("dials", dialsVar(pr.dials));
                 presets.add(juce::var(o));
             }
@@ -712,6 +734,8 @@ namespace playground::projectstore
         template <typename Change>
         bool update(std::string_view name, std::string* why, Change&& change)
         {
+            if (readOnly(name, why))
+                return false;
             std::optional<Project> p = load(name, why);
             if (!p)
                 return false;
@@ -968,8 +992,33 @@ namespace playground::projectstore
         return listing(&unread);
     }
 
+    namespace
+    {
+        // A factory project's presets as the listing has a project's (by name), or nothing, with why.
+        std::optional<std::vector<PresetSummary>> factoryPresets(std::string_view name, std::string* why)
+        {
+            const Project* p = factory::find(name);
+            if (p == nullptr)
+            {
+                fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+                return std::nullopt;
+            }
+            return cachedOf(*p, 0, 0, {}).presets;
+        }
+    }
+
+    std::vector<Entry> factoryList()
+    {
+        std::vector<Entry> out;
+        for (const Project& p : factory::projects())
+            out.push_back(cachedOf(p, 0, 0, {}).entry);
+        return out;
+    }
+
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why)
     {
+        if (isFactoryName(name))
+            return factoryPresets(name, why);
         juce::File f;
         juce::int64 modified = 0, size = 0;
         FileId id;
@@ -992,6 +1041,8 @@ namespace playground::projectstore
 
     std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread, std::string* why)
     {
+        if (isFactoryName(name))
+            return factoryPresets(name, why);
         juce::File f;
         juce::int64 modified = 0, size = 0;
         FileId id;
@@ -1018,12 +1069,21 @@ namespace playground::projectstore
 
     bool exists(std::string_view name)
     {
+        if (isFactoryName(name))
+            return factory::find(name) != nullptr;
         migrate();
         return fileOf(name) != juce::File();
     }
 
     std::optional<Project> load(std::string_view name, std::string* why)
     {
+        if (isFactoryName(name))
+        {
+            if (const Project* p = factory::find(name))
+                return *p;
+            fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+            return std::nullopt;
+        }
         migrate();
         const juce::File f = fileOf(name);
         if (f == juce::File())
@@ -1034,10 +1094,44 @@ namespace playground::projectstore
         return readAndKeep(f, why);                      // its entry kept too: what PROJECTS opens, the poll then has
     }
 
+    std::string noteLead(std::string_view words)
+    {
+        std::string out;
+        for (const char ch : words)
+        {
+            const auto u = static_cast<unsigned char>(ch);
+            const bool space = u <= ' ' || u == 0x7f;
+            if (space)
+            {
+                if (!out.empty() && out.back() != ' ')
+                    out += ' ';
+            }
+            else
+                out += ch;                               // UTF-8 kept as it is
+        }
+        while (!out.empty() && out.back() == ' ')
+            out.pop_back();
+        if (out.size() > kMaxLead)
+        {
+            std::size_t cut = out.rfind(' ', kMaxLead - 3);
+            if (cut == std::string::npos || cut < kMaxLead / 2)
+                cut = kMaxLead - 3;
+            while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xc0) == 0x80)
+                --cut;                                   // never inside a UTF-8 character
+            out = out.substr(0, cut);
+            while (!out.empty() && out.back() == ' ')
+                out.pop_back();
+            out += "...";
+        }
+        return out;
+    }
+
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
                                      const std::vector<Answer>& circuits, const VersionMidi& midi, const assets::Set* samples,
-                                     std::string* why)
+                                     std::string* why, std::string_view lead)
     {
+        if (readOnly(name, why))
+            return std::nullopt;
         const std::vector<midilearn::Mapping> maps = midilearn::tidy(midi.mappings);
         const std::vector<SampleRef> refs = refsOf(samples);
         const std::string tidy = tidyName(name);
@@ -1091,6 +1185,8 @@ namespace playground::projectstore
         v.midi = maps;
         v.samples = refs;
         v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials, &v.midi, &v.samples);
+        if (const std::string l = noteLead(lead); !l.empty())
+            v.note = l + " (" + v.note + ")";
         v.files = files;
         v.active = active;
         v.dials = dials;
@@ -1123,6 +1219,7 @@ namespace playground::projectstore
             for (Preset& old : p.presets)
                 if (sameName(old.name, name))
                 {
+                    pr.category = old.category;          // a preset saved over keeps its group
                     old = std::move(pr);
                     return true;
                 }
@@ -1141,6 +1238,20 @@ namespace playground::projectstore
                 return false;
             }
             p.presets.erase(it);
+            return true;
+        });
+    }
+
+    bool setPresetCategory(std::string_view project, std::string_view preset, std::string_view category, std::string* why)
+    {
+        return update(project, why, [&](Project& p) {
+            const auto it = std::find_if(p.presets.begin(), p.presets.end(), [&](const Preset& pr) { return sameName(pr.name, preset); });
+            if (it == p.presets.end())
+            {
+                fail(why, "\"" + p.name + "\" has no preset named \"" + std::string(preset) + "\"");
+                return false;
+            }
+            it->category = tidyCategory(category);
             return true;
         });
     }
@@ -1167,14 +1278,26 @@ namespace playground::projectstore
 
     bool remove(std::string_view name, std::string* why)
     {
+        if (readOnly(name, why))
+            return false;
         const juce::File f = fileOf(name);
         if (f == juce::File() || !f.deleteFile())
         {
             fail(why, "cannot delete the project \"" + std::string(name) + "\"");
             return false;
         }
-        const std::lock_guard<std::mutex> lock(cacheMutex);
-        cache.erase(f.getFullPathName().toStdString());
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            cache.erase(f.getFullPathName().toStdString());
+        }
+        // Its star goes with it: a project saved later under its name starts unstarred.
+        View v = view();
+        const auto starred = [&](const std::string& s) { return sameName(s, name); };
+        if (std::any_of(v.favourites.begin(), v.favourites.end(), starred))
+        {
+            v.favourites.erase(std::remove_if(v.favourites.begin(), v.favourites.end(), starred), v.favourites.end());
+            (void)setView(v);
+        }
         return true;
     }
 
@@ -1235,12 +1358,146 @@ namespace playground::projectstore
         return info;
     }
 
+    std::string tidyCategory(std::string_view category)
+    {
+        Info info;
+        info.category = std::string(category);
+        return tidyInfo(std::move(info)).category;
+    }
+
     bool setInfo(std::string_view project, const Info& info, std::string* why)
     {
         return update(project, why, [&](Project& p) {
             p.info = tidyInfo(info);
             return true;
         });
+    }
+
+    bool setCategory(std::string_view project, std::string_view category, std::string* why)
+    {
+        return update(project, why, [&](Project& p) {
+            Info info = p.info;
+            info.category = std::string(category);
+            p.info = tidyInfo(std::move(info));
+            return true;
+        });
+    }
+
+    namespace
+    {
+        constexpr const char* kViewFormat = "funk-playground-projects-view";
+
+        // The view's file as last read or written (its path, time and size), so view() reads it only when it changed.
+        std::mutex viewMutex;
+        struct ViewCache
+        {
+            std::string path;
+            juce::int64 modified = -1, size = -1;
+            View view;
+        };
+        ViewCache viewCache;
+
+        juce::File viewFile() { return directory().getChildFile(kViewFile); }
+
+        // The view as it may be kept: names tidied and each once (case aside), at most so many, the search printable.
+        View tidyView(View v)
+        {
+            const auto unique = [](const std::vector<std::string>& in, std::size_t most, bool names) {
+                std::vector<std::string> out;
+                for (const std::string& s : in)
+                {
+                    const std::string t = names ? (isFactoryName(s) ? factoryName(tidyName(ownName(s))) : tidyName(s))
+                                                : tidyInfo({ {}, {}, s, {}, {} }).category;
+                    if (!t.empty() && out.size() < most && std::none_of(out.begin(), out.end(), [&](const std::string& o) { return sameName(o, t); }))
+                        out.push_back(t);
+                }
+                return out;
+            };
+            v.favourites = unique(v.favourites, kMaxFavourites, true);
+            std::vector<std::string> folded;
+            for (const std::string& k : v.folded)        // a group's key ("category:bass"): printable, case aside once
+            {
+                std::string t;
+                for (const char ch : k)
+                    if (ch >= 0x20 && ch <= 0x7E && t.size() < kMaxTag + 16)
+                        t += ch;
+                if (!t.empty() && folded.size() < kMaxFolded
+                    && std::none_of(folded.begin(), folded.end(), [&](const std::string& o) { return sameName(o, t); }))
+                    folded.push_back(t);
+            }
+            v.folded = std::move(folded);
+            std::string search;
+            for (const char ch : v.search)
+                if (search.size() < kMaxSearch)
+                    search += (ch >= 0x20 && ch <= 0x7E) ? ch : ' ';
+            v.search = std::move(search);
+            v.tag = tidyInfo({ {}, {}, v.tag, {}, {} }).category;   // a tag as the info keeps one
+            return v;
+        }
+
+        View viewOf(const juce::var& root)
+        {
+            View v;
+            if (!root.isObject() || root["format"].toString() != kViewFormat)
+                return v;
+            v.favourites = stringsOf(root["favourites"]);
+            v.folded = stringsOf(root["folded"]);
+            v.search = root["search"].toString().toStdString();
+            v.tag = root["tag"].toString().toStdString();
+            v.byDate = root["sort"].toString() == "saved";
+            return tidyView(std::move(v));
+        }
+    }
+
+    View view()
+    {
+        const juce::File f = viewFile();
+        const std::string path = f.getFullPathName().toStdString();
+        const bool there = f.existsAsFile();
+        const juce::int64 modified = there ? f.getLastModificationTime().toMilliseconds() : 0, size = there ? f.getSize() : 0;
+        {
+            const std::lock_guard<std::mutex> lock(viewMutex);
+            if (viewCache.path == path && viewCache.modified == modified && viewCache.size == size)
+                return viewCache.view;
+        }
+        View v;
+        if (there && size < 1024 * 1024)
+            v = viewOf(juce::JSON::parse(f.loadFileAsString()));
+        const std::lock_guard<std::mutex> lock(viewMutex);
+        viewCache = { path, modified, size, v };
+        return v;
+    }
+
+    bool setView(const View& wanted, std::string* why)
+    {
+        const View v = tidyView(wanted);
+        if (v == view())
+            return true;
+        const juce::File dir = directory();
+        if (!dir.isDirectory() && !dir.createDirectory())
+        {
+            fail(why, "cannot make the folder " + dir.getFullPathName().toStdString());
+            return false;
+        }
+        auto* root = new juce::DynamicObject();
+        root->setProperty("format", kViewFormat);
+        root->setProperty("version", 1);
+        root->setProperty("favourites", stringsVar(v.favourites));
+        root->setProperty("folded", stringsVar(v.folded));
+        root->setProperty("search", str(v.search));
+        root->setProperty("tag", str(v.tag));
+        root->setProperty("sort", v.byDate ? "saved" : "name");
+        const juce::File target = viewFile();
+        const juce::File temp = dir.getChildFile(juce::String(kViewFile) + ".saving");
+        if (!temp.replaceWithText(juce::JSON::toString(juce::var(root)), false, false, "\n") || !temp.moveFileTo(target))
+        {
+            temp.deleteFile();
+            fail(why, "cannot write " + target.getFullPathName().toStdString());
+            return false;
+        }
+        const std::lock_guard<std::mutex> lock(viewMutex);
+        viewCache = { target.getFullPathName().toStdString(), target.getLastModificationTime().toMilliseconds(), target.getSize(), v };
+        return true;
     }
 
     std::string toJson(const Project& p)
@@ -1262,7 +1519,7 @@ namespace playground::projectstore
 
     std::optional<std::string> add(Project p, std::string* why)
     {
-        std::string base = tidyName(p.name);
+        std::string base = tidyName(ownName(p.name));    // a factory project's copy: its own name
         if (base.empty())
             base = "Imported";
         if (p.versions.empty())
