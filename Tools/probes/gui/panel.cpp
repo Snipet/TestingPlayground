@@ -7,6 +7,8 @@
 //   gui.panel.meters.png  its METERS page, audio flowing (meter, VU, light, number, scope, spectrum)
 //   gui.panel.small.png   the least size, CODE view, scrolled to its end
 //   gui.panel.readouts.png  READOUTS' panel: number displays of Shared's fields and of the main module's, formatted
+//   gui.panel.pragmas.png   PRAGMA READOUTS' panel: #pragma panel numbers with a unit, decimals and a scale
+//   gui.panel.meterfit.png  METER FIT's panel: meters short, narrow, tall, with a huge readout, and of the output
 //   gui.panel.state.png     STATE's picture Panel at its frames' last; .picture.png view_panel's picture with values
 //   gui.panel.settle.png    SETTLE's panel: a tone's scope and a field's, after a ramp of the field
 //   gui.panel.limits.png    LIMITS' panel: 40 dials (eight of them the panel's own) and 32 number displays
@@ -45,6 +47,13 @@
 //             (1250 rpm, as a knob reads), and a meter of shared->level at three quarters, all whether a voice sounds
 //             or not; the main module's int field a whole number too; a readout with a unit (-1200.0 cents) and one of
 //             twelve digits each drawn whole inside its box
+//   PRAGMA READOUTS  #pragma panel number lines with unit=, decimals= and scale= (Shared's fields, no note played) in
+//             the PANEL view: 1250 rpm and -1200.0 cents, as a .gui file's numbers read, each whole in its box, the
+//             cents' cell widened past 76 px for its unit (gui.panel.pragmas.png)
+//   METER FIT a .gui file's meters at every size (looks::meter): a short one (40 px: the bars alone, no readout), a
+//             narrow one (14 px: its readout drawn smaller, whole), a tall one (180 px: the bars down to the readout at
+//             its bottom), a huge readout (past half size, its leading digits from the cell's left, cut at its right)
+//             and the output's: every readout glyph and every bar inside its cell (gui.panel.meterfit.png)
 //   LIMITS    a program of 40 dials (d33 to d40 the panel's own: Controls.h's isPanelDial) and 32 fields, its panel
 //             a grid of 40 small knobs and one of 32 number displays (kMaxDisplays), in the PANEL view: every control
 //             and display shown, inside the area, none overlapping; each readout its field's value (the 32nd 32); a
@@ -959,6 +968,171 @@ PROBE(gui, panel)
         // The main module's int: the effect's process writes 3; the synth's voice sounds none, so it reads 0.
         P.eq("readouts.main_int_whole", count == (kInstrument ? "0" : "3") ? 1 : 0, 1);
         writePng(P, host, "gui.panel.readouts.png", "readouts");
+    }
+
+    // ---- PRAGMA READOUTS, METER FIT ------------------------------------------------------------------------------------
+    {
+        // The text quads of a display's readout: those centred under its label's line (13 px into its cell) and over
+        // its column (20 px either side), down to `below` px under its cell (a readout drawn past it).
+        const auto readoutGlyphs = [](const funkgui::PrimList& frame, const funkgui::Rect& r, float below) {
+            std::vector<funkgui::Rect> out;
+            for (const funkgui::Prim& q : frame.prims)
+            {
+                if (static_cast<int>(q.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::text))
+                    continue;
+                const float cx = 0.5f * (q.x0 + q.x1), cy = 0.5f * (q.y0 + q.y1);
+                if (cx >= r.x - 20.0f && cx <= r.right() + 20.0f && cy >= r.y + 13.0f && cy <= r.bottom() + below)
+                    out.push_back({ q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0 });
+            }
+            return out;
+        };
+        const auto allInside = [](const std::vector<funkgui::Rect>& quads, const funkgui::Rect& r) {
+            return std::all_of(quads.begin(), quads.end(), [&](const funkgui::Rect& q) { return inside(r, q); });
+        };
+        const auto chars = [](const std::string& t) {
+            return static_cast<std::size_t>(std::count_if(t.begin(), t.end(), [](char ch) { return ch != ' '; }));
+        };
+        const std::string shared = "module Shared\n{\n    float level, speed, detune, big;\n"
+                                   "    void init(float rate) { level = 0.75f; speed = 20.8333333f; detune = -1200; big = 123456789012.0f; }\n"
+                                   "};\n\n";
+        std::string main = program();
+        const std::string head = kInstrument ? "module Voice\n{\n" : "module Effect\n{\n";
+        main.replace(main.find(head), head.size(), head + "    Shared* shared;\n");
+        const auto play = [&] {
+            processor.prepareToPlay(48000.0, 256);
+            juce::AudioBuffer<float> buffer(2, 256);
+            for (int k = 0; k < 60; ++k)                 // no note: the synth's voices are silent
+            {
+                buffer.clear();
+                juce::MidiBuffer midi;
+                processor.processBlock(buffer, midi);
+                host.tick(1);
+            }
+            host.settle();
+        };
+
+        // #pragma panel number lines with unit=, decimals= and scale=, in the PANEL view.
+        const std::string pragmas = "#pragma panel section \"READ\" shared->speed shared->detune shared->level\n"
+                                    "#pragma panel number shared->speed \"SPEED\" unit=rpm decimals=0 scale=60\n"
+                                    "#pragma panel number shared->detune \"DETUNE\" unit=\"cents\" decimals=1\n"
+                                    "#pragma panel meter shared->level \"LEVEL\"\n";
+        load(processor, { { pg::kProgramName, pragmas + shared + main } });
+        settleRun(processor, host);
+        const pg::CompileStatus st = port.status();
+        P.eq("pragma_readouts.runs", st.ok && !panel.hasGui() ? 1 : 0, 1);
+        P.eq("pragma_readouts.lines_no_note", st.notes.find("program.fm:2:") == std::string::npos
+                                                  && st.notes.find("program.fm:3:") == std::string::npos ? 1 : 0, 1);
+        std::printf("%s", st.notes.c_str());
+        play();
+        {
+            const funkgui::PrimList& frame = host.draw();
+            std::string speed, detune;
+            bool speedFits = false, detuneFits = false;
+            float detuneW = 0.0f;
+            for (int d = 0; d < pg::kMaxDisplays; ++d)
+            {
+                const pg::ui::DisplayItem& item = panel.displayItem(d);
+                if (!item.shown() || item.display().kind != pg::DisplayKind::number)
+                    continue;
+                // Its box (looks::number's): the cell less 2 each side, from 18 down, 30 high.
+                const funkgui::Rect& r = item.cell();
+                const funkgui::Rect box{ r.x + 2.0f, r.y + 18.0f, r.w - 4.0f, 30.0f };
+                const std::vector<funkgui::Rect> quads = readoutGlyphs(frame, r, 0.0f);   // the next row's labels apart
+                const bool fits = quads.size() == chars(item.readout()) && allInside(quads, box);
+                std::printf("pragma readout %s: \"%s\" in a cell %.0f px wide, %d glyphs\n", item.display().label.c_str(),
+                            item.readout().c_str(), static_cast<double>(r.w), static_cast<int>(quads.size()));
+                if (item.display().label == "SPEED")
+                {
+                    speed = item.readout();
+                    speedFits = fits;
+                }
+                else if (item.display().label == "DETUNE")
+                {
+                    detune = item.readout();
+                    detuneFits = fits;
+                    detuneW = r.w;
+                }
+            }
+            P.eq("pragma_readouts.formatted", speed == "1250 rpm" ? 1 : 0, 1);
+            P.eq("pragma_readouts.unit_decimals", detune == "-1200.0 cents" ? 1 : 0, 1);
+            P.eq("pragma_readouts.speed_in_its_box", speedFits ? 1 : 0, 1);
+            P.eq("pragma_readouts.detune_in_its_box", detuneFits ? 1 : 0, 1);
+            P.ge("pragma_readouts.detune_cell_widened", static_cast<double>(detuneW), 77.0);
+        }
+        writePng(P, host, "gui.panel.pragmas.png", "pragma_readouts");
+
+        // Meters of every size in a .gui file: short, narrow, tall, a huge readout, the output's.
+        const std::string meterGui = "row gap=48 pad=24 align=start {\n"
+                                     "    meter shared->level label=\"A\" maxheight=40\n"
+                                     "    meter shared->level label=\"B\" maxwidth=14\n"
+                                     "    meter shared->level label=\"C\" minheight=180\n"
+                                     "    meter shared->big label=\"D\"\n"
+                                     "    meter out label=\"E\"\n"
+                                     "}\n";
+        load(processor, { { pg::kProgramName, shared + main }, { "panel.gui", meterGui } });
+        settleRun(processor, host);
+        const pg::CompileStatus mst = port.status();
+        P.eq("meter_fit.runs", mst.ok ? 1 : 0, 1);
+        play();
+        {
+            const funkgui::PrimList& frame = host.draw();
+            int found = 0;
+            for (int d = 0; d < pg::kMaxDisplays; ++d)
+            {
+                const pg::ui::DisplayItem& item = panel.displayItem(d);
+                if (!item.shown() || item.display().kind != pg::DisplayKind::meter)
+                    continue;
+                ++found;
+                const funkgui::Rect& r = item.cell();
+                const std::string& l = item.display().label;
+                const std::vector<funkgui::Rect> quads = readoutGlyphs(frame, r, 40.0f);   // the row alone in its panel
+                // The lowest bar segment's bottom (rects centred in the cell, under its label).
+                float lowest = r.y;
+                for (const funkgui::Prim& q : frame.prims)
+                    if (static_cast<int>(q.d2[2] + 0.5f) == static_cast<int>(funkgui::PrimKind::rrect)
+                        && r.contains({ 0.5f * (q.x0 + q.x1), 0.5f * (q.y0 + q.y1) }) && 0.5f * (q.y0 + q.y1) > r.y + 13.0f)
+                        lowest = std::max(lowest, q.y1);
+                std::printf("meter %s: cell %.0f x %.0f, readout \"%s\", %d glyphs, bars to %.1f px of %.0f\n", l.c_str(),
+                            static_cast<double>(r.w), static_cast<double>(r.h), item.readout().c_str(), static_cast<int>(quads.size()),
+                            static_cast<double>(lowest - r.y), static_cast<double>(r.h));
+                const std::string key = "meter_fit." + std::string(l == "A"   ? "short"
+                                                                   : l == "B" ? "narrow"
+                                                                   : l == "C" ? "tall"
+                                                                   : l == "D" ? "huge"
+                                                                              : "output");
+                P.eq(key + "_readout_inside", allInside(quads, r) ? 1 : 0, 1);
+                P.le(key + "_bars_inside", static_cast<double>(lowest), static_cast<double>(r.bottom()) + 0.5);
+                if (l == "A")
+                {
+                    P.le("meter_fit.short_cell", static_cast<double>(r.h), 40.5);
+                    P.eq("meter_fit.short_no_readout", static_cast<int64_t>(quads.size()), 0);
+                }
+                else if (l == "B")
+                {
+                    P.le("meter_fit.narrow_cell", static_cast<double>(r.w), 14.5);
+                    P.eq("meter_fit.narrow_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+                }
+                else if (l == "C")
+                {
+                    P.ge("meter_fit.tall_cell", static_cast<double>(r.h), 179.5);
+                    P.eq("meter_fit.tall_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+                    P.ge("meter_fit.tall_bars_down", static_cast<double>(lowest - r.y), static_cast<double>(r.h) - 20.0);
+                }
+                else if (l == "D")
+                {
+                    // Past half size it is cut at the right: its leading digits from the cell's left.
+                    float left = r.right();
+                    for (const funkgui::Rect& q : quads)
+                        left = std::min(left, q.x);
+                    P.eq("meter_fit.huge_cut", !quads.empty() && quads.size() < chars(item.readout()) ? 1 : 0, 1);
+                    P.le("meter_fit.huge_from_the_left", static_cast<double>(left - r.x), 2.0);
+                }
+                else if (l == "E")
+                    P.eq("meter_fit.output_whole", quads.size() == chars(item.readout()) ? 1 : 0, 1);
+            }
+            P.eq("meter_fit.five", found, 5);
+        }
+        writePng(P, host, "gui.panel.meterfit.png", "meter_fit");
     }
 
     // ---- STATE ---------------------------------------------------------------------------------------------------------
