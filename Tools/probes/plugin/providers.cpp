@@ -9,14 +9,18 @@
 //             in its file or its name; an Anthropic key refused for another provider; forgotten
 //   DEFAULT   a new chat talks to Anthropic, as before: its provider, its name, a key needed
 //   OPENROUTER  set with its key: the models listed from its /models (Bearer key; the newest first, a model without
-//             tools left out, one without pictures marked so), the first chosen, no Anthropic option; a turn: the
+//             tools left out, one without pictures marked so), none chosen for the user (a turn asks for one, sending
+//             nothing), no Anthropic option; a turn: the
 //             request to openrouter.ai's /api/v1/chat/completions with the key as a Bearer token alone, streamed with
 //             its usage, the full system prompt as the first message, the plugin's tools as functions (an array's
 //             items said), none of Anthropic's fields; the answer's reasoning shown and never kept, its text, a tool
 //             call in pieces run and answered by its id (made here), the footer's tokens; the history in the Messages
-//             API's shape; another model chosen is kept, Anthropic's model untouched
-//   OPENAI    OpenAI's own list: its chat models alone; a key refused for its shape; no key, none stored: refused
-//   LOCAL     Ollama on this Mac: no key, no Authorization; the prompt's short form (its context unsaid); calls sent
+//             API's shape; another model chosen is kept, Anthropic's model untouched; a model its list says takes no
+//             pictures gets a line of text for each, and the chat says so once
+//   OPENAI    OpenAI's own list: its chat models with tools alone (no speech, image or embedding model, none the
+//             Responses API alone serves, none that calls no tools); a key refused for its shape
+//   LOCAL     Ollama on this Mac, chosen after a Stop: its list read all the same; the first it lists taken; no key,
+//             no Authorization; the prompt's short form (its context unsaid); calls sent
 //             whole without an index and a "stop" after them still run; a server that read far less than was sent is
 //             noted once
 //   PICTURES  a model that refuses a picture: the request made again with a line of text in its place, a note, and
@@ -30,9 +34,18 @@
 //             functionResponse by name; a 400 that refuses parametersJsonSchema: Gemini's own subset from then on
 //             (types in upper case, no additionalProperties); a key it calls not valid: refused, said
 //   KEPT      a new processor talks to the provider chosen last, its model kept
-//   BACK      Anthropic again: its request as before (the full prompt cached, thinking, its key alone), the
-//             history without another provider's thought_signature, every tool id in its alphabet
+//   BACK      Anthropic again, with the planner chosen before the Gemini turns: its request as before (the full
+//             prompt cached, thinking, its key alone), the history without another provider's thought_signature in the
+//             builder's request and in the planner's, every tool id in its alphabet
 //   ERRORS    the provider named in its errors; a local server not running asked about
+//   SERVERS   a turn with no model whose list could not be read says why and sends nothing (LM Studio not running:
+//             is it running?; a key the server refused: the key's problem); a redirect is never followed (the one
+//             request, to the server chosen; the error says where it pointed); a model the server says cannot chat
+//             with tools (OpenAI's Responses-only) goes off the menu and is no longer chosen
+//   SWITCH    another provider chosen while a turn waits for the models list (nothing sent yet): the turn is the new
+//             provider's, its request and its model both (never one's request with the other's model)
+//   REDIRECT  the real transport (ClaudeApi.cpp) against two servers of the probe's own on 127.0.0.1: a 307 from
+//             the first is returned as it came, its location said, and the second is never reached
 #include "Probe.h"
 
 #include "FakeClaude.h"
@@ -55,6 +68,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -174,6 +188,23 @@ namespace
                    "            left[i] *= level[i];\n            right[i] *= level[i];\n        }\n    }\n};\n";
     }
 
+    // An orange PNG in a folder of the probe's own: a picture to attach.
+    juce::File pictureFile(const char* folder)
+    {
+        const juce::File dir(juce::String(probe::outPath(folder)));
+        dir.deleteRecursively();
+        dir.createDirectory();
+        juce::Image img(juce::Image::RGB, 64, 48, true);
+        {
+            juce::Graphics g(img);
+            g.fillAll(juce::Colours::orange);
+        }
+        const juce::File f = dir.getChildFile("panel.png");
+        juce::FileOutputStream out(f);
+        juce::PNGImageFormat().writeImageToStream(img, out);
+        return f;
+    }
+
     std::string fileText(const juce::File& f)
     {
         juce::MemoryBlock b;
@@ -249,6 +280,8 @@ PROBE(plugin, providers)
         P.eq("default.anthropic", s.provider.kind == "anthropic" && s.providerName == "Anthropic" && !s.keyless && !s.ready() ? 1 : 0, 1);
         agent.setModel("claude-sonnet-5-5");      // Anthropic's model: kept as it was whatever the other providers do
         P.eq("default.model", agent.chatState().model == "claude-sonnet-5-5" ? 1 : 0, 1);
+        agent.setPlanner("claude-opus-5-5");      // kept (chat.json) while other providers chat; BACK uses it
+        P.eq("default.planner", agent.chatState().planner == "claude-opus-5-5" ? 1 : 0, 1);
     }
 
     // ---- OPENROUTER ------------------------------------------------------------------------------------------------------
@@ -270,7 +303,7 @@ PROBE(plugin, providers)
         P.eq("openrouter.models_asked", script->lastHost("GET /api/v1/models") == "https://openrouter.ai"
                                             && script->lastHeader("GET /api/v1/models", "Authorization") == "Bearer " + orKey ? 1 : 0, 1);
         P.eq("openrouter.models_with_tools", static_cast<int64_t>(s.models.size()), 2);
-        P.eq("openrouter.newest_first", s.models.size() == 2 && s.models[0].id == "anthropic/claude-probe" && s.model == "anthropic/claude-probe" ? 1 : 0, 1);
+        P.eq("openrouter.newest_first", s.models.size() == 2 && s.models[0].id == "anthropic/claude-probe" && s.model.empty() ? 1 : 0, 1);
         P.eq("openrouter.context_and_pictures", s.models.size() == 2 && s.models[0].context == 200000 && s.models[0].images && !s.models[1].images ? 1 : 0, 1);
         P.eq("openrouter.no_anthropic_options", !s.fast && !s.web && s.planner.empty() && s.effort.empty()
                                                     && std::none_of(s.models.begin(), s.models.end(), [](const pg::ChatModel& m) { return m.fast || m.web || m.compaction || !m.efforts.empty(); })
@@ -278,7 +311,15 @@ PROBE(plugin, providers)
         const std::string json = fileText(keys.getChildFile("chat.json"));
         P.eq("openrouter.choice_kept", has(json, "\"provider\": \"openai\"") && has(json, "openrouter.ai") && !has(json, orKey.substr(0, 12)) ? 1 : 0, 1);
         P.eq("openrouter.notes", has(allOf(s, pg::ChatEntry::Kind::note), "talks to OpenRouter now")
-                                     && has(allOf(s, pg::ChatEntry::Kind::note), "goes to openrouter.ai alone") ? 1 : 0, 1);
+                                     && has(allOf(s, pg::ChatEntry::Kind::note), "goes to openrouter.ai alone")
+                                     && has(allOf(s, pg::ChatEntry::Kind::note), "the model you choose in the model menu") ? 1 : 0, 1);
+        // No model chosen: the turn asks for one and sends nothing (the newest of a long list is anyone's guess).
+        const int asked = script->postCount();
+        agent.send("hello");
+        agent.waitIdle();
+        P.eq("openrouter.choose_first", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error), "Choose a model in the model menu first: OpenRouter lists 2")
+                                            && script->postCount() == asked && !agent.chatState().busy ? 1 : 0, 1);
+        agent.setModel("anthropic/claude-probe");
 
         const int before = script->postCount();
         script->add(stream(fake::OpenAiSse("anthropic/claude-probe").reasoning("Let me look at the program.").text("Reading it.")
@@ -350,6 +391,27 @@ PROBE(plugin, providers)
         agent.setPlanner("claude-opus-5-5");
         const pg::ChatState u = agent.chatState();
         P.eq("openrouter.options_refused", !u.fast && u.planner.empty() && u.effort.empty() ? 1 : 0, 1);
+
+        // A model its list says takes no pictures: a line of text for each, said once.
+        agent.attach({ pictureFile("providers-text-only").getFullPathName().toStdString() });
+        agent.waitIdle();
+        const int pb = script->postCount();
+        script->add(stream(fake::OpenAiSse("meta/llama-probe").text("I read your words.").finish("stop").usage(9000, 8).done().str()));
+        script->add(stream(fake::OpenAiSse("meta/llama-probe").text("Still words.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("make the panel look like this");
+        agent.waitIdle();
+        agent.send("and again");
+        agent.waitIdle();
+        const std::string notes = allOf(agent.chatState(), pg::ChatEntry::Kind::note);
+        const auto count = [](const std::string& text, const std::string& part) {
+            int n = 0;
+            for (std::size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + 1))
+                ++n;
+            return n;
+        };
+        P.eq("openrouter.text_only_request", script->postCount() - pb == 2 && !has(script->body(pb), "\"image_url\"")
+                                                 && has(script->body(pb), "takes no pictures") ? 1 : 0, 1);
+        P.eq("openrouter.text_only_noted_once", count(notes, "The model (meta/llama-probe) takes no pictures"), 1);
         agent.setModel("anthropic/claude-probe");
     }
 
@@ -358,7 +420,10 @@ PROBE(plugin, providers)
         const std::string list = fake::openAiModels({ { "gpt-probe-5", "", 1762000000 }, { "gpt-image-probe", "", 1763000000 },
                                                        { "text-embedding-probe", "", 1764000000 }, { "o4-probe", "", 1761000000 },
                                                        { "whisper-probe", "", 1765000000 }, { "gpt-probe-realtime", "", 1766000000 },
-                                                       { "dall-e-probe", "", 1767000000 } });
+                                                       { "dall-e-probe", "", 1767000000 }, { "gpt-probe-5-pro", "", 1768000000 },
+                                                       { "o3-pro-2025-06-10", "", 1768100000 }, { "gpt-probe-5-codex", "", 1768200000 },
+                                                       { "o3-deep-research", "", 1768300000 }, { "chatgpt-probe-latest", "", 1768400000 },
+                                                       { "gpt-probe-5-chat-latest", "", 1768500000 }, { "o1-mini", "", 1768600000 } });
         const std::vector<pg::ChatModel> found = pr::modelsOf({ "openai", "https://api.openai.com/v1", "" }, list);
         P.eq("openai.chat_models", found.size() == 2 && found[0].id == "gpt-probe-5" && found[1].id == "o4-probe" ? 1 : 0, 1);
         why.clear();
@@ -366,6 +431,12 @@ PROBE(plugin, providers)
         P.eq("openai.spaced_key_refused", pr::plausibleKey({ "openai", "https://api.openai.com/v1", "" }, "sk-proj abc def ghi", why) ? 1 : 0, 0);
         P.eq("openai.endpoint", pr::endpoint({ "openai", "https://api.openai.com/v1", "" }, "gpt-probe-5").host == "https://api.openai.com"
                                     && pr::endpoint({ "openai", "https://api.openai.com/v1", "" }, "").path == "/v1/chat/completions" ? 1 : 0, 1);
+        P.eq("openai.picks_none", pr::picksFirst({ "openai", "https://api.openai.com/v1", "" }) || pr::picksFirst({ "openai", "https://openrouter.ai/api/v1", "" })
+                                      || !pr::picksFirst({ "gemini", "", "" }) || !pr::picksFirst({ "openai", "http://localhost:11434/v1", "" }) ? 1 : 0, 0);
+        P.eq("openai.responses_only_said", pr::aboutModel(404, "This model is only supported in v1/responses and not in v1/chat/completions.")
+                                               && pr::aboutModel(404, "No endpoints found that support tool use.")
+                                               && pr::aboutModel(400, "registry.ollama.ai/library/gemma:2b does not support tools")
+                                               && !pr::aboutModel(400, "model qwen does not support image input") && !pr::aboutModel(429, "v1/responses") ? 1 : 0, 1);
     }
 
     // ---- LOCAL -----------------------------------------------------------------------------------------------------------
@@ -373,6 +444,7 @@ PROBE(plugin, providers)
         script->gets["/v1/models"] = { 200, fake::openAiModels({ { "qwen-probe:32b", "", 1762400000 }, { "llava-probe:13b", "", 1762300000 },
                                                                  { "nomic-embed-probe", "", 1762500000 } }) };
         why.clear();
+        agent.stop();                             // a Stop with no turn under way: the list asked for next is read anyway
         P.eq("local.set_without_key", agent.setProvider({ "openai", "http://localhost:11434/v1", "" }, "", why) ? 1 : 0, 1);
         agent.waitIdle();
         const pg::ChatState s = agent.chatState();
@@ -426,19 +498,7 @@ PROBE(plugin, providers)
 
     // ---- PICTURES ----------------------------------------------------------------------------------------------------------
     {
-        const juce::File dir(juce::String(probe::outPath("providers-pictures")));
-        dir.deleteRecursively();
-        dir.createDirectory();
-        juce::Image img(juce::Image::RGB, 64, 48, true);
-        {
-            juce::Graphics g(img);
-            g.fillAll(juce::Colours::orange);
-        }
-        const juce::File f = dir.getChildFile("panel.png");
-        {
-            juce::FileOutputStream out(f);
-            juce::PNGImageFormat().writeImageToStream(img, out);
-        }
+        const juce::File f = pictureFile("providers-pictures");
         agent.attach({ f.getFullPathName().toStdString() });
         agent.waitIdle();
         const int before = script->postCount();
@@ -593,15 +653,24 @@ PROBE(plugin, providers)
         P.eq("back.anthropic", s.provider.kind == "anthropic" && s.providerName == "Anthropic" && s.model == "claude-sonnet-5-5" && !s.fast
                                    && !s.models.empty() && !s.models[0].efforts.empty() ? 1 : 0, 1);
         const int before = script->postCount();
+        script->add(fake::Response::ok(fake::Sse().start("claude-opus-5-5").text("Plan: read the program first.").end()));
         script->add(fake::Response::ok(fake::Sse().start("claude-sonnet-5-5").text("Back with Claude.").end()));
         agent.send("and now?");
         agent.waitIdle();
-        P.eq("back.requests", script->postCount() - before, 1);
+        P.eq("back.requests", script->postCount() - before, 2);   // the planner's, then the builder's
+        const juce::var planned = claude::parseJson(script->body(before));
+        bool plannerSawCall = false;
+        for (const juce::var& m : arr(planned.getProperty("messages", {})))
+            for (const juce::var& blk : arr(m.getProperty("content", {})))
+                plannerSawCall = plannerSawCall || (str(blk, "type") == "tool_use" && str(blk, "name") == "read_file");
+        P.eq("back.planner_asked", str(planned, "model") == "claude-opus-5-5" && str(planned.getProperty("tool_choice", {}), "type") == "none"
+                                       && plannerSawCall ? 1 : 0, 1);
+        P.eq("back.planner_no_signature", has(script->body(before), "thought_signature") ? 1 : 0, 0);
         P.eq("back.endpoint", script->lastHost("POST /v1/messages") == claude::kHost
                                   && script->lastHeader("POST /v1/messages", "x-api-key") == fake::fakeKey()
                                   && !script->lastHas("POST /v1/messages", "Authorization")
                                   && !script->lastHas("POST /v1/messages", "x-goog-api-key") ? 1 : 0, 1);
-        const juce::var b = claude::parseJson(script->body(before));
+        const juce::var b = claude::parseJson(script->body(before + 1));
         const juce::Array<juce::var> sys = arr(b.getProperty("system", {}));
         P.eq("back.shape", str(b, "model") == "claude-sonnet-5-5" && b.getProperty("thinking", {}).isObject() && sys.size() == 1
                                && str(sys[0], "text") == pg::ChatAgent::systemPrompt() && sys[0].getProperty("cache_control", {}).isObject()
@@ -612,7 +681,7 @@ PROBE(plugin, providers)
             for (const juce::var& blk : arr(m.getProperty("content", {})))
                 gemCall = gemCall || (str(blk, "type") == "tool_use" && str(blk, "name") == "read_file");
         P.eq("back.history_carried", gemCall && idsPlain(messages) ? 1 : 0, 1);
-        P.eq("back.no_signature", has(script->body(before), "thought_signature") ? 1 : 0, 0);
+        P.eq("back.no_signature", has(script->body(before + 1), "thought_signature") ? 1 : 0, 0);
         P.eq("back.signature_still_kept", has(agent.saveState(), "sig-gem-1") ? 1 : 0, 1);
         P.eq("back.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Back with Claude." ? 1 : 0, 1);
     }
@@ -627,6 +696,137 @@ PROBE(plugin, providers)
         P.eq("errors.context", has(pr::errorText(ollama, 400, ctx), "longer context in the server's settings") ? 1 : 0, 1);
         P.eq("errors.not_running", has(pr::connectionText(ollama, "no connection"), "is the server (Ollama (this Mac)) running?") ? 1 : 0, 1);
         P.eq("errors.string_error", has(pr::errorText(ollama, 404, "{\"error\":\"model 'x' not found\"}"), "model 'x' not found") ? 1 : 0, 1);
+    }
+
+    // ---- SERVERS -----------------------------------------------------------------------------------------------------------
+    {
+        // LM Studio on this Mac, not running, no model chosen: the turn says why, and sends nothing.
+        script->gets["/v1/models"] = { 0, "" };
+        why.clear();
+        P.eq("servers.studio_set", agent.setProvider({ "openai", "http://localhost:1234/v1", "" }, "", why) ? 1 : 0, 1);
+        agent.waitIdle();
+        int before = script->postCount();
+        agent.send("hello");
+        agent.waitIdle();
+        P.eq("servers.not_running", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error),
+                                        "Could not read LM Studio (this Mac)'s models: no connection to localhost:1234: is the "
+                                        "server (LM Studio (this Mac)) running?")
+                                        && script->postCount() == before && !agent.chatState().busy ? 1 : 0, 1);
+
+        // Another server whose list refuses the key, no model chosen: the key's problem, nothing sent.
+        script->gets["/v1/models"] = { 401, claude::toJson(input({ { "error", input({ { "message", "Invalid API key" } }) } })) };
+        P.eq("servers.custom_set", agent.setProvider({ "openai", "https://llm.example.org/v1", "" }, orKey, why) ? 1 : 0, 1);
+        agent.waitIdle();
+        before = script->postCount();
+        agent.send("hello again");
+        agent.waitIdle();
+        P.eq("servers.key_refused", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error),
+                                        "The saved llm.example.org key cannot be used: llm.example.org refused the API key (Invalid API key)")
+                                        && script->postCount() == before ? 1 : 0, 1);
+
+        // Its model chosen: a redirect is never followed, and the error says where it pointed.
+        script->gets["/v1/models"] = { 200, fake::openAiModels({ { "acme-probe", "", 1762000000 } }) };
+        P.eq("servers.custom_model", agent.setProvider({ "openai", "https://llm.example.org/v1", "acme-probe" }, orKey, why) ? 1 : 0, 1);
+        agent.waitIdle();
+        before = script->postCount();
+        script->add(fake::Response::redirect(307, "http://llm.example.com/v1/chat/completions"));
+        agent.send("and this?");
+        agent.waitIdle();
+        const std::string redirected = lastText(agent.chatState(), pg::ChatEntry::Kind::error);
+        std::printf("redirect: %s\n", redirected.c_str());
+        P.eq("servers.redirect_not_followed", script->postCount() - before == 1
+                                                  && script->lastHost("POST /v1/chat/completions") == "https://llm.example.org"
+                                                  && has(redirected, "answered with a redirect (HTTP 307, to http://llm.example.com/v1/chat/completions)")
+                                                  && has(redirected, "follows none") ? 1 : 0, 1);
+
+        // A model the server says cannot serve this chat (OpenAI's Responses API alone): off the menu, no longer chosen.
+        before = script->postCount();
+        script->add(fake::Response::failure(404, "invalid_request_error",
+                                            "This model is only supported in v1/responses and not in v1/chat/completions."));
+        agent.send("once more");
+        agent.waitIdle();
+        const pg::ChatState m = agent.chatState();
+        const std::string refusal = lastText(m, pg::ChatEntry::Kind::error);
+        std::printf("model refused: %s\n", refusal.c_str());
+        P.eq("servers.model_refused", script->postCount() - before == 1 && has(refusal, "cannot run acme-probe for this chat")
+                                          && has(refusal, "Choose another in the model menu") && m.model.empty()
+                                          && std::none_of(m.models.begin(), m.models.end(), [](const pg::ChatModel& x) { return x.id == "acme-probe"; })
+                                          ? 1 : 0, 1);
+        P.eq("servers.model_forgotten", has(fileText(keys.getChildFile("chat.json")), "acme-probe") ? 1 : 0, 0);
+    }
+
+    // ---- SWITCH ------------------------------------------------------------------------------------------------------------
+    {
+        // The other server's list held back (a slow GET) while a turn waits for it; Gemini chosen meanwhile.
+        script->gets["/v1/models"] = { 200, fake::openAiModels({ { "acme-probe", "", 1762000000 } }) };
+        script->holdGets = true;
+        P.eq("switch.custom", agent.setProvider({ "openai", "https://llm.example.org/v1", "" }, orKey, why) ? 1 : 0, 1);
+        for (int i = 0; i < 1000 && script->heldGets.load() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const int before = script->postCount(), toOther = script->count("POST /v1/chat/completions"), toGemini = script->count(gemPath);
+        script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("From Gemini.").finish("STOP").str()));
+        agent.send("which one?");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));   // the turn waits for the list by now
+        P.eq("switch.gemini", agent.setProvider({ "gemini", "", "" }, "", why) ? 1 : 0, 1);
+        script->holdGets = false;
+        agent.waitIdle();
+        P.eq("switch.turn_followed", script->postCount() - before == 1 && script->count("POST /v1/chat/completions") == toOther
+                                         && script->count(gemPath) == toGemini + 1
+                                         && has(lastText(agent.chatState(), pg::ChatEntry::Kind::assistant), "From Gemini.") ? 1 : 0, 1);
+    }
+
+    // ---- REDIRECT ----------------------------------------------------------------------------------------------------------
+    {
+        // The real transport, against two servers of the probe's own on 127.0.0.1 (nothing beyond this Mac): the first
+        // answers 307 to the second, which must never be reached.
+        juce::StreamingSocket first, second;
+        const bool listening = first.createListener(0, "127.0.0.1") && second.createListener(0, "127.0.0.1");
+        P.eq("redirect.listening", listening ? 1 : 0, 1);
+        if (listening)
+        {
+            const std::string to = "http://127.0.0.1:" + std::to_string(second.getBoundPort()) + "/v1/chat/completions";
+            std::thread server([&first, to] {
+                if (first.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(first.waitForNextConnection());
+                if (c == nullptr)
+                    return;
+                // The request whole (its headers, then its body by its length), then the redirect.
+                std::string got;
+                char buffer[4096];
+                std::size_t need = std::string::npos;
+                while (need == std::string::npos || got.size() < need)
+                {
+                    if (c->waitUntilReady(true, 5000) != 1)
+                        return;
+                    const int n = c->read(buffer, static_cast<int>(sizeof buffer), false);
+                    if (n <= 0)
+                        break;
+                    got.append(buffer, static_cast<std::size_t>(n));
+                    if (const std::size_t end = got.find("\r\n\r\n"); need == std::string::npos && end != std::string::npos)
+                    {
+                        std::size_t length = 0;
+                        const juce::String head = juce::String(got.substr(0, end)).toLowerCase();
+                        if (const int at = head.indexOf("content-length:"); at >= 0)
+                            length = static_cast<std::size_t>(head.substring(at + 15).getIntValue());
+                        need = end + 4 + length;
+                    }
+                }
+                const std::string reply = "HTTP/1.1 307 Temporary Redirect\r\nLocation: " + to
+                                        + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                c->write(reply.data(), static_cast<int>(reply.size()));
+            });
+            const std::atomic<bool> cancel{ false };
+            const claude::HttpResult r = claude::httpsTransport()->post("http://127.0.0.1:" + std::to_string(first.getBoundPort()),
+                                                                        "/v1/chat/completions", "{\"probe\":true}",
+                                                                        { { "content-type", "application/json" } },
+                                                                        [](std::string_view) { return true; }, cancel);
+            server.join();
+            std::printf("redirect: status %d, location %s, error %s\n", r.status, r.location.c_str(), r.error.c_str());
+            P.eq("redirect.returned", r.status, 307);
+            P.eq("redirect.location", r.location == to ? 1 : 0, 1);
+            P.eq("redirect.not_followed", second.waitUntilReady(true, 500), 0);   // 1: a connection came
+        }
     }
     pg::chatstore::setDirectoryForTests(juce::File());
     return P.finish();

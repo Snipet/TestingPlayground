@@ -234,15 +234,17 @@ namespace fake
         int retryAfter = -1;
         bool stall = false;                  // after the stream, the connection hangs until the agent cancels
         std::size_t chunk = 11;              // the stream arrives in pieces of this many bytes
+        std::string location;                // a redirect's (3xx): where it points (the transport follows none)
 
-        static Response ok(const Sse& sse) { return { 200, sse.str(), {}, -1, false, 11 }; }
+        static Response ok(const Sse& sse) { return { 200, sse.str(), {}, -1, false, 11, {} }; }
         static Response failure(int status, const std::string& type, const std::string& message, int retryAfter = -1)
         {
             const std::string body = claude::toJson(claude::object(
                 { { "type", "error" },
                   { "error", claude::object({ { "type", juce::String(type) }, { "message", juce::String(message) } }) } }));
-            return { status, {}, body, retryAfter, false, 11 };
+            return { status, {}, body, retryAfter, false, 11, {} };
         }
+        static Response redirect(int status, const std::string& to) { return { status, {}, {}, -1, false, 11, to }; }
     };
 
     struct Script
@@ -257,6 +259,8 @@ namespace fake
         std::vector<std::string> paths;      // every request's path, in order ("POST /v1/messages")
         std::vector<std::string> hosts;      // and its host, in the same order
         std::atomic<int> streaming{ 0 };     // a stalled stream is waiting
+        std::atomic<bool> holdGets{ false };  // while set, a GET waits (a slow models list) until it is cleared or cancelled
+        std::atomic<int> heldGets{ 0 };      // the GETs waiting so
 
         void add(Response r)
         {
@@ -356,13 +360,13 @@ namespace fake
                 }
             }
             if (r.status != 200)
-                return { r.status, {}, r.body, r.retryAfter };
+                return { r.status, {}, r.body, r.retryAfter, r.location };
             for (std::size_t p = 0; p < r.stream.size(); p += r.chunk)
             {
                 if (cancel.load())
-                    return { 0, "cancelled", {}, -1 };
+                    return { 0, "cancelled", {}, -1, {} };
                 if (!onChunk(std::string_view(r.stream).substr(p, r.chunk)))
-                    return { 200, {}, {}, -1 };
+                    return { 200, {}, {}, -1, {} };
             }
             if (r.stall)
             {
@@ -370,21 +374,30 @@ namespace fake
                 while (!cancel.load())
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 --script_->streaming;
-                return { 0, "cancelled", {}, -1 };
+                return { 0, "cancelled", {}, -1, {} };
             }
-            return { 200, {}, {}, r.retryAfter };   // a stream cut short (no message_stop) may ask for a quick retry
+            return { 200, {}, {}, r.retryAfter, {} };   // a stream cut short (no message_stop) may ask for a quick retry
         }
 
         claude::HttpResult get(const std::string& host, const std::string& path, const claude::Headers& headers,
-                               const std::atomic<bool>&) override
+                               const std::atomic<bool>& cancel) override
         {
+            if (script_->holdGets.load())
+            {
+                ++script_->heldGets;
+                while (script_->holdGets.load() && !cancel.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                --script_->heldGets;
+            }
             const std::lock_guard<std::mutex> lock(script_->mutex);
             script_->paths.push_back("GET " + path);
             script_->headers.push_back(headers);
             script_->hosts.push_back(host);
+            if (cancel.load())
+                return { 0, "cancelled", {}, -1, {} };   // as the real one: a set flag ends it at once
             if (const auto it = script_->gets.find(path); it != script_->gets.end())
-                return { it->second.first, {}, it->second.second, -1 };
-            return { script_->modelsStatus, {}, script_->models, -1 };
+                return { it->second.first, {}, it->second.second, -1, {} };
+            return { script_->modelsStatus, {}, script_->models, -1, {} };
         }
 
     private:
