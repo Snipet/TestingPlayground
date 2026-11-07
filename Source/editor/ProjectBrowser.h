@@ -1,5 +1,6 @@
 // Source/editor/ProjectBrowser.h: PROJECTS, a card over the panel, as the key dialog is: the projects saved on this Mac
-// (EditorPort::projects), each a program and its dials kept as versions, with presets (dial settings for it).
+// (EditorPort::projectsPolled, projectPolled: the store's cache, a file it lacks read on its Reader and shown once read,
+// poll()), each a program and its dials kept as versions, with presets (dial settings for it).
 //
 //   the top     the search field (Cmd-F: the name, the description and the tags, each word; Escape clears it), the
 //               tag filter (a dropdown: any tag, or one of those the projects have) and the order (by name, or the
@@ -89,7 +90,15 @@ namespace playground::ui
         // While open: the lists read again after a change made elsewhere (Claude's projects tool saved, opened or applied
         // one), the project chosen kept, its versions and presets read afresh, the version and the preset chosen kept by
         // number and name; a confirmation asked for is withdrawn (the next click asks again), a press let go.
-        void reread();
+        void reread(bool claude = true);                 // false: read again for poll(), its words saying so
+        // While open, each frame: the lists read again once the store's Reader has read a file (EditorPort::projectsRead):
+        // the card reads the store's cache alone (projectsPolled, projectPolled), never a project's file whole on the
+        // message thread, so one it lacks shows when the Reader has it. Whether it read them.
+        bool poll();
+        bool chosenRead() const noexcept { return chosenRead_; }   // the chosen project's file read (else: reading)
+        // Whether its Save started a save of the editor's (EditorPort::startSave), once: the Panel then says SAVING and,
+        // when it has ended, what came of it.
+        bool takeStartedSave();
 
         // Its places, for the panel's size.
         struct Places
@@ -216,6 +225,9 @@ namespace playground::ui
         std::vector<std::string> filterFolded_;          // the groups folded while a filter is on
         std::vector<VersionEntry> versions_;
         std::vector<PresetEntry> presets_;
+        bool chosenRead_ = true;                         // the chosen project's detail read (else the Reader reads it)
+        bool startedSave_ = false;                       // takeStartedSave
+        uint64_t readSeen_ = 0;                          // EditorPort::projectsRead as the lists were last read
         ProjectState state_;                             // EditorPort::project when it opened, or after it acted
         std::string title_;                              // the name it opened with (the program's title when none is open)
         std::string chosenName_;                         // the chosen project ("" for none)

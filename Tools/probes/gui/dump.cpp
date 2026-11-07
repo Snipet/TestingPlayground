@@ -99,8 +99,9 @@
 //             asking nothing, which runs with no note; over sixteen tabs of other files, its own are all that is left
 //   PROJECTS  (a folder of the probe's own) the PROJECTS pill opens the card, the program's title in its field; a name
 //             typed and Return save the program and its dials as a new project: the card closes, the status says so,
-//             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2, and again nothing
-//             new; two more projects; a preset saved in the one open (the card opened for a preset: its field "Preset
+//             the pill names it with its version; an edit makes it EDITED; Cmd-S saves version 2 (off the message
+//             thread: held before the store's work, the status says SAVING MY PATCH..., the pill still EDITED:
+//             gui.dump.saving.png), and again nothing new; two more projects; a preset saved in the one open (the card opened for a preset: its field "Preset
 //             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
@@ -1588,6 +1589,12 @@ PROBE(gui, dump)
             host.click(at.x, at.y);
             host.settle();
         };
+        // A save (Cmd-S, PROJECTS' Save) reads and writes the project's file off the message thread: it lands at the
+        // processor's poll, and the Panel says so at its next frame.
+        const auto saved = [&] {
+            processor.settle();
+            host.tick(2);
+        };
         const auto versionsOf = [](const std::string& name) {
             const std::optional<pg::projectstore::Project> p = pg::projectstore::load(name);
             return p ? static_cast<int64_t>(p->versions.size()) : int64_t{ -1 };
@@ -1608,6 +1615,7 @@ PROBE(gui, dump)
         typeText(host, "My Patch");
         host.keys("return");
         host.tick(1);
+        saved();
         P.eq("projects.saved_closes", !browser.isOpen() && pg::projectstore::exists("My Patch") ? 1 : 0, 1);
         P.eq("projects.status_says", panel.statusText().find("PROJECT SAVED: MY PATCH") != std::string::npos ? 1 : 0, 1);
         P.eq("projects.pill_names_it", panel.projectText() == "PROJECT  MY PATCH  V1" ? 1 : 0, 1);
@@ -1617,13 +1625,21 @@ PROBE(gui, dump)
         typeText(host, " ");
         host.tick(2);
         P.eq("projects.edited", panel.projectText() == "PROJECT  MY PATCH  V1  EDITED" ? 1 : 0, 1);
+        // Held before the store's work (Processor::setSaveGate), the save in flight shows: SAVING, the pill as it was.
+        processor.setSaveGate(true);
         host.keys("cmd+s");
         host.tick(2);
+        std::printf("cmd-s, in flight: %s / %s\n", panel.statusText().c_str(), panel.projectText().c_str());
+        P.eq("projects.cmd_s_in_flight", panel.statusText().find("SAVING MY PATCH...") != std::string::npos
+                                             && panel.projectText() == "PROJECT  MY PATCH  V1  EDITED" && versionsOf("My Patch") == 1 ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.saving.png", "saving");
+        processor.setSaveGate(false);
+        saved();
         std::printf("cmd-s: %s / %s\n", panel.statusText().c_str(), panel.projectText().c_str());
         P.eq("projects.cmd_s", panel.statusText().find("SAVED: MY PATCH V2") != std::string::npos
                                    && panel.projectText() == "PROJECT  MY PATCH  V2" && versionsOf("My Patch") == 2 ? 1 : 0, 1);
         host.keys("cmd+s");
-        host.tick(2);
+        saved();
         P.eq("projects.cmd_s_nothing_new", panel.statusText().find("NOTHING NEW TO SAVE: MY PATCH V2") != std::string::npos
                                                && versionsOf("My Patch") == 2 ? 1 : 0, 1);
         // DRAW: the status's notice runs out (4 s) with no input: that frame draws (Panel.h "Unchanged frames").
@@ -1647,6 +1663,7 @@ PROBE(gui, dump)
             typeText(host, name);
             host.keys("return");
             host.tick(1);
+            saved();
         }
         P.eq("projects.three_saved", static_cast<int64_t>(pg::projectstore::list().size()), 3);
         // A preset of the project open (Zebra Pad).
@@ -1695,6 +1712,7 @@ PROBE(gui, dump)
         click(browser.places(W, H).save);
         P.eq("projects.add_asks", browser.isOpen() && browser.why().find("Add version") != std::string::npos ? 1 : 0, 1);
         click(browser.places(W, H).save);
+        saved();
         P.eq("projects.added", !browser.isOpen() && versionsOf("zebra pad") == 2 && pg::projectstore::list().size() == 3 ? 1 : 0, 1);
         // Delete: a project, then a version, each asked first; Escape closes.
         host.click(open.x, open.y);
@@ -1761,6 +1779,7 @@ PROBE(gui, dump)
                 clickRow(BL::projects, browser.rowOf(first));
                 const std::size_t projectsBefore = pg::projectstore::list().size();
                 click(browser.places(W, H).save);
+                saved();
                 std::printf("factory chosen, Save: %s\n", panel.statusText().c_str());
                 P.eq("factory.save_keeps_program", !browser.isOpen() && pg::projectstore::list().size() == projectsBefore
                                                        && !pg::projectstore::exists(pg::ownName(first))

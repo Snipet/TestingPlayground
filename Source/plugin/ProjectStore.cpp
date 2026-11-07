@@ -59,11 +59,18 @@ namespace playground::projectstore
             FileId id;
             Entry entry;
             std::vector<PresetSummary> presets;
+            std::vector<VersionSummary> versions;        // oldest first (detailCached)
+            Info info;
             bool broken = false;
             std::string project, writtenAs;              // the project's id and the name written in its file (idOf)
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
+        // One writer at a time in this process: each read, change and write of a project's file (update, saveVersion,
+        // add, remove) holds it whole, so the editor's save on a thread of its own (Processor::startSave) and a write on
+        // the message thread never interleave (one would write over the other's). Recursive: a write may list the folder
+        // (exists, the migration), which may write.
+        std::recursive_mutex writeMutex;
         std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
         std::atomic<int> readerParsed{ 0 };              // of them, by the Reader's thread (readerParses())
         std::atomic<int> listed{ 0 };                    // listings, cached or not (listings())
@@ -560,6 +567,9 @@ namespace playground::projectstore
             c.entry.category = p.info.category;
             c.entry.tags = p.info.tags;
             c.entry.description = p.info.description;
+            for (const Version& v : p.versions)
+                c.versions.push_back({ v.number, v.savedMs, v.note });
+            c.info = p.info;
             return c;
         }
 
@@ -775,6 +785,7 @@ namespace playground::projectstore
         {
             if (readOnly(name, why))
                 return false;
+            const std::lock_guard<std::recursive_mutex> writing(writeMutex);
             std::optional<Project> p = load(name, why);
             if (!p)
                 return false;
@@ -1102,6 +1113,39 @@ namespace playground::projectstore
         return std::vector<PresetSummary>();
     }
 
+    std::optional<Detail> detailCached(std::string_view name, std::vector<std::string>& unread, std::string* why)
+    {
+        const auto detailOf = [](const Cached& c) { return Detail{ true, c.versions, c.presets, c.info }; };
+        if (isFactoryName(name))
+        {
+            const Project* p = factory::find(name);
+            if (p == nullptr)
+            {
+                fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+                return std::nullopt;
+            }
+            return detailOf(cachedOf(*p, 0, 0, {}));
+        }
+        juce::File f;
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (!presetsFile(name, f, modified, size, id, why))
+            return std::nullopt;
+        const std::string path = f.getFullPathName().toStdString();
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        if (const Cached* c = heldLocked(path, modified, size, id); c != nullptr)
+        {
+            if (!c->broken)
+                return detailOf(*c);
+            fail(why, "\"" + std::string(name) + "\" is damaged, or no project of this plugin's");
+            return std::nullopt;
+        }
+        unread.push_back(path);
+        if (const auto it = cache.find(path); it != cache.end() && !it->second.broken)
+            return detailOf(it->second);                 // as it was: the Reader brings it up to date
+        return Detail{};                                 // never read: the Reader reads it
+    }
+
     int parses() { return parsed.load(std::memory_order_relaxed); }
     int readerParses() { return readerParsed.load(std::memory_order_relaxed); }
     int listings() { return listed.load(std::memory_order_relaxed); }
@@ -1171,6 +1215,7 @@ namespace playground::projectstore
     {
         if (readOnly(name, why))
             return std::nullopt;
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         const std::vector<midilearn::Mapping> maps = midilearn::tidy(midi.mappings);
         const std::vector<SampleRef> refs = refsOf(samples);
         const std::string tidy = tidyName(name);
@@ -1327,6 +1372,7 @@ namespace playground::projectstore
     {
         if (readOnly(name, why))
             return false;
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         const juce::File f = fileOf(name);
         if (f == juce::File() || !f.deleteFile())
         {
@@ -1566,6 +1612,7 @@ namespace playground::projectstore
 
     std::optional<std::string> add(Project p, std::string* why)
     {
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
         std::string base = tidyName(ownName(p.name));    // a factory project's copy: its own name
         if (base.empty())
             base = "Imported";

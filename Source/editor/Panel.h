@@ -831,6 +831,10 @@ namespace playground::ui
         AbCard ab_{ port_ };
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
+        uint64_t saveSeen_ = 0;                          // EditorPort::saving().done this Panel last said
+        bool saving_ = false;                            // a save of the editor's in flight (its notice SAVING)
+        void savingNotice();                             // SAVING, or what came of it when it ended at once
+        void syncSave();                                 // what a save came to, once it has ended
         int focusBeforeProjects_ = -1;
         // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
         SettingsCard settings_{ port_ };

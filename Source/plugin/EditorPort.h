@@ -72,12 +72,21 @@
 //   projectsRead()    as it is now (another process wrote it, or none read it yet) is read on the store's own thread
 //                     (projectstore::Reader) and listed as the cache last held it until then (one never read: not yet);
 //                     projectsRead() moves when that thread has read one, and the explorer then polls again
+//   projectPolled()   a project's versions, presets and info (ProjectDetail) the same way, for PROJECTS and EXPORT, which
+//                     read again when projectsRead() moves: neither reads a project's file whole on the message thread
 //   saveVersion()     the editor's files (the draft) and the dials as they are now, by name, as a new version of the
 //                     project `name` (a new project when there is none): it is then the project open. No new version
 //                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot. A
 //                     factory project's name, or a new name while a factory project is open, saves the user's own
 //                     copy: a new project (the factory one's own name, else "<name> 2", ...) of one version, the
 //                     editor's, with the factory project's presets and info (SavedVersion::name says which)
+//   startSave()       saveVersion() as the editor's Cmd-S and PROJECTS' Save make it, without the message thread waiting:
+//   saving()          what it saves is taken at once (the draft, the dials, the answers, the MIDI map, the samples),
+//                     the project's file is read and written on a thread of its own, and poll() then makes it the
+//                     project open (unless another was opened meanwhile) and moves saving().done; the same file as
+//                     saveVersion() writes. One at a time: one asked for while another is in flight saves once that one
+//                     ends, what the editor has then (one more at most). A factory project's copy is saved at once.
+//                     False, with why, when refused at once (no name)
 //   openProject()     a version's files (0: the latest) become the draft (the editor shows them: draftRevision bumps)
 //                     and run; its dials are set by name once they compile
 //   startAfresh()     `files` as a new instance plays Init (EXAMPLES' example, RANDOM's program, each with the library
@@ -392,6 +401,18 @@ namespace playground
         friend bool operator==(const ProjectInfo&, const ProjectInfo&) = default;
     };
 
+    // A project as PROJECTS and EXPORT show it (projectPolled()): its versions (the newest first, as versions()), its
+    // presets and its info, from the store's cache.
+    struct ProjectDetail
+    {
+        bool exists = false;                     // a project of that name (false: none, or its file is damaged)
+        bool read = false;                       // its file read (false: the store's Reader reads it now, and
+                                                 // projectsRead() moves once it has; until then, nothing of it)
+        std::vector<VersionEntry> versions;
+        std::vector<PresetEntry> presets;
+        ProjectInfo info;
+    };
+
     // How PROJECTS shows the projects (projectsView(); ProjectStore.h's View): the projects starred (by name, a factory
     // one's as factoryName() spells it), the groups folded (editor/ProjectGroups.h's keys), the search typed, the tag
     // filtered on ("" for any) and the order (byDate: the newest save first, else by name).
@@ -501,6 +522,18 @@ namespace playground
         bool copied = false;                     // the user's own copy of a factory project
     };
 
+    // A save of the editor's off the message thread (startSave(), saving()): the one in flight, and the last one's
+    // outcome.
+    struct SaveState
+    {
+        bool busy = false;                       // one is in flight (its file read and written on a thread of its own)
+        std::string name;                        // the project it saves into (the one in flight, else the last one's)
+        uint64_t done = 0;                       // how many have ended: a new outcome when it moves
+        bool ok = false;                         // the last one's outcome: saved (SavedVersion), or not (why)
+        SavedVersion saved;
+        std::string why;
+    };
+
     // A/B listening (EditorPort::ab): its two sides and how it plays them.
     struct AbSide
     {
@@ -600,8 +633,11 @@ namespace playground
         virtual std::vector<PresetEntry> presets(const std::string& project) const = 0;
         virtual std::vector<ProjectEntry> projectsPolled() const = 0;
         virtual std::vector<PresetEntry> presetsPolled(const std::string& project) const = 0;
+        virtual ProjectDetail projectPolled(const std::string& project) const = 0;
         virtual uint64_t projectsRead() const = 0;
         virtual bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) = 0;
+        virtual bool startSave(const std::string& name, std::string& why) = 0;
+        virtual SaveState saving() const = 0;
         virtual bool openProject(const std::string& name, int version, std::string& why) = 0;
         virtual void startAfresh(const Sources& files, const std::string& what) = 0;
         virtual bool deleteProject(const std::string& name, std::string& why) = 0;

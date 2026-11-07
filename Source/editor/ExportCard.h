@@ -14,6 +14,8 @@
 // how it went (exported). Tab moves between the fields; Return to the next. While it is open it takes every pointer
 // event and key. A factory project's (isFactoryName) is read-only: its info shown as it is, no field or pill taking an
 // edit, nothing kept (the store refuses its info), its exports as they are; a copy saved as the user's own changes it.
+// It reads the store's cache alone (EditorPort::projectPolled): a project the cache lacks shows "Reading the project...",
+// its fields taking nothing, until the store's Reader has read it (poll()).
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -37,6 +39,7 @@ namespace playground::ui
     {
     public:
         static constexpr uint32_t kA11yBase = 0x7FFD0000u;   // its accessibility ids, past every item's
+        static constexpr const char* kReading = "Reading the project...";   // its line while reading()
         static constexpr int kDescriptionLength = 600, kAuthorLength = 60, kTagsLength = 200;
         static constexpr std::array<const char*, 12> kInstrumentCategories{ "Bass", "Lead", "Pad", "Keys", "Pluck", "Bell",
                                                                             "Brass", "Strings", "Arp", "Drums", "FX", "Other" };
@@ -53,8 +56,13 @@ namespace playground::ui
         explicit ExportCard(EditorPort& port) : port_(port) {}
 
         bool isOpen() const noexcept { return open_; }
-        void open(const std::string& project);           // its info and versions read
+        void open(const std::string& project);           // its info and versions read (the store's cache)
         void close();                                    // the info kept when it changed
+        // While open, each frame: once the store's Reader has read a file (EditorPort::projectsRead), the info again from
+        // the cache: a project it lacked when the card opened is filled in, one another process changed shows as it is
+        // now, unless the fields have been edited since (they stay as typed). Whether it changed.
+        bool poll();
+        bool reading() const noexcept { return reading_; }   // its info not read yet: the fields take nothing
 
         struct Places
         {
@@ -91,6 +99,8 @@ namespace playground::ui
         funkgui::text::LineEdit& field(Field f);
         const funkgui::text::LineEdit& field(Field f) const;
         void focusOn(Field f);
+        void read();                                      // its info and counts, from the store's cache
+        bool locked() const noexcept { return readOnly_ || reading_; }   // no field takes an edit
         bool keepInfo();                                  // setProjectInfo when it changed; false, with why_, on failure
         void ask(Want w);
 
@@ -98,6 +108,8 @@ namespace playground::ui
         bool open_ = false;
         std::string project_;
         bool readOnly_ = false;
+        bool reading_ = false;                            // its file not read yet (the store's Reader reads it)
+        uint64_t readSeen_ = 0;                           // EditorPort::projectsRead when it read the cache
         int versions_ = 0, latest_ = 0, presets_ = 0;
         ProjectInfo saved_;                               // as it was read or last kept
         funkgui::text::LineEdit description_, author_, tags_;

@@ -107,6 +107,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace playground
@@ -181,7 +182,10 @@ namespace playground
         // The compiler's outcome to the message thread (the timer's call); settle() waits for a run first. It also makes
         // the picture Claude's view_panel asks for, there.
         void poll();
-        void settle();
+        void settle();                                           // a save in flight (startSave) lands too
+        // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
+        // shows meanwhile can be checked; open, it goes on (poll() lands it).
+        void setSaveGate(bool shut);
         // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
         // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
         bool claudeJobWaiting() const;
@@ -281,8 +285,11 @@ namespace playground
         std::vector<PresetEntry> presets(const std::string& project) const override;
         std::vector<ProjectEntry> projectsPolled() const override;
         std::vector<PresetEntry> presetsPolled(const std::string& project) const override;
+        ProjectDetail projectPolled(const std::string& project) const override;
         uint64_t projectsRead() const override;
         bool saveVersion(const std::string& name, SavedVersion& saved, std::string& why) override;
+        bool startSave(const std::string& name, std::string& why) override;
+        SaveState saving() const override;
         bool openProject(const std::string& name, int version, std::string& why) override;
         void startAfresh(const Sources& files, const std::string& what) override;
         bool deleteProject(const std::string& name, std::string& why) override;
@@ -511,6 +518,42 @@ namespace playground
                            std::string& why);
         bool saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
                            SavedVersion& saved, std::string& why);
+        // A save in three parts (saveVersionAs runs them in turn; startSave the second on a thread of its own): what it
+        // keeps, taken on the message thread (takeSave); the store's read and write (runSave, any thread); the project
+        // open made the one saved (landSave, the message thread). A factory project's copy is saveCopy's, whole.
+        struct SaveJob
+        {
+            std::string name, lead;
+            std::optional<Journal::Who> who;
+            Sources files;
+            int active = 0;
+            std::string open;                                    // the project open as it was taken, and its version
+            int openVersion = 0;
+            std::vector<projectstore::Dial> dials;
+            std::vector<projectstore::Answer> answers;
+            projectstore::VersionMidi midi;
+            Assets samples;
+            bool copy = false;                                   // a factory project's copy (saveCopy's arguments)
+            std::string copyFrom, copyAs;
+            std::optional<projectstore::Saved> result;          // runSave's (none: why)
+            std::string why;
+        };
+        SaveJob takeSave(const std::string& name, const std::string& lead, std::optional<Journal::Who> who);
+        void runSave(SaveJob& job);
+        bool landSave(SaveJob& job, SavedVersion& saved, std::string& why);
+        // The editor's save in flight (EditorPort::startSave), the message thread's: its job (the saver thread reads its
+        // inputs and writes its result, then saverDone_), the one asked for meanwhile, and what saving() says.
+        std::unique_ptr<SaveJob> saveJob_;
+        std::thread saver_;
+        std::atomic<bool> saverDone_{ false };
+        std::optional<std::string> saveAgain_;
+        SaveState saveState_;
+        mutable std::mutex saveGateMutex_;                       // setSaveGate (probes): the saver waits while shut
+        std::condition_variable saveGateOpen_;
+        bool saveGateShut_ = false;
+        void endSave(bool ok, const SavedVersion& saved, const std::string& why);
+        void pollSave();
+        void finishSave();                                       // the destructor's: the gate opened, the saver joined
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

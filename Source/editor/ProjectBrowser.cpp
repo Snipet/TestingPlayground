@@ -89,7 +89,8 @@ namespace playground::ui
 
     void ProjectBrowser::readProjects()
     {
-        projects_ = port_.projects();
+        readSeen_ = port_.projectsRead();                // first: a read that lands meanwhile reads them again (poll)
+        projects_ = port_.projectsPolled();
         const std::vector<ProjectEntry> factory = port_.factoryProjects();
         projects_.insert(projects_.end(), factory.begin(), factory.end());
         arrange();
@@ -640,7 +641,7 @@ namespace playground::ui
         ++revision_;
     }
 
-    void ProjectBrowser::reread()
+    void ProjectBrowser::reread(bool claude)
     {
         if (!open_)
             return;
@@ -668,7 +669,8 @@ namespace playground::ui
         if (ask_ != Ask::none)
         {
             ask_ = Ask::none;
-            why_ = "The lists changed (Claude's projects tool): choose again, then confirm.";
+            why_ = claude ? "The lists changed (Claude's projects tool): choose again, then confirm."
+                          : "The lists changed (a project was saved elsewhere): choose again, then confirm.";
         }
         if (!dragging_)
         {
@@ -688,6 +690,8 @@ namespace playground::ui
         pressRow_ = -1;
         ++revision_;
     }
+
+    bool ProjectBrowser::takeStartedSave() { return std::exchange(startedSave_, false); }
 
     std::string ProjectBrowser::takeNotice()
     {
@@ -748,17 +752,45 @@ namespace playground::ui
 
     bool ProjectBrowser::chosenIsOpen() const { return !state_.name.empty() && same(chosenName_, state_.name); }
 
+    bool ProjectBrowser::poll()
+    {
+        if (!open_ || port_.projectsRead() == readSeen_)
+            return false;
+        // Read again only when what it shows changed (the Reader reads other files too: the explorer's, another
+        // instance's), so that a confirmation asked for stands over lists that did not.
+        const uint64_t seen = port_.projectsRead();
+        std::vector<ProjectEntry> now = port_.projectsPolled();
+        const std::vector<ProjectEntry> factory = port_.factoryProjects();
+        now.insert(now.end(), factory.begin(), factory.end());
+        const ProjectDetail d = chosenName_.empty() ? ProjectDetail{} : port_.projectPolled(chosenName_);
+        bool same = now == projects_ && d.presets == presets_ && d.versions.size() == versions_.size()
+                 && (chosenName_.empty() || !d.exists || d.read) == chosenRead_;
+        for (std::size_t i = 0; same && i < versions_.size(); ++i)
+            same = d.versions[i].number == versions_[i].number && d.versions[i].when == versions_[i].when
+                && d.versions[i].note == versions_[i].note;
+        if (same)
+        {
+            readSeen_ = seen;
+            return false;
+        }
+        reread(false);
+        return true;
+    }
+
     void ProjectBrowser::readChosen()
     {
         versions_.clear();
         presets_.clear();
+        chosenRead_ = true;
         chosen_[idx(L::versions)] = chosen_[idx(L::presets)] = -1;
         first_[idx(L::versions)] = first_[idx(L::presets)] = 0;
         const std::string name = chosenName_;
         if (name.empty())
             return;
-        versions_ = port_.versions(name);
-        presets_ = port_.presets(name);
+        const ProjectDetail d = port_.projectPolled(name);
+        chosenRead_ = !d.exists || d.read;
+        versions_ = d.versions;
+        presets_ = d.presets;
         const bool isOpen = chosenIsOpen();
         for (std::size_t i = 0; i < versions_.size(); ++i)
             if (isOpen && versions_[i].number == state_.version)
@@ -1076,19 +1108,15 @@ namespace playground::ui
             why_ = "\"" + name + "\" is another project: Add version saves this program as its newest version.";
             return;
         }
-        SavedVersion saved;
-        if (!port_.saveVersion(name, saved, why))
+        // The project's file is read and written off the message thread (EditorPort::startSave): the card closes at
+        // once, and the Panel says SAVING, then what came of it.
+        if (!port_.startSave(name, why))
         {
             ask_ = Ask::none;
             why_ = "Not saved: " + why + ".";
             return;
         }
-        const std::string into = saved.name.empty() ? name : saved.name;
-        const std::string at = upper(into) + " " + upper(v(saved.number));
-        notice_ = saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(into) + " (THE FACTORY'S STAYS AS IT IS)"
-                : saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT"
-                : saved.created   ? "PROJECT SAVED: " + upper(into)
-                                  : "SAVED: " + at;
+        startedSave_ = true;
         close();
     }
 
@@ -1754,7 +1782,8 @@ namespace playground::ui
             else if (overStar || (hasPointer && rr.contains(pointer) && !dragging_) || chosen)
                 chat::drawIcon(c, chat::Icon::star, s.centreX(), s.centreY(), 12.0f, overStar ? p.text : p.faint);
         });
-        list(L::versions, chosenName_.empty() ? "Choose a project." : "", [&](int i, const funkgui::Rect& rr, bool chosen) {
+        list(L::versions, chosenName_.empty() ? "Choose a project." : !chosenRead_ ? "Reading the project..." : "",
+             [&](int i, const funkgui::Rect& rr, bool chosen) {
             const VersionEntry& e = versions_[static_cast<std::size_t>(i)];
             if (chosenIsOpen() && e.number == state_.version)
                 mark(rr);
@@ -1767,7 +1796,7 @@ namespace playground::ui
             c.text(fitText(c, asciiText(e.note), chat::kSmall, std::max(0.0f, rr.right() - 10.0f - noteX)).c_str(), noteX,
                    c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.soft);
         });
-        const std::string noPresets = chosenName_.empty()                    ? std::string()
+        const std::string noPresets = chosenName_.empty() || !chosenRead_    ? std::string()
                                     : chosenIsOpen() && !factoryChosen() ? "No presets yet: click here, name one, Save preset."
                                                                          : "No presets.";
         list(L::presets, noPresets, [&](int i, const funkgui::Rect& rr, bool chosen) {

@@ -56,6 +56,15 @@
 //   PANEL    a panel dial (Controls.h's isPanelDial: the 34th of 34, past the host's 32) is kept by name as a host
 //            dial is: a version saved with it at 7 has it in its JSON's dials; moved through its port (the editor's
 //            way) the project notices it; a preset saved at 2; the version opened again plays 7, the preset applied 2
+//   DETAIL   a project's versions, presets and info as PROJECTS and EXPORT read them (projectPolled, the store's
+//            detailCached): one this process wrote, from the cache with no file read; one another rewrote, as it was
+//            and handed to the Reader, then the new info once it has read it; none for no such project; a factory one's
+//   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
+//            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
+//            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
+//            waits and saves after it, what the editor had then (two versions in turn), the project open the newest;
+//            a new project saved each way from the same state has the same version; another project opened while one
+//            is in flight stays open, the version saved all the same
 //   CIRCUITS a program with a netlist whose configuration is the self-test's (AutoClipper.h), saved before its test (no
 //            "circuits" in the version), refined (the tests off, Compiler::selfTestNow) and saved again unchanged: no
 //            version added, and version 1 now keeps the answer (its "circuits": key and text), as an export's JSON
@@ -78,12 +87,14 @@
 
 #include <juce_core/juce_core.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -856,6 +867,137 @@ PROBE(plugin, projects)
         P.eq("panel.preset_applied", pc.applyPreset("Panel Dials", "Two", why) ? 1 : 0, 1);
         P.near("panel.preset_value", static_cast<double>(value()), 2.0, 1e-4);
         P.eq("panel.removed", pc.deleteProject("Panel Dials", why) ? 1 : 0, 1);
+    }
+
+    // ---- DETAIL: a project's versions, presets and info from the cache (PROJECTS', EXPORT's) ---------------------------
+    {
+        pg::Processor d;
+        pg::EditorPort& pd = d.editorPort();
+        const pg::Sources f = twoFiles();
+        pd.setDraft({ f, 1 });
+        pd.run(f);
+        d.settle();
+        std::string w;
+        pg::SavedVersion v;
+        const bool made = pd.saveVersion("Detail", v, w) && pd.setProjectInfo("Detail", { "Kept here.", "Probe", "", {}, {} }, w);
+        const int parsed0 = ps::parses();
+        const pg::ProjectDetail own = pd.projectPolled("Detail");
+        P.eq("detail.written_here_no_read", made && own.exists && own.read && own.versions.size() == 1 && own.info.author == "Probe"
+                                                && ps::parses() == parsed0 ? 1 : 0, 1);
+        // Another writes it (an author of its own): as it was, the file to the Reader; once read, the new one.
+        rewrite(dir, "Detail", "Detail", [](juce::var& root) {
+            if (auto* info = root["info"].getDynamicObject())
+                info->setProperty("author", "Elsewhere");
+        });
+        std::vector<std::string> unread;
+        const std::optional<ps::Detail> stale = ps::detailCached("Detail", unread);
+        P.eq("detail.other_as_it_was", stale && stale->read && stale->info.author == "Probe" && unread.size() == 1
+                                           && ps::parses() == parsed0 ? 1 : 0, 1);
+        const uint64_t seen = pd.projectsRead();
+        (void)pd.projectPolled("Detail");                     // hands it to the Reader
+        for (int k = 0; k < 2000 && pd.projectsRead() == seen; ++k)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        P.eq("detail.other_once_read", pd.projectPolled("Detail").info.author == "Elsewhere" ? 1 : 0, 1);
+        P.eq("detail.none", !pd.projectPolled("No Such Project").exists ? 1 : 0, 1);
+        const std::vector<pg::ProjectEntry> factory = pd.factoryProjects();
+        P.eq("detail.factory", factory.empty() || (pd.projectPolled(factory.front().name).read
+                                                    && !pd.projectPolled(factory.front().name).versions.empty()) ? 1 : 0, 1);
+        P.eq("detail.removed", pd.deleteProject("Detail", w) ? 1 : 0, 1);
+    }
+
+    // ---- ASYNC: the editor's save off the message thread (startSave) ---------------------------------------------------
+    {
+        // A large project: 40 versions of a program with a comment of 120 KB each (about 5 MB), written at once.
+        const pg::Sources small = twoFiles();
+        ps::Project big;
+        big.name = "Large";
+        for (int k = 1; k <= 40; ++k)
+        {
+            ps::Version v;
+            v.number = k;
+            v.savedMs = juce::Time::currentTimeMillis() - (40 - k) * 1000;
+            v.note = k == 1 ? "first save" : "an edit";
+            v.files = small;
+            v.files[0].text += "// " + std::string(120000, static_cast<char>('a' + k % 26)) + "\n";
+            big.versions.push_back(std::move(v));
+        }
+        std::string w;
+        const std::optional<std::string> added = ps::add(std::move(big), &w);
+        const juce::int64 bytes = dir.getChildFile("Large.fmproject").getSize();
+        pg::Processor s;
+        pg::EditorPort& port = s.editorPort();
+        P.eq("async.setup", added == std::optional<std::string>("Large") && bytes > 4000000 && port.openProject("Large", 0, w) ? 1 : 0, 1);
+        s.settle();
+        const auto edit = [&](const std::string& line) {
+            pg::Draft dr = port.draft();
+            dr.files[0].text += line;
+            port.setDraft(dr);
+        };
+        const auto versionsOnDisk = [&] {
+            const std::optional<ps::Project> p = ps::load("Large");
+            return p ? static_cast<int>(p->versions.size()) : -1;
+        };
+        // Its cost on the message thread against a save made there (saveVersion), each this thread's CPU time: the save
+        // in flight takes what it keeps and nothing more.
+        edit("// one\n");
+        pg::SavedVersion v;
+        double t0 = probe::threadMs();
+        const bool sync = port.saveVersion("Large", v, w);
+        const double syncMs = probe::threadMs() - t0;
+        edit("// two\n");
+        s.setSaveGate(true);                                  // held before the store's work, so that it shows
+        const uint64_t done0 = port.saving().done;
+        t0 = probe::threadMs();
+        const bool started = port.startSave("Large", w);
+        const double startMs = probe::threadMs() - t0;
+        std::printf("async: a project of %.1f MB, saveVersion %.1f ms of the message thread's CPU, startSave %.2f ms\n",
+                    static_cast<double>(bytes) / 1e6, syncMs, startMs);
+        P.eq("async.sync_saved", sync && v.number == 41 ? 1 : 0, 1);
+        P.le("async.message_thread_share", startMs, 0.1 * syncMs);
+        const pg::SaveState inFlight = port.saving();
+        P.eq("async.in_flight", started && inFlight.busy && inFlight.name == "Large" && inFlight.done == done0 ? 1 : 0, 1);
+        s.poll();
+        P.eq("async.nothing_written_yet", versionsOnDisk() == 41 && port.project().version == 41 && port.project().edited ? 1 : 0, 1);
+        // One more asked for while it is in flight: it saves after it, what the editor has then.
+        edit("// three\n");
+        P.eq("async.second_waits", port.startSave("Large", w) && port.saving().busy && port.saving().done == done0 ? 1 : 0, 1);
+        s.setSaveGate(false);
+        s.settle();                                           // the first lands; the second starts
+        s.settle();                                           // and lands
+        const pg::SaveState after = port.saving();
+        const std::optional<ps::Project> large = ps::load("Large");
+        const bool both = large && large->versions.size() == 43 && large->latest().number == 43
+                       && large->latest().files[0].text.find("// three") != std::string::npos
+                       && large->versions[large->versions.size() - 2].files[0].text.find("// two") != std::string::npos
+                       && large->versions[large->versions.size() - 2].files[0].text.find("// three") == std::string::npos;
+        P.eq("async.both_saved_in_turn", both && after.done == done0 + 2 && !after.busy && after.ok && after.saved.number == 43 ? 1 : 0, 1);
+        P.eq("async.open_now", port.project().name == "Large" && port.project().version == 43 && !port.project().edited ? 1 : 0, 1);
+        // The same file as saveVersion's: a new project saved each way from the same state.
+        pg::SavedVersion twin;
+        const bool twinA = port.saveVersion("Twin A", twin, w);
+        P.eq("async.twin_b_started", twinA && port.startSave("Twin B", w) ? 1 : 0, 1);
+        s.settle();
+        const std::optional<ps::Project> ta = ps::load("Twin A"), tb = ps::load("Twin B");
+        const bool same = ta && tb && ta->versions.size() == 1 && tb->versions.size() == 1 && ta->latest().files == tb->latest().files
+                       && ta->latest().active == tb->latest().active && ta->latest().note == tb->latest().note
+                       && ta->latest().dials.size() == tb->latest().dials.size() && ta->presets.size() == tb->presets.size()
+                       && ta->latest().midi == tb->latest().midi && ta->latest().samples.size() == tb->latest().samples.size();
+        bool dialsSame = same;
+        for (std::size_t k = 0; dialsSame && k < ta->latest().dials.size(); ++k)
+            dialsSame = ta->latest().dials[k].name == tb->latest().dials[k].name && ta->latest().dials[k].value == tb->latest().dials[k].value;
+        P.eq("async.same_file", same && dialsSame && port.saving().saved.created ? 1 : 0, 1);
+        // Another project opened while one is in flight: the version is saved, and the other stays open.
+        edit("// four\n");
+        s.setSaveGate(true);
+        const bool four = port.startSave("Twin B", w);
+        const bool opened = port.openProject("Twin A", 0, w);
+        s.setSaveGate(false);
+        s.settle();
+        const std::optional<ps::Project> tb2 = ps::load("Twin B");
+        P.eq("async.other_opened_stays", four && opened && tb2 && tb2->versions.size() == 2 && port.project().name == "Twin A"
+                                             && port.saving().ok ? 1 : 0, 1);
+        for (const char* n : { "Large", "Twin A", "Twin B" })
+            (void)port.deleteProject(n, w);
     }
 
     ps::setDirectoryForTests({});

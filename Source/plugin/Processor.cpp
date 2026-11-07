@@ -503,6 +503,7 @@ namespace playground
 
     Processor::~Processor()
     {
+        finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
         midiTimer_.stopTimer();
@@ -1387,6 +1388,7 @@ namespace playground
             }
         }
         picturesIdle();                                          // the pictures' GPU context, let go when idle
+        pollSave();                                              // the editor's save, its file written: it lands
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -1544,6 +1546,14 @@ namespace playground
     void Processor::settle()
     {
         compiler_.wait();
+        // The editor's save in flight ends first (its file written), unless a probe holds it (setSaveGate).
+        bool shut = false;
+        {
+            const std::lock_guard<std::mutex> lock(saveGateMutex_);
+            shut = saveGateShut_;
+        }
+        while (saveState_.busy && !shut && !saverDone_.load(std::memory_order_acquire))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         poll();
     }
 
@@ -2310,6 +2320,25 @@ namespace playground
         return out;
     }
 
+    ProjectDetail Processor::projectPolled(const std::string& project) const
+    {
+        std::vector<std::string> unread;
+        ProjectDetail out;
+        if (const auto d = projectstore::detailCached(project, unread))
+        {
+            out.exists = true;
+            out.read = d->read;
+            for (auto it = d->versions.rbegin(); it != d->versions.rend(); ++it)
+                out.versions.push_back({ it->number, whenOf(it->savedMs), it->note });
+            for (const projectstore::PresetSummary& pr : d->presets)
+                out.presets.push_back({ pr.name, whenOf(pr.savedMs), pr.from, pr.category });
+            out.info = { d->info.description, d->info.author, d->info.category, d->info.tags, d->info.genres };
+        }
+        if (!unread.empty())
+            reader_->request(unread);
+        return out;
+    }
+
     uint64_t Processor::projectsRead() const { return reader_->revision(); }
 
     std::vector<ProjectEntry> Processor::entriesOf(const std::vector<projectstore::Entry>& list) const
@@ -2748,41 +2777,77 @@ namespace playground
     bool Processor::saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
                                   SavedVersion& saved, std::string& why)
     {
-        Sources files;
-        int active = 0;
-        std::string open;
+        SaveJob job = takeSave(name, lead, who);
+        if (job.copy)
+            return saveCopy(job.copyFrom, job.copyAs, job.files, job.active, job.dials, job.answers, job.midi.mappings,
+                            job.samples, lead, who, saved, why);
+        runSave(job);
+        return landSave(job, saved, why);
+    }
+
+    // What a save of `name` keeps, taken on the message thread as it is asked for: the draft, the dials, the answers,
+    // the MIDI map and the samples (as they are now), and the project open with its version.
+    Processor::SaveJob Processor::takeSave(const std::string& name, const std::string& lead, std::optional<Journal::Who> who)
+    {
+        SaveJob job;
+        job.name = name;
+        job.lead = lead;
+        job.who = who;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            files = draft_.files;
-            active = draft_.active;
-            open = projectName_;
+            job.files = draft_.files;
+            job.active = draft_.active;
+            job.open = projectName_;
+            job.openVersion = projectVersion_;
         }
-        const std::vector<projectstore::Dial> dials = dialsNow();
+        job.dials = dialsNow();
         // The self-test's answers for its netlists (fminus/Circuits.h), kept with the version.
-        std::vector<projectstore::Answer> answers;
-        for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
-            answers.push_back({ std::move(key), std::move(text) });
+        for (auto& [key, text] : circuits::answers().of(circuits::keysOf(job.files)))
+            job.answers.push_back({ std::move(key), std::move(text) });
         // MIDI learn's mappings; those a version with none left as they were (opening it) are no change of their own.
-        projectstore::VersionMidi midi{ learn_.mappings() };
+        job.midi = projectstore::VersionMidi{ learn_.mappings() };
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            midi.inherited = midiOpened_ && *midiOpened_ == midi.mappings
-                          && projectstore::sameName(projectstore::tidyName(name), projectName_);
+            job.midi.inherited = midiOpened_ && *midiOpened_ == job.midi.mappings
+                              && projectstore::sameName(projectstore::tidyName(name), projectName_);
         }
-        const Assets samples = assetsNow();
+        job.samples = assetsNow();
         // A factory project is never written: its name, or a new project's while one is open, saves the user's own copy.
-        if (isFactoryName(name) || (isFactoryName(open) && !projectstore::exists(name)))
-            return saveCopy(isFactoryName(name) ? name : open, isFactoryName(name) ? std::string() : name, files, active, dials,
-                            answers, midi.mappings, samples, lead, who, saved, why);
-        const std::optional<projectstore::Saved> r =
-            projectstore::saveVersion(name, files, active, dials, answers, midi, samples.get(), &why, lead);
-        if (!r)
+        if (isFactoryName(name) || (isFactoryName(job.open) && !projectstore::exists(name)))
+        {
+            job.copy = true;
+            job.copyFrom = isFactoryName(name) ? name : job.open;
+            job.copyAs = isFactoryName(name) ? std::string() : name;
+        }
+        return job;
+    }
+
+    // The store's part: the project's file read, the version added, the file written (any thread; the store keeps one
+    // writer at a time).
+    void Processor::runSave(SaveJob& job)
+    {
+        job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi, job.samples.get(),
+                                               &job.why, job.lead);
+    }
+
+    // The message thread's part once the file is written: the journal's note, and the project open made the one saved,
+    // unless another project or version was opened since the save was taken (the version is saved all the same).
+    bool Processor::landSave(SaveJob& job, SavedVersion& saved, std::string& why)
+    {
+        if (!job.result)
+        {
+            why = job.why;
             return false;
-        saved = { r->number, r->unchanged, r->created, projectstore::tidyName(name), false };
-        if (!r->unchanged && who)
-            journal_.note(*who, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+        }
+        const projectstore::Saved& r = *job.result;
+        const std::string tidy = projectstore::tidyName(job.name);
+        saved = { r.number, r.unchanged, r.created, tidy, false };
+        if (!r.unchanged && job.who)
+            journal_.note(*job.who, "saved version " + std::to_string(r.number) + " of \"" + tidy + "\"");
         std::unique_lock<std::mutex> lock(programMutex_);
-        const std::string tidy = projectstore::tidyName(name);
+        if (projectName_ != job.open || projectVersion_ != job.openVersion)
+            return true;                                         // another opened meanwhile: it stays open
+        const std::vector<projectstore::Dial>& dials = job.dials;
         // The preset applied stays named while the dials are still its.
         bool keep = projectstore::sameName(tidy, projectName_) && !projectPreset_.empty();
         for (const projectstore::Dial& d : dials)
@@ -2793,20 +2858,109 @@ namespace playground
             projectPreset_.clear();
         // The project's id as the save left its file: another than the one kept (a new file made where the project
         // open's was deleted or renamed away since it was opened) is looked up again (chatOwnerNow).
-        if (r->id.empty() || r->id != projectId_ || !projectstore::sameName(tidy, projectIdName_))
+        if (r.id.empty() || r.id != projectId_ || !projectstore::sameName(tidy, projectIdName_))
             projectIdName_.clear();
         projectName_ = tidy;
-        projectVersion_ = r->number;
-        projectLatest_ = r->number;
-        projectFiles_ = files;
-        projectAssets_ = samples;
+        projectVersion_ = r.number;
+        projectLatest_ = r.number;
+        projectFiles_ = job.files;
+        projectAssets_ = job.samples;
         baseDials_ = dials;
         presetsStale_.store(true);                               // the next poll reads its presets (refreshPresets)
-        if (!r->unchanged)
+        if (!r.unchanged)
             midiOpened_.reset();                                 // the version saved has these mappings
         lock.unlock();
         syncChatOwner(ChatAgent::OwnerChange::carry);            // the conversation goes on with what it made
         return true;
+    }
+
+    // ---- a save off the message thread (EditorPort::startSave) --------------------------------------------------------
+    bool Processor::startSave(const std::string& name, std::string& why)
+    {
+        if (projectstore::tidyName(name).empty())
+        {
+            why = "a project needs a name";
+            return false;
+        }
+        if (saveState_.busy)
+        {
+            saveAgain_ = name;                                   // once the one in flight ends: what the editor has then
+            return true;
+        }
+        SaveJob job = takeSave(name, {}, Journal::Who::user);
+        saveState_.name = projectstore::tidyName(name);
+        if (job.copy)
+        {
+            // A factory project's copy: its one version, at once (the store's copy of what is compiled in).
+            SavedVersion saved;
+            std::string whyNot;
+            const bool ok = saveCopy(job.copyFrom, job.copyAs, job.files, job.active, job.dials, job.answers, job.midi.mappings,
+                                     job.samples, {}, job.who, saved, whyNot);
+            endSave(ok, saved, whyNot);
+            return true;
+        }
+        saveState_.busy = true;
+        saveJob_ = std::make_unique<SaveJob>(std::move(job));
+        saverDone_.store(false);
+        saver_ = std::thread([this, j = saveJob_.get()] {
+            {
+                std::unique_lock<std::mutex> lock(saveGateMutex_);
+                saveGateOpen_.wait(lock, [this] { return !saveGateShut_; });
+            }
+            runSave(*j);
+            saverDone_.store(true, std::memory_order_release);
+        });
+        return true;
+    }
+
+    SaveState Processor::saving() const { return saveState_; }
+
+    void Processor::endSave(bool ok, const SavedVersion& saved, const std::string& why)
+    {
+        saveState_.busy = false;
+        saveState_.ok = ok;
+        saveState_.saved = saved;
+        saveState_.why = why;
+        if (ok && !saved.name.empty())
+            saveState_.name = saved.name;
+        ++saveState_.done;
+    }
+
+    // poll()'s: a save whose file is written lands (landSave), and one asked for meanwhile starts.
+    void Processor::pollSave()
+    {
+        if (!saveState_.busy || !saverDone_.load(std::memory_order_acquire))
+            return;
+        saver_.join();
+        const std::unique_ptr<SaveJob> job = std::move(saveJob_);
+        SavedVersion saved;
+        std::string why;
+        const bool ok = landSave(*job, saved, why);
+        endSave(ok, saved, why);
+        if (const std::optional<std::string> again = std::exchange(saveAgain_, std::nullopt))
+        {
+            std::string whyNot;
+            if (!startSave(*again, whyNot))
+                endSave(false, {}, whyNot);
+        }
+    }
+
+    void Processor::finishSave()
+    {
+        if (saver_.joinable())
+        {
+            setSaveGate(false);
+            saver_.join();
+        }
+    }
+
+    void Processor::setSaveGate(bool shut)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(saveGateMutex_);
+            saveGateShut_ = shut;
+        }
+        saveGateOpen_.notify_all();
     }
 
     // The user's own copy of the factory project `from` (Factory.h): a new project named `as` (else the factory one's

@@ -3363,6 +3363,7 @@ namespace playground::ui
         // The processor's files and status, and the chat; the netlists' views the session kept.
         bindFiles();
         claudeSeen_ = port_.claudeNotice().count;        // what Claude did before this editor opened: not said again
+        saveSeen_ = port_.saving().done;                 // and a save another editor made
         seenDraft_ = port_.draftRevision();
         given_ = port_.draft();
         files().load(given_);
@@ -5018,18 +5019,50 @@ namespace playground::ui
             openProjects();
             return;
         }
-        SavedVersion saved;
+        // The project's file is read and written off the message thread (EditorPort::startSave): SAVING meanwhile,
+        // then what came of it (syncSave).
         std::string why;
-        if (!port_.saveVersion(st.name, saved, why))
-        {
+        if (!port_.startSave(st.name, why))
             notice("NOT SAVED: " + upper(why));
+        else
+            savingNotice();
+        dirty_ = true;
+    }
+
+    void Panel::savingNotice()
+    {
+        if (const SaveState s = port_.saving(); s.busy)
+        {
+            notice("SAVING " + upper(s.name) + "...");
+            saving_ = true;
+        }
+        else
+            syncSave();
+    }
+
+    // What a save of the editor's came to, said once it has ended (SaveState::done moved): the lists read again.
+    void Panel::syncSave()
+    {
+        const SaveState s = port_.saving();
+        if (s.done == saveSeen_)
+        {
+            if (saving_ && !s.busy)
+                saving_ = false;
             return;
         }
-        const std::string at = upper(saved.name.empty() ? st.name : saved.name) + " V" + std::to_string(saved.number);
-        notice(saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(saved.name) + " (THE FACTORY'S STAYS AS IT IS)"
+        saveSeen_ = s.done;
+        saving_ = s.busy;
+        if (s.busy)
+            return;                                      // one more was asked for: its outcome comes next
+        const SavedVersion& saved = s.saved;
+        const std::string at = upper(saved.name.empty() ? s.name : saved.name) + " V" + std::to_string(saved.number);
+        notice(!s.ok           ? "NOT SAVED: " + upper(s.why)
+               : saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(saved.name) + " (THE FACTORY'S STAYS AS IT IS)"
                : saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT"
+               : saved.created   ? "PROJECT SAVED: " + upper(saved.name)
                                  : "SAVED: " + at);
         projectsAt_ = -100.0;
+        projects_.reread();
         dirty_ = true;
     }
 
@@ -5415,6 +5448,13 @@ namespace playground::ui
         keepStepDefaults(nowSec, false);
         syncFolder();
         syncMidi();
+        // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
+        syncSave();
+        // PROJECTS and EXPORT read the store's cache alone: what its Reader has read since shows now.
+        if (projects_.poll())
+            dirty_ = true;
+        if (export_.poll())
+            dirty_ = true;
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -6805,6 +6845,8 @@ namespace playground::ui
     {
         if (const std::string n = projects_.takeNotice(); !n.empty())
             notice(n);
+        if (projects_.takeStartedSave())
+            savingNotice();
         projectsAt_ = -100.0;                            // the explorer reads what it saved, opened or deleted
         const bool importIt = projects_.takeImport();
         const std::string exportIt = projects_.takeExport();
@@ -7754,7 +7796,7 @@ namespace playground::ui
 
     bool Panel::wantsFullRate() const
     {
-        if (dirty_ || compiling_ || inputHeld())
+        if (dirty_ || compiling_ || saving_ || inputHeld())
             return true;
         return std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
     }

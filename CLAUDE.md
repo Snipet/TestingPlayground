@@ -147,7 +147,24 @@ place (its `products/<key>.cmake`, and its names in the docs).
   store's `Reader` (one a process, its own thread, a path asked once until read; a read kept only while the file is
   still as a look before it found it, so it never replaces a write's entry), whose revision (`projectsRead`) makes the
   explorer poll again (`projectstore::parses`, `readerParses`, `listings`: plugin.projects POLL and CACHED,
-  gui.explorer POLL, gui.switch POLL). The poll waits `kPollAfterShow` after the frame that shows the explorer again
+  gui.explorer POLL, gui.switch POLL). The Reader moves its revision under the cache's lock with the read it keeps, and
+  `Panel::syncExplorer` polls again when the revision moved while it polled, so the listing and the presets are of one
+  state (else a read landing between them makes the rows twice). PROJECTS and EXPORT read the same cache
+  (`projectsPolled`, `EditorPort::projectPolled`: `projectstore::detailCached`, a project's versions' numbers, times and
+  notes, its presets and its info, which `Cached` keeps), never a project's file whole on the message thread: a file the
+  cache lacks goes to the Reader, the card shows what the cache last held (a project never read: "Reading the
+  project...", EXPORT's fields taking nothing) and reads again when `projectsRead` moves (`ProjectBrowser::poll`,
+  `ExportCard::poll`, each frame; gui.projects READS, plugin.projects DETAIL). The A/B card's versions are still read
+  whole. **The editor's save** (Cmd-S, PROJECTS' Save: `EditorPort::startSave`, `saving`; `Processor::takeSave`,
+  `runSave`, `landSave`) takes what it keeps on the message thread (the draft, the dials, the answers, the MIDI map, the
+  samples, the project open and its version), reads and writes the file on a thread of its own (`saver_`), and lands at
+  poll(): the project open made the one saved unless another project or version was opened meanwhile (the version saved
+  all the same); one asked for while one is in flight saves after it, with what the editor has then; a factory
+  project's copy is saved at once. `saveVersion` (Claude's projects tool, the probes) runs the same three parts in turn.
+  The Panel says SAVING until `saving().done` moves, then the outcome (`Panel::syncSave`, at full rate meanwhile);
+  `settle()` lands one in flight, and `setSaveGate` (probes only) holds it before the store's work. The store keeps one
+  writer in the process (`writeMutex`, recursive: `update`, `saveVersion`, `add`, `remove`), so the saver and a write on
+  the message thread never write over each other (plugin.projects ASYNC, gui.dump PROJECTS). The poll waits `kPollAfterShow` after the frame that shows the explorer again
   (the Code view), and the explorer hashes what its rows show each frame (the lists by a revision a poll bumps).
   `list()` and `presetsOf` (PROJECTS, EXPORT) still read what the cache lacks, outside its lock. A listing's entry
   carries the info's category, tags and description (`Entry`, `ProjectEntry`), which PROJECTS and the explorer group
