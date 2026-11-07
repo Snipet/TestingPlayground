@@ -33,7 +33,10 @@
 //             run, the signature kept on its tool_use block and sent back on its functionCall, its result a
 //             functionResponse by name; a 400 that refuses parametersJsonSchema: Gemini's own subset from then on
 //             (types in upper case, no additionalProperties; an enum with no type a STRING: the projects tool's
-//             action, compare's dials and measure_output's spectrum keep theirs); a key it calls not valid: refused, said
+//             action, compare's dials, measure_output's spectrum and run_function's on keep theirs; an array whose items
+//             are left open, run_function's args and write_file's files, one of strings, each a JSON value written out,
+//             read back before the tool runs: a write_file of files on it writes them); a key it calls not valid:
+//             refused, said
 //   KEPT      a new processor talks to the provider chosen last, its model kept
 //   BACK      Anthropic again, with the planner chosen before the Gemini turns: its request as before (the full
 //             prompt cached, thinking, its key alone), the history without another provider's thought_signature in the
@@ -618,7 +621,8 @@ PROBE(plugin, providers)
         const juce::var retry = claude::parseJson(script->body(b2 + 1));
         const juce::Array<juce::var> d2 = arr(arr(retry.getProperty("tools", {}))[0].getProperty("functionDeclarations", {}));
         bool subset = !d2.isEmpty();
-        juce::var action, dials, spectrum;       // enums with no type in the tools' own schemas
+        juce::var action, dials, spectrum, on;   // enums with no type in the tools' own schemas
+        juce::var args, files;                   // arrays whose items they leave open
         for (const juce::var& dcl : d2)
         {
             subset = subset && !dcl.hasProperty("parametersJsonSchema")
@@ -630,13 +634,56 @@ PROBE(plugin, providers)
                 dials = props.getProperty("dials", {});
             else if (str(dcl, "name") == "measure_output")
                 spectrum = props.getProperty("spectrum", {});
+            else if (str(dcl, "name") == "run_function")
+            {
+                on = props.getProperty("on", {});
+                args = props.getProperty("args", {});
+            }
+            else if (str(dcl, "name") == "write_file")
+                files = props.getProperty("files", {});
         }
         P.eq("gemini.subset", script->postCount() - b2 == 2 && subset && !anyHas(retry.getProperty("tools", {}), "additionalProperties")
                                   && !anyHas(retry.getProperty("tools", {}), "anyOf") ? 1 : 0, 1);
         std::printf("gemini subset: projects' action %s\n", claude::toJson(action).c_str());
         const auto words = [](const juce::var& p, int n) { return str(p, "type") == "STRING" && arr(p.getProperty("enum", {})).size() == n; };
         P.eq("gemini.subset_enums", words(action, 5) && arr(action.getProperty("enum", {}))[0].toString() == "list"
-                                        && words(dials, 3) && words(spectrum, 3) ? 1 : 0, 1);
+                                        && words(dials, 3) && words(spectrum, 3) && words(on, 2) ? 1 : 0, 1);
+        // An array whose items the tool leaves open (run_function's args, write_file's files): strings there, each a
+        // JSON value written out, read back before the tool runs (providers::fromSubset).
+        std::printf("gemini subset: run_function's args %s\n", claude::toJson(args).c_str());
+        const auto texts = [](const juce::var& p) {
+            return str(p, "type") == "ARRAY" && str(p.getProperty("items", {}), "type") == "STRING" && has(str(p, "description"), "JSON value");
+        };
+        P.eq("gemini.subset_open_arrays", texts(args) && texts(files) ? 1 : 0, 1);
+        juce::var args3;
+        {
+            juce::Array<juce::var> given;
+            given.add("0.5");
+            given.add("true");
+            given.add("[1, 2]");
+            given.add("not json");
+            juce::var schema;
+            for (const juce::var& tool : arr(pg::ChatAgent::toolDefinitions()))
+                if (str(tool, "name") == "run_function")
+                    schema = tool.getProperty("input_schema", {});
+            args3 = pr::fromSubset(input({ { "name", "f" }, { "args", given } }), schema).getProperty("args", {});
+        }
+        const juce::Array<juce::var> a3 = arr(args3);
+        P.eq("gemini.subset_read_back", a3.size() == 4 && a3[0].isDouble() && static_cast<double>(a3[0]) == 0.5 && a3[1].isBool()
+                                            && static_cast<bool>(a3[1]) && arr(a3[2]).size() == 2 && a3[3].toString() == "not json" ? 1 : 0, 1);
+        const pg::Draft before3 = processor.editorPort().draft();
+        juce::Array<juce::var> written;
+        written.add("{\"name\": \"extra.fm\", \"content\": \"// extra\\n\"}");
+        script->add(stream(fake::GeminiSse("gemini-3-pro-preview").call("write_file", input({ { "files", written } })).finish("STOP").str()));
+        script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("Wrote it.").finish("STOP").str()));
+        agent.send("add extra.fm");
+        agent.waitIdle();
+        processor.settle();
+        const pg::Draft after3 = processor.editorPort().draft();
+        bool extra = false;
+        for (const pg::SourceFile& f : after3.files)
+            extra = extra || (f.name == "extra.fm" && f.text == "// extra\n");
+        P.eq("gemini.subset_files_written", extra && after3.files.size() == before3.files.size() + 1 ? 1 : 0, 1);
         P.eq("gemini.subset_noted", has(allOf(agent.chatState(), pg::ChatEntry::Kind::note), "refused the tools' schemas") ? 1 : 0, 1);
         script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("Still OK.").finish("STOP").str()));
         agent.send("once more");

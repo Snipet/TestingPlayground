@@ -994,7 +994,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
     menu and out of the choice, and the error says to choose another (never a model switched to here); OpenAI's list
     leaves those out from the start (its `-pro`, codex, deep-research, `chatgpt-` and `-chat-latest` models); Gemini's
     400 refusing `parametersJsonSchema` makes it again with Gemini's own schema subset (an enum of words with no type
-    a STRING, as the projects tool's action), and keeps that (`schemaRefused_`);
+    a STRING, as the projects tool's action and run_function's `on`; an array whose items the schema leaves open, as
+    run_function's `args` and write_file's `files`, an array of STRINGs, each a JSON value written out, which
+    `providers::fromSubset` reads back by the tool's own schema before the tool runs: a tool gaining such an array
+    needs nothing more; a property it still cannot say, an object with no properties such as trace's `export`, is
+    left out), and keeps that (`schemaRefused_`);
     a model whose context is under `kShortPromptBelow` tokens (as its list says), or one a server on this Mac or the
     local network does not describe, gets `shortPrompt()` (the prompt up to THREADS and a line of what it left out);
     a server here that read under half of what was sent cut the conversation (Ollama does, silently): noted once a

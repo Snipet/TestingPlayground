@@ -81,6 +81,11 @@ namespace playground::providers
         bool images = true;                              // the model takes pictures (else a line of text each)
         bool jsonSchema = true;                          // Gemini: the tools' schemas as JSON Schema, else its subset
     };
+    // A tool call made against Gemini's own subset (Options::jsonSchema false), as the tool takes it: the subset asks
+    // for an array whose items the tool's schema leaves open (run_function's args, write_file's files, edit_file's edits
+    // and files) as one of strings, each a JSON value written out (0.5, true, [1, 2], {"name": ...}), and each such
+    // string that reads as JSON is that value again. `schema`: the tool's input_schema. Anything else as it came.
+    juce::var fromSubset(const juce::var& input, const juce::var& schema);
     struct Endpoint
     {
         std::string host, path;                          // the transport's (ClaudeApi.h): "https://openrouter.ai", "/api/v1/..."

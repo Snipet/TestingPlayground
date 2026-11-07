@@ -319,10 +319,20 @@ namespace playground::providers
                         withItems(a);
         }
 
+        // An array whose items its schema leaves open (none, or {}: any value), which Gemini's subset cannot say:
+        // run_function's args, write_file's files, edit_file's edits and files.
+        bool openArray(const juce::var& schema)
+        {
+            const juce::var items = schema.getProperty("items", juce::var());
+            return lower(schema.getProperty("type", "").toString().toStdString()) == "array"
+                && (!items.isObject() || items.getDynamicObject()->getProperties().isEmpty());
+        }
+
         // Gemini's own schema (its OpenAPI subset, the fallback): types in upper case, what it lacks left out (additional
         // properties; an alternative of several, the first with a type kept), an enum of words with no type (the tools
-        // leave it out, as JSON Schema allows: the projects tool's action) a STRING, and a property it cannot describe
-        // (an object with no properties, an array of such) left out with its place in required. Void: nothing left.
+        // leave it out, as JSON Schema allows: the projects tool's action) a STRING, an array of open items one of
+        // STRINGs, each a JSON value written out (fromSubset reads them back), and a property it cannot describe (an
+        // object with no properties, an array of such) left out with its place in required. Void: nothing left.
         juce::var geminiSubset(const juce::var& schema)
         {
             const auto* o = schema.getDynamicObject();
@@ -379,6 +389,13 @@ namespace playground::providers
                         required.add(r);
                 if (!required.isEmpty())
                     out->setProperty("required", required);
+            }
+            else if (openArray(schema))
+            {
+                out->setProperty("items", claude::object({ { "type", "STRING" } }));
+                const juce::String said = o->getProperty("description").toString();
+                out->setProperty("description", said + (said.isEmpty() ? "" : " ") + "(each item a JSON value written out: 0.5, "
+                                                                                     "true, [1, 2], {\"name\": ...})");
             }
             else if (type == "array")
             {
@@ -641,6 +658,34 @@ namespace playground::providers
                     m.end());
             return m;
         }
+    }
+
+    juce::var fromSubset(const juce::var& input, const juce::var& schema)
+    {
+        const auto* props = schema.getProperty("properties", juce::var()).getDynamicObject();
+        if (props == nullptr || !input.isObject())
+            return input;
+        juce::var out = copyOf(input);
+        for (const auto& kv : props->getProperties())
+        {
+            juce::var p = kv.value;                      // as geminiSubset reads it: an alternative's first with a type
+            if (!p.hasProperty("type"))
+                for (const char* key : { "anyOf", "oneOf" })
+                    for (const juce::var& alt : arrayOf(p.getProperty(key, juce::var())))
+                        if (!p.hasProperty("type") && alt.hasProperty("type"))
+                            p = alt;
+            const juce::Array<juce::var>* given = out.getProperty(kv.name, juce::var()).getArray();
+            if (!openArray(p) || given == nullptr)
+                continue;
+            juce::Array<juce::var> read;
+            for (const juce::var& e : *given)
+            {
+                const juce::var v = e.isString() ? juce::JSON::fromString(e.toString().trim()) : juce::var();   // any value
+                read.add(v.isVoid() ? e : v);
+            }
+            out.getDynamicObject()->setProperty(kv.name, read);
+        }
+        return out;
     }
 
     std::string body(const ChatProvider& p, const juce::var& messagesApi, const Options& options)

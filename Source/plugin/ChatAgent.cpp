@@ -3204,8 +3204,25 @@ namespace playground
             juce::Array<juce::var> results;
             std::string askId;
             std::vector<ChatQuestion> askQuestions;
-            for (const auto& use : toolUses)
+            // A call Gemini made against its own subset of the schemas: the values it gave as text read back
+            // (providers::fromSubset), so each tool takes them as from any other model.
+            bool subset = false;
             {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                subset = turnProvider_.kind == "gemini" && !turnJsonSchema_;
+            }
+            const juce::var definitions = subset ? toolDefinitions() : juce::var();
+            for (const auto& given : toolUses)
+            {
+                juce::var use = given;
+                if (const juce::Array<juce::var>* defs = definitions.getArray(); subset && defs != nullptr)
+                    for (const juce::var& d : *defs)
+                        if (str(d, "name") == str(given, "name"))
+                        {
+                            use = claude::parseJson(claude::toJson(given));
+                            use.getDynamicObject()->setProperty("input", providers::fromSubset(given.getProperty("input", juce::var()),
+                                                                                              d.getProperty("input_schema", juce::var())));
+                        }
                 const std::string id = str(use, "id");
                 bool invalid = false;
                 std::string raw;
