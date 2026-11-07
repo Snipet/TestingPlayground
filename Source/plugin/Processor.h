@@ -184,8 +184,10 @@ namespace playground
         void poll();
         void settle();                                           // a save in flight (startSave) lands too
         // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
-        // shows meanwhile can be checked; open, it goes on (poll() lands it).
+        // shows meanwhile can be checked; open, it goes on (poll() lands it). saveWritten: the last one started has done
+        // its store's work (the next poll() lands it), so a probe can time the landing alone.
         void setSaveGate(bool shut);
+        bool saveWritten() const noexcept { return saverDone_.load(std::memory_order_acquire); }
         // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
         // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
         bool claudeJobWaiting() const;
@@ -462,6 +464,10 @@ namespace playground
         // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
         // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).
         std::optional<std::vector<midilearn::Mapping>> midiOpened_;
+        // How many times a project, a version or none was opened (a version, a fresh start, a session, the open one
+        // deleted, A/B's Keep of a version): a save in flight lands as the project open only when none was since,
+        // the same version opened again included (landSave).
+        uint64_t projectOpens_ = 0;
         // The chats (ChatAgent.h, "The chats"; programMutex_): the project open's id (ProjectStore.h: the session keeps it,
         // to find the project renamed in the Finder since), and this instance's own (its chats while no project is open;
         // kept in the session, <CHAT instance>; no two live processors of this process hold one: Processor.cpp's
@@ -527,8 +533,12 @@ namespace playground
             std::optional<Journal::Who> who;
             Sources files;
             int active = 0;
-            std::string open;                                    // the project open as it was taken, and its version
-            int openVersion = 0;
+            std::string open;                                    // the project open as it was taken, its version and
+            int openVersion = 0;                                 // projectOpens_ then (landSave: none opened since)
+            uint64_t opens = 0;
+            std::string knownId, knownIdName;                    // projectId_ and projectIdName_ as it was taken
+            std::string ownerId;                                 // runSave's: the project saved's id as chatOwnerNow
+                                                                 // finds it, looked up when knownId is not it
             std::vector<projectstore::Dial> dials;
             std::vector<projectstore::Answer> answers;
             projectstore::VersionMidi midi;
@@ -553,7 +563,8 @@ namespace playground
         bool saveGateShut_ = false;
         void endSave(bool ok, const SavedVersion& saved, const std::string& why);
         void pollSave();
-        void finishSave();                                       // the destructor's: the gate opened, the saver joined
+        void finishSave();                                       // the destructor's: the gate opened, the saver joined,
+                                                                 // it lands, and the one asked for meanwhile saves
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

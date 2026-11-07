@@ -64,7 +64,11 @@
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
 //            waits and saves after it, what the editor had then (two versions in turn), the project open the newest;
 //            a new project saved each way from the same state has the same version; another project opened while one
-//            is in flight stays open, the version saved all the same
+//            is in flight stays open, the version saved all the same; a version added to the large project while a
+//            small one is open lands (the poll after the saver is done, alone) with no file read on the message thread
+//            and under a twentieth of saveVersion's CPU, the large one then open and the chats' owner its id; the version
+//            open opened again mid-save stays open as opened, not edited; a processor that goes with a save in flight
+//            and one more asked for saves both, in turn
 //   CIRCUITS a program with a netlist whose configuration is the self-test's (AutoClipper.h), saved before its test (no
 //            "circuits" in the version), refined (the tests off, Compiler::selfTestNow) and saved again unchanged: no
 //            version added, and version 1 now keeps the answer (its "circuits": key and text), as an export's JSON
@@ -996,6 +1000,70 @@ PROBE(plugin, projects)
         const std::optional<ps::Project> tb2 = ps::load("Twin B");
         P.eq("async.other_opened_stays", four && opened && tb2 && tb2->versions.size() == 2 && port.project().name == "Twin A"
                                              && port.saving().ok ? 1 : 0, 1);
+        // A version added to another project (Large, about 5 MB) while a small one is open (PROJECTS' Add version): its
+        // landing (the poll after the saver is done, alone) reads no file on the message thread and costs it under a
+        // twentieth of saveVersion's CPU; Large is then the project open, the chats' owner its file's id.
+        edit("// five\n");
+        s.setSaveGate(true);
+        const bool five = port.startSave("Large", w);
+        s.setSaveGate(false);
+        for (int k = 0; k < 5000 && !s.saveWritten(); ++k)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const int parsed0 = ps::parses(), reader0 = ps::readerParses();
+        t0 = probe::threadMs();
+        s.poll();
+        const double landMs = probe::threadMs() - t0;
+        const int landParses = (ps::parses() - parsed0) - (ps::readerParses() - reader0);
+        std::printf("async: Add version to the large project, its landing %.2f ms of the message thread's CPU, %d file(s) read there\n",
+                    landMs, landParses);
+        const std::optional<ps::Project> large5 = ps::load("Large");
+        P.eq("async.add_version_saved", five && !port.saving().busy && port.saving().ok && large5 && large5->latest().number == 44
+                                            && port.project().name == "Large" && port.project().version == 44
+                                            && s.chatAgent().chatOwner() == large5->id ? 1 : 0, 1);
+        P.eq("async.add_version_landing_reads_none", landParses, 0);
+        P.le("async.add_version_landing_share", landMs, 0.05 * syncMs);
+        // The version open opened again while a save is in flight (its edits thrown away): it stays open as opened, its
+        // files not edited, the version saved all the same.
+        const bool twinOpen = port.openProject("Twin A", 1, w);
+        s.settle();
+        edit("// six\n");
+        s.setSaveGate(true);
+        const bool six = port.startSave("Twin A", w);
+        const bool reopened = port.openProject("Twin A", 1, w);
+        s.setSaveGate(false);
+        s.settle();
+        const std::optional<ps::Project> ta2 = ps::load("Twin A");
+        std::printf("async: Twin A v1 opened again mid-save: open v%d, %s\n", port.project().version,
+                    port.project().edited ? "edited" : "not edited");
+        P.eq("async.same_version_reopened_stays", twinOpen && six && reopened && ta2 && ta2->versions.size() == 2
+                                                      && ta2->latest().files[0].text.find("// six") != std::string::npos
+                                                      && port.project().name == "Twin A" && port.project().version == 1
+                                                      && !port.project().edited
+                                                      && port.draft().files[0].text.find("// six") == std::string::npos ? 1 : 0, 1);
+        // A processor that goes while a save is in flight and one more was asked for: both saved, in turn.
+        {
+            pg::Processor q;
+            pg::EditorPort& qp = q.editorPort();
+            const auto qedit = [&](const std::string& line) {
+                pg::Draft dr = qp.draft();
+                dr.files[0].text += line;
+                qp.setDraft(dr);
+            };
+            const bool qopen = qp.openProject("Twin B", 0, w);
+            q.settle();
+            qedit("// seven\n");
+            q.setSaveGate(true);
+            const bool first = qp.startSave("Twin B", w);
+            qedit("// eight\n");
+            const bool second = qp.startSave("Twin B", w) && qp.saving().busy;
+            P.eq("async.close_setup", qopen && first && second ? 1 : 0, 1);
+        }
+        const std::optional<ps::Project> tb3 = ps::load("Twin B");
+        const bool closed = tb3 && tb3->versions.size() == 4
+                         && tb3->latest().files[0].text.find("// eight") != std::string::npos
+                         && tb3->versions[2].files[0].text.find("// seven") != std::string::npos
+                         && tb3->versions[2].files[0].text.find("// eight") == std::string::npos;
+        P.eq("async.close_saves_both", closed ? 1 : 0, 1);
         for (const char* n : { "Large", "Twin A", "Twin B" })
             (void)port.deleteProject(n, w);
     }

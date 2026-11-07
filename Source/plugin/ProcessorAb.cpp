@@ -417,6 +417,7 @@ namespace playground
                 projectName_ = ab_.st.project;
                 projectVersion_ = kept.version;
                 projectLatest_ = std::max(ab_.latest, kept.version);
+                ++projectOpens_;                                 // a save in flight lands, the version kept stays open
                 projectPreset_.clear();
                 projectFiles_ = d.files;
                 baseDials_ = ab_.saved[i];

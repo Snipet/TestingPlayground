@@ -66,10 +66,10 @@ namespace playground::projectstore
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
-        // One writer at a time in this process: each read, change and write of a project's file (update, saveVersion,
-        // add, remove) holds it whole, so the editor's save on a thread of its own (Processor::startSave) and a write on
-        // the message thread never interleave (one would write over the other's). Recursive: a write may list the folder
-        // (exists, the migration), which may write.
+        // One writer at a time in this process: each read, change and write of a project's file (update and every write
+        // made through it, saveVersion, add, remove, idOf's new id, the migration) holds it whole, so the editor's save on
+        // a thread of its own (Processor::startSave) and a write on the message thread never interleave (one would write
+        // over the other's). Recursive: a write may list the folder (exists, the migration), which may write.
         std::recursive_mutex writeMutex;
         std::atomic<int> parsed{ 0 };                    // project files read whole (parses())
         std::atomic<int> readerParsed{ 0 };              // of them, by the Reader's thread (readerParses())
@@ -737,14 +737,22 @@ namespace playground::projectstore
             return juce::var(root);
         }
 
-        // The playground's presets before projects: each a project of one version, the old file then moved aside.
+        // The playground's presets before projects: each a project of one version, the old file then moved aside. The
+        // store's one writer (writeMutex) while there are any, never when there are none (the explorer's poll lists the
+        // folder every few seconds on the message thread: it never waits for a save on the saver's thread).
         void migrate()
         {
             const juce::File dir = directory();
             if (!dir.isDirectory())
                 return;
-            for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kLegacyExtension))
+            const juce::Array<juce::File> legacy = dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kLegacyExtension);
+            if (legacy.isEmpty())
+                return;
+            const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+            for (const juce::File& f : legacy)
             {
+                if (!f.existsAsFile())
+                    continue;                            // another thread migrated it while this one waited
                 const std::string name = f.getFileNameWithoutExtension().toStdString();
                 if (tidyName(name) != name || name.empty() || f.getSize() > kMaxBytes)
                     continue;
@@ -1670,21 +1678,20 @@ namespace playground::projectstore
             fail(why, "there is no project named \"" + project.name + "\"");
             return {};
         }
-        std::optional<Project> p = project;
-        if (!p->id.empty())
+        if (!project.id.empty())
         {
             // Another file with the same id: one of the two is a copy made in the Finder (an export or an import never
             // carries an id). The copy is the file whose name is not the one written in it while the other's is; when
             // both are so, or neither, the one made later.
             (void)list();                                // the cache holds every project's id
             const std::string path = f.getFullPathName().toStdString();
-            const bool mine = sameName(p->writtenAs, p->name);
+            const bool mine = sameName(project.writtenAs, project.name);
             bool copy = false;
             {
                 const std::lock_guard<std::mutex> lock(cacheMutex);
                 for (const auto& [other, c] : cache)
                 {
-                    if (other == path || c.broken || c.project != p->id)
+                    if (other == path || c.broken || c.project != project.id)
                         continue;
                     const bool theirs = sameName(c.writtenAs, c.entry.name);
                     if (mine != theirs)
@@ -1694,15 +1701,24 @@ namespace playground::projectstore
                 }
             }
             if (!copy)
-                return p->id;
-            p->id = newProjectId();
+                return project.id;
         }
-        if (p->id.empty())
-            p->id = newProjectId();                      // a project from before ids: its first
-        const std::string made = p->id;
-        if (!write(std::move(*p), why))
-            return {};
-        return made;
+        // A new id (a project from before ids: its first; a copy: one of its own), written by the store's one writer
+        // into the file as it is now (update), never `project` as it was read: a save on another thread (the editor's)
+        // may have added a version since. When the file has another id by then (that save made one), it is that one.
+        std::string made, now;
+        if (update(project.name, why, [&](Project& q) {
+                if (q.id != project.id)
+                {
+                    now = q.id;
+                    return false;
+                }
+                q.id = newProjectId();
+                made = q.id;
+                return true;
+            }))
+            return made;
+        return now;
     }
 
     std::string nameOfId(std::string_view id)

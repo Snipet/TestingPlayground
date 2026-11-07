@@ -1954,6 +1954,7 @@ namespace playground
                 projectIdName_.clear();
             }
             projectLatest_ = projectVersion_;
+            ++projectOpens_;                                     // a save in flight lands as no project open now
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
             baseDials_.clear();                                  // restoreProjectBase's, below
             midiOpened_.reset();                                 // the session's mappings are its own
@@ -2658,6 +2659,7 @@ namespace playground
             projectName_ = p.name;
             projectVersion_ = v.number;
             projectLatest_ = p.latest().number;
+            ++projectOpens_;                                     // the same version again too (landSave)
             projectPreset_.clear();
             projectFiles_ = d.files;
             baseDials_ = v.dials;
@@ -2750,6 +2752,7 @@ namespace playground
             ++draftRevision_;                                    // the editor shows the new files
             projectName_.clear();
             projectVersion_ = projectLatest_ = 0;
+            ++projectOpens_;
             projectPreset_.clear();
             projectFiles_ = d.files;                             // nothing to lose yet, as in a new instance
             projectAssets_ = assetsNow();                        // the samples stay: the user's, for the next program
@@ -2799,6 +2802,9 @@ namespace playground
             job.active = draft_.active;
             job.open = projectName_;
             job.openVersion = projectVersion_;
+            job.opens = projectOpens_;
+            job.knownId = projectId_;
+            job.knownIdName = projectIdName_;
         }
         job.dials = dialsNow();
         // The self-test's answers for its netlists (fminus/Circuits.h), kept with the version.
@@ -2823,11 +2829,17 @@ namespace playground
     }
 
     // The store's part: the project's file read, the version added, the file written (any thread; the store keeps one
-    // writer at a time).
+    // writer at a time). Then the project saved's id as the chats' owner (chatOwnerNow) when the one known is not its
+    // (a version added to another project, a new project, one from before ids): its file read here, never at landing.
     void Processor::runSave(SaveJob& job)
     {
         job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi, job.samples.get(),
                                                &job.why, job.lead);
+        if (!job.result)
+            return;
+        const std::string tidy = projectstore::tidyName(job.name);
+        if (job.result->id.empty() || job.result->id != job.knownId || !projectstore::sameName(tidy, job.knownIdName))
+            job.ownerId = projectstore::idOf(tidy);
     }
 
     // The message thread's part once the file is written: the journal's note, and the project open made the one saved,
@@ -2845,8 +2857,8 @@ namespace playground
         if (!r.unchanged && job.who)
             journal_.note(*job.who, "saved version " + std::to_string(r.number) + " of \"" + tidy + "\"");
         std::unique_lock<std::mutex> lock(programMutex_);
-        if (projectName_ != job.open || projectVersion_ != job.openVersion)
-            return true;                                         // another opened meanwhile: it stays open
+        if (projectOpens_ != job.opens || projectName_ != job.open || projectVersion_ != job.openVersion)
+            return true;                                         // another (or the same again) opened meanwhile: it stays open
         const std::vector<projectstore::Dial>& dials = job.dials;
         // The preset applied stays named while the dials are still its.
         bool keep = projectstore::sameName(tidy, projectName_) && !projectPreset_.empty();
@@ -2856,9 +2868,15 @@ namespace playground
                     keep = false;
         if (!keep)
             projectPreset_.clear();
-        // The project's id as the save left its file: another than the one kept (a new file made where the project
-        // open's was deleted or renamed away since it was opened) is looked up again (chatOwnerNow).
-        if (r.id.empty() || r.id != projectId_ || !projectstore::sameName(tidy, projectIdName_))
+        // The project's id as the save left its file: runSave's when the one known was not it (another project, a new
+        // file made where the project open's was deleted or renamed away since it was opened), so chatOwnerNow reads
+        // no file here; else one that moved since the save was taken is looked up again (chatOwnerNow).
+        if (!job.ownerId.empty())
+        {
+            projectId_ = job.ownerId;
+            projectIdName_ = tidy;
+        }
+        else if (r.id.empty() || r.id != projectId_ || !projectstore::sameName(tidy, projectIdName_))
             projectIdName_.clear();
         projectName_ = tidy;
         projectVersion_ = r.number;
@@ -2945,13 +2963,23 @@ namespace playground
         }
     }
 
+    // The destructor's (the message thread's, every member still there): the save in flight writes its file and lands as
+    // poll() would land it, then the one asked for meanwhile saves, whole, with what the editor has now: the user asked
+    // for both.
     void Processor::finishSave()
     {
-        if (saver_.joinable())
-        {
-            setSaveGate(false);
-            saver_.join();
-        }
+        if (!saver_.joinable())
+            return;
+        setSaveGate(false);
+        saver_.join();
+        const std::unique_ptr<SaveJob> job = std::move(saveJob_);
+        SavedVersion saved;
+        std::string why;
+        if (job != nullptr)
+            (void)landSave(*job, saved, why);
+        if (const std::optional<std::string> again = std::exchange(saveAgain_, std::nullopt))
+            (void)saveVersionAs(*again, {}, Journal::Who::user, saved, why);
+        saveState_.busy = false;
     }
 
     void Processor::setSaveGate(bool shut)
@@ -3055,6 +3083,7 @@ namespace playground
             {
                 projectName_.clear();
                 projectVersion_ = projectLatest_ = 0;
+                ++projectOpens_;
                 projectPreset_.clear();
                 baseDials_.clear();
             }
