@@ -6,8 +6,11 @@
 //            name the store keeps), one version whose files are names a tab may have, the program first; the port's
 //            factoryProjects() lists them read-only (one version, their presets counted), projects() none of them;
 //            what was compiled in is counted (bytes, printed)
-//   PRIVATE  no text of one holds a path on someone's machine, an email address or a key's shape (the import refuses
-//            them; a hand edit is caught here)
+//   PRIVATE  no string of one (its name, its files' names and texts, its version's note, every dial's and preset's
+//            name and label, its circuits' keys and answers, every field of its info) holds what the import refuses: a
+//            path on someone's machine, an email address, a key or a token (the import's own shapes, line by line:
+//            scripts/import-factory.py's PRIVATE and LONG_RUN); so a hand edit is caught here. Each shape is tried on a
+//            sample made here, and code and plain words are not taken for one
 //   RENDER   each compiles as the plugin opens it (its files as they are), with no error; each of its saved dials
 //            lands on a parameter of its name; two seconds at its dials (an effect over stereo noise at -12 dBFS, an
 //            instrument a chord, C4 E4 G4 at velocity 0.8, released at 1 s) are finite and audible (a peak above
@@ -29,7 +32,8 @@
 //            files, tab and dials), presets' "from" 1 for the latest's and 0 for an older one's, the info kept, a field
 //            it does not know left behind; factory::fromFolder reads it; imported.txt lists it; run again with another
 //            name: the old folder gone, the new one there, a hand-made folder untouched; a project holding an email
-//            address, a path in /Users and a key is refused, nothing written; a map naming a hand-made folder refused
+//            address, a path in /Users and a key is refused, nothing written; a map naming a hand-made folder refused;
+//            each project's largest text said (a dry run of one over 64 KB says so, and writes nothing)
 #include "Probe.h"
 
 #include "Rig.h"
@@ -50,6 +54,7 @@
 #include <cstdio>
 #include <map>
 #include <optional>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -115,19 +120,113 @@ namespace
         return false;
     }
 
-    // What the import refuses, said as plainly as the probe needs it (scripts/import-factory.py has the whole list).
-    bool looksPrivate(const std::string& text)
+    // What the import refuses as private: scripts/import-factory.py's PRIVATE and LONG_RUN, the same shapes (Python's
+    // lookbehind (?<![A-Za-z0-9]) as (?:^|[^A-Za-z0-9]) here), tried on each line of a text.
+    class PrivateShapes
     {
-        const juce::String t = juce::String::fromUTF8(text.c_str());
-        if (t.contains("/Users/") || t.contains("/home/") || t.contains("sk-ant-") || t.contains("PRIVATE KEY-----"))
-            return true;
-        for (int at = t.indexOfChar('@'); at > 0; at = t.indexOfChar(at + 1, '@'))
+    public:
+        PrivateShapes()
         {
-            const juce::String after = t.substring(at + 1).initialSectionContainingOnly("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-");
-            if (juce::CharacterFunctions::isLetterOrDigit(t[at - 1]) && after.contains(".") && !after.endsWithChar('.'))
-                return true;
+            const auto add = [&](const char* what, const char* re, bool icase = false) {
+                shapes_.push_back({ what, std::regex(re, icase ? std::regex::ECMAScript | std::regex::icase : std::regex::ECMAScript) });
+            };
+            constexpr const char* path = "a path on someone's machine";
+            constexpr const char* key = "a key or token";
+            add(path, R"re(/(?:Users|home)/[^/\s"'<>|]+)re");
+            add(path, R"re(/(?:Volumes|private|var/folders|tmp)/[^\s"'<>|]+)re");
+            add(path, R"re((?:^|[^A-Za-z0-9])[A-Za-z]:\\[^\s"'<>|]+)re");
+            add(path, R"re(\\\\[A-Za-z0-9._-]+\\[^\s"'<>|]+)re");
+            add(path, R"re(file://[^\s"'<>|]+)re", true);
+            add("an email address", R"re([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})re");
+            add(key, R"re(sk-ant-[A-Za-z0-9_-]{8,})re");
+            add(key, R"re((?:^|[^A-Za-z0-9])sk-[A-Za-z0-9_-]{20,})re");
+            add(key, R"re((?:^|[^A-Za-z0-9])AKIA[0-9A-Z]{16}(?![A-Za-z0-9]))re");
+            add(key, R"re((?:^|[^A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{20,})re");
+            add(key, R"re(github_pat_[A-Za-z0-9_]{20,})re");
+            add(key, R"re((?:^|[^A-Za-z0-9])xox[abprs]-[A-Za-z0-9-]{10,})re");
+            add(key, R"re((?:^|[^A-Za-z0-9])AIza[0-9A-Za-z_-]{30,})re");
+            add(key, R"re(-----BEGIN [A-Z ]*PRIVATE KEY-----)re");
+            add(key, R"re((?:api[_-]?key|secret|token|passw(?:or)?d)\s*[:=]\s*["']?[A-Za-z0-9_/+=.-]{12,})re", true);
+            longRun_ = std::regex(R"re([A-Za-z0-9+/_-]{40,})re");
         }
-        return false;
+
+        // What `text` holds of them, the first found ("" when none).
+        std::string find(const std::string& text) const
+        {
+            std::size_t at = 0;
+            while (at <= text.size())
+            {
+                const std::size_t end = std::min(text.find('\n', at), text.size());
+                const std::string line = text.substr(at, end - at);
+                for (const Shape& sh : shapes_)
+                    if (std::regex_search(line, sh.re))
+                        return sh.what;
+                for (std::sregex_iterator m(line.begin(), line.end(), longRun_), none; m != none; ++m)
+                {
+                    bool upper = false, lower = false, digit = false;   // mixed: a secret's look, never a word's
+                    for (const char ch : m->str())
+                    {
+                        upper = upper || (ch >= 'A' && ch <= 'Z');
+                        lower = lower || (ch >= 'a' && ch <= 'z');
+                        digit = digit || (ch >= '0' && ch <= '9');
+                    }
+                    if (upper && lower && digit)
+                        return "a key or token, by its look";
+                }
+                at = end + 1;
+            }
+            return {};
+        }
+
+    private:
+        struct Shape
+        {
+            const char* what;
+            std::regex re;
+        };
+        std::vector<Shape> shapes_;
+        std::regex longRun_;
+    };
+
+    // Every string of a project, with where it is.
+    std::vector<std::pair<std::string, std::string>> stringsOf(const pg::projectstore::Project& p)
+    {
+        std::vector<std::pair<std::string, std::string>> out{ { "name", p.name } };
+        const auto dials = [&](const std::string& where, const std::vector<pg::projectstore::Dial>& ds) {
+            for (const pg::projectstore::Dial& d : ds)
+            {
+                out.emplace_back(where + " dial", d.name);
+                out.emplace_back(where + " dial " + d.name + "'s label", d.label);
+            }
+        };
+        for (const pg::projectstore::Version& v : p.versions)
+        {
+            out.emplace_back("note", v.note);
+            for (const pg::SourceFile& f : v.files)
+            {
+                out.emplace_back("a file's name", f.name);
+                out.emplace_back(f.name, f.text);
+            }
+            dials("the version's", v.dials);
+            for (const pg::projectstore::Answer& a : v.circuits)
+            {
+                out.emplace_back("a circuit's key", a.key);
+                out.emplace_back("a circuit's answer", a.text);
+            }
+        }
+        for (const pg::projectstore::Preset& pr : p.presets)
+        {
+            out.emplace_back("a preset's name", pr.name);
+            dials("preset " + pr.name + "'s", pr.dials);
+        }
+        out.emplace_back("description", p.info.description);
+        out.emplace_back("author", p.info.author);
+        out.emplace_back("category", p.info.category);
+        for (const std::string& t : p.info.tags)
+            out.emplace_back("a tag", t);
+        for (const std::string& g : p.info.genres)
+            out.emplace_back("a genre", g);
+        return out;
     }
 
     // A made-up project of this plugin's, as the plugin saves one: two versions (the first's program a little
@@ -201,14 +300,16 @@ namespace
     }
 
     // Runs the import: its exit code (-1: it did not start), its output in `out`.
-    int runImport(const juce::File& source, const juce::File& map, const juce::File& factory, std::string& out)
+    int runImport(const juce::File& source, const juce::File& map, const juce::File& factory, std::string& out, bool dryRun = false)
     {
         const juce::File repo = juce::File(PROBE_SOURCE_DIR);
         juce::ChildProcess p;
-        const juce::StringArray args{ "python3", repo.getChildFile("scripts/import-factory.py").getFullPathName(),
-                                      "--source", source.getFullPathName(), "--names", map.getFullPathName(),
-                                      "--factory", factory.getFullPathName(),
-                                      "--products", repo.getChildFile("products").getFullPathName() };
+        juce::StringArray args{ "python3", repo.getChildFile("scripts/import-factory.py").getFullPathName(),
+                                "--source", source.getFullPathName(), "--names", map.getFullPathName(),
+                                "--factory", factory.getFullPathName(),
+                                "--products", repo.getChildFile("products").getFullPathName() };
+        if (dryRun)
+            args.add("--dry-run");
         if (!p.start(args, juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
             return -1;
         out = p.readAllProcessOutput().toStdString();
@@ -276,24 +377,57 @@ PROBE(plugin, factory)
 
     // ---- PRIVATE -------------------------------------------------------------------------------------------------------
     {
-        int leaks = 0;
+        const PrivateShapes shapes;
+        int leaks = 0, strings = 0;
         for (const ps::Project& p : all)
-        {
-            std::vector<std::string> texts{ p.name, p.latest().note, p.info.description, p.info.author, p.info.category };
-            for (const pg::SourceFile& f : p.latest().files)
-                texts.push_back(f.text);
-            for (const ps::Preset& pr : p.presets)
-                texts.push_back(pr.name);
-            for (const std::string& t : texts)
-                if (looksPrivate(t))
+            for (const auto& [where, text] : stringsOf(p))
+            {
+                ++strings;
+                if (const std::string what = shapes.find(text); !what.empty())
                 {
-                    std::printf("  private in %s: %.40s...\n", p.name.c_str(), t.c_str());
+                    std::printf("  private in %s, %s: %s\n", p.name.c_str(), where.c_str(), what.c_str());
                     ++leaks;
                 }
-        }
+            }
+        std::printf("%d strings looked at\n", strings);
         P.eq("private.none", leaks, 0);
-        P.eq("private.check_works", looksPrivate("mail me at someone@example.com") && looksPrivate("/Users/someone/x")
-                                        && !looksPrivate("x@3 project:Name@2") ? 1 : 0, 1);
+        // Each shape on a sample made here (pieces joined, so no line of this file has one whole), and what is none.
+        const std::string mixed = "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC2eF4hJ6kL8n";
+        const std::vector<std::pair<std::string, std::string>> samples{
+            { "/" + std::string("Users/someone/x"), "a path on someone's machine" },
+            { "from /" + std::string("home/someone/x"), "a path on someone's machine" },
+            { "on /" + std::string("Volumes/Disk/Projects"), "a path on someone's machine" },
+            { "at C:" + std::string("\\Users\\x"), "a path on someone's machine" },
+            { "FILE:" + std::string("//host/share"), "a path on someone's machine" },
+            { "mail someone" + std::string("@example.com"), "an email address" },
+            { "sk-" + std::string("ant-") + mixed.substr(0, 12), "a key or token" },
+            { "sk-" + std::string("proj-") + mixed.substr(0, 24), "a key or token" },
+            { "AK" + std::string("IA") + "ABCDEFGHIJ234567", "a key or token" },
+            { "gh" + std::string("p_") + mixed.substr(0, 24), "a key or token" },
+            { "github" + std::string("_pat_") + mixed.substr(0, 24), "a key or token" },
+            { "xo" + std::string("xb-") + mixed.substr(0, 12), "a key or token" },
+            { "AI" + std::string("za") + mixed.substr(0, 33), "a key or token" },
+            { "-----BEGIN RSA " + std::string("PRIVATE KEY-----"), "a key or token" },
+            { "pass" + std::string("word = ") + mixed.substr(0, 14), "a key or token" },
+            { "// " + mixed + "\nnext", "a key or token, by its look" },
+        };
+        int caught = 0;
+        for (const auto& [text, what] : samples)
+        {
+            const std::string found = shapes.find(text);
+            if (found == what)
+                ++caught;
+            else
+                std::printf("  sample %.12s...: found [%s], not [%s]\n", text.c_str(), found.c_str(), what.c_str());
+        }
+        P.eq("private.check_works", caught, static_cast<int64_t>(samples.size()));
+        const std::vector<std::string> clean{ "x@3 project:Name@2", "    for (int i = 0; i < n; ++i) left[i] *= level[i];",
+                                              "// 1/4 note at 120 BPM, -12 dBFS", "float kSomeVeryLongNameForATableOfValuesAtStartup[64];",
+                                              "--------------------------------------------------", "tags: warm, analog" };
+        int none = 0;
+        for (const std::string& t : clean)
+            none += shapes.find(t).empty() ? 1 : 0;
+        P.eq("private.clean_passes", none, static_cast<int64_t>(clean.size()));
     }
 
     // ---- RENDER and PRESETS ----------------------------------------------------------------------------------------------
@@ -481,6 +615,7 @@ PROBE(plugin, factory)
         int code = runImport(src, map, fac, out);
         std::printf("import: %d\n%s", code, out.c_str());
         P.eq("import.runs", code, 0);
+        P.eq("import.says_largest", out.find("; the largest text ") != std::string::npos ? 1 : 0, 1);
         juce::File product;
         for (const juce::File& f : fac.findChildFiles(juce::File::findDirectories, false))
             product = f;
@@ -526,6 +661,22 @@ PROBE(plugin, factory)
         std::printf("hand-made: %d\n%s", code, out.c_str());
         P.eq("import.hand_made_refused", code == 1 && product.getChildFile("Second Name").exists()
                                              && product.getChildFile("By Hand").getChildFile("project.json").loadFileAsString() == "{}" ? 1 : 0, 1);
+
+        // A large one, a dry run: its largest text said, over the 65,536 bytes a string literal may pass; nothing written.
+        {
+            std::string large;
+            for (int i = 0; large.size() < 70000; ++i)
+                large += "// a line of a long comment, which makes this program large: " + std::to_string(i) + "\n";
+            folder.getChildFile("large.fmproject").replaceWithText(juce::JSON::toString(madeUp(large)));
+            map.replaceWithText(juce::String(keyWord) + "\tlarge\tLarge One\n");
+            code = runImport(src, map, fac, out, true);
+            std::printf("large, dry run: %d\n%s", code, out.c_str());
+            P.eq("import.large_said", code == 0 && out.find("the largest text program.fm, ") != std::string::npos
+                                          && out.find("over the 65,536 bytes") != std::string::npos
+                                          && out.find("dry run: nothing written") != std::string::npos ? 1 : 0, 1);
+            P.eq("import.dry_run_writes_nothing", !product.getChildFile("Large One").exists() && product.getChildFile("Second Name").exists()
+                                                      && product.getChildFile("imported.txt").loadFileAsString().contains("Second Name") ? 1 : 0, 1);
+        }
 
         // Something private: refused, nothing written.
         folder.getChildFile("leaky.fmproject").replaceWithText(juce::JSON::toString(madeUp(

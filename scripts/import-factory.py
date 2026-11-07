@@ -12,7 +12,8 @@ which CMakeLists.txt compiles into the plugin, read-only (Source/plugin/Factory.
           name), from (the project's name in the source folder) and to (its name as a factory project). Blank lines,
           lines that start with # and a first row naming the columns are skipped. The map is the user's: keep it out
           of the repository (give it by its path).
---dry-run says what it would write and remove, and writes nothing.
+--dry-run says what it would write and remove, and writes nothing. Either way it prints each project's bytes and its
+          largest text (each text is one string literal in the plugin's source: over 64 KB it still compiles).
 --author  sets every project's author ("" leaves it empty); by default each keeps its own.
 --factory the folder to write into (default: this repository's factory/), and --products where the products' files
           are (default: this repository's products/): the probes use them.
@@ -59,6 +60,7 @@ META = "project.json"
 MAX_NAME = 40          # ProjectStore.h's kMaxName
 MAX_FILE_NAME = 24     # Sources.h's kMaxNameLength
 NOTE = "factory version"
+LITERAL_LIMIT = 65536  # a string literal's length a compiler must take: longer ones compile (FactoryProjects.h)
 
 # What is private (refused): a path on someone's machine, an email address, a key or a token.
 PRIVATE = [
@@ -388,10 +390,16 @@ def main() -> int:
         gone = [n for n in old if n.lower() not in {t.lower() for t in new}]
         total = 0
         for to, meta, files in plan[key]:
-            size = len(json.dumps(meta, indent=2, ensure_ascii=True)) + sum(len(t.encode("utf-8")) for _, t in files)
+            sizes = [(META, len(json.dumps(meta, indent=2, ensure_ascii=True)) + 1)]
+            sizes += [(name, len(text.encode("utf-8"))) for name, text in files]
+            size = sum(s for _, s in sizes)
             total += size
+            largest = max(sizes, key=lambda s: s[1])     # each text is one string literal in the plugin's source
+            over = (f", over the {LITERAL_LIMIT:,} bytes -Wpedantic warns about: it compiles"
+                    if largest[1] > LITERAL_LIMIT else "")
             print(f"{key}: {to} ({len(files)} file{'s' if len(files) != 1 else ''}, {len(meta['presets'])} "
-                  f"preset{'s' if len(meta['presets']) != 1 else ''}, {size:,} bytes)")
+                  f"preset{'s' if len(meta['presets']) != 1 else ''}, {size:,} bytes; the largest text "
+                  f"{largest[0]}, {largest[1]:,} bytes{over})")
         for n in gone:
             print(f"{key}: {n} removed (the last import's, not in the map)")
         print(f"{key}: {len(new)} factory project{'s' if len(new) != 1 else ''}, {total:,} bytes"
