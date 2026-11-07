@@ -614,11 +614,12 @@ module Voice
   compiles, and has the GPU check each then too, on threads of their own that the compile waits for: a RUN's never on
   the window's thread, so a new shader does not stall it, and a host's session or preset load's while the thread that
   loads it waits. The builds are kept, for every instance and on disk between sessions
-  (`~/Library/Caches/<Company>/<Name>/Shaders`, on Windows `%LOCALAPPDATA%\<Company>\<Name>\Shaders`; 16 MB at most, the
-  least used going first), so a shader built before is not built again until it, a file it includes, its inputs or the
-  plugin's shaderc change. One that does not compile, or that the GPU refuses, is a note on its own line (in a `.sh`
-  file it includes, that file's), and draws nothing until it does; so is a string that cannot be one and an `#include`
-  of no file (`Source/fminus/Shaders.h`, `Source/fminus/ShaderLib.h`). Four a panel at most.
+  (`~/Library/Caches/<Company>/<Name>/Shaders`, on Windows `%LOCALAPPDATA%\<Company>\<Name>\Shaders`, on Linux
+  `~/.cache/<Company>/<Name>/Shaders`; 16 MB at most, the least used going first), so a shader built before is not
+  built again until it, a file it includes, its inputs or the plugin's shaderc change. One that does not compile, or
+  that the GPU refuses, is a note on its own line (in a `.sh` file it includes, that file's), and draws nothing until it
+  does; so is a string that cannot be one and an `#include` of no file (`Source/fminus/Shaders.h`,
+  `Source/fminus/ShaderLib.h`). Four a panel at most.
   `taper=log` gives a frequency's or a time's knob the same turn for each octave, and the host's automation follows
   it; `unit=`, `decimals=` and `scale=` say how a value reads, to the host too (`Source/dsp/Controls.h`). Displays are
   those of the lines below and `spectrum` (an analyser of `in` or `out`), 32 at most (a `live=` field and a field a
@@ -2079,11 +2080,18 @@ name, then renamed into place, and what was there goes to your Trash (`~/.local/
 it): nothing is deleted, and a failure leaves the old copy whole. A place that is a link (a plugin folder on another
 disk), and a launcher or menu entry it did not make, are left alone and said so. `./install.sh --uninstall` moves
 what it installed to the Trash. Its last lines are the `claude mcp add` commands for Claude Code. `--build` runs the
-release build first; `--build-dir build-linux-dev` packages a dev build. The probes' GUI
-tests need an X display with a window manager (your desktop session; on a headless machine Xvfb with one, such as
-openbox); `-DFP_PROBE_TIMEOUT_SCALE=<n>` multiplies every probe's timeout, for a slow machine. Not every probe passes
-there yet: the rows that want a GPU picture, a few that assume macOS, the chats' conflicts, and the FOLDER's saves of
-the same size within a few milliseconds on a kernel before 6.13 (a file's time there moves by the kernel's tick).
+release build first; `--build-dir build-linux-dev` packages a dev build.
+
+Every probe runs on Linux, and passes. A row the machine cannot judge is skipped and says so, never left out: a `SKIP`
+line where its result would be (`ctest -V`) and a `skip_<row>` member in its results
+(`build-linux-dev/probe-results/<key>/<probe>.json`), the rows that can be judged there running in its place. Those are
+the rows that look at a GPU picture's pixels (on Linux the pictures are drawn on the CPU: the rows check that, and what
+the picture's text says), the menus' pictures with no X display (run the probes in your desktop session, or under Xvfb
+with a window manager such as openbox: a bare X server is not enough), and, in an x86-64 container on a Mac (Rosetta),
+the rows with a time budget. `-DFP_PROBE_TIMEOUT_SCALE=<n>` multiplies every probe's timeout, for a slow machine. One
+limit stays: on a kernel before 6.13, where a file's time moves by the kernel's tick, the FOLDER sync does not see a
+save in place that keeps the file's size within a few milliseconds of the one before (a save that renames a new file
+into place, as most editors' do, it sees).
 
 ### Install
 
@@ -2281,7 +2289,9 @@ a probe would find the user's own folders.
 
 A probe is one file in `Tools/probes/<layer>/` whose first line registers it (`// PROBE name=dsp.mytest timeout=60`)
 and whose body uses spec rows (`P.near`, `P.le`, `P.ge`, `P.in`, `P.eq`): each states what must hold, with its
-tolerance. It runs for both products (`product::kIsInstrument` says which kind it runs as).
+tolerance. It runs for both products (`product::kIsInstrument` says which kind it runs as). A row a machine cannot
+judge (a GPU picture on Linux, a time budget under emulation, a window with no display) goes through `probe::skip`,
+which prints it and why and keeps it in the results, never left out.
 `Tools/probes/common/Audio.h` has the signal helpers, and `Tools/probes/common/Rig.h` runs a program in an Engine as
 the processor does (the synth's notes at absolute samples).
 

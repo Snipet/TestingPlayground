@@ -77,7 +77,7 @@ macOS a Logitech G29 over IOKit's IOHIDManager, C API, on the main run loop in e
 | `Tools/wheel-dump/` | wheel-dump, a developer's tool: a connected G29's HID elements and live values beside `WheelMap.h`'s table, the MIDI it would make, `--leds` its shift lights tried (README, "A racing wheel") | a CMake target outside `all` (`--target wheel-dump`), never installed nor run by a test; it shares `WheelMap.cpp`, so a table row it shows wrong is fixed there |
 | `Tools/logo/logo.swift` | the mark ("Caret": a wave written up to the editor's caret), its one source: the construction in its header (the 3-4-5 arcs, the effect's processed trough, the optical corrections, the hinting of every size, the colours) and every number, and what writes every asset from them: `Assets/logo/`, `Source/mcp/icon-<key>.png` and `Source/editor/LogoMark.h`; it reads `products/*.cmake` and the instrument's accent in `Theme.h` | `swift Tools/logo/logo.swift` after any change (it needs JetBrains Mono: a build's FunkGui checkout, or `--font <ttf>`; `--out <dir>` writes elsewhere, `--preview <dir>` adds enlargements); the same bytes run after run; look at `Assets/logo/sheet.png` and `construction.png`; never edit its outputs by hand |
 | `Assets/logo/**` | its outputs: `<kind>/` (`effect`, `instrument`: a product's `PRODUCT_KIND`) the app icon (`icon.iconset`, 16 to 1024 px: every size from 64 up on the pixel grid (the crest, the trough, the floor and the stem on whole px), 32 hinted on its own grid, 16 set pixel by pixel; `icon.icns`; `icon.svg`; `installer-1024.png`, the master an installer takes), `extension-512.png`, the mark's SVGs (`mark-graphite`, `mark-paper`, `mark-flat`) and lockups; `readme-*.png` (the README's header: both marks), `construction.png`, `sheet.png` (the top bar's tiles in FunkGui's own pixels: logo.swift mirrors its rasteriser) | generated, committed. CMakeLists.txt gives JUCE `installer-1024.png` as ICON_BIG and puts `icon.icns` over the Icon.icns JUCE makes, in every bundle (the Standalone's `CFBundleIconFile`; the About box shows it) |
-| `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine, `common/Cadence.h` an editor's frames at FramePump's cadence; `installer/`, the installer's (no product's: their own executable, each run once; `Fixture.h`, their payload, root and `System` stand-in) | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
+| `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine, `common/Cadence.h` an editor's frames at FramePump's cadence, `common/Probe.h`'s `probe::skip` says a row a machine cannot judge (and `emulated`, `noDisplay`, `common/Pictures.h`'s `noGpuPictures` say why: "Linux"); `installer/`, the installer's (no product's: their own executable, each run once; `Fixture.h`, their payload, root and `System` stand-in) | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
 
 There are no starters here (`scripts/starters/` is the template's, and new plugins start from FunkPluginTemplate).
 `plugin.py add` makes another product of this tree from one of these (its kind, a copy of its examples and its icon;
@@ -89,8 +89,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
   build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" below).
 - Linux: `cmake --workflow --preset linux-verify` (or `linux-effect-verify`, `linux-synth-verify`; the release build
-  `linux-release-build`), in `build-linux-<preset>`, with clang and lld, the GUI probes on an X display ("Linux"
-  below).
+  `linux-release-build`), in `build-linux-<preset>`, with clang and lld, on an X display with a window manager for the
+  menus' pictures (without one they are skipped, saying so: "Linux" below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
   renderer and probes, and the installer) and run every test in `build-dev`: each of the 70 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
@@ -740,17 +740,42 @@ place (its `products/<key>.cmake`, and its names in the docs).
   cast to `long long` or `unsigned long long` for `%lld` and `%llu`, as the code does everywhere.
 - **The probes there** are every probe, `plugin.mcp` and `plugin.sandbox` too (POSIX child processes; `plugin.sandbox`
   finds the helper's processes through `/proc`), `plugin.linux` (Linux's alone: the folders, the MCP folder, the
-  keyring, the wheel over evdev, the package's install script), and `lint.exports` and `lint.layers`. Not every row passes there yet:
-  those that want a GPU picture (FunkGui reads no frame back from Vulkan, so view_panel's and the sandbox's pictures
-  are SoftRaster's: `gui.shaders`, `plugin.sandbox`, `plugin.chat`, `plugin.mcp`), those that assume macOS
-  (`gui.shaders`' `text.spirv` sets SPIR-V against the panel's Metal; `gui.folder`'s Finder and VS Code), two rows of
-  `gui.explorer` and `gui.folder`'s, the conflicts of `plugin.chats`, and `plugin.folder`'s saves of the same size
-  within one tick of the kernel's file clock (FolderSync tells a change by size and time, and before Linux 6.13's
-  fine-grained file times a file's time moves by the tick, 1 to 4 ms: `atomic.rename_over`, at times the conflicts;
-  seen on Docker Desktop's 6.12 kernel). Under emulation (an x86-64 container on a Mac) the rows with a time budget
-  fail too (`dsp.tune`, `plugin.capture`, `plugin.reload`). The GUI probes need an X display with a window manager:
-  JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which on a bare X server nothing has
-  made, and the X error ends the process.
+  keyring, the wheel over evdev, the package's install script), and `lint.exports` and `lint.layers`; every one passes,
+  in an amd64 Arch container on Apple silicon too (Rosetta, Mesa's lavapipe, Xvfb with openbox).
+- **A row a machine cannot judge is skipped, and says so**, never left out: `probe::skip(P, key, why)`
+  (`Tools/probes/common/Probe.h`) prints `SKIP       <key>  <why>` where its SPEC line would be and adds the note
+  `skip_<key>` to the probe's results JSON (`<build>/probe-results/<key>/<probe>.json`); the rows that can be judged
+  there run in its place. Each kind has its helper, which a new row of the kind takes too:
+  - **a GPU picture's pixels** (`Tools/probes/common/Pictures.h`: `noGpuPictures()`, the words a picture's text gives,
+    and `noGpuPicturesSkip()`, the skip's): FunkGui reads no frame back from Vulkan (`gpuPicturesSupported()` false),
+    so view_panel's, the window's and the sandbox's pictures are SoftRaster's on Linux, each shader its striped
+    placeholder. `gui.shaders` (PICTURE's GPU rows; TEXT's text, numbers and ticks) and `plugin.sandbox` (SHADER's
+    colours) skip those; `picture.soft_said`, `picture.not_held`, `picture.panel_soft_said`, `shader.soft_said`,
+    `shader.placeholder`, and `plugin.chat`'s `view.gpu`, `plugin.mcp`'s `call.picture_gpu` and `plugin.sandbox`'s
+    `render.gpu` check the fallback and its words (`Drawn without the GPU (no GPU pictures on this platform)`), as a
+    build with `FP_WITH_GPU` off checks its own;
+  - **a time budget under emulation** (`probe::emulated()`: an x86-64 build run by Rosetta, whose `/proc/cpuinfo`
+    names the CPU `VirtualApple`): `dsp.tune`'s `long.seconds` and `long.cancel_at_once`, `plugin.capture`'s
+    `size.status_ms` and `size.stop_ms`. On a machine of its own they run;
+  - **a JUCE window with no X display** (`probe::noDisplay()`: `$DISPLAY` unset on Linux, where JUCE's X calls end the
+    process, even for a menu shown inside a component): `gui.menus`' and `gui.midi`'s menu pictures (`png.*`). Every
+    other probe is headless (HeadlessHost, SoftRaster) and needs no display. On an X display, a window manager too:
+    JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which on a bare X server nothing has
+    made, and the X error ends the process (`xvfb-run` alone is not enough; Xvfb with openbox is);
+  - **a premise the machine did not give**: `plugin.reload`'s `wait.table_read_first` wants the audio thread's blocks
+    closer than `Compiler::audioIdle`'s 20 ms, and says how far apart they came when they were not.
+
+  What differs there and is checked as it is: `gui.shaders` builds the other renderer's profile as Metal's
+  (`text.metal`: SPIR-V is the panel's own); `gui.folder` finds Show in File Manager; `gui.explorer` scrolls a row into
+  view before it clicks it (CLAUDE DESKTOP shows above LIBRARY when the MCP link listens, which hangs on the build
+  folder's path: a socket's must fit `sun_path`, 104 bytes on macOS and 108 on Linux). Before Linux 6.13 a file's time
+  moves by the kernel's tick (1 to 10 ms), so `FolderSync`'s listing and `chatstore::Stamp` hold the file's identity
+  (its inode) beside its size and time: a save that renames a new file in is a change within a tick too
+  (`plugin.folder`'s `atomic.*`, `plugin.chats`' `store.conflict`); a save in place of the same size within one tick is
+  not seen, which no person's saves are, and `plugin.folder`'s in-place writes move the file's time on, as theirs would
+  be apart. `Shaders.cpp`'s `run` takes a child that exits 127 for a shaderc that did not run (POSIX lets posix_spawn
+  report a failed exec so; glibc's does under Rosetta: `gui.shaders`' `cache.passing_failure_*`). Under Rosetta,
+  configure with `-DFP_PROBE_TIMEOUT_SCALE=3`: the probes' timeouts are a native machine's, and lavapipe is slow.
 
 ## The installer
 
@@ -882,7 +907,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   write so an open editor merges it as one undo step; both changed, a conflict: the file held, neither side written,
   until `resolveFolderConflict` keeps one and puts the other in `.conflicts/`. Nothing is ever lost: no path writes a
   side it has not compared, the folder's changes are taken only once its listing held still 0.15 s (an editor's save
-  in steps), and a write of the plugin's goes only right after a look that found the file as last seen. The texts are
+  in steps; a file's size, time and identity, its inode, so that a save renaming a new file in is seen within one tick
+  of the file clock too, which on Linux before 6.13 moves by the kernel's tick), and a write of the plugin's goes only
+  right after a look that found the file as last seen. The texts are
   compared as the editor holds them (`TextEditor::sanitise`). The program (the first file) is never deleted from the
   folder's side; a name `validFileName` refuses, a 17th file, an editor's swap file stay there (a note); host.fm and a
   library file an `#include` names that the draft lacks are read-only copies, never taken (host.fm in the draft would
@@ -1027,7 +1054,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
     ask at every change), before another chat shows, on a new chat and when the agent goes; only when it changed and
     holds more than the chat's notes; one writer at a time (`storeMutex_`, never under `mutex_`; a switch stops and
     joins the worker before it takes it). A chat file another writer changed since it was read here (two instances
-    with one chat) is a conflict: this one is kept under a new id. A project's chat whose folder is gone since it was
+    with one chat; `chatstore::Stamp`, its time, size and identity: each save renames a new file in) is a conflict:
+    this one is kept under a new id. A project's chat whose folder is gone since it was
     kept here (the project deleted in another instance) is not written back. A write that fails (or is held back so)
     says so in the chat once, is tried again at every keep, and says so again once it is kept: the session no longer
     holds the chat.
