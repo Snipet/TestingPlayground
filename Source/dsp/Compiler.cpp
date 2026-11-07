@@ -654,7 +654,8 @@ namespace playground
         s.sources = files;
         s.controls = after;
         s.panel = std::move(panel);
-        s.carry = DialCarry{};                         // nothing comes across: the dials are where they were
+        // The carry stays the program's: when poll() never saw its compile's status (this one came first), this one
+        // writes it, and when it did, writes nothing again (a carry writes once).
         s.refined = false;
         s.panelOnly = true;
         // The displays' new fields read by the audio thread before the status is out, unless it is idle (a block, or

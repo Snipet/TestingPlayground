@@ -947,6 +947,10 @@ namespace playground
         capture_.noteProgram(s.program, s.sources, s.controls, s.circuits);   // a recording's replay compiles these
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            // A panel's edit of the program applied plays the same program: no run's. One of a program this has not
+            // applied (poll() saw the edit's status, not its compile's) is that compile's too: its run replaced what
+            // played.
+            const bool edit = s.panelOnly && s.program == program_;
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
@@ -954,8 +958,8 @@ namespace playground
             // no run's: nothing played before it, though Init played until then.
             if (loaded)
                 previous_.clear();
-            else if (!s.panelOnly && !running_.empty() && !cir::sameProgram(running_, s.sources))
-                previous_ = running_;                            // (a panel's edit plays the same program: no run's)
+            else if (!edit && !running_.empty() && !cir::sameProgram(running_, s.sources))
+                previous_ = running_;
             running_ = s.sources;
         }
         if (run)
@@ -1153,6 +1157,9 @@ namespace playground
             }
             else if (s.ok && abDialsRequest_ != 0 && s.request == abDialsRequest_)
                 given = givenByName(s.controls, s.panel.options, abDials_);   // an A/B side's own (ProcessorAb.cpp)
+            // A panel's edit of a program apply() has not taken (this poll missed its compile's status, Compiler.h) is
+            // that compile's too: apply() writes its carry and moves previous_run, and its run is journalled as one.
+            const bool edit = s.panelOnly && s.program == program();
             apply(s, true, false, given);
             abLanded(s);
             if (!s.panel.gui.empty() && !fitFonts_.load(std::memory_order_relaxed))
@@ -1164,6 +1171,12 @@ namespace playground
                     stopJournaled_ = s.stoppedProgram;           // said with the run (runWords)
                 if (s.ok && !s.panelOnly)
                     journal_.dialsNote(Journal::Who::user, runWords(s));   // a new dial at its default (apply)
+                else if (s.ok && !edit)
+                {
+                    CompileStatus compiled = s;                  // (the compile it edits, whose run this answers too)
+                    compiled.panelOnly = false;
+                    journal_.dialsNote(Journal::Who::user, runWords(compiled));
+                }
                 else
                     journal_.note(Journal::Who::user, runWords(s));        // (a panel's edit sets no dial)
             }
@@ -2241,8 +2254,9 @@ namespace playground
     {
         const CompileStatus s = compiler_.status();
         const std::lock_guard<std::mutex> lock(programMutex_);
-        if (s.ok && !s.panelOnly && !running_.empty() && !cir::sameProgram(running_, s.sources))
+        if (s.ok && !(s.panelOnly && s.program == program_) && !running_.empty() && !cir::sameProgram(running_, s.sources))
             return running_;                                     // poll() has not taken the newest yet: it comes after this
+                                                                 // (a panel's edit of a program it has not: its compile)
         return previous_;
     }
 
