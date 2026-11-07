@@ -89,8 +89,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - Windows: `cmake --workflow --preset windows-verify` (or `windows-effect-verify`, `windows-synth-verify`; the release
   build `windows-release-build`), in `build-windows-<preset>`, from an x64 Native Tools prompt ("Windows" below).
 - Linux: `cmake --workflow --preset linux-verify` (or `linux-effect-verify`, `linux-synth-verify`; the release build
-  `linux-release-build`), in `build-linux-<preset>`, with clang and lld, on an X display with a window manager for the
-  menus' pictures (without one they are skipped, saying so: "Linux" below).
+  `linux-release-build`), in `build-linux-<preset>`, with clang and lld, on an X display that runs a window manager
+  (with `$DISPLAY` unset the menus' pictures are skipped, saying so; a bare X server ends the process: "Linux" below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
   renderer and probes, and the installer) and run every test in `build-dev`: each of the 70 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
@@ -744,8 +744,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
   in an amd64 Arch container on Apple silicon too (Rosetta, Mesa's lavapipe, Xvfb with openbox).
 - **A row a machine cannot judge is skipped, and says so**, never left out: `probe::skip(P, key, why)`
   (`Tools/probes/common/Probe.h`) prints `SKIP       <key>  <why>` where its SPEC line would be and adds the note
-  `skip_<key>` to the probe's results JSON (`<build>/probe-results/<key>/<probe>.json`); the rows that can be judged
-  there run in its place. Each kind has its helper, which a new row of the kind takes too:
+  `skip_<key>` (every character of the key outside `a-z0-9` an underscore: `skip_picture_gpu`) to the probe's results
+  JSON (`<build>/probe-results/<key>/<probe>.json`); the rows that can be judged there run in its place. A row of a
+  feature macOS alone has is no `#if defined(__APPLE__)` without an `#else`: the other platforms' behaviour is checked
+  there (`plugin.export`'s `package.zlib` and `refuse.xz`, `plugin.folder`'s `watch.watching` and `watch.poll_s`,
+  `plugin.chat`'s `pictures.tiff_refused`), or, with none to check, the row is skipped saying so (`plugin.chat`'s
+  `pictures.upright`: ImageIO's EXIF orientation). Each kind of skip has its helper, which a new row of the kind takes
+  too:
   - **a GPU picture's pixels** (`Tools/probes/common/Pictures.h`: `noGpuPictures()`, the words a picture's text gives,
     and `noGpuPicturesSkip()`, the skip's): FunkGui reads no frame back from Vulkan (`gpuPicturesSupported()` false),
     so view_panel's, the window's and the sandbox's pictures are SoftRaster's on Linux, each shader its striped
@@ -769,11 +774,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`text.metal`: SPIR-V is the panel's own); `gui.folder` finds Show in File Manager; `gui.explorer` scrolls a row into
   view before it clicks it (CLAUDE DESKTOP shows above LIBRARY when the MCP link listens, which hangs on the build
   folder's path: a socket's must fit `sun_path`, 104 bytes on macOS and 108 on Linux). Before Linux 6.13 a file's time
-  moves by the kernel's tick (1 to 10 ms), so `FolderSync`'s listing and `chatstore::Stamp` hold the file's identity
-  (its inode) beside its size and time: a save that renames a new file in is a change within a tick too
-  (`plugin.folder`'s `atomic.*`, `plugin.chats`' `store.conflict`); a save in place of the same size within one tick is
-  not seen, which no person's saves are, and `plugin.folder`'s in-place writes move the file's time on, as theirs would
-  be apart. `Shaders.cpp`'s `run` takes a child that exits 127 for a shaderc that did not run (POSIX lets posix_spawn
+  moves by the kernel's tick (1 to 10 ms), and JUCE reads a file's time on Linux in whole seconds, so `FolderSync`'s
+  listing and `chatstore::Stamp` hold the file's identity (its inode) beside its size and time: a save that renames a
+  new file in is a change within a tick too. `plugin.chats`' `store.conflict`, and on POSIX `plugin.folder`'s
+  `atomic.rename_over` and `atomic.jetbrains`, give the new file the old one's time back (`store.theirs_alike`,
+  `atomic.*_alike`: the same size and time, another identity), so they hold on the identity alone on every machine,
+  APFS's and Linux 6.13's nanosecond clocks too (Windows' FolderSync keeps no identity; NTFS's clock is 100 ns). A save in place of the same size within one tick is not seen, which
+  no person's saves are, and `plugin.folder`'s in-place writes move the file's time on, as theirs would be apart. `Shaders.cpp`'s `run` takes a child that exits 127 for a shaderc that did not run (POSIX lets posix_spawn
   report a failed exec so; glibc's does under Rosetta: `gui.shaders`' `cache.passing_failure_*`). Under Rosetta,
   configure with `-DFP_PROBE_TIMEOUT_SCALE=3`: the probes' timeouts are a native machine's, and lavapipe is slow.
 
