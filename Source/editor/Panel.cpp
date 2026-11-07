@@ -196,6 +196,10 @@ namespace playground::ui
         constexpr float kEditorY = kTabsY + 26.0f + 6.0f;
         constexpr float kSegmentW = 84.0f;               // a half of the Code / Panel switch
         constexpr float kProjectW = 340.0f;              // the project pill, at most
+        constexpr float kProjectLeast = 90.0f;           // ... at least, beside the presets
+        constexpr float kPresetGap = 6.0f;               // between the pill and the presets' arrow
+        constexpr float kPresetArrowW = 26.0f, kPresetArrowGap = 2.0f;
+        constexpr float kPresetNameW = 200.0f, kPresetNameLeast = 64.0f;   // the preset's name between the arrows
         constexpr float kProblemRowH = 15.0f;
         constexpr float kPlaceW = 150.0f;                // a problem's file, line and column
         constexpr int   kProblemRows = 4;
@@ -2848,6 +2852,42 @@ namespace playground::ui
         projectsItem_ = button(TB::Shape::pill, chat::Icon::list, [this] { return projectLabel(); }, true,
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
+        // The project open's presets, right of the pill: the one before, its name (a click: their list), the next.
+        {
+            const auto any = [this] { return !cycle_.presets.empty(); };
+            const auto shown = [this] { return presetsShown(); };
+            TB::Spec sp;
+            sp.shape = TB::Shape::square;
+            sp.icon = [] { return chat::Icon::chevronLeft; };
+            sp.look = [] { return TB::Look::ghost; };
+            sp.enabled = any;
+            sp.shown = shown;
+            sp.act = [this] { stepPresets(-1); };
+            sp.a11yTitle = "Previous preset";
+            sp.spec = "PREVIOUS PRESET   THE ONE BEFORE, OF THE PROJECT OPEN ([), WRAPPING: ITS DIALS GLIDE THERE";
+            presetPrevItem_ = add(std::make_unique<TB>(idFor(), sp));
+            TB::Spec name;
+            name.shape = TB::Shape::pill;
+            name.label = [this] { return presetLabel(); };
+            name.detail = [this] { return presetDetail(); };
+            name.dot = [this] { return cycle_.applied && cycle_.edited; };
+            name.chevron = true;
+            name.look = [] { return TB::Look::outlined; };
+            name.shown = shown;
+            name.act = [this] { openPresets(); };
+            name.a11yTitle = "Preset";
+            name.specNow = [this] {
+                return std::string(cycle_.applied && cycle_.edited
+                                       ? "PRESET   ITS DIALS MOVED (THE DOT): SAVE IT IN PROJECTS TO KEEP THEM; THE ARROWS LEAVE THEM"
+                                       : "PRESET   THE PROJECT OPEN'S PRESETS IN A LIST: SEARCH, THEIR GROUPS, A RIGHT-CLICK FOR A CATEGORY");
+            };
+            presetItem_ = add(std::make_unique<TB>(idFor(), std::move(name)));
+            sp.icon = [] { return chat::Icon::chevronRight; };
+            sp.act = [this] { stepPresets(1); };
+            sp.a11yTitle = "Next preset";
+            sp.spec = "NEXT PRESET   THE NEXT ONE OF THE PROJECT OPEN (]), WRAPPING: ITS DIALS GLIDE THERE";
+            presetNextItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
         panelView_ = role_ != Role::code && port_.panelView();   // the code window's is the CODE view
         codePanel_[0] = port_.codePanel(false);
         codePanel_[1] = port_.codePanel(true);
@@ -3135,6 +3175,8 @@ namespace playground::ui
         static_cast<TB&>(*items_[static_cast<std::size_t>(projectsItem_)]).setOpen([this] {
             return projects_.isOpen();
         });
+        static_cast<TB&>(*items_[static_cast<std::size_t>(presetItem_)]).setOpen([this] { return picker_.isOpen(); });
+        picker_.setAnswered([this] { afterPicker(true); });   // a menu's answer, as an event's
         settings_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         projects_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         projects_.setAnswered([this] { afterProjects(true); });   // a menu's answer, as an event's
@@ -3333,13 +3375,28 @@ namespace playground::ui
         at(windowItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW - 3.0f - 8.0f - kIconButton, barMid - 0.5f * kIconButton,
                                     kIconButton, kIconButton });
         {
+            // The project's pill and, while a project is open, its presets right of it (the arrows and the name), the
+            // two centred as one between the product's name and the switch: the pill gives way first, then the name.
             const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
             const float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f - windowW;
-            const float w = std::min(kProjectW, std::max(120.0f, segLeft - 24.0f - (nameRight + 24.0f)));
-            const float x = std::clamp(std::round(0.5f * (W - w)), nameRight + 24.0f, std::max(nameRight + 24.0f, segLeft - 24.0f - w));
+            const float room = segLeft - 24.0f - (nameRight + 24.0f);
+            const bool presets = presetsShown();
+            const float extras = presets ? kPresetGap + 2.0f * kPresetArrowW + 2.0f * kPresetArrowGap : 0.0f;
+            const float nameW = presets ? std::clamp(std::round(0.36f * (room - extras)), kPresetNameLeast, kPresetNameW) : 0.0f;
+            const float w = std::min(kProjectW, std::max(presets ? kProjectLeast : 120.0f, room - extras - nameW));
+            const float total = w + extras + nameW;
+            const float x = std::clamp(std::round(0.5f * (W - total)), nameRight + 24.0f, std::max(nameRight + 24.0f, segLeft - 24.0f - total));
             at(projectsItem_).setBounds({ x, barMid - 0.5f * kTopButtonH, w, kTopButtonH });
+            float px = x + w + kPresetGap;
+            at(presetPrevItem_).setBounds({ px, barMid - 0.5f * kTopButtonH, kPresetArrowW, kTopButtonH });
+            px += kPresetArrowW + kPresetArrowGap;
+            at(presetItem_).setBounds({ px, barMid - 0.5f * kTopButtonH, nameW, kTopButtonH });
+            px += nameW + kPresetArrowGap;
+            at(presetNextItem_).setBounds({ px, barMid - 0.5f * kTopButtonH, kPresetArrowW, kTopButtonH });
+            picker_.setAnchor(at(presetItem_).bounds());
+            picker_.setSize(W, H);
         }
 
         // The program's card's header: the actions at its right (Run last), the tabs from its left.
@@ -5046,6 +5103,29 @@ namespace playground::ui
         syncIr();
         const std::string statusBefore = status_;
 
+        // The project open's presets (the top bar's arrows and name; their list while it is open).
+        {
+            PresetCycle cy = port_.presetCycle();
+            if (cy != cycle_)
+            {
+                const bool layoutNow = presetsShown() != !cy.project.empty();
+                cycle_ = std::move(cy);
+                dirty_ = true;
+                if (layoutNow)
+                    layout();                            // the pill makes room for them, or takes it back
+            }
+            const bool pickerOpen = picker_.isOpen();
+            const uint32_t pickerWas = picker_.revision();
+            picker_.sync();
+            if (picker_.isOpen() && !presetsShown())
+                picker_.close();
+            if (picker_.revision() != pickerWas)
+            {
+                if (pickerOpen)
+                    afterPicker(true);                   // closed by another project opening: the focus back
+                dirty_ = true;
+            }
+        }
         // The project open, in words.
         {
             const ProjectState st = port_.project();
@@ -5918,6 +5998,11 @@ namespace playground::ui
 
     bool Panel::openSettings()
     {
+        if (picker_.isOpen())                            // the app's Settings... over the presets' list: it goes
+        {
+            picker_.close();
+            afterPicker(true);
+        }
         if (dialogOpen() || port_.devices() == nullptr)
             return false;
         files().endRename();
@@ -6331,9 +6416,77 @@ namespace playground::ui
         std::string label = asciiText(st.name) + (st.version > 0 && !isFactoryName(st.name) ? " v" + std::to_string(st.version) : "");
         if (st.edited || (st.preset.empty() && st.dialsEdited))
             label += " (edited)";
-        if (!st.preset.empty())
+        if (!st.preset.empty() && !presetsShown())       // the presets right of it name it, and its dot
             label += "  -  " + asciiText(st.preset) + (st.dialsEdited ? " (edited)" : "");
         return label;
+    }
+
+    std::string Panel::presetLabel() const
+    {
+        if (cycle_.presets.empty())
+            return "No presets";
+        if (cycle_.current < 0 || cycle_.current >= static_cast<int>(cycle_.presets.size()))
+            return "(no preset)";
+        return asciiText(cycle_.presets[static_cast<std::size_t>(cycle_.current)].name);
+    }
+
+    std::string Panel::presetDetail() const
+    {
+        if (cycle_.presets.empty())
+            return {};
+        const std::string n = std::to_string(cycle_.presets.size());
+        return cycle_.current < 0 ? "-/" + n : std::to_string(cycle_.current + 1) + "/" + n;
+    }
+
+    funkgui::Point Panel::centreOfPresetStep(int step) const
+    {
+        return items_[static_cast<std::size_t>(step < 0 ? presetPrevItem_ : presetNextItem_)]->centre();
+    }
+
+    funkgui::Point Panel::centreOfPresetName() const { return items_[static_cast<std::size_t>(presetItem_)]->centre(); }
+
+    // The arrows, [ and ]: the project open's preset before or after the one now (wrapping; from none, the first or the
+    // last), applied as PROJECTS applies one (its dials glide there; changes to the one before are not kept).
+    void Panel::stepPresets(int step)
+    {
+        const PresetCycle before = port_.presetCycle();
+        std::string why;
+        if (!port_.stepPreset(step, why))
+        {
+            notice("NOT APPLIED: " + upper(why));
+            return;
+        }
+        cycle_ = port_.presetCycle();
+        notice(presetNotice(before, cycle_));
+        dirty_ = true;
+    }
+
+    void Panel::openPresets()
+    {
+        if (!presetsShown() || picker_.isOpen())
+            return;
+        files().endRename();
+        picker_.setSize(width_, height_);
+        picker_.open(static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(presetItem_)]).bounds());
+        focusBeforePicker_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::afterPicker(bool wasOpen)
+    {
+        if (const std::string n = picker_.takeNotice(); !n.empty())
+        {
+            notice(n);
+            cycle_ = port_.presetCycle();
+        }
+        if (wasOpen && !picker_.isOpen() && focusBeforePicker_ != -2)
+        {
+            setFocus(focusBeforePicker_);
+            focusBeforePicker_ = -2;                     // given back once
+        }
+        dirty_ = true;
     }
 
     void Panel::openZoom()
@@ -6521,6 +6674,7 @@ namespace playground::ui
             .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
+            .mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
             .mix(layoutRevision_).mix(buttonsRoom_);
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
@@ -6789,6 +6943,11 @@ namespace playground::ui
         else if (ab_.isOpen())
             std::snprintf(line, sizeof line, "A/B   A, B OR SPACE SWITCH   UP AND DOWN CHOOSE B, SHIFT A   TAB THE NEXT FILE   "
                                              "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
+        else if (picker_.isOpen())
+            std::snprintf(line, sizeof line, "%s",
+                          picker_.categoryMode() ? "PRESETS   TYPE A CATEGORY   RETURN SETS IT   ESCAPE GOES BACK"
+                                                 : "PRESETS   TYPE TO SEARCH   UP AND DOWN CHOOSE   RETURN OR A CLICK APPLIES   "
+                                                   "RIGHT-CLICK: ITS CATEGORY   ESCAPE CLOSES");
         else if (projects_.isOpen())
         {
             const std::string what = upper(shortcutText(   // Ctrl- on Windows
@@ -6864,6 +7023,11 @@ namespace playground::ui
         {
             const funkgui::Canvas::Scope s(c, kSettingsTag, false);
             settings_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (picker_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kPresetsTag, false);
+            picker_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
     }
 
@@ -6950,6 +7114,11 @@ namespace playground::ui
             {
                 ab_.pointerDown(pointer_, width_, height_);
                 afterAb(true);
+            }
+            else if (picker_.isOpen())
+            {
+                (void)picker_.pointerDown(e, host_, width_, height_);   // outside it: closed, the press goes no further
+                afterPicker(true);
             }
             else
             {
@@ -7078,6 +7247,11 @@ namespace playground::ui
             projects_.wheel(e, width_, height_);
             return true;
         }
+        if (picker_.isOpen())
+        {
+            picker_.wheel(e, width_, height_);
+            return true;
+        }
         const int i = itemAt({ e.x, e.y });
         // A .gui interface taller or wider than its area scrolls, but for a control under the pointer (it takes the
         // wheel itself).
@@ -7150,6 +7324,12 @@ namespace playground::ui
             afterProjects(true);
             return true;
         }
+        if (picker_.isOpen())
+        {
+            picker_.key(e, host_, width_, height_);
+            afterPicker(true);
+            return true;
+        }
         // RUN, from anywhere in the panel; Cmd-S, a new version of the project open.
         if (e.key == funkgui::Key::enter && (e.mods.cmd || e.mods.ctrl))
         {
@@ -7202,6 +7382,13 @@ namespace playground::ui
             }
             return false;
         }
+        // [ and ]: the project open's preset before and after, while no text field has the caret (above).
+        if (e.key == funkgui::Key::character && !e.mods.cmd && !e.mods.ctrl && !e.mods.alt && (e.ch == '[' || e.ch == ']')
+            && presetsShown())
+        {
+            stepPresets(e.ch == '[' ? -1 : 1);
+            return true;
+        }
         if (e.key == funkgui::Key::tab)
         {
             ring_ = moveFocus(e.mods.shift ? -1 : 1);
@@ -7234,6 +7421,8 @@ namespace playground::ui
             return ab_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
             return projects_.cursor(pointer_, width_, height_);
+        if (picker_.isOpen())
+            return picker_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
@@ -7304,6 +7493,11 @@ namespace playground::ui
             projects_.accessibility(out, width_, height_);
             return;
         }
+        if (picker_.isOpen())
+        {
+            picker_.accessibility(out, width_, height_);
+            return;
+        }
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);
@@ -7321,6 +7515,7 @@ namespace playground::ui
         r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
+        r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
@@ -7383,6 +7578,12 @@ namespace playground::ui
         {
             projects_.a11yAction(id, a, host_, width_, height_);
             afterProjects(true);
+            return;
+        }
+        if (picker_.isOpen())
+        {
+            (void)picker_.a11yAction(id, a, host_, width_, height_);
+            afterPicker(true);
             return;
         }
         for (const auto& item : items_)

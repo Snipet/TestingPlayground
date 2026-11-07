@@ -18,7 +18,10 @@
 //             when the editor has changes no preset holds; the header's + opens PRESETS); its
 //             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
 //             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
-//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
+//   header    the product name, its kind and version, the project's pill and, while a project is open, its presets
+//             (the arrows either side of the preset's name and place, "Bright 2/7", a dot when its dials moved; the
+//             name opens their list, PresetPicker.h; [ and ] step them while no text field has the caret), and the
+//             THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example starts afresh, as a new instance,
 //             its files the only tabs and the dials at their defaults, asking first when changes would be lost; it
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
@@ -117,6 +120,7 @@
 #include "editor/Explorer.h"
 #include "editor/AbCard.h"
 #include "editor/ExportCard.h"
+#include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
 
@@ -211,6 +215,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
     inline constexpr funkgui::Tag kLogoTag = funkgui::tags::firstProduct + 14;        // the top bar's mark (LogoMark.h)
     inline constexpr funkgui::Tag kAbTag = funkgui::tags::firstProduct + 15;          // A/B's card
+    inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 16;     // the top bar's list of presets
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -345,6 +350,16 @@ namespace playground::ui
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
         AbCard& abCard() noexcept { return ab_; }
+        // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
+        // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
+        void stepPresets(int step);
+        void openPresets();
+        PresetPicker& presetPicker() noexcept { return picker_; }
+        const PresetCycle& presetCycle() const noexcept { return cycle_; }
+        funkgui::Point centreOfPresetStep(int step) const;   // the arrow: -1 the previous, +1 the next
+        funkgui::Point centreOfPresetName() const;
+        std::string presetLabel() const;                 // the name between the arrows: "Bright", "(no preset)"
+        std::string presetDetail() const;                // and its place: "3/7", "-/7"
         // "PROJECT  NAME  V3  EDITED  PRESET  BRIGHT  EDITED" (what the top bar's pill says, in words), "" for none.
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
@@ -635,6 +650,9 @@ namespace playground::ui
         std::size_t shownAt_ = 0;                        // the frame shown
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
             projectsItem_ = -1;
+        int presetPrevItem_ = -1, presetItem_ = -1, presetNextItem_ = -1;   // the top bar's presets, right of the pill
+        PresetCycle cycle_;                              // the project open's presets, as the last refresh read them
+        bool presetsShown() const noexcept { return !cycle_.project.empty(); }
         int themeItem_ = -1, zoomItem_ = -1;
         int panelViewItem_ = -1;                         // the Code / Panel switch's Panel half (viewItem_ the Code one)
         float actionsX_ = 0.0f;                          // the program's card's actions start here (at its right)
@@ -709,7 +727,7 @@ namespace playground::ui
         void importFiles(const std::vector<std::string>& paths);
         bool dialogOpen() const noexcept
         {
-            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen();
+            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || picker_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -738,6 +756,9 @@ namespace playground::ui
         void placeMeter();                               // the snowflake's place, left of the load's text
         std::string projectText_;                        // the project open, its version, the preset applied, in words
         ProjectBrowser projects_{ port_ };
+        PresetPicker picker_{ port_ };
+        int focusBeforePicker_ = -2;                     // the focus to give back when the list closes (-2: none)
+        void afterPicker(bool wasOpen);                  // its notice to the status, the focus back once it closed
         ExportCard export_{ port_ };
         AbCard ab_{ port_ };
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
