@@ -1280,20 +1280,27 @@ place (its `products/<key>.cmake`, and its names in the docs).
   save the user's own copy, `saveCopy`); a preset of the name is replaced only with `replace`, the result giving its
   old values; open and apply_preset are refused while the editor holds unsaved changes (`ProjectState::changed`, a
   dial off the version's or the preset's value, `baseDials_`, or off its default with no project open), naming them,
-  unless `discard`, which the guide says only the user may ask for; nothing deletes (no action does: deleting is the
-  user's, in PROJECTS). The saves, opens and presets run on the message thread, as PROJECTS runs them: the caller's
-  worker hands poll() a job (`onMessageThread`, `runClaudeJob`: after the dials Claude set, so a save keeps a set_dial
-  of the call before; at once when the caller is the message thread; a job not taken in `kClaudeJobSeconds` withdrawn,
-  nothing done) and waits; an open then waits for its compile and for a poll() that set its dials, so the next tool
-  measures the version. A list reads the store on the caller's thread (never a file whole on the message thread), the
-  project open's state from a job. A version's note is Claude's ("Claude: <note> (<the change>)": `projectstore::
-  saveVersion`'s `lead`, `noteLead`). Each save, open and preset goes to the editor (`EditorPort::claudeNotice`, a
-  count and the words: the Panel of the editor says it once in its status, polls the projects again and has an open
-  PROJECTS read its lists again, `ProjectBrowser::reread`; a Panel made later says nothing of the past) and, the
-  plugin's own chat's, to the journal as `Journal::Who::chat` (Claude Desktop's not: it knows); the chat's row says
-  it. A list or a save changes nothing a check measures (`kChangingTools`' exception), an open or a preset does. The
-  guide says when to save (when the user asks, or at a milestone they agreed to; never silently) in RANDOM AND
-  PROJECTS, and start names that part. `plugin.saves` checks both paths, `gui.presets` CLAUDE the editor's side.
+  unless `discard`, which the guide says only the user may ask for; a save, a preset and apply_preset are refused while
+  an A/B is on or its Keep or Close still lands (`ab_.st.on`, `abEnding_`: what plays is a side's, not the editor's);
+  nothing deletes (no action does: deleting is the user's, in PROJECTS). The saves, opens and presets run on the
+  message thread, as PROJECTS runs them: the caller's worker hands poll() a job (`onMessageThread`, `runClaudeJob`:
+  after the dials Claude set, so a save keeps a set_dial of the call before; at once when the caller is the message
+  thread; a job not taken in `kClaudeJobSeconds` withdrawn, nothing done: `setClaudeJobWaitForTests`,
+  `claudeJobWaiting` for the probes) and waits; an open then waits for its compile and for a poll() that set its
+  dials, so the next tool measures the version. A list reads the store on the caller's thread (never a file whole on
+  the message thread), the project open's state from a job. A version's note is Claude's ("Claude: <note> (<the
+  change>)": `projectstore::saveVersion`'s `lead`, `noteLead`); its `category` is set with nothing new to save too.
+  Each save, open and preset goes to the editor (`EditorPort::claudeNotice`, a count and the words, in capitals as
+  every status notice, which the status line says in its sentence case: the Panel of the editor says it once in its
+  status, polls the projects again and has an open PROJECTS read its lists again, `ProjectBrowser::reread`, which keeps
+  the version and the preset chosen by number and name and withdraws a confirmation it was asking for (Delete, Open
+  anyway, Replace, Add version), so no click confirms over lists that changed; a Panel made later says nothing of the
+  past) and, the plugin's own chat's, to the journal as `Journal::Who::chat` (Claude Desktop's not: it knows); the
+  chat's row says it. projects is none of `kChangingTools`: what it opens or applies is the user's asking, never
+  Claude's work for the checks to send on; an open of another project clears the checks (`ProjectAnswer::another`,
+  `ChatAgent::projectsText`), as a fresh start does, and its result says so. The guide says when to save (when the user
+  asks, or at a milestone they agreed to; never silently) in RANDOM AND PROJECTS, and start names that part.
+  `plugin.saves` checks both paths, `gui.presets` CLAUDE the editor's side.
 
 ## Recipes
 
