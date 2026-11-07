@@ -877,6 +877,12 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                  "code is a project of its own. Its A/B plays two versions (or the editor's files and a version) in turn "
                  "while the user plays, the louder turned down to match, until they keep one: get_status says when one is on, "
                  "its sides and which plays, and compare renders a version (version:N, project:Name@N).\n";
+            s += product::kIsInstrument
+                     ? "A dial can follow a knob on the user's MIDI controller (MIDI learn, the user's to set: right-click the "
+                       "dial, Learn MIDI CC, move the knob; Forget in the same menu); the dial lines then say which control "
+                       "moves it, and a project version keeps them.\n"
+                     : "The effect takes no MIDI: to turn a dial from a MIDI controller, the user maps it in the host (right-click "
+                       "the dial for the host's menu).\n";
             s += kCircuits;
             return shortcutText(s);                      // Ctrl- on Windows
         }
