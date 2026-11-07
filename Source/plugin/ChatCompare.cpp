@@ -38,6 +38,13 @@ namespace playground
     {
         constexpr std::size_t kMaxOutput = 12000;
 
+        // A whole path as the user's machine writes one (wav:'s refusals).
+#if defined(_WIN32)
+        constexpr const char* kWholePath = "C:\\... or ~\\...";
+#else
+        constexpr const char* kWholePath = "/Users/... or ~/...";
+#endif
+
         std::string number(double v)
         {
             char buf[32];
@@ -148,9 +155,10 @@ namespace playground
             }
             if (s.rfind("wav:", 0) == 0)
             {
-                // A target sound: a file on this Mac by its whole path, or one of the program's samples by its name.
+                // A target sound: a file on this machine by its whole path, or one of the program's samples by its name
+                // (AssetFiles.h's namesAFile tells them apart, a Windows path too).
                 std::string path = juce::String(s.substr(4)).trim().toStdString();
-                if (path.find('/') == std::string::npos && path != "~")
+                if (!assetfiles::namesAFile(path))
                 {
                     const Assets samples = host.chatAssets();
                     out.target = samples != nullptr ? samples->find(path) : nullptr;
@@ -162,17 +170,18 @@ namespace playground
                                 have += (have.empty() ? "" : ", ") + a->name();
                         why = std::string(which) + " is " + s + ": the program has no sample " + path + " ("
                             + (have.empty() ? std::string("it has none") : "its samples: " + have)
-                            + "). A file on this Mac is wav: and its whole path (/Users/... or ~/...).";
+                            + "). A file on " + kThisMachine + " is wav: and its whole path (" + kWholePath + ").";
                         return false;
                     }
                     out.words = "the target sound " + path + " (a sample of the program's: " + out.target->describe() + ")";
                     return true;
                 }
-                if (path.rfind("~/", 0) == 0)
+                if (path == "~" || path.rfind("~/", 0) == 0 || path.rfind("~\\", 0) == 0)
                     path = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString() + path.substr(1);
                 if (!juce::File::isAbsolutePath(juce::String::fromUTF8(path.c_str())))
                 {
-                    why = std::string(which) + " is " + s + ": wav: takes a file on this Mac, whole (/Users/... or ~/...), or a sample's name.";
+                    why = std::string(which) + " is " + s + ": wav: takes a file on " + kThisMachine + ", whole (" + kWholePath
+                        + "), or a sample's name.";
                     return false;
                 }
                 std::string readWhy;
