@@ -35,6 +35,9 @@
 //             (an `as` name is no label); a label and a unit too long for a display cut where a character starts, with
 //             a note, the field keeping them whole; notes for an array named without its indexes, an index outside its
 //             extent and one index too many
+//   CUT       a section's title, a dial's label, an option's name and a number's unit= too long: each cut where a
+//             character starts, with a note; a number's unit="" says none, over its field's ui::unit (its ui::decimals
+//             kept)
 //   MOST      32 displays (kMaxDisplays: scope out as w1 to w32) are all shown, the 33rd a note on its line, left out;
 //             a section names a panel dial (the 33rd of 33 dials, past the host's 32: Controls.h's isPanelDial)
 #include "Probe.h"
@@ -489,6 +492,48 @@ PROBE(fminus, panel)
             P.near("elements.tap_element_2d", r.patch->tap(2, 0), 12.0, 0.0);
             P.near("elements.tap_field", r.patch->tap(3, 0), 6.0, 0.0);
         }
+    }
+
+    // CUT: a section's title, a dial's label, an option's name and a number's unit too long, each cut where a character
+    // starts (the two-byte one that would not fit left out whole); unit="" beats the field's ui::unit
+    {
+        const std::string e = "\xc3\x89";                    // a two-byte character
+        const std::string title = std::string(23, 'T') + e, label = std::string(13, 'L') + e, option = std::string(9, 'O') + e;
+        const std::string unit = "ab\xc2\xb5\xc2\xb5\xc2\xb5";   // 8 bytes, the last two a third micro sign
+        const std::string before = "#pragma panel label cutoff \"" + label + "\"\n"                 // 1
+                                   "#pragma panel options mode \"" + option + "\" \"B\"\n"          // 2
+                                   "#pragma panel number gr unit=\"\" as bare\n"                     // 3: none, over ui::unit
+                                   "#pragma panel number gr unit=\"" + unit + "\" as mu\n"          // 4
+                                   "#pragma panel section \"" + title + "\" cutoff mode bare mu\n";  // 5
+        const std::string params = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    param int mode [[fminus::range(0, 1)]] [[fminus::default(0)]];\n"
+                                   "    float gr [[ui::unit(\"dB\")]] [[ui::decimals(1)]];\n";
+        const std::string source = kInstrument
+            ? before + "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                       "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : before + "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled c = compile(source);
+        std::printf("cut: %s", c.notes.c_str());
+        P.eq("cut.compiles", c.ok ? 1 : 0, 1);
+        const auto noteOn = [&](int line, const std::string& what) {
+            return has(c.notes, "program.fm:" + std::to_string(line) + ":1: note: #pragma panel: ") && has(c.notes, what);
+        };
+        P.eq("cut.title", !c.panel.sections.empty() && c.panel.sections[0].title == std::string(23, 'T') ? 1 : 0, 1);
+        P.eq("cut.label", c.panel.labels[0] == std::string(13, 'L') ? 1 : 0, 1);
+        P.eq("cut.option", c.panel.options[1] == std::vector<std::string>{ std::string(9, 'O'), "B" } ? 1 : 0, 1);
+        const pg::PanelDisplay* bare = nullptr;
+        const pg::PanelDisplay* mu = nullptr;
+        for (const pg::PanelDisplay& d : c.panel.displays)
+        {
+            if (d.name == "bare")
+                bare = &d;
+            if (d.name == "mu")
+                mu = &d;
+        }
+        P.eq("cut.unit", mu != nullptr && mu->unit == "ab\xc2\xb5\xc2\xb5" ? 1 : 0, 1);
+        P.eq("cut.notes", noteOn(5, "is cut to 24 characters") && noteOn(1, "is cut to 14 characters")
+                              && noteOn(2, "is cut to 10 characters") && noteOn(4, "is cut to 7 characters") ? 1 : 0, 1);
+        P.eq("cut.empty_unit_beats_look", bare != nullptr && bare->unit.empty() && bare->decimals == 1 ? 1 : 0, 1);
     }
 
     // MOST
