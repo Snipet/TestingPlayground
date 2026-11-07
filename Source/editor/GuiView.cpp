@@ -2,6 +2,7 @@
 #include "editor/GuiView.h"
 
 #include "editor/DisplayItem.h"
+#include "editor/ShaderFont.h"
 
 #include "fminus/Shaders.h"
 
@@ -276,8 +277,8 @@ namespace playground::ui
     }
 
     // A shader's program goes to FunkGui's registry (process-wide, keyed by its bytes' hash: the same shader in two
-    // instances is one program) the first time a panel shows it; a program is never removed, since another instance
-    // may draw it too. One that was not built says why from the compile's notes; one FunkGui refuses (Metal's own
+    // instances is one program) the first time a panel shows it, with the text font bound to it (ShaderFont.h); a
+    // program is never removed, since another instance may draw it too. One that was not built says why from the compile's notes; one FunkGui refuses (Metal's own
     // compiler, say), from FunkGui.
     void GuiView::registerShaders(const PanelSpec& spec, const Sources& files, const std::string& notes)
     {
@@ -290,7 +291,7 @@ namespace playground::ui
             const PanelShader& sh = spec.shaders[k];
             const auto f = std::find_if(files.begin(), files.end(), [&](const SourceFile& x) { return x.name == sh.file; });
             if (f != files.end())
-                shaderMoves_[k] = shaderAnimates(f->text);
+                shaderMoves_[k] = shaderAnimates(sh.file, f->text, shaderHeaders(files));
             if (sh.binary.empty() || sh.id == 0)
             {
                 std::string why = f == files.end() ? "there is no file " + sh.file + " among the program's" : std::string("not built");
@@ -309,7 +310,10 @@ namespace playground::ui
             std::string why;
             if (funkgui::shaders::has(sh.id)
                 || funkgui::shaders::set(sh.id, sh.binary.data(), static_cast<uint32_t>(sh.binary.size()), why))
+            {
                 shaderIds_[k] = sh.id;
+                bindShaderFont(sh.id);                   // funk/text.sh's font (ShaderFont.h)
+            }
             else
                 shaderWhy_[k] = why.empty() ? std::string("the GPU refused it") : why;
         }
