@@ -644,9 +644,37 @@ namespace playground::ui
     {
         if (!open_)
             return;
+        // The rows chosen stay chosen by what they are (a version's number, a preset's name), never by their place: a
+        // version Claude added comes first, and the open one moves.
+        const int c = chosen_[idx(L::versions)], p = chosen_[idx(L::presets)];
+        const int version = c >= 0 && c < static_cast<int>(versions_.size()) ? versions_[static_cast<std::size_t>(c)].number : 0;
+        const std::string preset = p >= 0 && p < static_cast<int>(presets_.size()) ? presets_[static_cast<std::size_t>(p)].name : std::string();
         state_ = port_.project();
         readProjects();
         readChosen();
+        for (std::size_t i = 0; i < versions_.size(); ++i)
+            if (version > 0 && versions_[i].number == version)
+                chosen_[idx(L::versions)] = static_cast<int>(i);
+        for (std::size_t i = 0; i < presets_.size(); ++i)
+            if (!preset.empty() && same(presets_[i].name, preset))
+                chosen_[idx(L::presets)] = static_cast<int>(i);
+        first_[idx(L::versions)] = std::max(0, chosen_[idx(L::versions)] - 2);
+        first_[idx(L::presets)] = std::max(0, chosen_[idx(L::presets)] - 2);
+        if (const int row = chosen(L::projects); row >= 0)
+            anchor_ = row;
+        // A confirmation asked for (Delete, Open anyway, Replace, Add version) is never given over lists that changed
+        // under it: the next click asks again. A press on a project's row holds its place: let go (a drag holds its
+        // projects by name, and goes on).
+        if (ask_ != Ask::none)
+        {
+            ask_ = Ask::none;
+            why_ = "The lists changed (Claude's projects tool): choose again, then confirm.";
+        }
+        if (!dragging_)
+        {
+            pressRow_ = -1;
+            chooseOnUp_ = false;
+        }
         ++revision_;
     }
 

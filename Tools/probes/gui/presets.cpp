@@ -34,8 +34,9 @@
 //            the Code / Panel switch, none over another
 //   CLAUDE   Claude's projects tool saves a preset (Claude Desktop's call): the status says so ("CLAUDE SAVED PRESET
 //            CLAUDE PICK IN GLASS BLOOM") and the top bar shows it applied, in its place; PROJECTS open while it saves
-//            a version reads its lists again (the version listed, Claude's note on it) and the status says it; an
-//            editor opened afterwards says none of it again
+//            a version reads its lists again (the version listed, Claude's note on it) and the status says it; a Delete
+//            asked of a version as Claude saves another is withdrawn (that version still chosen, by its number; the next
+//            click asks again, nothing deleted); an editor opened afterwards says none of it again
 #include "Probe.h"
 
 #include "editor/Panel.h"
@@ -454,6 +455,42 @@ PROBE(gui, presets)
                                           && versions.front().note.rfind("Claude: a brighter tone", 0) == 0 ? 1 : 0, 1);
         P.eq("claude.version_notice", panel.statusText().find("CLAUDE SAVED VERSION " + std::to_string(versions.empty() ? 0 : versions.front().number) + " OF GLASS BLOOM") != std::string::npos ? 1 : 0, 1);
         writePng(P, host, "gui.presets.claude.projects.png");
+        // Delete asked of version 1 (the oldest row), then Claude saves another version before the user confirms: the
+        // card withdraws the question, version 1 still the one chosen (by its number: the rows moved), and the next
+        // click asks again, nothing deleted.
+        {
+            using BL = pg::ui::ProjectBrowser::List;
+            pg::ui::ProjectBrowser& browser = panel.projectBrowser();
+            const auto kept = [] {
+                const std::optional<pg::projectstore::Project> p = pg::projectstore::load("Glass Bloom");
+                return p ? p->versions.size() : std::size_t{ 0 };
+            };
+            const funkgui::Point oldest = browser.centreOfRow(BL::versions, static_cast<int>(browser.versionList().size()) - 1, W, H);
+            host.click(oldest.x, oldest.y);
+            host.settle();
+            const funkgui::Rect remove = browser.places(W, H).remove;
+            host.click(remove.centreX(), remove.centreY());
+            host.settle();
+            const bool asked = browser.removeLabel() == "Delete it";
+            const std::size_t count = kept();
+            setDial(processor, 1, 5000.0f);
+            auto* again = new juce::DynamicObject();
+            again->setProperty("action", "save_version");
+            (void)processor.chatAgent().mcpCall("projects", juce::var(again));
+            host.tick(2);
+            host.settle();
+            const int c = browser.chosen(BL::versions);
+            const std::vector<pg::VersionEntry>& vs = browser.versionList();
+            std::printf("claude, delete asked: %s / %s / v%d of %zu\n", browser.removeLabel().c_str(), browser.why().c_str(),
+                        c >= 0 && c < static_cast<int>(vs.size()) ? vs[static_cast<std::size_t>(c)].number : -1, vs.size());
+            P.eq("claude.delete_withdrawn", asked && kept() == count + 1 && vs.size() == count + 1 && browser.focus() == BL::versions
+                                                && c == static_cast<int>(vs.size()) - 1 && vs[static_cast<std::size_t>(c)].number == 1
+                                                && browser.removeLabel() == "Delete v1"
+                                                && browser.why().find("The lists changed") != std::string::npos ? 1 : 0, 1);
+            host.click(remove.centreX(), remove.centreY());
+            host.settle();
+            P.eq("claude.delete_asks_again", kept() == count + 1 && browser.removeLabel() == "Delete it" ? 1 : 0, 1);
+        }
         host.keys("escape");
         host.settle();
         // An editor opened since says none of it again.

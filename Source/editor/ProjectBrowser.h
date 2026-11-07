@@ -87,7 +87,8 @@ namespace playground::ui
         void setSize(float width, float height) noexcept { width_ = width; height_ = height; }   // the panel's, before open()
         void close();
         // While open: the lists read again after a change made elsewhere (Claude's projects tool saved, opened or applied
-        // one), the project chosen kept, its versions and presets read afresh.
+        // one), the project chosen kept, its versions and presets read afresh, the version and the preset chosen kept by
+        // number and name; a confirmation asked for is withdrawn (the next click asks again), a press let go.
         void reread();
 
         // Its places, for the panel's size.
