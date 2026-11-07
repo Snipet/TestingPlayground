@@ -52,7 +52,9 @@
 // with the answer, and offers it as any program (the effect crossfades; the synth's old voices would fade). It waits
 // while a RUN is queued (which reads the store itself: the refine is then dropped), while a recording is armed
 // (Engine::ownCode) and, for an instrument, until no voice sounds, fades or is held (Meters), so no held note starts
-// again; and it looks again once the compile is done, just before it offers: a refine that may not play then is held,
+// again; an instrument's program whose Shared ticks (Patch.h, "Shared on its own": its state moves between notes, and a
+// new program's Shared starts afresh) is never refined, its answer playing from the next RUN (which reads the store);
+// and it looks again once the compile is done, just before it offers: a refine that may not play then is held,
 // and offered at the first pass that may (dropped when another program plays first, or when an answer it lacks lands).
 // A refine answers no request: it brings the status up to date (CompileStatus::refined), which still answers the
 // request before it (`request`, `ok`, and a failed compile's `errors` and `sources`, which the editor and Claude go on
@@ -239,7 +241,8 @@ namespace playground
 
         // The self-test (above): the tests and the refines on or off (on by default); selfTestNow() runs the jobs
         // waiting, then the refine when one is due or held and may run (no RUN queued, no recording armed, an instrument
-        // silent: looked at before it compiles and again before it offers), on the calling thread: true when it offered
+        // silent and its Shared not ticking: looked at before it compiles and again before it offers), on the calling
+        // thread: true when it offered
         // the refined program; selfTesting() says whether a test waits or runs, or an answer waits to be compiled in or
         // offered; selfTests() counts the tests this compiler's tester started.
         void setSelfTesting(bool on);
@@ -289,8 +292,9 @@ namespace playground
         void bumpIr();                         // under mutex_
         // The self-test's (under mutex_): refineDue_ from the answers landed since the program that plays was compiled
         // (a refine held then is stale: handed back, for the caller to let go once mutex_ is); whether a refine may run
-        // now, and whether one built may be offered now (no recording armed, an instrument silent); the refine itself,
-        // true when it offered (mutex_ held on entry and on return, let go while it compiles and once it offered).
+        // now, and whether one built may be offered now (no recording armed, an instrument silent and its Shared not
+        // ticking); the refine itself, true when it offered (mutex_ held on entry and on return, let go while it
+        // compiles and once it offered).
         [[nodiscard]] std::unique_ptr<Built> checkLanded();
         // The outcomes reported since last looked at (circuits::Answers::reported): a test of the program that plays
         // that gave no answer says why in the status (above). Under mutex_.

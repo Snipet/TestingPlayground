@@ -811,6 +811,9 @@ namespace playground
             return false;                          // a recording is armed: what plays stays what it records
         if constexpr (product::kIsInstrument)
         {
+            if (recipe_.sharedTick)
+                return false;                      // its Shared moves between notes (Patch.h, "Shared on its own"), and a
+                                                   // new program's starts afresh: the answer waits for the next RUN
             Meters m;
             if (!engine_.meters(m) || m.voices != 0 || m.fading != 0 || m.held != 0)
                 return false;                      // only in silence: no held note starts again

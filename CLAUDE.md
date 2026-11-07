@@ -237,9 +237,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   keys empty (the held keys' restarts give the noteOns) and keeps the old one's for a revert, which takes them up again
   (those let go meanwhile get their noteOff). A new path that ends a note calls `sharedNoteOff` before the voice's
   stop. The frozen copy looks the hooks up (`freeze`), and a hook that runs past its budget stops the Patch as any call
-  does (`Method::sharedTick`, ...). A program with none of them gets no call and no write. A recording whose program's
-  Shared ticks never replays from a fresh state (its tick ran before the take): CaptureReplay says so. `dsp.shared`
-  checks it all.
+  does (`Method::sharedTick`, ...). A program with none of them gets no call and no write. A program whose Shared ticks
+  is never refined (below, the self-test: its answer waits for the next RUN). A recording whose program's Shared ticks
+  never replays from a fresh state (its tick ran before the take): CaptureReplay says so. `dsp.shared` checks it all.
 - The circuit dials (Patch.h's "Circuits", Engine.h's "Circuit dials"): a circuit's pot or switch that is a dial reaches
   its module through `set()`, which the Engine calls through the program's shim (`Patch::setCircuits`: no allocation,
   the values into a buffer the compile sized) on the absolute 16-sample grid, with the glided values at that sample,
@@ -277,7 +277,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the one whose compile made it due): it compiles `recipe_.files`, what plays (never the draft, never a failed RUN's
   `status_.sources`), under a new program id and offers it as any program; it waits while a RUN is queued (which reads
   the store itself, and the refine is dropped), while a recording is armed (`Engine::ownCode`), and in the synth until
-  `Meters` shows no voice sounding, fading or held (no held note restarts), and it looks again just before the offer
+  `Meters` shows no voice sounding, fading or held (no held note restarts), never for a program whose Shared ticks
+  (`Recipe::sharedTick`: its state moves between notes, and a new program's Shared starts afresh; the answer plays from
+  the next RUN, which reads the store), and it looks again just before the offer
   (a refine that may not play then is held, `held_`, and offered later). A refine answers no request: its status keeps
   the request before it (`request`, `ok`, a failed RUN's `errors` and `sources`: the editor and Claude still see why the
   draft fails), the refined program in `CompileStatus::program` (what `Meters::program` names; `Processor::apply` and

@@ -130,7 +130,8 @@
 // dial's value at the sample (setSharedDials) before each tick and each note hook, from the first block on: a knob's
 // value, never a stream. A param of Shared that no dial is named as keeps its default, with a note. The effect's Shared
 // has none of these, its init and end only. They run in the frozen copy too (it looks their shims up), and stop the
-// Patch as any audio-thread call does.
+// Patch as any audio-thread call does. A program whose Shared ticks is never refined (Compiler.h, "The self-test"): a
+// new Patch's Shared starts afresh, so its circuits' self-test answers play from the next RUN.
 //
 // Frozen dials. Once the dials hold still, the plugin compiles the program again with each dial bound as a constant at
 // its value (FMinus's Program::Binding::frozen; freeze() below): the optimiser folds what the dials compute, a filter's
