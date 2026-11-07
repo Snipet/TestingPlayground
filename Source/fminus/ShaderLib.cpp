@@ -16,7 +16,7 @@ namespace playground::shaderlib
 // by it. at: where the text stands (its left end with align 0, its middle 0.5, its right end 1), at the middle of its
 // capitals' height; size: the font's size in px, as the panel's text has it (11: a label's).
 //   text(p, at, size, align, "RPM")                 a string: up to 12 characters (a vec4), 48 (a mat4)
-//   number(p, at, size, align, value, decimals)     a number: "1250", "-3.5" (decimals 0 to 6)
+//   number(p, at, size, align, value, decimals)     a number: "1250", "-3.5" (decimals 0 to 6; 9999999 at most)
 //   textWidth(size, "RPM")                          a string's width in px
 #ifndef FUNK_TEXT_SH
 #define FUNK_TEXT_SH
@@ -140,7 +140,9 @@ float number(vec2 p, vec2 at, float size, float align, float value, float decima
     for (int k = 0; k < 6; ++k)
         if (k < d)
             m *= 10.0;
-    int r = int(min(floor(abs(value) * m + 0.5), 9999999.0));
+    // Rounded by its fraction: from 2^23 up a float's x + 0.5 is a tie, rounded to even.
+    float a = abs(value) * m;
+    int r = int(min(floor(a) + step(0.5, fract(a)), 9999999.0));
     int digits = 1;
     int ten = 10;
     for (int k = 0; k < 7; ++k)
@@ -191,8 +193,8 @@ float number(vec2 p, vec2 at, float size, float align, float value, float decima
 //   needle(p, c, angle, length, w)    a needle from its hub c, narrowing to its tip
 //   dirOf(angle)  angleOf(p, c)       an angle's direction; p's angle around c
 //   digit7(p, c, h, d)                a seven-segment digit, its middle c, h px tall (d 0 to 9; any other value none)
-//   number7(p, at, h, value, n)       a whole number in n seven-segment digits, its right end at at (the digits'
-//                                     middle), leading zeros dark; value 8888888.0 lights every segment: unlit ghosts
+//   number7(p, at, h, value, n)       a whole number (to 9999999) in n seven-segment digits, its right end at at (the
+//                                     digits' middle), leading zeros dark; 8888888.0 lights every segment: unlit ghosts
 //   ramp(a, b, t)  ramp3(a, b, c, t)  two and three colours along t (0..1)
 //   along(p, a, b)  around(p, c, r)   t for a straight gradient from a to b, a round one from c out to r
 #ifndef FUNK_SHAPES_SH
@@ -268,11 +270,13 @@ float arc(vec2 p, vec2 c, float r, float w, float from, float to)
 float ticks(vec2 p, vec2 c, float r0, float r1, float w, float from, float to, float n)
 {
     float pitch = (to - from) / max(n - 1.0, 1.0);
-    float rel = angleOf(p, c) - from;
-    rel -= 360.0 * floor(rel / 360.0);
-    if (pitch < 0.0)
-        rel -= 360.0;
-    float k = clamp(floor(rel / pitch + 0.5), 0.0, n - 1.0);
+    // p's angle from `from`, wrapped about the sweep's middle as arc() wraps it: a point just past either end is that
+    // end's tick's, never the other end's (either way round).
+    float mid = 0.5 * (from + to);
+    float rel = angleOf(p, c) - mid;
+    rel -= 360.0 * floor((rel + 180.0) / 360.0);
+    rel += mid - from;
+    float k = abs(pitch) > 1e-6 ? clamp(floor(rel / pitch + 0.5), 0.0, n - 1.0) : 0.0;
     vec2 dir = dirOf(from + k * pitch);
     return cover(sdLine(p, c + dir * r0, c + dir * r1) - 0.5 * w);
 }
@@ -335,13 +339,14 @@ float number7(vec2 p, vec2 at, float h, float value, float n)
     float k = floor((at.x - p.x) / pitch);
     if (k < 0.0 || k > n - 1.0)
         return 0.0;
-    float v = min(floor(abs(value) + 0.5), 9999999.0);
-    float ten = 1.0;
+    // Rounded by its fraction and taken apart in ints: from 2^23 up a float's x + 0.5 is a tie, rounded to even.
+    float a = abs(value);
+    int v = int(min(floor(a) + step(0.5, fract(a)), 9999999.0));
+    int ten = 1;
     for (int i = 0; i < 7; ++i)
         if (float(i) < k)
-            ten *= 10.0;
-    float digit = floor(v / ten + 0.5 / ten);
-    digit -= 10.0 * floor(digit / 10.0);
+            ten *= 10;
+    float digit = float((v / ten) % 10);
     if (k > 0.5 && v < ten)
         digit = 10.0;
     return digit7(p, vec2(at.x - (k + 0.5) * pitch, at.y), h, digit);
