@@ -16,8 +16,9 @@
 //            past 300 s, the user's recording, JSON that is none, a folder without program.fm, an option it has not: 1,
 //            each saying why
 //   MORE     a library file the program #includes and the folder lacks: added, saying so; --list-fields names the
-//            fields; the effect's own input (--input, a WAV at 44.1 kHz): rendered at its rate, the same bits as trace's
-//            export of it in this process; the extension (<Name>.mcpb) carries the renderer beside the server
+//            fields; measure_output's profile (its line in the report); the effect's own input (--input, a WAV at 44.1
+//            kHz): rendered at its rate, the same bits as trace's export of it in this process; the extension
+//            (<Name>.mcpb) carries the renderer beside the server
 //   NOTES    a dial the program has not, by --dial and by a scenario's move: said on stderr and listed in the metrics
 //            (unknown_dials), measured (-q) or not (--no-measure); fields: a pattern that matches none and the fields
 //            matched past the CSV's 12 columns (each counted once, however many patterns match it) said on stderr and
@@ -499,6 +500,9 @@ PROBE(plugin, render)
         P.eq("more.library_added", r.code == 0 && has(r.out, "noise.fm is the library's") ? 1 : 0, 1);
         const Ran listed = render({ work.getChildFile("spins").getFullPathName().toStdString(), "--list-fields" });
         P.eq("more.list_fields", listed.code == 0 && has(listed.out, "count int") && has(listed.out, "spins int") ? 1 : 0, 1);
+        // measure_output's profile (dsp/Profile.h): its line in the report, read as the tool reads it.
+        const Ran profiled = render({ lib.getFullPathName().toStdString(), "-r", "{\"profile\": true, \"hold_seconds\": 0.3}" });
+        P.eq("more.profile", profiled.code == 0 && has(profiled.out, "\nProfile") ? 1 : 0, 1);
     }
     if constexpr (!kInstrument)
     {

@@ -175,6 +175,8 @@
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
+//   PROFILE  measure_output's profile through MCP: the report's profile line (dsp/Profile.h), before the metrics; a
+//            value that is no boolean refused
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
@@ -3304,6 +3306,22 @@ PROBE(plugin, chat)
                                                   && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
                                                   && !has(plain, "Octave bands") && !has(plain, "Third-octave bands")
                                                   && !has(plain, "Semitone bands") ? 1 : 0, 1);
+            }
+
+            // ---- PROFILE ---------------------------------------------------------------------------------------------------
+            {
+                juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "profile", true } });
+                const std::string profiled = toolText(sa.mcpCall("measure_output", in));
+                const std::size_t at = profiled.find("\nProfile");
+                std::printf("measure_output with profile: %s\n",
+                            at == std::string::npos ? "(no line)" : profiled.substr(at + 1, profiled.find('\n', at + 1) - at - 1).c_str());
+                P.eq("profile.line", at != std::string::npos
+                                         && (has(profiled, "samples of the rendering thread") || has(profiled, "Profile: no samples (")
+                                             || has(profiled, "Profile: none (this platform"))
+                                         && has(profiled, "\nMetrics: ") ? 1 : 0, 1);
+                in.getDynamicObject()->setProperty("profile", "yes");
+                const pg::ChatAgent::McpResult notBool = sa.mcpCall("measure_output", in);
+                P.eq("profile.bad_refused", notBool.isError && has(allText(notBool), "profile is true or false") ? 1 : 0, 1);
             }
 
             // ---- BASE ------------------------------------------------------------------------------------------------------
