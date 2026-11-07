@@ -686,8 +686,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   desktop; Mesa's lavapipe where no GPU driver is), so the editor is `gpu/CreateEditorGpu.cpp`'s EditorHost as on macOS.
   Its shaders and a `.gui` file's are SPIR-V, compiled by the Linux shaderc the deps cache holds stamped (else built
   from bgfx.cmake); CMakeLists.txt copies it into the VST3's `Contents/Resources` and beside the Standalone's
-  executable, where `Processor.cpp`'s `shaderTools` looks. With `FP_WITH_GPU` off, `editor/nogpu/SoftEditorHost` as on
-  Windows.
+  executable, where `bundledShaderc` (`Processor.h`) looks. The Standalone's own file is `/proc/self/exe`'s there:
+  JUCE's `currentExecutableFile` on Linux is dladdr's name, which for a program is its argv[0] as typed, so a
+  Standalone started by name through `~/.local/bin` would look in the working folder (`plugin.linux` STANDALONE).
+  With `FP_WITH_GPU` off, `editor/nogpu/SoftEditorHost` as on Windows.
 - **Platform code** takes the POSIX branches macOS takes, and the other side of `#if defined(__APPLE__)` where a pair
   names the Mac alone: the Standalone takes Windows' `NativeWindowWin.cpp` (JUCE's window and title bar, a JUCE menu bar
   in the window: nothing in it is Windows') and its own `RacingWheelLinux.cpp` (below); `ChatStore`'s crypto is
@@ -712,9 +714,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   else `$TMPDIR`'s (else `/tmp`'s) `funk-<uid>/`, made 0700 and refused (no MCP) when it is a link or others may write
   into it. A new store or cache on Linux goes through `xdg::` too; a probe points the variables at its own folders.
 - **The chat's keys go to the desktop's keyring** (`plugin/SecretStore.h`: the Secret Service through libsecret,
-  loaded at run time, never linked) when a session bus and libsecret are there, else to their FPK1 files; a file left
-  from a keyring-less run moves in when the key is next read with one. `hasKey` asks the keyring without unlocking (no
-  prompt), at most every 3 s; `loadKey` and `saveKey` may have the desktop prompt to unlock it. Never the keyring while
+  loaded at run time, never linked) when a session bus and libsecret are there, else to their FPK1 files. A key's file
+  exists only when its last save did not reach the keyring (none ran, or it refused: left locked), so it is newer than
+  the keyring's item and is read first, then moves in when the keyring takes it. `hasKey` asks the keyring without
+  unlocking (no prompt), at most every 3 s; `loadKey`, `saveKey` and `forgetKey` may have the desktop prompt to unlock
+  it and wait for the answer, so the agent reads a key with its mutex released (`ensureKey`, `otherKeyOf`) and
+  `chatState` asks `hasKey` before taking it. libsecret's lookup and clear say nothing about a keyring left locked (a
+  lookup finds nothing, a clear removes nothing): `readKey` asks `has()` after an empty lookup (the key kept, said
+  locked), `SecretStore`'s clear unlocks first, and `dropKey` asks `has()` after it (a forget that left the key false,
+  with why, and the chat says it was not removed). Never the keyring while
   the store's folder is a test's or a probe's sandbox: a probe gives a `secrets::Store` of its own
   (`setSecretStoreForTests`), or the desktop's with `DBUS_SESSION_BUS_ADDRESS` pointing nowhere (libsecret's calls fail
   at the connection), never the user's bus.
