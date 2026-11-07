@@ -838,15 +838,22 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`rows`, 32 by default, at most 64, within `kInlineBytes`: rows dropped evenly; after trace's cut, whole) for a
   client that cannot open the files. find looks for nothing unless asked. The folder is `rendersFolder()`: the user's
   Music folder's `<Company>/<Name>/Renders`, under CTest the probe's sandbox's `renders/`; each file is written through
-  a temporary beside it and moved into place; a name given (`name`, tidied) replaces that name's files (and only
-  those), else the time names them; nothing else there is deleted, and an export that would take the folder past
-  `kMaxFolderBytes` (2 GB) or leave the disk under `kKeepFree` (1 GB) is refused in words. Never of the user's
-  recording: a render that reads it (source or scenario "capture") is refused before it renders, as is `list` with it.
+  a temporary beside it and moved into place. The files are the user's: an export only adds files, never replacing or
+  deleting one: a name given (`name`, tidied), else the time, names them, with a number after it while a file it would
+  write is there (an effect's input file's name among them). So trace is no read-only tool to MCP, nor a destructive
+  one (`kFaces`: its `destructiveHint` false); keep it so. An export that would take the folder past
+  `kMaxFolderBytes` (2 GB) or leave the disk under `kKeepFree` (1 GB) is refused in words, and a trace cancelled (the
+  stop button, Desktop's cancel: `cancel_`, in either pass) writes nothing. The WAV and the CSV say "up to where trace
+  stopped" only when pass 1 stopped (`TraceResult::stoppedFirst`; a stop in pass 2 leaves its render whole). Never of
+  the user's recording: a render that reads it (source or scenario "capture") is refused before it renders, as is
+  `list` with it.
 - **The render hash** (`dsp/Export.h`): every measuring report names what it rendered as bits, "Render hash: <16 hex>
   (SHA-256 of the float32 samples, L R interleaved, of ...)": measure_output's (`Result::hash`, `hashed`: an
   instrument's render of the notes held, the same render as trace's and view_sound's; an effect's counted test-signal
   renders in turn, the steady tone's aside; a whole report's only, so a check's and tune_dials' partial ones, `want`,
-  spend nothing on it: about 190 MB of samples a second), view_sound's (`View::hash`), compare's each side's
+  spend nothing on it: about 190 MB of samples a second), view_sound's (`View::hash`), each over the render's own
+  length (a window past its end renders on, and the hash leaves that out, saying so: `Timeline::plain`,
+  `Sound::plain`; the same sound hashes the same whatever the window), compare's each side's
   (`Comparison::hashA`, `hashB`, a line after its own) and trace's (`TraceResult::hash`, of what pass 1 rendered). The
   bytes are a float32 WAV's data chunk's, so a build elsewhere, `shasum -a 256` or Python's hashlib gives the same
   digest. `dsp.debug` EXPORT and `plugin.chat` EXPORT check both.
