@@ -923,16 +923,18 @@ namespace
             return out;
         }
 
-        // The instances `wanted` names: its id, its name or its number's name ("2", "Bass", "Synth 2"), its track's or
-        // its project's name, whole (case aside); else those sharing the most words with it ("the moog one" for the
-        // project "Moog Bass").
+        // The instances `wanted` names: its id, its name or its number's name ("2", "Bass", "Synth 2"), both as
+        // list_instances writes them ("Bass (Synth 2)"), its track's or its project's name, whole (case aside); else
+        // those sharing the most words with it ("the moog one" for the project "Moog Bass"; a named one's number counts
+        // as its words too).
         static std::vector<const Seen*> matching(const std::vector<Seen>& all, const std::string& wanted)
         {
             const std::string w = lower(juce::String(str(wanted)).trim().toStdString());
             std::vector<const Seen*> exact;
             for (const Seen& s : all)
-                if (w == s.id || w == lower(s.name) || w == lower(s.number) || (!s.track.empty() && w == lower(s.track))
-                    || (!s.project.empty() && w == lower(s.project)))
+                if (w == s.id || w == lower(s.name) || w == lower(s.number)
+                    || (s.name != s.number && w == lower(s.name + " (" + s.number + ")"))
+                    || (!s.track.empty() && w == lower(s.track)) || (!s.project.empty() && w == lower(s.project)))
                     exact.push_back(&s);
             if (!exact.empty())
                 return exact;
@@ -942,7 +944,8 @@ namespace
             for (const Seen& s : all)
             {
                 int score = 0;
-                for (const std::string& mine : words(s.name + " " + s.track + " " + s.project))
+                const std::string named = s.name == s.number ? s.name : s.name + " " + s.number;
+                for (const std::string& mine : words(named + " " + s.track + " " + s.project))
                     score += std::count(asked.begin(), asked.end(), mine) > 0 ? 1 : 0;
                 if (score > top)
                 {
