@@ -1828,7 +1828,7 @@ namespace playground::ui
             editor().accessibility(text);
             out.push_back(std::move(text));
         }
-        bool a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&) override
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double value, funkgui::GestureController& g) override
         {
             const uint32_t files = static_cast<uint32_t>(kMaxFiles);
             if (id == editor().a11yId() || id == id_ + 1)
@@ -1845,8 +1845,12 @@ namespace playground::ui
                 assist_.togglePanelSwitch();
                 return true;
             }
-            if (schematicShown() && schematic_.a11yAction(id, a))
-                return true;
+            if (schematicShown())
+            {
+                schematic_.setGestures(&g);              // a circuit dial's item writes through it
+                if (schematic_.a11yAction(id, a, value))
+                    return true;
+            }
             if (id >= id_ + 2 && id < id_ + 2 + files)
             {
                 select(static_cast<int>(id - id_ - 2));

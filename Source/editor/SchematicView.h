@@ -21,7 +21,8 @@
 //                a banner before it (Not drawn: ..., else Not played: ... with its button, Play this circuit, else
 //                "program.fm now plays pedal.cir" with its button, Undo, while program.fm's text is what Play wrote,
 //                else why its pots have no knobs: "program.fm:38: Screamer's pots have no dials: the program calls its
-//                set()")
+//                set()", else the drawing's notes: "Note: ..."); the notes take the hint's place while another banner
+//                has the right
 //
 // The circuit dials: when the program that plays drives this file's pots and switches with dials
 // (CompileStatus::circuitDials, Patch.h's "Circuits"), a 16 px knob beside each pot symbol and a position chip beside
@@ -48,7 +49,7 @@
 //
 // Keys while the canvas has them (FilesItem takes every key in this view; Escape leaves it): the parts' keys (R C L D
 // P X S E V I, Shift-G, O, Shift-P: carried under the pointer, or placed at the view's centre, or 4 units right of the
-// selection, when the pointer is away), A the More menu, G the Ground tool, N the Label tool, Escape (a gesture, then
+// selection, when the pointer is away, else beside or under that spot where it meets nothing), A the More menu, G the Ground tool, N the Label tool, Escape (a gesture, then
 // the tool, then the selection, then the canvas), Return (the field), Cmd-R, Cmd-Shift-R, Cmd-E, Delete and Backspace,
 // Cmd-Z, Cmd-Shift-Z, Cmd-Y, Cmd-A, Cmd-C, Cmd-X, Cmd-V, Cmd-D (the clipboard: netlist text, fminus/CirDoc.h's copied
 // and apply's paste op; Duplicate pastes just below the selection, else beside it, where the copy meets nothing; a
@@ -77,10 +78,17 @@
 // where the user sees them; a file's view takes its first ones from there (setPinsSource), so an editor opened again
 // and a picture's Panel (which publishes none) draw them there too.
 //
-// Accessibility: one group "Schematic, <file>" (the item's Tab stop), a list of parts ("R4, resistor 4.7k, from n1 to
-// z1") and a list of nets ("net n1: R4.1, C4.1, XU1.inn"), ids kA11yBase plus a 24-bit hash of "p:"+name or
-// "n:"+name (collisions probed in natural order), stable across pans and zooms; a11yRevision() bumps only when parts or
-// nets come or go. Message thread only.
+// Accessibility: one group "Schematic, <file>" (the item's Tab stop) holding a list of parts ("R4, resistor 4.7k, from
+// n1 to z1"), a list of nets ("net n1: R4.1, C4.1, XU1.inn"), the circuit dials (a pot's knob a slider of its dial, a
+// switch's chip a stepped slider of its positions, each written through the Panel's gestures as a drag on it is, and
+// listed whatever the zoom), the toolbar (Select, Ground and Label toggles; each part's button, which a screen reader's
+// press places at the view's centre as its key does with the pointer away; More a combo box whose choice is placed so;
+// Undo, Redo, Tidy, the zoom), the info strip's words (its banner and count, then the notice, the selection or the
+// hint), its button and its count, and the probes' readouts, the card's chip and Pin and each lane's unpin. Ids:
+// kA11yBase plus a fixed number under kA11yReserved, or plus a 24-bit hash of "p:"+name, "n:"+name or "k:"+name (a
+// dial's part; collisions probed in natural order), stable across pans and zooms; a11yRevision() bumps when items come
+// or go (parts, nets, the dials, the strip's button and count, the probes' items), never on a pan or a zoom. Message
+// thread only.
 #pragma once
 
 #include "dsp/Controls.h"
@@ -143,6 +151,7 @@ namespace playground::ui
     {
     public:
         static constexpr uint32_t kA11yBase = 0x40000000u;
+        static constexpr uint32_t kA11yReserved = 64;   // ids kA11yBase + 0 .. 63: the fixed items (below)
         static constexpr std::size_t kA11yItems = 400;   // the accessibility tree's budget: parts first, then nets
         static constexpr float kToolbarH = 28.0f;    // the toolbar, over the canvas
         static constexpr float kStripH = 22.0f;      // the info strip, under it (always reserved)
@@ -242,10 +251,10 @@ namespace playground::ui
         bool wheel(const funkgui::WheelEvent& e, double nowSec);
         bool key(const funkgui::KeyEvent& e);            // false: Escape with nothing left to end (leave the canvas)
         void accessibility(std::vector<funkgui::A11yItem>& out) const;
-        bool a11yAction(uint32_t id, funkgui::A11yAction a);
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double value = 0.0);   // a dial's through setGestures's
         bool specLine(char* out, std::size_t n, funkgui::Point pointer) const;
         void focusChanged(bool focused);
-        uint32_t a11yRevision() const;                   // bumps when parts or nets come or go
+        uint32_t a11yRevision() const;                   // bumps when its items come or go (Accessibility above)
         std::string statusWords() const;                 // CodeAssist's status line: "Schematic   12 parts   ..."
 
         // ---- the drawing and the view (the Panel's, the probes') ---------------------------------------------------------
@@ -375,7 +384,7 @@ namespace playground::ui
         void selectAll();
         void stepPart(int dir);                          // Tab, Shift-Tab
         void stepProblem(int dir);                       // the info strip's count
-        bool placeAt(cir::Kind kind, cir::Pt at, cir::Orient o);
+        bool placeAt(cir::Kind kind, cir::Pt at, cir::Orient o, std::string* why = nullptr);   // why: its refusal, unsaid
         void openMenu(funkgui::Point at);                // the popup click's menu, for what is under `at`
 
     private:
@@ -411,8 +420,10 @@ namespace playground::ui
         std::string stripCount() const;                  // "2 PROBLEMS" (none: empty)
         funkgui::Rect countRect() const;                 // the count's, at the strip's right end (its click)
         std::string stripBanner() const;                 // "Not drawn: Q1 (a BJT: Phase 2)", else "Not played: ..."
+        std::string noteWords() const;                   // "Note: <the drawing's first note> (+2 more)", "" for none
         funkgui::Rect stripButtonRect() const;           // the banner's button, at the left of the count
-        std::vector<Knob> knobs() const;                 // the circuit dials drawn now (screen points)
+        // the circuit dials drawn now (screen points); hidden: also while the labels hide them (their a11y items)
+        std::vector<Knob> knobs(bool hidden = false) const;
         int knobAt(funkgui::Point p) const;              // knobs()'s index under a point, -1 for none
         std::string knobWords(const Knob& k) const;      // "drive 62 %   drag to turn it, double-click: its default"
         void layoutBars();
@@ -471,6 +482,16 @@ namespace playground::ui
         std::optional<funkgui::Point> flagAt(const std::string& net) const;   // where a pinned net's number sits (world)
         void drawProbes(funkgui::Canvas& c, const funkgui::Theme& th, const sch::View& v, const sch::Inks& k) const;
         void openChipMenu();
+        // The toolbar's button pressed (a click; reader: a screen reader's press, which places a part at once), the
+        // strip's (Play this circuit, Undo), a part placed with the pointer away (the view's centre, or 4 units right
+        // of the selection), More's menu (reader: its choice placed so).
+        void pressButton(Button b, bool reader);
+        void pressStripButton();
+        bool placeAway(cir::Kind kind);
+        void openMore(bool reader);
+        std::string a11yShape() const;                   // what makes items come or go besides parts and nets (tick)
+        std::string shapeKey_;
+        uint32_t shapeA11y_ = 0;
         ProbeHooks probe_;
         std::array<ProbeSlot, 4> slots_{};
         ProbeSet sent_{};
