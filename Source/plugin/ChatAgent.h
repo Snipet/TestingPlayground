@@ -105,6 +105,16 @@
 // the key was refused: it stays, and the chat says so until the user replaces or removes it. When it starts, the
 // agent deletes what an earlier version kept of a sign-in it no longer has (chatstore::forgetOldSignIn).
 //
+// The chats, on this Mac only (ChatStore.h; CLAUDE.md, "The chats: on this Mac only"). The conversation shown is one of
+// its owner's chats: the project open's (by the project's id), or, while none is, this instance's own. The processor
+// names the owner (setOwner): opening another project keeps the chat shown with its project and shows that project's
+// newest (a new chat when it has none); saving the editor's files as a project carries the chat to it (moved from the
+// instance, copied from another project). The chat is written to the store (keep(): the conversation as saveState(true)
+// has it, the panel's pictures kept, so a chat opened again keeps its thinking) when a turn ends, when the session is
+// saved, before another chat shows and when the agent goes; the session keeps only which chat it is (chatRef()), and a
+// session from before keeps its conversation here once (adoptChat). The chat list (chatList) is its owner's, the newest
+// first: new, open, rename, delete.
+//
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
 // ChatHost (whose implementation must be safe from that thread) and the transport. Pictures are read on a job thread
 // of their own, so the message thread never waits for them.
@@ -112,6 +122,7 @@
 
 #include "plugin/Capture.h"
 #include "plugin/ChatPort.h"
+#include "plugin/ChatStore.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Live.h"
@@ -219,11 +230,45 @@ namespace playground
         void clearChecks() override;
         void stop() override;
         void newChat() override;
+        ChatList chatList() const override;
+        bool openChat(const std::string& id) override;
+        void renameChat(const std::string& title) override;
+        void deleteChat() override;
 
-        // The conversation in the session (the API's messages and the view's entries, as JSON), and back. A turn that
-        // is running is not saved half-done: its user message and what came back so far are.
-        std::string saveState() const;
+        // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
+        // saved half-done: its user message and what came back so far are. The panel's pictures (view_panel's,
+        // view_sound's) are left out, a line in each one's place, unless `pictures` (the chat's own file on this Mac):
+        // a history without them loads without its thinking. A chat whose tools' pictures pass kKeptPictureBytes (base64)
+        // in all is kept without them too: its file would be rewritten whole after every turn.
+        static constexpr std::size_t kKeptPictureBytes = 12u << 20;
+        std::string saveState(bool pictures = false) const;
         void loadState(const std::string& json);
+
+        // The chats (above). setOwner: the owner the conversation belongs to now (a project's id, or
+        // chatstore::instanceOwner of the instance's id) and its name for the list ("" for none); open shows the new
+        // owner's newest chat (the one shown kept with its owner), carry takes the chat shown along (a project saved:
+        // from the instance it moves, from another project a copy goes, the old project keeping its own). The same owner
+        // again changes nothing but the name. Asked from a turn's own thread, the change waits for the turn's end. True
+        // when another chat shows. restoreChat: a session's chat (its id) when it is this owner's, else the owner's
+        // newest, else a new one. adoptChat: a session from before the chats were kept here: its conversation kept under
+        // `owner`, its id made from its text, so a session loaded again finds the chat it became (and what was said
+        // since). chatRef: what the session keeps (keep() first). keep: the chat written when it changed since it was
+        // last written and holds more than the chat's notes (any thread, no lock of the agent's held); a chat whose file
+        // another writer changed meanwhile (another instance with it open) is kept under a new id, nothing lost.
+        enum class OwnerChange : uint8_t { open, carry };
+        bool setOwner(const std::string& owner, const std::string& label, OwnerChange how);
+        void restoreChat(const std::string& owner, const std::string& label, const std::string& id);
+        void adoptChat(const std::string& json, const std::string& owner, const std::string& label);
+        struct ChatRef
+        {
+            std::string owner, id;                                  // id "" while the chat holds nothing to keep
+        };
+        ChatRef chatRef() const;
+        void keep();
+        // The id adoptChat gives a session's conversation (32 hex digits from its text); a session from before has no
+        // instance id either, so the processor takes this one for it: the same session loaded again is the same owner.
+        static std::string sessionChatId(const std::string& json);
+        std::string chatOwner() const;
 
         // For probes: the transport (the next turn uses it), waiting for the current turn (and for the pictures
         // being read), the Messages API request bodies sent.
@@ -365,6 +410,22 @@ namespace playground
         void setActivity(std::string activity);
         void startWorker();
         void joinWorker();
+        // loadState without stopping a turn (its own thread may call it: a change of owner it waited for).
+        void readState(const std::string& json);
+
+        // The chats (ChatChats.cpp). keepLocked: keep() with storeMutex_ held. The chat shown replaced (storeMutex_ held,
+        // no turn running): by a chat of the store, by the owner's newest (else a new one), by a new one. clearChat: the
+        // conversation forgotten (mutex held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner
+        // asked from the turn's thread, at its end.
+        void keepLocked();
+        void showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
+        void showNewest(const std::string& owner, const std::string& label);
+        void showFresh(const std::string& owner, const std::string& label);
+        void clearChat();
+        bool worthKeeping() const;
+        std::string titleNow() const;
+        void applyPendingOwner();
+        bool onTurnThread() const;
 
         ChatHost& host_;
         std::unique_ptr<claude::Transport> transport_;
@@ -453,6 +514,26 @@ namespace playground
                                                                     // (a listen, one about to start): mcpCancel's
         std::string mcpLook_;                                       // the journal's token at MCP's last result
         std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
+
+        // The chat shown (above): its owner, the owner's name, its id, the user's title (named), when it was made, its file
+        // as last written or read here (another writer's change shows), revision_ when it was last written; storeMutex_
+        // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). A change of owner asked
+        // from a turn's own thread (turnThread_: the worker's, or an MCP call's) waits in pendingOwner_.
+        std::string chatOwner_, ownerLabel_;
+        std::string chatId_ = chatstore::newId();
+        std::string chatTitle_;
+        bool chatNamed_ = false;
+        int64_t chatCreated_ = 0;
+        chatstore::Stamp chatStamp_;
+        uint64_t storedRevision_ = 0;
+        mutable std::mutex storeMutex_;
+        struct PendingOwner
+        {
+            bool set = false;
+            std::string owner, label;
+        };
+        PendingOwner pendingOwner_;                                 // mutex held
+        std::atomic<std::thread::id> turnThread_{};
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work

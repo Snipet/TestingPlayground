@@ -1,8 +1,9 @@
 // Source/plugin/ChatStore.h: what the chat keeps on this Mac, shared by both playground plugins (the effect and the
-// synth, in any host and in their Standalones): the Anthropic API key, encrypted, and the choices (the model, thinking
-// level, fast mode, web search and planner chosen last). They live in ~/Library/Application Support/Funk/Playground/
-// (0700): anthropic-key.bin (0600) and chat.json. On Windows: %APPDATA%\Funk\Playground\, the user's profile's own,
-// and the same file through Windows' CNG (bcrypt) in place of CommonCrypto.
+// synth, in any host and in their Standalones): the Anthropic API key, encrypted, the choices (the model, thinking
+// level, fast mode, web search and planner chosen last) and the chats themselves, encrypted. They live in
+// ~/Library/Application Support/Funk/Playground/ (0700): anthropic-key.bin (0600), chat.json and chats/ (below). On
+// Windows: %APPDATA%\Funk\Playground\, the user's profile's own, and the same files through Windows' CNG (bcrypt) in
+// place of CommonCrypto.
 //
 // The key's file is "FPK1", a 16-byte salt, a 16-byte IV, the key encrypted with AES-256-CBC, and an HMAC-SHA256 of
 // all that before it (CommonCrypto). The two keys come from PBKDF2-HMAC-SHA256 (100,000 rounds, the salt) over this
@@ -11,12 +12,26 @@
 // derive the same keys, as it could read anything else of the user's: the encryption protects the key at rest
 // (backups, a copied folder, a stray search), not from such a program.
 //
-// Message thread or any other; the functions do their own I/O and hold no state but the directory override.
+// The chats (CLAUDE.md, "The chats: on this Mac only"): chats/<owner>/ (0700) a folder an owner, a project's id
+// (ProjectStore.h: a UUID in its file) or an instance's ("instance-" and the id its session keeps, for a chat while no
+// project is open), and in it two files a chat (0600), named by the chat's id (32 hex digits): <id>.chat, the
+// conversation as ChatAgent::saveState writes it, and <id>.meta, what the chat list shows (its title, whether the user
+// named it, when it was made and last changed). Both sealed as the key's file is, "FPC1" in place of "FPK1", with the
+// salt of the store (chats/.salt, 16 random bytes made once, 0600) so that a process derives the keys once whatever
+// number of chats it lists; each file still names its salt, so one written under another salt reads too. Nothing of a
+// chat is ever in clear on disk, nor anywhere but this folder: not in a session, a project, an export or a picture.
+//
+// Message thread or any other; the functions do their own I/O and hold no state but the directory override and the
+// chats' derived keys (by salt).
 #pragma once
 
+#include "plugin/ChatPort.h"
+
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace juce
 {
@@ -57,4 +72,64 @@ namespace playground::chatstore
     // token's file (and a temporary beside it), and those two fields (chat.json's others stay). Nothing there, nothing
     // changes; a file that cannot be read or deleted is left as it is. The agent calls it once, when it starts.
     void forgetOldSignIn();
+
+    // ---- the chats (above) ------------------------------------------------------------------------------------------
+    inline constexpr std::size_t kMaxTitle = kMaxChatTitle;      // characters (ChatPort.h)
+    inline constexpr const char* kInstancePrefix = "instance-";
+
+    // A new id: 32 random hex digits (a chat's, an instance's). Whether `id` is one (a chat's file is named by it).
+    std::string newId();
+    bool validId(std::string_view id);
+    // Whether `owner` may name a folder of chats: 1 to 64 of a-z, 0-9 and '-', starting with neither '-' nor '.': a
+    // project's id (a UUID, lower case) or kInstancePrefix and an id. An owner read from a file or a session is checked
+    // so before it reaches a path.
+    bool validOwner(std::string_view owner);
+    std::string instanceOwner(std::string_view instanceId);     // "instance-<id>"
+    // A title as the list keeps it: printable ASCII, the spaces collapsed, at most kMaxTitle characters.
+    std::string tidyTitle(std::string_view title);
+
+    // A chat as the list shows it.
+    struct ChatMeta
+    {
+        std::string id;
+        std::string title;
+        bool named = false;                                      // the user named it: its title no longer follows its
+                                                                 // first message
+        int64_t createdMs = 0, updatedMs = 0;                    // ms since 1970
+    };
+    // A chat's file as this process last wrote or read it (its time and size): another writer's change (another
+    // instance with the same chat open) shows as a file that is not as it was.
+    struct Stamp
+    {
+        int64_t modified = -1, size = -1;
+        bool none() const noexcept { return size < 0; }
+        friend bool operator==(const Stamp&, const Stamp&) = default;
+    };
+
+    juce::File chatsDirectory();                                 // directory()'s chats/
+    // An owner's chats, the newest (last changed) first; a chat whose .meta is missing or damaged is listed from its
+    // file's time, titled "Chat". Ids not valid and files not sealed here are left out.
+    std::vector<ChatMeta> chatsOf(std::string_view owner);
+    bool hasChat(std::string_view owner, std::string_view id);
+    struct Loaded
+    {
+        ChatMeta meta;
+        std::string state;                                       // ChatAgent::saveState's JSON
+        Stamp stamp;
+    };
+    // A chat, opened: nothing, with why, when it is missing, damaged, or was sealed on another Mac or account.
+    std::optional<Loaded> loadChat(std::string_view owner, std::string_view id, std::string* why = nullptr);
+    // A chat written (the folder made, 0700, the files 0600): `stamp` is what the caller last wrote or read of it (none:
+    // it has not), and becomes what it wrote. `conflict`, and nothing written, when the file is there and not as
+    // `stamp` says (another writer's: the caller keeps its chat under a new id instead), or there and `stamp` none.
+    enum class SaveResult : uint8_t { ok, conflict, failed };
+    SaveResult saveChat(std::string_view owner, const ChatMeta& meta, const std::string& state, Stamp& stamp,
+                        std::string* why = nullptr);
+    // The user's title for a chat (named), its .meta written again; false when there is no such chat.
+    bool renameChat(std::string_view owner, std::string_view id, std::string_view title);
+    // A chat deleted (both files); a chat moved to another owner's folder (a chat with no project going with the
+    // project it is saved as); every chat of an owner deleted, with its folder (a project deleted).
+    bool removeChat(std::string_view owner, std::string_view id);
+    bool moveChat(std::string_view from, std::string_view to, std::string_view id);
+    bool removeOwner(std::string_view owner);
 }

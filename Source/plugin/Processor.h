@@ -18,9 +18,10 @@
 //   - effect or instrument (the product's KIND, products/<key>.cmake: product::kIsInstrument): an effect has a
 //     stereo input and output and processes in place; an instrument has an output only and gets the block's MIDI
 //     notes as Events;
-//   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
-//     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
-//     a dial queued for poll()).
+//   - the chat with Claude (ChatAgent.h): its conversations are kept on this Mac only (ChatStore.h), with the project
+//     open (by its id) or, while none is, with this instance; the session names the chat (<CHAT instance=".."
+//     owner=".." chat=".."/>), never holds it. Its tools act on the draft, RUN and the dials through ChatHost, from the
+//     agent's thread (the draft under programMutex_, a dial queued for poll()).
 //   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
 //     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
 //     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element);
@@ -362,6 +363,15 @@ namespace playground
         std::string projectPreset_;
         Sources projectFiles_;
         std::vector<projectstore::Dial> baseDials_;
+        // The chats (ChatAgent.h, "The chats"; programMutex_): the project open's id (ProjectStore.h: the session keeps it,
+        // to find the project renamed in the Finder since), and this instance's own (its chats while no project is open;
+        // kept in the session, <CHAT instance>). chatOwnerNow: the owner the chat shown belongs to now (the project's
+        // id, made when it has none; `opened`: the project read already), projectId_ followed; syncChatOwner tells the
+        // agent (open: the owner's newest chat shows; carry: the chat goes along).
+        std::string projectId_, projectIdName_;                   // the id, and the name it was found for
+        std::string instanceId_ = chatstore::newId();
+        void chatOwnerNow(std::string& owner, std::string& label, const projectstore::Project* opened = nullptr);
+        void syncChatOwner(ChatAgent::OwnerChange how, const projectstore::Project* opened = nullptr);
         // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();

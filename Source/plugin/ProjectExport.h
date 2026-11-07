@@ -18,8 +18,11 @@
 //            Name.fmpack | xz -d` prints the JSON): a project's versions are mostly the same text, which LZMA's window
 //            takes as repeats. Elsewhere zlib (JUCE's), and a package in xz is refused there with a why.
 //
-// Either imports as a new project (ProjectStore::add: "<name> 2" when the name is taken), its versions, presets and info
-// with it; the kind is checked (a synth's export does not open in the effect). Any thread; no state.
+// Either imports as a new project (ProjectStore::add: "<name> 2" when the name is taken, a new id), its versions,
+// presets and info with it; the kind is checked (a synth's export does not open in the effect). Neither holds the
+// project's chats nor its id (ProjectStore.h): the chats stay on this Mac (ChatStore.h), and the id, which names their
+// folder here, is left out, so a file sent elsewhere carries nothing of them (the source zip's README says so; a factory
+// project made from a user's file must leave it out too). Any thread; no state.
 #pragma once
 
 #include "plugin/ProjectStore.h"

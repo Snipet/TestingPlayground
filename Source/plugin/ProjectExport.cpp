@@ -133,6 +133,7 @@ namespace playground::projectexport
             }
             s += "\n## Open it again\n\nIn " + std::string(product::kName) + ": PROJECTS, Import..., and choose this .zip. `project.json` "
                  "keeps the dials, the presets and every version's place.\n";
+            s += "\nThe project's chats with Claude are not in this zip: they stay on the computer they were had on.\n";
             return s;
         }
     }
@@ -221,6 +222,7 @@ namespace playground::projectexport
     bool writePackage(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why)
     {
         projectstore::Project q = p;
+        q.id.clear();                                    // this Mac's: its chats stay here (ProjectExport.h)
         if (!allVersions)
             q.versions = { p.latest() };
         const std::string json = projectstore::toJson(q);
@@ -253,8 +255,9 @@ namespace playground::projectexport
             zip.addEntry(new juce::MemoryInputStream(text.data(), text.size(), true), 9, str(root + "/" + path),
                          juce::Time(static_cast<juce::int64>(ms)));
         };
-        // The manifest: the project's JSON, each version's files by name only, and where they are.
+        // The manifest: the project's JSON, each version's files by name only, and where they are; never its id.
         projectstore::Project q = p;
+        q.id.clear();
         if (!allVersions)
             q.versions = { p.latest() };
         juce::var manifest = juce::JSON::parse(str(projectstore::toJson(q)));

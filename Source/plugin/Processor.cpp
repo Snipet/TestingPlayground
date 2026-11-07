@@ -1,6 +1,7 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "plugin/ChatStore.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 
@@ -35,9 +36,14 @@ namespace playground
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
         const juce::Identifier kCircuitsTag{ "CIRCUITS" }, kAnswerTag{ "ANSWER" }, kKey{ "key" };
         const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" },
-                               kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
+                               kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" },
+                               kProjectId{ "projectId" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
-        const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        // The chat with Claude: which one it is, never what was said (ChatAgent.h, "The chats"; CLAUDE.md, "The chats: on
+        // this Mac only"): <CHAT instance=".." owner=".." chat=".."/>, the instance's id (its chats while no project is
+        // open), the chat's owner and id. A session from before kept the conversation itself (json=".."): it is kept on
+        // this Mac when the session loads (ChatAgent::adoptChat), and the session's next save leaves it out.
+        const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" }, kInstance{ "instance" }, kOwner{ "owner" }, kChatId{ "chat" };
         // MCP's marks (ChatAgent::mcpMarksToKeep, Live.h's KeptMark): <MCP><MARK token><FILE name hash netlist lines/>
         // </MARK></MCP>, the hashes in hex, so that get_status `since` with a token from before the plugin was opened
         // again still says which files changed (a state from before them has none).
@@ -345,6 +351,8 @@ namespace playground
         apply(s, true, true, Given{});
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
+        // The chat's owner: this instance (no project is open yet).
+        chat_.setOwner(chatstore::instanceOwner(instanceId_), {}, ChatAgent::OwnerChange::carry);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
                                                          [this](const std::string& name, const juce::var& arguments, uint64_t call) {
                                                              return chat_.mcpCall(name, arguments, call);
@@ -1321,6 +1329,8 @@ namespace playground
             if (!projectName_.empty())
             {
                 program.setProperty(kProject, juce::String::fromUTF8(projectName_.c_str()), nullptr);
+                if (!projectId_.empty())
+                    program.setProperty(kProjectId, juce::String(projectId_), nullptr);
                 program.setProperty(kProjectVersion, projectVersion_, nullptr);
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
@@ -1373,9 +1383,22 @@ namespace playground
             program.appendChild(tree, nullptr);
         }
         state.appendChild(program, nullptr);
-        juce::ValueTree chat{ kChatTag };
-        chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
-        state.appendChild(chat, nullptr);
+        {
+            // The chat stays on this Mac (written now, when it changed); the session names it only.
+            chat_.keep();
+            const ChatAgent::ChatRef ref = chat_.chatRef();
+            std::string instance;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                instance = instanceId_;
+            }
+            juce::ValueTree chat{ kChatTag };
+            chat.setProperty(kInstance, juce::String(instance), nullptr);
+            chat.setProperty(kOwner, juce::String(ref.owner), nullptr);
+            if (!ref.id.empty())
+                chat.setProperty(kChatId, juce::String(ref.id), nullptr);
+            state.appendChild(chat, nullptr);
+        }
         if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
         {
             const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
@@ -1518,12 +1541,10 @@ namespace playground
                 }
             state.removeChild(panel, nullptr);
         }
+        // The chat: which one (applied once the project open is known, below), or a conversation from before.
         const juce::ValueTree chat = state.getChildWithName(kChatTag);
         if (chat.isValid())
-        {
-            chat_.loadState(chat.getProperty(kJson).toString().toStdString());
             state.removeChild(chat, nullptr);
-        }
         {
             // MCP's marks, now of before the plugin was opened again (none in a state from before them).
             const juce::ValueTree mcp = state.getChildWithName(kMcpTag);
@@ -1621,12 +1642,16 @@ namespace playground
                 projectName_ = projectstore::tidyName(program.getProperty(kProject).toString().toStdString());
                 projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
                 projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
+                projectId_ = program.getProperty(kProjectId).toString().toLowerCase().substring(0, 64).toStdString();
+                projectIdName_.clear();                          // checked against the project's file (chatOwnerNow)
             }
             else
             {
                 projectName_ = projectstore::tidyName(program.getProperty(kPreset).toString().toStdString());
                 projectVersion_ = 0;
                 projectPreset_.clear();
+                projectId_.clear();
+                projectIdName_.clear();
             }
             projectLatest_ = projectVersion_;
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
@@ -1662,6 +1687,79 @@ namespace playground
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
         abStateLoaded_.store(std::max<uint64_t>(1, s.request));
+
+        // The chat (ChatAgent.h, "The chats"): this instance's id (its chats while no project is open), then the project
+        // open's chat the session names, else that project's newest; a session from before keeps its conversation on this
+        // Mac now; a state with no chat at all (a preset from before chats) shows the project's chats all the same.
+        if (chat.isValid())
+        {
+            // A session from before has no instance id: one made from its conversation, so that loaded again (unsaved
+            // since) it is the same instance, and its chat (kept with it while no project is open) is found, not kept twice.
+            std::string id = chat.getProperty(kInstance).toString().toStdString();
+            if (!chatstore::validId(id) && chat.hasProperty(kJson))
+                id = ChatAgent::sessionChatId(chat.getProperty(kJson).toString().toStdString());
+            if (chatstore::validId(id))
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                instanceId_ = id;
+            }
+        }
+        std::string owner, label;
+        chatOwnerNow(owner, label);
+        if (chat.isValid() && chat.hasProperty(kJson))
+            chat_.adoptChat(chat.getProperty(kJson).toString().toStdString(), owner, label);
+        else if (chat.isValid())
+            chat_.restoreChat(owner, label,
+                              chat.getProperty(kOwner).toString().toStdString() == owner ? chat.getProperty(kChatId).toString().toStdString()
+                                                                                          : std::string());
+        else
+            chat_.setOwner(owner, label, ChatAgent::OwnerChange::open);
+    }
+
+    // The chats' owner now (ChatAgent.h, "The chats"): the project open's id (made now when its file has none: a project
+    // from before ids; found by the id the session kept when the project was renamed in the Finder since), its name the
+    // label; else this instance's own. projectId_ follows.
+    void Processor::chatOwnerNow(std::string& owner, std::string& label, const projectstore::Project* opened)
+    {
+        std::string name, kept, keptFor, instance;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+            kept = projectId_;
+            keptFor = projectIdName_;
+            instance = instanceId_;
+        }
+        std::string id;
+        if (!name.empty() && !kept.empty() && projectstore::sameName(name, keptFor) && opened == nullptr)
+            id = kept;                                           // the same project as before (a version saved): no read
+        else if (opened != nullptr && projectstore::sameName(opened->name, name))
+            id = projectstore::idOf(*opened);                    // read already: not read again
+        else if (!name.empty())
+        {
+            id = projectstore::idOf(name);
+            if (id.empty() && projectstore::validProjectId(kept))
+                if (const std::string renamed = projectstore::nameOfId(kept); !renamed.empty())
+                {
+                    name = renamed;                              // renamed in the Finder since the session named it
+                    id = projectstore::idOf(name);
+                }
+        }
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (!id.empty() && !projectstore::sameName(projectName_, name))
+                projectName_ = name;
+            projectId_ = id;
+            projectIdName_ = id.empty() ? std::string() : name;
+        }
+        owner = id.empty() ? chatstore::instanceOwner(instance) : id;
+        label = id.empty() ? std::string() : name;
+    }
+
+    void Processor::syncChatOwner(ChatAgent::OwnerChange how, const projectstore::Project* opened)
+    {
+        std::string owner, label;
+        chatOwnerNow(owner, label, opened);
+        chat_.setOwner(owner, label, how);
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -2048,6 +2146,7 @@ namespace playground
         // edit (Compiler.h).
         const uint64_t id = compiler_.request(d.files, false);
         dialsRequest_ = id;
+        syncChatOwner(ChatAgent::OwnerChange::open, &p);         // another project: its chats
         return true;
     }
 
@@ -2090,6 +2189,7 @@ namespace playground
         projectDials_.clear();
         dialsRequest_ = 0;
         setGuiPages({});
+        syncChatOwner(ChatAgent::OwnerChange::open);             // no project: this instance's chats
         chat_.clearChecks();
         const uint64_t id = compiler_.request(d.files, false);   // a fresh start: compiled, whatever changed
         defaultsRequest_ = id;
@@ -2118,7 +2218,7 @@ namespace playground
         saved = { r->number, r->unchanged, r->created };
         if (!r->unchanged)
             journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
+        std::unique_lock<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
         bool keep = projectstore::sameName(tidy, projectName_) && !projectPreset_.empty();
@@ -2133,21 +2233,36 @@ namespace playground
         projectLatest_ = r->number;
         projectFiles_ = files;
         baseDials_ = dials;
+        lock.unlock();
+        syncChatOwner(ChatAgent::OwnerChange::carry);            // the conversation goes on with what it made
         return true;
     }
 
+    // A project deleted, its chats on this Mac with it (the Projects card says so); while it was open, this instance's
+    // chats show after it.
     bool Processor::deleteProject(const std::string& name, std::string& why)
     {
+        const std::optional<projectstore::Project> p = projectstore::load(name);
+        const std::string id = p ? p->id : std::string();
         if (!projectstore::remove(name, &why))
             return false;
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        if (projectstore::sameName(projectName_, name))
+        bool open = false;
         {
-            projectName_.clear();
-            projectVersion_ = projectLatest_ = 0;
-            projectPreset_.clear();
-            baseDials_.clear();
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            open = projectstore::sameName(projectName_, name);
+            if (open)
+            {
+                projectName_.clear();
+                projectVersion_ = projectLatest_ = 0;
+                projectPreset_.clear();
+                baseDials_.clear();
+            }
         }
+        if (open)
+            syncChatOwner(ChatAgent::OwnerChange::open);
+        // Its chats, unless another project's file still holds its id (a copy made in the Finder).
+        if (projectstore::validProjectId(id) && projectstore::nameOfId(id).empty())
+            chatstore::removeOwner(id);
         return true;
     }
 

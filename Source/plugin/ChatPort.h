@@ -21,7 +21,12 @@
 //                    Claude's turn goes on with it
 //   clearChecks()    forgets Claude's checks (set_checks): the plugin no longer measures them after a run
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
-//   newChat()        forgets the conversation
+//   newChat()        a new conversation; the one shown stays in the chat list
+//   chatList()       the chats kept on this Mac (ChatStore.h) for the project open, or for this plugin while none is
+//                    (a chat with no project stays with it): the newest first, the one shown marked
+//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there
+//   renameChat()     the chat shown named ("" for its first message's words again)
+//   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
 #pragma once
 
 #include <algorithm>
@@ -129,6 +134,23 @@ namespace playground
         bool web = true;                      // it takes web search (/v1/models' server_tools.web_search)
     };
 
+    inline constexpr std::size_t kMaxChatTitle = 60;       // a chat's name, characters at most
+
+    // A chat of the list (chatList): its title, and when it last changed.
+    struct ChatListEntry
+    {
+        std::string id;
+        std::string title;
+        std::string when;                     // "14:02" today, "Nov 6" this year, else "2025-11-06" (local time)
+        bool current = false;                 // the one shown
+    };
+
+    struct ChatList
+    {
+        std::string owner;                    // the project the chats are kept with ("" for none: this plugin's own)
+        std::vector<ChatListEntry> chats;     // the newest first
+    };
+
     struct ChatState
     {
         bool hasKey = false;
@@ -147,6 +169,9 @@ namespace playground
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         bool web = false;                     // web search chosen
         std::string usage;                    // the last reply's tokens, for the footer
+        std::string title;                    // the chat shown: its name, else its first message's words, else
+                                              // "New chat"
+        std::string owner;                    // the project its chats are kept with ("" for none)
 
         // The chat has what it needs to send: a key is stored.
         bool ready() const noexcept { return hasKey; }
@@ -175,5 +200,9 @@ namespace playground
         virtual void clearChecks() = 0;
         virtual void stop() = 0;
         virtual void newChat() = 0;
+        virtual ChatList chatList() const = 0;
+        virtual bool openChat(const std::string& id) = 0;
+        virtual void renameChat(const std::string& title) = 0;
+        virtual void deleteChat() = 0;
     };
 }

@@ -1116,6 +1116,7 @@ namespace playground
         joinWorker();
         if (jobThread_.joinable())
             jobThread_.join();
+        keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)
@@ -1211,6 +1212,8 @@ namespace playground
         s.fast = fast_;
         s.web = web_;
         s.usage = usage_;
+        s.title = titleNow();
+        s.owner = ownerLabel_;
         return s;
     }
 
@@ -1526,11 +1529,25 @@ namespace playground
         }
     }
 
+    // A new chat: the one shown kept on this Mac (it stays in the list), then a new one of the same owner.
     void ChatAgent::newChat()
     {
         stop();
         joinWorker();
-        const std::lock_guard<std::mutex> lock(mutex_);
+        const std::lock_guard<std::mutex> store(storeMutex_);
+        keepLocked();
+        std::string owner, label;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            owner = chatOwner_;
+            label = ownerLabel_;
+        }
+        showFresh(owner, label);
+    }
+
+    // The conversation forgotten (mutex held): what a new chat starts without.
+    void ChatAgent::clearChat()
+    {
         messages_.clear();
         entries_.clear();
         seen_.clear();
@@ -1547,7 +1564,7 @@ namespace playground
     }
 
     // ---- the session --------------------------------------------------------------------------------------------------
-    std::string ChatAgent::saveState() const
+    std::string ChatAgent::saveState(bool keepPictures) const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         juce::Array<juce::var> entries;
@@ -1593,16 +1610,29 @@ namespace playground
             }
             entries.add(entry);
         }
-        // The panel's pictures (view_panel's images, hundreds of KB each) stay out of the session: a line in each one's
-        // place, and a mark that the history was changed, so a session that loads it drops its thinking (bound to the
-        // pictures).
+        // The panel's pictures (view_panel's images, hundreds of KB each) stay out (but in the chat's own file, which
+        // keeps them up to kKeptPictureBytes in all): a line in each one's place, and a mark that the history was
+        // changed, so a chat that loads it drops its thinking (bound to the pictures).
+        if (keepPictures)
+        {
+            std::size_t bytes = 0;
+            for (const juce::var& m : messages_)
+                if (const juce::Array<juce::var>* content = m.getProperty("content", juce::var()).getArray())
+                    for (const juce::var& b : *content)
+                        if (str(b, "type") == "tool_result")
+                            if (const auto* inner = b.getProperty("content", juce::var()).getArray())
+                                for (const juce::var& x : *inner)
+                                    if (str(x, "type") == "image")
+                                        bytes += static_cast<std::size_t>(x.getProperty("source", juce::var()).getProperty("data", juce::var()).toString().length());
+            keepPictures = bytes <= kKeptPictureBytes;
+        }
         bool cut = false;
         juce::Array<juce::var> messages;
         for (const juce::var& m : messages_)
         {
             const juce::Array<juce::var>* content = m.getProperty("content", juce::var()).getArray();
             bool pictures = false;
-            if (content != nullptr)
+            if (content != nullptr && !keepPictures)
                 for (const juce::var& b : *content)
                     if (str(b, "type") == "tool_result")
                         if (const auto* inner = b.getProperty("content", juce::var()).getArray())
@@ -1674,6 +1704,11 @@ namespace playground
     {
         stop();
         joinWorker();
+        readState(json);
+    }
+
+    void ChatAgent::readState(const std::string& json)
+    {
         const juce::var v = claude::parseJson(json);
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
@@ -2557,6 +2592,7 @@ namespace playground
 
     void ChatAgent::runTurn()
     {
+        turnThread_.store(std::this_thread::get_id());
         ensureKey();
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -2567,6 +2603,7 @@ namespace playground
                                                      : "The saved API key cannot be used: " + keyProblem_);
                 busy_ = false;
                 activity_.clear();
+                turnThread_.store(std::thread::id{});
                 return;
             }
         }
@@ -3077,10 +3114,15 @@ namespace playground
                 addEntry(ChatEntry::Kind::note, list);
             touch();
         }
-        const std::lock_guard<std::mutex> lock(mutex_);
-        busy_ = false;
-        activity_.clear();
-        touch();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            busy_ = false;
+            activity_.clear();
+            touch();
+        }
+        turnThread_.store(std::thread::id{});
+        keep();                                    // the turn's work, on this Mac at once
+        applyPendingOwner();
     }
 
     // ---- the planner (setPlanner) -------------------------------------------------------------------------------------
@@ -3652,17 +3694,22 @@ namespace playground
             }
             activity_ = "Claude Desktop is at work";
             touch();
+            turnThread_.store(std::this_thread::get_id());
         }
         const juce::var use = claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } });
         const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
         if (!live)
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            busy_ = false;
-            mcpWorking_.store(false);
-            mcpRunning_ = 0;
-            activity_.clear();
-            touch();
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                busy_ = false;
+                mcpWorking_.store(false);
+                mcpRunning_ = 0;
+                activity_.clear();
+                touch();
+            }
+            turnThread_.store(std::thread::id{});
+            applyPendingOwner();
         }
         const juce::var content = block.getProperty("content", juce::var());
         juce::Array<juce::var> out;
