@@ -172,7 +172,7 @@ namespace playground
         // (source "capture"): the scenario is it (from, to: a part of it), replayed through the program that played it,
         // as it played (ChatScenario.h); read once, here, for the files and the render alike.
         {
-            measure::Request base;
+            measure::Request base = scenario::forNumbers();   // up to 300 s (Measure.h, "How long a render may be")
             base.fromCapture = source == "capture";
             q.render = scenario::renderOf(input, &why, base);
             if (!why.empty())

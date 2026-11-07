@@ -19,7 +19,14 @@
 // read() parses it into a measure::Request (Measure.h), "host" and "capture" as flags; resolve() fills those in from
 // the plugin just before a render (the host's rate and block from ChatHost; the user's last recording through
 // captured()), so a check that keeps "host" renders at whatever the host runs at then. toVar() writes it back, for the
-// session. Times stop at 10 s (measure::kMaxPlaySeconds) and the tail follows, as the renders' caps have it.
+// session.
+//
+// How long: the request's `longest` (Measure.h, "How long a render may be"), which the tool sets before it reads the
+// rest: measure::kMaxPlaySeconds (10 s, the default) for a picture's render (view_sound, view_panel's moment, compare's
+// picture), measure::kMaxLongSeconds (300 s) for a call that returns numbers alone (measure_output, a check, tune_dials,
+// compare, trace). The scenario's times and hold_seconds stop there, tail_seconds at measure::kMaxTailSeconds, a
+// window at both (Request::endSeconds); one past its cap is refused, naming it (a picture's naming the tools that take
+// 300 s). resolve() refuses a render longer than measure::kMaxRenderSamples a channel at its rate (155 s at 192 kHz).
 //
 // dials_from: current | defaults, measure_output's, view_sound's and trace's: the dials a render does not name as they
 // are in the plugin now (the default; the caller fills Request::current) or at the program's defaults (it leaves it
@@ -56,6 +63,8 @@ namespace playground::scenario
     // (readWindow: trace refuses one before it reads them) and the scenario (read(): why, when it cannot be), over
     // `request` (trace's source "capture" starts from the recording).
     measure::Request renderOf(const juce::var& input, std::string* why = nullptr, measure::Request request = {});
+    // The request a call that returns numbers alone starts from (above, "How long"): longest kMaxLongSeconds.
+    measure::Request forNumbers();
     // The property's schema: one line, details in the guide.
     juce::var schema();
     // The tool input's `scenario` into `request` (nothing there: unchanged); false with why (naming the part) when it
@@ -64,7 +73,8 @@ namespace playground::scenario
     // A request's scenario as read() takes it (void: none), for the session.
     juce::var toVar(const measure::Request& request);
     struct Captured;
-    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there. With
+    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there, or when
+    // the render would hold more than measure::kMaxRenderSamples a channel at its rate (above). With
     // `recording` given, that one (compare reads the recording once for both its sides), else captured()'s.
     bool resolve(measure::Request& request, ChatHost& host, std::string& why);
     bool resolve(measure::Request& request, ChatHost& host, std::string& why, const Captured* recording);
@@ -72,14 +82,15 @@ namespace playground::scenario
     // saying why).
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
                                                const std::map<std::string, float>& current, ChatHost& host,
-                                               std::string* errors);
+                                               std::string* errors, const measure::Cancel* cancel = nullptr);
 
     // ---- window ------------------------------------------------------------------------------------------------------
-    // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <=
-    // kMaxWindowSeconds, at least kMinWindowSeconds long), which renderOf reads too: absent, nothing; false with why for
+    // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <= `end` (the
+    // request's endSeconds()), at least kMinWindowSeconds long), which renderOf reads too: absent, nothing; false with why for
     // one it cannot take. measure_output, view_sound, each check (which keeps it) and tune_dials measure it in place of
     // the held part (Measure.h); trace and compare take none (they refuse one).
-    bool readWindow(const juce::var& input, measure::Window& window, std::string& why);
+    bool readWindow(const juce::var& input, measure::Window& window, std::string& why,
+                    double end = measure::kMaxWindowSeconds);
     // Back as the input has it (void: none), for the session.
     juce::var windowVar(const measure::Window& window);
 

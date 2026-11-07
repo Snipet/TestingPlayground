@@ -285,7 +285,9 @@ namespace playground
         if (input.hasProperty("window"))
             return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
                         "tune_dials measure one).", true);
-        measure::Request req;
+        // Its numbers alone render up to 300 s; with the picture, a picture's 10 s (Measure.h, "How long a render may be").
+        const bool picture = static_cast<bool>(input.getProperty("picture", false));
+        measure::Request req = picture ? measure::Request{} : scenario::forNumbers();
         if (!scenario::read(input, req, &why))
             return done(why, true);
         scenario::Captured recording;
@@ -350,6 +352,7 @@ namespace playground
             return done(why, true);
         measure::CompareOptions options;
         options.detail = static_cast<bool>(input.getProperty("detail", false));
+        options.cancel = renderCancel("Comparing the sounds");
         const measure::Comparison c = measure::compare(A, B, options);
         if (!c.error.empty())
             return done(scenario::trialLine(trials) + c.error, true);
@@ -393,7 +396,7 @@ namespace playground
             }
             out += "Source, B against A: " + files + "; " + (dials.empty() ? std::string("the same dials") : "dials " + dials) + ".\n";
         }
-        if (!static_cast<bool>(input.getProperty("picture", false)))
+        if (!picture)
             return done(out, false);
 
         // The picture: both levels over time and both spectra, on one scale.

@@ -674,7 +674,8 @@ namespace playground
         };
 
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share); with
-        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too.
+        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too, and hold_seconds' cap the
+        // numbers' (Measure.h, "How long a render may be": 300 s; a picture's 10).
         void addRenderProps(juce::var& props, bool metrics = true)
         {
             auto* o = props.getDynamicObject();
@@ -690,8 +691,10 @@ namespace playground
                 if (metrics)
                     o->setProperty("base_hz", prop("number", "off_order_db's base (default: the expected pitch)"));
             }
-            o->setProperty("hold_seconds", prop("number", kInstrument ? "How long the notes are held; default 1, at most 10"
-                                                                      : "How long the input plays; default 1, at most 10"));
+            o->setProperty("hold_seconds", prop("number", kInstrument ? metrics ? "How long the notes are held; default 1, at most 300"
+                                                                                : "How long the notes are held; default 1, at most 10"
+                                                          : metrics ? "How long the input plays; default 1, at most 300"
+                                                                    : "How long the input plays; default 1, at most 10"));
             o->setProperty("tail_seconds", prop("number", kInstrument ? "How long to go on after the release; default 1.5, "
                                                                         "at most 10"
                                                                       : "How long to go on after it (silence); default 1.5, "
@@ -1694,7 +1697,7 @@ namespace playground
                 if (!goalOf(c, k.goal, why) || static_cast<int>(checks_.size()) >= kMaxChecks)
                     continue;
                 k.label = str(c, "label");
-                k.request = scenario::renderOf(c);
+                k.request = scenario::renderOf(c, nullptr, scenario::forNumbers());
                 if (!dialsFromOf(c.getProperty("dials_from", juce::var()), k.dialsFrom))
                     k.dialsFrom = measure::DialsFrom::current;
                 if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
@@ -1948,6 +1951,22 @@ namespace playground
         }
     }
 
+    measure::Cancel ChatAgent::renderCancel(std::string doing)
+    {
+        measure::Cancel c;
+        c.asked = [this] { return cancel_.load(); };
+        c.seconds = measure::kRenderSeconds;
+        auto said = std::make_shared<std::chrono::steady_clock::time_point>();
+        c.progress = [this, what = std::move(doing), said](double done, double length) {
+            const auto now = std::chrono::steady_clock::now();
+            if (length < 30.0 || now - *said < std::chrono::milliseconds(250))   // a short render says nothing more
+                return;
+            *said = now;
+            setActivity(what + ": " + std::to_string(static_cast<long>(done)) + " of " + std::to_string(std::lround(length)) + " s");
+        };
+        return c;
+    }
+
     void ChatAgent::startWorker()
     {
         worker_ = std::thread([this] { runTurn(); });
@@ -2163,7 +2182,7 @@ namespace playground
             if constexpr (!kInstrument)
             {
                 o->setProperty("hold_seconds", prop("number", "How long the sine and the noise play; default 1, "
-                                                              "at most 10"));
+                                                              "at most 300"));
                 o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
                                                               "at most 10"));
             }
@@ -3276,7 +3295,9 @@ namespace playground
             return {};
         setActivity("Checking");
         std::string errors;
-        const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
+        const measure::Cancel cut = renderCancel("Checking");
+        const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_,
+                                                                             &errors, &cut);
         // A failing check's dials off their reference, as the panel says them (the options of the program that plays).
         const Controls playing = host_.chatDials();
         const std::array<std::vector<std::string>, kMaxControls> options = host_.chatDialOptions();
@@ -4327,7 +4348,7 @@ namespace playground
         {
             setActivity("Measuring the sound");
             std::string why;
-            measure::Request req = scenario::renderOf(input, &why);
+            measure::Request req = scenario::renderOf(input, &why, scenario::forNumbers());
             bool defaults = false;
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 req.current = currentDials();
@@ -4346,9 +4367,11 @@ namespace playground
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
                 return fail(why);
-            const std::string report = measure::run(files, req);
+            bool cut = false;
+            const std::string report = measure::run(files, req, renderCancel("Measuring the sound"), &cut);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
-                                                             : "measured the sound");
+                 : cut                                     ? "measuring the sound was cut short"
+                                                           : "measured the sound");
             return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")
@@ -4432,7 +4455,7 @@ namespace playground
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
-                k.request = scenario::renderOf(c, &why);
+                k.request = scenario::renderOf(c, &why, scenario::forNumbers());
                 if (!why.empty())
                     return "Check " + std::to_string(i + 1) + ": " + why + " Nothing was changed.";
                 if (k.request.fromCapture)                   // gone after a reload: it could never pass again
@@ -4582,8 +4605,9 @@ namespace playground
         {
             measure::TuneRequest q;
             std::string unfit;
-            q.render = scenario::renderOf(input, &unfit);
+            q.render = scenario::renderOf(input, &unfit, scenario::forNumbers());
             q.render.current = currentDials();
+            q.cancelled = [this] { return cancel_.load(); };
             if (!unfit.empty() || !scenario::resolve(q.render, host_, unfit))
                 return fail(unfit);
             if (const auto* tune = input.getProperty("tune", juce::var()).getArray())
@@ -4627,10 +4651,16 @@ namespace playground
                 return !cancel_.load();
             };
             const measure::TuneResult t = measure::tune(host_.chatDraft().files, q);
+            bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
+            }
             if (!t.error.empty())
             {
                 note(sweeping ? "sweeping failed" : "tuning failed");
-                return fail(t.error);
+                // Its first render cancelled (TuneRequest::cancelled): nothing was tuned, and nothing was set.
+                return fail(t.error + (dropped ? " Claude Desktop stopped this call, so the dials are left exactly as they were." : ""));
             }
             if (sweeping)
             {
@@ -4642,11 +4672,6 @@ namespace playground
             for (const auto& [dial, v] : t.best)
                 tuned += (tuned.empty() ? "" : ", ") + dial;
             const int met = static_cast<int>(std::count(t.bestMet.begin(), t.bestMet.end(), true));
-            bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
-            }
             if (dropped)
                 out += "Claude Desktop stopped this call, so the dials are left exactly as they were (set_dial sets the "
                        "values above).";

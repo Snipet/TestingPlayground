@@ -161,10 +161,15 @@
 //            name (one in its dials, one moving it) names both checks and each FAILs for it, names apart a check from a
 //            snapshot that holds it (the new name at its default; it passes), and the program back, they pass
 //   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
-//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object, under 0.01 s)
-//            and the least taken; trace and compare refusing one; a check with
-//            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
+//            (to before from, from below 0, to past 310 s, from left out, a key it has not, not an object, under 0.01 s)
+//            and the least taken; view_sound's past 20 s refused (a picture's); trace and compare refusing one; a check
+//            with one names it on its line and in the card, is saved with it and measures the same once loaded, and a
 //            failing one says so; tune_dials takes one
+//   LONG     measure_output held 300 s through MCP: its numbers (the level as a 1 s render's), its time printed and
+//            bounded; refused in words past the caps: hold_seconds 301, view_sound's 11 (naming the tools that take 300
+//            s), tail_seconds 11, a scenario's move at 301 s (tune_dials), compare's picture with one at 11 s, trace's
+//            hold 301, 200 s at 192 kHz; Claude Desktop's cancel mid-render (the activity counting the seconds first):
+//            what it reached, nothing measured, back within 2 s, the next call free
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
@@ -3093,16 +3098,21 @@ PROBE(plugin, chat)
                                            ? 1 : 0, 1);
                 int refused = 0;
                 const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
-                                          input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 320.0 } }), input({ { "to", 1.0 } }),
                                           input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all"),
                                           input({ { "from", 0.5 }, { "to", 0.505 } }) };
                 for (const juce::var& b : unfit)
                 {
                     const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
-                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20, at "
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 310, at "
                                                             "least 0.01 s long") ? 1 : 0;
                 }
                 P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // A picture's window ends by 20 s (its render's 10 s and the tail), the numbers' by 310 s.
+                const pg::ChatAgent::McpResult pictured = sa.mcpCall("view_sound", withWindow(input({ { "from", 0.0 }, { "to", 30.0 } })));
+                P.eq("window.picture_cap", pictured.isError && has(allText(pictured), "0 <= from < to <= 20, at least 0.01 s long")
+                                               && !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.0 }, { "to", 0.25 } }))).isError
+                                               ? 1 : 0, 1);
                 // The least window, 0.03 - 0.02 rounding under 0.01, is taken.
                 P.eq("window.least_taken", !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.02 }, { "to", 0.03 } }))).isError
                                                ? 1 : 0, 1);
@@ -3147,6 +3157,85 @@ PROBE(plugin, chat)
                 tune.getDynamicObject()->setProperty("apply", false);
                 const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", tune);
                 P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
+            }
+
+            // ---- LONG: a render that returns numbers lasts up to 300 s, a picture's 10; a cancel stops one as it goes ----
+            {
+                using Clock = std::chrono::steady_clock;
+                const auto held = [&](double hold) {
+                    juce::var in = input({ { "hold_seconds", hold }, { "tail_seconds", 0.2 } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const auto with = [](juce::var in, const char* key, const juce::var& v) {
+                    in.getDynamicObject()->setProperty(key, v);
+                    return in;
+                };
+                // A metric's value from the report's last line ("Metrics: ... rms_db=-17.2 ...").
+                const auto metric = [](const std::string& t, const std::string& name) {
+                    const std::size_t at = t.find(" " + name + "=");
+                    return at == std::string::npos ? std::nan("") : std::atof(t.c_str() + at + name.size() + 2);
+                };
+                const char* const level = pg::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+                const auto t0 = Clock::now();
+                const pg::ChatAgent::McpResult longer = sa.mcpCall("measure_output", held(300.0));
+                const double took = std::chrono::duration<double>(Clock::now() - t0).count();
+                const std::string text = allText(longer), plain = allText(sa.mcpCall("measure_output", held(1.0)));
+                std::printf("measure_output, held 300 s, in %.1f s:\n%s\n", took, text.c_str());
+                P.eq("long.measure_300s", !longer.isError && has(text, pg::product::kIsInstrument ? "held 300.00 s, then released" : "for 300.00 s")
+                                              && has(text, "Metrics: ") && !has(text, "Cancelled") ? 1 : 0, 1);
+                P.near("long.level_as_1s", metric(text, level), metric(plain, level), 0.15);
+                P.le("long.measure_300s_seconds", took, 120.0);
+                // Past the caps, refused in words that name them.
+                const auto refused = [&](const char* tool, const juce::var& in, const std::string& words) {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall(tool, in);
+                    if (!(r.isError && has(allText(r), words)))
+                        std::printf("%s, expected refused with \"%s\": %s\n", tool, words.c_str(), allText(r).c_str());
+                    return r.isError && has(allText(r), words) ? 1 : 0;
+                };
+                const juce::var late = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 301.0 }, { "to", -6.0 } }) } } });
+                const juce::var pastPicture = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 11.0 }, { "to", -6.0 } }) } } });
+                P.eq("long.hold_refused", refused("measure_output", held(301.0), "hold_seconds is at most 300 s (a render that returns numbers)"), 1);
+                P.eq("long.picture_hold_refused",
+                     refused("view_sound", held(11.0), "hold_seconds is at most 10 s (a picture's render: measure_output, a check, tune_dials, "
+                                                       "trace and compare without its picture take up to 300 s)"), 1);
+                P.eq("long.tail_refused", refused("measure_output", with(held(1.0), "tail_seconds", 11.0), "tail_seconds is at most 10 s"), 1);
+                P.eq("long.scenario_refused", refused("tune_dials", with(with(held(1.0), "scenario", late), "tune", juce::Array<juce::var>{ juce::var(levelDial) }),
+                                                      "scenario.automate[0]: at is 0 to 300 s (a render that returns numbers)"), 1);
+                P.eq("long.compare_picture_refused",
+                     refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "picture", true }, { "scenario", pastPicture } }),
+                             "scenario.automate[0]: at is 0 to 10 s (a picture's render: "), 1);
+                P.eq("long.trace_takes_300", refused("trace", held(301.0), "hold_seconds is at most 300 s"), 1);
+                P.eq("long.rate_refused", refused("measure_output", with(held(200.0), "scenario", input({ { "rate", 192000 } })),
+                                                  "The render would last 200.2 s at 192000 Hz, past the 155 s a render holds at that rate "
+                                                  "(310 s up to 96000 Hz): render it shorter, or at a lower rate."), 1);
+                // Cancelled mid-render (Claude Desktop's cancel): what it reached, at once; the activity said how far.
+                pg::ChatAgent::McpResult cut;
+                std::atomic<bool> finished{ false };
+                std::thread desktop([&] {
+                    cut = sa.mcpCall("measure_output", held(300.0), 4242);
+                    finished.store(true);
+                });
+                std::string progress;
+                for (int tick = 0; tick < 20000 && progress.empty() && !finished.load(); ++tick)
+                {
+                    if (const std::string a = sa.chatState().activity; a.rfind("Measuring the sound: ", 0) == 0)
+                        progress = a;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                const auto asked = Clock::now();
+                sa.mcpCancel(4242);
+                desktop.join();
+                const double back = std::chrono::duration<double>(Clock::now() - asked).count();
+                const std::string cutText = allText(cut);
+                std::printf("measure_output cancelled at \"%s\", back in %.3f s:\n%s\n", progress.c_str(), back, cutText.c_str());
+                P.eq("long.cancel_mid_render", !progress.empty() && has(progress, " of 300 s") && has(cutText, "Cancelled ")
+                                                   && has(cutText, pg::product::kIsInstrument ? " into the render of the note held (300.20 s long), "
+                                                                                              : " into the sine's render (300.00 s long), ")
+                                                   && has(cutText, "Nothing was measured.") && !has(cutText, "Metrics:") ? 1 : 0, 1);
+                P.le("long.cancel_at_once", back, 2.0);
+                P.eq("long.cancel_then_free", !sa.mcpCall("measure_output", held(1.0)).isError ? 1 : 0, 1);
             }
 
             // ---- SPECTRUM ----------------------------------------------------------------------------------------------

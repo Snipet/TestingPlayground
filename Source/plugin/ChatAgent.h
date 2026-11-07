@@ -26,7 +26,9 @@
 // dials for goals by rendering offline (up to 400 renders and `seconds`, 120 by default and 170 at most, the activity
 // counting them, the stop button or the time limit ending the search with the best so far) and sets the best values
 // as set_dial does; its sweep renders one dial at given values instead, a table of the goals' metrics, and sets
-// nothing.
+// nothing. The tools that return numbers alone render up to 300 s, a picture's 10 (dsp/Measure.h, "How long a render
+// may be"), and every render stops as it goes at the stop button, an MCP cancel or kRenderSeconds (renderCancel),
+// its result saying how far it got.
 //
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
@@ -360,6 +362,10 @@ namespace playground
         void addEntry(ChatEntry::Kind kind, std::string text);     // mutex held
         void appendToLast(ChatEntry::Kind kind, std::string_view text);   // mutex held
         void setActivity(std::string activity);
+        // A render's cancel, for the tools that render (Measure.h's Cancel): the chat's stop and an MCP cancel
+        // (cancel_), measure::kRenderSeconds at most, and a long render's progress in the activity ("Measuring the
+        // sound: 84 of 300 s") a few times a second.
+        measure::Cancel renderCancel(std::string doing);
         void startWorker();
         void joinWorker();
 
