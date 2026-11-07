@@ -15,6 +15,8 @@
 //             one; the header's + saves the dials as a new one (PROJECTS, its field a preset's name)
 //   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
 //             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version)
+//   FACTORY   the factory projects (plugin/Factory.h), by name (the one open marked), folded at first: a click opens
+//             one (read-only: a save makes the user's own copy)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
 //             (and #includes it), or shows it
 //   EXAMPLES  a click starts afresh from the example (Panel::loadExample: its files the only tabs, the dials at their
@@ -40,8 +42,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder };
-        static constexpr int kSections = 7;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder, factory };
+        static constexpr int kSections = 8;
 
         struct Row
         {
@@ -145,7 +147,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true, true, false };   // FACTORY folded at first
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

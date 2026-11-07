@@ -42,20 +42,51 @@ namespace playground::ui
         std::string shortWhen(const std::string& when) { return when.size() > 5 ? when.substr(5) : when; }   // "10-27 14:02"
     }
 
+    void ProjectBrowser::readProjects()
+    {
+        projects_ = port_.projects();
+        const std::vector<ProjectEntry> factory = port_.factoryProjects();
+        if (factory.empty())
+            return;
+        ProjectEntry caption;                            // a row of no name: the FACTORY caption
+        caption.factory = true;
+        projects_.push_back(std::move(caption));
+        projects_.insert(projects_.end(), factory.begin(), factory.end());
+    }
+
+    bool ProjectBrowser::heading(int i) const
+    {
+        return i >= 0 && i < static_cast<int>(projects_.size()) && projects_[static_cast<std::size_t>(i)].name.empty();
+    }
+
+    bool ProjectBrowser::factoryChosen() const { return isFactoryName(chosenProject()); }
+
+    std::string ProjectBrowser::copyName(const std::string& factory) const
+    {
+        const std::string base = port_.tidyName(ownName(factory));
+        std::string name = base;
+        for (int k = 2; std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& p) { return !p.factory && same(p.name, name); }); ++k)
+        {
+            const std::string suffix = " " + std::to_string(k);
+            name = base.substr(0, std::min(base.size(), static_cast<std::size_t>(kMaxNameLength) - suffix.size())) + suffix;
+        }
+        return name;
+    }
+
     void ProjectBrowser::open(const std::string& name, bool preset)
     {
         open_ = true;
-        projects_ = port_.projects();
+        readProjects();
         state_ = port_.project();
         chosen_ = { -1, -1, -1 };
         first_ = { 0, 0, 0 };
         for (std::size_t i = 0; i < projects_.size(); ++i)
-            if (same(projects_[i].name, state_.name))
+            if (!state_.name.empty() && same(projects_[i].name, state_.name))
                 chosen_[idx(L::projects)] = static_cast<int>(i);
         first_[idx(L::projects)] = std::max(0, chosen_[idx(L::projects)] - 2);
         readChosen();
         focus_ = L::projects;
-        name_.set(name, kMaxNameLength);
+        name_.set(isFactoryName(name) ? copyName(name) : name, kMaxNameLength);   // a factory project's: its copy's
         typed_ = false;
         ask_ = Ask::none;
         why_.clear();
@@ -109,9 +140,9 @@ namespace playground::ui
 
     void ProjectBrowser::chooseProjectNamed(const std::string& name, float width, float height)
     {
-        projects_ = port_.projects();
+        readProjects();
         for (std::size_t i = 0; i < projects_.size(); ++i)
-            if (same(projects_[i].name, name))
+            if (!name.empty() && same(projects_[i].name, name))
                 choose(L::projects, static_cast<int>(i), places(width, height).rows[idx(L::projects)]);
     }
 
@@ -226,14 +257,22 @@ namespace playground::ui
         return { r.centreX(), r.y + 4.0f + (static_cast<float>(shown) + 0.5f) * at.rowH };
     }
 
-    void ProjectBrowser::choose(List l, int i, int rowsShown)
+    void ProjectBrowser::choose(List l, int i, int rowsShown, int step)
     {
         const int n = count(l);
         if (n == 0)
             return;
         int& c = chosen_[idx(l)];
         int& first = first_[idx(l)];
-        c = std::clamp(i, 0, n - 1);
+        i = std::clamp(i, 0, n - 1);
+        if (l == L::projects && heading(i))              // the caption is never chosen: the row past it, else before
+        {
+            const int past = i + (step < 0 ? -1 : 1);
+            i = past >= 0 && past < n ? past : i - (step < 0 ? -1 : 1);
+        }
+        if (i < 0 || i >= n || heading(i))
+            return;
+        c = i;
         if (c < first)
             first = c;
         if (c >= first + rowsShown)
@@ -245,10 +284,11 @@ namespace playground::ui
         if (l == L::projects)
         {
             readChosen();
-            name_.set(projects_[static_cast<std::size_t>(c)].name, kMaxNameLength);
+            const std::string& chosen = projects_[static_cast<std::size_t>(c)].name;
+            name_.set(isFactoryName(chosen) ? copyName(chosen) : chosen, kMaxNameLength);
         }
         else if (l == L::versions)
-            name_.set(chosenProject(), kMaxNameLength);
+            name_.set(factoryChosen() ? copyName(chosenProject()) : chosenProject(), kMaxNameLength);
         else
             name_.set(presets_[static_cast<std::size_t>(c)].name, kMaxNameLength);
         ++revision_;
@@ -279,8 +319,8 @@ namespace playground::ui
         if (ask_ == Ask::addTo)
             return "Add version";
         const std::string name = port_.tidyName(name_.buffer);
-        const bool exists = std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& p) { return same(p.name, name); });
-        return exists ? "Save version" : "Save project";
+        const bool exists = std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& p) { return !p.factory && same(p.name, name); });
+        return exists ? "Save version" : isFactoryName(state_.name) ? "Save as mine" : "Save project";
     }
 
     std::string ProjectBrowser::openLabel() const
@@ -323,6 +363,12 @@ namespace playground::ui
                 why_ = "Save the project first: a preset is kept in its project.";
                 return;
             }
+            if (isFactoryName(state_.name))
+            {
+                ask_ = Ask::none;
+                why_ = "A factory project's presets stay as they are: save the project first (your own copy, its presets with it).";
+                return;
+            }
             if (!chosenIsOpen())
             {
                 ask_ = Ask::none;
@@ -353,7 +399,7 @@ namespace playground::ui
             return;
         }
         const bool other = !same(name, state_.name)
-                        && std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& p) { return same(p.name, name); });
+                        && std::any_of(projects_.begin(), projects_.end(), [&](const ProjectEntry& p) { return !p.factory && same(p.name, name); });
         if (other && ask_ != Ask::addTo)
         {
             ask_ = Ask::addTo;
@@ -367,8 +413,12 @@ namespace playground::ui
             why_ = "Not saved: " + why + ".";
             return;
         }
-        const std::string at = upper(name) + " " + upper(v(saved.number));
-        notice_ = saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT" : saved.created ? "PROJECT SAVED: " + upper(name) : "SAVED: " + at;
+        const std::string into = saved.name.empty() ? name : saved.name;
+        const std::string at = upper(into) + " " + upper(v(saved.number));
+        notice_ = saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(into) + " (THE FACTORY'S STAYS AS IT IS)"
+                : saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT"
+                : saved.created   ? "PROJECT SAVED: " + upper(into)
+                                  : "SAVED: " + at;
         close();
     }
 
@@ -424,7 +474,8 @@ namespace playground::ui
             why_ = "Not opened: " + why + ".";
             return;
         }
-        notice_ = "OPENED: " + upper(name) + " " + upper(v(version > 0 ? version : projects_[static_cast<std::size_t>(p)].latest));
+        notice_ = isFactoryName(name) ? "OPENED: " + upper(ownName(name)) + " (FACTORY, READ-ONLY: A SAVE MAKES YOUR OWN COPY)"
+                                      : "OPENED: " + upper(name) + " " + upper(v(version > 0 ? version : projects_[static_cast<std::size_t>(p)].latest));
         close();
     }
 
@@ -438,6 +489,12 @@ namespace playground::ui
             return;
         }
         const std::string project = chosenProject();
+        if (isFactoryName(project))
+        {
+            ask_ = Ask::none;
+            why_ = "\"" + ownName(project) + "\" is a factory project: it stays as it is, its versions and presets too.";
+            return;
+        }
         std::string what;
         if (focus_ == L::projects)
             what = "\"" + project + "\", every version and preset,";
@@ -466,7 +523,7 @@ namespace playground::ui
             why_ = "Not deleted: " + why + ".";
             return;
         }
-        projects_ = port_.projects();
+        readProjects();
         state_ = port_.project();
         int keep = -1;
         if (from != L::projects)
@@ -491,10 +548,12 @@ namespace playground::ui
         for (const List l : { L::projects, L::versions, L::presets })
             if (listRect(at, l).contains(p))
             {
-                if (const int row = rowAt(p, at, l); row >= 0)
+                if (const int row = rowAt(p, at, l); row >= 0 && l == L::projects && heading(row))
+                    return;                              // the FACTORY caption
+                else if (row >= 0)
                     choose(l, row, at.rows[idx(l)]);
-                else if (l == L::presets && !chosenProject().empty())
-                    startPreset();
+                else if (l == L::presets && !chosenProject().empty() && !factoryChosen())
+                    startPreset();                       // a factory project's presets stay as they are
                 else
                 {
                     focus_ = l;
@@ -558,6 +617,8 @@ namespace playground::ui
         for (const List l : { L::projects, L::versions, L::presets })
             if (const int row = rowAt(p, at, l); row >= 0)
             {
+                if (l == L::projects && heading(row))
+                    return;
                 if (row != chosen_[idx(l)] || focus_ != l)
                     choose(l, row, at.rows[idx(l)]);
                 openChosen();
@@ -604,7 +665,7 @@ namespace playground::ui
         else if (e.key == Key::up || e.key == Key::down)
         {
             const int c = chosen_[idx(focus_)];
-            choose(focus_, c < 0 ? 0 : c + (e.key == Key::up ? -1 : 1), at.rows[idx(focus_)]);
+            choose(focus_, c < 0 ? 0 : c + (e.key == Key::up ? -1 : 1), at.rows[idx(focus_)], e.key == Key::up ? -1 : 1);
         }
         else if (e.key == Key::tab)
         {
@@ -638,7 +699,7 @@ namespace playground::ui
             || at.exportIt.contains(p) || at.ab.contains(p))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
-            if (rowAt(p, at, l) >= 0)
+            if (const int row = rowAt(p, at, l); row >= 0 && !(l == L::projects && heading(row)))
                 return funkgui::Cursor::pointingHand;
         return funkgui::Cursor::normal;
     }
@@ -663,7 +724,10 @@ namespace playground::ui
         c.rrect(x, box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
         chat::drawIcon(c, chat::Icon::list, x + 15.0f, box.y + 37.0f, 15.0f, p.accent);
         c.text("Projects", x + 42.0f, c.capCentreTop(box.y + 37.0f, chat::kH2), chat::kH2, p.text);
-        const std::string howMany = std::to_string(projects_.size()) + (projects_.size() == 1 ? " project" : " projects");
+        const auto mine = static_cast<std::size_t>(std::count_if(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.factory; }));
+        const std::size_t factory = projects_.size() - mine - (projects_.size() > mine ? 1 : 0);
+        const std::string howMany = std::to_string(mine) + (mine == 1 ? " project" : " projects")
+                                  + (factory > 0 ? ", " + std::to_string(factory) + " factory" : std::string());
         c.text(howMany.c_str(), box.right() - kPad, c.capCentreTop(box.y + 37.0f, chat::kSmall), chat::kSmall, p.faint,
                funkgui::Align::right);
         const std::string folder = std::string("Saved on ") + kThisMachine + " in " + port_.projectFolder()
@@ -672,7 +736,8 @@ namespace playground::ui
                chat::kSmall, p.soft);
 
         // The lists, each under its caption.
-        const std::string of = chosenProject().empty() ? std::string() : " OF " + upper(asciiText(chosenProject()));
+        const std::string of = chosenProject().empty() ? std::string() : " OF " + upper(asciiText(ownName(chosenProject())))
+                                                                         + (factoryChosen() ? " (FACTORY)" : "");
         const auto caption = [&](const funkgui::Rect& r, List l, const std::string& text) {
             const funkgui::TextStyle& st = chat::kSmallStrong;
             c.text(fitText(c, text, st, r.w).c_str(), r.x + 2.0f, c.capCentreTop(r.y - 11.0f, st), st, focus_ == l ? p.text : p.faint);
@@ -694,6 +759,12 @@ namespace playground::ui
                 const int i = first + k;
                 const funkgui::Rect rr{ r.x + 4.0f, r.y + 4.0f + static_cast<float>(k) * at.rowH, rowW, at.rowH };
                 const bool chosen = i == chosen_[idx(l)];
+                if (l == L::projects && heading(i))
+                {
+                    const funkgui::TextStyle& st = chat::kSmallStrong;   // the FACTORY caption, no row of its own
+                    c.text("FACTORY   READ-ONLY", rr.x + 12.0f, c.capCentreTop(rr.centreY() + 3.0f, st), st, p.faint);
+                    continue;
+                }
                 if (chosen)
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, funkgui::mix(p.composer, p.accent, focus_ == l ? 0.22f : 0.10f));
                 else if (hasPointer && rr.contains(pointer))
@@ -713,10 +784,12 @@ namespace playground::ui
             const ProjectEntry& e = projects_[static_cast<std::size_t>(i)];
             if (same(e.name, state_.name))
                 mark(rr);
-            const std::string right = v(e.latest) + "   " + shortWhen(e.when);
+            const std::string right = !e.factory     ? v(e.latest) + "   " + shortWhen(e.when)
+                                    : e.presets > 0 ? std::to_string(e.presets) + (e.presets == 1 ? " preset" : " presets")
+                                                    : std::string();
             const float rightW = c.textWidth(right.c_str(), chat::kSmall);
             const funkgui::TextStyle& st = chosen ? chat::kStrong : chat::kBody;
-            c.text(fitText(c, asciiText(e.name), st, rr.w - rightW - 48.0f).c_str(), rr.x + 24.0f, c.capCentreTop(rr.centreY(), st), st, p.text);
+            c.text(fitText(c, asciiText(ownName(e.name)), st, rr.w - rightW - 48.0f).c_str(), rr.x + 24.0f, c.capCentreTop(rr.centreY(), st), st, p.text);
             c.text(right.c_str(), rr.right() - 10.0f, c.capCentreTop(rr.centreY(), chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
         });
         list(L::versions, chosenProject().empty() ? "Choose a project." : "", [&](int i, const funkgui::Rect& rr, bool chosen) {
@@ -732,9 +805,9 @@ namespace playground::ui
             c.text(fitText(c, asciiText(e.note), chat::kSmall, std::max(0.0f, rr.right() - 10.0f - noteX)).c_str(), noteX,
                    c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.soft);
         });
-        const std::string noPresets = chosenProject().empty() ? std::string()
-                                    : chosenIsOpen()         ? "No presets yet: click here, name one, Save preset."
-                                                             : "No presets.";
+        const std::string noPresets = chosenProject().empty()                 ? std::string()
+                                    : chosenIsOpen() && !factoryChosen() ? "No presets yet: click here, name one, Save preset."
+                                                                         : "No presets.";
         list(L::presets, noPresets, [&](int i, const funkgui::Rect& rr, bool chosen) {
             const PresetEntry& e = presets_[static_cast<std::size_t>(i)];
             if (chosenIsOpen() && same(e.name, state_.preset))
@@ -798,7 +871,7 @@ namespace playground::ui
         button(at.save, saveLabel(), 0, true);
         button(at.open, openLabel(), 1, canOpen);
         button(at.close, "Close", 1, true);
-        button(at.remove, removeLabel(), 2, chosen_[idx(focus_)] >= 0);
+        button(at.remove, removeLabel(), 2, chosen_[idx(focus_)] >= 0 && !factoryChosen());
         button(at.importIt, "Import...", 1, true);
         button(at.exportIt, "Export...", 1, chosen_[idx(L::projects)] >= 0);
         button(at.ab, "A/B...", 1, chosen_[idx(L::projects)] >= 0 && !versions_.empty());
@@ -831,7 +904,7 @@ namespace playground::ui
                 funkgui::A11yItem row;
                 row.id = kRowId + static_cast<uint32_t>(idx(l)) * 0x1000u + static_cast<uint32_t>(i);
                 row.parent = it.id;
-                row.role = funkgui::A11yRole::listItem;
+                row.role = l == L::projects && heading(i) ? funkgui::A11yRole::staticText : funkgui::A11yRole::listItem;
                 const funkgui::Rect r = listRect(at, l);
                 row.bounds = { r.x + 4.0f, r.y + 4.0f + static_cast<float>(k) * at.rowH, r.w - 8.0f, at.rowH };
                 std::string value;
@@ -842,6 +915,17 @@ namespace playground::ui
         };
         list(L::projects, "Projects", [&](int i, std::string& value) {
             const ProjectEntry& e = projects_[static_cast<std::size_t>(i)];
+            if (heading(i))
+            {
+                value = "the factory projects below, read-only: saving one makes a project of your own";
+                return std::string("Factory");
+            }
+            if (e.factory)
+            {
+                value = (same(e.name, state_.name) ? "open, " : "") + std::string("factory, read-only, ") + std::to_string(e.presets)
+                      + (e.presets == 1 ? " preset" : " presets");
+                return ownName(e.name);
+            }
             value = (same(e.name, state_.name) ? "open, " : "") + std::string("version ") + std::to_string(e.latest) + ", saved " + e.when;
             return e.name;
         });
@@ -904,7 +988,7 @@ namespace playground::ui
         {
             const auto l = static_cast<List>((id - kRowId) / 0x1000u);
             const int i = static_cast<int>((id - kRowId) % 0x1000u);
-            if (i >= count(l))
+            if (i >= count(l) || (l == L::projects && heading(i)))
                 return false;
             choose(l, i, places(width, height).rows[idx(l)]);
         }

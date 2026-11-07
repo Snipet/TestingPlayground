@@ -436,6 +436,7 @@ namespace playground::ui
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
                             : g.section == Section::presets    ? "Applies this preset's dials"
+                            : g.section == Section::factory    ? "Opens this factory project (read-only: saving it makes a project of your own)"
                                                                : "Opens this project's newest version";
                     if (row.error)
                         it.description = "Has errors";
@@ -481,7 +482,7 @@ namespace playground::ui
         const Hit* h = hitAt(pointer_);
         if (h == nullptr)
         {
-            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, ITS FOLDER AND ITS IR, THE PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
+            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, ITS FOLDER AND ITS IR, THE PRESETS, THE PROJECTS, THE FACTORY'S, THE LIBRARY, THE EXAMPLES");
             return;
         }
         const Section s = groups_[static_cast<std::size_t>(h->group)].section;
@@ -509,6 +510,7 @@ namespace playground::ui
                          : s == Section::library   ? "LIBRARY   ADD IT AS A TAB (THE PROGRAM INCLUDES IT), OR SHOW IT"
                          : s == Section::examples  ? "EXAMPLE   START AFRESH FROM IT, THE DIALS AT THEIR DEFAULTS"
                          : s == Section::presets   ? "PRESET   ITS DIALS, AT ONCE (NO CODE CHANGES)"
+                         : s == Section::factory   ? "FACTORY PROJECT   OPEN IT: ITS FILES AND ITS DIALS   READ-ONLY: SAVING MAKES A PROJECT OF YOUR OWN"
                                                    : "PROJECT   OPEN ITS NEWEST VERSION: ITS FILES AND ITS DIALS";
         std::snprintf(out, n, "%s", line);
     }

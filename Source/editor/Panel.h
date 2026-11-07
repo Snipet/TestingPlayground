@@ -671,6 +671,8 @@ namespace playground::ui
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<ProjectEntry> projectList_;
+        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects): read once
+        bool factoryRead_ = false;
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;

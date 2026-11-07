@@ -4154,6 +4154,11 @@ namespace playground::ui
         // it is now is read on its thread, listed as it was until then): a revision when they differ from what the rows
         // show.
         const uint64_t read = port_.projectsRead();
+        if (!factoryRead_)
+        {
+            factoryList_ = port_.factoryProjects();      // compiled in: the same for the plugin's life
+            factoryRead_ = true;
+        }
         if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)
         {
             projectsReadSeen_ = read;
@@ -4311,12 +4316,15 @@ namespace playground::ui
             ExplorerItem::Group g;
             g.section = S::presets;
             g.title = "PRESETS";
-            if (!st.name.empty())
+            const bool factory = isFactoryName(st.name);     // read-only: saving the project makes the user's own copy
+            if (!st.name.empty() && !factory)
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "Save a preset";
             }
-            g.empty = st.name.empty() ? "Save the project to keep presets" : "None yet: + saves the dials";
+            g.empty = st.name.empty() ? "Save the project to keep presets"
+                    : factory         ? "None in this factory project"
+                                      : "None yet: + saves the dials";
             for (const PresetEntry& e : presetList_)
             {
                 ExplorerItem::Row r;
@@ -4341,6 +4349,23 @@ namespace playground::ui
                 ExplorerItem::Row r;
                 r.label = e.name;
                 r.detail = "v" + std::to_string(e.latest);
+                r.icon = chat::Icon::list;
+                r.active = e.name == st.name;
+                r.key = e.name;
+                g.rows.push_back(std::move(r));
+            }
+            groups.push_back(std::move(g));
+        }
+        if (!factoryList_.empty())
+        {
+            // The factory projects (plugin/Factory.h), by name, read-only.
+            ExplorerItem::Group g;
+            g.section = S::factory;
+            g.title = "FACTORY";
+            for (const ProjectEntry& e : factoryList_)
+            {
+                ExplorerItem::Row r;
+                r.label = ownName(e.name);
                 r.icon = chat::Icon::list;
                 r.active = e.name == st.name;
                 r.key = e.name;
@@ -4416,6 +4441,7 @@ namespace playground::ui
                 applyPresetNamed(row.key);
                 break;
             case S::projects:
+            case S::factory:
                 openProjectNamed(row.key);
                 break;
             case S::ir:
@@ -4437,7 +4463,8 @@ namespace playground::ui
         const auto load = [this, name] {
             std::string why;
             if (port_.openProject(name, 0, why))
-                notice("OPENED: " + upper(name) + " V" + std::to_string(port_.project().version));
+                notice(isFactoryName(name) ? "OPENED: " + upper(ownName(name)) + " (FACTORY, READ-ONLY: A SAVE MAKES YOUR OWN COPY)"
+                                           : "OPENED: " + upper(name) + " V" + std::to_string(port_.project().version));
             else
                 notice("NOT OPENED: " + upper(why));
             projectsAt_ = -100.0;
@@ -4451,7 +4478,7 @@ namespace playground::ui
             return;
         }
         funkgui::MenuRequest request;
-        request.items.push_back({ 1, "Open " + name + " (the editor's changes are lost)" });
+        request.items.push_back({ 1, "Open " + ownName(name) + " (the editor's changes are lost)" });
         request.anchor = { pointer_.x, pointer_.y, 1.0f, 1.0f };
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [load](int chosen) {
@@ -4490,8 +4517,10 @@ namespace playground::ui
             notice("NOT SAVED: " + upper(why));
             return;
         }
-        const std::string at = upper(st.name) + " V" + std::to_string(saved.number);
-        notice(saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT" : "SAVED: " + at);
+        const std::string at = upper(saved.name.empty() ? st.name : saved.name) + " V" + std::to_string(saved.number);
+        notice(saved.copied    ? "SAVED AS YOUR OWN PROJECT: " + upper(saved.name) + " (THE FACTORY'S STAYS AS IT IS)"
+               : saved.unchanged ? "NOTHING NEW TO SAVE: " + at + " HAS IT"
+                                 : "SAVED: " + at);
         projectsAt_ = -100.0;
         dirty_ = true;
     }
@@ -4971,7 +5000,7 @@ namespace playground::ui
             std::string text;
             if (!st.name.empty())
             {
-                text = "PROJECT  " + upper(st.name) + (st.version > 0 ? "  V" + std::to_string(st.version) : "")
+                text = "PROJECT  " + upper(st.name) + (st.version > 0 && !isFactoryName(st.name) ? "  V" + std::to_string(st.version) : "")
                      + (st.edited || (st.preset.empty() && st.dialsEdited) ? "  EDITED" : "");
                 if (!st.preset.empty())
                     text += "  PRESET  " + upper(st.preset) + (st.dialsEdited ? "  EDITED" : "");
@@ -5792,7 +5821,7 @@ namespace playground::ui
             request.mode = funkgui::FileRequest::Mode::save;
             request.title = "Export " + project;
             request.pattern = "*" + ext;
-            request.suggestedName = project + ext;
+            request.suggestedName = ownName(project) + ext;    // a factory project's own name: no colon in a file's
             if (host_ == nullptr || !host_->chooseFiles(request, [write](const std::vector<std::string>& paths) {
                     if (!paths.empty())
                         write(paths.front());
@@ -5800,9 +5829,10 @@ namespace playground::ui
             {
                 // No chooser: the Desktop, under a name no file there has.
                 const juce::File desk(juce::String::fromUTF8(port_.exportFolder().c_str()));
-                juce::File to = desk.getChildFile(juce::String::fromUTF8((project + ext).c_str()));
+                const std::string base = ownName(project);
+                juce::File to = desk.getChildFile(juce::String::fromUTF8((base + ext).c_str()));
                 for (int k = 2; to.exists() && k < 1000; ++k)
-                    to = desk.getChildFile(juce::String::fromUTF8((project + " " + std::to_string(k) + ext).c_str()));
+                    to = desk.getChildFile(juce::String::fromUTF8((base + " " + std::to_string(k) + ext).c_str()));
                 write(to.getFullPathName().toStdString());
             }
         }
@@ -6245,7 +6275,7 @@ namespace playground::ui
         const ProjectState st = port_.project();
         if (st.name.empty())
             return "Projects";
-        std::string label = asciiText(st.name) + (st.version > 0 ? " v" + std::to_string(st.version) : "");
+        std::string label = asciiText(st.name) + (st.version > 0 && !isFactoryName(st.name) ? " v" + std::to_string(st.version) : "");
         if (st.edited || (st.preset.empty() && st.dialsEdited))
             label += " (edited)";
         if (!st.preset.empty())

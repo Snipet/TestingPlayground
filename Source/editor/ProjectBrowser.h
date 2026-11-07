@@ -3,7 +3,9 @@
 //
 //   PROJECTS   a row a project, its name, its newest version and when it was saved; the one open marked. A click
 //              chooses one (its name goes into the field, its versions and presets show at the right), a double-click
-//              opens its newest version
+//              opens its newest version. Under the FACTORY caption (a row of no name: never chosen), the factory
+//              projects (EditorPort::factoryProjects), read-only: one chosen puts the name its copy would take into the
+//              field ("Warm Pad", "Warm Pad 2" when a project of this Mac's has that), and nothing of it is deleted
 //   VERSIONS   the chosen project's, the newest first, each with when and what changed; the one open marked. A click
 //              chooses one, a double-click opens it
 //   PRESETS    the chosen project's dial settings; the one applied marked. A click chooses one (its name goes into the
@@ -11,8 +13,9 @@
 //   the field  the name Save saves under: a project's, or, while the presets are chosen from, a preset's (its pill
 //              says which)
 //   Save       a project: the editor's files and dials as a new version of the project named (the one open, or a new
-//              one; another's, a second click: Add version). A preset: the dials as a preset of the project open (one
-//              of that name, a second click: Replace)
+//              one; another's, a second click: Add version); a factory project open, a new name saves the user's own
+//              copy (EditorPort::saveVersion). A preset: the dials as a preset of the project open (one of that name, a
+//              second click: Replace); never a factory project's
 //   Open       the chosen project's newest version, or the chosen version; Apply, the chosen preset (its project
 //              opened first when it is not the one open). When the editor's files have changes no version holds, a
 //              second click: Open anyway
@@ -89,6 +92,8 @@ namespace playground::ui
         std::string takeExport();
         std::pair<std::string, int> takeAb();
         void chooseProjectNamed(const std::string& name, float width, float height);
+        // The name a factory project's copy takes: its own, else "<own> 2", ... (case aside, as the store's add()).
+        std::string copyName(const std::string& factory) const;
 
         // For probes.
         const std::vector<ProjectEntry>& projectList() const noexcept { return projects_; }
@@ -111,8 +116,11 @@ namespace playground::ui
         funkgui::Rect listRect(const Places& at, List l) const;
         int count(List l) const;
         int rowAt(funkgui::Point p, const Places& at, List l) const;
+        void readProjects();                             // this Mac's, then the FACTORY caption and the factory's
+        bool heading(int i) const;                       // the projects' row i is the FACTORY caption
+        bool factoryChosen() const;                      // the chosen project is a factory one
         void readChosen();                               // the chosen project's versions and presets
-        void choose(List l, int i, int rowsShown);
+        void choose(List l, int i, int rowsShown, int step = 1);   // a caption skipped in the step's direction
         void startPreset();                              // the presets chosen from, the field a new preset's name
         void save();
         void openChosen();

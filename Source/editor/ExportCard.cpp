@@ -106,7 +106,10 @@ namespace playground::ui
         category_ = saved_.category;
         genres_ = saved_.genres;
         versions_ = latest_ = presets_ = 0;
-        for (const ProjectEntry& e : port_.projects())
+        std::vector<ProjectEntry> all = port_.projects();
+        if (isFactoryName(project))
+            all = port_.factoryProjects();
+        for (const ProjectEntry& e : all)
             if (e.name == project)
             {
                 versions_ = e.versions;
