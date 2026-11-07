@@ -88,8 +88,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `-L <label>`, `-V` pass through to ctest). Run the probes through ctest only: outside CTest a probe's stores are the
   user's own folders. The editor rendered headless lands in `build-dev/probe-out/<key>/` (`gui.dump*.png`,
   `gui.code*.png`: the code editor's completion, signature, hover (and a long declaration's on two lines, a local
-  named as a constant drawn plain: `.hover_long`), problems, find bar and PAPER; `gui.ir*.png`: the IR
-  view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside sixteen narrowed ones;
+  named as a constant drawn plain: `.hover_long`; that local's card: `.hover_local`), problems, find bar and PAPER;
+  `gui.ir*.png`: the IR view's optimised, lowered (the find bar) and frozen views, PAPER, and its tab beside sixteen
+  narrowed ones;
   `gui.schematic*.png`: a netlist's Schematic view, the library's netlists drawn, PAPER, the least window with 32 dials
   folded and with sixteen tabs and the IR tab, a wire and a move mid-drag, the problems' marks, an empty netlist, 25 %
   and 400 %, the circuit dials' knobs, a netlist after Play this circuit, a part's field with the `1M` warning, a net
@@ -838,9 +839,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   gives each use's flag (`resolve`'s answer), which CodeAssist's sync puts in `TypeNames` by tab and the highlighter
   counts its way to in its state (bits 17 to 31, the conditionals' count in bits 1 to 16); a tab without flags, or a
   use past them, stays a constant, and while the index is due after an edit (until the check's sync) a use after one
-  typed or deleted may show its neighbour's flag. A hover's code is fitted to the card (`fitCode`:
-  `kHoverWidth` columns, `kHoverLines` lines, broken after a comma in brackets or before an attribute, outermost
-  first), and the card cuts a code line still too wide with "..." (never a piece of it left out further on).
+  typed or deleted may show its neighbour's flag. The flags are the tab's by its name: a highlighter is made for a
+  name (`CodeHighlighter::file`), and sync gives a tab renamed one of its new name. A hover card's code is drawn with
+  `Hover::plain`, the names its declaration declares, never as constants. A hover's code is fitted to the card
+  (`fitCode`: `kHoverWidth` columns, `kHoverLines` lines, broken after a comma in brackets or before an attribute,
+  outermost first), and the card cuts a code line still too wide with "..." (never a piece of it left out further
+  on). A cut of text that may hold a string's characters keeps whole UTF-8 characters (`lang::headOf`).
 - **The plugin's macros are every build's** (`lang::kDefines`: DEBUG; Patch.h, "Conditionals and warnings"): each of
   Patch's compiles defines them (`Program::Options::defines`), the check's and the frozen copy's too, which plays
   through the program's instances and so must be the program (a field an `#ifdef DEBUG` declares is in both). A new
