@@ -381,6 +381,9 @@ namespace playground
         std::string projectPreset_;
         Sources projectFiles_;
         std::vector<projectstore::Dial> baseDials_;
+        // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
+        // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).
+        std::optional<std::vector<midilearn::Mapping>> midiOpened_;
         // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();

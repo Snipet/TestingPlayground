@@ -28,7 +28,9 @@
 //   STATE   a session keeps the mappings (<MIDI><MAP/>): a fresh processor loads them and its dials move with them; a
 //           state without <MIDI> loads none; a mapping the session should not hold (a wheel's control) is left out
 //   PROJECT a version saved keeps them ("midi"; "MIDI map" in the note of one whose mappings changed), opening it makes
-//           them the mappings, a version with none leaves them as they are; an export and its import keep them
+//           them the mappings, a version with none leaves them as they are; an export and its import keep them; the
+//           version with none saved as it was then adds no version for the mappings it left, and one changed since
+//           is a change
 //   EFFECT  the effect learns nothing (learnMidi false), and a control change moves nothing
 #include "Probe.h"
 
@@ -534,6 +536,29 @@ PROBE(plugin, midi)
                   "\"program.fm\", \"text\": \"x\" } ], \"dials\": [] } ] }",
             "Old", &why);
         P.eq("project.older_reads", noMidi && noMidi->latest().midi.empty() ? 1 : 0, 1);
+
+        // Version 2 (none) open, after version 1: the mappings it left are 1's. Saving it as it was adds no version for
+        // them; one of them forgotten since is a change, which a version keeps ("MIDI map").
+        P.eq("project.inherited_unchanged", port.saveVersion("Midi Learn", saved, why) && saved.unchanged && saved.number == 2 ? 1 : 0, 1);
+        P.eq("project.inherited_forgot", port.forgetMidi(cutoff) ? 1 : 0, 1);
+        P.eq("project.touched_saves", port.saveVersion("Midi Learn", saved, why) && !saved.unchanged && saved.number == 3 ? 1 : 0, 1);
+        pr = pg::projectstore::load("Midi Learn", &why);
+        P.eq("project.touched_kept", pr && pr->latest().midi.size() == 3u && has(pr->latest().note, "MIDI map") ? 1 : 0, 1);
+        P.eq("project.touched_unchanged", port.saveVersion("Midi Learn", saved, why) && saved.unchanged && saved.number == 3 ? 1 : 0, 1);
+        // The store alone: mappings a version with none left are no change while the latest has none, else they are.
+        const pg::Sources files = pg::singleFile(program());
+        const std::vector<ml::Mapping> maps{ { "cutoff", 1, 74, false } };
+        P.eq("project.store_first", pg::projectstore::saveVersion("Midi Inherit", files, 0, {}).has_value() ? 1 : 0, 1);
+        const auto inherited = pg::projectstore::saveVersion("Midi Inherit", files, 0, {}, {}, { maps, true });
+        P.eq("project.store_inherited", inherited && inherited->unchanged ? 1 : 0, 1);
+        const auto own = pg::projectstore::saveVersion("Midi Inherit", files, 0, {}, {}, { maps, false });
+        P.eq("project.store_own", own && !own->unchanged && own->number == 2 ? 1 : 0, 1);
+        const auto latestHas = pg::projectstore::saveVersion("Midi Inherit", files, 0, {}, {}, { {}, true });
+        P.eq("project.store_latest_has", latestHas && !latestHas->unchanged && latestHas->number == 3 ? 1 : 0, 1);
+        // Version 1's mappings back for the rows below.
+        P.eq("project.back_v1", port.openProject("Midi Learn", 1, why) ? 1 : 0, 1);
+        p.settle();
+        P.eq("project.back_v1_mappings", port.midi().words == words ? 1 : 0, 1);
     }
 
     // ---- FORGET --------------------------------------------------------------------------------------------------------

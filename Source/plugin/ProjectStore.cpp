@@ -902,9 +902,9 @@ namespace playground::projectstore
     }
 
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits, const std::vector<midilearn::Mapping>& midi,
-                                     std::string* why)
+                                     const std::vector<Answer>& circuits, const VersionMidi& midi, std::string* why)
     {
+        const std::vector<midilearn::Mapping> maps = midilearn::tidy(midi.mappings);
         const std::string tidy = tidyName(name);
         if (tidy.empty())
         {
@@ -925,7 +925,9 @@ namespace playground::projectstore
                 return std::nullopt;
             p = std::move(*old);
             Version& last = p.versions.back();
-            if (last.files == files && last.active == active && sameDials(last.dials, dials) && last.midi == midilearn::tidy(midi))
+            // Mappings a version with none left as they were make no change while the latest has none either.
+            const bool sameMidi = last.midi == maps || (midi.inherited && last.midi.empty());
+            if (last.files == files && last.active == active && sameDials(last.dials, dials) && sameMidi)
             {
                 saved.number = last.number;
                 saved.unchanged = true;
@@ -950,7 +952,7 @@ namespace playground::projectstore
         Version v;
         v.number = p.versions.empty() ? 1 : p.latest().number + 1;
         v.savedMs = juce::Time::currentTimeMillis();
-        v.midi = midilearn::tidy(midi);
+        v.midi = maps;
         v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials, &v.midi);
         v.files = files;
         v.active = active;

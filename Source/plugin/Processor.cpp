@@ -1680,6 +1680,7 @@ namespace playground
             projectLatest_ = projectVersion_;
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
             baseDials_.clear();
+            midiOpened_.reset();                                 // the session's mappings are its own
             draft_ = std::move(draft);
             ++draftRevision_;
             abKept_ = {};                                        // an A/B's: the session's program plays, as saved
@@ -2159,6 +2160,7 @@ namespace playground
             return false;
         }
         d.active = std::clamp(v.active, 0, static_cast<int>(d.files.size()) - 1);
+        std::vector<midilearn::Mapping> left = learn_.mappings();
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = d;
@@ -2169,6 +2171,10 @@ namespace playground
             projectPreset_.clear();
             projectFiles_ = d.files;
             baseDials_ = v.dials;
+            if (v.midi.empty())
+                midiOpened_ = std::move(left);                   // what it leaves: no change of its own (saveVersion)
+            else
+                midiOpened_.reset();
         }
         projectDials_ = v.dials;
         for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
@@ -2217,6 +2223,7 @@ namespace playground
             projectPreset_.clear();
             projectFiles_ = d.files;                             // nothing to lose yet, as in a new instance
             baseDials_.clear();
+            midiOpened_.reset();
         }
         projectDials_.clear();
         dialsRequest_ = 0;
@@ -2243,8 +2250,14 @@ namespace playground
         std::vector<projectstore::Answer> answers;
         for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
             answers.push_back({ std::move(key), std::move(text) });
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers,
-                                                                               learn_.mappings(), &why);
+        // MIDI learn's mappings; those a version with none left as they were (opening it) are no change of their own.
+        projectstore::VersionMidi midi{ learn_.mappings() };
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            midi.inherited = midiOpened_ && *midiOpened_ == midi.mappings
+                          && projectstore::sameName(projectstore::tidyName(name), projectName_);
+        }
+        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, midi, &why);
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };
@@ -2265,6 +2278,8 @@ namespace playground
         projectLatest_ = r->number;
         projectFiles_ = files;
         baseDials_ = dials;
+        if (!r->unchanged)
+            midiOpened_.reset();                                 // the version saved has these mappings
         return true;
     }
 
