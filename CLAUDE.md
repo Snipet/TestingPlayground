@@ -250,27 +250,38 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **Samples** (`dsp/Assets.h`, Patch.h's "Samples", `plugin/AssetFiles.h`, `plugin/ProcessorAssets.cpp`; the explorer's
   ASSETS): a program reads an audio file the user added as a table, `#pragma sample <field> "<file>"` filling a field
   whose module has `const float* data` and `int frames` (and `int channels`, `float rate`: the library's `Sample`,
-  `sample.fm`), the main module's in every instance and Shared's, after the defaults and before init (`Patch::reset`).
+  `sample.fm`), the main module's in every instance and Shared's, after the defaults and before init (`Patch::reset`);
+  `data` const alone (a `float* data` is a note: the sound is one buffer the instances, `Asset::at`'s next compiles and
+  the tools' renders share, and FMinus refuses a write through a const pointer).
   A file is decoded once, where it is added (the message thread for a drop or the ASSETS +, Claude's worker for
   write_file's `path`, the thread that loads a state or opens a version), never on the audio thread, and resampled
   (`assets::resample`: a Kaiser-windowed sinc, 48 zero crossings, its cutoff 0.95 of the lower Nyquist) only in
   `Patch::reset` through `Asset::at`, which keeps each rate made (compile, `Engine::prepare`, `offer` at another rate:
   never in a call). The Patch holds the sound (shared) while it lives, so the audio thread only reads it and a sample
   removed or replaced plays on until the next RUN; the pointer is no array FMinus sees, so a program reads within
-  `frames` (`at` and `read` do). Every compile that renders the program takes the samples: the Compiler's
-  (`setAssets`: a RUN and compileNow the set as it is when they start; a refine and a stop's restore their recipe's,
-  `Recipe::assets`), every tool's Session (`measure::Request::assets`, which `scenario::resolve` fills from
-  `ChatHost::chatAssets`; the A/B's loudness and a capture's replay too): a new path that compiles a program for
-  sound passes them. A panel's edit is one only while each sample the program read is the set's of its name
+  `frames` (`at`, `readAt` and `read` do; `read`'s float position only for short sounds, sample.fm's header). Every
+  compile that renders a program takes its samples: the Compiler's (`setAssets`: a RUN and compileNow the set as it is
+  when they start; a refine and a stop's restore their recipe's, `Recipe::assets`), every tool's Session
+  (`measure::Request::assets`, which `scenario::resolve` fills from `ChatHost::chatAssets`, the set as it is: the
+  editor's files'), and a render of another program its own: what plays and previous_run what they compiled with
+  (`CompileStatus::assets`; `ChatHost::chatPlaying`, `chatPrevious`: compare's sides, trace's and view_panel's at), a
+  version its own (`chatVersionSamples`: `assetsOfVersion`, sharing what the set holds of the same file). previous_run
+  is what a run replaced that changed the files or the samples its lines read. The A/B's loudness and a capture's
+  replay take the set as it is (an A/B side and a take keep none of their own): a new path that compiles a program for
+  sound passes its samples. A panel's edit is one only while each sample the program read is the set's of its name
   (`Recipe::samples`, `CompileStatus::samples`). The set is immutable once made (`assets::with`, `without`,
   `renamed`): the processor replaces it whole under `assetsMutex_`, the Compiler's with it. Kept in the session as
   each file was added (`<ASSETS><ASSET name data/>`; a state without them has none), with each project version
   (ProjectStore.h's `samples`, the project's `sampleFiles` each once by hash; opening a version makes its samples the
   plugin's, they count in the edited mark and in the note) and in both exports (a .zip's `samples/`); EXAMPLES and
   RANDOM keep them. Caps (`refusal`, in words): 8 MB a file as added, 32 MB a program's in all, sixteen samples, two
-  channels and 60 s each, a project's files 64 MB. Claude lists them in get_status's and plugin_state's Samples line,
-  adds one with write_file's `path` (a property: the tool budget), and rename_file and delete_file take a sample's
-  name. `assetfiles::decodes()` and `assets::resamples()` count, and `plugin.samples` holds processBlock to none.
+  channels, 1 to 768 kHz, 60 s and 64 MB decoded each, a project's files 64 MB; a file's header checked before anything
+  is read or allocated (JUCE's readers take its rate and length as given and give silence for what the bytes lack), and
+  a WAV's or AIFF's sound within its bytes (a damaged or cut-short file refused). A state's or a version's second
+  sample of a name takes the first's place (`assets::with`). Claude lists them in get_status's and plugin_state's
+  Samples line, adds one with write_file's `path` (a property: the tool budget), and rename_file and delete_file take a
+  sample's name. `assetfiles::decodes()` and `assets::resamples()` count, and `plugin.samples` holds processBlock to
+  none.
 - **A panel's edit** (Compiler.h's "A panel's edit", `Compiler::editPanel`; Patch.h's "The panel"): a RUN whose
   files differ from the recipe's (what plays) only in the panel's files (`isPanelFile`, Sources.h: `.gui`, `.sc`,
   `.sh`) is applied to the program that plays with no compile and nothing offered: no crossfade and no fade (the same
@@ -1116,7 +1127,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes of listen, capture, trace and compare, whose uses CHECKING YOUR WORK names), examples, projects, circuits
   (CIRCUITS: .cir NETLISTS, the prompt's last section; a guide.md from before it cuts as it did), all. A heading
   renamed in ChatPrompt.cpp is a part lost: `plugin.mcp` GUIDE fails. Its start is at most 9,200 tokens for the synth
-  and 8,100 for the effect (bytes / 4: 8,597 and 7,413 now; `plugin.mcp` prints them).
+  and 8,100 for the effect (bytes / 4: 8,581 and 7,398 now; `plugin.mcp` prints them).
 - **The GUI sandbox** (`gui_sandbox`, the server's own tool, `mcp/Main.cpp`; its helper `<Name>GuiSandbox`,
   `Source/sandbox/`): Claude Desktop designs a panel.gui and sees it drawn as the plugin's PANEL view draws it, with no
   plugin open and nothing of an open one touched until the user asks to apply it. Its rules:
