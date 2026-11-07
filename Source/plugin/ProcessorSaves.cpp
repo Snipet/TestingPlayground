@@ -6,13 +6,13 @@
 //
 // Safe by design (ChatAgent.h's ProjectCall): a save only adds (a version, a preset, the user's own copy of a factory
 // project: the factory's is never written); a preset of the name is replaced only with `replace`, and the result gives
-// its old values; opening a project or applying a preset while the editor holds unsaved changes (its files changed
-// since they were opened, saved or loaded; a dial moved from the version's or the preset's value, or from its default
-// when no project is open) is refused unless `discard`; a save or a preset while an A/B plays is refused (what plays is
-// a side's, not the editor's); nothing is deleted. Each save, open and preset goes to the editor's status (claudeNotice:
-// "CLAUDE SAVED VERSION 5 OF ENGINE", which the status line says in its sentence case, as it says every notice), and,
-// the plugin's own chat's, to the journal (get_status since): Claude Desktop's are not journalled (Journal.h: it knows
-// what it did).
+// its old values; opening a project or applying a preset while the editor holds unsaved changes (its files or samples
+// changed since they were opened, saved or loaded; a dial moved from the version's or the preset's value, or from its
+// default when no project is open) is refused unless `discard`; a save or a preset while an A/B plays is refused (what
+// plays is a side's, not the editor's); nothing is deleted. Each save, open and preset goes to the editor's status
+// (claudeNotice: "CLAUDE SAVED VERSION 5 OF ENGINE", which the status line says in its sentence case, as it says every
+// notice), and, the plugin's own chat's, to the journal (get_status since): Claude Desktop's are not journalled
+// (Journal.h: it knows what it did).
 #include "plugin/Processor.h"
 
 #include "Product.h"
@@ -91,6 +91,10 @@ namespace playground
     }
 
     // ---- the message thread's hand -------------------------------------------------------------------------------------
+    // Waits in slices, and not past the chat's stop while the job is not taken: the message thread that would take it may
+    // be the one that stopped the turn and joins it (another chat shown, a project opened, a fresh start, a state load),
+    // which polls nothing until the turn has ended (as chatPicture's wait). A job taken runs on the message thread
+    // already: it finishes.
     bool Processor::onMessageThread(std::function<void()> job)
     {
         if (juce::MessageManager::existsAndIsCurrentThread())
@@ -98,19 +102,43 @@ namespace playground
             job();
             return true;
         }
+        using Clock = std::chrono::steady_clock;
+        constexpr auto kSlice = std::chrono::milliseconds(20);
         std::unique_lock<std::mutex> lock(claudeJobMutex_);
-        claudeJobDone_.wait(lock, [this] { return !claudeJob_ && !claudeJobRunning_; });   // one at a time
+        while (claudeJob_ || claudeJobRunning_)                  // one at a time
+        {
+            if (chat_.stopping())
+                return false;
+            claudeJobDone_.wait_for(lock, kSlice);
+        }
         claudeJob_ = std::move(job);
         const uint64_t ticket = claudeJobsDone_ + 1;
-        if (!claudeJobDone_.wait_for(lock, std::chrono::milliseconds(claudeJobMs_),
-                                     [&] { return claudeJobRunning_ || claudeJobsDone_ >= ticket; }))
+        const Clock::time_point until = Clock::now() + std::chrono::milliseconds(claudeJobMs_);
+        while (!claudeJobRunning_ && claudeJobsDone_ < ticket)
         {
-            claudeJob_ = nullptr;                                // never taken: withdrawn, nothing done
-            claudeJobDone_.notify_all();
-            return false;
+            if (chat_.stopping() || Clock::now() >= until)
+            {
+                claudeJob_ = nullptr;                            // never taken: withdrawn, nothing done
+                claudeJobDone_.notify_all();
+                return false;
+            }
+            claudeJobDone_.wait_until(lock, std::min(until, Clock::now() + kSlice));
         }
         claudeJobDone_.wait(lock, [&] { return claudeJobsDone_ >= ticket; });   // taken: it finishes
         return true;
+    }
+
+    // What ProjectState::changed counts, in words: the files, the samples (one added or removed), or both.
+    std::string Processor::unsavedWhat() const
+    {
+        const Assets samples = assetsNow();
+        bool files = false, sampled = false;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            files = draft_.files != projectFiles_;
+            sampled = !assets::same(samples.get(), projectAssets_.get());
+        }
+        return files && sampled ? "the editor's files and samples" : sampled ? "the samples" : "the editor's files";
     }
 
     bool Processor::claudeJobWaiting() const
@@ -163,12 +191,15 @@ namespace playground
         ProjectAnswer out;
         uint64_t compile = 0;
         if (!onMessageThread([&] { out = claudeProjectAction(call, compile); }))
-            return { false, "The plugin did not get to it in time (its host may be busy): nothing was done. Try again.", {}, false };
-        if (out.ok && compile != 0)
+            return { false, chat_.stopping() ? "Stopped before the plugin got to it: nothing was done."
+                                             : "The plugin did not get to it in time (its host may be busy): nothing was done. Try again.",
+                     {}, false };
+        if (out.ok && compile != 0 && !chat_.stopping())
         {
             // An open: its compile, then a poll() (a job of its own) that has set its dials, so what the next tool
             // measures is the version as it was saved. A poll() under way as the compile ended may take the job before
-            // it has seen the compile: asked again until one has (dialsRequest_ cleared), a few times at most.
+            // it has seen the compile: asked again until one has (dialsRequest_ cleared), a few times at most, and no
+            // longer once the chat stops (onMessageThread gives up then: the message thread may be joining the turn).
             compiler_.wait();
             const CompileStatus s = compiler_.status();
             if (s.request >= compile && s.ok)
@@ -180,7 +211,7 @@ namespace playground
                           + "): run_program gives every message once its files are fixed.";
             }
             if (!juce::MessageManager::existsAndIsCurrentThread())
-                for (int k = 0; k < 5; ++k)
+                for (int k = 0; k < 5 && !chat_.stopping(); ++k)
                 {
                     bool landed = false;
                     if (!onMessageThread([&] { landed = dialsRequest_ != compile; }) || landed)
@@ -244,8 +275,8 @@ namespace playground
                 }
             std::string words;
             if (files && st.changed)
-                words = st.name.empty() ? "the editor's files (no project holds them)"
-                                        : "the editor's files (changed since version " + std::to_string(st.version) + ")";
+                words = unsavedWhat() + (st.name.empty() ? std::string(" (no project holds them)")
+                                                         : " (changed since version " + std::to_string(st.version) + ")");
             if (!moved.empty())
             {
                 std::string names;
@@ -469,7 +500,11 @@ namespace playground
     std::string Processor::claudeProjectList(const ProjectCall& call)
     {
         ProjectState st;
-        const bool known = onMessageThread([&] { st = project(); });
+        std::string what;
+        const bool known = onMessageThread([&] {
+            st = project();
+            what = unsavedWhat();
+        });
         std::string out;
         if (known)
             out = st.name.empty() ? std::string("No project is open")
@@ -480,7 +515,7 @@ namespace playground
         {
             std::string unsaved;
             if (st.changed)
-                unsaved = st.name.empty() ? "the editor's files are in no project" : "the editor's files changed since";
+                unsaved = what + (st.name.empty() ? " are in no project" : " changed since");
             if (st.dialsEdited)
                 unsaved += (unsaved.empty() ? "" : "; ") + std::string("dials moved since");
             out += unsaved.empty() ? std::string(st.name.empty() ? "." : "; nothing unsaved.") : " (unsaved: " + unsaved + ").";

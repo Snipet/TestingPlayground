@@ -37,8 +37,8 @@ namespace playground
                 "apply_preset applies a preset of the project open (its dials glide there); open opens a project's newest "
                 "version, or Name@N's (@N alone: the open one's): its files go into the editor (one step the user can "
                 "undo there) and play, and its dials follow once it compiles. Both refuse while the editor holds unsaved "
-                "changes (files or dials moved since they were opened or saved) unless discard: true, only when the user "
-                "said to drop them. A save only adds; nothing is deleted (that is the user's alone, in PROJECTS). Each "
+                "changes (files, samples or dials changed since they were opened or saved) unless discard: true, only when "
+                "the user said to drop them. A save only adds; nothing is deleted (that is the user's alone, in PROJECTS). Each "
                 "save shows in the plugin and in the change notices." },
               { "eager_input_streaming", true },
               { "input_schema", claude::object({ { "type", "object" }, { "properties", props } }) } });

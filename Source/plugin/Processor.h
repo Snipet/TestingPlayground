@@ -595,7 +595,10 @@ namespace playground
         std::vector<projectstore::Dial> dialsNow() const;        // the program's dials, by name, in its own units
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
                             const std::vector<projectstore::Dial>& dials);
-        bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
+        // `how`: the chat's change of owner (open: the project's own chats show; the plugin's own chat's open, carry:
+        // the conversation goes on with the project it asked for, as a save's does).
+        bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why,
+                         ChatAgent::OwnerChange how = ChatAgent::OwnerChange::open);
         // A state load's: the project's file read whole (the store's cache then has its presets), and the dials its
         // version and the preset applied set kept as baseDials_ (what dialsEdited and the presets' `edited` compare).
         void restoreProjectBase();
@@ -607,9 +610,11 @@ namespace playground
         // Claude's projects tool (ProcessorSaves.cpp; ChatHost::chatProjects). Its saves, opens and presets run on the
         // message thread, as the editor's PROJECTS runs them: the caller's worker hands a job to poll() (after the dials
         // Claude set, so a save keeps them) and waits for it (onMessageThread: at once on the message thread itself; a
-        // job poll() has not taken in kClaudeJobSeconds is withdrawn, nothing done). A list reads the store on the
-        // caller's thread (never a file read whole on the message thread), the project open's state from a job. What
-        // it did goes to the editor's status (claudeNotice_, which EditorPort::claudeNotice gives).
+        // job poll() has not taken in kClaudeJobSeconds, or by the chat's stop, is withdrawn, nothing done: the message
+        // thread may be the one joining the turn). A list reads the store on the caller's thread (never a file read
+        // whole on the message thread), the project open's state from a job. What it did goes to the editor's status
+        // (claudeNotice_, which EditorPort::claudeNotice gives); unsavedWhat: what ProjectState::changed counts, in
+        // words ("the editor's files", "the samples" or both).
         static constexpr int kClaudeJobSeconds = 10;
         int claudeJobMs_ = kClaudeJobSeconds * 1000;             // (setClaudeJobWaitForTests)
         mutable std::mutex claudeJobMutex_;
@@ -617,8 +622,9 @@ namespace playground
         std::function<void()> claudeJob_;                        // asked, not taken yet
         bool claudeJobRunning_ = false;
         uint64_t claudeJobsDone_ = 0;
-        bool onMessageThread(std::function<void()> job);         // false: not taken in time
+        bool onMessageThread(std::function<void()> job);         // false: not taken in time, or stopped first
         void runClaudeJob();                                     // poll()
+        std::string unsavedWhat() const;
         mutable std::mutex claudeNoticeMutex_;
         ClaudeNotice claudeNotice_;
         void noticeClaude(const std::string& text);              // the editor's status says it

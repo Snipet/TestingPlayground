@@ -288,7 +288,7 @@ namespace playground
             }
             if (how == OwnerChange::open && onTurnThread())
             {
-                pendingOwner_ = { true, owner, label };   // a tool of the turn opened a project: at the turn's end
+                pendingOwner_ = { true, owner, label };   // Claude Desktop's call opened a project: at the call's end
                 return false;
             }
         }

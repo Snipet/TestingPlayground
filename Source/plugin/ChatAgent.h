@@ -129,11 +129,12 @@
 // its owner's chats: the project open's (by the project's id), or, while none is, this instance's own. The processor
 // names the owner (setOwner): opening another project keeps the chat shown with its project and shows that project's
 // newest (a new chat when it has none); saving the editor's files as a project carries the chat to it (moved from the
-// instance, copied from another project). The chat is written to the store (keep(): the conversation as saveState(true)
-// has it, the panel's pictures kept, so a chat opened again keeps its thinking) when a turn ends, when the session is
-// saved (keepIdle: not while a turn runs, whose end does), before another chat shows and when the agent goes; the
-// session keeps only which chat it is (chatRef()), and a session from before keeps its conversation here once
-// (adoptChat). A copy of a state in another live instance shows its chat as a chat of its own (restoreChat's `from`;
+// instance, copied from another project), and so does a project the chat's own turn opens (the projects tool: the
+// conversation that asked for it goes on with it). The chat is written to the store (keep(): the conversation as
+// saveState(true) has it, the panel's pictures kept, so a chat opened again keeps its thinking) when a turn ends, when
+// the session is saved (keepIdle: not while a turn runs, whose end does), before another chat shows and when the agent
+// goes; the session keeps only which chat it is (chatRef()), and a session from before keeps its conversation here
+// once (adoptChat). A copy of a state in another live instance shows its chat as a chat of its own (restoreChat's `from`;
 // the processor decides). The chat list (chatList) is its owner's, the newest first: new, open, rename, delete.
 //
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
@@ -177,9 +178,9 @@ namespace playground
 {
     // Claude's projects (the projects tool: ChatProjects.cpp, ChatHost::chatProjects). Safe by design: a save only adds
     // (a version, a preset, the user's own copy of a factory project), a preset is replaced only with `replace` (the old
-    // values said), and opening a project or applying a preset over unsaved changes (the editor's files or the dials
-    // moved since they were opened or saved) only with `discard`, which the user must have asked for; nothing is
-    // deleted (that is the user's alone).
+    // values said), and opening a project or applying a preset over unsaved changes (the editor's files, its samples or
+    // the dials changed since they were opened or saved) only with `discard`, which the user must have asked for;
+    // nothing is deleted (that is the user's alone).
     struct ProjectCall
     {
         enum class Action : uint8_t { list, saveVersion, savePreset, applyPreset, open };
@@ -377,7 +378,8 @@ namespace playground
         bool setOwner(const std::string& owner, const std::string& label, OwnerChange how);
         // A thread acting for the turn that runs (the message thread, while it runs a job a tool of the turn waits for:
         // the projects tool's, Processor::runClaudeJob): an open asked from it waits for the turn's end, as one asked
-        // from the turn's own thread does (it could not stop and join the turn that waits for it).
+        // from the turn's own thread does (it could not stop and join the turn that waits for it). Such an open is
+        // Claude Desktop's (the plugin's own chat's open is a carry: the processor's openProjectAs).
         void actForTurn(bool on);
         void restoreChat(const std::string& owner, const std::string& label, const std::string& id,
                          const std::string& from = {});
@@ -705,8 +707,9 @@ namespace playground
 
         // The chat shown (above): its owner, the owner's name, its id, the user's title (named), when it was made, its file
         // as last written or read here (another writer's change shows), revision_ when it was last written; storeMutex_
-        // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). A change of owner asked
-        // from a turn's own thread (turnThread_: the worker's, or an MCP call's) waits in pendingOwner_.
+        // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). An open asked from a
+        // turn's own thread (turnThread_: the worker's, or an MCP call's; Claude Desktop's projects open) waits in
+        // pendingOwner_.
         std::string chatOwner_, ownerLabel_;
         std::string chatId_ = chatstore::newId();
         std::string chatTitle_;

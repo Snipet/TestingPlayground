@@ -891,11 +891,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
     the open project are `open` (the chat shown is kept with its owner; the new owner's newest shows, else a new one);
     a save is `carry` (from the instance the chat moves, from another project a copy goes), or `move` when the
     project the chat was with has no file any more (deleted, or a new file made in its name's place: the save's id,
-    `Saved::id`, tells, and `chatOwnerNow` looks the project up again). An `open` asked from a turn's own thread (a
-    future tool that opens a project) waits for the turn's end (`pendingOwner_`), never joins the worker from itself;
-    a `carry` runs at once. A switch stops the turn and joins it on the message thread, so nothing a turn does waits
-    for the message thread past `ChatAgent::stopping()` (`chatPicture`, view_panel's wait for `poll()`). Deleting a
-    project deletes its chats (the Projects card says so) unless a Finder copy holds its id.
+    `Saved::id`, tells, and `chatOwnerNow` looks the project up again). A project the plugin's own chat opens in its
+    turn (the projects tool's open: `openProjectAs` with `Journal::Who::chat`) is a `carry` too: the conversation that
+    asked for it goes on with it, never left behind with the project before. An `open` asked from a turn's own thread
+    (Claude Desktop's projects open, which runs as a turn: the user's own chat changes project, as with PROJECTS)
+    waits for the turn's end (`pendingOwner_`), never joins the worker from itself; a `carry` runs at once. A switch
+    stops the turn and joins it on the message thread, so nothing a turn does waits for the message thread past
+    `ChatAgent::stopping()` (`chatPicture`, view_panel's wait for `poll()`; `onMessageThread`, the projects tool's).
+    Deleting a project deletes its chats (the Projects card says so) unless a Finder copy holds its id.
   - **One instance, one id.** No two live processors of a process hold one instance id (`heldIds`), and a state's
     `<CHAT instance>` is taken only when it is this instance's own, or when its chats are there to find (`hasChats`)
     and no other live processor holds it: a state copied into several instances (a track duplicated, a template, a
@@ -1486,18 +1489,21 @@ place (its `products/<key>.cmake`, and its names in the docs).
   description's second paragraph, which the guide's projects part has, the tool budget's way). **Safe by design**, and
   keep it so: a save only adds (a version through `saveVersionAs`, a preset through `savePresetAs`, a factory project's
   save the user's own copy, `saveCopy`); a preset of the name is replaced only with `replace`, the result giving its
-  old values; open and apply_preset are refused while the editor holds unsaved changes (`ProjectState::changed`, a
-  dial off the version's or the preset's value, `baseDials_`, or off its default with no project open), naming them,
-  unless `discard`, which the guide says only the user may ask for; a save, a preset and apply_preset are refused while
-  an A/B is on or its Keep or Close still lands (`ab_.st.on`, `abEnding_`: what plays is a side's, not the editor's);
-  nothing deletes (no action does: deleting is the user's, in PROJECTS). The saves, opens and presets run on the
-  message thread, as PROJECTS runs them: the caller's worker hands poll() a job (`onMessageThread`, `runClaudeJob`:
-  after the dials Claude set, so a save keeps a set_dial of the call before; at once when the caller is the message
-  thread; a job not taken in `kClaudeJobSeconds` withdrawn, nothing done: `setClaudeJobWaitForTests`,
-  `claudeJobWaiting` for the probes) and waits; an open then waits for its compile and for a poll() that set its
-  dials, so the next tool measures the version. A list reads the store on the caller's thread (never a file whole on
-  the message thread), the project open's state from a job. A version's note is Claude's ("Claude: <note> (<the
-  change>)": `projectstore::saveVersion`'s `lead`, `noteLead`); its `category` is set with nothing new to save too.
+  old values; open and apply_preset are refused while the editor holds unsaved changes (`ProjectState::changed`: its
+  files or samples; a dial off the version's or the preset's value, `baseDials_`, or off its default with no project
+  open), naming them (`unsavedWhat`), unless `discard`, which the guide says only the user may ask for; a save, a
+  preset and apply_preset are refused while an A/B is on or its Keep or Close still lands (`ab_.st.on`, `abEnding_`:
+  what plays is a side's, not the editor's); nothing deletes (no action does: deleting is the user's, in PROJECTS).
+  The saves, opens and presets run on the message thread, as PROJECTS runs them: the caller's worker hands poll() a
+  job (`onMessageThread`, `runClaudeJob`: after the dials Claude set, so a save keeps a set_dial of the call before;
+  at once when the caller is the message thread; a job not taken in `kClaudeJobSeconds`, or by the chat's stop (the
+  message thread may be the one joining the turn: "The chats" above), withdrawn, nothing done:
+  `setClaudeJobWaitForTests`, `claudeJobWaiting` for the probes) and waits in slices; an open then waits for its
+  compile and for a poll() that set its dials (not past a stop either), so the next tool measures the version. An open
+  of the plugin's own chat carries the conversation to the project opened (above, "The chats"). A list reads the store
+  on the caller's thread (never a file whole on the message thread), the project open's state from a job. A version's
+  note is Claude's ("Claude: <note> (<the change>)": `projectstore::saveVersion`'s `lead`, `noteLead`); its `category`
+  is set with nothing new to save too.
   Each save, open and preset goes to the editor (`EditorPort::claudeNotice`, a count and the words, in capitals as
   every status notice, which the status line says in its sentence case: the Panel of the editor says it once in its
   status, polls the projects again and has an open PROJECTS read its lists again, `ProjectBrowser::reread`, which keeps

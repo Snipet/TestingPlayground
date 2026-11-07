@@ -2551,7 +2551,8 @@ namespace playground
         return isPanelDial(c) || c < 0 || c >= kHostControls ? 0.5f : params_[static_cast<std::size_t>(c)]->getDefaultValue();
     }
 
-    bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why)
+    bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why,
+                                ChatAgent::OwnerChange how)
     {
         Draft d;
         d.files = tidyFiles(v.files);
@@ -2594,7 +2595,7 @@ namespace playground
         // edit (Compiler.h).
         const uint64_t id = compiler_.request(d.files, false);
         dialsRequest_ = id;
-        syncChatOwner(ChatAgent::OwnerChange::open, &p);         // another project: its chats
+        syncChatOwner(how, &p);                                  // another project: its chats (or the chat goes along)
         return true;
     }
 
@@ -2614,7 +2615,10 @@ namespace playground
             why = "\"" + p->name + "\" keeps no version " + std::to_string(version);
             return false;
         }
-        if (!openVersion(*p, *v, why))
+        // The plugin's own chat asked for it in a turn: the conversation that asked goes on with the project (carry, as
+        // a save), never left behind with the project before (CLAUDE.md, "The chats"). Claude Desktop's open is the
+        // user's own chat's change of project, as PROJECTS' (open: at the call's end, ChatAgent's pendingOwner_).
+        if (!openVersion(*p, *v, why, who == Journal::Who::chat ? ChatAgent::OwnerChange::carry : ChatAgent::OwnerChange::open))
             return false;
         if (who)
             journal_.dialsNote(*who, "opened project \"" + p->name + "\", version " + std::to_string(v->number));

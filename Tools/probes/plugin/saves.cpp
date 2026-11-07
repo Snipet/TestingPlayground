@@ -21,8 +21,9 @@
 //   APPLY    apply_preset while a dial moved off the preset: refused, naming the dial, nothing applied; with discard:
 //            applied (its value back); a preset the project lacks: refused, naming its presets
 //   OPEN     open of another project with nothing unsaved: its files the editor's, its dials once it compiled (the
-//            next tool measures them); the editor's file changed: open refused (unsaved files), with discard: Name@N
-//            opened (that version's files and dials); a version not kept refused, naming those kept
+//            next tool measures them); the editor's file changed: open refused (unsaved files); the files as the
+//            version has them and a sample added: refused, naming the samples alone; with discard: Name@N opened
+//            (that version's files and dials); a version not kept refused, naming those kept
 //   FACTORY  a factory project opened (read-only, said); save_preset refused (save_version first); save_version: the
 //            user's own copy (a new project, its presets with it), the factory's as it was
 //   AB       while an A/B is on, save_version, save_preset and apply_preset refused (the user compares A and B: Keep or
@@ -35,11 +36,17 @@
 //            request (22 tools), its results no errors, the chat's lines say what it saved, the version's note is
 //            Claude's; a second turn's open over moved dials comes back an error, nothing opened; with a check set that
 //            fails, a turn whose only tool applies a preset ends with its answer (no nudge, the check kept), and one
-//            that opens another project clears the check, its result saying so, and ends with its answer too
+//            that opens another project clears the check, its result saying so, and ends with its answer too; that
+//            open carries the conversation (the chat shown is the project's, with the user's words, the open's row,
+//            the answer and the turns before it; the project before keeps its own); a turn whose save waits for
+//            poll() while the user opens a project (the message thread stopping and joining the turn): the job
+//            withdrawn at the stop, the open back in well under a second, nothing saved
+#include "Audio.h"
 #include "FakeClaude.h"
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
+#include "plugin/ChatStore.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -53,6 +60,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -411,6 +419,27 @@ PROBE(plugin, saves)
         const pg::ChatAgent::McpResult refused = projects(a, { { "action", "open" }, { "name", "Glass Song@1" } });
         P.eq("open.refused", refused.isError && has(textOf(refused), "the editor's files (changed since version 1)")
                                  && pa.project().name == "Other Song" ? 1 : 0, 1);
+        // The files as the version has them, a sample added (ProjectState::changed counts it): refused, naming the
+        // samples, not the files.
+        {
+            pa.setDraft({ other, 0 });
+            const juce::File kick = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                        .getChildFile(juce::String(pg::product::kEnvPrefix) + "saves-kick-"
+                                                      + juce::String(juce::Time::currentTimeMillis()) + ".wav");
+            probe::Stereo hit(4800);
+            for (std::size_t i = 0; i < hit.size(); ++i)
+                hit.l[i] = hit.r[i] = 0.5f * std::exp(-static_cast<float>(i) / 600.0f);
+            const bool added = probe::writeWav(kick.getFullPathName().toStdString(), hit, 48000)
+                            && pa.addAssets({ kick.getFullPathName().toStdString() }, why) == 1;
+            const pg::ChatAgent::McpResult smp = projects(a, { { "action", "open" }, { "name", "Glass Song@1" } });
+            std::printf("open (a sample added): %s\n", textOf(smp).c_str());
+            P.eq("open.refused_samples", added && smp.isError && has(textOf(smp), "the samples (changed since version 1)")
+                                             && !has(textOf(smp), "the editor's files") && pa.project().name == "Other Song" ? 1 : 0, 1);
+            for (const pg::AssetEntry& e : pa.assets())
+                (void)pa.removeAsset(e.name, why);
+            kick.deleteFile();
+            a.settle();
+        }
         const pg::ChatAgent::McpResult v1 = projects(a, { { "action", "open" }, { "name", "Glass Song@1" }, { "discard", true } });
         const std::optional<ps::Project> g = ps::load("Glass Song");
         P.eq("open.version", !v1.isError && pa.project().name == "Glass Song" && pa.project().version == 1 && g
@@ -544,6 +573,52 @@ PROBE(plugin, saves)
                                         && has(opened.text, "The check you set was for the program before it, so the plugin cleared it")
                                         && script->postCount() - b6 == 2 && !agent.chatState().checks
                                         && pa.project().name == "Other Song" ? 1 : 0, 1);
+
+        // The open was the plugin's own chat's: the conversation that asked for it goes on with the project (carried, as
+        // a save carries it), never left behind with Glass Song: the chat shown is Other Song's, with the user's words,
+        // the open's row, the answer and the turns before it; Glass Song keeps its own.
+        {
+            const pg::ChatState now = agent.chatState();
+            bool asked = false, answered = false;
+            for (const pg::ChatEntry& e : now.entries)
+            {
+                asked = asked || (e.kind == pg::ChatEntry::Kind::user && e.text == "open Other Song");
+                answered = answered || (e.kind == pg::ChatEntry::Kind::assistant && has(e.text, "Other Song is open."));
+            }
+            const std::string otherId = ps::idOf("Other Song"), glassId = ps::idOf("Glass Song");
+            std::printf("after the open: the chat is %s's, %zu entries\n", now.owner.c_str(), now.entries.size());
+            P.eq("chat.open_carried", !otherId.empty() && agent.chatOwner() == otherId && now.owner == "Other Song" && asked
+                                          && answered && hasEntry(now, "opened version 1 of \"Other Song\"")
+                                          && hasEntry(now, "saved version 3 of \"Glass Song\"") ? 1 : 0, 1);
+            P.eq("chat.open_copy_kept", !glassId.empty() && !pg::chatstore::chatsOf(glassId).empty() ? 1 : 0, 1);
+        }
+
+        // A turn whose save waits for poll() while the user opens a project in PROJECTS: the message thread stops the
+        // turn and joins it, polling nothing meanwhile. The job is withdrawn at the stop (onMessageThread), so the open
+        // waits only for the turn to end, never the job's 10 s; nothing is saved.
+        {
+            const std::optional<ps::Project> before = ps::load("Other Song");
+            const uint64_t was = pa.claudeNotice().count;
+            script->add(fake::Response::ok(fake::Sse().start().tool("toolu_p7", "projects", object({ { "action", "save_version" },
+                                                                                                      { "note", "never saved" } })).end("tool_use")));
+            const int b7 = script->postCount();
+            agent.send("save a version");
+            for (int k = 0; k < 5000 && !a.claudeJobWaiting(); ++k)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const bool waited = a.claudeJobWaiting();
+            const auto t0 = std::chrono::steady_clock::now();
+            const bool switched = pa.openProject("Glass Song", 3, why);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            agent.waitIdle();
+            a.settle();
+            const std::optional<ps::Project> after = ps::load("Other Song");
+            std::printf("a project opened while the turn's save waits: %.1f ms\n", ms);
+            P.eq("chat.switch_job_waited", waited ? 1 : 0, 1);
+            P.le("chat.switch_ms", ms, 1000.0);
+            P.eq("chat.switch_nothing_saved", switched && !a.claudeJobWaiting() && !agent.chatState().busy && script->postCount() - b7 == 1
+                                                  && before && after && after->versions.size() == before->versions.size()
+                                                  && pa.claudeNotice().count == was && pa.project().name == "Glass Song" ? 1 : 0, 1);
+        }
     }
 
     ps::setDirectoryForTests({});
