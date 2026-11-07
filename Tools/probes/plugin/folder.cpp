@@ -143,10 +143,20 @@ namespace
         std::ifstream in(p, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     }
-    void writeFile(const fs::path& p, const std::string& text)   // in place, as VS Code saves
+    // In place, as VS Code saves. Its time after the file's last one: on Linux before 6.13 a file's time moves by the
+    // kernel's tick (1 to 10 ms), so two of the probe's saves of one size within a tick would look alike to FolderSync,
+    // as a person's saves, further apart, never do.
+    void writeFile(const fs::path& p, const std::string& text)
     {
-        std::ofstream out(p, std::ios::binary | std::ios::trunc);
-        out << text;
+        std::error_code ec;
+        const fs::file_time_type was = fs::last_write_time(p, ec);
+        const bool existed = !ec;
+        {
+            std::ofstream out(p, std::ios::binary | std::ios::trunc);
+            out << text;
+        }
+        if (existed && fs::last_write_time(p, ec) <= was && !ec)
+            fs::last_write_time(p, was + std::chrono::milliseconds(1), ec);
     }
     void writeAtomic(const fs::path& dir, const std::string& name, const std::string& text)
     {
