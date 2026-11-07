@@ -63,6 +63,8 @@ namespace playground::ui
         struct Hooks
         {
             std::function<funkgui::Theme()> menuTheme;               // a menu control's popup
+            std::function<bool(const funkgui::Rect&)> menuOpen;      // ... open from that box (the Panel's menuOpenAt)
+            std::function<funkgui::HostServices*()> menuHost;        // ... opened by a key or a screen reader from it
             std::function<void(int node, int page)> choosePage;      // a tab clicked
             std::function<void(int note, float velocity)> playNote;  // a keyboard's key (velocity 0: let go)
             std::function<void(bool pitch, float value)> playWheel;  // its wheels

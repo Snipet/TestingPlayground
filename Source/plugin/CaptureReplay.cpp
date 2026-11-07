@@ -2,6 +2,8 @@
 #include "plugin/CaptureReplay.h"
 
 #include "dsp/Compare.h"
+#include "fminus/GuiSpec.h"
+#include "fminus/Lang.h"
 
 #include "Product.h"
 
@@ -30,6 +32,27 @@ namespace playground::capture
         }
 
         double dbOf(double linear) { return linear > 1e-12 ? 20.0 * std::log10(linear) : -240.0; }
+
+        // Whether the program of `files` has an instrument's Shared that ticks (fminus/Patch.h, "Shared on its own"):
+        // its state moves from the program's first block, notes or none, so no take of it starts on a fresh one.
+        bool sharedTicks(const Sources* files)
+        {
+            if (!kInstrument || files == nullptr || files->empty())
+                return false;
+            Sources texts;
+            for (const SourceFile& f : *files)
+                if (!isGuiFile(f.name))
+                    texts.push_back(f);
+            lang::Service service;
+            lang::Options o;
+            o.instrument = true;
+            service.setOptions(o);
+            service.setFiles(texts);
+            return lang::sharedHooks(service)[0].declared;
+        }
+
+        const char* const kTicks = "its Shared's tick() runs from the program's first block, notes or none, so the program's "
+                                   "state when it started was not a fresh one";
 
         Transport transportOf(const Block& b)
         {
@@ -62,6 +85,8 @@ namespace playground::capture
                            t.voicesAtStart == 1 ? "" : "s");
             if (!kInstrument && t.peakBefore > 1e-5f && t.start != Start::arm)
                 return "a tail still rang when it started (the program's state was not fresh)";
+            if (sharedTicks(r.files))
+                return kTicks;
             if (t.start == Start::arm && !t.restarted)
                 return "it started in the middle of the playing (mode last), on the program's state then, not a fresh one";
             if (t.restarted)
@@ -74,7 +99,8 @@ namespace playground::capture
         {
             const double block = !r.request.blocks.empty() ? static_cast<double>(r.request.blocks.back()) / t.rate : 0.0;
             return !(r.swappedAt >= 0.0 && firstDiffers >= r.swappedAt - block)
-                && !(r.frozenFrom >= 0.0 && firstDiffers >= r.frozenFrom - block) && !t.restarted && r.fromStart;
+                && !(r.frozenFrom >= 0.0 && firstDiffers >= r.frozenFrom - block) && !t.restarted && r.fromStart
+                && !sharedTicks(r.files);                    // (a restart's take ticked before it too)
         }
 
         const char* const kExact = " For an exact take: capture arm with mode next and restart (ask the user first: it cuts "
@@ -297,6 +323,9 @@ namespace playground::capture
         if (r.swappedAt >= 0.0)
             return fmt("Replay: plays the program at its start throughout, so from %.2f s (another program came in) it "
                        "differs; a render of \"capture\" null-tests it.", r.swappedAt);
+        if (sharedTicks(r.files))
+            return std::string("Replay: ") + kTicks + ": a replay differs at first, whether the take began at a note or "
+                   "after a restart; the first render of \"capture\" null-tests it.";
         const bool fresh = t.restarted || (t.start != Start::arm && t.voicesAtStart == 0 && (kInstrument || t.peakBefore <= 1e-5f));
         if (fresh)
             return std::string("Replay: ")

@@ -20,6 +20,7 @@
 #include "fsdsp/core/ScopedFtz.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -86,6 +87,67 @@ namespace playground
               "void playground_shared_init(Shared* self, float rate) { self->init(rate); }", kSharedModule },
             { "end", false, "void end()", "void playground_shared_end(Shared* self) { self->end(); }", kSharedModule },
         };
+        // An instrument's Shared hooks (Patch.h, "Shared on its own"), in lang::sharedHooks' order: each appended only
+        // when the program declares it as here.
+        constexpr Call kSharedHookCalls[] = {
+            { "tick", false, "void tick(int n)",
+              "void playground_shared_tick(Shared* self, int n) [[clang::nonblocking]] { self->tick(n); }", kSharedModule },
+            { "noteOn", false, "void noteOn(float note, float velocity)",
+              "void playground_shared_note_on(Shared* self, float note, float velocity) [[clang::nonblocking]] "
+              "{ self->noteOn(note, velocity); }", kSharedModule },
+            { "noteOff", false, "void noteOff(float note)",
+              "void playground_shared_note_off(Shared* self, float note) [[clang::nonblocking]] { self->noteOff(note); }",
+              kSharedModule },
+        };
+        constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_note_on",
+                                                     "playground_shared_note_off" };
+        // A mono instrument's Voice::legato (Patch.h, "Mono"): appended only to a mono program, and only when the program
+        // declares it as here.
+        constexpr Call kLegatoCall = { "legato", false, "void legato(float note, float velocity)",
+                                       "void playground_legato(Voice* self, float note, float velocity) [[clang::nonblocking]] "
+                                       "{ self->legato(note, velocity); }" };
+
+        // A #pragma mono line (Patch.h, "Mono"): its words after "mono" (a // comment ends them) into `words`; false for
+        // any other line.
+        bool monoLine(std::string_view line, std::vector<std::string>& words)
+        {
+            const auto space = [](char c) { return c == ' ' || c == '\t' || c == '\r'; };
+            const auto nameChar = [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            };
+            std::size_t i = 0;
+            const auto skip = [&] {
+                while (i < line.size() && space(line[i]))
+                    ++i;
+            };
+            const auto word = [&](std::string_view w) {
+                if (line.substr(i, w.size()) != w || (i + w.size() < line.size() && nameChar(line[i + w.size()])))
+                    return false;
+                i += w.size();
+                return true;
+            };
+            skip();
+            if (i >= line.size() || line[i] != '#')
+                return false;
+            ++i;
+            skip();
+            if (!word("pragma"))
+                return false;
+            skip();
+            if (!word("mono"))
+                return false;
+            words.clear();
+            while (true)
+            {
+                skip();
+                if (i >= line.size() || line.compare(i, 2, "//") == 0)
+                    return true;
+                const std::size_t from = i;
+                while (i < line.size() && !space(line[i]) && line.compare(i, 2, "//") != 0)
+                    ++i;
+                words.emplace_back(line.substr(from, i - from));
+            }
+        }
 
         // A field's type as FMinus writes it ("Shared *") without its spaces.
         std::string squeezed(const std::string& type)
@@ -122,6 +184,8 @@ namespace playground
 
         template <std::size_t N>
         constexpr std::size_t countOf(const Call (&)[N]) noexcept { return N; }
+        static_assert(countOf(kSharedHookCalls) == static_cast<std::size_t>(lang::kSharedHooks)
+                      && std::size(kSharedHookShims) == static_cast<std::size_t>(lang::kSharedHooks));
 
         const Call* calls() noexcept { return kInstrument ? kVoiceCalls : kEffectCalls; }
         constexpr std::size_t callCount() noexcept
@@ -497,6 +561,12 @@ namespace playground
         Plain* end = nullptr;
         Init* sharedInit = nullptr;                // the module Shared's
         Plain* sharedEnd = nullptr;
+        using Tick = void(void*, int);
+        using NoteOff = void(void*, float);
+        Tick* sharedTick = nullptr;                // an instrument's Shared hooks (Patch.h, "Shared on its own")
+        Start* sharedNoteOn = nullptr;
+        NoteOff* sharedNoteOff = nullptr;
+        Start* legato = nullptr;                   // a mono program's Voice::legato (Patch.h, "Mono")
         std::vector<Circuit*> circuits;            // the circuit dials' shims, in order
         bool boundsCheck = false;                  // compiled with the bounds checks (the frozen copy never is)
     };
@@ -644,6 +714,51 @@ namespace playground
                     shims.push_back(&c);
                     (std::strcmp(c.method, "init") == 0 ? sharedInit : sharedEnd) = true;
                 }
+        // An instrument's Shared hooks (Patch.h, "Shared on its own"): each method FMinus compiled that Lang reads as
+        // declared the way the plugin calls it; one of the name declared otherwise is the program's own, never called.
+        std::array<bool, lang::kSharedHooks> hooks{};
+        if constexpr (kInstrument)
+        {
+            const auto sharedHas = [&](const char* method) {
+                return sharedDecl != nullptr && std::find(sharedDecl->methods.begin(), sharedDecl->methods.end(),
+                                                          std::string(kSharedModule) + "::" + method) != sharedDecl->methods.end();
+            };
+            bool named = false;
+            for (const Call& c : kSharedHookCalls)
+                named = named || sharedHas(c.method);
+            if (named)
+            {
+                Sources texts;
+                for (const SourceFile& f : files)
+                    if (!isGuiFile(f.name))
+                        texts.push_back(f);
+                lang::Service service;
+                lang::Options o;
+                o.instrument = kInstrument;
+                service.setOptions(o);
+                service.setFiles(texts);
+                const std::array<lang::SharedHook, lang::kSharedHooks> found = lang::sharedHooks(service);
+                for (std::size_t k = 0; k < found.size(); ++k)
+                {
+                    const Call& c = kSharedHookCalls[k];
+                    if (!sharedHas(c.method))
+                        continue;
+                    if (found[k].declared)
+                    {
+                        shims.push_back(&c);
+                        hooks[k] = true;
+                        continue;
+                    }
+                    const lang::SharedHook& h = found[k];
+                    const std::string at = h.file >= 0 && h.file < static_cast<int>(service.files().size())
+                                             ? service.files()[static_cast<std::size_t>(h.file)].name + ":"
+                                                   + std::to_string(h.at.line + 1) + ":" + std::to_string(h.at.col + 1)
+                                             : file;
+                    r.notes += at + ": note: " + kSharedModule + "::" + c.method + " is not declared as the plugin calls it (`"
+                             + c.declaration + "`), so the plugin never calls it\n";
+                }
+            }
+        }
         if (!r.errors.empty())
         {
             r.notes += warnings;
@@ -713,6 +828,82 @@ namespace playground
             patch->circuitCalls_.push_back(std::move(call));
         }
         patch->circuitArgs_.assign(mostArgs, 0.0f);
+        // Mono (Patch.h): the first #pragma mono line of the files FMinus read, as it read them, and the dial it names;
+        // then Voice::legato's shim, for a mono program whose Voice declares it as the plugin calls it.
+        for (const SourceFile& f : asRead(compiled, files))
+        {
+            if (isCircuitFile(f.name))
+                continue;                              // a netlist's lines are SPICE's
+            std::string_view text = f.text;
+            std::vector<std::string> words;
+            for (int no = 1; !text.empty(); ++no)
+            {
+                const std::size_t end = text.find('\n');
+                const std::string_view line = text.substr(0, end);
+                text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+                if (!monoLine(line, words))
+                    continue;
+                const std::string at = f.name + ":" + std::to_string(no) + ":1: note: #pragma mono: ";
+                if (!kInstrument)
+                {
+                    r.notes += at + "the effect plays no notes, so it is left out\n";
+                    continue;
+                }
+                if (patch->mono_)
+                {
+                    r.notes += at + "the program's first such line counts, and this one is left out\n";
+                    continue;
+                }
+                patch->mono_ = true;
+                if (words.size() > 1)
+                    r.notes += at + "it names one dial at most, so what follows " + words.front() + " is left out\n";
+                if (words.empty())
+                    continue;
+                int dial = -1;
+                for (int c = 0; c < kMaxControls && dial < 0; ++c)
+                    if (patch->controls_[static_cast<std::size_t>(c)].used && words.front() == patch->controls_[static_cast<std::size_t>(c)].name)
+                        dial = c;
+                if (dial < 0)
+                    r.notes += at + "no dial is named " + words.front() + ", so the program is mono always\n";
+                else if (patch->controls_[static_cast<std::size_t>(dial)].type == ControlType::real)
+                    r.notes += at + words.front() + " is a real dial, and its switch is a bool (or an int, on when it is not "
+                                                    "0), so the program is mono always\n";
+                else
+                    patch->monoDial_ = dial;
+            }
+        }
+        bool legatoShim = false;
+        if constexpr (kInstrument)
+        {
+            if (has("legato"))
+            {
+                Sources texts;
+                for (const SourceFile& f : files)
+                    if (!isGuiFile(f.name))
+                        texts.push_back(f);
+                lang::Service service;
+                lang::Options o;
+                o.instrument = kInstrument;
+                service.setOptions(o);
+                service.setFiles(texts);
+                const lang::SharedHook h = lang::legatoHook(service);
+                const std::string at = h.file >= 0 && h.file < static_cast<int>(service.files().size())
+                                         ? service.files()[static_cast<std::size_t>(h.file)].name + ":" + std::to_string(h.at.line + 1)
+                                               + ":" + std::to_string(h.at.col + 1)
+                                         : file;
+                if (!patch->mono_)
+                    r.notes += at + ": note: " + kModule + "::legato is called only in a mono program (`#pragma mono`), so the "
+                                                         "plugin never calls it\n";
+                else if (!h.declared)
+                    r.notes += at + ": note: " + kModule + "::legato is not declared as the plugin calls it (`"
+                             + kLegatoCall.declaration + "`), so the plugin never calls it, and a new note starts a voice\n";
+                else
+                {
+                    shims.push_back(&kLegatoCall);
+                    legatoShim = true;
+                }
+            }
+        }
         fminus::Program::Options build = playOptions(file, names, streams, loopBudget, boundsCheck);
         build.include = include;
         build.keepIr = keepIr ? fminus::Program::KeepIr::Both : fminus::Program::KeepIr::None;
@@ -771,6 +962,14 @@ namespace playground
             lookShared("playground_shared_init", s.sharedInit);
         if (sharedEnd)
             lookShared("playground_shared_end", s.sharedEnd);
+        if (hooks[0])
+            lookShared(kSharedHookShims[0], s.sharedTick);
+        if (hooks[1])
+            lookShared(kSharedHookShims[1], s.sharedNoteOn);
+        if (hooks[2])
+            lookShared(kSharedHookShims[2], s.sharedNoteOff);
+        if (legatoShim)
+            lookShared("playground_legato", s.legato);
         for (std::size_t k = 0; k < bound.size(); ++k)
         {
             std::string missing;
@@ -812,6 +1011,10 @@ namespace playground
             rc.stop = s.stop != nullptr;
             rc.render = s.render != nullptr;
             rc.process = s.process != nullptr;
+            rc.sharedTick = s.sharedTick != nullptr;
+            rc.sharedNoteOn = s.sharedNoteOn != nullptr;
+            rc.sharedNoteOff = s.sharedNoteOff != nullptr;
+            rc.legato = s.legato != nullptr;
             rc.bindings = bindings;
             rc.circuitShims = static_cast<int>(bound.size());
             rc.loopBudget = loopBudget;
@@ -856,6 +1059,26 @@ namespace playground
             if (patch->sharedFields_.empty())
                 r.notes += file + ": note: the plugin makes one module Shared for the program, but no field of " + kModule
                          + " points at it (`Shared* shared;`), so nothing reaches it\n";
+            // An instrument's: each param of Shared named as a dial reads it (Patch.h, "Shared on its own").
+            if constexpr (kInstrument)
+                for (const fminus::Program::Parameter& p : m->parameters)
+                {
+                    int dial = -1;
+                    for (int c = 0; c < kMaxControls && dial < 0; ++c)
+                        if (patch->controls_[static_cast<std::size_t>(c)].used && p.name == patch->controls_[static_cast<std::size_t>(c)].name)
+                            dial = c;
+                    if (dial < 0)
+                    {
+                        r.notes += file + ": note: " + kSharedModule + "::" + p.name + " reads no dial (none is named " + p.name
+                                 + "), so it stays at its default\n";
+                        continue;
+                    }
+                    Slot& slot = patch->sharedSlots_[static_cast<std::size_t>(dial)];
+                    slot.stream = p.streamOffset;
+                    slot.value = p.valueOffset;
+                    slot.kind = p.type == "int" ? Slot::Kind::integer : p.type == "bool" ? Slot::Kind::boolean : Slot::Kind::real;
+                    patch->sharedDialMask_ |= 1u << dial;
+                }
         }
         // The module Host's one instance (host.fm), the fields that point at it (the main module's and Shared's), and
         // where its fields are.
@@ -1177,6 +1400,9 @@ namespace playground
         {
             std::memset(shared_, 0, sharedSize_);
             setDefaults(shared_, kSharedModule, 0);
+            for (int c = 0; c < kMaxControls; ++c)   // a param named as a dial: at the dial's default, as the instances'
+                if (((sharedDialMask_ >> c) & 1u) != 0)
+                    store(shared_, sharedSlots_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
             for (const std::size_t at : sharedHostFields_)
                 std::memcpy(static_cast<char*>(shared_) + at, &host_, sizeof host_);
             if (!init(s_->sharedInit, shared_, Method::sharedInit))
@@ -1297,6 +1523,10 @@ namespace playground
             case Method::circuit:    return "a circuit's set()";
             case Method::sharedInit: return std::string(kSharedModule) + "'s init()";
             case Method::sharedEnd:  return std::string(kSharedModule) + "'s end()";
+            case Method::sharedTick: return std::string(kSharedModule) + "'s tick()";
+            case Method::sharedNoteOn: return std::string(kSharedModule) + "'s noteOn()";
+            case Method::sharedNoteOff: return std::string(kSharedModule) + "'s noteOff()";
+            case Method::legato:     return "legato()";
             case Method::none:       break;
         }
         return "a call";
@@ -1325,12 +1555,17 @@ namespace playground
         }
         // The method's line, where the program defines it (Lang's index): the call the plugin made, which a loop in a
         // function it calls stops too.
-        const bool shared = call == Method::sharedInit || call == Method::sharedEnd;
+        const bool shared = call == Method::sharedInit || call == Method::sharedEnd || call == Method::sharedTick
+                         || call == Method::sharedNoteOn || call == Method::sharedNoteOff;
         const char* method = call == Method::init || call == Method::sharedInit ? "init"
                            : call == Method::end || call == Method::sharedEnd   ? "end"
                            : call == Method::process                          ? "process"
                            : call == Method::start                            ? "start"
                            : call == Method::stop                             ? "stop"
+                           : call == Method::legato                           ? "legato"
+                           : call == Method::sharedTick                       ? "tick"
+                           : call == Method::sharedNoteOn                     ? "noteOn"
+                           : call == Method::sharedNoteOff                    ? "noteOff"
                                                                             : nullptr;
         std::string at = files.empty() ? std::string(kProgramName) : files.front().name;
         if (method != nullptr && !files.empty())
@@ -1438,6 +1673,16 @@ namespace playground
         within(c, Method::start);
     }
 
+    void Patch::legato(int i, float note, float velocity) noexcept
+    {
+        const Compiled& c = code();
+        if (c.legato == nullptr || i < 0 || i >= static_cast<int>(instances_.size()) || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.legato(instances_[static_cast<std::size_t>(i)], note, velocity);
+        within(c, Method::legato);
+    }
+
     void Patch::stop(int i) noexcept
     {
         const Compiled& c = code();
@@ -1477,6 +1722,48 @@ namespace playground
         budget(c, n);
         const bool sounding = c.render(instances_[static_cast<std::size_t>(i)], left, right, n);
         return within(c, Method::process) && sounding;
+    }
+
+    // ---- Shared on its own (Patch.h) ------------------------------------------------------------------------------------
+    void Patch::setSharedDials(const float* plain) noexcept
+    {
+        if (shared_ == nullptr)
+            return;
+        for (uint32_t m = sharedDialMask_; m != 0; m &= m - 1)
+        {
+            const int c = std::countr_zero(m);
+            store(shared_, sharedSlots_[static_cast<std::size_t>(c)], plain[c]);
+        }
+    }
+
+    void Patch::sharedTick(int n) noexcept
+    {
+        const Compiled& c = code();
+        if (c.sharedTick == nullptr || shared_ == nullptr || stopped() != Method::none)
+            return;
+        budget(c, n);
+        c.sharedTick(shared_, n);
+        within(c, Method::sharedTick);
+    }
+
+    void Patch::sharedNoteOn(float note, float velocity) noexcept
+    {
+        const Compiled& c = code();
+        if (c.sharedNoteOn == nullptr || shared_ == nullptr || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.sharedNoteOn(shared_, note, velocity);
+        within(c, Method::sharedNoteOn);
+    }
+
+    void Patch::sharedNoteOff(float note) noexcept
+    {
+        const Compiled& c = code();
+        if (c.sharedNoteOff == nullptr || shared_ == nullptr || stopped() != Method::none)
+            return;
+        budget(c, 0);
+        c.sharedNoteOff(shared_, note);
+        within(c, Method::sharedNoteOff);
     }
 
     // ---- frozen dials ---------------------------------------------------------------------------------------------------
@@ -1539,6 +1826,15 @@ namespace playground
         }
         for (int k = 0; k < r.circuitShims; ++k)                  // the circuit dials' shims, which the source carries
             s.circuits.push_back(program.function<Compiled::Circuit>("playground_circuit_" + std::to_string(k), missing));
+        // Shared's hooks (Patch.h, "Shared on its own"), which run on the audio thread through the copy's code too.
+        if (r.sharedTick)
+            s.sharedTick = program.function<Compiled::Tick>(kSharedHookShims[0], missing);
+        if (r.sharedNoteOn)
+            s.sharedNoteOn = program.function<Compiled::Start>(kSharedHookShims[1], missing);
+        if (r.sharedNoteOff)
+            s.sharedNoteOff = program.function<Compiled::NoteOff>(kSharedHookShims[2], missing);
+        if (r.legato)                                             // a mono program's (Patch.h, "Mono")
+            s.legato = program.function<Compiled::Start>("playground_legato", missing);
         if (!missing.empty())
         {
             why = missing;

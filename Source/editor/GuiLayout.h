@@ -77,6 +77,11 @@ namespace playground::ui
     inline constexpr float kGuiSectionEdge = 6.0f;         // a section's frame's top edge, under its top (its title on it)
     inline constexpr float kGuiLabelH = 16.0f;             // a control's label, over its cell
     inline constexpr float kGuiWheelsW = 56.0f;            // a keyboard's pitch and mod wheels, left of its keys
+    // A menu control's box (a dropdown's trigger, GuiItems): its value kGuiMenuInset from its left edge, and the box
+    // kGuiMenuRoom wider than its widest value, which then shows whole: the inset, the chevron's room
+    // (Dropdown.h's kChevronRoom) and 4 px to spare.
+    inline constexpr float kGuiMenuInset = 8.0f;
+    inline constexpr float kGuiMenuRoom = 34.0f;
 
     // A knob's places in its cell (relative to its top left): its face (`d` across, its centre at cx, cy), its label's
     // and its value's tops when it has them, and the cell's size. small, medium and large are faces of 22, 30 and 56 px.

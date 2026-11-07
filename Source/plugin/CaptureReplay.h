@@ -15,8 +15,10 @@
 // program that played at its start (compiled at the take's rate), it gives what played bit for bit when the program
 // started from its fresh state there and its own code played (its netlists generated as they were, with the
 // configurations the take keeps: a self-test's answer stored since, or the program refined since, changes nothing); a
-// frozen copy (Math::Fast), a state left by what played before (voices still sounding, a tail, an LFO's phase) or a
-// program swapped in the middle make it differ, and the null test says where from and why.
+// frozen copy (Math::Fast), a state left by what played before (voices still sounding, a tail, an LFO's phase, an
+// instrument's Shared that ticks, fminus/Patch.h's "Shared on its own": from the program's first block, notes or none,
+// so never fresh, restart or not) or a program swapped in the middle make it differ, and the null test says where from
+// and why.
 //
 // Off the audio thread only: nullTest compiles and renders (a compile, and about as long as the take plays at the
 // program's cost); the rest copies and counts (the live stop and status call them).

@@ -19,6 +19,35 @@
 // non-finite, and one still sounding when prepare() is called. A program swap is apart: the old program's voices fade
 // out without a stop() (that program, its Shared with it, is going).
 //
+// Shared on its own (an instrument's; Patch.h). At every absolute multiple of kGrid samples (counted from prepare(), as
+// the voices' parts are) the Engine calls the program's Shared tick(16) at the start of the part that begins there,
+// after the events at that sample and before the voices' calls, whether or not a voice sounds: so what it computes
+// moves the same however the host splits its blocks (a block that ends mid-tick calls nothing more). A note-on calls
+// Shared's noteOn before its voice's start (a key pressed again while its note is on: its noteOff first), and the
+// note's end calls noteOff before its voice's stop: its note-off, or, while the sustain pedal is down, the pedal's going
+// up; All Notes Off; prepare(), before the voices' stops. So each noteOn gets one noteOff before that key's next noteOn
+// (sharedKeys_: the keys whose note is on for the program's Shared, those let go under the pedal apart). Before each
+// tick and each note hook, the params of Shared named as dials get the dials' values at that sample (a gliding dial's
+// stream there, else its value; for a program that came this block and has had no glides yet, the values its first
+// glides snap to). While a swap's old program goes, its Shared gets none of this but the noteOff of a key let go under
+// the pedal before the swap, as the pedal's going up stops that key's voice (a going program's though it is); the new
+// one's hears the held keys start again (a noteOn each). A program gone back to (a stop's revert) takes up the keys its
+// Shared had at the swap: those let go since get their noteOff (or at the pedal's going up), and the held ones a noteOff
+// and a noteOn as they start again.
+//
+// Mono (an instrument's; Patch.h). While the program that plays is mono (its #pragma mono, and the dial it names, if one,
+// not 0 at the note's sample: read at each note-on and note-off, so a switch takes effect at the next), the Engine keeps
+// the keys held in the order they were pressed and one voice sounds the newest. A note-on while that voice sounds, not
+// released (its key, or the sustain pedal, holds it), goes to it through legato(note, velocity) when the program has
+// one, with no start and no stop; else it starts a voice of its own as above. Either way every other voice of the program
+// (a released voice's tail, those from before the switch) gets its stop() when it had none and fades out over 2 ms, as a
+// steal does (none counted). The voice's key let go while others are held gives it the newest of them, at the velocity
+// it was pressed with (legato, or a voice of its own); with none held it ends as any voice does (its stop(), or the pedal
+// holds it until it comes up). A key let go that the voice does not sound changes nothing, and one let go under the pedal
+// is not held. Shared's hooks hear the keys as ever (a noteOn each key pressed, a noteOff as its note ends), whichever the
+// voice sounds. The held keys started again on a new program (or one gone back to) give its Shared a noteOn each, in the
+// order they were pressed, and one voice the newest's.
+//
 // The host (host.fm, Patch.h). setTransport() takes the host's transport once a block; the Engine keeps the song's
 // position from there, sample by sample (its own clock at 120 BPM when the host says nothing), and fills the program's
 // Host block before each call into it (start, stop, process, every part of a block), so a call reads the position of
@@ -194,10 +223,10 @@ namespace playground
         // While the audio thread is stopped. A program waiting is taken at once, without a fade, and the one playing
         // starts again at the new rate (its instances as new).
         void prepare(double sampleRate, int maxBlockSize);
-        // Offline only (the audio thread stopped, as for prepare()): everything as new, the program that plays too
-        // (Patch::reset: its instances and its module Shared's, end and init run), at the same rate and block. A
-        // render after it is the same as one from a fresh Engine and a fresh compile (measure::Session renders one
-        // compile many times so).
+        // Offline only (the audio thread stopped, as for prepare()): everything as new (no key held), the program that
+        // plays too (Patch::reset: its instances and its module Shared's, end and init run), at the same rate and
+        // block. A render after it is the same as one from a fresh Engine and a fresh compile (measure::Session renders
+        // one compile many times so).
         void restart();
 
         // ---- the audio thread ------------------------------------------------------------------------------------
@@ -426,9 +455,34 @@ namespace playground
         void controller(const Event& e) noexcept;     // a controller, pitch bend or pressure event
         void wheel(int cc, int value) noexcept;       // a racing wheel's control change (wheelcc), its 7-bit value
         void processInstrument(float* const* channels, int numChannels, int n, std::span<const Event> events) noexcept;
-        void noteOn(int key, float velocity) noexcept;
+        void noteOn(int key, float velocity) noexcept;   // the player's: the key held, then playNote
         void noteOff(int key) noexcept;
         void allNotesOff() noexcept;
+        // A note begun on current_ (the player's, or a held key's started again): its Shared's noteOn, then its voice,
+        // by the voices' rules or mono's (below); startVoice() the voices' rules alone (the key's own voice stopped, a
+        // steal, the quietest cut), the note started on an instance of its own.
+        void playNote(int key, float velocity) noexcept;
+        void startVoice(int key, float velocity) noexcept;
+        // Mono (above): whether current_ plays mono at this event (its #pragma mono, and its dial at callAt_ not 0); its
+        // voice, the newest of it not released, fading or ending (null: none); the newest key held (-1: none); every
+        // voice of current_ but `keep` faded out as a steal's (its stop() first, when it had none); the held keys
+        // started again on a program come or gone back to (mono: their Shared's noteOns in the order they were pressed,
+        // and one voice, the newest's; else each key's playNote, in key order).
+        bool monoNow() const noexcept;
+        Voice* monoVoice() noexcept;
+        int newestHeld() const noexcept;
+        void fadeOthers(const Voice* keep) noexcept;
+        void restartHeld() noexcept;
+        // Shared on its own (above): dial c's plain value at the block's sample `at` (-1: as the last block left it), its
+        // target for current_ while `carrying` holds the carry's slots (glideControls'), the program's Shared's params
+        // named as dials set at that sample, and a key's note beginning and ending for its Shared (the hooks, with the
+        // dials before them), every note on ending.
+        float dialAt(int c, int at) const noexcept;
+        float targetOf(int c, uint64_t carrying) const noexcept;
+        void sharedDialsAt(int at) noexcept;
+        void sharedNoteOn(int key, float velocity, int at) noexcept;
+        void sharedNoteOff(int key, int at) noexcept;
+        void sharedKeysOff(int at) noexcept;
         void render(int from, int to) noexcept;       // every voice over [from, to) of the block, into acc
         void renderPart(int from, int to, bool onGrid) noexcept;   // one call a voice; to is a multiple of kGrid?
         int freeInstance(const Patch& p) const noexcept;
@@ -515,8 +569,16 @@ namespace playground
         uint64_t circuitCalls_ = 0;
 
         std::array<Voice, 2 * Patch::kInstances> voices_{};
+        // Shared on its own (above): each key's note for the program's Shared (kKeyOff; kKeyOn; kKeyPedal, on and let
+        // go while the pedal is down), and the old program's as the swap left them (what a revert takes up again, less
+        // those the pedal's going up ended since); the values setSharedDials passes.
+        static constexpr uint8_t kKeyOff = 0, kKeyOn = 1, kKeyPedal = 2;
+        std::array<uint8_t, 128> sharedKeys_{}, oldSharedKeys_{};
+        std::array<float, kMaxControls> sharedPlain_{};
         std::array<bool, 128> held_{};
         std::array<float, 128> heldVelocity_{};
+        std::array<uint64_t, 128> pressed_{};         // when each key was last pressed (presses_ then): mono's order
+        uint64_t presses_ = 0;
         uint64_t noteCount_ = 0;
         uint64_t clock_ = 0;                          // samples processed since prepare(): the grid's origin
         HostBlock host_;                              // what the programs' Host block holds (host.fm)

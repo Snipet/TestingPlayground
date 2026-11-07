@@ -80,7 +80,9 @@
 //                holds it, and it is offered later without compiling again; compileNow waits for a refine running on
 //                another thread, and its program plays; a RUN queued before the refine wins (it reads the store: no
 //                note, no job) and the refine is dropped; an instrument's refine waits while a key is held (no new
-//                program id), and lands after the release, once the voice has ended; with the tests on, a RUN whose
+//                program id), and lands after the release, once the voice has ended; an instrument's program whose
+//                Shared ticks (Patch.h, "Shared on its own") is never refined, silent though it is (its program and
+//                revision stay, the answer due), and the next RUN plays the answer; with the tests on, a RUN whose
 //                files drop the netlist cancels its test, which stores nothing, and a RUN made while the test runs has
 //                its status before landed() moves (by order), the refine after it
 //   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
@@ -1305,6 +1307,27 @@ namespace
             const pg::Meters now = live.play(8);
             P.eq("refresh.synth_after_release", releasing && !sounding && silent && after && s.ok && chose(s) && now.program == s.program
                                                     ? 1 : 0, 1);
+        }
+        // An instrument whose Shared ticks is never refined, silent or not (its Shared would start again): the next RUN
+        // plays the answer.
+        if constexpr (kInstrument)
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::Sources ticking = clipperFiles(false, "\nmodule Shared\n{\n    int ticks;\n    void tick(int n) { ticks += 1; }\n};\n");
+            const pg::CompileStatus a = live.compiler->compileNow(ticking);
+            live.play(8);
+            store.store(key, answer);                    // another instance's answer lands: due, but not here
+            const bool refined = live.compiler->selfTestNow();
+            const pg::Meters m = live.play(8);
+            const pg::Patch* p = live.engine.playingPatch();
+            const auto provisional = [](const pg::CompileStatus& c) { return c.notes.find("; provisional: ") != std::string::npos; };
+            P.eq("refresh.synth_ticking_waits", a.ok && provisional(a) && p != nullptr && p->sharedTicks() && !refined && m.voices == 0 && m.held == 0
+                                                    && m.program == a.request && live.compiler->revision() == a.revision
+                                                    && live.compiler->selfTesting() && live.compiler->selfTests() == 0 ? 1 : 0, 1);
+            const pg::CompileStatus b = live.compiler->compileNow(ticking);
+            P.eq("refresh.synth_ticking_next_run", b.ok && !provisional(b) && live.play(8).program == b.request
+                                                       && !live.compiler->selfTesting() ? 1 : 0, 1);
         }
         // With the tests on: a RUN whose files drop the netlist cancels its test, which stores nothing.
         const pg::Sources potFiles = clipperFiles(true);

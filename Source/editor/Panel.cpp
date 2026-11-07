@@ -7,6 +7,7 @@
 #include "editor/CodeAssist.h"
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
+#include "editor/Dropdown.h"
 #include "editor/GuiItems.h"
 #include "editor/GuiView.h"
 #include "editor/IrView.h"
@@ -764,6 +765,8 @@ namespace playground::ui
             problems_ = &problems;
             close_ = std::move(close);
         }
+        // ... and its menuOpenAt, which the Schematic view's triggers (More, the probe chip) draw open by.
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { schematic_.setMenuOpen(std::move(open)); }
         // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
         // fields, a dial's port and control, and RUN (the Panel's).
         void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
@@ -2714,6 +2717,9 @@ namespace playground::ui
     // Every call goes to the host the Panel was attached to. A menu's and a file chooser's answer comes later, outside
     // any input to the Panel (Panel.h "Unchanged frames"): the Panel is marked changed before the callback runs, so
     // what the answer does is drawn, whoever asked (the Panel, the code editor, the Schematic view, a .gui's menu).
+    // A menu shown is the open one (menuOpenAt: its trigger draws open) until its answer, dismissMenus() or the next
+    // request, which replaces it whether or not that one is shown (the hosts' rule): each request's serial says whether
+    // its answer still closes the open one.
     class Panel::HostProxy final : public funkgui::HostServices
     {
     public:
@@ -2734,13 +2740,30 @@ namespace playground::ui
         unsigned services() const override { return host_.services(); }
         bool showMenu(const funkgui::MenuRequest& request, funkgui::MenuCallback done) override
         {
-            return host_.showMenu(request, [panel = &panel_, then = std::move(done)](int id) {
+            const uint32_t serial = ++panel_.menuSerial_;
+            panel_.menuOpen_ = false;
+            panel_.dirty_ = true;
+            const bool shown = host_.showMenu(request, [panel = &panel_, serial, then = std::move(done)](int id) {
                 panel->dirty_ = true;
+                if (panel->menuSerial_ == serial)
+                    panel->menuOpen_ = false;
                 if (then)
                     then(id);
             });
+            if (shown && panel_.menuSerial_ == serial)
+            {
+                panel_.menuOpen_ = true;
+                panel_.menuAnchor_ = request.anchor;
+            }
+            return shown;
         }
-        void dismissMenus() override { host_.dismissMenus(); }
+        void dismissMenus() override
+        {
+            host_.dismissMenus();
+            ++panel_.menuSerial_;
+            panel_.menuOpen_ = false;
+            panel_.dirty_ = true;
+        }
         bool chooseFiles(const funkgui::FileRequest& request, funkgui::FilesCallback done) override
         {
             return host_.chooseFiles(request,
@@ -2915,6 +2938,8 @@ namespace playground::ui
             hooks.menuTheme = [this] {
                 return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
             };
+            hooks.menuOpen = [this](const funkgui::Rect& r) { return menuOpenAt(r); };
+            hooks.menuHost = [this] { return host_; };
             hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
             hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
             hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
@@ -3096,6 +3121,16 @@ namespace playground::ui
             sp.spec = "ZOOM   THE EDITOR'S SIZE ON SCREEN";
             zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        // The dropdowns' triggers draw open while their menu is (Dropdown.h), PROJECTS' while its card is.
+        for (const int i : { examplesItem_, libraryItem_, modelItem_, thinkingItem_, zoomItem_ })
+        {
+            TB& trigger = static_cast<TB&>(*items_[static_cast<std::size_t>(i)]);
+            trigger.setOpen([this, &trigger] { return menuOpenAt(trigger.bounds()); });
+        }
+        static_cast<TB&>(*items_[static_cast<std::size_t>(projectsItem_)]).setOpen([this] {
+            return projects_.isOpen();
+        });
+        settings_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
 
         // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
         // left of the zoom, and this button, which opens SETTINGS.
@@ -3152,6 +3187,7 @@ namespace playground::ui
     {
         FilesItem& fi = files();
         fi.setPanelHooks(problems_, [this](int tab) { closeFile(tab); });
+        fi.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         fi.setNotice([this](const std::string& text) { notice(text); });
         // The status line's Panel switch: the panel under the code, for the tab shown (none in the code window, which
         // has no panel: the editor's window shows it).
@@ -5127,16 +5163,15 @@ namespace playground::ui
         if (host_ == nullptr || efforts.empty())
             return;
         funkgui::MenuRequest request;
-        int id = 1;
+        int id = 1, current = 0;
         for (const std::string& e : efforts)
         {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = effortName(e) + (e == "medium" ? " (the default)" : "");
-            item.checked = e == chat_.effort;
-            request.items.push_back(std::move(item));
+            if (e == chat_.effort)
+                current = id;
+            request.items.push_back(
+                dropdown::choice(id++, effortName(e) + (e == "medium" ? " (the default)" : ""), e == chat_.effort));
         }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(thinkingItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(thinkingItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, efforts](int chosen) {
             if (chosen < 1 || chosen > static_cast<int>(efforts.size()))
@@ -5172,37 +5207,24 @@ namespace playground::ui
             return;
         // Two choices: the model that builds (writes the files, runs, measures, answers), and the one that plans each
         // request first, or none (ChatAgent.h, "A planner").
-        constexpr int kPlanNone = 1000, kPlanFirst = 1001, kHeading = 2000;
+        // Each a radio set under its header; the builder's choice highlighted when it opens.
+        constexpr int kPlanNone = 1000, kPlanFirst = 1001;
         funkgui::MenuRequest request;
-        request.items.push_back({ kHeading, "BUILD WITH", false });
-        int id = 1;
+        request.items.push_back(dropdown::header("Build with"));
+        int id = 1, current = 0;
         for (const ChatModel& m : chat_.models)
         {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = m.name;
-            item.checked = m.id == chat_.model;
-            request.items.push_back(std::move(item));
+            if (m.id == chat_.model)
+                current = id;
+            request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.model));
         }
-        request.items.push_back({ 0, {}, false, false, true });
-        request.items.push_back({ kHeading + 1, "PLAN WITH (EACH REQUEST, FIRST)", false });
-        {
-            funkgui::MenuItem none;
-            none.id = kPlanNone;
-            none.label = "No planner";
-            none.checked = chat_.planner.empty();
-            request.items.push_back(std::move(none));
-        }
+        request.items.push_back(dropdown::separator());
+        request.items.push_back(dropdown::header("Plan with (each request, first)"));
+        request.items.push_back(dropdown::choice(kPlanNone, "No planner", chat_.planner.empty()));
         id = kPlanFirst;
         for (const ChatModel& m : chat_.models)
-        {
-            funkgui::MenuItem item;
-            item.id = id++;
-            item.label = m.name;
-            item.checked = m.id == chat_.planner;
-            request.items.push_back(std::move(item));
-        }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(modelItem_)]).bounds();
+            request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.planner));
+        dropdown::dropdownMenu(request, triggerRect(modelItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::vector<ChatModel> models = chat_.models;
         host_->showMenu(request, [this, models](int chosen) {
@@ -5462,7 +5484,7 @@ namespace playground::ui
         int id = 1;
         for (const Example& e : kExamples)
             request.items.push_back({ id++, e.title });
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(examplesItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(examplesItem_), 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) { loadExample(chosen - 1); });
     }
@@ -5521,31 +5543,32 @@ namespace playground::ui
         return false;
     }
 
-    // LIBRARY: the library's files by category, a tick on those the program has. One the program lacks becomes a tab
-    // of its own, shown, and the program #includes it (one more line at its top, an edit Cmd-Z takes back); one it has
-    // is shown. With no room for another tab, the others are greyed.
+    // LIBRARY: the library's files under their categories' headers, a tick on those the program has, each label
+    // starting with its file's name (the menu's type-ahead finds a file by it). One the program lacks becomes a tab of
+    // its own, shown, and the program #includes it (one more line at its top, an edit Cmd-Z takes back); one it has is
+    // shown. With no room for another tab, the others are greyed.
     void Panel::openLibrary()
     {
         if (host_ == nullptr)
             return;
         funkgui::MenuRequest request;
         const bool room = files().count() < static_cast<int>(kMaxFiles);
-        constexpr int kHeading = 1000;                   // a category's heading: an id of its own, greyed (never chosen)
         std::string category;
         for (std::size_t i = 0; i < std::size(kLibrary); ++i)
         {
             const LibraryFile& f = kLibrary[i];
             if (category != f.category)
             {
-                if (!category.empty())
-                    request.items.push_back({ 0, {}, false, false, true });
                 category = f.category;
-                request.items.push_back({ kHeading + static_cast<int>(i), upper(category), false });
+                std::string title = category;
+                if (!title.empty())
+                    title[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(title[0])));
+                request.items.push_back(dropdown::header(std::move(title)));   // MenuLook writes it in capitals
             }
             const bool have = files().find(f.name) >= 0;
             request.items.push_back({ static_cast<int>(i) + 1, std::string(f.name) + "   " + f.summary, have || room, have });
         }
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(libraryItem_)]).bounds();
+        dropdown::dropdownMenu(request, triggerRect(libraryItem_), 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             if (chosen >= 1 && chosen <= static_cast<int>(std::size(kLibrary)))
@@ -5734,6 +5757,18 @@ namespace playground::ui
     namespace
     {
         constexpr const char* kMutedText = "Input muted to avoid a feedback loop";
+    }
+
+    funkgui::Rect Panel::triggerRect(int item) const
+    {
+        return static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(item)]).bounds();
+    }
+
+    bool Panel::menuOpenAt(const funkgui::Rect& anchor) const noexcept
+    {
+        const funkgui::Rect& a = menuAnchor_;
+        return menuOpen_ && std::abs(a.x - anchor.x) < 0.5f && std::abs(a.y - anchor.y) < 0.5f
+            && std::abs(a.w - anchor.w) < 0.5f && std::abs(a.h - anchor.h) < 0.5f;
     }
 
     bool Panel::openSettings()
@@ -6163,8 +6198,8 @@ namespace playground::ui
             return;
         funkgui::MenuRequest request;
         for (int i = 0; i < z->count(); ++i)
-            request.items.push_back({ i + 1, z->label(i), z->enabled(i), i == z->active(), false });
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]).bounds();
+            request.items.push_back(dropdown::choice(i + 1, z->label(i), i == z->active(), z->enabled(i)));
+        dropdown::dropdownMenu(request, triggerRect(zoomItem_), z->active() >= 0 ? z->active() + 1 : 0);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this](int chosen) {
             auto* m = static_cast<ZoomModel*>(zoom_);

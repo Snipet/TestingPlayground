@@ -64,9 +64,14 @@
 //             arm with restart: the restart plays that run's files; the take starts at the Engine's own position and
 //             replays bit for bit, twice in one Session (the second after the first ended with the pedal down); a take
 //             with no MIDI (a chord held from before) replays no notes of its own
+//   TICKS     (an instrument) a take, as the recorder keeps one, of a program whose Shared's tick (fminus/Patch.h,
+//             "Shared on its own") moved an LFO its voice reads for half a second before the take's first note: the
+//             forecast and the null test say a replay differs because the tick ran before it began (no "exact take" hint:
+//             a restart does not help); the same program with its tick renamed (no hook) replays bit for bit
 #include "Probe.h"
 
 #include "AutoClipper.h"
+#include "Rig.h"
 
 #include "plugin/CaptureReplay.h"
 #include "plugin/ChatAgent.h"
@@ -1384,6 +1389,86 @@ PROBE(plugin, capture)
         r.rec.poll();
         P.eq("forget.held_then_freed", held == 1 && r.rec.recorder().rings() == 0 ? 1 : 0, 1);
         P.eq("forget.own_code_off", r.rec.engine().ownCode() ? 0 : 1, 1);
+    }
+
+    // ---- TICKS: a take of a program whose Shared ticks never starts fresh ------------------------------------------------
+    if constexpr (kInstrument)
+    {
+        const auto program = [](bool hook) {
+            return std::string("module Shared\n{\n    float phase;\n    void ") + (hook ? "tick" : "step")
+                 + "(int n) { phase += 0.0005f * (float)n; if (phase >= 1) phase -= 1; }\n};\n\n"
+                   "module Voice\n{\n    Shared* shared;\n    float p, step, env;\n    bool held;\n"
+                   "    void start(float note, float velocity) { step = 440 * expf(0.0577622650f * (note - 69)) / 48000; held = true; }\n"
+                   "    void stop() { held = false; }\n"
+                   "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                   "        for (int i = 0; i < n; ++i)\n        {\n"
+                   "            env += held ? 0.01f * (1 - env) : -0.01f * env;\n"
+                   "            p += step * (1 + 0.05f * sinf(6.28318531f * shared->phase));\n"
+                   "            if (p >= 1)\n                p -= 1;\n"
+                   "            left[i] += 0.2f * env * sinf(6.28318531f * p);\n            right[i] += 0.2f * env * sinf(6.28318531f * p);\n"
+                   "        }\n        return held || env > 0.0001f;\n    }\n};\n";
+        };
+        // Half a second with no note, then the take: whole blocks of 256 from a note at its first sample.
+        const auto takeOf = [&](const std::string& source, cap::Take& t) {
+            probe::Rig rig(kFs, 512);
+            std::string errors;
+            if (!rig.load(source, &errors))
+            {
+                std::printf("%s", errors.c_str());
+                return false;
+            }
+            constexpr std::size_t kBefore = 24064, kLength = 24064;
+            rig.run(probe::Stereo(kBefore), 256);
+            const std::vector<probe::Note> notes = { { 0, pg::EventKind::noteOn, 60, 0.8f }, { 12000, pg::EventKind::noteOff, 60, 0.0f } };
+            const probe::Stereo played = rig.run(probe::Stereo(kLength), 256, notes);
+            t = cap::Take{};
+            t.rate = kFs;
+            t.part = 512;
+            t.channels = 2;
+            t.start = cap::Start::note;
+            t.clock = kBefore;
+            for (std::size_t at = 0; at < kLength; at += 256)
+            {
+                cap::Block b;
+                b.sample = at;
+                b.event = t.events.size();
+                b.program = rig.program();
+                b.size = 256;
+                b.dials = rig.defaults();
+                for (int i = 0; i < pg::wheelcc::kStateCcs; ++i)
+                    b.racing[static_cast<std::size_t>(i)] = pg::wheelcc::restOf(i);
+                for (const probe::Note& n : notes)
+                    if (n.at >= at && n.at < at + 256)
+                    {
+                        cap::Note x;
+                        x.sample = n.at;
+                        x.kind = n.kind;
+                        x.note = static_cast<uint8_t>(n.note);
+                        x.velocity = n.velocity;
+                        t.events.push_back(x);
+                        ++b.events;
+                    }
+                t.blocks.push_back(b);
+            }
+            t.out[0] = played.l;
+            t.out[1] = played.r;
+            t.programs.push_back({ rig.program(), pg::singleFile(source) });
+            t.programDials.push_back({ rig.program(), rig.controls() });
+            return true;
+        };
+        cap::Take ticking, still;
+        const bool made = takeOf(program(true), ticking) && takeOf(program(false), still);
+        P.eq("ticks.takes", made ? 1 : 0, 1);
+        cap::Replay a, b;
+        std::string why;
+        const cap::Fidelity fa = made && cap::replayOf(ticking, 0.0, -1.0, a, why) ? cap::nullTest(ticking, a) : cap::Fidelity{};
+        const cap::Fidelity fb = made && cap::replayOf(still, 0.0, -1.0, b, why) ? cap::nullTest(still, b) : cap::Fidelity{};
+        const std::string forecastA = made ? cap::forecast(ticking) : std::string(), forecastB = made ? cap::forecast(still) : std::string();
+        std::printf("ticks: %s\n  %s\n  still: %s\n  %s\n", forecastA.c_str(), fa.line.c_str(), forecastB.c_str(), fb.line.c_str());
+        P.eq("ticks.forecast_says", has(forecastA, "its Shared's tick() runs from the program's first block") && !has(forecastA, "bit for bit") ? 1 : 0, 1);
+        P.eq("ticks.replay_differs_says_why", fa.rendered && !fa.identical && has(fa.line, "its Shared's tick() runs from the program's first block")
+                                                  && !has(fa.line, "For an exact take") ? 1 : 0, 1);
+        P.eq("ticks.renamed_replays", fb.identical && has(forecastB, "no voice sounded when it started") ? 1 : 0, 1);
     }
     return P.finish();
 }

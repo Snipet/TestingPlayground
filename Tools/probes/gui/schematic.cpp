@@ -84,12 +84,14 @@
 //             within 1 %, each trace triggered on a rising crossing of its mean (the same window two frames apart) and
 //             ranged in a power of two volts, the readouts accessibility items (their values the numbers); with the
 //             meters standing still the view settles; the synth's "no voice sounding" is spoken once, not after each
-//             note let go; the wire's menu pins and unpins, and the effect's chip chooses amp[1] (and back); a
-//             view_panel window picture sends no set and a second Panel opened and closed leaves the set as it was, and
-//             a Panel that owns none (a picture's) reads the slots it shares with the user's set live; the
-//             Netlist view clears the set and the Schematic view arms the pins again (the session keeps them), a RUN
-//             arms them on the new program; in host blocks of 2048 an effect's scope shows each block's newest 1,024,
-//             triggered inside them (never two blocks joined), a synth's whole windows; and the Panel's going clears them
+//             note let go; the wire's menu pins and unpins, and the effect's chip chooses amp[1] (and back), a
+//             dropdown's trigger (its menu under it and as wide, the current element highlighted, drawn open until
+//             answered); a view_panel window picture sends no set and a second Panel opened and closed leaves the set
+//             as it was, and a Panel that owns none (a picture's) reads the slots it shares with the user's set live;
+//             the Netlist view clears the set and the Schematic view arms the pins again (the session keeps them), a
+//             RUN arms them on the new program; in host blocks of 2048 an effect's scope shows each block's newest
+//             1,024, triggered inside them (never two blocks joined), a synth's whole windows; and the Panel's going
+//             clears them
 //   EDIT      each kind's field (all 13 kinds and both terminals) writing the exact tokens as one undo step, its rows,
 //             the taper FMinus plays (a line's taper= before its .pot's word), a row past 64 characters left alone;
 //             E12 steps; refusals; 1M's warning; the Label tool; Show as labels (its tags overlapping nothing new);
@@ -461,6 +463,25 @@ namespace
     bool hasLabel(const std::vector<std::string>& labels, const std::string& prefix)
     {
         return std::any_of(labels.begin(), labels.end(), [&](const std::string& l) { return l.rfind(prefix, 0) == 0; });
+    }
+
+    // A dropdown's trigger drawn open at `r` (editor/Dropdown.h): a rounded rectangle there with the accent's 1 px edge
+    // (the effect's probe chip; the synth has none to check).
+    [[maybe_unused]] bool drawnOpenAt(const funkgui::PrimList& f, const funkgui::Rect& r, funkgui::Col accent)
+    {
+        const uint32_t edge = static_cast<uint32_t>(accent.r) | static_cast<uint32_t>(accent.g) << 8
+                            | static_cast<uint32_t>(accent.b) << 16 | static_cast<uint32_t>(accent.a) << 24;
+        for (const funkgui::Prim& p : f.prims)
+        {
+            if (static_cast<int>(p.d2[2] + 0.5f) != static_cast<int>(funkgui::PrimKind::rrect) || p.c1 != edge
+                || std::abs(p.d2[0] - 1.0f) > 0.01f)
+                continue;
+            const float pad = 1.5f + p.d2[1];
+            if (std::abs(p.x0 + pad - r.x) <= 1.6f && std::abs(p.y0 + pad - r.y) <= 1.6f && std::abs(p.x1 - pad - r.right()) <= 1.6f
+                && std::abs(p.y1 - pad - r.bottom()) <= 1.6f)
+                return true;
+        }
+        return false;
     }
 
     // The first label of the pending menu starting with `prefix`, chosen.
@@ -1409,7 +1430,7 @@ PROBE(gui, schematic)
                 return ok;
             };
             const cir::Orient o = partOf(v.drawing(), "R2")->orient;
-            P.eq("menus.part_rotate", partMenu("R2", "Rotate   ") && partOf(v.drawing(), "R2")->orient == cir::rotatedCw(o) ? 1 : 0, 1);
+            P.eq("menus.part_rotate", partMenu("R2", "Rotate") && partOf(v.drawing(), "R2")->orient == cir::rotatedCw(o) ? 1 : 0, 1);
             P.eq("menus.part_rotate_back", partMenu("R2", "Rotate back") && partOf(v.drawing(), "R2")->orient == o ? 1 : 0, 1);
             P.eq("menus.part_mirror", partMenu("R2", "Mirror") && partOf(v.drawing(), "R2")->orient == cir::mirrored(o) ? 1 : 0, 1);
             P.eq("menus.part_show", partMenu("R2", "Show in netlist") && !panel.schematicShown() && ed.caret().line == 5
@@ -2352,10 +2373,23 @@ PROBE(gui, schematic)
         if constexpr (!kInstrument)
         {
             const std::optional<funkgui::Point> chip = v.centreOfChip();
+            const std::optional<funkgui::Rect> chipBox = v.chipRect();
             if (chip)
                 host.click(chip->x, chip->y);
             const bool listed = menuLabels(host) == std::vector<std::string>{ "amp[0]", "amp[1]" };
+            // a dropdown's trigger (Dropdown.h): its menu under it, as wide, the current element highlighted; drawn
+            // open (the accent's edge) while it is, and not once it is answered
+            const funkgui::Col accent = pg::ui::productTheme(funkgui::Theme::byIndex(host.themeIndex())).accent;
+            const funkgui::MenuRequest* cm = host.pendingMenu();
+            const bool under = cm != nullptr && chipBox && std::abs(cm->anchor.x - chipBox->x) < 0.5f
+                            && std::abs(cm->anchor.y - chipBox->y) < 0.5f && std::abs(cm->anchor.w - chipBox->w) < 0.5f
+                            && cm->minWidth >= chipBox->w - 0.5f && cm->selectedId == 1;
+            host.tick(1);
+            const bool drawnOpen = chipBox && drawnOpenAt(host.draw(), *chipBox, accent);
             choose(host, "amp[1]");
+            host.tick(1);
+            const bool closedAfter = chipBox && !drawnOpenAt(host.draw(), *chipBox, accent);
+            P.eq("probes.chip_trigger", under && drawnOpen && closedAfter ? 1 : 0, 1);
             play(4);
             port.meters(m);
             const bool second = v.probeElement() == "amp[1]" && v.probeSet().instance == 1 && m.probeSet == v.probeSet() && v.probesLive();

@@ -474,6 +474,10 @@ namespace playground::ui
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
         bool openSettings();
         SettingsCard& settingsCard() noexcept { return settings_; }
+
+        // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
+        // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
+        bool menuOpenAt(const funkgui::Rect& anchor) const noexcept;
         bool mutedNoticeShown() const noexcept { return mutedShown_; }
         funkgui::Point centreOfMutedSettings() const;
 
@@ -776,6 +780,11 @@ namespace playground::ui
         funkgui::Point pointer_{};
         bool hasPointer_ = false;
         bool ring_ = false;                              // the focus ring is shown (keyboard use)
+        // The menu open (menuOpenAt): its anchor, and the request it belongs to (a later one replaces it).
+        bool menuOpen_ = false;
+        funkgui::Rect menuAnchor_{};
+        uint32_t menuSerial_ = 0;
+        funkgui::Rect triggerRect(int item) const;       // a ButtonItem trigger's bounds: its menu's anchor
         bool dirty_ = true;                              // a change since the last tick (input, a refresh, a layout)
         // Unchanged frames (above): a change not drawn yet (dirty_ as each tick found it, kept until draw()); an item
         // unsettled at the last tick, and at the tick before (the frame a motion ends in draws too); the mix of what

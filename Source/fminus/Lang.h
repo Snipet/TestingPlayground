@@ -65,6 +65,9 @@
 //                      receiver is not known: the test is conservative, so a pot is never driven twice) and the dials'
 //                      names (the pot's when no other dial has it, else <field>_<pot>). The plugin's compile (Patch)
 //                      and the GUI sandbox both take them from here, so a panel drawn for a circuit program has its dials
+//   sharedHooks()      the methods of an instrument's module Shared that the Engine calls as it plays (Patch.h's
+//                      "Shared on its own": tick, noteOn, noteOff), each declared as the plugin calls it or otherwise;
+//                      legatoHook(), a mono program's Voice::legato (Patch.h's "Mono"), the same way
 //   format()           the house style of the examples and the library (LangFormat.cpp): Allman braces, four spaces
 //                      a level, a single statement under its if/for/while/else a level deeper, continuation lines
 //                      under their open parenthesis (else a level deeper), C's spacing (binary operators and commas
@@ -89,6 +92,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -405,6 +409,26 @@ namespace playground::lang
     // Patch makes the plugin's from these, the GUI sandbox its mocks.
     Control potControl(const std::string& name, float def);
     Control switchControl(const std::string& name, int positions, int def);
+
+    // ---- an instrument's Shared hooks (Patch.h's "Shared on its own") ------------------------------------------------
+    // The methods of a module Shared an instrument's Engine calls as it plays, beside its init and end: each one's name
+    // and the declaration it calls it by. sharedHooks() says, for each, whether the program `s` holds declares a method
+    // of that name in its module Shared, as the plugin calls it (`declared`) or otherwise (`otherwise`: the plugin never
+    // calls it, and Patch's compile says so in a note at its place). Patch and the capture's replay take them from here.
+    struct SharedHook
+    {
+        const char* name = "";                   // "tick"
+        const char* declaration = "";            // "void tick(int n)"
+        bool declared = false;
+        bool otherwise = false;
+        int file = -1;                           // the method's (Service::files() index), when either
+        Pos at{};                                // its name
+    };
+    inline constexpr int kSharedHooks = 3;       // tick, noteOn, noteOff, in that order
+    std::array<SharedHook, kSharedHooks> sharedHooks(const Service& s);
+    // Voice's legato, which the Engine calls in a mono program (Patch.h's "Mono"), in the same shape: whether module
+    // Voice declares `void legato(float note, float velocity)`, or a legato otherwise.
+    SharedHook legatoHook(const Service& s);
 
     // ---- the formatter (LangFormat.cpp) -----------------------------------------------------------------------------
     struct Formatted

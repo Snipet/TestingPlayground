@@ -8,6 +8,7 @@
 #include "fsdsp/core/ScopedFtz.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -70,9 +71,13 @@ namespace playground
         if (current_ != nullptr && pending_.load(std::memory_order_acquire) == nullptr)
         {
             const fsdsp::ScopedFtz ftz;
+            if constexpr (kInstrument)
+                sharedKeysOff(-1);                   // its Shared's notes end first (Engine.h, "Shared on its own")
             for (Voice& v : voices_)
                 stopVoice(v);
         }
+        sharedKeys_.fill(kKeyOff);
+        oldSharedKeys_.fill(kKeyOff);
         fs_ = sampleRate > 0.0 ? static_cast<float>(sampleRate) : 48000.0f;
         rate_.store(fs_, std::memory_order_relaxed);
         maxBlock_ = std::max(1, maxBlockSize);
@@ -158,6 +163,10 @@ namespace playground
         prepare(fs_, maxBlock_);
         host_ = HostBlock{};                         // the wheels, the pedal and the song's position at rest, as new
         wheel14_ = { wheelcc::kCentre, 0, 0, 0 };
+        held_.fill(false);                           // no key held (a mono program's note-off reads them: Engine.h, "Mono")
+        heldVelocity_.fill(0.0f);
+        pressed_.fill(0);
+        presses_ = 0;
         beat_ = 0.0;
         bpm_ = 120.0;
         running_ = true;
@@ -267,6 +276,9 @@ namespace playground
             for (int c = 0; c < kMaxControls; ++c)
                 heldDials_[static_cast<std::size_t>(c)] = glide_[static_cast<std::size_t>(c)].tgt;
             heldCarryOver_ = carryOver_;
+            // Its Shared's notes as they stand, should the Engine go back to it; the new one's Shared has none yet.
+            oldSharedKeys_ = sharedKeys_;
+            sharedKeys_.fill(kKeyOff);
             // The old program's voices fade out; the keys still held start again on the new one.
             for (Voice& v : voices_)
                 if (v.patch != nullptr && v.patch == old_ && !v.exiting)
@@ -274,9 +286,7 @@ namespace playground
                     v.fading = true;
                     v.fall = v.gain / static_cast<float>(swapFade_);
                 }
-            for (int k = 0; k < 128; ++k)
-                if (held_[static_cast<std::size_t>(k)])
-                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            restartHeld();
             stopCheck(0, -1);                        // a start() that ran past its budget
         }
         else
@@ -417,14 +427,9 @@ namespace playground
             if (!info.used)
                 continue;
             const bool circuit = (bound & slotBit(c)) != 0;
-            float target = normSet_ ? plainOf(info, norm_[static_cast<std::size_t>(c)]) : info.def;
-            if ((carrying & slotBit(c)) != 0)
-            {
-                if (norm_[static_cast<std::size_t>(c)] == carry.fromNorm[static_cast<std::size_t>(c)])
-                    target = carry.plain[static_cast<std::size_t>(c)];
-                else
-                    carryOver_ |= slotBit(c);               // moved since: as the host's value says, from now on
-            }
+            const float target = targetOf(c, carrying);
+            if ((carrying & slotBit(c)) != 0 && norm_[static_cast<std::size_t>(c)] != carry.fromNorm[static_cast<std::size_t>(c)])
+                carryOver_ |= slotBit(c);                // moved since: as the host's value says, from now on
             if (snap || info.type != ControlType::real)
             {
                 const bool changed = g.cur != target || g.moving();
@@ -484,6 +489,75 @@ namespace playground
             ++feedGen_;
         streamingNow_ = streaming;
         streamedLast_ = streaming;
+    }
+
+    float Engine::targetOf(int c, uint64_t carrying) const noexcept
+    {
+        const auto k = static_cast<std::size_t>(c);
+        const Control& info = current_->controls()[k];
+        const DialCarry& carry = current_->carry();
+        if ((carrying & slotBit(c)) != 0 && norm_[k] == carry.fromNorm[k])
+            return carry.plain[k];                   // the carry's while the host's value is the one it was made from
+        return normSet_ ? plainOf(info, norm_[k]) : info.def;
+    }
+
+    // ---- the audio thread: Shared on its own (Engine.h) ------------------------------------------------------------------
+    float Engine::dialAt(int c, int at) const noexcept
+    {
+        const auto k = static_cast<std::size_t>(c);
+        if (fedPatch_ != current_)
+        {
+            // It came this block and has had no glides yet: the values its first glides snap to (glideControls, its carry
+            // whole, as a snap starts it).
+            const DialCarry& carry = current_->carry();
+            const bool carrying = normSet_ && meaning_ != 0 && meaning_ == carry.from && meaning_ != current_->program();
+            return targetOf(c, carrying ? carry.slots : uint64_t{ 0 });
+        }
+        if (streaming_[k] && at >= 0)
+            return streamBuf_[k * static_cast<std::size_t>(maxBlock_) + static_cast<std::size_t>(std::clamp(at, 0, std::max(maxBlock_ - 1, 0)))];
+        return glide_[k].cur;
+    }
+
+    void Engine::sharedDialsAt(int at) noexcept
+    {
+        const uint32_t mask = current_->sharedDials();
+        if (mask == 0 || current_->stopped() != Patch::Method::none)
+            return;
+        for (uint32_t m = mask; m != 0; m &= m - 1)
+        {
+            const int c = std::countr_zero(m);
+            sharedPlain_[static_cast<std::size_t>(c)] = dialAt(c, at);
+        }
+        current_->setSharedDials(sharedPlain_.data());
+    }
+
+    void Engine::sharedNoteOn(int key, float velocity, int at) noexcept
+    {
+        uint8_t& state = sharedKeys_[static_cast<std::size_t>(key)];
+        if (current_->sharedNotes() || current_->sharedDials() != 0)
+        {
+            sharedDialsAt(at);
+            if (state != kKeyOff)
+                current_->sharedNoteOff(static_cast<float>(key));   // pressed again while its note is on: that one ends
+            current_->sharedNoteOn(static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
+        }
+        state = kKeyOn;
+    }
+
+    void Engine::sharedNoteOff(int key, int at) noexcept
+    {
+        sharedKeys_[static_cast<std::size_t>(key)] = kKeyOff;
+        if (current_ == nullptr || !(current_->sharedNotes() || current_->sharedDials() != 0))
+            return;
+        sharedDialsAt(at);
+        current_->sharedNoteOff(static_cast<float>(key));
+    }
+
+    void Engine::sharedKeysOff(int at) noexcept
+    {
+        for (int k = 0; k < 128; ++k)
+            if (sharedKeys_[static_cast<std::size_t>(k)] != kKeyOff)
+                sharedNoteOff(k, at);
     }
 
     void Engine::feed(Patch& p, int offset, int instance) noexcept
@@ -742,9 +816,20 @@ namespace playground
             if (resume >= 0)
                 resumeGlides(resume);
             callAt_ = resume;                        // -1: a circuit's first call at the dials the last block left
+            // Its Shared's notes as the swap left them (Engine.h, "Shared on its own"): those let go since end now (or
+            // when the pedal comes up); the held keys' end and begin again as they start again below. (Those let go
+            // under the pedal before the swap ended at its going up, if it went up since: controller.)
+            sharedKeys_ = oldSharedKeys_;
+            oldSharedKeys_.fill(kKeyOff);            // the stopped one's Shared is called no more
             for (int k = 0; k < 128; ++k)
-                if (held_[static_cast<std::size_t>(k)])
-                    noteOn(k, heldVelocity_[static_cast<std::size_t>(k)]);
+                if (sharedKeys_[static_cast<std::size_t>(k)] == kKeyOn && !held_[static_cast<std::size_t>(k)])
+                {
+                    if (host_.sustain)
+                        sharedKeys_[static_cast<std::size_t>(k)] = kKeyPedal;
+                    else
+                        sharedNoteOff(k, callAt_);
+                }
+            restartHeld();
             stopCheck(at, resume);                   // one that stops at once: no other to go back to now
         }
     }
@@ -1439,8 +1524,36 @@ namespace playground
             return;
         held_[static_cast<std::size_t>(key)] = true;
         heldVelocity_[static_cast<std::size_t>(key)] = velocity;
+        pressed_[static_cast<std::size_t>(key)] = ++presses_;
+        playNote(key, velocity);
+    }
+
+    void Engine::playNote(int key, float velocity) noexcept
+    {
         if (current_ == nullptr || maxBlock_ == 0 || current_->stopped() != Patch::Method::none)
             return;                                  // (a stopped program starts no note: Engine.h)
+        sharedNoteOn(key, velocity, callAt_);        // its Shared first (Engine.h, "Shared on its own")
+        if (current_->stopped() != Patch::Method::none)
+            return;                                  // that call ran past its budget, or failed a bounds check
+        if (monoNow())
+        {
+            // Mono (Engine.h): the voice that sounds takes the note (legato), else the note starts a voice of its own;
+            // either way every other voice of the program fades out as a steal's does.
+            Voice* live = current_->legatos() ? monoVoice() : nullptr;
+            fadeOthers(live);
+            if (live != nullptr)
+            {
+                live->key = key;
+                live->pedal = false;                 // a key holds it now
+                current_->legato(live->instance, static_cast<float>(key), std::clamp(velocity, 0.0f, 1.0f));
+                return;
+            }
+        }
+        startVoice(key, velocity);
+    }
+
+    void Engine::startVoice(int key, float velocity) noexcept
+    {
         // The key's own voice stops first; then, with every voice taken, the oldest released one (else the oldest)
         // gets its stop() (when it had none) and fades out to make room.
         int sounding = 0;
@@ -1506,11 +1619,112 @@ namespace playground
             }
     }
 
+    // ---- the audio thread: mono (Engine.h) ------------------------------------------------------------------------------
+    bool Engine::monoNow() const noexcept
+    {
+        if (current_ == nullptr || !current_->mono())
+            return false;
+        const int c = current_->monoDial();
+        return c < 0 || dialAt(c, callAt_) != 0.0f;
+    }
+
+    Engine::Voice* Engine::monoVoice() noexcept
+    {
+        Voice* live = nullptr;
+        for (Voice& v : voices_)
+            if (v.patch != nullptr && v.patch == current_ && !v.released && !v.fading && !v.ending && !v.exiting
+                && (live == nullptr || v.age > live->age))
+                live = &v;
+        return live;
+    }
+
+    int Engine::newestHeld() const noexcept
+    {
+        int newest = -1;
+        for (int k = 0; k < 128; ++k)
+            if (held_[static_cast<std::size_t>(k)]
+                && (newest < 0 || pressed_[static_cast<std::size_t>(k)] > pressed_[static_cast<std::size_t>(newest)]))
+                newest = k;
+        return newest;
+    }
+
+    void Engine::fadeOthers(const Voice* keep) noexcept
+    {
+        for (Voice& v : voices_)
+            if (&v != keep && v.patch != nullptr && v.patch == current_ && !v.fading && !v.exiting)
+            {
+                stopVoice(v);                        // its stop() first, when it had none
+                v.fading = true;
+                v.fall = v.gain / static_cast<float>(stealFade_);
+            }
+    }
+
+    void Engine::restartHeld() noexcept
+    {
+        if (!monoNow())
+        {
+            for (int k = 0; k < 128; ++k)
+                if (held_[static_cast<std::size_t>(k)])
+                    playNote(k, heldVelocity_[static_cast<std::size_t>(k)]);
+            return;
+        }
+        // Mono: each held key's note begins again for the program's Shared, in the order the keys were pressed, then one
+        // voice sounds the newest.
+        if (maxBlock_ == 0 || current_->stopped() != Patch::Method::none)
+            return;
+        std::array<int, 128> keys{};
+        int count = 0;
+        for (int k = 0; k < 128; ++k)
+            if (held_[static_cast<std::size_t>(k)])
+                keys[static_cast<std::size_t>(count++)] = k;
+        std::sort(keys.begin(), keys.begin() + count, [this](int a, int b) {
+            return pressed_[static_cast<std::size_t>(a)] < pressed_[static_cast<std::size_t>(b)];
+        });
+        for (int i = 0; i < count; ++i)
+        {
+            const int k = keys[static_cast<std::size_t>(i)];
+            sharedNoteOn(k, heldVelocity_[static_cast<std::size_t>(k)], callAt_);
+            if (current_->stopped() != Patch::Method::none)
+                return;
+        }
+        if (count > 0)
+        {
+            const int k = keys[static_cast<std::size_t>(count - 1)];
+            startVoice(k, heldVelocity_[static_cast<std::size_t>(k)]);
+        }
+    }
+
     void Engine::noteOff(int key) noexcept
     {
         if (key < 0 || key > 127)
             return;
         held_[static_cast<std::size_t>(key)] = false;
+        // Its note's end for the program's Shared, first (Engine.h, "Shared on its own"): now, or when the pedal comes up.
+        if (uint8_t& state = sharedKeys_[static_cast<std::size_t>(key)]; current_ != nullptr && state == kKeyOn)
+        {
+            if (host_.sustain)
+                state = kKeyPedal;
+            else
+                sharedNoteOff(key, callAt_);
+        }
+        // Mono (Engine.h): the key the voice sounds, let go while others are held, gives the voice back to the newest of
+        // them (legato, else a voice of its own), every other voice of the program fading. With none held, it ends as
+        // below.
+        if (current_ != nullptr && current_->stopped() == Patch::Method::none && monoNow())
+            if (Voice* live = monoVoice(); live != nullptr && live->key == key)
+                if (const int back = newestHeld(); back >= 0)
+                {
+                    const float velocity = heldVelocity_[static_cast<std::size_t>(back)];
+                    const bool legato = current_->legatos();
+                    fadeOthers(legato ? live : nullptr);
+                    if (legato)
+                    {
+                        live->key = back;
+                        current_->legato(live->instance, static_cast<float>(back), std::clamp(velocity, 0.0f, 1.0f));
+                    }
+                    else
+                        startVoice(back, velocity);
+                }
         for (Voice& v : voices_)
             if (v.patch != nullptr && v.patch == current_ && v.key == key && !v.released)
             {
@@ -1535,6 +1749,20 @@ namespace playground
         else if (e.kind == EventKind::controller && e.note == 64)
         {
             const bool down = e.velocity >= 0.5f;
+            if (host_.sustain && !down)
+                for (int k = 0; k < 128; ++k)        // the pedal up: their notes end for the program's Shared first
+                {
+                    const auto s = static_cast<std::size_t>(k);
+                    if (sharedKeys_[s] == kKeyPedal)
+                        sharedNoteOff(k, callAt_);
+                    // A swap's old program's too, let go under the pedal before the swap: the loop below stops their
+                    // voices, a going program's though they are (Engine.h, "Shared on its own").
+                    if (old_ != nullptr && oldSharedKeys_[s] == kKeyPedal)
+                    {
+                        oldSharedKeys_[s] = kKeyOff;
+                        old_->sharedNoteOff(static_cast<float>(k));
+                    }
+                }
             if (host_.sustain && !down)
                 for (Voice& v : voices_)             // the pedal up: the keys let go meanwhile stop now
                     if (v.patch != nullptr && v.pedal && !v.released)
@@ -1642,6 +1870,7 @@ namespace playground
     void Engine::allNotesOff() noexcept
     {
         held_.fill(false);
+        sharedKeysOff(callAt_);                      // every note's end for the program's Shared, first
         for (Voice& v : voices_)
             if (v.patch != nullptr && v.patch == current_ && !v.released)
             {
@@ -1670,6 +1899,13 @@ namespace playground
         if (len <= 0)
             return;
         syncHost(from);
+        // Shared's tick (Engine.h, "Shared on its own"): at each absolute multiple of kGrid, before the voices' calls.
+        if (current_ != nullptr && (clock_ + static_cast<uint64_t>(from)) % kGrid == 0
+            && (current_->sharedTicks() || current_->sharedDials() != 0) && current_->stopped() == Patch::Method::none)
+        {
+            sharedDialsAt(from);
+            current_->sharedTick(kGrid);
+        }
         for (Voice& v : voices_)
         {
             if (v.patch == nullptr)
