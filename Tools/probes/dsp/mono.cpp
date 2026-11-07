@@ -23,6 +23,7 @@
 //            return, its one start, and its sine never steps
 //   SWAP     the held keys start again on a new mono program: its Shared's noteOns in the order they were pressed, one
 //            voice the newest's; that key let go gives the voice the one pressed before it
+//   RESTART  a render after Engine::restart() is a fresh one's: a key the render before left held is held no more
 //   FROZEN   the frozen copy calls legato
 //   BLOCKS   a mono program with a glide of its own (legato, return, retrigger, the pedal, the bend) and one without
 //            legato give the same bits in blocks of 64, 333, 1 and a mix; every start had its stop
@@ -657,6 +658,20 @@ PROBE(dsp, mono)
         rig.run(silence(512), 256, { off(100, 62) });
         sameText(P, "swap.back_to_pressed_before", logFrom(p, 4), "4062 5064");
         e.collect();
+    }
+
+    // ---- RESTART -----------------------------------------------------------------------------------------------------------
+    {
+        // A render after restart() is a fresh Engine's: a key the render before left held is held no more, so the next
+        // render's last key let go stops the voice rather than going back to it.
+        probe::Rig rig(kFs, 512);
+        loaded(rig, kLog);
+        pg::Engine& e = rig.engine();
+        rig.run(silence(1000), 100, { on(100, 60) });
+        e.restart();
+        const pg::Patch* p = e.playingPatch();
+        rig.run(silence(1000), 100, { on(100, 64), off(500, 64) });
+        sameText(P, "restart.no_key_held", text(logOf(p)), "1064 2064 4064 3064");
     }
 
     // ---- FROZEN ------------------------------------------------------------------------------------------------------------

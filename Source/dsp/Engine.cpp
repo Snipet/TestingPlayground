@@ -163,6 +163,10 @@ namespace playground
         prepare(fs_, maxBlock_);
         host_ = HostBlock{};                         // the wheels, the pedal and the song's position at rest, as new
         wheel14_ = { wheelcc::kCentre, 0, 0, 0 };
+        held_.fill(false);                           // no key held (a mono program's note-off reads them: Engine.h, "Mono")
+        heldVelocity_.fill(0.0f);
+        pressed_.fill(0);
+        presses_ = 0;
         beat_ = 0.0;
         bpm_ = 120.0;
         running_ = true;
