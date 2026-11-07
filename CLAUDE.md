@@ -1640,7 +1640,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Music folder's `<Company>/<Name>/Programs` (the probe's sandbox's `programs/` under CTest), a number after a name
   taken: an export adds a folder, never replacing or deleting a file (two names equal but for case, one file on the
   default APFS, refused before anything is made; a file there already fails it; a failed one removes only the folder it
-  made). `plugin.import` checks them.
+  made). It writes the program's samples there too, each file as it was added (`Asset::bytes`), their names in the
+  case check; a project's source export carries them as well. `path` adds a sample (`ChatHost::chatAddAsset`, decoded
+  on the calling thread; `name` its name if given): it is a form of its own, as `files`, `from` and `to` are, so
+  `content` beside it is refused; an audio file's name (`assets::isAudioName`) is never a program file's, in `name`,
+  in `files` or brought in by `from` (a folder's is left out and named, for `path` to add; one named alone refused).
+  `plugin.import` checks them.
 - **add_library_file** puts a library file in the editor as a tab (never over a file of that name) and returns its
   whole text, so Claude has seen it (`seen_`); the program's `#include` is Claude's to write.
 - **projects** (`plugin/ChatProjects.cpp`, `plugin/ProcessorSaves.cpp`, `ChatHost::chatProjects`; ChatAgent.h's

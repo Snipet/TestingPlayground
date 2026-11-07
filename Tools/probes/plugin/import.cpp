@@ -17,6 +17,9 @@
 //           sandbox under CTest), byte for byte, the path in the result; the same name again: "<name> 2", the first
 //           untouched; a name that is a path, or starts with '.', refused; two files whose names differ only in case
 //           (one file on this Mac's disk): refused, no folder made; nothing in the plugin changed
+//   SAMPLES a WAV by its path added as a sample; path beside content refused; an audio file's name with content
+//           refused, naming path; from: a folder's audio file left out, said with path, and one named alone refused;
+//           to: the program's samples exported beside its files, byte for byte, and said
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
@@ -30,6 +33,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -68,6 +72,30 @@ namespace
     const pg::SourceFile* fileOf(const pg::Draft& d, const std::string& name) { return pg::findFile(d.files, name); }
 
     void write(const juce::File& f, const std::string& bytes) { f.replaceWithData(bytes.data(), bytes.size()); }
+
+    // A mono 16-bit WAV at 48 kHz of `frames` frames of a ramp: a sample's file.
+    std::string wav16(int frames)
+    {
+        const auto le = [](std::string& s, uint32_t v, int bytes) {
+            for (int i = 0; i < bytes; ++i)
+                s += static_cast<char>((v >> (8 * i)) & 0xFF);
+        };
+        std::string s = "RIFF";
+        le(s, static_cast<uint32_t>(36 + frames * 2), 4);
+        s += "WAVEfmt ";
+        le(s, 16, 4);
+        le(s, 1, 2);                                   // PCM
+        le(s, 1, 2);                                   // mono
+        le(s, 48000, 4);
+        le(s, 96000, 4);
+        le(s, 2, 2);
+        le(s, 16, 2);
+        s += "data";
+        le(s, static_cast<uint32_t>(frames * 2), 4);
+        for (int i = 0; i < frames; ++i)
+            le(s, static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(i * 50 - 12000))), 2);
+        return s;
+    }
 }
 
 PROBE(plugin, import)
@@ -254,6 +282,39 @@ PROBE(plugin, import)
         t = call(object({ { "to", "Cased" } }), &error);
         P.eq("to.case_refused", error && has(t, "filters.fm and Filters.fm differ only in case") && has(t, "Nothing was exported")
                                     && !programs.getChildFile("Cased").exists() ? 1 : 0, 1);
+        if (programs != juce::File())
+            programs.deleteRecursively();
+    }
+
+    // ---- SAMPLES ------------------------------------------------------------------------------------------------------
+    {
+        reset();
+        const juce::File song = tmp.getChildFile("sampled");
+        song.createDirectory();
+        write(song.getChildFile(pg::kProgramName), program("sampled"));
+        const juce::File kick = song.getChildFile("kick.wav");
+        write(kick, wav16(480));
+        bool error = true;
+        std::string t = call(object({ { "path", kick.getFullPathName() } }), &error);
+        const std::vector<pg::AssetEntry> held = p.editorPort().assets();
+        P.eq("samples.added", !error && has(t, "Added the sample kick.wav") && held.size() == 1 && held[0].name == "kick.wav" ? 1 : 0, 1);
+        t = call(object({ { "path", kick.getFullPathName() }, { "content", "x" } }), &error);
+        P.eq("samples.path_and_content", error && has(t, "write_file takes one of") ? 1 : 0, 1);
+        t = call(object({ { "name", "snare.wav" }, { "content", "x" } }), &error);
+        P.eq("samples.audio_name_refused", error && has(t, "snare.wav names an audio file: give its path") ? 1 : 0, 1);
+        t = call(object({ { "from", song.getFullPathName() } }), &error);
+        P.eq("samples.from_left_out", !error && has(t, "kick.wav (a sample: write_file's path adds it)") ? 1 : 0, 1);
+        t = call(object({ { "from", kick.getFullPathName() } }), &error);
+        P.eq("samples.from_file_refused", error && has(t, "kick.wav is an audio file: write_file's path adds it as a sample") ? 1 : 0, 1);
+        const char* sandbox = std::getenv((std::string(pg::product::kEnvPrefix) + "PREFS_DIR").c_str());
+        const juce::File programs = sandbox != nullptr && *sandbox != '\0' ? juce::File(juce::String::fromUTF8(sandbox)).getChildFile("programs")
+                                                                           : juce::File();
+        t = call(object({ { "to", "With Samples" } }), &error);
+        juce::MemoryBlock out;
+        const bool read = programs != juce::File() && programs.getChildFile("With Samples").getChildFile("kick.wav").loadFileAsData(out);
+        P.eq("samples.exported", !error && read && out.getSize() == static_cast<std::size_t>(kick.getSize())
+                                     && std::memcmp(out.getData(), wav16(480).data(), out.getSize()) == 0
+                                     && has(t, "and the program's 1 sample") && has(t, "kick.wav (a sample, ") ? 1 : 0, 1);
         if (programs != juce::File())
             programs.deleteRecursively();
     }

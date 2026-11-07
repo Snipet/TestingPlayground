@@ -2,11 +2,12 @@
 // whole (name, content); a sample added (path: an audio file on this Mac, decoded by ChatHost::chatAddAsset; an audio
 // file's name is never a program file's); several written as one change, all or none (files); a file or a folder on
 // this Mac that the user named brought into the program's files (from: the program files there, text, kMaxImportBytes
-// each, names the editor takes, all or none, without the folder sync's read-only copies); and the editor's files
-// written to a folder of their own on this Mac (to: in exportsFolder(), the user's Music folder's
-// <Company>/<Name>/Programs, a probe's sandbox under CTest), which only adds files: a name taken gets a number after
-// it, and nothing there is replaced or deleted. Every write but the export and a sample goes into the editor as one
-// change (one undo step there); an import reads, it never writes or moves the user's files.
+// each, names the editor takes, all or none, without the folder sync's read-only copies; its audio files are left out,
+// said, as a sample comes in by its path); and the editor's files, with the program's samples, written to a folder of
+// their own on this Mac (to: in exportsFolder(), the user's Music folder's <Company>/<Name>/Programs, a probe's sandbox
+// under CTest), which only adds files: a name taken gets a number after it, and nothing there is replaced or deleted.
+// Every write but the export and a sample goes into the editor as one change (one undo step there); an import reads,
+// it never writes or moves the user's files.
 #include "plugin/ChatAgent.h"
 
 #include "fminus/CirDoc.h"
@@ -176,6 +177,8 @@ namespace playground
             if (named.existsAsFile())
             {
                 const std::string n = named.getFileName().toStdString();
+                if (assets::isAudioName(n))
+                    return n + " is an audio file: write_file's path adds it as a sample";
                 if (!programExtension(n))
                     return n + " is not a program file (" + std::string(kProgramFileKinds) + ")";
                 files.push_back(named);
@@ -191,7 +194,7 @@ namespace playground
                     if (programExtension(n))
                         files.push_back(e.getFile());
                     else
-                        left.push_back(n);
+                        left.push_back(assets::isAudioName(n) ? n + " (a sample: write_file's path adds it)" : n);
                 }
                 std::sort(files.begin(), files.end(), [](const juce::File& a, const juce::File& b) {
                     const bool pa = a.getFileName() == kProgramName, pb = b.getFileName() == kProgramName;
@@ -325,11 +328,27 @@ namespace playground
             const Draft d = host_.chatDraft();
             if (d.files.empty())
                 return fail("The editor has no file to export.");
+            // The program's files, then its samples (dsp/Assets.h: each file as it was added), as a project's source
+            // export carries them; a write_file `from` of the folder brings the program's files back (a sample's path
+            // adds one).
+            struct Out
+            {
+                const std::string& name;
+                const std::string& bytes;
+                bool sample;
+            };
+            std::vector<Out> outs;
+            for (const SourceFile& f : d.files)
+                outs.push_back({ f.name, f.text, false });
+            const Assets samples = host_.chatAssets();
+            if (samples != nullptr)
+                for (const std::shared_ptr<const assets::Asset>& a : samples->items)
+                    outs.push_back({ a->name(), a->bytes(), true });
             // Two names that differ only in case are one file on this Mac's disk (APFS ignores case by default): the
             // second would replace the first.
             {
                 std::map<std::string, std::string> seen;
-                for (const SourceFile& f : d.files)
+                for (const Out& f : outs)
                     if (const auto [it, added] = seen.emplace(lowered(f.name), f.name); !added)
                         return fail(it->second + " and " + f.name + " differ only in case, which this Mac's disk takes as one "
                                     "name: rename one (rename_file) and export again. Nothing was exported.");
@@ -344,12 +363,12 @@ namespace playground
             if (!dir.createDirectory().wasOk())
                 return fail("Could not make the folder " + dir.getFullPathName().toStdString() + ".");
             std::string listed;
-            for (const SourceFile& f : d.files)
+            for (const Out& f : outs)
             {
                 const juce::File target = dir.getChildFile(juce::String::fromUTF8(f.name.c_str()));
                 juce::TemporaryFile temp(target);
                 const bool there = target.exists();    // another of its name, as this disk compares names: never replaced
-                const bool wrote = !there && temp.getFile().replaceWithData(f.text.data(), f.text.size())
+                const bool wrote = !there && temp.getFile().replaceWithData(f.bytes.data(), f.bytes.size())
                                 && temp.overwriteTargetFileWithTemporary();
                 if (!wrote)
                 {
@@ -358,11 +377,14 @@ namespace playground
                                 + (there ? "this disk holds a file of that name there already" : "is the disk full?")
                                 + "): nothing was exported.");
                 }
-                const int lines = lineCount(f.text);
-                listed += "\n- " + f.name + " (" + std::to_string(lines) + (lines == 1 ? " line)" : " lines)");
+                const int lines = lineCount(f.bytes);
+                listed += "\n- " + f.name + (f.sample ? " (a sample, " + assets::sizeText(f.bytes.size()) + ")"
+                                                       : " (" + std::to_string(lines) + (lines == 1 ? " line)" : " lines)"));
             }
+            const std::size_t sampled = outs.size() - d.files.size();
             note("exported the files to " + stem);
             return "Exported the editor's " + std::to_string(d.files.size()) + (d.files.size() == 1 ? " file" : " files")
+                 + (sampled == 0 ? std::string() : " and the program's " + std::to_string(sampled) + (sampled == 1 ? " sample" : " samples"))
                  + " as they are now, on this Mac (the user can open them), to " + dir.getFullPathName().toStdString()
                  + (stem != to ? " (\"" + to + "\" was taken, and nothing is replaced)" : std::string()) + ":" + listed
                  + "\nIt changed nothing in the plugin.";
@@ -395,6 +417,8 @@ namespace playground
                     if (!n.isString() || !c.isString())
                         return fail("files[" + std::to_string(k) + "] needs a name and the content");
                     incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), 0, false });
+                    if (assets::isAudioName(incoming.back().name))
+                        return fail("files[" + std::to_string(k) + "]: " + audioRefusal(incoming.back().name) + ". Nothing was written");
                     if (!validFileName(incoming.back().name))
                         return fail("files[" + std::to_string(k) + "]: '" + incoming.back().name + "' cannot name a file: use "
                                     + nameRule() + ". Nothing was written");
