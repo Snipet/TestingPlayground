@@ -117,18 +117,23 @@ namespace playground
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
         // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
-        // the VST3 and beside the Standalone's .exe), else where <prefix>SHADERC says (the probes'); FunkGui's
+        // the VST3 and beside the Standalone's .exe; on Linux there in the VST3 and beside the Standalone's
+        // executable), else where <prefix>SHADERC says (the probes'); FunkGui's
         // prelude, varyings and bgfx_shader.sh; the renderer's target and check; the disk cache's folder.
         ShaderTools shaderTools()
         {
             ShaderTools t;
-            // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, the AU's), or the
-            // Standalone's.
+            // The binary this code is in: the plug-in's (the VST3's Contents/x86_64-win/<Name>.vst3, its
+            // Contents/x86_64-linux/<Name>.so, the AU's), or the Standalone's.
             const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
 #if defined(_WIN32)
             juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc.exe");
             if (!bundled.existsAsFile())
                 bundled = exe.getSiblingFile("shaderc.exe");
+#elif !defined(__APPLE__)
+            juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
+            if (!bundled.existsAsFile())
+                bundled = exe.getSiblingFile("shaderc");
 #else
             const juce::File bundled = exe.getParentDirectory().getSiblingFile("Resources").getChildFile("shaderc");
 #endif

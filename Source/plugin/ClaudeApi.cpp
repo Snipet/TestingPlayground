@@ -221,10 +221,10 @@ namespace playground::claude
             const juce::var message = o->getProperty("message");
             model_ = message.getProperty("model", "").toString().toStdString();
             const juce::var u = message.getProperty("usage", juce::var());
-            usage_.input = static_cast<int64_t>(u.getProperty("input_tokens", 0));
-            usage_.cacheRead = static_cast<int64_t>(u.getProperty("cache_read_input_tokens", 0));
-            usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
-            usage_.output = static_cast<int64_t>(u.getProperty("output_tokens", 0));
+            usage_.input = static_cast<juce::int64>(u.getProperty("input_tokens", 0));
+            usage_.cacheRead = static_cast<juce::int64>(u.getProperty("cache_read_input_tokens", 0));
+            usage_.cacheWrite = static_cast<juce::int64>(u.getProperty("cache_creation_input_tokens", 0));
+            usage_.output = static_cast<juce::int64>(u.getProperty("output_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
         }
@@ -364,13 +364,13 @@ namespace playground::claude
                 stopReason_ = reason.toString().toStdString();
             const juce::var u = o->getProperty("usage");
             if (u.hasProperty("output_tokens"))
-                usage_.output = static_cast<int64_t>(u.getProperty("output_tokens", 0));
+                usage_.output = static_cast<juce::int64>(u.getProperty("output_tokens", 0));
             if (u.hasProperty("input_tokens"))
-                usage_.input = static_cast<int64_t>(u.getProperty("input_tokens", 0));
+                usage_.input = static_cast<juce::int64>(u.getProperty("input_tokens", 0));
             if (u.hasProperty("cache_read_input_tokens"))
-                usage_.cacheRead = static_cast<int64_t>(u.getProperty("cache_read_input_tokens", 0));
+                usage_.cacheRead = static_cast<juce::int64>(u.getProperty("cache_read_input_tokens", 0));
             if (u.hasProperty("cache_creation_input_tokens"))
-                usage_.cacheWrite = static_cast<int64_t>(u.getProperty("cache_creation_input_tokens", 0));
+                usage_.cacheWrite = static_cast<juce::int64>(u.getProperty("cache_creation_input_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
             const juce::var server = u.getProperty("server_tool_use", juce::var());
@@ -388,8 +388,8 @@ namespace playground::claude
                 int compactions = 0;
                 for (const auto& it : *its)
                 {
-                    in += static_cast<int64_t>(it.getProperty("input_tokens", 0));
-                    out += static_cast<int64_t>(it.getProperty("output_tokens", 0));
+                    in += static_cast<juce::int64>(it.getProperty("input_tokens", 0));
+                    out += static_cast<juce::int64>(it.getProperty("output_tokens", 0));
                     compactions += it.getProperty("type", "").toString() == "compaction" ? 1 : 0;
                 }
                 if (compactions > 0)

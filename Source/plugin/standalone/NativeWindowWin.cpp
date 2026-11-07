@@ -1,10 +1,11 @@
-// Source/plugin/standalone/NativeWindowWin.cpp: NativeWindow.h on Windows. The window keeps Windows' own title bar
-// (the editor keeps no room for buttons: styleWindow reports none, and placeButtons and dragWindow do nothing), and the
-// menu bar is a JUCE MenuBarModel in the window, under the title bar (menuBarModel(), which App.cpp gives the window):
-// File (Settings..., Load State..., Save State As..., Reset to Default State, Exit), Edit (StandaloneMenu.h's), Help
-// (About). The commands macOS alone has (Services, Hide, Hide Others, Show All, Bring All to Front) are left out;
-// Minimize and Zoom are the title bar's. The shortcuts are shown with Ctrl, and the editor still gets every key first:
-// a menu's shortcut is only its label here (JUCE's menu bar sends none), so no key the editor uses is taken.
+// Source/plugin/standalone/NativeWindowWin.cpp: NativeWindow.h on Windows and Linux (JUCE's alone: nothing here is
+// Windows'). The window keeps the system's own title bar (the editor keeps no room for buttons: styleWindow reports
+// none, and placeButtons and dragWindow do nothing), and the menu bar is a JUCE MenuBarModel in the window, under the
+// title bar (menuBarModel(), which App.cpp gives the window): File (Settings..., Load State..., Save State As..., Reset
+// to Default State, Exit), Edit (StandaloneMenu.h's), Help (About). The commands macOS alone has (Services, Hide, Hide
+// Others, Show All, Bring All to Front) are left out; Minimize and Zoom are the title bar's. The shortcuts are shown
+// with Ctrl, and the editor still gets every key first: a menu's shortcut is only its label here (JUCE's menu bar sends
+// none), so no key the editor uses is taken.
 #include "plugin/standalone/NativeWindow.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>

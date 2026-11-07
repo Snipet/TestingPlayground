@@ -84,9 +84,13 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__)
 #include <libproc.h>
-#include <spawn.h>
 #include <sys/proc.h>
+#else
+#include <dirent.h>
+#endif
+#include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -202,6 +206,7 @@ namespace
         }
 
         // The helper processes it started that still run (its children, but those that ended and wait to be reaped).
+#if defined(__APPLE__)
         std::vector<pid_t> children() const
         {
             pid_t kids[16] = {};
@@ -212,6 +217,44 @@ namespace
                     found.push_back(kids[k]);
             return found;
         }
+#else
+        // Linux: every process's /proc/<pid>/stat whose parent is the server's.
+        std::vector<pid_t> children() const
+        {
+            std::vector<pid_t> found;
+            DIR* d = opendir("/proc");
+            if (d == nullptr)
+                return found;
+            while (const dirent* e = readdir(d))
+            {
+                char* end = nullptr;
+                const long p = std::strtol(e->d_name, &end, 10);
+                char state = 0;
+                pid_t parent = 0;
+                if (p > 0 && *end == '\0' && statOf(static_cast<pid_t>(p), state, parent) && parent == pid
+                    && state != 'Z' && state != 'X')
+                    found.push_back(static_cast<pid_t>(p));
+            }
+            closedir(d);
+            return found;
+        }
+
+        // A process's state and parent, from /proc/<pid>/stat: "pid (name) state ppid ...", the name any bytes, so
+        // read after its last ')'.
+        static bool statOf(pid_t p, char& state, pid_t& parent)
+        {
+            std::ifstream f("/proc/" + std::to_string(p) + "/stat");
+            std::string line;
+            if (!std::getline(f, line))
+                return false;
+            const std::size_t close = line.rfind(')');
+            if (close == std::string::npos || close + 4 > line.size())
+                return false;
+            state = line[close + 2];
+            parent = static_cast<pid_t>(std::strtol(line.c_str() + close + 4, nullptr, 10));
+            return true;
+        }
+#endif
 
         // Whether it has no helper running, within `ms` (a helper ended takes a moment to go).
         bool childless(int ms) const
@@ -228,8 +271,14 @@ namespace
 
         static bool running(pid_t p)
         {
+#if defined(__APPLE__)
             proc_bsdinfo info{};
             return proc_pidinfo(p, PROC_PIDTBSDINFO, 0, &info, sizeof info) == static_cast<int>(sizeof info) && info.pbi_status != SZOMB;
+#else
+            char state = 0;
+            pid_t parent = 0;
+            return statOf(p, state, parent) && state != 'Z' && state != 'X';
+#endif
         }
 
         void stop()

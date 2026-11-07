@@ -8,12 +8,20 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <bcrypt.h>
-#else
+#elif defined(__APPLE__)
 #include <CommonCrypto/CommonCryptor.h>
 #include <CommonCrypto/CommonHMAC.h>
 #include <CommonCrypto/CommonKeyDerivation.h>
 #include <CommonCrypto/CommonRandom.h>
 
+#include <sys/stat.h>
+#include <unistd.h>
+#else
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#include <openssl/rand.h>
+
+#include <climits>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -36,13 +44,13 @@ namespace playground::chatstore
         constexpr std::size_t kSaltBytes = 16, kIvBytes = 16, kMacBytes = 32, kBlockBytes = 16;   // SHA-256, AES
         constexpr unsigned kRounds = 100000;
         // Another machine, as the user's error names it ("made on another Mac or account").
-#if defined(_WIN32)
-        constexpr const char* kAnotherMachine = "another computer";
-#else
+#if defined(__APPLE__)
         constexpr const char* kAnotherMachine = "another Mac";
+#else
+        constexpr const char* kAnotherMachine = "another computer";
 #endif
 
-        // ---- the four primitives the file needs: CommonCrypto on macOS, CNG (bcrypt) on Windows ------------------
+        // ---- the four primitives the file needs: CommonCrypto (macOS), CNG (Windows), OpenSSL's libcrypto (Linux) ---
 #if defined(_WIN32)
         // A CNG algorithm provider, opened once and kept for the process (CNG's providers are thread-safe).
         BCRYPT_ALG_HANDLE provider(const wchar_t* algorithm, ULONG flags)
@@ -114,6 +122,52 @@ namespace playground::chatstore
 
         // The account's part of the secret (macOS's uid): the user's name is in the secret already.
         std::string accountId() { return "win"; }
+#elif !defined(__APPLE__)
+        bool randomBytes(uint8_t* out, std::size_t n)
+        {
+            return n <= static_cast<std::size_t>(INT_MAX) && RAND_bytes(out, static_cast<int>(n)) == 1;
+        }
+
+        bool pbkdf2(const std::string& secret, const uint8_t* salt, uint8_t* out, std::size_t n)
+        {
+            return secret.size() <= static_cast<std::size_t>(INT_MAX) && n <= static_cast<std::size_t>(INT_MAX)
+                && PKCS5_PBKDF2_HMAC(secret.data(), static_cast<int>(secret.size()), salt, static_cast<int>(kSaltBytes),
+                                     static_cast<int>(kRounds), EVP_sha256(), static_cast<int>(n), out)
+                       == 1;
+        }
+
+        std::array<uint8_t, kMacBytes> hmac(const std::array<uint8_t, 32>& key, const uint8_t* data, std::size_t n)
+        {
+            std::array<uint8_t, kMacBytes> out{};
+            unsigned written = 0;
+            if (HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()), data, n, out.data(), &written) == nullptr
+                || written != kMacBytes)
+                out.fill(0);
+            return out;
+        }
+
+        // AES-256-CBC with PKCS#7 padding (EVP's default); `out` is sized to what was written. False when it fails (a
+        // bad pad).
+        bool aesCbc(bool encrypt, const std::array<uint8_t, 32>& key, const uint8_t* iv, const uint8_t* in,
+                    std::size_t n, std::vector<uint8_t>& out)
+        {
+            out.clear();
+            if (n > static_cast<std::size_t>(INT_MAX) - kBlockBytes)
+                return false;
+            EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+            if (ctx == nullptr)
+                return false;
+            out.assign(n + kBlockBytes, 0);
+            int body = 0, tail = 0;
+            const bool ok = EVP_CipherInit_ex(ctx, EVP_aes_256_cbc(), nullptr, key.data(), iv, encrypt ? 1 : 0) == 1
+                         && EVP_CipherUpdate(ctx, out.data(), &body, in, static_cast<int>(n)) == 1
+                         && EVP_CipherFinal_ex(ctx, out.data() + body, &tail) == 1;
+            EVP_CIPHER_CTX_free(ctx);
+            out.resize(ok ? static_cast<std::size_t>(body + tail) : 0);
+            return ok;
+        }
+
+        std::string accountId() { return std::to_string(static_cast<unsigned>(::getuid())); }
 #else
         bool randomBytes(uint8_t* out, std::size_t n) { return CCRandomGenerateBytes(out, n) == kCCSuccess; }
 

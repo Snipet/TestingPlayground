@@ -1461,6 +1461,8 @@ namespace
 #if defined(POSIX_SPAWN_CLOEXEC_DEFAULT)
             posix_spawn_file_actions_addinherit_np(&fa, 2);
             posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+#elif defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+            posix_spawn_file_actions_addclosefrom_np(&fa, 3);   // Linux: its pipes and stderr alone
 #endif
             char* argv[] = { const_cast<char*>(path.c_str()), nullptr };
             pid_t pid = -1;

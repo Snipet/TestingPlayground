@@ -29,6 +29,8 @@ namespace playground
     private:
         std::atomic<bool> changed_{ false };
         void* stream_ = nullptr;                      // FSEventStreamRef
+#if defined(__APPLE__)
         void* queue_ = nullptr;                       // dispatch_queue_t
+#endif
     };
 }

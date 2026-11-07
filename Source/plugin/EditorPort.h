@@ -160,18 +160,18 @@ namespace playground
     class EditorPort;
 
     // The machine, as the panel and the chat name it to the user ("stored encrypted on this Mac").
-#if defined(_WIN32)
-    inline constexpr const char* kThisMachine = "this computer";
-#else
+#if defined(__APPLE__)
     inline constexpr const char* kThisMachine = "this Mac";
+#else
+    inline constexpr const char* kThisMachine = "this computer";
 #endif
 
-    // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows, whose editor host gives
-    // Ctrl the editor's Cmd (editor/nogpu/SoftEditorHost.h).
+    // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows and Linux, whose editor
+    // hosts give Ctrl the editor's Cmd (JUCE's command key there; editor/nogpu/SoftEditorHost.h).
     inline std::string shortcutText(std::string_view macText)
     {
         std::string s(macText);
-#if defined(_WIN32)
+#if !defined(__APPLE__)
         for (std::size_t at = s.find("Cmd-"); at != std::string::npos; at = s.find("Cmd-", at + 5))
             s.replace(at, 4, "Ctrl-");
 #endif

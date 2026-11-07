@@ -780,6 +780,8 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
             s = replaceAll(s, "%THINGS%", instrument ? "synthesizers" : "effects");
 #if defined(_WIN32)
             s = replaceAll(s, "%FORMATS%", "VST3 and Standalone, on Windows");
+#elif !defined(__APPLE__)
+            s = replaceAll(s, "%FORMATS%", "VST3 and Standalone, on Linux");
 #else
             s = replaceAll(s, "%FORMATS%", "AU, VST3 and Standalone, on macOS");
 #endif
