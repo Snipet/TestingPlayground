@@ -3218,6 +3218,7 @@ namespace playground::ui
 
         // The processor's files and status, and the chat; the netlists' views the session kept.
         bindFiles();
+        claudeSeen_ = port_.claudeNotice().count;        // what Claude did before this editor opened: not said again
         seenDraft_ = port_.draftRevision();
         given_ = port_.draft();
         files().load(given_);
@@ -4996,6 +4997,16 @@ namespace playground::ui
         syncCodePanel();
         keepStepDefaults(nowSec, false);
         syncFolder();
+        // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
+        if (role_ == Role::editor)
+            if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
+            {
+                claudeSeen_ = n.count;
+                notice(n.text);
+                projectsAt_ = -100.0;
+                projects_.reread();
+                dirty_ = true;
+            }
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once

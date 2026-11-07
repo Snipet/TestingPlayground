@@ -762,6 +762,7 @@ namespace playground::ui
         ExportCard export_{ port_ };
         AbCard ab_{ port_ };
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
+        uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
         int focusBeforeProjects_ = -1;
         // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
         SettingsCard settings_{ port_ };

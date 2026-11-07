@@ -9,6 +9,8 @@
 //   gui.presets.list.png     the list open: its groups (LEADS, PADS, UNCATEGORISED), the current one marked
 //   gui.presets.search.png   a search typed in the list
 //   gui.presets.least.png    the least window: the header's pill, arrows and name side by side, clear of the rest
+//   gui.presets.claude.png   Claude saved a preset: the status says so, the top bar shows it
+//   gui.presets.claude.projects.png   PROJECTS open as Claude saved a version: its note listed, the status saying it
 // and checks:
 //   HEADER   no project open: no arrows and no name; a project open: the arrows and its preset's name and place
 //            ("Bright", "2/4"), the pill naming the project alone; the next arrow applies the next preset (its notice
@@ -30,10 +32,15 @@
 //            place, "edited"), Next preset
 //   LEAST    in the least window the pill, the arrows and the name sit side by side between the product's name and
 //            the Code / Panel switch, none over another
+//   CLAUDE   Claude's projects tool saves a preset (Claude Desktop's call): the status says so ("CLAUDE SAVED PRESET
+//            CLAUDE PICK IN GLASS BLOOM") and the top bar shows it applied, in its place; PROJECTS open while it saves
+//            a version reads its lists again (the version listed, Claude's note on it) and the status says it; an
+//            editor opened afterwards says none of it again
 #include "Probe.h"
 
 #include "editor/Panel.h"
 #include "editor/PresetPicker.h"
+#include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -411,6 +418,49 @@ PROBE(gui, presets)
         writePng(P, host, "gui.presets.least.png");
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         host.settle();
+    }
+
+    // ---- CLAUDE: the projects tool saves (Claude Desktop's call, on this, the message thread) ---------------------------
+    {
+        std::string why;
+        port.openProject("Glass Bloom", 0, why);
+        processor.settle();
+        host.tick(2);
+        host.settle();
+        auto* args = new juce::DynamicObject();
+        args->setProperty("action", "save_preset");
+        args->setProperty("name", "Claude Pick");
+        args->setProperty("category", "Leads");
+        const pg::ChatAgent::McpResult r = processor.chatAgent().mcpCall("projects", juce::var(args));
+        host.tick(2);
+        host.settle();
+        std::printf("claude: %s / %s / %s\n", panel.statusText().c_str(), panel.presetLabel().c_str(), panel.presetDetail().c_str());
+        P.eq("claude.notice", !r.isError && panel.statusText().find("CLAUDE SAVED PRESET CLAUDE PICK IN GLASS BLOOM") != std::string::npos
+                                  && panel.presetLabel() == "Claude Pick" && panel.presetDetail() == "3/5" ? 1 : 0, 1);
+        writePng(P, host, "gui.presets.claude.png");
+        // PROJECTS open while Claude saves a version: its lists read again (the new version listed, the one chosen).
+        panel.openProjects();
+        host.settle();
+        const std::size_t before = panel.projectBrowser().versionList().size();
+        setDial(processor, 1, 3000.0f);
+        auto* save = new juce::DynamicObject();
+        save->setProperty("action", "save_version");
+        save->setProperty("note", "a brighter tone");
+        (void)processor.chatAgent().mcpCall("projects", juce::var(save));
+        host.tick(2);
+        host.settle();
+        const std::vector<pg::VersionEntry>& versions = panel.projectBrowser().versionList();
+        P.eq("claude.browser_reread", panel.projectBrowser().isOpen() && versions.size() == before + 1 && !versions.empty()
+                                          && versions.front().note.rfind("Claude: a brighter tone", 0) == 0 ? 1 : 0, 1);
+        P.eq("claude.version_notice", panel.statusText().find("CLAUDE SAVED VERSION " + std::to_string(versions.empty() ? 0 : versions.front().number) + " OF GLASS BLOOM") != std::string::npos ? 1 : 0, 1);
+        writePng(P, host, "gui.presets.claude.projects.png");
+        host.keys("escape");
+        host.settle();
+        // An editor opened since says none of it again.
+        pg::ui::Panel later(processor.ports(), port);
+        funkgui::HeadlessHost laterHost(later, 0, 2.0f);
+        laterHost.settle();
+        P.eq("claude.said_once", later.statusText().find("CLAUDE") == std::string::npos ? 1 : 0, 1);
     }
 
     // ---- FACTORY -------------------------------------------------------------------------------------------------------

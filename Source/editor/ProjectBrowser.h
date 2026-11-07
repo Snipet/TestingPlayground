@@ -86,6 +86,9 @@ namespace playground::ui
         void open(const std::string& name, bool preset);
         void setSize(float width, float height) noexcept { width_ = width; height_ = height; }   // the panel's, before open()
         void close();
+        // While open: the lists read again after a change made elsewhere (Claude's projects tool saved, opened or applied
+        // one), the project chosen kept, its versions and presets read afresh.
+        void reread();
 
         // Its places, for the panel's size.
         struct Places

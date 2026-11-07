@@ -640,6 +640,16 @@ namespace playground::ui
         ++revision_;
     }
 
+    void ProjectBrowser::reread()
+    {
+        if (!open_)
+            return;
+        state_ = port_.project();
+        readProjects();
+        readChosen();
+        ++revision_;
+    }
+
     void ProjectBrowser::close()
     {
         if (open_)
