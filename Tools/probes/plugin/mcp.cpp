@@ -22,7 +22,7 @@
 //            from outside; a guide request naming no part (a 0.2.0 server's) gets the whole guide
 //   GUIDE    the guide in parts (mcp/McpGuide.h): start (working from outside, FMINUS, DSP PRACTICE, CHECKING, the
 //            notes of the tools it uses and the other parts named; none of the lines only the plugin's chat needs;
-//            host.fm in short, every field of its module named; its size printed, in bytes and about tokens),
+//            the target rule (a call without `instance` goes to the one the user chose); host.fm in short, every field of its module named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
 //            trace and compare, not in start), examples, projects (with the projects tool's notes alone), circuits
 //            (CIRCUITS: .cir NETLISTS, which ends
@@ -839,6 +839,9 @@ PROBE(plugin, mcp)
                                 && !has(guide, "\nBUILDING A LARGE PROGRAM\n") && !has(guide, "\nTHREADS: parallel for")
                                 && !has(guide, "<tool name=\"trace\"") && has(guide, "- \"debugging\": ")
                                 && guide == text("start") ? 1 : 0, 1);
+        // The server's target rule, as its instructions and list_instances give it: never `instance` on every call.
+        P.eq("guide.start_target", has(guide, "A call without `instance` goes to the target, the instance the user chose in the plugin")
+                                       && !has(guide, "every tool takes `instance`") ? 1 : 0, 1);
         std::printf("guide: start %zu bytes (about %zu tokens); all %zu bytes (about %zu tokens)\n", guide.size(), guide.size() / 4,
                     all.size(), all.size() / 4);
         // The first MCP wave's budget, and the circuits part's line in the list of parts.

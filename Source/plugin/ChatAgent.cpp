@@ -3778,9 +3778,9 @@ namespace playground
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
                "use. The plugin does not send you its state with each message, as it does its own chat (its "
                "<plugin_state>): call get_status for the files, the dials and the last run, and read_file before editing a file. "
-               "With more than one instance of the plugin open, every tool takes `instance`: the one meant, by its "
-               "name (\"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the "
-               "user's words (list_instances names them). "
+               "A call without `instance` goes to the target, the instance the user chose in the plugin, else the only "
+               "one open (list_instances says which); for another, pass `instance`: the one meant, by its name (\""
+             + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the user's words. "
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
