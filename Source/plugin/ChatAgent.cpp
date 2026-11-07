@@ -4353,17 +4353,8 @@ namespace playground
             bool defaults = false;
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 req.current = currentDials();
-            if (const juce::var sp = input.getProperty("spectrum", juce::var()); why.empty() && !sp.isVoid() && !sp.isUndefined())
-            {
-                const juce::String kind = sp.toString();
-                req.spectrum = !sp.isString()     ? measure::Bands::none
-                             : kind == "octave"   ? measure::Bands::octave
-                             : kind == "third"    ? measure::Bands::third
-                             : kind == "semitone" ? measure::Bands::semitone
-                                                  : measure::Bands::none;
-                if (req.spectrum == measure::Bands::none)
-                    why = "spectrum is octave, third or semitone: the bands' width.";
-            }
+            if (why.empty())
+                scenario::spectrumOf(input, req.spectrum, why);
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))

@@ -103,4 +103,81 @@ namespace playground::scenario
         out.about = about;
         return true;
     }
+
+    // ---- resolve and evaluate: the plugin's side of a render's settings (ChatScenario.h) -------------------------
+    bool resolve(measure::Request& r, ChatHost& host, std::string& why) { return resolve(r, host, why, nullptr); }
+
+    bool resolve(measure::Request& r, ChatHost& host, std::string& why, const Captured* recording)
+    {
+        if (r.hostRate)
+            if (const double rate = host.chatHostRate(); rate > 1000.0)
+                r.rate = std::clamp(rate, kMinRate, kMaxRate);
+        if (r.hostBlock)
+            if (const int block = host.chatHostBlock(); block > 0)
+                r.block = std::clamp(block, 1, measure::kMaxBlock);
+        if (r.fromCapture)
+        {
+            Captured c;
+            if (recording == nullptr)
+            {
+                if (!captured(host, c, why, r.captureFrom, r.captureTo))
+                    return false;
+                recording = &c;
+            }
+            const measure::Request& k = recording->request;
+            r.rate = k.rate;
+            r.block = k.block;
+            r.blocks = k.blocks;
+            r.events = k.events;
+            r.transport = k.transport;
+            const auto bySample = [](const auto& x, const auto& y) { return x.first < y.first; };
+            std::stable_sort(r.events.begin(), r.events.end(), bySample);
+            std::stable_sort(r.transport.begin(), r.transport.end(), bySample);
+            r.input = k.input;
+            r.frames = k.frames;                             // its dials, clock and parts: a replay gives what played
+            r.frameControls = k.frameControls;
+            r.clock = k.clock;
+            r.part = k.part;
+            r.recording = k.recording;
+            r.modwheel = k.modwheel;
+            r.pitchbend = k.pitchbend;
+            for (const auto& [name, v] : k.current)          // its dials at its start, for the report's line
+                r.current[name] = v;
+            r.phrase.clear();
+            std::map<std::string, float> dials = k.dials;          // the recording's at its start, under the request's own
+            for (const auto& [name, x] : r.dials)
+                dials[name] = x;
+            r.dials = std::move(dials);
+            std::vector<measure::DialMove> moves = k.automate;   // the recording's, then the request's own
+            moves.insert(moves.end(), r.automate.begin(), r.automate.end());
+            r.automate = std::move(moves);
+        }
+        return fits(r, why);
+    }
+
+    std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
+                                               const std::map<std::string, float>& current, ChatHost& host, std::string* errors,
+                                               const measure::Cancel* cancel)
+    {
+        std::vector<measure::CheckResult> out(checks.size());
+        std::vector<measure::Check> ready;
+        std::vector<int> at(checks.size(), -1);
+        for (std::size_t i = 0; i < checks.size(); ++i)
+        {
+            measure::Check k = checks[i];
+            std::string why;
+            if (!resolve(k.request, host, why))
+            {
+                out[i].text = "not measured: " + why;
+                continue;
+            }
+            at[i] = static_cast<int>(ready.size());
+            ready.push_back(std::move(k));
+        }
+        const std::vector<measure::CheckResult> measured = measure::evaluate(files, ready, current, errors, cancel);
+        for (std::size_t i = 0; i < checks.size(); ++i)
+            if (at[i] >= 0 && static_cast<std::size_t>(at[i]) < measured.size())
+                out[i] = measured[static_cast<std::size_t>(at[i])];
+        return out;
+    }
 }

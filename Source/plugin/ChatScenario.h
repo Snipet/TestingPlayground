@@ -40,11 +40,18 @@
 // edit_file's rule (old_text occurs exactly once) and write_file's (a whole file, new or replaced): measure_output,
 // view_sound and compare (its b) render the copy; nothing in the plugin changes, and the result's first line says so.
 //
+// spectrum (measure_output's) and trace's fields, voice and export are read here too, so that the headless renderer
+// (Source/render), which takes the same JSON, reads them as the tools do: this file needs juce_core, the DSP library
+// and nothing of the plugin, and the renderer compiles it. What reaches the plugin (resolve, evaluate and captured: the
+// host's rate and block, the recording) is ChatCaptured.cpp's.
+//
 // Any thread (the agent's worker, the MCP link's): no state but what the caller passes.
 #pragma once
 
 #include "plugin/ChatAgent.h"
 
+#include "dsp/Debug.h"
+#include "dsp/Export.h"
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
@@ -107,6 +114,30 @@ namespace playground::scenario
     bool dialsFrom(const juce::var& input, bool& defaults, std::string& why);
     // The result's line: "The dials not named are at their defaults.\n" ("" for current).
     std::string dialsLine(bool defaults);
+
+    // ---- spectrum (measure_output's) -----------------------------------------------------------------------------
+    // The input's `spectrum`, the report's band levels (Measure.h's Request::spectrum): octave, third or semitone into
+    // `bands` (absent: none); false with why for anything else.
+    bool spectrumOf(const juce::var& input, measure::Bands& bands, std::string& why);
+
+    // ---- trace's fields, voice and export (ChatTrace.cpp's, and the renderer's) ------------------------------------
+    // fields: a list of at most measure::kMaxTracePatterns paths or globs; voice: newest, all or a MIDI note. Into `q`
+    // (absent: as it is); false with why.
+    bool watchOf(const juce::var& input, measure::TraceRequest& q, std::string& why);
+    inline constexpr int kInlineRows = 32, kMaxInlineRows = 64;     // export's short CSV: its rows by default, at most
+    struct ExportAsk
+    {
+        bool on = false;
+        measure::WavFormat wav = measure::WavFormat::float32;
+        std::size_t every = 0;                    // samples (0: about 1 ms)
+        int rows = kInlineRows;
+        std::string name;                         // the files' stem ("": a time's)
+    };
+    // `export`: true, or {wav, every, rows, name} (a value sent as a JSON string read as one: "false" is false); false
+    // with why.
+    bool exportOf(const juce::var& input, ExportAsk& ask, std::string& why);
+    // The field log's rows: every `asked` samples (0: about 1 ms at `rate`), a multiple of 16 (pass 1's calls, Debug.h).
+    std::size_t everyOf(std::size_t asked, double rate);
 
     // ---- try_edits ------------------------------------------------------------------------------------------------
     juce::var trialSchema();

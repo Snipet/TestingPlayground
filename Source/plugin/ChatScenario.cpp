@@ -6,6 +6,7 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iterator>
 #include <set>
@@ -431,56 +432,6 @@ namespace playground::scenario
         return o->getProperties().isEmpty() ? juce::var() : out;
     }
 
-    bool resolve(measure::Request& r, ChatHost& host, std::string& why) { return resolve(r, host, why, nullptr); }
-
-    bool resolve(measure::Request& r, ChatHost& host, std::string& why, const Captured* recording)
-    {
-        if (r.hostRate)
-            if (const double rate = host.chatHostRate(); rate > 1000.0)
-                r.rate = std::clamp(rate, kMinRate, kMaxRate);
-        if (r.hostBlock)
-            if (const int block = host.chatHostBlock(); block > 0)
-                r.block = std::clamp(block, 1, measure::kMaxBlock);
-        if (r.fromCapture)
-        {
-            Captured c;
-            if (recording == nullptr)
-            {
-                if (!captured(host, c, why, r.captureFrom, r.captureTo))
-                    return false;
-                recording = &c;
-            }
-            const measure::Request& k = recording->request;
-            r.rate = k.rate;
-            r.block = k.block;
-            r.blocks = k.blocks;
-            r.events = k.events;
-            r.transport = k.transport;
-            const auto bySample = [](const auto& x, const auto& y) { return x.first < y.first; };
-            std::stable_sort(r.events.begin(), r.events.end(), bySample);
-            std::stable_sort(r.transport.begin(), r.transport.end(), bySample);
-            r.input = k.input;
-            r.frames = k.frames;                             // its dials, clock and parts: a replay gives what played
-            r.frameControls = k.frameControls;
-            r.clock = k.clock;
-            r.part = k.part;
-            r.recording = k.recording;
-            r.modwheel = k.modwheel;
-            r.pitchbend = k.pitchbend;
-            for (const auto& [name, v] : k.current)          // its dials at its start, for the report's line
-                r.current[name] = v;
-            r.phrase.clear();
-            std::map<std::string, float> dials = k.dials;          // the recording's at its start, under the request's own
-            for (const auto& [name, x] : r.dials)
-                dials[name] = x;
-            r.dials = std::move(dials);
-            std::vector<measure::DialMove> moves = k.automate;   // the recording's, then the request's own
-            moves.insert(moves.end(), r.automate.begin(), r.automate.end());
-            r.automate = std::move(moves);
-        }
-        return fits(r, why);
-    }
-
     bool fits(const measure::Request& r, std::string& why)
     {
         // Two decimals, rounded down for a cap (so that what it names fits) and to the nearest for what was asked.
@@ -505,32 +456,6 @@ namespace playground::scenario
             return false;
         }
         return true;
-    }
-
-    std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
-                                               const std::map<std::string, float>& current, ChatHost& host, std::string* errors,
-                                               const measure::Cancel* cancel)
-    {
-        std::vector<measure::CheckResult> out(checks.size());
-        std::vector<measure::Check> ready;
-        std::vector<int> at(checks.size(), -1);
-        for (std::size_t i = 0; i < checks.size(); ++i)
-        {
-            measure::Check k = checks[i];
-            std::string why;
-            if (!resolve(k.request, host, why))
-            {
-                out[i].text = "not measured: " + why;
-                continue;
-            }
-            at[i] = static_cast<int>(ready.size());
-            ready.push_back(std::move(k));
-        }
-        const std::vector<measure::CheckResult> measured = measure::evaluate(files, ready, current, errors, cancel);
-        for (std::size_t i = 0; i < checks.size(); ++i)
-            if (at[i] >= 0 && static_cast<std::size_t>(at[i]) < measured.size())
-                out[i] = measured[static_cast<std::size_t>(at[i])];
-        return out;
     }
 
     // ---- dials_from ----------------------------------------------------------------------------------------------------
@@ -558,6 +483,127 @@ namespace playground::scenario
     }
 
     std::string dialsLine(bool defaults) { return defaults ? "The dials not named are at their defaults.\n" : ""; }
+
+    // ---- spectrum --------------------------------------------------------------------------------------------------
+    bool spectrumOf(const juce::var& input, measure::Bands& bands, std::string& why)
+    {
+        const juce::var sp = input.getProperty("spectrum", juce::var());
+        if (sp.isVoid() || sp.isUndefined())
+            return true;
+        const juce::String kind = sp.toString();
+        bands = !sp.isString()     ? measure::Bands::none
+              : kind == "octave"   ? measure::Bands::octave
+              : kind == "third"    ? measure::Bands::third
+              : kind == "semitone" ? measure::Bands::semitone
+                                   : measure::Bands::none;
+        if (bands != measure::Bands::none)
+            return true;
+        why = "spectrum is octave, third or semitone: the bands' width.";
+        return false;
+    }
+
+    // ---- trace's fields, voice and export ----------------------------------------------------------------------------
+    bool watchOf(const juce::var& input, measure::TraceRequest& q, std::string& why)
+    {
+        if (const juce::var fields = input.getProperty("fields", juce::var()); !fields.isVoid())
+        {
+            const juce::Array<juce::var>* list = fields.getArray();
+            if (list == nullptr || list->size() > static_cast<int>(measure::kMaxTracePatterns))
+            {
+                why = "fields is a list of at most 8 paths or globs (\"filter.*\", \"osc[1].phase\"); list: true names the "
+                      "program's fields.";
+                return false;
+            }
+            for (const juce::var& f : *list)
+                if (f.isString() && f.toString().isNotEmpty())
+                    q.fields.push_back(f.toString().toStdString());
+        }
+        if (const juce::var voice = input.getProperty("voice", juce::var()); !voice.isVoid())
+        {
+            const juce::String v = voice.toString();
+            q.voiceGiven = true;
+            if (v == "newest")
+                q.voice = measure::kTraceNewest;
+            else if (v == "all")
+                q.voice = measure::kTraceAll;
+            else if ((isNumber(voice) || v.containsOnly("0123456789")) && v.isNotEmpty() && v.getIntValue() >= 0 && v.getIntValue() <= 127)
+                q.voice = v.getIntValue();
+            else
+            {
+                why = "voice is newest, all or a MIDI note (0 to 127).";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool exportOf(const juce::var& in, ExportAsk& ask, std::string& why)
+    {
+        juce::var v = in.getProperty("export", juce::var());
+        const auto off = [](const juce::var& x) { return x.isVoid() || x.isUndefined() || (x.isBool() && !static_cast<bool>(x)); };
+        if (off(v))
+            return true;
+        if (v.isString() && off(v = juce::JSON::fromString(v.toString())) && !v.isVoid())   // any JSON value, "false" too
+            return true;
+        ask.on = true;
+        if (v.isBool())
+            return true;
+        if (!v.isObject())
+        {
+            why = "export is true, or {wav, every, rows, name}.";
+            return false;
+        }
+        if (const juce::var w = v.getProperty("wav", juce::var()); !w.isVoid())
+        {
+            const juce::String word = w.toString().toLowerCase().removeCharacters(" -_");
+            if (word == "float32" || word == "float" || word == "32" || word == "f32")
+                ask.wav = measure::WavFormat::float32;
+            else if (word == "24" || word == "pcm24" || word == "int24" || word == "24bit" || word == "s24")
+                ask.wav = measure::WavFormat::pcm24;
+            else
+            {
+                why = "export's wav is float32 (the default) or 24 (24-bit PCM).";
+                return false;
+            }
+        }
+        if (const juce::var e = v.getProperty("every", juce::var()); !e.isVoid())
+        {
+            if (!isNumber(e) || static_cast<double>(e) < 1.0)
+            {
+                why = "export's every is a number of samples, 16 or more (the fields are read after calls of 16).";
+                return false;
+            }
+            ask.every = static_cast<std::size_t>(std::llround(std::min(static_cast<double>(e), 1e9)));
+        }
+        if (const juce::var r = v.getProperty("rows", juce::var()); isNumber(r))
+            ask.rows = std::clamp(static_cast<int>(std::lround(static_cast<double>(r))), 0, kMaxInlineRows);
+        if (const juce::var n = v.getProperty("name", juce::var()); !n.isVoid())
+        {
+            // Letters, digits, space, - _ . alone; no leading dot or space; 64 characters at most.
+            std::string stem;
+            for (const char c : n.toString().toStdString())
+                if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == ' ' || c == '-' || c == '_' || c == '.')
+                    stem += c;
+            while (!stem.empty() && (stem.front() == '.' || stem.front() == ' '))
+                stem.erase(stem.begin());
+            while (!stem.empty() && (stem.back() == '.' || stem.back() == ' '))
+                stem.pop_back();
+            if (stem.size() > 64)
+                stem.resize(64);
+            for (const char* ext : { ".wav", ".csv" })
+                if (stem.size() > 4 && juce::String(stem).endsWithIgnoreCase(ext))
+                    stem.resize(stem.size() - 4);
+            ask.name = stem;
+        }
+        return true;
+    }
+
+    std::size_t everyOf(std::size_t asked, double rate)
+    {
+        const double r = rate > 0.0 ? rate : 48000.0;
+        const std::size_t every = asked > 0 ? asked : 16 * static_cast<std::size_t>(std::max(1L, std::lround(r / 16000.0)));
+        return std::max<std::size_t>(16, (every + 8) / 16 * 16);
+    }
 
     // ---- try_edits ------------------------------------------------------------------------------------------------------
     juce::var trialSchema()

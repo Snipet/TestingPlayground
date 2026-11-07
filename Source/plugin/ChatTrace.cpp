@@ -23,7 +23,6 @@
 #include "Product.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <functional>
@@ -51,80 +50,8 @@ namespace playground
         // ---- the export --------------------------------------------------------------------------------------------
         constexpr int64_t kMaxFolderBytes = int64_t{ 2 } << 30;    // the renders folder at most (refused past it)
         constexpr int64_t kKeepFree = int64_t{ 1 } << 30;          // the disk keeps this much free
-        constexpr int kInlineRows = 32, kMaxInlineRows = 64;       // the short CSV's rows: default, at most
-        constexpr std::size_t kInlineBytes = 6000;                 // and its bytes at most (rows dropped evenly)
-
-        struct ExportAsk
-        {
-            bool on = false;
-            measure::WavFormat wav = measure::WavFormat::float32;
-            std::size_t every = 0;                                 // samples (0: about 1 ms)
-            int rows = kInlineRows;
-            std::string name;                                      // the files' stem ("": a time's)
-        };
-
-        // `export`: true, or {wav, every, rows, name} (a value sent as a JSON string read as one: "false" is false); false
-        // with why.
-        bool exportOf(const juce::var& in, ExportAsk& ask, std::string& why)
-        {
-            juce::var v = in.getProperty("export", juce::var());
-            const auto off = [](const juce::var& x) { return x.isVoid() || x.isUndefined() || (x.isBool() && !static_cast<bool>(x)); };
-            if (off(v))
-                return true;
-            if (v.isString() && off(v = juce::JSON::fromString(v.toString())) && !v.isVoid())   // any JSON value, "false" too
-                return true;
-            ask.on = true;
-            if (v.isBool())
-                return true;
-            if (!v.isObject())
-            {
-                why = "export is true, or {wav, every, rows, name}.";
-                return false;
-            }
-            if (const juce::var w = v.getProperty("wav", juce::var()); !w.isVoid())
-            {
-                const juce::String word = w.toString().toLowerCase().removeCharacters(" -_");
-                if (word == "float32" || word == "float" || word == "32" || word == "f32")
-                    ask.wav = measure::WavFormat::float32;
-                else if (word == "24" || word == "pcm24" || word == "int24" || word == "24bit" || word == "s24")
-                    ask.wav = measure::WavFormat::pcm24;
-                else
-                {
-                    why = "export's wav is float32 (the default) or 24 (24-bit PCM).";
-                    return false;
-                }
-            }
-            if (const juce::var e = v.getProperty("every", juce::var()); !e.isVoid())
-            {
-                if (!isNumber(e) || static_cast<double>(e) < 1.0)
-                {
-                    why = "export's every is a number of samples, 16 or more (the fields are read after calls of 16).";
-                    return false;
-                }
-                ask.every = static_cast<std::size_t>(std::llround(std::min(static_cast<double>(e), 1e9)));
-            }
-            if (const juce::var r = v.getProperty("rows", juce::var()); isNumber(r))
-                ask.rows = std::clamp(static_cast<int>(std::lround(static_cast<double>(r))), 0, kMaxInlineRows);
-            if (const juce::var n = v.getProperty("name", juce::var()); !n.isVoid())
-            {
-                // Letters, digits, space, - _ . alone; no leading dot or space; 64 characters at most.
-                std::string stem;
-                for (const char c : n.toString().toStdString())
-                    if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == ' ' || c == '-' || c == '_' || c == '.')
-                        stem += c;
-                while (!stem.empty() && (stem.front() == '.' || stem.front() == ' '))
-                    stem.erase(stem.begin());
-                while (!stem.empty() && (stem.back() == '.' || stem.back() == ' '))
-                    stem.pop_back();
-                if (stem.size() > 64)
-                    stem.resize(64);
-                for (const char* ext : { ".wav", ".csv" })
-                    if (stem.size() > 4 && juce::String(stem).endsWithIgnoreCase(ext))
-                        stem.resize(stem.size() - 4);
-                ask.name = stem;
-            }
-            return true;
-        }
+        constexpr std::size_t kInlineBytes = 6000;                 // the short CSV's bytes at most (rows dropped evenly;
+                                                                   // its rows: ChatScenario.h's ExportAsk)
 
         std::string sizeText(int64_t bytes)
         {
@@ -204,8 +131,8 @@ namespace playground
 
         // The files of an export (above) in the renders folder, and the result's lines naming them; the short CSV into
         // `inlineCsv`; "" and why when nothing could be written.
-        std::string exportFiles(const measure::TraceResult& r, const ExportAsk& ask, std::size_t every, const measure::TraceRequest& q,
-                                std::string& inlineCsv, std::string& why)
+        std::string exportFiles(const measure::TraceResult& r, const scenario::ExportAsk& ask, std::size_t every,
+                                const measure::TraceRequest& q, std::string& inlineCsv, std::string& why)
         {
             const double rate = q.render.rate > 0.0 ? q.render.rate : 48000.0;
             const juce::File dir = rendersFolder();
@@ -418,38 +345,17 @@ namespace playground
             if (!known)
                 return done("find is one of nan, click, runaway, silence, dc or any.", true);
         }
-        if (const juce::var fields = input.getProperty("fields", juce::var()); !fields.isVoid())
-        {
-            const juce::Array<juce::var>* list = fields.getArray();
-            if (list == nullptr || list->size() > static_cast<int>(measure::kMaxTracePatterns))
-                return done("fields is a list of at most 8 paths or globs (\"filter.*\", \"osc[1].phase\"); list: true names "
-                            "the program's fields.", true);
-            for (const juce::var& f : *list)
-                if (f.isString() && f.toString().isNotEmpty())
-                    q.fields.push_back(f.toString().toStdString());
-        }
+        if (std::string bad; !scenario::watchOf(input, q, bad))
+            return done(bad, true);
         q.list = static_cast<bool>(input.getProperty("list", false));
         q.detail = static_cast<bool>(input.getProperty("detail", false));
-        ExportAsk ask;
+        scenario::ExportAsk ask;
         {
             std::string bad;
-            if (!exportOf(input, ask, bad))
+            if (!scenario::exportOf(input, ask, bad))
                 return done(bad, true);
             if (ask.on && q.list)
                 return done("list names the fields and renders nothing to export: ask for one or the other.", true);
-        }
-        if (const juce::var voice = input.getProperty("voice", juce::var()); !voice.isVoid())
-        {
-            const juce::String v = voice.toString();
-            q.voiceGiven = true;
-            if (v == "newest")
-                q.voice = measure::kTraceNewest;
-            else if (v == "all")
-                q.voice = measure::kTraceAll;
-            else if ((isNumber(voice) || v.containsOnly("0123456789")) && v.isNotEmpty() && v.getIntValue() >= 0 && v.getIntValue() <= 127)
-                q.voice = v.getIntValue();
-            else
-                return done("voice is newest, all or a MIDI note (0 to 127).", true);
         }
         if (const juce::var points = input.getProperty("points", juce::var()); isNumber(points))
             q.points = std::clamp(static_cast<int>(std::lround(static_cast<double>(points))), 0, static_cast<int>(measure::kMaxTracePoints));
@@ -527,9 +433,7 @@ namespace playground
         if (ask.on)
         {
             q.exporting = true;
-            const double rate = q.render.rate > 0.0 ? q.render.rate : 48000.0;
-            every = ask.every > 0 ? ask.every : 16 * static_cast<std::size_t>(std::max(1L, std::lround(rate / 16000.0)));
-            every = std::max<std::size_t>(16, (every + 8) / 16 * 16);
+            every = scenario::everyOf(ask.every, q.render.rate);
             q.every = q.fields.empty() ? 0 : every;
         }
 
