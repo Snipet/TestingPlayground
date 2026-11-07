@@ -50,10 +50,13 @@
 // Marks. While it records, the user marks a moment (the status bar's Mark, Cmd-Shift-M: Processor::markRecording, the
 // message thread): mark() takes what the audio thread announced last (the end of the block it writes or wrote last,
 // within a block of the moment), under the recorder's mutex, into the ring's list (the reader's alone, never the audio
-// thread's), numbered from 1 in the order made, kMaxMarks at most. A take keeps those inside it, at their samples from
-// its start (last: those before the part it keeps are counted, Take::marksBefore), and the tools read them: the
-// report's line, and a scenario's from and to ("m2", ChatScenario.h). glance() is the status bar's look (the message
-// thread, at most 20 times a second): it never waits for the mutex (a call copying keeps it) and says so.
+// thread's), numbered from 1 in the order made, and returns its number. The list holds kMaxMarks at most: in a long
+// recording (last) the oldest, which have left the ring and so every take, make room for a new one. A take keeps those
+// inside it, at their samples from its start and by their numbers (those before the part it keeps, and those let go,
+// are counted: Take::marksBefore), and the tools read them: the report's line, and a scenario's from and to ("m2",
+// ChatScenario.h). glance() is the status bar's look (the message thread, at most 20 times a second): it never waits
+// for the mutex (a call copying keeps it) and says so. mark() does wait for it, as noteProgram does: a click is the
+// user's, and a mark late by a copy's wait beats one refused.
 //
 // Privacy. Nothing here is written anywhere: a take lives in memory until forget, the next arm, or ten minutes without
 // a call (housekeep), and leaves only as the numbers the tool reports.
@@ -304,8 +307,8 @@ namespace playground::capture
     {
         State state = State::off;   // waiting, recording, ended (not stopped yet): the bar shows it
         double seconds = 0.0;       // recorded so far
-        int marks = 0;              // made so far
-        bool room = true;           // another mark fits (kMaxMarks)
+        int marks = 0;              // made so far (the newest one's number)
+        bool room = true;           // another mark fits (kMaxMarks, those let go aside)
     };
 
     class Recorder
@@ -328,9 +331,9 @@ namespace playground::capture
         // recording that ended by itself (the program's own code then need not play), and after kIdleSeconds without
         // a call forgets everything. Skips a round while a call holds the mutex.
         void housekeep();
-        // The user's mark (above, "Marks"): false, with why, when nothing records now (not armed, waiting for its start,
-        // ended) or it holds kMaxMarks already.
-        bool mark(std::string& why);
+        // The user's mark (above, "Marks"): its number (from 1), or 0, with why, when nothing records now (not armed,
+        // waiting for its start, ended) or the part a take could keep holds kMaxMarks already.
+        int mark(std::string& why);
         // The recorder as the status bar shows it: false (and `out` as it was) when a call holds the mutex now.
         bool glance(Glance& out) const;
         // A program that plays now (a compile that landed: Processor::apply): its files, its dials and the configuration

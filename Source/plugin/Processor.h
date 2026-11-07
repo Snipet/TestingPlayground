@@ -270,7 +270,7 @@ namespace playground
         float load() const override;
         bool frozen() const override;
         RecordingState recording() const override;
-        bool markRecording(std::string& why) override;
+        int markRecording(std::string& why) override;
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
         std::vector<ProjectEntry> factoryProjects() const override;

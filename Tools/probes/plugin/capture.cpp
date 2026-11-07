@@ -45,10 +45,14 @@
 //             status then reports the replay's line; from and to without "capture" are refused
 //             trace's source "capture" replays it through the program that played it, a part of it too
 //   MARKS     the user's marks (Processor::markRecording, the status bar's Mark): refused before the take starts, two
-//             made while it records, each at the samples played when it was made; stop's report names them ("m1 at
-//             ..."), LAST's (none made) says "Marks: none"; a scenario's from and to take them by name ("m1", "m2"):
-//             the part between them replayed; a mark the take lacks, a later mark before an earlier one and a word
-//             that names none refused in words
+//             made while it records, each at the samples played when it was made, each returning its number; stop's
+//             report names them ("m1 at ..."), LAST's (none made) says "Marks: none"; a scenario's from and to take
+//             them by name ("m1", "m2"): the part between them replayed; a mark the take lacks, a later mark before an
+//             earlier one and a word that names none refused in words. In a long recording (mode last, 1 s): 32 marks
+//             early, the 33rd refused (the status bar's Mark off) while a take could still hold them; once they have
+//             left the ring Mark is on again, and m33 and m34 are made a second apart; the take of the last second
+//             holds m34 alone, at its sample, and counts 33 before it, as the report does ("33 before the part
+//             kept"); from "m33" refused, saying 33 fell before the part it kept
 //   CIRCUITS  a program playing a netlist's provisional configuration (AutoClipper.h's clipper, the self-test off),
 //             recorded (mode next); the self-test's answer stored after it: the take keeps the configuration its
 //             netlist played with (CompileStatus::circuits), and its replay (and trace's "capture") plays it bit for bit,
@@ -926,11 +930,11 @@ PROBE(plugin, capture)
         for (std::size_t k = 0; r.pos < static_cast<uint64_t>(2.4 * kFs); ++k)
         {
             if (k == 1)
-                early = r.rec.editorPort().markRecording(earlyWhy);
+                early = r.rec.editorPort().markRecording(earlyWhy) != 0;
             if (k == kFrom + 20 || k == kFrom + 45)
             {
                 std::string why;
-                if (r.rec.editorPort().markRecording(why))
+                if (r.rec.editorPort().markRecording(why) == static_cast<int>(markedAt.size()) + 1)   // its number
                     markedAt.push_back(r.pos - r.starts[kFrom]);
             }
             const int n = patternAt(k);
@@ -1042,6 +1046,77 @@ PROBE(plugin, capture)
         P.eq("privacy.replay_pictures_not_kept", !cp.isError && hasImage(cp) && keptPictures(r.rec) == 0 ? 1 : 0, 1);
         const std::string after = textOf(tool(r.rec, object({ { "action", "status" } })));
         P.eq("replay.status_says", has(after, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
+    // ---- MARKS in a long recording (mode last, 1 s): 32 marks, the 33rd refused while they can still be in a take; once
+    // they have left the ring, m33 (made in their place) and m34; stop keeps the last second, holding m34 alone -----------
+    {
+        Rig r;
+        const pg::ChatAgent::McpResult a = tool(r.rec, object({ { "action", "arm" }, { "seconds", 1 } }));
+        P.eq("marks_last.armed", a.isError ? 0 : 1, 1);
+        constexpr std::size_t kMax = static_cast<std::size_t>(cap::kMaxMarks);
+        std::vector<int> numbers;                                // what each mark returned
+        std::vector<uint64_t> at;                                // the samples played when each was made
+        bool fullRefused = false, roomWhileFull = true, roomAgain = false;
+        const auto markNow = [&] {
+            std::string why;
+            const int n = r.rec.editorPort().markRecording(why);
+            if (n > 0)
+            {
+                numbers.push_back(n);
+                at.push_back(r.pos);
+            }
+        };
+        for (std::size_t k = 0; r.pos < static_cast<uint64_t>(3.0 * kFs); ++k)
+        {
+            if (k >= 2 && k < 2 + kMax)                          // a block apart, in the first 0.2 s
+                markNow();
+            else if (k == 2 + kMax)
+            {
+                roomWhileFull = r.rec.editorPort().recording().room;
+                std::string why;
+                fullRefused = r.rec.editorPort().markRecording(why) == 0 && has(why, "32 marks at most");
+            }
+            else if (numbers.size() == kMax && r.pos >= static_cast<uint64_t>(1.5 * kFs))
+            {
+                roomAgain = r.rec.editorPort().recording().room;   // the 32 are out of every take now
+                markNow();
+            }
+            else if (numbers.size() == kMax + 1 && r.pos >= static_cast<uint64_t>(2.5 * kFs))
+                markNow();
+            const int n = patternAt(k);
+            r.block(n, kInstrument ? silence : sine, phrase(k, n));
+        }
+        const int counted = r.rec.editorPort().recording().marks;
+        bool inOrder = numbers.size() == kMax + 2;
+        for (std::size_t i = 0; inOrder && i < numbers.size(); ++i)
+            inOrder = numbers[i] == static_cast<int>(i) + 1;
+        std::printf("marks, last: %zu made (the last two at %.3f and %.3f s), REC counts %d\n", numbers.size(),
+                    at.size() >= 2 ? static_cast<double>(at[at.size() - 2]) / kFs : 0.0, at.empty() ? 0.0 : static_cast<double>(at.back()) / kFs,
+                    counted);
+        P.eq("marks_last.numbers", inOrder ? 1 : 0, 1);
+        P.eq("marks_last.full_refused", fullRefused && !roomWhileFull ? 1 : 0, 1);
+        P.eq("marks_last.room_again", roomAgain ? 1 : 0, 1);
+        P.eq("marks_last.counted", counted, static_cast<int64_t>(kMax + 2));
+        const std::string stopText = textOf(tool(r.rec, object({ { "action", "stop" } })));
+        std::printf("marks, last, stop:\n%s", stopText.c_str());
+        const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
+        if (taken.take != nullptr && inOrder)
+        {
+            const cap::Take& t = *taken.take;
+            P.eq("marks_last.take", t.marks.size() == 1 && t.marks[0].number == 34 && t.marks[0].sample == at.back() - t.clock
+                                        && t.marksBefore == 33 ? 1 : 0, 1);
+            P.eq("marks_last.report", has(stopText, "\"m1\"): m34 at ") && has(stopText, "; 33 before the part kept.") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult before = r.rec.chatAgent().mcpCall(
+                "measure_output", object({ { "scenario", object({ { kInstrument ? "phrase" : "input", "capture" }, { "from", "m33" } }) } }));
+            P.eq("marks_last.before_refused", before.isError && has(textOf(before), "from is m33, but the recording has m34 (33 fell before "
+                                                                                    "the part it kept)") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult kept = r.rec.chatAgent().mcpCall(
+                "measure_output", object({ { "scenario", object({ { kInstrument ? "phrase" : "input", "capture" }, { "from", "m34" } }) } }));
+            P.eq("marks_last.kept_part", !kept.isError ? 1 : 0, 1);
+        }
+        else
+            P.eq("marks_last.kept", 0, 1);
     }
 
     // ---- WHEEL: a take that starts with the racing wheel turned and its pedal down, replayed bit for bit -----------------

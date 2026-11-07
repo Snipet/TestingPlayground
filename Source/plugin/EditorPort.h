@@ -583,12 +583,12 @@ namespace playground
         virtual bool frozen() const = 0;                 // the dials are frozen into the code (Patch.h)
         // The recorder (RecordingState; the message thread: it never waits for a call that holds the recorder, and says
         // what it saw last then), and the user's mark of this moment in its recording (the status bar's Mark,
-        // Cmd-Shift-M): false, with why, when nothing records.
+        // Cmd-Shift-M): the mark's number (m1 is 1), or 0, with why, when nothing records or no mark fits.
         virtual RecordingState recording() const { return {}; }
-        virtual bool markRecording(std::string& why)
+        virtual int markRecording(std::string& why)
         {
             why = "nothing is recording";
-            return false;
+            return 0;
         }
 
         virtual std::vector<ProjectEntry> projects() const = 0;

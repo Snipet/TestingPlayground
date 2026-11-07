@@ -2249,7 +2249,7 @@ namespace playground
         return r;
     }
 
-    bool Processor::markRecording(std::string& why) { return capture_.mark(why); }
+    int Processor::markRecording(std::string& why) { return capture_.mark(why); }
     uint32_t Processor::alerts() const { return alerts_.load(); }
 
     // ---- projects --------------------------------------------------------------------------------------------------------

@@ -7089,11 +7089,8 @@ namespace playground::ui
     {
         std::string why;
         recordingAt_ = -1.0;                             // looked at again in the next refresh
-        if (port_.markRecording(why))
-        {
-            const RecordingState r = port_.recording();
-            notice("MARKED M" + std::to_string(r.marks) + " IN THE RECORDING");
-        }
+        if (const int number = port_.markRecording(why); number > 0)
+            notice("MARKED M" + std::to_string(number) + " IN THE RECORDING");   // its own number, never a glance's
         else
             notice("NOT MARKED: " + upper(why));
     }
