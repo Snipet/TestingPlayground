@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <map>
 #include <set>
 
 namespace playground
@@ -159,6 +160,7 @@ namespace playground
         {
             std::string name, text;
             int replaced = 0;                          // characters outside ASCII the editor holds as '?'
+            bool lineEnds = false;                     // CR LF (or CR) line ends, read as LF
         };
 
         // The program files of `given` (a file, or a folder's), checked; "" or why none is taken. `left`: what a folder
@@ -247,7 +249,8 @@ namespace playground
                     continue;
                 }
                 in.replaced = outsideAscii(in.text);
-                if (in.replaced > 0 || in.text.find('\r') != std::string::npos)
+                in.lineEnds = in.text.find('\r') != std::string::npos;
+                if (in.replaced > 0 || in.lineEnds)
                     in.text = funkgui::TextEditor::sanitise(in.text);
                 out.push_back(std::move(in));
             }
@@ -304,6 +307,15 @@ namespace playground
             const Draft d = host_.chatDraft();
             if (d.files.empty())
                 return fail("The editor has no file to export.");
+            // Two names that differ only in case are one file on this Mac's disk (APFS ignores case by default): the
+            // second would replace the first.
+            {
+                std::map<std::string, std::string> seen;
+                for (const SourceFile& f : d.files)
+                    if (const auto [it, added] = seen.emplace(lowered(f.name), f.name); !added)
+                        return fail(it->second + " and " + f.name + " differ only in case, which this Mac's disk takes as one "
+                                    "name: rename one (rename_file) and export again. Nothing was exported.");
+            }
             const juce::File base = exportsFolder();
             if (!base.isDirectory() && !base.createDirectory().wasOk())
                 return fail("Could not make the folder " + base.getFullPathName().toStdString() + ".");
@@ -318,12 +330,15 @@ namespace playground
             {
                 const juce::File target = dir.getChildFile(juce::String::fromUTF8(f.name.c_str()));
                 juce::TemporaryFile temp(target);
-                const bool wrote = temp.getFile().replaceWithData(f.text.data(), f.text.size()) && temp.overwriteTargetFileWithTemporary();
+                const bool there = target.exists();    // another of its name, as this disk compares names: never replaced
+                const bool wrote = !there && temp.getFile().replaceWithData(f.text.data(), f.text.size())
+                                && temp.overwriteTargetFileWithTemporary();
                 if (!wrote)
                 {
                     dir.deleteRecursively();           // the folder this export made, and nothing else
-                    return fail("Writing " + f.name + " into " + dir.getFullPathName().toStdString() + " failed (is the disk "
-                                "full?): nothing was exported.");
+                    return fail("Writing " + f.name + " into " + dir.getFullPathName().toStdString() + " failed ("
+                                + (there ? "this disk holds a file of that name there already" : "is the disk full?")
+                                + "): nothing was exported.");
                 }
                 const int lines = lineCount(f.text);
                 listed += "\n- " + f.name + " (" + std::to_string(lines) + (lines == 1 ? " line)" : " lines)");
@@ -361,7 +376,7 @@ namespace playground
                     const juce::var n = e.getProperty("name", juce::var()), c = e.getProperty("content", juce::var());
                     if (!n.isString() || !c.isString())
                         return fail("files[" + std::to_string(k) + "] needs a name and the content");
-                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), 0 });
+                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), 0, false });
                     if (!validFileName(incoming.back().name))
                         return fail("files[" + std::to_string(k) + "]: '" + incoming.back().name + "' cannot name a file: use "
                                     + nameRule() + ". Nothing was written");
@@ -408,6 +423,8 @@ namespace playground
                         + (before.count(in.name) == 0 ? "new" : "replaced");
                 if (kept > 0)
                     listed += "; kept the drawing's " + std::to_string(kept) + " *@ lines";
+                if (in.lineEnds)
+                    listed += "; CR LF line ends read as LF";
                 if (in.replaced > 0)
                     listed += "; " + std::to_string(in.replaced) + (in.replaced == 1 ? " character" : " characters")
                             + " outside ASCII became '?', as the editor holds ASCII";

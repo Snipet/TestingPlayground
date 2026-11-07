@@ -6,15 +6,16 @@
 //           version each); a list with a name the editor cannot take, a name twice, or past the editor's 16 files:
 //           nothing written; files beside name and content refused
 //   FROM    a folder the user named: its program files brought in as one change (program.fm replaced, a new .fm and a
-//           .gui added; CR LF read as LF; a character outside ASCII made '?', and said), what is no program file left
-//           out and named, the folder sync's read-only copies left out (host.fm as the plugin's, a library file as the
-//           library's, another's copy); one file by its path; ~ for the home folder; nothing brought in, all or none,
-//           when one file is not text (a NUL byte, bytes that are not UTF-8), is past 256 KB, or has a name the editor
-//           cannot take; a relative path, a file that is no program file, a path that is nowhere, and a folder of no
-//           program file refused; the folder's files never changed
+//           .gui added; CR LF read as LF, and said; a character outside ASCII made '?', and said), what is no program
+//           file left out and named, the folder sync's read-only copies left out (host.fm as the plugin's, a library
+//           file as the library's, another's copy); one file by its path; ~ for the home folder; nothing brought in,
+//           all or none, when one file is not text (a NUL byte, bytes that are not UTF-8), is past 256 KB, or has a
+//           name the editor cannot take; a relative path, a file that is no program file, a path that is nowhere, and
+//           a folder of no program file refused; the folder's files never changed
 //   TO      the editor's files written to a new folder of the name given in the plugin's Programs folder (the probe's
 //           sandbox under CTest), byte for byte, the path in the result; the same name again: "<name> 2", the first
-//           untouched; a name that is a path, or starts with '.', refused; nothing in the plugin changed
+//           untouched; a name that is a path, or starts with '.', refused; two files whose names differ only in case
+//           (one file on this Mac's disk): refused, no folder made; nothing in the plugin changed
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
@@ -153,7 +154,7 @@ PROBE(plugin, import)
         P.eq("from.folder", !error && fileOf(d, "program.fm")->text == program("imported") && fileOf(d, "keep.fm")->text == "// kept\n"
                                 && fileOf(d, "filters.fm") != nullptr && fileOf(d, "panel.gui") != nullptr && d.files.size() == 4 ? 1 : 0, 1);
         P.eq("from.crlf", fileOf(d, "filters.fm") != nullptr && fileOf(d, "filters.fm")->text == "// filters\nfloat lp(float x) { return x; }\n"
-                              ? 1 : 0, 1);
+                              && has(t, "filters.fm (2 lines; new; CR LF line ends read as LF)") ? 1 : 0, 1);
         P.eq("from.ascii", fileOf(d, "panel.gui") != nullptr && has(fileOf(d, "panel.gui")->text, "// caf?\n")
                                && has(t, "1 character outside ASCII became '?'") ? 1 : 0, 1);
         P.eq("from.words", has(t, "Brought 3 files into the editor from " + src.getFullPathName().toStdString()) && has(t, "program.fm (")
@@ -228,6 +229,13 @@ PROBE(plugin, import)
         P.eq("to.path_refused", error && has(t, "a name, not a path") && !programs.getChildFile("../outside").exists() ? 1 : 0, 1);
         t = call(object({ { "to", ".hidden" } }), &error);
         P.eq("to.dot_refused", error ? 1 : 0, 1);
+        pg::Draft cased = d;
+        cased.files.push_back({ "filters.fm", "// one\n" });
+        cased.files.push_back({ "Filters.fm", "// two\n" });
+        p.editorPort().setDraft(cased);
+        t = call(object({ { "to", "Cased" } }), &error);
+        P.eq("to.case_refused", error && has(t, "filters.fm and Filters.fm differ only in case") && has(t, "Nothing was exported")
+                                    && !programs.getChildFile("Cased").exists() ? 1 : 0, 1);
         if (programs != juce::File())
             programs.deleteRecursively();
     }
