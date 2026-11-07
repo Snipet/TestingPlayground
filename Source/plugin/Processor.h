@@ -244,6 +244,7 @@ namespace playground
         bool frozen() const override;
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
+        std::vector<ProjectEntry> factoryProjects() const override;
         std::string projectFolder() const override;
         std::string tidyName(const std::string& typed) const override { return projectstore::tidyName(typed); }
         ProjectState project() const override;
@@ -451,6 +452,9 @@ namespace playground
         void setDialsByName(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
                             const std::vector<projectstore::Dial>& dials);
         bool openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why);
+        bool saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
+                      const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
+                      SavedVersion& saved, std::string& why);   // a factory project's: the user's own copy
 
         juce::AudioProcessorValueTreeState apvts_;
         // The panel's own dials' normalised values (Controls.h's isPanelDial: slot kHostControls + k's is k's), as a

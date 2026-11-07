@@ -1,6 +1,9 @@
 // Source/plugin/ProjectStore.cpp: see ProjectStore.h.
 #include "plugin/ProjectStore.h"
 
+#include "plugin/EditorPort.h"
+#include "plugin/Factory.h"
+
 #include "Product.h"
 
 #include <juce_core/juce_core.h>
@@ -438,6 +441,15 @@ namespace playground::projectstore
             });
         }
 
+        // A factory project's name (Factory.h): never written, its why saying what a save does instead.
+        bool readOnly(std::string_view name, std::string* why)
+        {
+            if (!isFactoryName(name))
+                return false;
+            fail(why, "\"" + ownName(name) + "\" is a factory project: it stays as it is (saving it makes a project of your own)");
+            return true;
+        }
+
         // Writes `p` under p.name: beside, then moved over, so a project is never half written; one of the name in
         // another case goes. The cache then holds what it wrote (its entry, as the file now is): the listing after a
         // save of this process's reads nothing whole (the explorer's next poll), where it read the file it had just
@@ -445,6 +457,8 @@ namespace playground::projectstore
         // (keepRead), so it never takes this one's place.
         bool write(Project p, std::string* why)
         {
+            if (readOnly(p.name, why))
+                return false;
             p.name = tidyName(p.name);
             if (p.name.empty())
             {
@@ -576,6 +590,8 @@ namespace playground::projectstore
         template <typename Change>
         bool update(std::string_view name, std::string* why, Change&& change)
         {
+            if (readOnly(name, why))
+                return false;
             std::optional<Project> p = load(name, why);
             if (!p)
                 return false;
@@ -804,8 +820,33 @@ namespace playground::projectstore
         return listing(&unread);
     }
 
+    namespace
+    {
+        // A factory project's presets as the listing has a project's (by name), or nothing, with why.
+        std::optional<std::vector<PresetSummary>> factoryPresets(std::string_view name, std::string* why)
+        {
+            const Project* p = factory::find(name);
+            if (p == nullptr)
+            {
+                fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+                return std::nullopt;
+            }
+            return cachedOf(*p, 0, 0, {}).presets;
+        }
+    }
+
+    std::vector<Entry> factoryList()
+    {
+        std::vector<Entry> out;
+        for (const Project& p : factory::projects())
+            out.push_back(cachedOf(p, 0, 0, {}).entry);
+        return out;
+    }
+
     std::optional<std::vector<PresetSummary>> presetsOf(std::string_view name, std::string* why)
     {
+        if (isFactoryName(name))
+            return factoryPresets(name, why);
         juce::File f;
         juce::int64 modified = 0, size = 0;
         FileId id;
@@ -828,6 +869,8 @@ namespace playground::projectstore
 
     std::optional<std::vector<PresetSummary>> presetsCached(std::string_view name, std::vector<std::string>& unread, std::string* why)
     {
+        if (isFactoryName(name))
+            return factoryPresets(name, why);
         juce::File f;
         juce::int64 modified = 0, size = 0;
         FileId id;
@@ -854,12 +897,21 @@ namespace playground::projectstore
 
     bool exists(std::string_view name)
     {
+        if (isFactoryName(name))
+            return factory::find(name) != nullptr;
         migrate();
         return fileOf(name) != juce::File();
     }
 
     std::optional<Project> load(std::string_view name, std::string* why)
     {
+        if (isFactoryName(name))
+        {
+            if (const Project* p = factory::find(name))
+                return *p;
+            fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+            return std::nullopt;
+        }
         migrate();
         const juce::File f = fileOf(name);
         if (f == juce::File())
@@ -873,6 +925,8 @@ namespace playground::projectstore
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
                                      const std::vector<Answer>& circuits, std::string* why)
     {
+        if (readOnly(name, why))
+            return std::nullopt;
         const std::string tidy = tidyName(name);
         if (tidy.empty())
         {
@@ -988,6 +1042,8 @@ namespace playground::projectstore
 
     bool remove(std::string_view name, std::string* why)
     {
+        if (readOnly(name, why))
+            return false;
         const juce::File f = fileOf(name);
         if (f == juce::File() || !f.deleteFile())
         {
@@ -1083,7 +1139,7 @@ namespace playground::projectstore
 
     std::optional<std::string> add(Project p, std::string* why)
     {
-        std::string base = tidyName(p.name);
+        std::string base = tidyName(ownName(p.name));    // a factory project's copy: its own name
         if (base.empty())
             base = "Imported";
         if (p.versions.empty())

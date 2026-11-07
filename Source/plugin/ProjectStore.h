@@ -37,6 +37,12 @@
 // version, at the time the preset was saved, the first time the folder is read; the old files then move into the
 // folder's "Presets before projects" (never deleted).
 //
+// The factory projects (Factory.h), compiled into the plugin, are served here too, by their factory name (EditorPort.h's
+// factoryName: "Factory: Warm Pad", which tidyName never leaves, so no file here can have it): load(), exists(),
+// presetsOf() and presetsCached() read them, factoryList() lists them (list() and listCached() are this Mac's alone),
+// and every write (saveVersion, savePreset, removePreset, removeVersion, remove, setInfo) refuses one, with why. add()
+// of a project named so takes its own name.
+//
 // Any thread; the functions do their own I/O. They hold no state but the folder override and a cache of the listing
 // and of each project's presets (a file read again only when its size or its time changes; what this process writes
 // or reads whole, it keeps there as it is), and the Reader below.
@@ -161,6 +167,7 @@ namespace playground::projectstore
     bool sameName(std::string_view a, std::string_view b);   // case aside
 
     std::vector<Entry> list();                           // by name, case aside
+    std::vector<Entry> factoryList();                    // the factory projects (Factory.h), by name, case aside
     // A project's presets as the listing keeps them (by name): its file read whole only when its size or its time
     // changed since it was last read (here or by list(), whatever the case its name is spelt in: the same file by its
     // device and inode, on Windows by its path case aside), so a project open, whose presets the explorer asks for

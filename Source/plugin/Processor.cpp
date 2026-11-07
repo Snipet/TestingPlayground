@@ -1,6 +1,7 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "plugin/Factory.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 
@@ -599,7 +600,7 @@ namespace playground
         std::string name;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            name = projectName_;
+            name = ownName(projectName_);                        // a factory project's: its own name
         }
         if (name.empty())
             name = desktopName();
@@ -1618,7 +1619,11 @@ namespace playground
             // The project open; a session from before projects names a preset, now a project of that name.
             if (program.hasProperty(kProject))
             {
-                projectName_ = projectstore::tidyName(program.getProperty(kProject).toString().toStdString());
+                // A factory project's name as it is (tidyName would take its colon), while this build has it.
+                const std::string named = program.getProperty(kProject).toString().toStdString();
+                projectName_ = !isFactoryName(named)                              ? projectstore::tidyName(named)
+                             : factory::find(named) != nullptr ? factory::find(named)->name
+                                                               : std::string();
                 projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
                 projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
             }
@@ -1822,6 +1827,14 @@ namespace playground
     std::vector<ProjectEntry> Processor::projects() const
     {
         return entriesOf(projectstore::list());
+    }
+
+    std::vector<ProjectEntry> Processor::factoryProjects() const
+    {
+        std::vector<ProjectEntry> out;
+        for (const projectstore::Entry& e : projectstore::factoryList())
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), true });
+        return out;
     }
 
     std::vector<ProjectEntry> Processor::projectsPolled() const
@@ -2102,20 +2115,26 @@ namespace playground
     {
         Sources files;
         int active = 0;
+        std::string open;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             files = draft_.files;
             active = draft_.active;
+            open = projectName_;
         }
         const std::vector<projectstore::Dial> dials = dialsNow();
         // The self-test's answers for its netlists (fminus/Circuits.h), kept with the version.
         std::vector<projectstore::Answer> answers;
         for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
             answers.push_back({ std::move(key), std::move(text) });
+        // A factory project is never written: its name, or a new project's while one is open, saves the user's own copy.
+        if (isFactoryName(name) || (isFactoryName(open) && !projectstore::exists(name)))
+            return saveCopy(isFactoryName(name) ? name : open, isFactoryName(name) ? std::string() : name, files, active, dials,
+                            answers, saved, why);
         const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why);
         if (!r)
             return false;
-        saved = { r->number, r->unchanged, r->created };
+        saved = { r->number, r->unchanged, r->created, projectstore::tidyName(name), false };
         if (!r->unchanged)
             journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
@@ -2132,6 +2151,61 @@ namespace playground
         projectVersion_ = r->number;
         projectLatest_ = r->number;
         projectFiles_ = files;
+        baseDials_ = dials;
+        return true;
+    }
+
+    // The user's own copy of the factory project `from` (Factory.h): a new project named `as` (else the factory one's
+    // own name), or "<name> 2", ... when one has it (projectstore::add), of one version, the editor's files and dials,
+    // its note saying whose copy it is, with the factory project's presets and info. It is then the project open.
+    bool Processor::saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
+                             const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
+                             SavedVersion& saved, std::string& why)
+    {
+        if (files.empty())
+        {
+            why = "there is no program to save";
+            return false;
+        }
+        const std::optional<projectstore::Project> origin = projectstore::load(from, &why);
+        if (!origin)
+            return false;
+        projectstore::Project p;
+        p.name = as.empty() ? ownName(origin->name) : projectstore::tidyName(as);
+        if (p.name.empty())
+        {
+            why = "a project needs a name";
+            return false;
+        }
+        projectstore::Version v;
+        v.number = 1;
+        v.savedMs = juce::Time::currentTimeMillis();
+        const std::string changed = projectstore::describeChange(&origin->latest(), files, dials);
+        v.note = "a copy of the factory's \"" + ownName(origin->name) + "\"" + (changed == "the tab shown" ? "" : ", " + changed);
+        v.files = files;
+        v.active = active;
+        v.dials = dials;
+        v.circuits = answers;
+        if (v.circuits.size() > projectstore::kMaxAnswers)
+            v.circuits.resize(projectstore::kMaxAnswers);
+        p.versions.push_back(std::move(v));
+        p.presets = origin->presets;
+        p.info = origin->info;
+        const std::optional<std::string> added = projectstore::add(std::move(p), &why);
+        if (!added)
+            return false;
+        saved = { 1, false, true, *added, true };
+        journal_.note(Journal::Who::user, "saved \"" + *added + "\", a copy of the factory project \"" + ownName(origin->name)
+                                              + "\" (its presets with it)");
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        projectName_ = *added;
+        projectVersion_ = projectLatest_ = 1;
+        projectFiles_ = files;
+        // The preset applied stays named while the dials are still its: the copy has it too.
+        for (const projectstore::Dial& d : dials)
+            for (const projectstore::Dial& b : baseDials_)
+                if (b.name == d.name && b.value != d.value)
+                    projectPreset_.clear();
         baseDials_ = dials;
         return true;
     }
@@ -2173,6 +2247,12 @@ namespace playground
         if (project.empty())
         {
             why = "save the project first: a preset is kept in its project";
+            return false;
+        }
+        if (isFactoryName(project))
+        {
+            why = "\"" + ownName(project) + "\" is a factory project, whose presets stay as they are: save the project first "
+                  "(your own copy, its presets with it), then the preset";
             return false;
         }
         if (!projectstore::exists(project))
@@ -2265,7 +2345,9 @@ namespace playground
             return false;
         }
         projectexport::Result r;
-        if (!(package ? projectexport::writePackage(*p, allVersions, to, r, &why) : projectexport::writeSource(*p, allVersions, to, r, &why)))
+        projectstore::Project q = *p;
+        q.name = ownName(q.name);                                // a factory project's: its own name
+        if (!(package ? projectexport::writePackage(q, allVersions, to, r, &why) : projectexport::writeSource(q, allVersions, to, r, &why)))
             return false;
         out.bytes = r.bytes;
         out.raw = r.raw;
