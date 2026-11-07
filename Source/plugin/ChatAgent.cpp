@@ -1142,6 +1142,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         transport_ = std::move(transport);
         modelsFetched_ = false;
+        otherFetched_ = false;
     }
 
     void ChatAgent::waitIdle()
