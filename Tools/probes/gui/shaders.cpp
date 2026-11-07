@@ -62,13 +62,17 @@
 //             the includes (the library's and the program's .sh files, in turn theirs, each once; a missing one a note at
 //             its line, in the shader or in the .sh; a clock read in an included .sh animates the shader, the library
 //             reads none); a panel of text.sc (text, numbers, a mat4 string from ink.sh, a .sh of the program's own that
-//             includes the library too) and dash.sc (a gauge of shapes.sh): built with no note, registered with the
-//             font's texture, still; text.sc's cell drawn by the GPU against funk/text.sh's arithmetic on the CPU over the
-//             same atlas, pixel for pixel (gui.shaders.text.png), and again with its numbers moved by their dials
-//             (.text.moved.png); the cache's key: a .sh no shader includes changed builds nothing, ink.sh changed builds
-//             text.sc alone again; a .sh that does not compile a note on its own line, an #include of no file a note and
-//             no build; both shaders built for Vulkan (SPIR-V) too (Direct3D 11's compiler is Windows' alone); PROMPT's
-//             gauge example (text.sh and shapes.sh) builds, the renderer takes it, and it is still
+//             includes the library too), dash.sc (a gauge of shapes.sh) and odo.sc (8999001, past 2^23): built with no
+//             note, registered with the font's texture, still; text.sc's cell drawn by the GPU against funk/text.sh's
+//             arithmetic on the CPU over the same atlas, pixel for pixel (gui.shaders.text.png), and again with its
+//             numbers moved by their dials (.text.moved.png); odo.sc's number7() and number() the same pixels as its
+//             digits drawn one by one (digit7, text) under them; dash.sc's first and last ticks as wide on both sides of
+//             their centre lines, a sweep either way round; the cache's key: a .sh no shader includes changed builds
+//             nothing, ink.sh changed builds text.sc alone again; a .sh that does not compile a note on its own line,
+//             which the shader that includes it shows as why (its placeholder, its screen reader's value, view_panel's
+//             line), an #include of no file a note and no build; the shaders built for Vulkan (SPIR-V) too (Direct3D
+//             11's compiler is Windows' alone); PROMPT's gauge example (text.sh and shapes.sh) builds, the renderer
+//             takes it, and it is still
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
@@ -455,13 +459,15 @@ namespace
             return ink;
         }
 
-        // number()'s characters, as text.sh makes them.
+        // number()'s characters, as text.sh makes them (rounded by the fraction, as it rounds).
         static std::vector<int> numberCodes(float value, int decimals)
         {
             float m = 1.0f;
             for (int k = 0; k < decimals; ++k)
                 m *= 10.0f;
-            const int r = static_cast<int>(std::min(std::floor(std::fabs(value) * m + 0.5f), 9999999.0f));
+            const float a = std::fabs(value) * m;
+            const float whole = std::floor(a);
+            const int r = static_cast<int>(std::min(whole + (a - whole >= 0.5f ? 1.0f : 0.0f), 9999999.0f));
             std::string digits = std::to_string(r);
             while (static_cast<int>(digits.size()) < decimals + 1)
                 digits.insert(digits.begin(), '0');
@@ -1358,7 +1364,9 @@ PROBE(gui, shaders)
         P.eq("includes.library_no_clock", clocks, 0);
 
         // The panel: text and numbers drawn white on black (text.sc, ink.sh of the program's own, which includes the
-        // library too), and a gauge of shapes (dash.sc).
+        // library too), a gauge of shapes (dash.sc: its outer scale counted from -135, its inner one from 135), and an
+        // odometer past 2^23 (odo.sc: 8999001 in seven segments and in the font, each over the same digits drawn one by
+        // one, digit7's and text()'s).
         const char* const kTextSc = "// text.sc: the font, numbers and a long string, white on black.\n"
                                     "#include \"funk/text.sh\"\n"
                                     "#include \"ink.sh\"\n"
@@ -1384,6 +1392,7 @@ PROBE(gui, shaders)
                                     "    col = mix(col, vec3(1.0, 0.25, 0.1), number7(v_px, vec2(u_size.x - 12.0, 17.0), 16.0, in_cutoff * 100.0, 2.0));\n"
                                     "    col = mix(col, vec3(0.35, 0.35, 0.4), ring(v_px, c, r + 4.0, 1.5));\n"
                                     "    col = mix(col, vec3(0.75, 0.75, 0.75), ticks(v_px, c, 0.82 * r, r, 1.5, -135.0, 135.0, 9.0));\n"
+                                    "    col = mix(col, vec3(0.5, 0.5, 0.55), ticks(v_px, c, 0.56 * r, 0.74 * r, 1.5, 135.0, -135.0, 5.0));\n"
                                     "    col = mix(col, vec3(0.9, 0.2, 0.1), arc(v_px, c, r - 2.0, 4.0, 90.0, 135.0));\n"
                                     "    col = mix(col, vec3(0.25, 0.25, 0.28), segment(v_px, vec2(10.0, 17.0), vec2(34.0, 17.0), 3.0));\n"
                                     "    col = mix(col, vec3(0.2, 0.6, 1.0), segment(v_px, vec2(10.0, 17.0), vec2(10.0 + 24.0 * in_level, 17.0), 3.0));\n"
@@ -1396,21 +1405,41 @@ PROBE(gui, shaders)
                                     "    col = mix(col, ramp3(vec3(0.2, 0.9, 0.3), vec3(1.0, 0.8, 0.1), vec3(1.0, 0.2, 0.1), along(v_px, c - vec2(r, 0.0), c + vec2(r, 0.0))),\n"
                                     "              box(v_px, vec2(c.x, u_size.y - 6.0), vec2(2.0 * r, 4.0), 2.0));\n"
                                     "    gl_FragColor = vec4(col, 1.0);\n}\n";
+        const char* const kOdoSc = "// odo.sc: 8999001 (odd, past 2^23) in seven segments and in the font, each over the same digits.\n"
+                                   "#include \"funk/text.sh\"\n#include \"funk/shapes.sh\"\n"
+                                   "void main()\n{\n"
+                                   "    float v = 8999001.0 + floor(in_level);\n"
+                                   "    float pitch = 0.62 * 20.0;\n"
+                                   "    float ink = number7(v_px, vec2(100.0, 20.0), 20.0, v, 7.0);\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 0.5 * pitch, 50.0), 20.0, 1.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 1.5 * pitch, 50.0), 20.0, 0.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 2.5 * pitch, 50.0), 20.0, 0.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 3.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 4.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 5.5 * pitch, 50.0), 20.0, 9.0));\n"
+                                   "    ink = max(ink, digit7(v_px, vec2(100.0 - 6.5 * pitch, 50.0), 20.0, 8.0));\n"
+                                   "    ink = max(ink, number(v_px, vec2(8.0, 78.0), 12.0, 0.0, v, 0.0));\n"
+                                   "    ink = max(ink, text(v_px, vec2(8.0, 98.0), 12.0, 0.0, \"8999001\"));\n"
+                                   "    gl_FragColor = vec4(vec3_splat(ink), 1.0);\n}\n";
         const std::string textGui = "panel { row {\n"
                                     "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=110\n"
                                     "    shader \"dash.sc\" inputs=\"cutoff level\" width=170 height=110\n"
+                                    "    shader \"odo.sc\" inputs=\"level\" width=120 height=110\n"
                                     "} row { knob cutoff; knob level } }\n";
         const std::string firstWords = "A STRING LONGER THAN TWELVE";
         const pg::Sources textFiles{ { pg::kProgramName, program() }, { "panel.gui", textGui }, { "text.sc", kTextSc },
-                                     { "ink.sh", inkSh(firstWords) }, { "dash.sc", kDashSc }, { "other.sh", "// no shader includes this\n" } };
+                                     { "ink.sh", inkSh(firstWords) }, { "dash.sc", kDashSc }, { "other.sh", "// no shader includes this\n" },
+                                     { "odo.sc", kOdoSc } };
         load(processor, textFiles);
         processor.settle();
         host.tick(2);
         host.settle(30);
         const pg::CompileStatus ts = port.status();
         std::printf("TEXT notes:\n%s", ts.notes.c_str());
-        const bool textBuilt = ts.ok && ts.panel.shaders.size() == 2 && !ts.panel.shaders[0].binary.empty() && !ts.panel.shaders[1].binary.empty();
-        P.eq("text.built", textBuilt && !has(ts.notes, "text.sc") && !has(ts.notes, "ink.sh") && !has(ts.notes, "dash.sc") ? 1 : 0, 1);
+        const bool textBuilt = ts.ok && ts.panel.shaders.size() == 3 && !ts.panel.shaders[0].binary.empty() && !ts.panel.shaders[1].binary.empty()
+                               && !ts.panel.shaders[2].binary.empty();
+        P.eq("text.built", textBuilt && !has(ts.notes, "text.sc") && !has(ts.notes, "ink.sh") && !has(ts.notes, "dash.sc")
+                               && !has(ts.notes, "odo.sc") ? 1 : 0, 1);
         const uint32_t textId = textBuilt ? ts.panel.shaders[0].id : 0u;
         const pg::ui::GuiShaderItem* textItem = shaderShowing(panel, "text.sc");
         const pg::ui::GuiShaderItem* dashItem = shaderShowing(panel, "dash.sc");
@@ -1473,6 +1502,87 @@ PROBE(gui, shaders)
             P.le((std::string(name) + ".over_16_share").c_str(), static_cast<double>(over16) / std::max(n, 1), 0.01);
         };
         compare("text.draw", "gui.shaders.text.png");
+
+        // Past 2^23 (odo.sc): number7's and number()'s 8999001 the same pixels as the digits drawn one by one under
+        // each (a float's x + 0.5 would round the tie to even, an 8999002); dash.sc's ticks as wide on both sides of
+        // the first and last marks, either way round (the outer scale from -135, the inner one from 135).
+        {
+            const funkgui::PrimList& frame = host.draw();
+            const pg::picture::Drawn g = pg::picture::draw(frame);
+            const pg::ui::GuiShaderItem* odoItem = shaderShowing(panel, "odo.sc");
+            const auto sameAsBelow = [&](const std::string& name, float top, float height, float below) {
+                if (odoItem == nullptr || !g.gpu)
+                {
+                    P.eq(name.c_str(), 0, 1);
+                    return;
+                }
+                funkgui::Rect band = odoItem->cell();
+                band.y += top;
+                band.h = height;
+                const Px box = pixelsOf(g.image, band, kDpi, 0.0f);
+                const int shift = static_cast<int>(std::lround(below * kDpi));
+                int differ = 0, inked = 0, worst = 0;
+                for (int y = box.y0; y < box.y1 && y + shift < g.image.h; ++y)
+                    for (int x = box.x0; x < box.x1; ++x)
+                    {
+                        const int a = at(g.image, x, y)[0], b = at(g.image, x, y + shift)[0];
+                        worst = std::max(worst, std::abs(a - b));
+                        differ += std::abs(a - b) > 16 ? 1 : 0;
+                        inked += a > 128 ? 1 : 0;
+                    }
+                std::printf("%s: %d px inked, %d differ from the digits %.0f px under them by more than 16 (the most %d)\n",
+                            name.c_str(), inked, differ, static_cast<double>(below), worst);
+                P.eq(name.c_str(), differ, 0);
+                P.ge((name + "_inked").c_str(), static_cast<double>(inked), 200.0);
+            };
+            sameAsBelow("text.number7_large", 6.0f, 28.0f, 30.0f);
+            sameAsBelow("text.number_large", 68.0f, 18.0f, 20.0f);
+
+            // A mark's ink (its red over the background's, near it) on each side of its centre line: the less over the more.
+            const auto evenness = [&](const char* name, float angle, float r0, float r1) {
+                if (dashItem == nullptr || !g.gpu)
+                {
+                    P.eq(name, 0, 1);
+                    return;
+                }
+                const funkgui::Rect cell = dashItem->cell();
+                const float cx = 0.5f * cell.w, cy = 0.56f * cell.h, rad = 0.4f * cell.h;
+                const float a = angle * 3.14159265f / 180.0f;
+                const float dx = std::sin(a), dy = -std::cos(a);     // along the mark (y down)
+                const Px box = pixelsOf(g.image, cell, kDpi, 0.0f);
+                std::vector<std::pair<float, int>> samples;          // across the mark (px), red
+                double background = 0.0;
+                int counted = 0;
+                for (int y = box.y0; y < box.y1; ++y)
+                    for (int x = box.x0; x < box.x1; ++x)
+                    {
+                        const float px = (static_cast<float>(x) + 0.5f) / kDpi - cell.x - cx;
+                        const float py = (static_cast<float>(y) + 0.5f) / kDpi - cell.y - cy;
+                        const float along = px * dx + py * dy, across = px * -dy + py * dx;
+                        if (along < r0 * rad + 1.0f || along > r1 * rad - 1.0f)
+                            continue;
+                        const int red = at(g.image, x, y)[0];
+                        if (std::fabs(across) > 2.5f && std::fabs(across) < 4.0f)
+                        {
+                            background += red;
+                            ++counted;
+                        }
+                        else if (std::fabs(across) <= 1.5f)
+                            samples.emplace_back(across, red);
+                    }
+                background /= std::max(counted, 1);
+                double side[2] = { 0.0, 0.0 };
+                for (const auto& [across, red] : samples)
+                    side[across < 0.0f ? 0 : 1] += std::max(0.0, red - background);
+                const double even = std::max(side[0], side[1]) > 0.0 ? std::min(side[0], side[1]) / std::max(side[0], side[1]) : 0.0;
+                std::printf("%s: the mark at %.0f deg, its ink on the two sides of its centre line %.0f and %.0f (the "
+                            "background %.1f): %.3f\n", name, static_cast<double>(angle), side[0], side[1], background, even);
+                P.ge(name, even, 0.8);
+            };
+            evenness("text.ticks_first_even", -135.0f, 0.82f, 1.0f);
+            evenness("text.ticks_reverse_first_even", 135.0f, 0.56f, 0.74f);
+            evenness("text.ticks_reverse_last_even", -135.0f, 0.56f, 0.74f);
+        }
         // The numbers follow their inputs: the level at 1/8000 of its range (a "1"), the cutoff at 0.9 ("-9.00").
         juce::AudioProcessorParameter& cutoffParam = *processor.getParameters()[0];
         juce::AudioProcessorParameter& levelParam = *processor.getParameters()[1];
@@ -1494,15 +1604,16 @@ PROBE(gui, shaders)
             load(processor, other);
             processor.settle();
             const pg::CompileStatus o = port.status();
-            P.eq("includes.unrelated_same", o.panel.shaders.size() == 2 && o.panel.shaders[0].id == textId ? 1 : 0, 1);
+            P.eq("includes.unrelated_same", o.panel.shaders.size() == 3 && o.panel.shaders[0].id == textId ? 1 : 0, 1);
             P.eq("includes.unrelated_no_build", static_cast<int64_t>(pg::shadercRuns() - runs), 0);
             pg::Sources changed = textFiles;
             changed[3].text = inkSh("ANOTHER STRING, AS LONG");
             load(processor, changed);
             processor.settle();
             const pg::CompileStatus c = port.status();
-            P.eq("includes.header_rebuilds", c.panel.shaders.size() == 2 && c.panel.shaders[0].id != textId && c.panel.shaders[0].id != 0
-                                                 && c.panel.shaders[1].id == ts.panel.shaders[1].id ? 1 : 0, 1);
+            P.eq("includes.header_rebuilds", c.panel.shaders.size() == 3 && c.panel.shaders[0].id != textId && c.panel.shaders[0].id != 0
+                                                 && c.panel.shaders[1].id == ts.panel.shaders[1].id
+                                                 && c.panel.shaders[2].id == ts.panel.shaders[2].id ? 1 : 0, 1);
             P.eq("includes.header_one_build", static_cast<int64_t>(pg::shadercRuns() - runs), 1);
             // A .sh file that does not compile: the note on its own line.
             pg::Sources broken = textFiles;
@@ -1513,6 +1624,21 @@ PROBE(gui, shaders)
             std::printf("a broken ink.sh: %s", b.notes.c_str());
             P.eq("includes.header_note", has(b.notes, "ink.sh:5:1: note: the shader does not compile:") && has(b.notes, "notDefinedHere")
                                              && b.ok ? 1 : 0, 1);
+            // ... and text.sc, which includes it, says so: its placeholder, its screen reader's value and view_panel's
+            // element line give ink.sh's note, at its line.
+            host.tick(2);
+            const pg::ui::GuiShaderItem* brokenText = shaderShowing(panel, "text.sc");
+            char line[512] = {};
+            if (brokenText != nullptr)
+                brokenText->specLine(line, sizeof line);
+            std::printf("text.sc with ink.sh broken: %s\n", line);
+            bool spoken = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                spoken = spoken || (a.title == "Shader text.sc" && has(a.value, "ink.sh:5: the shader does not compile:"));
+            P.eq("includes.header_why", brokenText != nullptr && brokenText->program() == 0
+                                            && brokenText->why().rfind("ink.sh:5: the shader does not compile:", 0) == 0
+                                            && has(brokenText->why(), "notDefinedHere") && has(line, "shader text.sc   ink.sh:5: ")
+                                            && spoken ? 1 : 0, 1);
             // An #include of a file there is none of, and a string too long: notes on their lines, nothing built.
             pg::Sources missing = textFiles;
             missing[2].text = std::string(kTextSc) + "#include \"nothere.sh\"\n";
@@ -1520,7 +1646,7 @@ PROBE(gui, shaders)
             processor.settle();
             const pg::CompileStatus m = port.status();
             P.eq("includes.missing_note", has(m.notes, "text.sc:13:10: note: the shader does not compile: there is no file nothere.sh")
-                                              && m.panel.shaders.size() == 2 && m.panel.shaders[0].binary.empty() ? 1 : 0, 1);
+                                              && m.panel.shaders.size() == 3 && m.panel.shaders[0].binary.empty() ? 1 : 0, 1);
         }
 
         // Every renderer's profile: the library and both shaders compile for Vulkan (SPIR-V) here too; Direct3D 11's
@@ -1532,9 +1658,10 @@ PROBE(gui, shaders)
             const pg::Sources heads = pg::shaderHeaders(textFiles);
             const pg::ShaderBuild a = pg::buildShader("text.sc", kTextSc, { "cutoff", "level" }, spirv, heads);
             const pg::ShaderBuild b = pg::buildShader("dash.sc", kDashSc, { "cutoff", "level" }, spirv, heads);
-            if (!a.ok() || !b.ok())
-                std::printf("SPIR-V:\n%s%s", a.error.c_str(), b.error.c_str());
-            P.eq("text.spirv", a.ok() && b.ok() && a.binary != ts.panel.shaders[0].binary ? 1 : 0, 1);
+            const pg::ShaderBuild o = pg::buildShader("odo.sc", kOdoSc, { "level" }, spirv, heads);
+            if (!a.ok() || !b.ok() || !o.ok())
+                std::printf("SPIR-V:\n%s%s%s", a.error.c_str(), b.error.c_str(), o.error.c_str());
+            P.eq("text.spirv", a.ok() && b.ok() && o.ok() && a.binary != ts.panel.shaders[0].binary ? 1 : 0, 1);
         }
         load(processor, textFiles);
         processor.settle();
