@@ -376,12 +376,14 @@ namespace playground
             o->setProperty("track", juce::String::fromUTF8(trackName_.c_str()));
         }
         juce::Array<juce::var> files;
+        const Assets samples = assetsNow();
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             o->setProperty("project", juce::String::fromUTF8(projectName_.c_str()));
             o->setProperty("version", projectVersion_);
             o->setProperty("preset", juce::String::fromUTF8(projectPreset_.c_str()));
-            o->setProperty("edited", !projectName_.empty() && draft_.files != projectFiles_);
+            o->setProperty("edited", !projectName_.empty()
+                                         && (draft_.files != projectFiles_ || !assets::same(samples.get(), projectAssets_.get())));
             for (const SourceFile& f : draft_.files)
                 files.add(juce::String::fromUTF8(f.name.c_str()));
         }
@@ -1514,6 +1516,9 @@ namespace playground
             }
             state.appendChild(midi, nullptr);
         }
+        // The samples, each file as it was added (ProcessorAssets.cpp).
+        if (juce::ValueTree samples = assetsState(); samples.getNumChildren() > 0)
+            state.appendChild(samples, nullptr);
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -1668,8 +1673,18 @@ namespace playground
             setEditorSize(static_cast<int>(editor.getProperty(kWidth, 0)), static_cast<int>(editor.getProperty(kHeight, 0)));
             state.removeChild(editor, nullptr);
         }
+        // The samples (a state from before them, or saved with none, has none), decoded here, before its program
+        // compiles with them.
+        std::vector<std::string> samplesRefused;
+        const Assets samples = assetsOfState(state, samplesRefused);
+        state.removeChild(state.getChildWithName("ASSETS"), nullptr);
+        replaceAssets(samples, Journal::Who::host, "");
+        if (!samplesRefused.empty())
+            journal_.note(Journal::Who::host, "left out of the saved state's samples: " + samplesRefused.front()
+                                                  + (samplesRefused.size() > 1 ? " (and " + std::to_string(samplesRefused.size() - 1) + " more)" : ""));
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            projectAssets_ = samples;                            // the session's samples are its version's, as saved
             // The project open; a session from before projects names a preset, now a project of that name.
             if (program.hasProperty(kProject))
             {
@@ -1929,6 +1944,7 @@ namespace playground
         std::vector<projectstore::Dial> base;
         Controls cs;
         std::array<std::vector<std::string>, kMaxControls> options;
+        const Assets samples = assetsNow();
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             options = panel_.options;
@@ -1936,8 +1952,8 @@ namespace playground
             st.version = projectVersion_;
             st.latest = std::max(projectLatest_, projectVersion_);
             st.preset = projectPreset_;
-            st.edited = !projectName_.empty() && draft_.files != projectFiles_;
-            st.changed = draft_.files != projectFiles_;
+            st.changed = draft_.files != projectFiles_ || !assets::same(samples.get(), projectAssets_.get());
+            st.edited = !projectName_.empty() && st.changed;
             base = baseDials_;
             cs = controls_;
         }
@@ -2192,10 +2208,18 @@ namespace playground
         }
         d.active = std::clamp(v.active, 0, static_cast<int>(d.files.size()) - 1);
         std::vector<midilearn::Mapping> left = learn_.mappings();
+        // Its samples (none: none), decoded before it compiles with them (ProcessorAssets.cpp).
+        std::vector<std::string> refused;
+        const Assets samples = assetsOfVersion(p, v, refused);
+        replaceAssets(samples, Journal::Who::user, "");
+        if (!refused.empty())
+            journal_.note(Journal::Who::user, "left out of the version's samples: " + refused.front()
+                                                  + (refused.size() > 1 ? " (and " + std::to_string(refused.size() - 1) + " more)" : ""));
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = d;
             ++draftRevision_;                                    // the editor shows the version's files
+            projectAssets_ = samples;
             projectName_ = p.name;
             projectVersion_ = v.number;
             projectLatest_ = p.latest().number;
@@ -2253,6 +2277,7 @@ namespace playground
             projectVersion_ = projectLatest_ = 0;
             projectPreset_.clear();
             projectFiles_ = d.files;                             // nothing to lose yet, as in a new instance
+            projectAssets_ = assetsNow();                        // the samples stay: the user's, for the next program
             baseDials_.clear();
             midiOpened_.reset();
         }
@@ -2288,7 +2313,9 @@ namespace playground
             midi.inherited = midiOpened_ && *midiOpened_ == midi.mappings
                           && projectstore::sameName(projectstore::tidyName(name), projectName_);
         }
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, midi, &why);
+        const Assets samples = assetsNow();
+        const std::optional<projectstore::Saved> r =
+            projectstore::saveVersion(name, files, active, dials, answers, midi, samples.get(), &why);
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created };
@@ -2308,6 +2335,7 @@ namespace playground
         projectVersion_ = r->number;
         projectLatest_ = r->number;
         projectFiles_ = files;
+        projectAssets_ = samples;
         baseDials_ = dials;
         if (!r->unchanged)
             midiOpened_.reset();                                 // the version saved has these mappings

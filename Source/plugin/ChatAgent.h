@@ -194,6 +194,30 @@ namespace playground
         // lines and get_status say them, matched to the controls they list by name (its `words` are by the slots of
         // the program apply() took, which a compile apply() has not taken yet may have moved).
         virtual midilearn::View chatMidi() const { return {}; }
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS), which its #pragma sample lines read: every render
+        // of a tool compiles with them (scenario::resolve). Any thread (a copy under its own mutex). chatAddAsset adds
+        // the audio file at `path` (a WAV, AIFF or FLAC on this computer) as `name` (its own name tidied when ""),
+        // decoded on the calling thread; chatRemoveAsset and chatRenameAsset act on one by name. False, with why in
+        // words (the caps, a file that is none of those), when it cannot; `done` says what was done.
+        virtual Assets chatAssets() const { return {}; }
+        virtual bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why)
+        {
+            (void)path, (void)name, (void)done;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRemoveAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why)
+        {
+            (void)name, (void)to;
+            why = "this plugin keeps no samples";
+            return false;
+        }
     };
 
     class ChatAgent final : public ChatPort

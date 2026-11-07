@@ -32,6 +32,12 @@
 //     them offline), until one is kept (its files the draft) or it ends. Not in the session itself: a session saved
 //     while it is on keeps what played before it began (and those dials, when each side has its own), as Close would
 //     put back, and a session loaded ends it.
+//   - the samples (dsp/Assets.h; EditorPort::assets, the explorer's ASSETS): audio files a program reads as tables
+//     (#pragma sample), decoded when added (AssetFiles.h, on the message thread or Claude's worker), never on the audio
+//     thread; the set the Compiler and every tool's render compile with. Kept in the session as each file was added
+//     (<ASSETS><ASSET name=".." data="base64"/></ASSETS>; a state without them has none) and with each project version
+//     saved (ProjectStore.h: opening a version makes its samples the plugin's); a fresh start (EXAMPLES, RANDOM) keeps
+//     them, as the user's material for the next program.
 //   - MIDI learn (MidiLearn.h; the instrument's): a dial learns a MIDI controller's control, which then moves it
 //     through its port as the editor's hand does (a host gesture a touch). The audio thread notes the control changes
 //     (learn_), the message thread writes them (pollMidi, on a timer of its own while there is anything to listen for).
@@ -63,6 +69,7 @@
 #pragma once
 
 #include "plugin/AbMatch.h"
+#include "plugin/AssetFiles.h"
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -332,6 +339,10 @@ namespace playground
         void cancelMidiLearn() override;
         bool forgetMidi(int slot) override;
         int forgetAllMidi() override;
+        std::vector<AssetEntry> assets() const override;
+        uint64_t assetsRevision() const override { return assetsRevision_.load(); }
+        int addAssets(const std::vector<std::string>& paths, std::string& why) override;
+        bool removeAsset(const std::string& name, std::string& why) override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -361,6 +372,30 @@ namespace playground
         std::string chatAb() const override;
         std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
         midilearn::View chatMidi() const override { return learn_.view(); }
+        Assets chatAssets() const override { return assetsNow(); }
+        bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why) override;
+        bool chatRemoveAsset(const std::string& name, std::string& why) override;
+        bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why) override;
+
+        // The samples (above; dsp/Assets.h): the set as it is, under assetsMutex_ (any thread reads it), replaced whole
+        // on the message thread and Claude's worker (the Compiler's with it, journalled as `who`'s: `words`).
+        mutable std::mutex assetsMutex_;
+        Assets assets_;
+        mutable std::map<std::string, std::string> base64_;     // each file's base64 by its hash (assetsState: a host
+                                                                // may save its state often), the set's only
+        std::atomic<uint64_t> assetsRevision_{ 1 };
+        Assets assetsNow() const;
+        void replaceAssets(Assets next, Journal::Who who, const std::string& words);
+        // A decoded sample into the set (in place of one of its name), its caps checked again against the set as it is
+        // then: false, with why.
+        bool putAsset(const std::shared_ptr<const assets::Asset>& asset, Journal::Who who, std::string& why);
+        bool dropAsset(const std::string& name, Journal::Who who, std::string& why);
+        // What the session keeps of them (<ASSETS>), and the set a state's or a version's make (each file decoded; one
+        // that cannot be is left out, `refused` saying why).
+        juce::ValueTree assetsState() const;
+        static Assets assetsOfState(const juce::ValueTree& state, std::vector<std::string>& refused);
+        static Assets assetsOfVersion(const projectstore::Project& p, const projectstore::Version& v,
+                                      std::vector<std::string>& refused);
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -380,6 +415,7 @@ namespace playground
         mutable int projectLatest_ = 0;                          // its newest, as last read
         std::string projectPreset_;
         Sources projectFiles_;
+        Assets projectAssets_;                                   // its samples, as projectFiles_ (project().edited)
         std::vector<projectstore::Dial> baseDials_;
         // MIDI learn's mappings when a version with none was opened (it left them as they were), else none: saving
         // that project while they are still these is no change of theirs (projectstore::VersionMidi::inherited).

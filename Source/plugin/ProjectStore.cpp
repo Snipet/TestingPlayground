@@ -34,7 +34,8 @@ namespace playground::projectstore
         constexpr const char* kFormat = "funk-playground-project";
         constexpr const char* kLegacyFormat = "funk-playground-preset";
         constexpr int kFormatVersion = 1;
-        constexpr juce::int64 kMaxBytes = 64 * 1024 * 1024;   // a project larger than this is no project
+        constexpr juce::int64 kMaxBytes = 128 * 1024 * 1024;  // a project larger than this is no project (its sample
+                                                              // files, kMaxSampleBytes, are a third more as base64)
 
         // A file's identity: its device and inode where a look gives them (POSIX), so that two spellings of one name
         // (case aside, on a volume that ignores case) are known for one file; none on Windows (0, 0).
@@ -252,6 +253,104 @@ namespace playground::projectstore
         }
 
         // The project in a file's JSON: nothing, with why, when it is not one of this plugin's or it is damaged.
+        // A version's samples (ProjectStore.h): each a valid sample's name once, with a hash of 16 hex digits.
+        juce::var samplesVar(const std::vector<SampleRef>& refs)
+        {
+            juce::Array<juce::var> out;
+            for (const SampleRef& r : refs)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("name", str(r.name));
+                o->setProperty("hash", str(r.hash));
+                out.add(juce::var(o));
+            }
+            return out;
+        }
+
+        std::vector<SampleRef> samplesOf(const juce::var& v)
+        {
+            std::vector<SampleRef> out;
+            if (const juce::Array<juce::var>* a = v.getArray())
+                for (const juce::var& e : *a)
+                {
+                    SampleRef r{ e["name"].toString().toStdString(), e["hash"].toString().toStdString() };
+                    const bool hex = r.hash.size() == 16
+                                  && std::all_of(r.hash.begin(), r.hash.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; });
+                    if (assets::validName(r.name) && hex && out.size() < assets::kMaxAssets
+                        && std::none_of(out.begin(), out.end(), [&](const SampleRef& o) { return o.name == r.name; }))
+                        out.push_back(std::move(r));
+                }
+            return out;
+        }
+
+        // The project's sample files: each its hash and its bytes as base64; one whose bytes are not its hash's (damaged)
+        // or past a file's cap is left out, and so is what would take the files past kMaxSampleBytes.
+        juce::var sampleFilesVar(const std::vector<SampleFile>& files)
+        {
+            juce::Array<juce::var> out;
+            for (const SampleFile& f : files)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("hash", str(f.hash));
+                o->setProperty("data", juce::Base64::toBase64(f.bytes.data(), f.bytes.size()));
+                out.add(juce::var(o));
+            }
+            return out;
+        }
+
+        std::vector<SampleFile> sampleFilesOf(const juce::var& v)
+        {
+            std::vector<SampleFile> out;
+            std::size_t total = 0;
+            if (const juce::Array<juce::var>* a = v.getArray())
+                for (const juce::var& e : *a)
+                {
+                    juce::MemoryOutputStream bytes;
+                    if (!juce::Base64::convertFromBase64(bytes, e["data"].toString()))
+                        continue;
+                    SampleFile f{ e["hash"].toString().toStdString(),
+                                  std::string(static_cast<const char*>(bytes.getData()), bytes.getDataSize()) };
+                    if (f.bytes.size() > assets::kMaxFileBytes || assets::hashOf(f.bytes) != f.hash
+                        || total + f.bytes.size() > kMaxSampleBytes
+                        || std::any_of(out.begin(), out.end(), [&](const SampleFile& o) { return o.hash == f.hash; }))
+                        continue;
+                    total += f.bytes.size();
+                    out.push_back(std::move(f));
+                }
+            return out;
+        }
+
+        // The project's sample files that its versions name, each once, in the order first named (`more`: files for the
+        // names it lacks, a save's).
+        void keepNamedSamples(Project& p, const assets::Set* more = nullptr)
+        {
+            std::vector<SampleFile> kept;
+            for (const Version& v : p.versions)
+                for (const SampleRef& r : v.samples)
+                {
+                    if (std::any_of(kept.begin(), kept.end(), [&](const SampleFile& f) { return f.hash == r.hash; }))
+                        continue;
+                    if (const SampleFile* f = p.sample(r.hash))
+                        kept.push_back(*f);
+                    else if (more != nullptr)
+                        for (const std::shared_ptr<const assets::Asset>& a : more->items)
+                            if (a->hash() == r.hash)
+                            {
+                                kept.push_back({ a->hash(), a->bytes() });
+                                break;
+                            }
+                }
+            p.samples = std::move(kept);
+        }
+
+        bool sameSamples(std::vector<SampleRef> a, std::vector<SampleRef> b)
+        {
+            const auto byName = [](const SampleRef& x, const SampleRef& y) { return x.name < y.name; };
+            std::sort(a.begin(), a.end(), byName);
+            std::sort(b.begin(), b.end(), byName);
+            return a == b;
+        }
+
         std::optional<Project> parseRoot(const juce::var& root, const std::string& name, const std::string& label, std::string* why)
         {
             if (!root.isObject() || root["format"].toString() != kFormat)
@@ -287,6 +386,7 @@ namespace playground::projectstore
                     ver.dials = dialsOf(v["dials"]);
                     ver.circuits = answersOf(v["circuits"]);
                     ver.midi = midiOf(v["midi"]);
+                    ver.samples = samplesOf(v["samples"]);
                     if (!ver.files.empty() && ver.number > 0)
                         p.versions.push_back(std::move(ver));
                 }
@@ -319,6 +419,7 @@ namespace playground::projectstore
                 in.genres = stringsOf(info["genres"]);
                 p.info = tidyInfo(std::move(in));
             }
+            p.samples = sampleFilesOf(root["sampleFiles"]);
             return p;
         }
 
@@ -534,6 +635,8 @@ namespace playground::projectstore
                     o->setProperty("circuits", answersVar(v.circuits));
                 if (!v.midi.empty())
                     o->setProperty("midi", midiVar(v.midi));
+                if (!v.samples.empty())
+                    o->setProperty("samples", samplesVar(v.samples));
                 versions.add(juce::var(o));
             }
             root->setProperty("versions", versions);
@@ -558,6 +661,8 @@ namespace playground::projectstore
                 info->setProperty("genres", stringsVar(p.info.genres));
                 root->setProperty("info", juce::var(info));
             }
+            if (!p.samples.empty())
+                root->setProperty("sampleFiles", sampleFilesVar(p.samples));
             return juce::var(root);
         }
 
@@ -647,6 +752,34 @@ namespace playground::projectstore
             if (v.number == number)
                 return &v;
         return nullptr;
+    }
+
+    const SampleFile* Project::sample(std::string_view hash) const
+    {
+        for (const SampleFile& f : samples)
+            if (f.hash == hash)
+                return &f;
+        return nullptr;
+    }
+
+    std::vector<SampleRef> refsOf(const assets::Set* samples)
+    {
+        std::vector<SampleRef> out;
+        if (samples != nullptr)
+            for (const std::shared_ptr<const assets::Asset>& a : samples->items)
+                out.push_back({ a->name(), a->hash() });
+        return out;
+    }
+
+    std::string samplesRefusal(const Project& p)
+    {
+        std::size_t total = 0;
+        for (const SampleFile& f : p.samples)
+            total += f.bytes.size();
+        if (total <= kMaxSampleBytes)
+            return {};
+        return "\"" + p.name + "\"'s versions would keep " + assets::sizeText(total) + " of samples: a project keeps "
+             + assets::sizeText(kMaxSampleBytes) + " at most (save it as a new project, or delete older versions)";
     }
 
     const Preset* Project::preset(std::string_view wanted) const
@@ -902,9 +1035,11 @@ namespace playground::projectstore
     }
 
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits, const VersionMidi& midi, std::string* why)
+                                     const std::vector<Answer>& circuits, const VersionMidi& midi, const assets::Set* samples,
+                                     std::string* why)
     {
         const std::vector<midilearn::Mapping> maps = midilearn::tidy(midi.mappings);
+        const std::vector<SampleRef> refs = refsOf(samples);
         const std::string tidy = tidyName(name);
         if (tidy.empty())
         {
@@ -927,7 +1062,8 @@ namespace playground::projectstore
             Version& last = p.versions.back();
             // Mappings a version with none left as they were make no change while the latest has none either.
             const bool sameMidi = last.midi == maps || (midi.inherited && last.midi.empty());
-            if (last.files == files && last.active == active && sameDials(last.dials, dials) && sameMidi)
+            if (last.files == files && last.active == active && sameDials(last.dials, dials) && sameMidi
+                && sameSamples(last.samples, refs))
             {
                 saved.number = last.number;
                 saved.unchanged = true;
@@ -953,7 +1089,8 @@ namespace playground::projectstore
         v.number = p.versions.empty() ? 1 : p.latest().number + 1;
         v.savedMs = juce::Time::currentTimeMillis();
         v.midi = maps;
-        v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials, &v.midi);
+        v.samples = refs;
+        v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials, &v.midi, &v.samples);
         v.files = files;
         v.active = active;
         v.dials = dials;
@@ -961,6 +1098,12 @@ namespace playground::projectstore
         p.versions.push_back(std::move(v));
         if (p.versions.size() > static_cast<std::size_t>(kMaxVersions))
             p.versions.erase(p.versions.begin(), p.versions.end() - kMaxVersions);
+        keepNamedSamples(p, samples);                    // the new version's files in, those no version names out
+        if (const std::string refused = samplesRefusal(p); !refused.empty())
+        {
+            fail(why, refused);
+            return std::nullopt;
+        }
         saved.number = p.latest().number;
         if (!write(std::move(p), why))
             return std::nullopt;
@@ -1017,6 +1160,7 @@ namespace playground::projectstore
                 return false;
             }
             p.versions.erase(it);
+            keepNamedSamples(p);                         // its sample files no other version names go with it
             return true;
         });
     }
@@ -1140,7 +1284,7 @@ namespace playground::projectstore
     }
 
     std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials,
-                               const std::vector<midilearn::Mapping>* midi)
+                               const std::vector<midilearn::Mapping>* midi, const std::vector<SampleRef>* samples)
     {
         if (before == nullptr)
             return "first save";
@@ -1159,6 +1303,21 @@ namespace playground::projectstore
         for (const SourceFile& o : before->files)
             if (std::none_of(files.begin(), files.end(), [&](const SourceFile& f) { return f.name == o.name; }))
                 parts.push_back(o.name + " gone");
+        if (samples != nullptr)
+        {
+            for (const SampleRef& r : *samples)
+            {
+                const auto old = std::find_if(before->samples.begin(), before->samples.end(),
+                                              [&](const SampleRef& o) { return o.name == r.name; });
+                if (old == before->samples.end())
+                    parts.push_back(r.name + " new");
+                else if (old->hash != r.hash)
+                    parts.push_back(r.name + " changed");
+            }
+            for (const SampleRef& o : before->samples)
+                if (std::none_of(samples->begin(), samples->end(), [&](const SampleRef& r) { return r.name == o.name; }))
+                    parts.push_back(o.name + " gone");
+        }
         int moved = 0;
         for (const Dial& d : dials)
         {

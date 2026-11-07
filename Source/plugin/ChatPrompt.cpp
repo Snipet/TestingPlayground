@@ -94,6 +94,7 @@ module Effect
 - A call whose loops run far longer than its samples last (a loop that never ends), or that indexes outside an array, is stopped, and the program before it plays instead; run_program and get_status say where.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
 - A module named Shared, when the program has one, is made once for the program (its init(float rate) before the effect's, its end() after) and every field of Effect of type Shared* points at it: how an instrument's voices share a table built once. An effect, one instance, may as well hold what it needs.
+- A sample (an audio file of the user's, an impulse response say: get_status lists them, write_file's path adds one): #pragma sample ir "ir.wav" fills the field Sample ir; (sample.fm) before init, at the plugin's rate.
 )";
 
         const char* const kInstrumentContract = R"(
@@ -147,6 +148,7 @@ module Voice
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
 - The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest): stop() at once, then a 2 ms fade. A key pressed again while its note sounds stops that voice first. Each start() gets one stop() (BUILDING A LARGE PROGRAM says when). The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up.
 - #pragma mono [bool dial]: one voice, the newest key; a key pressed while it is held calls legato(float note, float velocity), not start (BUILDING A LARGE PROGRAM).
+- A sample (an audio file of the user's: get_status lists them, write_file's path adds one): #pragma sample kick "kick.wav" fills the field Sample kick; (sample.fm) of Voice or Shared before init, at the plugin's rate.
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32 (the next 32: the panel's alone), the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.

@@ -6,6 +6,8 @@
 //                                          (and where its files are), the presets
 //              <Name>/<file>               the newest version's files (program.fm first)
 //              <Name>/versions/v<N>/<file> each older version's, when every version goes
+//              <Name>/samples/<file>       the samples' files (ProjectStore.h) the versions that go name, each once,
+//                                          under the name the newest of them gives it, stored as they are
 //   package  a .fmpack: the project file's JSON (ProjectStore.h: versions, presets, info), compressed, in one file:
 //              bytes 0-3   "FMPK"
 //              byte 4      the package format (1)

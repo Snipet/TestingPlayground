@@ -118,6 +118,7 @@
 #include "plugin/DevicePort.h"
 #include "plugin/MidiLearn.h"
 
+#include "dsp/Assets.h"
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
@@ -295,7 +296,7 @@ namespace playground
         int version = 0;                         // the version opened or saved last (0: none kept)
         int latest = 0;                          // the project's newest
         std::string preset;                      // the preset applied last ("" for none)
-        bool edited = false;                     // the editor's files differ from that version's
+        bool edited = false;                     // the editor's files (or the samples) differ from that version's
         bool changed = false;                    // the editor's files differ from those last opened, saved or loaded
                                                  // (a version, an example, the session, a new instance's Init), with a
                                                  // project open or not: what loading another would lose
@@ -367,6 +368,14 @@ namespace playground
     struct WindowButtons
     {
         float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
+    };
+
+    // A sample as the explorer lists it (EditorPort::assets).
+    struct AssetEntry
+    {
+        std::string name;                        // "kick.wav"
+        std::string detail;                      // "0.42 s, mono, 44.1 kHz, 37 KB"
+        bool used = false;                       // a #pragma sample line of the program that plays reads it
     };
 
     struct SavedVersion
@@ -622,5 +631,33 @@ namespace playground
         virtual void cancelMidiLearn() {}
         virtual bool forgetMidi(int slot) { (void)slot; return false; }
         virtual int forgetAllMidi() { return 0; }
+
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS): audio files a program reads as tables (`#pragma
+        // sample`), kept with the session and with each project version. assets() lists them in the order they were
+        // added; addAssets decodes the files at `paths` (WAV, AIFF, FLAC: a file of a name the samples have replaces it)
+        // on the calling thread, the message thread, and says in words what it refused (`why`: the caps, a file that is
+        // none of those; the others added still): how many it added; removeAsset takes one away. A program plays a
+        // changed sample from its next RUN.
+        virtual std::vector<AssetEntry> assets() const { return {}; }
+        virtual uint64_t assetsRevision() const { return 0; }
+        virtual int addAssets(const std::vector<std::string>& paths, std::string& why)
+        {
+            (void)paths;
+            why = "no samples here";
+            return 0;
+        }
+        virtual bool removeAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "no samples here";
+            return false;
+        }
     };
+
+    // Whether a path names an audio file a sample may be made of (dsp/Assets.h: .wav, .aif, .aiff, .flac): what a drop
+    // on the panel adds to the samples.
+    inline bool isAudioPath(std::string_view path)
+    {
+        return assets::isAudioName(path);
+    }
 }

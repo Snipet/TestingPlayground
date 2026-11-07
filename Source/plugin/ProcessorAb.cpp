@@ -736,6 +736,7 @@ namespace playground
         ab_.restless = false;
         const double rate = engine_.rate();
         job.rate = rate >= 8000.0 ? rate : 48000.0;
+        job.assets = chatAssets();
         ab_.st.measuring = true;
         abMatcher_.start(std::move(job));
     }

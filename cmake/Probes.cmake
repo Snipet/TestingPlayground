@@ -112,9 +112,10 @@ function(fp_add_probes key)
   endif()
   target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}")
+  # juce_audio_formats: the samples' readers (plugin/AssetFiles.cpp), as the plugin has them through juce_audio_utils.
   target_link_libraries(${FP_PROBES} PRIVATE
       ${PRODUCT_NAME}_dsp fp_flags FunkGui::core FunkGui::harness
-      juce::juce_audio_processors juce::juce_recommended_config_flags)
+      juce::juce_audio_processors juce::juce_audio_formats juce::juce_recommended_config_flags)
   if(FP_WITH_GPU)
     target_link_libraries(${FP_PROBES} PRIVATE FunkGui::gpu)
   endif()
