@@ -1462,31 +1462,37 @@ namespace playground::cir
         repairAll(d, d.budget);
         // A name tag sits on its net's wire: one the wire left (a move, a cut, a reroute) is dropped, so the next write
         // leaves it out and no tag names a wire of another net or empty canvas.
-        if (!d.budget.wide)
-            for (Net& n : d.nets)
-                if (n.style == Style::wired && !n.unroutable && !n.labels.empty())
+        for (Net& n : d.nets)
+            if (n.style == Style::wired && !n.unroutable && !n.labels.empty())
+            {
+                std::set<Pt> on;
+                for (const UnitEdge& e : n.edges)
                 {
-                    std::set<Pt> on;
-                    for (const UnitEdge& e : n.edges)
-                    {
-                        on.insert(e.a);
-                        on.insert(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }));
-                    }
-                    std::erase_if(n.labels, [&](Pt t) { return on.count(t) == 0; });
+                    on.insert(e.a);
+                    on.insert(e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 }));
                 }
+                std::erase_if(n.labels, [&](Pt t) { return on.count(t) == 0; });
+            }
+        // A wide drawing (Budget::far): one note for the nets its groups leave as name tags (three named at most)
         if (d.budget.wide)
         {
             Box b;
             for (const Part& p : d.parts)
                 b = b.joined(p.body);
+            std::string nets;
+            for (std::size_t k = 0; k < d.budget.far.size() && k < 3; ++k)
+                nets += (k == 0 ? "" : ", ") + d.nets[static_cast<std::size_t>(d.budget.far[k])].name;
+            if (d.budget.far.size() > 3)
+                nets += " and " + std::to_string(d.budget.far.size() - 3) + " more";
+            const std::string tags = d.budget.far.empty() ? std::string("no net joins them")
+                                   : (d.budget.far.size() == 1 ? "net " : "nets ") + nets + " drawn as name tags";
             d.notes.push_back("the parts span " + std::to_string(b.x1 - b.x0 + 1) + " x " + std::to_string(b.y1 - b.y0 + 1)
-                              + " units, past what the router wires (" + std::to_string(kRouteCells)
-                              + " grid points): every net is drawn as name tags");
+                              + " units, past what the router wires as one (" + std::to_string(kRouteCells)
+                              + " grid points): wired as groups far apart, " + tags);
         }
-        else
-            for (const Net& n : d.nets)
-                if (n.unroutable)
-                    d.notes.push_back("net " + n.name + ": no route within the budget: drawn as name tags");
+        for (std::size_t n = 0; n < d.nets.size(); ++n)
+            if (d.nets[n].unroutable && std::find(d.budget.far.begin(), d.budget.far.end(), static_cast<int>(n)) == d.budget.far.end())
+                d.notes.push_back("net " + d.nets[n].name + ": no route within the budget: drawn as name tags");
         finish(d);
         return d;
     }
