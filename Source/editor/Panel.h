@@ -127,6 +127,7 @@
 #include "dsp/Sources.h"
 #include "dsp/Engine.h"
 #include "editor/DialLayout.h"
+#include "editor/DisplayItem.h"
 #include "editor/GuiLayout.h"
 #include "fminus/Lang.h"
 #include "fminus/PanelSpec.h"
@@ -740,6 +741,7 @@ namespace playground::ui
         bool ownsProbes_ = true;                         // false: a picture's Panel, which never arms one
         PanelSpec panelSpec_;                            // its #pragma panel lines
         uint64_t panelProgram_ = 0;                      // the compile they came from (EditorPort::program)
+        TapsShown tapsShown_;                            // the fields its displays read, of its program and tap table
         DialsLayout dials_;                              // their places
         // A .gui file's interface (when panelSpec_.gui is not empty): its items (a control a slot, pools of tabs, pads,
         // envelopes, keyboards and shaders, in items_), its places, its tabs' pages and its scroll (GuiView.h).

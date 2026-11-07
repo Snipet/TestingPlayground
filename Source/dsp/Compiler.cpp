@@ -653,6 +653,7 @@ namespace playground
         s.notes = withPanelNotes(s.notes, base.files, files, notes);
         s.sources = files;
         s.controls = after;
+        panel.tapTable = taps != 0 ? taps : s.panel.tapTable;   // the table its displays' taps index (Engine::setTaps)
         s.panel = std::move(panel);
         // The carry stays the program's: when poll() never saw its compile's status (this one came first), this one
         // writes it, and when it did, writes nothing again (a carry writes once).

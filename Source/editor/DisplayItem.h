@@ -161,4 +161,19 @@ namespace playground::ui
         std::vector<float> in, out;
         Spectrum inSpectrum, outSpectrum;
     };
+
+    // The fields a panel's displays read of a frame (Meters::taps), for the panel of `program` whose displays index
+    // tap table `table` (PanelSpec::tapTable): the frame's when it is of both; the last such frame's while it is of the
+    // program but of another table (a panel's edit's table, read by the audio thread before the panel has the edit's
+    // status: its displays hold their values); else none, every field 0 (another program's, or the panel's own new
+    // table not read yet: the fields at those indices are others'). show() puts them in `m` and says whether they are
+    // the panel's own (the frame's or held).
+    struct TapsShown
+    {
+        bool show(Meters& m, uint64_t program, uint64_t table) noexcept;
+
+        float taps[kMaxDisplays] = {};                // the last frame of `program` and `table`
+        uint64_t program = 0, table = 0;
+        bool held = false;                            // taps holds one
+    };
 }

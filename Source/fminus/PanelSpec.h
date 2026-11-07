@@ -204,6 +204,10 @@ namespace playground
         std::array<DialStyle, kMaxControls> styles{};
         std::array<std::vector<std::string>, kMaxControls> options{};   // an int's or a bool's values' names
         std::array<std::string, kMaxControls> colors{};
+        // The tap table its displays' `tap` indices are of: 0 the program's own (Patch::taps), else a panel's edit's
+        // (the count dsp/Engine.h's setTaps gave it; dsp/Compiler.h, "A panel's edit"). A frame read by another table
+        // (Meters::tapTable) holds other fields at those indices.
+        uint64_t tapTable = 0;
         bool operator==(const PanelSpec&) const = default;
     };
 

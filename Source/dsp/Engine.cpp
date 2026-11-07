@@ -977,6 +977,7 @@ namespace playground
             }
         }
         const bool edited = current_ != nullptr && tapWant_.program != 0 && tapWant_.program == current_->program();
+        frame_.tapTable = edited ? tapSeen_ : 0;         // which table the taps are of (Meters::tapTable)
         const int tapCount = current_ == nullptr ? 0
                            : edited              ? static_cast<int>(std::min<uint32_t>(tapWant_.count, kMaxDisplays))
                                                  : std::min(current_->taps(), kMaxDisplays);

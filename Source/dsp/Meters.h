@@ -48,6 +48,8 @@ namespace playground
         float outPeak[2] = {}, outRms[2] = {};        // the output
         float taps[kMaxDisplays] = {};                // the fields the program's displays show (PanelDisplay::tap)
         uint64_t program = 0;                         // the program they are of (Patch::program), 0 while none plays
+        uint64_t tapTable = 0;                        // the table they were read by: 0 the program's own taps, else a
+                                                      // panel's edit's (Engine::setTaps' count; PanelSpec::tapTable)
         float rate = 48000.0f;                        // the sample rate (a spectrum's frequencies)
         // The player and the host, as of the last block, for a tool that listens (whoever reads; the counts run on
         // from the Engine's making, so a reader takes differences):

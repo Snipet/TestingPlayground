@@ -236,7 +236,8 @@ namespace playground
         // from now on, in place of the taps it was compiled with (Patch::taps), until another program plays; one
         // writer (the compiler's thread). Read at the end of the next block, as the probes' set is; a table of another
         // program than the one that plays reads nothing, and that program its own taps. Its count (from 1) is returned,
-        // and tapsRead() says the newest the audio thread has read (after the block's meters are published).
+        // and tapsRead() says the newest the audio thread has read (after the block's meters are published); each
+        // frame names the table it was read by (Meters::tapTable: this count, or 0 for the program's own taps).
         struct TapTable
         {
             uint64_t program = 0;

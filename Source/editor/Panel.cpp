@@ -6221,14 +6221,15 @@ namespace playground::ui
                 }
                 meters_ = shown_.frames[shownAt_];
                 meters_.program = panelProgram_;
+                meters_.tapTable = panelSpec_.tapTable;
             }
             else if (port_.meters(m))
                 meters_ = m;
             // The fields are this panel's program's once the audio thread plays it; until then they are another's,
-            // and read as 0.
+            // and read as 0. A panel's edit's new table read before this panel has its status, the last fields of its
+            // own hold; its own new table not read yet, 0 (TapsShown).
             Meters shown = meters_;
-            if (shown.program != panelProgram_)
-                std::fill(std::begin(shown.taps), std::end(shown.taps), 0.0f);
+            const bool fields = tapsShown_.show(shown, panelProgram_, panelSpec_.tapTable);
             if (showing_)
             {
                 for (const auto& [tap, v] : shown_.taps)
@@ -6262,7 +6263,7 @@ namespace playground::ui
                 for (const auto& tv : shown_.taps)
                     if (tv.first >= 0 && tv.first < kMaxDisplays)
                         stateTaps |= 1u << tv.first;
-            guiView_->tick(panelSpec_, shown, meters_.program == panelProgram_, stateTaps);
+            guiView_->tick(panelSpec_, shown, fields, stateTaps);
         }
         const int hovered = hasPointer_ && pressed_ < 0 ? itemAt(pointer_) : pressed_;
         const funkgui::Point far{ -1.0e4f, -1.0e4f };
