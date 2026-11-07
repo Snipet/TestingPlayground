@@ -247,7 +247,16 @@ namespace playground::ui
         // The key dialog.
         constexpr float kKeyDialogW = 540.0f;
         constexpr float kKeyDialogH = 256.0f;
+        constexpr float kRenameDialogH = 196.0f;          // the chat's rename (the key dialog's box, two lines)
         constexpr int   kMaxKeyLength = 320;
+        // Another provider's rows (its server's address, its key, its model): their top, their pitch, their labels'
+        // column; the Provider pill.
+        constexpr float kProviderRowsTop = 124.0f;
+        constexpr float kProviderRowPitch = 44.0f;
+        constexpr float kProviderLabelW = 64.0f;
+        constexpr float kProviderPillW = 104.0f;
+        constexpr int   kMaxBaseLength = 300;
+        constexpr int   kMaxModelLength = 200;
         constexpr uint32_t kA11yStride = 64;             // item i's ids: kA11yStride * (i + 1) + 0..63
 
         // Where a new #include goes in a program: after the last #include before its first line of code, else after
@@ -3087,10 +3096,16 @@ namespace playground::ui
         };
         newChatItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::pencil; }, {}, false, {}, {}, [this] { newChat(); },
-                          "New chat", "NEW CHAT   FORGET THIS CONVERSATION AND START ANOTHER")));
+                          "New chat", "NEW CHAT   START ANOTHER; THIS ONE STAYS IN THE CHAT LIST")));
+        // The chats (ChatPort::chatList): the chat shown, a dropdown of the project's chats kept on this Mac.
+        chatsItem_ = add(std::make_unique<B>(
+            idFor(), spec(B::Shape::pill, {}, [this] { return chatsLabel(); }, true, [] { return B::Look::ghost; }, {},
+                          [this] { openChats(); }, "Chats",
+                          "CHATS   THE PROJECT'S CHATS, KEPT ON THIS MAC ONLY: OPEN ONE, START, RENAME OR DELETE")));
         keyItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [] { return chat::Icon::key; }, {}, false, {}, {}, [this] { openKeyDialog(); },
-                          "Anthropic API key", "API KEY   STORED ENCRYPTED ON THIS MAC, FOR BOTH PLAYGROUND PLUGINS")));
+                          "Model provider and API key",
+                          "API KEY   THE MODEL PROVIDER AND ITS KEY, STORED ENCRYPTED ON THIS MAC, FOR BOTH PLAYGROUND PLUGINS")));
         chatToggleItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::square, [this] { return chatOpen_ ? chat::Icon::chevronRight : chat::Icon::bubble; }, {},
                           false, {}, {}, [this] { setChatOpen(!chatOpen_); }, "Fold or open the chat",
@@ -3167,10 +3182,13 @@ namespace playground::ui
         modelItem_ = add(std::make_unique<B>(
             idFor(), spec(B::Shape::pill, {}, [this] { return modelLabel(); }, true, [] { return B::Look::ghost; }, {},
                           [this] { openModels(); }, "Model", "MODEL   THE MODEL THAT BUILDS, AND ONE THAT PLANS EACH REQUEST FIRST")));
-        thinkingItem_ = add(std::make_unique<B>(
-            idFor(), spec(B::Shape::pill, {}, [this] { return thinkingLabel(); }, true, [] { return B::Look::ghost; },
-                          [this] { return !chatEfforts().empty(); }, [this] { openThinking(); }, "Thinking level",
-                          "THINKING   HOW MUCH CLAUDE THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS")));
+        {
+            B::Spec thinking = spec(B::Shape::pill, {}, [this] { return thinkingLabel(); }, true, [] { return B::Look::ghost; },
+                                    [this] { return !chatEfforts().empty(); }, [this] { openThinking(); }, "Thinking level",
+                                    "THINKING   HOW MUCH CLAUDE THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS");
+            thinking.shown = [this] { return chatTakesThinking(); };   // Anthropic's: another provider's models have none
+            thinkingItem_ = add(std::make_unique<B>(idFor(), std::move(thinking)));
+        }
         {
             B::Spec fast = spec(B::Shape::pill, [] { return chat::Icon::bolt; }, [] { return std::string("Fast"); }, false,
                                 [this] { return chat_.fast ? B::Look::primary : B::Look::ghost; }, {},
@@ -3252,7 +3270,7 @@ namespace playground::ui
             zoomItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
         // The dropdowns' triggers draw open while their menu is (Dropdown.h), PROJECTS' while its card is.
-        for (const int i : { examplesItem_, libraryItem_, modelItem_, thinkingItem_, zoomItem_ })
+        for (const int i : { examplesItem_, libraryItem_, modelItem_, thinkingItem_, zoomItem_, chatsItem_ })
         {
             TB& trigger = static_cast<TB&>(*items_[static_cast<std::size_t>(i)]);
             trigger.setOpen([this, &trigger] { return menuOpenAt(trigger.bounds()); });
@@ -3757,9 +3775,11 @@ namespace playground::ui
     {
         const float inX = card_.x + kCardPad, inW = card_.w - 2.0f * kCardPad;
         const float hy = card_.y + kCardPad;
+        chatsLabel_ = chatsLabel() + '|' + chatTitle();  // what the chats' pill was placed for (folded too: refreshChat)
         // Folded: every item of the chat hidden but the rail's button, at its top. The code window has no chat at all.
         const bool open = chatOpen_ && hasChat();
-        for (const int i : { newChatItem_, keyItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_, sendItem_, desktopItem_ })
+        for (const int i : { newChatItem_, keyItem_, chatsItem_, modelItem_, thinkingItem_, fastItem_, webItem_, attachItem_, sendItem_,
+                             desktopItem_ })
             static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(i)]).setHidden(!open);
         chatView().setHidden(!open);
         inputItem().setHidden(!open);
@@ -3782,7 +3802,7 @@ namespace playground::ui
         static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)])
             .setBounds({ fx - 2.0f * kIconButton - 8.0f, hy, kIconButton, kIconButton });
         headerY_ = hy;
-        placeDesktopBadge();
+        placeDesktopBadge();                             // and the chats' pill after the title, up to it
         const float headerBottom = hy + kIconButton;
 
         InputItem& in = inputItem();
@@ -3823,17 +3843,17 @@ namespace playground::ui
         thinking.setBounds({ x0, y, kPillH, kPillH });
         fast.setBounds({ x0, y, kPillH, kPillH });
         web.setBounds({ x0, y, kPillH, kPillH });
-        const bool withFast = chatTakesFast(), withWeb = chatTakesWeb();
+        const bool withFast = chatTakesFast(), withWeb = chatTakesWeb(), withThinking = chatTakesThinking();
         const float fw = withFast ? fast.preferredWidth() + 4.0f : 0.0f;
         const float ww = withWeb ? web.preferredWidth() + 4.0f : 0.0f;
         const float room = bar.right() - 6.0f - kSendD - 8.0f - fw - ww - x0;
-        float mw = model.preferredWidth(), tw = thinking.preferredWidth();
-        if (mw + 4.0f + tw > room)
+        float mw = model.preferredWidth(), tw = withThinking ? thinking.preferredWidth() : -4.0f;
+        if (withThinking && mw + 4.0f + tw > room)
             tw = std::max(64.0f, room - 4.0f - mw);
         if (mw + 4.0f + tw > room)
             mw = std::max(64.0f, room - 4.0f - tw);
         model.setBounds({ x0, y, mw, kPillH });
-        thinking.setBounds({ x0 + mw + 4.0f, y, tw, kPillH });
+        thinking.setBounds({ x0 + mw + 4.0f, y, std::max(0.0f, tw), kPillH });
         fast.setBounds({ x0 + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
         web.setBounds({ x0 + mw + 4.0f + tw + 4.0f + fw, y, withWeb ? ww - 4.0f : 0.0f, kPillH });
         send.setBounds({ bar.right() - 6.0f - kSendD, bar.y + std::floor((bar.h - kSendD) * 0.5f) - 3.0f, kSendD, kSendD });
@@ -4264,6 +4284,7 @@ namespace playground::ui
     funkgui::Point Panel::centreOfSend() const { return centreOf(sendItem_); }
     funkgui::Point Panel::centreOfModel() const { return centreOf(modelItem_); }
     funkgui::Point Panel::centreOfNewChat() const { return centreOf(newChatItem_); }
+    funkgui::Point Panel::centreOfChats() const { return centreOf(chatsItem_); }
     funkgui::Point Panel::centreOfKey() const { return centreOf(keyItem_); }
 
     funkgui::Point Panel::centreOfChatToggle() const { return centreOf(chatToggleItem_); }
@@ -5036,9 +5057,28 @@ namespace playground::ui
     }
     std::optional<funkgui::Point> Panel::centreOfKeyRemove() const
     {
-        if (!chat_.hasKey)
+        if (!dialogHasKey())
             return std::nullopt;
         const funkgui::Rect r = keyDialog().remove;
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+    funkgui::Point Panel::centreOfKeyProvider() const
+    {
+        const funkgui::Rect r = keyDialog().provider;
+        return { r.centreX(), r.centreY() };
+    }
+    std::optional<funkgui::Point> Panel::centreOfKeyBase() const
+    {
+        const funkgui::Rect r = keyDialog().base;
+        if (r.w <= 0.0f)
+            return std::nullopt;
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+    std::optional<funkgui::Point> Panel::centreOfKeyModel() const
+    {
+        const funkgui::Rect r = keyDialog().model;
+        if (r.w <= 0.0f)
+            return std::nullopt;
         return funkgui::Point{ r.centreX(), r.centreY() };
     }
 
@@ -5572,11 +5612,20 @@ namespace playground::ui
                            "dials. Ask it about FMinus, synthesis or the code, too."
                          : "Describe an effect and Claude writes it in FMinus, runs it, measures it and sets the dials. "
                            "Ask it about FMinus, DSP or the code, too.";
-            if (!s.hasKey)
+            if (!s.ready() && s.provider.kind == "anthropic")
                 e.body += std::string(" First add your Anthropic API key: it is stored encrypted on ") + kThisMachine
                           + ", for both playground plugins, and the chat's requests are billed to it.";
+            else if (!s.ready())
+                e.body += " First add your " + s.providerName + " API key (or choose another provider): it is stored "
+                          "encrypted on " + kThisMachine + " and sent only to " + s.providerName + ".";
+            else if (s.provider.kind != "anthropic")
+                e.body += " It runs on " + s.providerName + (s.model.empty() ? std::string() : " (" + s.model + ")")
+                          + ": the conversation goes there.";
             if (!s.keyProblem.empty())
                 e.body += " The stored key cannot be used: " + s.keyProblem;
+            // Where the chat is kept (ChatAgent.h, "The chats").
+            e.body += s.owner.empty() ? std::string(" This chat stays on ") + kThisMachine + ", with this plugin until you save a project."
+                                      : " This chat stays on " + std::string(kThisMachine) + ", with \"" + s.owner + "\".";
             e.body = asciiText(e.body);
             if (product::kIsInstrument)
                 e.suggestions = { "A warm detuned pad with a slow filter sweep",
@@ -5617,7 +5666,7 @@ namespace playground::ui
         const auto shortName = [this](const std::string& id) {
             for (const ChatModel& m : chat_.models)
                 if (m.id == id)
-                    return m.name.rfind("Claude ", 0) == 0 ? m.name.substr(7) : m.name;
+                    return m.name.rfind("Claude ", 0) == 0 && chat_.provider.kind == "anthropic" ? m.name.substr(7) : m.name;
             return id;
         };
         const std::string builder = chat_.model.empty() ? std::string("Model") : shortName(chat_.model);
@@ -5649,10 +5698,14 @@ namespace playground::ui
         return false;
     }
 
+    // The thinking levels' pill: Anthropic's (its models have levels); another provider's models have none.
+    bool Panel::chatTakesThinking() const { return chat_.provider.kind == "anthropic" || !chatEfforts().empty(); }
+
     // What the bar's layout depends on: the pills' labels, and whether fast mode's is there.
     std::string Panel::barLabels() const
     {
-        return modelLabel() + '|' + thinkingLabel() + (chatTakesFast() ? "|fast" : "") + (chatTakesWeb() ? "|web" : "");
+        return modelLabel() + '|' + thinkingLabel() + (chatTakesFast() ? "|fast" : "") + (chatTakesWeb() ? "|web" : "")
+             + (chatTakesThinking() ? "" : "|nothinking");
     }
 
     std::string Panel::thinkingLabel() const
@@ -5692,12 +5745,18 @@ namespace playground::ui
             // long one.
             if (moved || hadKey != chat_.ready() || hadProblem != chat_.keyProblem)
                 chatView().show(chat_, emptyChat(chat_));
-            inputItem().setPlaceholder(chat_.busy     ? "Claude is working (the square button stops it)"
+            const bool claude = chat_.provider.kind == "anthropic";   // another provider's model is no Claude
+            inputItem().setPlaceholder(chat_.busy     ? (claude ? "Claude is working (the square button stops it)"
+                                                                : "The model is working (the square button stops it)")
                                        : chat_.asking ? "Answer above, or write your own answer"
-                                       : (product::kIsInstrument ? "Ask Claude for a sound, or about the code"
-                                                                 : "Ask Claude for an effect, or about the code"));
+                                       : (product::kIsInstrument ? (claude ? "Ask Claude for a sound, or about the code"
+                                                                           : "Ask for a sound, or about the code")
+                                                                 : (claude ? "Ask Claude for an effect, or about the code"
+                                                                           : "Ask for an effect, or about the code")));
             if (barLabels() != barLabels_)
                 placeChatBar();
+            if (chatsLabel() + '|' + chatTitle() != chatsLabel_)
+                layoutChat();                            // the chats' pill as wide as the chat's name
             if (!chatOpen_ && !unread_ && chat_.entries.size() > entriesAtFold_)
             {
                 unread_ = true;                          // the rail's dot
@@ -5763,7 +5822,7 @@ namespace playground::ui
         auto& badge = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]);
         const funkgui::Rect newChat = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds();
         const float right = newChat.x - 8.0f;
-        const float room = right - (card_.x + kCardPad + 96.0f);   // after "Claude" and its light
+        const float room = right - (chatsPillX() + kChatsPillLeast);   // after the title, its light and the chats' pill
         const float w = std::min(badge.preferredWidth(), room);
         const bool shown = chatOpen_ && hasChat() && !desktopBadge_.empty() && room >= 90.0f;
         badge.setHidden(!shown);
@@ -5771,11 +5830,25 @@ namespace playground::ui
         auto& mark = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopMarkItem_)]);
         mark.setHidden(chatOpen_ || !hasChat() || desktopBadge_.empty());
         mark.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f + 2.0f * kIconButton, kIconButton, kIconButton });
+        // The chats' pill after the title, as wide as the chat's name, up to the badge or the header's buttons.
+        {
+            auto& chats = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(chatsItem_)]);
+            const float x = chatsPillX();
+            const float end = shown ? badge.bounds().x - 6.0f : newChat.x - 6.0f;
+            chats.setBounds({ x, headerY_ + std::floor((kIconButton - kPillH) * 0.5f), std::max(0.0f, std::min(chats.preferredWidth(), end - x)),
+                              kPillH });
+        }
         // Either gone once clicked (this one the target now) or with the fold: the focus to the chat's own button.
         if ((focus_ == desktopItem_ || focus_ == desktopMarkItem_) && !items_[static_cast<std::size_t>(focus_)]->shown())
             setFocus(chatToggleItem_);
         ++layoutRevision_;
         dirty_ = true;
+    }
+
+    float Panel::chatsPillX() const
+    {
+        const float tx = card_.x + kCardPad + 4.0f;
+        return std::round(tx + 15.0f + funkgui::text::width(funkgui::FontService::get().atlas(), chatTitle().c_str(), chat::kTitle) + 8.0f);
     }
 
     std::optional<funkgui::Point> Panel::centreOfDesktopBadge() const
@@ -5910,7 +5983,8 @@ namespace playground::ui
         // Each a radio set under its header; the builder's choice highlighted when it opens.
         constexpr int kPlanNone = 1000, kPlanFirst = 1001;
         funkgui::MenuRequest request;
-        request.items.push_back(dropdown::header("Build with"));
+        request.items.push_back(dropdown::header(chat_.provider.kind == "anthropic" ? std::string("Build with")
+                                                                                   : "Build with (" + asciiText(chat_.providerName) + ")"));
         int id = 1, current = 0;
         for (const ChatModel& m : chat_.models)
         {
@@ -5918,12 +5992,15 @@ namespace playground::ui
                 current = id;
             request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.model));
         }
-        request.items.push_back(dropdown::separator());
-        request.items.push_back(dropdown::header("Plan with (each request, first)"));
-        request.items.push_back(dropdown::choice(kPlanNone, "No planner", chat_.planner.empty()));
-        id = kPlanFirst;
-        for (const ChatModel& m : chat_.models)
-            request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.planner));
+        if (chat_.provider.kind == "anthropic")      // the planner is Anthropic's (another provider's models build alone)
+        {
+            request.items.push_back(dropdown::separator());
+            request.items.push_back(dropdown::header("Plan with (each request, first)"));
+            request.items.push_back(dropdown::choice(kPlanNone, "No planner", chat_.planner.empty()));
+            id = kPlanFirst;
+            for (const ChatModel& m : chat_.models)
+                request.items.push_back(dropdown::choice(id++, m.name, m.id == chat_.planner));
+        }
         dropdown::dropdownMenu(request, triggerRect(modelItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::vector<ChatModel> models = chat_.models;
@@ -5942,26 +6019,84 @@ namespace playground::ui
         });
     }
 
+    // A new chat: nothing is forgotten (the one shown stays in the chat list), so nothing is asked.
     void Panel::newChat()
     {
-        const auto forget = [this] {
-            port_.chat().newChat();
+        port_.chat().newChat();
+        chatAt_ = -1.0;
+        dirty_ = true;
+    }
+
+    std::string Panel::chatsLabel() const { return asciiText(chat_.title.empty() ? std::string("New chat") : chat_.title); }
+
+    // The chat card's title: Claude, or the provider another model runs on.
+    std::string Panel::chatTitle() const
+    {
+        return chat_.provider.kind == "anthropic" || chat_.providerName.empty() ? std::string("Claude") : asciiText(chat_.providerName);
+    }
+
+    // The chats' menu (ChatPort::chatList): the project's chats on this Mac, the newest first, the one shown dotted and
+    // each one's time in the shortcut column; then New chat, Rename and Delete, which act on the chat shown.
+    void Panel::openChats()
+    {
+        if (host_ == nullptr)
+            return;
+        const ChatList list = port_.chat().chatList();
+        constexpr int kNew = 100001, kRename = 100002, kDelete = 100003;
+        const int n = static_cast<int>(std::min<std::size_t>(list.chats.size(), 100000));
+        funkgui::MenuRequest request;
+        request.items.push_back(dropdown::header(list.owner.empty() ? std::string("Chats with no project open")
+                                                                    : "Chats of " + asciiText(list.owner)));
+        int current = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const ChatListEntry& c = list.chats[static_cast<std::size_t>(i)];
+            funkgui::MenuItem item = dropdown::choice(i + 1, asciiText(c.title), c.current);
+            item.shortcut = c.when;
+            if (c.current)
+                current = i + 1;
+            request.items.push_back(std::move(item));
+        }
+        request.items.push_back(dropdown::separator());
+        request.items.push_back(dropdown::command(kNew, "New chat"));
+        request.items.push_back(dropdown::command(kRename, "Rename this chat..."));
+        request.items.push_back(dropdown::command(kDelete, "Delete this chat..."));
+        dropdown::dropdownMenu(request, triggerRect(chatsItem_), current);
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        std::vector<std::string> ids;
+        for (int i = 0; i < n; ++i)
+            ids.push_back(list.chats[static_cast<std::size_t>(i)].id);
+        host_->showMenu(request, [this, ids](int chosen) {
+            if (chosen >= 1 && chosen <= static_cast<int>(ids.size()))
+                port_.chat().openChat(ids[static_cast<std::size_t>(chosen - 1)]);
+            else if (chosen == kNew)
+                port_.chat().newChat();
+            else if (chosen == kRename)
+                openRenameDialog();
+            else if (chosen == kDelete)
+                askDeleteChat();
+            else
+                return;
             chatAt_ = -1.0;
             dirty_ = true;
-        };
-        if (chat_.entries.empty() || host_ == nullptr)
-        {
-            forget();
+        });
+    }
+
+    // Delete asks first, under the pill: the chat goes from this Mac for good.
+    void Panel::askDeleteChat()
+    {
+        if (host_ == nullptr)
             return;
-        }
         funkgui::MenuRequest request;
-        request.items.push_back({ 1, chat_.busy ? "Stop Claude and start a new chat (this one is forgotten)"
-                                                : "Start a new chat (this one is forgotten)" });
-        request.anchor = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds();
+        request.items.push_back({ 1, "Delete \"" + chatsLabel() + "\" from " + kThisMachine + " (it cannot be undone)" });
+        request.anchor = triggerRect(chatsItem_);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
-        host_->showMenu(request, [forget](int chosen) {
-            if (chosen == 1)
-                forget();
+        host_->showMenu(request, [this](int chosen) {
+            if (chosen != 1)
+                return;
+            port_.chat().deleteChat();
+            chatAt_ = -1.0;
+            dirty_ = true;
         });
     }
 
@@ -5970,8 +6105,30 @@ namespace playground::ui
     {
         KeyDialog d;
         const float w = std::min(kKeyDialogW, width_ - 2.0f * kMargin);
-        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - kKeyDialogH) * 0.42f), w, kKeyDialogH };
-        d.field = { d.box.x + 24.0f, d.box.y + 134.0f, w - 48.0f, 34.0f };
+        // Anthropic's as it always was; another provider's a row a field (its server's address, its key, its model).
+        const int fields = renaming_ ? 1 : dialogFields();
+        const int rows = (fields & 1) + ((fields >> 1) & 1) + ((fields >> 2) & 1);
+        const bool other = !renaming_ && !dialogAnthropic();
+        const float h = renaming_ ? kRenameDialogH : other ? kProviderRowsTop + kProviderRowPitch * static_cast<float>(rows) + 76.0f : kKeyDialogH;
+        d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
+        if (!renaming_)
+            d.provider = { d.box.right() - 24.0f - kProviderPillW, d.box.y + 22.0f, kProviderPillW, 30.0f };
+        if (other)
+        {
+            const float fx = d.box.x + 24.0f + kProviderLabelW, fw = w - 48.0f - kProviderLabelW;
+            float y = d.box.y + kProviderRowsTop;
+            const auto row = [&](funkgui::Rect& r) {
+                r = { fx, y, fw, 34.0f };
+                y += kProviderRowPitch;
+            };
+            if ((fields & 2) != 0)
+                row(d.base);
+            row(d.field);
+            if ((fields & 4) != 0)
+                row(d.model);
+        }
+        else
+            d.field = { d.box.x + 24.0f, d.box.y + (renaming_ ? 102.0f : 134.0f), w - 48.0f, 34.0f };
         const float by = d.box.bottom() - 24.0f - 32.0f;
         d.save = { d.box.right() - 24.0f - 96.0f, by, 96.0f, 32.0f };
         d.cancel = { d.save.x - 8.0f - 84.0f, by, 84.0f, 32.0f };
@@ -5979,11 +6136,106 @@ namespace playground::ui
         return d;
     }
 
+    const ChatPreset& Panel::dialogPresetRef() const
+    {
+        return kChatPresets[static_cast<std::size_t>(std::clamp(dialogPreset_, 0, static_cast<int>(std::size(kChatPresets)) - 1))];
+    }
+
+    bool Panel::dialogAnthropic() const { return std::string_view(dialogPresetRef().kind) == "anthropic"; }
+
+    // Anthropic's, and the chat's provider now: the dialog as it always was (its key alone).
+    bool Panel::dialogAsBefore() const { return dialogAnthropic() && chat_.provider.kind == "anthropic"; }
+
+    int Panel::dialogFields() const
+    {
+        const std::string_view kind = dialogPresetRef().kind;
+        return kind == "anthropic" ? 1 : kind == "openai" ? (1 | 2 | 4) : (1 | 4);
+    }
+
+    ChatProvider Panel::dialogProvider() const
+    {
+        ChatProvider p;
+        p.kind = dialogPresetRef().kind;
+        if (p.kind == "openai")
+            p.base = baseEdit_.buffer;
+        if (p.kind != "anthropic")
+            p.model = modelEdit_.buffer;
+        return p;
+    }
+
+    bool Panel::dialogHasKey() const { return dialogAsBefore() ? chat_.hasKey : dialogInfo_.hasKey; }
+
+    funkgui::text::LineEdit& Panel::dialogEdit() { return dialogField_ == 1 ? baseEdit_ : dialogField_ == 2 ? modelEdit_ : keyEdit_; }
+
+    // A preset shown: its server's address (a custom server's the chat's, when it talks to one), the model kept with it,
+    // the key field empty (a key stored stays unless one is typed), the keys going to the first field it needs.
+    void Panel::chooseKeyPreset(int preset)
+    {
+        dialogPreset_ = std::clamp(preset, 0, static_cast<int>(std::size(kChatPresets)) - 1);
+        const ChatPreset& p = dialogPresetRef();
+        const bool custom = std::string_view(p.id) == "custom";
+        const bool current = chat_.provider.kind == p.kind
+                          && (std::string_view(p.kind) != "openai" || custom ? true : chat_.provider.base == p.base);
+        std::string base = p.base;
+        if (custom)
+            base = chat_.provider.kind == "openai" && !std::any_of(std::begin(kChatPresets), std::end(kChatPresets), [&](const ChatPreset& q) {
+                       return std::string_view(q.kind) == "openai" && chat_.provider.base == q.base && std::string_view(q.id) != "custom";
+                   })
+                       ? chat_.provider.base
+                       : std::string();
+        baseEdit_.set(base, kMaxBaseLength);
+        baseEdit_.allSelected = false;
+        ChatProvider asked;
+        asked.kind = p.kind;
+        asked.base = base;
+        dialogInfo_ = port_.chat().providerInfo(asked);
+        modelEdit_.set(current && !custom ? chat_.model : dialogInfo_.model, kMaxModelLength);
+        modelEdit_.allSelected = false;
+        keyEdit_.set("", kMaxKeyLength);
+        keyWhy_.clear();
+        dialogField_ = custom && base.empty() ? 1 : (dialogInfo_.keyless && std::string_view(p.kind) == "openai") ? 2 : 0;
+        dirty_ = true;
+    }
+
+    // The Provider pill's menu: the presets, the one shown dotted.
+    void Panel::openProviders()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::MenuRequest request;
+        request.items.push_back(dropdown::header("Chat through"));
+        int id = 1;
+        for (const ChatPreset& p : kChatPresets)
+        {
+            request.items.push_back(dropdown::choice(id, p.name, id - 1 == dialogPreset_));
+            ++id;
+        }
+        dropdown::dropdownMenu(request, keyDialog().provider, dialogPreset_ + 1);
+        request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
+        host_->showMenu(request, [this](int chosen) {
+            if (chosen >= 1 && chosen <= static_cast<int>(std::size(kChatPresets)))
+                chooseKeyPreset(chosen - 1);
+        });
+    }
+
     void Panel::openKeyDialog()
     {
         if (keyOpen_)
             return;
         keyOpen_ = true;
+        // The provider the chat talks to: its preset (another OpenAI-compatible server's "custom").
+        int preset = 0;
+        for (std::size_t i = 0; i < std::size(kChatPresets); ++i)
+        {
+            const ChatPreset& p = kChatPresets[i];
+            if (chat_.provider.kind == p.kind
+                && (chat_.provider.kind != "openai" || chat_.provider.base == p.base || std::string_view(p.id) == "custom"))
+            {
+                preset = static_cast<int>(i);
+                break;
+            }
+        }
+        chooseKeyPreset(preset);
         keyEdit_.set("", kMaxKeyLength);
         keyWhy_.clear();
         focusBeforeKey_ = focus_;
@@ -5992,9 +6244,33 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    // The rename (the chats' menu): the key dialog's box with a plain field, the chat's name in it, selected.
+    void Panel::openRenameDialog()
+    {
+        if (keyOpen_)
+            return;
+        keyOpen_ = true;
+        renaming_ = true;
+        keyEdit_.set(chatsLabel(), static_cast<int>(kMaxChatTitle));
+        keyWhy_.clear();
+        focusBeforeKey_ = focus_;
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::renameFromDialog()
+    {
+        port_.chat().renameChat(keyEdit_.buffer);
+        closeKeyDialog();
+        chatAt_ = -1.0;
+        refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
+    }
+
     void Panel::closeKeyDialog()
     {
         keyOpen_ = false;
+        renaming_ = false;
         keyEdit_.set("", kMaxKeyLength);                 // nothing of the key stays in the panel
         keyWhy_.clear();
         pendingSend_.clear();
@@ -6007,19 +6283,27 @@ namespace playground::ui
     // Closes the dialog and sends the message that waited for it, now that the chat can.
     void Panel::saveKeyFromDialog()
     {
+        if (renaming_)
+        {
+            renameFromDialog();
+            return;
+        }
         std::string typed = keyEdit_.buffer;
         while (!typed.empty() && typed.back() == ' ')
             typed.pop_back();
         while (!typed.empty() && typed.front() == ' ')
             typed.erase(typed.begin());
-        if (typed.empty())
+        // Anthropic's key, the chat's provider now: as it always was. Back to Anthropic: its key stored, or one typed.
+        // Another provider: its settings and its key (none typed keeps the one stored; a server here needs none).
+        if (typed.empty() && dialogAnthropic() && (dialogAsBefore() || !dialogInfo_.hasKey))
         {
             keyWhy_ = shortcutText("Paste a key first (Cmd-V).");
             dirty_ = true;
             return;
         }
         std::string why;
-        if (!port_.chat().saveKey(typed, why))
+        const bool ok = dialogAsBefore() ? port_.chat().saveKey(typed, why) : port_.chat().setProvider(dialogProvider(), typed, why);
+        if (!ok)
         {
             keyWhy_ = asciiText(why);
             dirty_ = true;
@@ -6038,7 +6322,10 @@ namespace playground::ui
 
     void Panel::removeKeyFromDialog()
     {
-        port_.chat().forgetKey();
+        if (dialogAnthropic())
+            port_.chat().forgetKey();
+        else
+            port_.chat().forgetProviderKey(dialogProvider());
         closeKeyDialog();
         chatAt_ = -1.0;
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
@@ -6049,10 +6336,66 @@ namespace playground::ui
     bool Panel::keyDialogKey(const funkgui::KeyEvent& e)
     {
         using funkgui::Key;
+        if (renaming_)
+        {
+            // A name: the field's own keys (the caret moves), Return renames, Escape cancels, Cmd-V pastes.
+            const int most = static_cast<int>(kMaxChatTitle);
+            if (e.key == Key::enter)
+                renameFromDialog();
+            else if (e.key == Key::escape)
+                closeKeyDialog();
+            else if (e.key == Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
+            {
+                if (host_ != nullptr)
+                    keyEdit_.paste(host_->clipboardText(), most);
+            }
+            else if (e.key == Key::character && e.mods.cmd && (e.ch == 'a' || e.ch == 'A'))
+                keyEdit_.allSelected = !keyEdit_.buffer.empty();
+            else if (e.key != Key::tab && e.key != Key::up && e.key != Key::down)
+                keyEdit_.key(e, most);
+            dirty_ = true;
+            return true;
+        }
         if (e.key == Key::enter)
             saveKeyFromDialog();
         else if (e.key == Key::escape)
             closeKeyDialog();
+        else if (e.key == Key::tab && !dialogAnthropic())
+        {
+            // The next field shown (Shift: the one before): the address, the key, the model.
+            const int fields = dialogFields();
+            const int order[3] = { 1, 0, 2 };
+            int at = 0;
+            for (int i = 0; i < 3; ++i)
+                if (order[i] == dialogField_)
+                    at = i;
+            for (int step = 1; step <= 3; ++step)
+            {
+                const int next = order[(at + (e.mods.shift ? 3 - step : step)) % 3];
+                if ((fields & (1 << next)) != 0)
+                {
+                    dialogField_ = next;
+                    break;
+                }
+            }
+        }
+        else if (dialogField_ != 0)
+        {
+            // The address or the model: a plain field (the caret moves; the text is no secret).
+            funkgui::text::LineEdit& edit = dialogEdit();
+            const int most = dialogField_ == 1 ? kMaxBaseLength : kMaxModelLength;
+            if (e.key == Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
+            {
+                if (host_ != nullptr && edit.paste(host_->clipboardText(), most))
+                    keyWhy_.clear();
+            }
+            else if (e.key == Key::character && e.mods.cmd && (e.ch == 'a' || e.ch == 'A'))
+                edit.allSelected = !edit.buffer.empty();
+            else if (e.key != Key::up && e.key != Key::down && edit.key(e, most))
+                keyWhy_.clear();
+            dirty_ = true;
+            return true;
+        }
         else if (e.key == Key::character && e.mods.cmd && (e.ch == 'v' || e.ch == 'V'))
         {
             if (host_ != nullptr && keyEdit_.paste(host_->clipboardText(), kMaxKeyLength))
@@ -6078,8 +6421,16 @@ namespace playground::ui
             saveKeyFromDialog();
         else if (d.cancel.contains(p))
             closeKeyDialog();
-        else if (chat_.hasKey && d.remove.contains(p))
+        else if (!renaming_ && dialogHasKey() && d.remove.contains(p))
             removeKeyFromDialog();
+        else if (!renaming_ && d.provider.contains(p))
+            openProviders();
+        else if (!renaming_ && d.base.contains(p))
+            dialogField_ = 1;
+        else if (!renaming_ && d.model.contains(p))
+            dialogField_ = 2;
+        else if (!renaming_ && d.field.contains(p))
+            dialogField_ = 0;
         dirty_ = true;
     }
 
@@ -6109,16 +6460,41 @@ namespace playground::ui
         c.rrect(d.box.x, d.box.y, d.box.w, d.box.h, 16.0f, p.card, 1.0f, p.cardEdge);
 
         const float x = d.box.x + 24.0f;
+        const ChatPreset& preset = dialogPresetRef();
+        const bool other = !renaming_ && !dialogAnthropic();
         c.rrect(x, d.box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
-        chat::drawIcon(c, chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
-        c.text("Anthropic API key", x + 42.0f, c.capCentreTop(d.box.y + 37.0f, chat::kH2), chat::kH2, p.text);
+        chat::drawIcon(c, renaming_ ? chat::Icon::pencil : chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
+        const std::string title = renaming_ ? std::string("Rename this chat") : other ? std::string(preset.name) : std::string("Anthropic API key");
+        const float titleW = renaming_ ? d.box.w - 48.0f - 42.0f : d.provider.x - 12.0f - (x + 42.0f);
+        c.text(fitText(c, title, chat::kH2, titleW).c_str(), x + 42.0f,
+               c.capCentreTop(d.box.y + 37.0f, chat::kH2), chat::kH2, p.text);
 
-        // The lines under the title: what the key is, and whether one is stored.
-        const std::string lines[] = { "Claude runs on your own key, from console.anthropic.com (API keys).",
-                                      std::string("It is stored encrypted on ") + kThisMachine
-                                          + ", for both playground plugins,",
-                                      "and sent only to api.anthropic.com. Requests are billed to it.",
-                                      chat_.hasKey ? std::string("A key is stored, and the chat uses it.") : std::string() };
+        // The lines under the title: what the key is, where it goes, and whether one is stored; or what a chat's name is.
+        std::vector<std::string> lines;
+        const std::string host = std::string(preset.base).empty() ? std::string() : std::string(preset.base).substr(std::string(preset.base).find("://") + 3);
+        const std::string server = host.substr(0, host.find('/'));
+        if (renaming_)
+            lines = { "Its name in the chat list (empty: its first message's words).",
+                      std::string("The chats stay on ") + kThisMachine
+                          + (chat_.owner.empty() ? ", with this plugin (no project is open)." : ", with the project.") };
+        else if (!other)
+            lines = { "Claude runs on your own key, from console.anthropic.com (API keys).",
+                      std::string("It is stored encrypted on ") + kThisMachine + ", for both playground plugins,",
+                      "and sent only to api.anthropic.com. Requests are billed to it.",
+                      dialogHasKey() ? std::string("A key is stored, and the chat uses it.") : std::string() };
+        else if (std::string_view(preset.id) == "custom")
+            lines = { "Any server that speaks OpenAI's Chat Completions, by its base URL:",
+                      std::string("https://, or http:// for one on ") + kThisMachine + " or the local network. Its",
+                      "key, if it needs one, is stored encrypted and sent only to that server." };
+        else if (std::string(preset.key).empty())
+            lines = { std::string("A model server on ") + kThisMachine + ": no key, and nothing leaves " + kThisMachine + ".",
+                      "Give its model a context of 32K tokens or more, and one that calls tools.",
+                      std::string("Start it first") + (std::string_view(preset.id) == "ollama" ? " (ollama serve)." : " (its Developer tab: Start Server).") };
+        else
+            lines = { "Chat through " + std::string(preset.name) + " on your own key, from " + preset.keys + ".",
+                      std::string("It is stored encrypted on ") + kThisMachine + " and sent only to " + server + ".",
+                      dialogHasKey() ? std::string("A key is stored: leave the field empty to keep it.")
+                                     : std::string("Requests are billed to it.") };
         float y = d.box.y + 66.0f;
         for (const std::string& line : lines)
         {
@@ -6127,30 +6503,103 @@ namespace playground::ui
             y += 16.0f;
         }
 
-        // The field: the key masked (its first and last characters shown), the caret at its end.
+        // The Provider pill: a dropdown's trigger (Dropdown.h), outlined; its menu the presets.
+        if (!renaming_)
+        {
+            const funkgui::Rect r = d.provider;
+            dropdown::State st;
+            st.hover = hasPointer_ && r.contains(pointer_);
+            st.open = menuOpenAt(r);
+            const funkgui::Col ink = dropdown::drawTrigger(c, p, r, dropdown::Base::outlined, st);
+            c.text(fitText(c, "Provider", chat::kSmall, dropdown::labelRoom(r, r.x + 14.0f)).c_str(), r.x + 14.0f,
+                   c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, ink);
+        }
+
+        // A field's box: lit while the keys go to it (red while it refused what was typed).
+        const auto box = [&](const funkgui::Rect& f, bool focused) {
+            const funkgui::Col edge = !focused ? p.composerEdge
+                                    : keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger;
+            c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f, edge);
+        };
+        // A plain field (a name, an address, a model): the text, the selection, the caret where it is.
+        const auto plain = [&](const funkgui::Rect& f, const funkgui::text::LineEdit& edit, const std::string& hint, bool focused) {
+            const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
+            const float maxW = f.w - 28.0f;
+            const std::string& b = edit.buffer;
+            const std::string shownText = asciiText(b);
+            if (focused && edit.allSelected && !b.empty())
+                c.rrect(f.x + 12.0f, f.y + 8.0f, std::min(c.textWidth(shownText.c_str(), chat::kBody), maxW) + 4.0f, f.h - 16.0f,
+                        3.0f, th.accentDim);
+            if (b.empty())
+                c.text(fitText(c, hint, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+            else
+                c.text(fitText(c, shownText, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
+            if (!focused)
+                return;
+            const std::string before = asciiText(b.substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(b.size())))));
+            const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody), maxW);
+            c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
+        };
+        const auto label = [&](const funkgui::Rect& f, const char* text) {
+            c.text(text, x, c.capCentreTop(f.centreY(), chat::kSmall), chat::kSmall, p.soft);
+        };
+
         const funkgui::Rect f = d.field;
-        c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f,
-                keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger);
+        const bool keyFocused = renaming_ || !other || dialogField_ == 0;
+        box(f, keyFocused);
         const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
-        const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
-        const float maxW = f.w - 28.0f;
-        if (shown.empty())
-            c.text(shortcutText("sk-ant-...   (Cmd-V pastes it)").c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+        if (renaming_)
+            plain(f, keyEdit_, "A name for this chat", true);
         else
         {
-            const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
-            if (keyEdit_.allSelected)
-                c.rrect(f.x + 12.0f, f.y + 8.0f, w + 4.0f, f.h - 16.0f, 3.0f, th.accentDim);
-            c.text(fitText(c, shown, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
+            // The key masked (its first and last characters shown), the caret at its end.
+            const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
+            const float maxW = f.w - 28.0f;
+            const std::string hint = !other                   ? std::string("sk-ant-...   (Cmd-V pastes it)")
+                                   : dialogInfo_.keyless       ? std::string("None needed")
+                                   : dialogHasKey()            ? std::string("Stored: empty keeps it   (Cmd-V pastes another)")
+                                   : std::string(preset.key).empty() ? std::string("Its key, if it needs one   (Cmd-V pastes it)")
+                                                             : std::string(preset.key) + "...   (Cmd-V pastes it)";
+            if (shown.empty())
+                c.text(fitText(c, shortcutText(hint), chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+            else
+            {
+                const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
+                if (keyEdit_.allSelected)
+                    c.rrect(f.x + 12.0f, f.y + 8.0f, w + 4.0f, f.h - 16.0f, 3.0f, th.accentDim);
+                c.text(fitText(c, shown, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
+            }
+            if (keyFocused)
+            {
+                const float cx = f.x + 14.0f + (shown.empty() ? 0.0f : std::min(c.textWidth(shown.c_str(), chat::kBody), maxW));
+                c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
+            }
         }
-        const float cx = f.x + 14.0f + (shown.empty() ? 0.0f : std::min(c.textWidth(shown.c_str(), chat::kBody), maxW));
-        c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
+        if (other)
+        {
+            label(f, "Key");
+            if (d.base.w > 0.0f)
+            {
+                box(d.base, dialogField_ == 1);
+                plain(d.base, baseEdit_, "https://host/v1", dialogField_ == 1);
+                label(d.base, "Server");
+            }
+            if (d.model.w > 0.0f)
+            {
+                box(d.model, dialogField_ == 2);
+                plain(d.model, modelEdit_, dialogInfo_.picksFirst ? "Empty: the first it lists (then the model menu)"
+                                                                  : "Empty: choose it in the model menu after Save",
+                      dialogField_ == 2);
+                label(d.model, "Model");
+            }
+        }
+        const funkgui::Rect last = d.model.w > 0.0f ? d.model : f;
         if (!keyWhy_.empty())
-            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, f.w).c_str(), f.x + 2.0f,
-                   c.capCentreTop(f.bottom() + 14.0f, chat::kSmall), chat::kSmall, p.danger);
+            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, d.box.w - 48.0f).c_str(), other ? x : f.x + 2.0f,
+                   c.capCentreTop(last.bottom() + 14.0f, chat::kSmall), chat::kSmall, p.danger);
 
         // The buttons: pills.
-        const auto button = [&](const funkgui::Rect& r, const char* label, int look) {   // 0 primary, 1 outlined, 2 quiet
+        const auto button = [&](const funkgui::Rect& r, const char* text, int look) {   // 0 primary, 1 outlined, 2 quiet
             const bool hover = hasPointer_ && r.contains(pointer_);
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
@@ -6168,11 +6617,11 @@ namespace playground::ui
             }
             c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, fill, look == 1 ? 1.0f : 0.0f, edge);
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
-            c.text(label, r.centreX(), c.capCentreTop(r.centreY(), st), st, ink, funkgui::Align::centre);
+            c.text(text, r.centreX(), c.capCentreTop(r.centreY(), st), st, ink, funkgui::Align::centre);
         };
-        button(d.save, "Save", 0);
+        button(d.save, renaming_ ? "Rename" : "Save", 0);
         button(d.cancel, "Cancel", 1);
-        if (chat_.hasKey)
+        if (dialogHasKey() && !renaming_)
             button(d.remove, "Remove key", 2);
     }
 
@@ -7149,7 +7598,7 @@ namespace playground::ui
         k.mix(status_).mix(meter_).mix(meterAlerts_).mix(meterLoad_).mix(port_.alerts() != 0).mix(projectText_).mix(title_)
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
             .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
-            .mix(dropHover_).mix(keyOpen_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
+            .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
@@ -7340,17 +7789,16 @@ namespace playground::ui
             const float ty = headerY_ + kIconButton * 0.5f;
             const float tx = card_.x + kCardPad + 4.0f;
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
-            c.text("Claude", tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
-            const float sub = tx + 15.0f + c.textWidth("Claude", chat::kTitle) + 10.0f;
+            c.text(chatTitle().c_str(), tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
+            // After the chats' pill, while Claude Desktop acts on or talks to this instance: what it does, its name for it.
+            const funkgui::Rect pill = triggerRect(chatsItem_);
+            const float sub = pill.right() + 8.0f;
             const bool badge = desktopItem_ >= 0 && items_[static_cast<std::size_t>(desktopItem_)]->shown();
             const float subRoom = (badge ? static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]).bounds().x - 10.0f
                                          : card_.right() - kCardPad - 3.0f * kIconButton - 16.0f)
                                 - sub;
-            const std::string kind = !desktop_.empty()             ? desktop_
-                                   : product::kIsInstrument          ? "builds and edits your synth"
-                                                                     : "builds and edits your effect";
-            if (subRoom > 60.0f && !(badge && desktop_.empty()))   // the badge says what matters then
-                c.text(fitText(c, kind, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
+            if (!desktop_.empty() && subRoom > 60.0f)
+                c.text(fitText(c, desktop_, chat::kSmall, subRoom).c_str(), sub, c.capCentreTop(ty, chat::kSmall), chat::kSmall, p.faint);
             const funkgui::Rect box = inputItem().box();
             c.text(fitText(c, activity_, chat::kSmall, box.w - 8.0f).c_str(), box.x + 6.0f,
                    c.capCentreTop(usageY_ + kUsageH * 0.5f, chat::kSmall), chat::kSmall, chat_.busy ? p.dim : p.faint);
@@ -7414,8 +7862,11 @@ namespace playground::ui
         char line[256] = {};
         if (settings_.isOpen())
             std::snprintf(line, sizeof line, "SETTINGS   TAB THE NEXT CONTROL   RETURN OR SPACE CHOOSES   ESCAPE OR DONE CLOSES");
+        else if (keyOpen_ && renaming_)
+            std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   ESCAPE CANCELS");
         else if (keyOpen_)
-            std::snprintf(line, sizeof line, "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, "%s", dialogAnthropic() ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
+                                                                     : "PROVIDER   TAB THE NEXT FIELD   CMD-V PASTES   RETURN SAVES   ESCAPE CANCELS");
         else if (export_.isOpen() && export_.readOnly())
             std::snprintf(line, sizeof line, "EXPORT   A FACTORY PROJECT: ITS INFO AS IT IS   ESCAPE CLOSES");
         else if (export_.isOpen())
@@ -7910,7 +8361,8 @@ namespace playground::ui
         {
             const KeyDialog d = keyDialog();
             const bool button = d.save.contains(pointer_) || d.cancel.contains(pointer_)
-                             || (chat_.hasKey && d.remove.contains(pointer_));
+                             || (dialogHasKey() && !renaming_ && d.remove.contains(pointer_))
+                             || (!renaming_ && d.provider.contains(pointer_));
             return button ? funkgui::Cursor::pointingHand : funkgui::Cursor::normal;
         }
         if (export_.isOpen())
@@ -7933,7 +8385,8 @@ namespace playground::ui
         // The key dialog's ids, past every item's.
         constexpr uint32_t kKeyDialogId = 0x7FFF0000u;
         constexpr uint32_t kKeyFieldId = kKeyDialogId + 1, kKeySaveId = kKeyDialogId + 2,
-                           kKeyCancelId = kKeyDialogId + 3, kKeyRemoveId = kKeyDialogId + 4;
+                           kKeyCancelId = kKeyDialogId + 3, kKeyRemoveId = kKeyDialogId + 4,
+                           kKeyProviderId = kKeyDialogId + 5, kKeyBaseId = kKeyDialogId + 6, kKeyModelId = kKeyDialogId + 7;
     }
 
     void Panel::accessibility(std::vector<funkgui::A11yItem>& out) const
@@ -7945,24 +8398,40 @@ namespace playground::ui
         }
         if (keyOpen_)
         {
-            // Never the key: its length only.
+            // Never the key: its length only. A chat's new name as typed.
             const KeyDialog d = keyDialog();
             funkgui::A11yItem box;
             box.id = kKeyDialogId;
             box.role = funkgui::a11yrole::group;
             box.bounds = d.box;
-            box.title = "Anthropic API key";
-            box.description = std::string("Stored encrypted on ") + kThisMachine + ", for both playground plugins";
+            box.title = renaming_ ? "Rename this chat" : dialogAnthropic() ? "Anthropic API key" : std::string(dialogPresetRef().name);
+            box.description = renaming_ ? std::string("Its name in the chat list, on ") + kThisMachine
+                                        : std::string("Stored encrypted on ") + kThisMachine + ", for both playground plugins";
             out.push_back(box);
+            const auto plainField = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
+                funkgui::A11yItem f;
+                f.id = id;
+                f.parent = kKeyDialogId;
+                f.role = funkgui::a11yrole::editableText;
+                f.bounds = r;
+                f.title = title;
+                f.value = e.buffer.empty() ? "empty" : asciiText(e.buffer);
+                out.push_back(std::move(f));
+            };
+            if (!renaming_ && keyDialog().base.w > 0.0f)
+                plainField(kKeyBaseId, keyDialog().base, "Server's address", baseEdit_);
             funkgui::A11yItem field;
             field.id = kKeyFieldId;
             field.parent = kKeyDialogId;
             field.role = funkgui::a11yrole::editableText;
             field.bounds = d.field;
-            field.title = "Key";
-            field.value = keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
-            field.help = keyWhy_.empty() ? "Command V pastes it" : keyWhy_;
+            field.title = renaming_ ? "Name" : "Key";
+            field.value = renaming_ ? asciiText(keyEdit_.buffer)
+                        : keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
+            field.help = !keyWhy_.empty() ? keyWhy_ : renaming_ ? "Return renames it" : "Command V pastes it";
             out.push_back(std::move(field));
+            if (!renaming_ && keyDialog().model.w > 0.0f)
+                plainField(kKeyModelId, keyDialog().model, "Model", modelEdit_);
             const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
                 funkgui::A11yItem b;
                 b.id = id;
@@ -7972,10 +8441,22 @@ namespace playground::ui
                 b.title = title;
                 out.push_back(std::move(b));
             };
-            button(kKeySaveId, d.save, "Save");
+            button(kKeySaveId, d.save, renaming_ ? "Rename" : "Save");
             button(kKeyCancelId, d.cancel, "Cancel");
-            if (chat_.hasKey)
+            if (dialogHasKey() && !renaming_)
                 button(kKeyRemoveId, d.remove, "Remove the stored key");
+            if (!renaming_)
+            {
+                // A dropdown: its value the provider shown.
+                funkgui::A11yItem b;
+                b.id = kKeyProviderId;
+                b.parent = kKeyDialogId;
+                b.role = funkgui::A11yRole::comboBox;
+                b.bounds = d.provider;
+                b.title = "Provider";
+                b.value = dialogPresetRef().name;
+                out.push_back(std::move(b));
+            }
             return;
         }
         if (export_.isOpen())
@@ -8019,6 +8500,7 @@ namespace playground::ui
                 dials |= slotBit(c);
         r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
+        r ^= keyOpen_ ? static_cast<uint32_t>(dialogPreset_ + 1) * 0x2545F491u ^ (dialogHasKey() ? 0x61C88647u : 0u) : 0u;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
@@ -8063,8 +8545,16 @@ namespace playground::ui
                 saveKeyFromDialog();
             else if (id == kKeyCancelId)
                 closeKeyDialog();
-            else if (id == kKeyRemoveId && chat_.hasKey)
+            else if (id == kKeyRemoveId && dialogHasKey() && !renaming_)
                 removeKeyFromDialog();
+            else if (id == kKeyProviderId && !renaming_)
+                openProviders();
+            else if (id == kKeyBaseId && !renaming_)
+                dialogField_ = 1;
+            else if (id == kKeyModelId && !renaming_)
+                dialogField_ = 2;
+            else if (id == kKeyFieldId && !renaming_)
+                dialogField_ = 0;
             dirty_ = true;
             return;
         }

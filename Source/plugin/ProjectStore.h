@@ -5,7 +5,7 @@
 // programs do not play in the other). A file is JSON:
 //
 //   { "format": "funk-playground-project", "version": 1, "plugin": "<product name>", "kind": "instrument",
-//     "name": "Glass Bloom",
+//     "name": "Glass Bloom", "id": "8c1f4e2a-...",
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
 //                     "dials": [ { "name": "cutoff", "value": 900 }, { "name": "drive", "value": 2, "label": "PITCH" }, ... ],
@@ -50,6 +50,14 @@
 // A preset's "category" (optional: added later, read past by an older build; none when it has none) is what the top
 // bar's list of the presets groups it by (editor/PresetPicker.h); setPresetCategory sets it, and a preset saved over
 // one of its name keeps it.
+//
+// A project's "id" (optional: a project from before ids has none, and an older build reads past it) is a UUID, made
+// when the project is first written (a save, a preset, its info) and kept in its file, so a project renamed in the
+// Finder keeps it: the chats kept for the project on this Mac (ChatStore.h, chats/<id>/) are found by it, and a
+// session names the project by it too (Processor.cpp), as a renamed project's name is gone. It is this Mac's: an export
+// leaves it out (ProjectExport.h), and a project imported or added (add()) gets a new one, as does a copy of a file
+// made in the Finder (idOf: the copy is the file whose name is not the "name" written in it). "name" is the name it was
+// last written under (`writtenAs`); the project's name is its file's.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.
@@ -188,6 +196,8 @@ namespace playground::projectstore
     struct Project
     {
         std::string name;
+        std::string id;                                  // a UUID, lower case ("" in a project from before ids)
+        std::string writtenAs;                           // the "name" in its file: the name it was last written under
         std::vector<Version> versions;                   // oldest first, never empty
         std::vector<Preset> presets;                     // by name, case aside
         Info info;
@@ -282,6 +292,8 @@ namespace playground::projectstore
         int number = 0;                                  // the version's
         bool unchanged = false;                          // the files, the tab and the dials were the latest's: none added
         bool created = false;                            // a new project
+        std::string id;                                  // the id in its file now ("" for a project from before ids
+                                                         // that this save did not write)
     };
     // MIDI learn's mappings for a new version (Version::midi). `inherited`: they came from before the version open now,
     // which had none (opening it left them), and are as they were when it opened: while the project's latest version
@@ -348,12 +360,22 @@ namespace playground::projectstore
     View view();
     bool setView(const View& v, std::string* why = nullptr);
 
+    // The project's id (above), made and written into its file when it has none, or when another project's file has
+    // the same one and this file is the copy (its name is not the one written in it while the other's is, else it was
+    // made later): "" when there is no such project, or its file cannot be written. Whether `id` may be one (a UUID's
+    // characters: what a session's or a file's id must be before it names a folder). The project whose file holds
+    // `id` now ("" for none), from the listing (a project renamed in the Finder since a session named it).
+    std::string idOf(std::string_view name, std::string* why = nullptr);
+    std::string idOf(const Project& p, std::string* why = nullptr);     // the same, of a project read already (load())
+    bool validProjectId(std::string_view id);
+    std::string nameOfId(std::string_view id);
+
     // A project as the JSON of its file, and back (`name` the project's when the JSON is a file's; nothing, with why, when
-    // it is not a project of this plugin's or it is damaged). For ProjectExport.
+    // it is not a project of this plugin's or it is damaged). For ProjectExport, which clears the id first.
     std::string toJson(const Project& p);
     std::optional<Project> fromJson(const std::string& json, std::string_view name, std::string* why = nullptr);
     // A project added under its name, or, when one has it, "<name> 2", "<name> 3", ...: the name it took, or nothing,
-    // with why, when it cannot be written.
+    // with why, when it cannot be written. It gets an id of its own, whatever id it came with.
     std::optional<std::string> add(Project p, std::string* why = nullptr);
 
     // What changed from `before` (none: "first save") to the files and dials given: each file added, removed or edited

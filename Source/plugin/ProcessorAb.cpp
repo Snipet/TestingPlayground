@@ -427,6 +427,8 @@ namespace playground
                 abKept_.dials = false;
             }
         }
+        if (kept.version > 0)
+            syncChatOwner(ChatAgent::OwnerChange::open);         // a version of another project: its chats
         if (ending != 0)
         {
             abEndingFiles_ = kept.files;

@@ -1176,7 +1176,7 @@ namespace playground::ui
         }
         std::string what;
         if (focus_ == L::projects)
-            what = "\"" + project + "\", every version and preset,";
+            what = "\"" + project + "\", every version, preset and chat,";
         else if (focus_ == L::versions)
             what = v(versions_[static_cast<std::size_t>(c)].number) + " of \"" + project + "\"";
         else

@@ -5,11 +5,12 @@
 // pressed and, over it, the menu FunkGui's MenuLook draws for the Panel's request (JUCE's popup menu, shown in a
 // component as fg.menulook shows its own), cut to the two, at 2x, to <build>/probe-out/:
 //   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, projects (a project's context menu in
-//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, zoom, settings (the
-//   output's select), panel (a .gui file's menu control) and schematic (a netlist's canvas menu)
+//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, zoom, chats (the chat card's list of the project's
+//   chats), provider (the key dialog's Provider pill), settings (the output's select), panel (a .gui file's menu
+//   control) and schematic (a netlist's canvas menu)
 // and checks:
-//   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the output's select, a
-//            .gui file's menu control): a combo box to a screen reader, its value its label; its chevron
+//   TRIGGER  each trigger (Examples, Library, Projects, the zoom, the model, the thinking level, the key dialog's
+//            Provider, the output's select, a .gui file's menu control): a combo box to a screen reader, its value its label; its chevron
 //            kChevronInset from its right edge; a click opens its menu under it (the anchor its bounds), at least as
 //            wide when it holds choices; while the menu is open the trigger's pill has the accent's edge and the one
 //            open fill (every trigger's the same), and once it is dismissed neither; Projects' while its card is open;
@@ -20,8 +21,10 @@
 //            its label starting with its file name (the menu's type-ahead), the files the program has ticked, no
 //            disabled row standing for a header; MODEL its two headers, a radio set under each, the current one dotted
 //            and highlighted when it opens (selectedId); THINKING, ZOOM, the output's select and the .gui menu a radio
-//            set, the current one dotted and highlighted; the schematic's canvas menu every key in the shortcut column,
-//            none left in a label; a choice made from each doing what it did
+//            set, the current one dotted and highlighted; CHATS its header (the project's name), its chats a radio set,
+//            the newest first, the one shown dotted and highlighted, each one's time in the shortcut column, then New
+//            chat, Rename and Delete; PROVIDER its header, every provider a radio set, the one shown dotted; the schematic's canvas menu every key in the shortcut column, none left in a label;
+//            a choice made from each doing what it did
 #include "Probe.h"
 
 #include "editor/ChatStyle.h"
@@ -521,6 +524,42 @@ PROBE(gui, menus)
         pg::Processor processor;
         pg::EditorPort& port = processor.editorPort();
         processor.settle();
+        // CHATS' list: a project with three chats kept on this Mac (today, yesterday: earlier this year but on 1 January,
+        // and last year), the second shown. Whatever the time: today's never before midnight, nor past a midnight that
+        // comes before the menu opens.
+        std::vector<std::string> chatIds;
+        {
+            pg::SavedVersion saved;
+            std::string why;
+            port.saveVersion("Glass Bloom", saved, why);
+            const std::string owner = processor.chatAgent().chatOwner();
+            juce::Time now = juce::Time::getCurrentTime();
+            const auto midnight = [](const juce::Time& t) { return juce::Time(t.getYear(), t.getMonth(), t.getDayOfMonth(), 0, 0).toMilliseconds(); };
+            if (midnight(juce::Time(now.toMilliseconds() + 30000)) != midnight(now))
+            {
+                juce::Thread::sleep(31000);                 // midnight within 30 s: the rows read after it
+                now = juce::Time::getCurrentTime();
+            }
+            const int64_t today = std::max(midnight(now), now.toMilliseconds() - 60000);
+            const int64_t yesterday = midnight(now) - 12LL * 3600 * 1000;           // noon the day before
+            const int64_t lastYear = juce::Time(now.getYear(), 0, 1, 12, 0).toMilliseconds() - 86400000LL * 200;
+            const struct
+            {
+                const char* title;
+                int64_t at;
+            } made[] = { { "A warm detuned pad with a slow sweep", today },
+                         { "Brighter attack, less drive", yesterday },
+                         { "Bass ideas", lastYear } };
+            for (const auto& c : made)
+            {
+                pg::chatstore::ChatMeta meta{ pg::chatstore::newId(), c.title, false, c.at, c.at };
+                pg::chatstore::Stamp stamp;
+                const std::string state = std::string(R"({"version":1,"messages":[],"entries":[{"k":"user","t":")") + c.title + R"("}]})";
+                pg::chatstore::saveChat(owner, meta, state, stamp);
+                chatIds.push_back(meta.id);
+            }
+            processor.chatAgent().openChat(chatIds[1]);
+        }
         for (int t = 0; t < 2; ++t)
         {
             const bool rows = t == 0;                    // the rows once; the pictures in both themes
@@ -710,6 +749,59 @@ PROBE(gui, menus)
                 picture(P, pics, host, panel, *m, "thinking", t);
                 host.cancelMenu();
                 closedTrigger(R, host, "thinking", seen);
+            }
+
+            // CHATS: the project's chats under its header, a radio set with each one's time, then three commands.
+            if (const funkgui::MenuRequest* m = openTrigger(R, host, "chats", panel.centreOfChats(), true, seen))
+            {
+                int headers = 0, commands = 0;
+                std::string header;
+                std::vector<funkgui::MenuItem> list;
+                for (const funkgui::MenuItem& it : m->items)
+                {
+                    if (it.header)
+                    {
+                        ++headers;
+                        header = it.label;
+                    }
+                    else if (it.radio)
+                        list.push_back(it);
+                    else if (!it.separator)
+                        ++commands;
+                }
+                R.eq("rows.chats.header", headers == 1 && has(header, "Glass Bloom") ? 1 : 0, 1);
+                radioSet(R, "rows.chats", *m, list, "Brighter attack");
+                bool newestFirst = list.size() == 3 && list[0].label.rfind("A warm", 0) == 0 && list[2].label == "Bass ideas";
+                bool times = !list.empty();
+                for (const funkgui::MenuItem& it : list)
+                    times = times && !it.shortcut.empty();
+                R.eq("rows.chats.newest_first", newestFirst ? 1 : 0, 1);
+                R.eq("rows.chats.times", times && has(list.back().shortcut, "-") && has(list.front().shortcut, ":") ? 1 : 0, 1);
+                R.eq("rows.chats.commands", commands, 3);
+                picture(P, pics, host, panel, *m, "chats", t);
+                host.cancelMenu();
+                closedTrigger(R, host, "chats", seen);
+            }
+
+            // PROVIDER: the key dialog's Provider pill, the providers a radio set under its header.
+            {
+                const funkgui::Point key = panel.centreOfKey();
+                host.click(key.x, key.y);
+                host.tick(1);
+                if (const funkgui::MenuRequest* m = openTrigger(R, host, "provider", panel.centreOfKeyProvider(), true, seen))
+                {
+                    int headers = 0;
+                    for (const funkgui::MenuItem& it : m->items)
+                        headers += it.header ? 1 : 0;
+                    R.eq("rows.provider.header", headers, 1);
+                    R.eq("rows.provider.every", static_cast<int64_t>(choicesOf(*m).size()), static_cast<int64_t>(std::size(pg::kChatPresets)));
+                    radioSet(R, "rows.provider", *m, choicesOf(*m), "Anthropic");
+                    picture(P, pics, host, panel, *m, "provider", t);
+                    host.cancelMenu();
+                    closedTrigger(R, host, "provider", seen);
+                }
+                host.keys("escape");
+                host.tick(1);
             }
 
             if (rows)

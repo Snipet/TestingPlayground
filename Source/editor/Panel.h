@@ -63,9 +63,13 @@
 //             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
 //             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
 //             else the last reply's tokens)
-//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
-//             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
-//             is sent before any key is stored (the message goes once a key is saved)
+//   key       a dialog over the panel for the model provider and its API key: the Provider pill at its title's right (a
+//             menu: Anthropic, the default, OpenAI, OpenRouter, Google Gemini, Ollama or LM Studio on this Mac, another
+//             OpenAI-compatible server), a masked key field (Cmd-V pastes), and for another provider its server's
+//             address (an OpenAI-compatible one's) and its model, Tab moving between them; Save, Cancel and, when a key
+//             is stored for that provider, Remove key. Anthropic's is as it always was. It opens from the header's
+//             key, the empty chat's button, and when a message is sent before the chat can send (the message goes
+//             once it is saved)
 //   settings  the Standalone's only (EditorPort::devices): SETTINGS, the audio and MIDI devices in a card over the panel
 //             (SettingsCard.h), opened by the app's Settings... (Cmd-,: EditorPort::settingsAsked, polled each frame)
 //             and by the muted notice's button; while an effect's input is muted (JUCE's guard against a feedback loop)
@@ -502,12 +506,23 @@ namespace playground::ui
         funkgui::Point centreOfExplorerEdge() const;
         funkgui::Point centreOfChatEdge() const;
         // The key dialog.
-        bool keyDialogOpen() const noexcept { return keyOpen_; }
+        bool keyDialogOpen() const noexcept { return keyOpen_ && !renaming_; }
+        bool renameDialogOpen() const noexcept { return keyOpen_ && renaming_; }
+        funkgui::Point centreOfChats() const;            // the chats' pill (the chat shown: its menu)
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
         funkgui::Point centreOfKeyField() const;
         funkgui::Point centreOfKeySave() const;
         funkgui::Point centreOfKeyCancel() const;
         std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
+        // The provider's settings in it: the Provider pill, the server's address and the model fields (nullopt while the
+        // provider shown has none), the preset shown (an index of kChatPresets) and the field the keys go to (0 the
+        // key, 1 the address, 2 the model), and a preset chosen as the pill's menu would.
+        funkgui::Point centreOfKeyProvider() const;
+        std::optional<funkgui::Point> centreOfKeyBase() const;
+        std::optional<funkgui::Point> centreOfKeyModel() const;
+        int keyDialogPreset() const noexcept { return dialogPreset_; }
+        int keyDialogField() const noexcept { return dialogField_; }
+        void chooseKeyPreset(int preset);
         // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
         bool openSettings();
@@ -622,6 +637,14 @@ namespace playground::ui
         void openModels();
         void openThinking();
         void newChat();
+        // The chats (ChatPort::chatList): the pill's label (the chat shown's name), its menu, Delete's question, and the
+        // rename, in the key dialog's box (renaming_).
+        std::string chatsLabel() const;
+        std::string chatTitle() const;                   // the card's title: Claude, or another provider's name
+        void openChats();
+        void askDeleteChat();
+        void openRenameDialog();
+        void renameFromDialog();
         void layoutChat();                               // the chat card's insides
         void placeChatBar();                             // the message box's bar: the pills, send
         std::string modelLabel() const;
@@ -629,6 +652,7 @@ namespace playground::ui
         std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
         bool chatTakesFast() const;                      // the chosen model takes fast mode
         bool chatTakesWeb() const;                       // ... and web search
+        bool chatTakesThinking() const;                  // ... and thinking levels (Anthropic's)
         std::string barLabels() const;                   // what the bar's layout depends on
         InputItem& inputItem();
         const InputItem& inputItem() const;
@@ -638,6 +662,7 @@ namespace playground::ui
         struct KeyDialog
         {
             funkgui::Rect box, field, save, cancel, remove;
+            funkgui::Rect provider, base, model;         // the pill; another provider's fields (empty: none)
         };
         KeyDialog keyDialog() const;                     // its places, for the panel's size
         void openKeyDialog();
@@ -648,6 +673,17 @@ namespace playground::ui
         void keyDialogPointerDown(funkgui::Point);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
         std::string maskedKey() const;
+        // The provider in the dialog (ChatPort::setProvider): its preset, whether it is Anthropic's and the chat's now
+        // (the dialog then works as it always did), the provider as its fields say it, whether a key is stored for it,
+        // the Provider pill's menu, the field the keys go to (Tab: the next shown).
+        const ChatPreset& dialogPresetRef() const;
+        bool dialogAnthropic() const;
+        bool dialogAsBefore() const;
+        ChatProvider dialogProvider() const;
+        bool dialogHasKey() const;
+        void openProviders();
+        funkgui::text::LineEdit& dialogEdit();
+        int dialogFields() const;                        // the fields shown, as a mask of 1 << field
 
         EditorPort& port_;
         class HostProxy;                                 // the host as host_ and the items reach it (Panel.cpp, above:
@@ -674,6 +710,8 @@ namespace playground::ui
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
         float statusX() const;                           // where it starts (it ends before the actions, actionsX_)
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int chatsItem_ = -1;                             // the chats' pill (the chat shown, its menu)
+        std::string chatsLabel_;                         // its label when layoutChat placed it
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
@@ -843,7 +881,9 @@ namespace playground::ui
         int desktopItem_ = -1;                           // the badge
         int desktopMarkItem_ = -1;                       // ... its mark on the folded chat's rail
         void syncDesktop();
-        void placeDesktopBadge();
+        void placeDesktopBadge();                        // and the chats' pill, which ends at the badge while it shows
+        float chatsPillX() const;                        // the chats' pill's left: after the title and its light
+        static constexpr float kChatsPillLeast = 48.0f;  // the room the pill keeps before the badge takes any
         void desktopRow(const ExplorerItem::Row& row);
         NameCard name_{ port_ };
         int focusBeforeName_ = -1;
@@ -853,9 +893,14 @@ namespace playground::ui
 
         // The key dialog.
         bool keyOpen_ = false;
+        bool renaming_ = false;                          // the dialog renames the chat shown (keyOpen_ too)
         funkgui::text::LineEdit keyEdit_;
         std::string keyWhy_;                             // why the key typed was refused
         int focusBeforeKey_ = -1;
+        int dialogPreset_ = 0;                           // the provider shown (kChatPresets), the server's address and
+        funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
+        int dialogField_ = 0;
+        ChatProviderInfo dialogInfo_;
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

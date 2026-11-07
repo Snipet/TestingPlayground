@@ -18,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <set>
 #include <string_view>
 #include <thread>
@@ -59,6 +60,7 @@ namespace playground::projectstore
             Entry entry;
             std::vector<PresetSummary> presets;
             bool broken = false;
+            std::string project, writtenAs;              // the project's id and the name written in its file (idOf)
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
@@ -69,6 +71,31 @@ namespace playground::projectstore
         std::weak_ptr<Reader> theReader;                 // the process's (reader()), while someone holds it
 
         std::string kindName(bool instrument) { return instrument ? "instrument" : "effect"; }
+
+        // A new project's id: a version 4 UUID from the system's random source, lower case.
+        std::string newProjectId()
+        {
+            std::random_device rd;
+            uint8_t b[16];
+            for (int i = 0; i < 16; i += 4)
+            {
+                const uint32_t r = rd();
+                for (int k = 0; k < 4; ++k)
+                    b[i + k] = static_cast<uint8_t>(r >> (8 * k));
+            }
+            b[6] = static_cast<uint8_t>((b[6] & 0x0F) | 0x40);
+            b[8] = static_cast<uint8_t>((b[8] & 0x3F) | 0x80);
+            static constexpr char kHex[] = "0123456789abcdef";
+            std::string out;
+            for (int i = 0; i < 16; ++i)
+            {
+                if (i == 4 || i == 6 || i == 8 || i == 10)
+                    out += '-';
+                out += kHex[b[i] >> 4];
+                out += kHex[b[i] & 0x0F];
+            }
+            return out;
+        }
 
         juce::String str(const std::string& s) { return juce::String::fromUTF8(s.c_str()); }
 
@@ -376,6 +403,11 @@ namespace playground::projectstore
             }
             Project p;
             p.name = name;
+            // Its id, when it has one that may be one (else none: the next write gives it one), and the name it was
+            // written under.
+            if (const std::string id = root["id"].toString().toLowerCase().toStdString(); validProjectId(id))
+                p.id = id;
+            p.writtenAs = root["name"].toString().toStdString();
             if (const juce::Array<juce::var>* versions = root["versions"].getArray())
                 for (const juce::var& v : *versions)
                 {
@@ -515,6 +547,8 @@ namespace playground::projectstore
             c.size = size;
             c.id = id;
             c.entry.name = p.name;
+            c.project = p.id;
+            c.writtenAs = p.writtenAs;
             c.entry.savedMs = p.latest().savedMs;
             c.entry.latest = p.latest().number;
             c.entry.versions = static_cast<int>(p.versions.size());
@@ -601,6 +635,9 @@ namespace playground::projectstore
                 fail(why, "a project needs a name");
                 return false;
             }
+            if (p.id.empty())
+                p.id = newProjectId();                   // made when it is first written (ProjectStore.h)
+            p.writtenAs = p.name;
             const juce::File dir = directory();
             if (!dir.isDirectory() && !dir.createDirectory())
             {
@@ -641,6 +678,8 @@ namespace playground::projectstore
             root->setProperty("plugin", product::kName);
             root->setProperty("kind", str(kindName(product::kIsInstrument)));
             root->setProperty("name", str(p.name));
+            if (!p.id.empty())
+                root->setProperty("id", str(p.id));
             juce::Array<juce::var> versions;
             for (const Version& v : p.versions)
             {
@@ -1170,9 +1209,14 @@ namespace playground::projectstore
                 if (p.name != tidy || more || named)     // the same project, named in another case now, answered, labelled
                 {
                     p.name = tidy;
+                    if (p.id.empty())
+                        p.id = newProjectId();
+                    saved.id = p.id;
                     if (!write(std::move(p), why))
                         return std::nullopt;
                 }
+                else
+                    saved.id = p.id;
                 return saved;
             }
         }
@@ -1201,6 +1245,9 @@ namespace playground::projectstore
             return std::nullopt;
         }
         saved.number = p.latest().number;
+        if (p.id.empty())
+            p.id = newProjectId();                       // made when it is first written (write() would make it too)
+        saved.id = p.id;
         if (!write(std::move(p), why))
             return std::nullopt;
         return saved;
@@ -1534,10 +1581,94 @@ namespace playground::projectstore
             name = base.substr(0, kMaxName - suffix.size()) + suffix;
         }
         p.name = name;
+        p.id = newProjectId();                           // a copy of its own: never the id it came with
         p.info = tidyInfo(std::move(p.info));
         if (!write(std::move(p), why))
             return std::nullopt;
         return name;
+    }
+
+    bool validProjectId(std::string_view id)
+    {
+        if (id.size() != 36)
+            return false;
+        for (std::size_t i = 0; i < id.size(); ++i)
+        {
+            const char c = id[i];
+            const bool dash = i == 8 || i == 13 || i == 18 || i == 23;
+            if (dash ? c != '-' : !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                return false;
+        }
+        return true;
+    }
+
+    std::string idOf(std::string_view name, std::string* why)
+    {
+        migrate();
+        const juce::File f = fileOf(name);
+        if (f == juce::File())
+        {
+            fail(why, "there is no project named \"" + std::string(name) + "\"");
+            return {};
+        }
+        const std::optional<Project> p = readAndKeep(f, why);
+        return p ? idOf(*p, why) : std::string();
+    }
+
+    std::string idOf(const Project& project, std::string* why)
+    {
+        const juce::File f = fileOf(project.name);
+        if (f == juce::File())
+        {
+            fail(why, "there is no project named \"" + project.name + "\"");
+            return {};
+        }
+        std::optional<Project> p = project;
+        if (!p->id.empty())
+        {
+            // Another file with the same id: one of the two is a copy made in the Finder (an export or an import never
+            // carries an id). The copy is the file whose name is not the one written in it while the other's is; when
+            // both are so, or neither, the one made later.
+            (void)list();                                // the cache holds every project's id
+            const std::string path = f.getFullPathName().toStdString();
+            const bool mine = sameName(p->writtenAs, p->name);
+            bool copy = false;
+            {
+                const std::lock_guard<std::mutex> lock(cacheMutex);
+                for (const auto& [other, c] : cache)
+                {
+                    if (other == path || c.broken || c.project != p->id)
+                        continue;
+                    const bool theirs = sameName(c.writtenAs, c.entry.name);
+                    if (mine != theirs)
+                        copy = copy || theirs;
+                    else
+                        copy = copy || f.getCreationTime() > juce::File(juce::String::fromUTF8(other.c_str())).getCreationTime();
+                }
+            }
+            if (!copy)
+                return p->id;
+            p->id = newProjectId();
+        }
+        if (p->id.empty())
+            p->id = newProjectId();                      // a project from before ids: its first
+        const std::string made = p->id;
+        if (!write(std::move(*p), why))
+            return {};
+        return made;
+    }
+
+    std::string nameOfId(std::string_view id)
+    {
+        if (!validProjectId(id))
+            return {};
+        (void)list();
+        std::string found;
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        for (const auto& [path, c] : cache)
+            if (!c.broken && c.project == id && (found.empty() || sameName(c.writtenAs, c.entry.name)))
+                found = c.entry.name;
+        return found;
     }
 
     std::string describeChange(const Version* before, const Sources& files, const std::vector<Dial>& dials,
