@@ -4,12 +4,16 @@
 // planner chosen last) and the chats themselves, encrypted. They live in ~/Library/Application Support/Funk/Playground/
 // (0700): anthropic-key.bin (0600), key-<kind>-<origin>.bin (0600), chat.json and chats/ (below). On
 // Windows: %APPDATA%\Funk\Playground\, the user's profile's own, and the same files through Windows' CNG (bcrypt) in
-// place of CommonCrypto.
+// place of CommonCrypto. On Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/Playground/, through OpenSSL's libcrypto,
+// and the keys (the Anthropic key and the other providers') in the desktop's keyring when a Secret Service runs
+// (plugin/SecretStore.h: GNOME Keyring, KWallet, KeePassXC), a file only where none does; a key saved to a file while
+// none ran moves into the keyring the next time it is read with one there. The chats stay files (below) everywhere.
 //
 // The key's file is "FPK1", a 16-byte salt, a 16-byte IV, the key encrypted with AES-256-CBC, and an HMAC-SHA256 of
 // all that before it (CommonCrypto). The two keys come from PBKDF2-HMAC-SHA256 (100,000 rounds, the salt) over this
-// Mac's device ID (juce::SystemStats::getUniqueDeviceID) and the user's account: the file is useless on another Mac or
-// to another account, and nothing on disk shows the key in clear. Any program running as this user on this Mac can
+// Mac's device ID (juce::SystemStats::getUniqueDeviceID; on Linux the machine's key, machineKey(): /etc/machine-id) and
+// the user's account: the file is useless on another Mac or to another account, and nothing on disk shows the key in
+// clear. Any program running as this user on this Mac can
 // derive the same keys, as it could read anything else of the user's: the encryption protects the key at rest
 // (backups, a copied folder, a stray search), not from such a program.
 //
@@ -40,6 +44,11 @@ namespace juce
     class File;
 }
 
+namespace playground::secrets
+{
+    class Store;
+}
+
 namespace playground::chatstore
 {
     // The folder (tests point it elsewhere; an empty path restores the default). Under a probe's preferences sandbox
@@ -56,6 +65,15 @@ namespace playground::chatstore
 
     // Whether `key` looks like an Anthropic API key: "sk-ant-" then 20 to 300 letters, digits, '-' and '_'.
     bool plausibleKey(std::string_view key);
+
+    // Where the keys go now: the keyring's name ("the desktop's keyring") when one takes them (Linux, a Secret Service
+    // running), "" when they go to files. The store is never the user's while the folder is a test's or a probe's
+    // sandbox; a probe gives one of its own (overridden: `store`, null for none), or the default back (not overridden).
+    std::string keyPlace();
+    void setSecretStoreForTests(secrets::Store* store, bool overridden);
+    // What the key's file is sealed with besides the account: on Linux the machine's key (systemd's /etc/machine-id,
+    // else D-Bus's /var/lib/dbus/machine-id, else "host:" and the host's name); elsewhere the device's id.
+    std::string machineKey();
 
     // The model, thinking level and fast mode chosen last ("" and off when none was).
     struct Choice
