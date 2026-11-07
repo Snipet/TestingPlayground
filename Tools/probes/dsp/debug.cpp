@@ -25,7 +25,8 @@
 //           view_sound's (the effect's) to the bit, and not the render without the dial
 //   BUFFER  a delay line fed back at 1.1: the runaway's and the NaN's verdicts name the buffer trace does not read
 //   BITS    CLICK's bug on a phase kept as an int of 30 bits: its writers (detail: six) the lines that write it by
-//           ^=, &=, |=, >>=, <<= and +=, and not the line that reads it
+//           ^=, &=, |=, >>=, <<= and +=, and not the lines that read it (one by >=, before them all: a reader taken
+//           for a writer would push the last writer past the six)
 //   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
 //   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
 //   SHARED  a module Shared's field listed, and watched as shared->gain
@@ -288,7 +289,8 @@ module Effect
 
     // CLICK's bug on a phase kept as an int of 30 bits (2^30 a cycle), written by the bitwise compound assignments:
     // every 10007 samples its top bit flipped (half a cycle: the click), and each sample wrapped, its low bits dropped
-    // and its quantum's middle set.
+    // and its quantum's middle set. The flip's condition reads it first, by `>=` (never false: it is never negative),
+    // so a reader the writers' scan took for one would come before the six writers and push the last past detail's six.
     const char* const kBitsVoice = R"(module Voice
 {
     float rate;
@@ -320,7 +322,7 @@ module Effect
         for (int i = 0; i < n; ++i)
         {
             count += 1;
-            if (count >= 10007)
+            if (count >= 10007 && acc >= 0)     // (acc is never negative: a read before its writers)
             {
                 count = 0;
                 acc ^= 0x20000000;
@@ -357,7 +359,7 @@ module Effect
         for (int i = 0; i < n; ++i)
         {
             count += 1;
-            if (count >= 10007)
+            if (count >= 10007 && acc >= 0)     // (acc is never negative: a read before its writers)
             {
                 count = 0;
                 acc ^= 0x20000000;
@@ -1341,7 +1343,7 @@ PROBE(dsp, debug)
         P.eq("bits.writer_or", writes("acc |= 8;") ? 1 : 0, 1);
         P.eq("bits.writer_shifts", writes("acc >>= 4;") && writes("acc <<= 4;") ? 1 : 0, 1);
         P.eq("bits.writer_add", writes("acc += ") ? 1 : 0, 1);
-        P.eq("bits.reader_not_writer", acc != nullptr && !writes("(float)acc") && acc->writes.size() == 6 ? 1 : 0, 1);
+        P.eq("bits.reader_not_writer", acc != nullptr && !writes("(float)acc") && !writes("acc >= 0") && acc->writes.size() == 6 ? 1 : 0, 1);
     }
 
     // ---- LOCAL ---------------------------------------------------------------------------------------------------------
