@@ -549,6 +549,10 @@ PROBE(plugin, reload)
         bool read = false, conclusive = false;
         for (; tries < 8 && !conclusive; ++tries)
         {
+            // The try before's edit taken here, not as it ended: the last try's stays the processor's pending one, so
+            // LISTEN finds the panel before it whether or not any try was conclusive.
+            if (tries > 0)
+                skip.p.poll();
             std::string more = relabelled(kGuiTaper, "\"LEVEL\"", "\"DRIVE" + std::to_string(tries) + "\"");
             if (tries % 2 == 0)
                 more = relabelled(more, "        meter level", "        number ph\n        meter level");
@@ -571,10 +575,7 @@ PROBE(plugin, reload)
                         "%.1f ms%s\n", tries + 1, s.ms, static_cast<unsigned long long>(s.panel.tapTable),
                         static_cast<unsigned long long>(m.tapTable), gapMs, conclusive ? "" : ": idle as far as the wait knew, again");
             if (!conclusive)
-            {
                 ++idle;
-                skip.p.poll();
-            }
         }
         std::printf("wait: %d tr%s, %d of them with the audio thread idle as far as the wait knew\n", tries, tries == 1 ? "y" : "ies", idle);
         P.eq("wait.panel_only", s.ok && s.panelOnly && s.panel.tapTable != 0 ? 1 : 0, 1);
