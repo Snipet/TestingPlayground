@@ -552,6 +552,23 @@ namespace playground
         const void* sharedInstance() const noexcept { return shared_; }
         const void* hostInstance() const noexcept { return host_; }
 
+        // ---- where the code is (measure_output's profile: dsp/Profile.h; PatchCode.cpp) -------------------------------
+        // The program's own machine code (never the frozen copy's), from FMinus's Program::codeRanges (its recipe 37):
+        // the ranges sorted by address, none overlapping another, each the bytes [address, address + size). `function`
+        // is what the program calls it ("Svf::tick", "softclip"; the plugin's appended calls the method they call,
+        // "Voice::process"; a circuit dial's shim "the circuit dials' set()"; FMinus's own "FMinus's math"), `module`
+        // a method's ("Svf"; "" otherwise) and `inlined` the program's functions the optimiser folded into it, whose
+        // time is this code's (an appended call's own method left out). Off the audio thread (it allocates); empty,
+        // with why, when the code does not link. The code stays where it says while the Patch lives.
+        struct CodeRange
+        {
+            std::uintptr_t address = 0;
+            std::size_t size = 0;
+            std::string function, module;
+            std::vector<std::string> inlined;
+        };
+        std::vector<CodeRange> codeRanges(std::string& errors) const;
+
     private:
         struct Compiled;                               // the Program and the function pointers
         Patch();
