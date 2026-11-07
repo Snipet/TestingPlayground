@@ -4349,8 +4349,10 @@ namespace playground::ui
             g.action = chat::Icon::plus;
             g.actionTitle = "Save the project";
             g.empty = "None yet: + saves this program";
-            // Grouped as PROJECTS groups them (ProjectGroups.h), the newest first in each: a caption a group once there
-            // is more than one (the factory's starred ones among the favourites), each folding its group.
+            // Grouped as PROJECTS groups them (ProjectGroups.h), the newest first in each (the factory's starred ones
+            // among the favourites): a caption a group, each folding its group, unless the one group is UNCATEGORISED
+            // (no project given a category, none starred: the flat list). A lone category's or FAVOURITES' caption
+            // stays: it says what the list is.
             std::vector<ProjectEntry> all = projectList_;
             all.insert(all.end(), factoryList_.begin(), factoryList_.end());
             projectgroups::Options o;
@@ -4359,7 +4361,7 @@ namespace playground::ui
             o.byDate = true;
             o.factoryGroup = false;
             const std::vector<projectgroups::Group> grouped = projectgroups::arrange(all, o);
-            const bool captions = grouped.size() > 1 || (grouped.size() == 1 && grouped[0].kind != projectgroups::Kind::uncategorised);
+            const bool captions = !(grouped.size() == 1 && grouped[0].kind == projectgroups::Kind::uncategorised);
             g.total = static_cast<int>(projectList_.size());
             for (const projectgroups::Group& grp : grouped)
             {

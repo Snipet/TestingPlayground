@@ -16,8 +16,9 @@
 //   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
 //             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version).
 //             Grouped as PROJECTS groups them (ProjectGroups.h: FAVOURITES, the factory's starred ones among them, a
-//             category a group, UNCATEGORISED last) once there is more than one group: a caption a group, which folds
-//             it (the groups folded are PROJECTS', this Mac's: EditorPort::projectsView)
+//             category a group, UNCATEGORISED last): a caption a group, which folds it (the groups folded are
+//             PROJECTS', this Mac's: EditorPort::projectsView), unless the one group is UNCATEGORISED (none starred,
+//             none given a category: a flat list)
 //   FACTORY   the factory projects (plugin/Factory.h), by name (the one open marked), folded at first: a click opens
 //             one (read-only: a save makes the user's own copy)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
