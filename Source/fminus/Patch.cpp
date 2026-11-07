@@ -65,7 +65,8 @@ namespace playground
 
         // One of the plugin's calls into the program: the method, whether the plugin needs it, how the plugin calls
         // it (as the author would declare it), the line appended to the program for it, and its module (null: the
-        // main one).
+        // main one). The appended function is named playground_<method>, Shared's playground_shared_<method>:
+        // PatchCode.cpp names a profile's functions from that (shimNamed checks each table).
         struct Call
         {
             const char* method;
@@ -93,14 +94,14 @@ namespace playground
             { "tick", false, "void tick(int n)",
               "void playground_shared_tick(Shared* self, int n) [[clang::nonblocking]] { self->tick(n); }", kSharedModule },
             { "noteOn", false, "void noteOn(float note, float velocity)",
-              "void playground_shared_note_on(Shared* self, float note, float velocity) [[clang::nonblocking]] "
+              "void playground_shared_noteOn(Shared* self, float note, float velocity) [[clang::nonblocking]] "
               "{ self->noteOn(note, velocity); }", kSharedModule },
             { "noteOff", false, "void noteOff(float note)",
-              "void playground_shared_note_off(Shared* self, float note) [[clang::nonblocking]] { self->noteOff(note); }",
+              "void playground_shared_noteOff(Shared* self, float note) [[clang::nonblocking]] { self->noteOff(note); }",
               kSharedModule },
         };
-        constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_note_on",
-                                                     "playground_shared_note_off" };
+        constexpr const char* kSharedHookShims[] = { "playground_shared_tick", "playground_shared_noteOn",
+                                                     "playground_shared_noteOff" };
         // A mono instrument's Voice::legato (Patch.h, "Mono"): appended only to a mono program, and only when the program
         // declares it as here.
         constexpr Call kLegatoCall = { "legato", false, "void legato(float note, float velocity)",
@@ -187,6 +188,43 @@ namespace playground
         static_assert(countOf(kSharedHookCalls) == static_cast<std::size_t>(lang::kSharedHooks)
                       && std::size(kSharedHookShims) == static_cast<std::size_t>(lang::kSharedHooks));
 
+        // Whether a call's appended function is named for its method (Call, above): "playground_" (and "shared_" for
+        // Shared's), the method, then its parameters; and whether `shim` is that function's name.
+        constexpr bool shimNamed(const Call& c, std::string_view shim = {}) noexcept
+        {
+            std::string_view s = c.shim;
+            const std::size_t at = s.find("playground_");
+            if (at == std::string_view::npos)
+                return false;
+            s.remove_prefix(at);
+            const std::size_t open = s.find('(');
+            if (open == std::string_view::npos)
+                return false;
+            std::string_view want = s.substr(0, open);
+            if (!shim.empty() && want != shim)
+                return false;
+            want.remove_prefix(std::string_view("playground_").size());
+            if (c.module != nullptr && std::string_view(c.module) == kSharedModule)
+            {
+                if (want.substr(0, 7) != "shared_")
+                    return false;
+                want.remove_prefix(7);
+            }
+            return want == c.method;
+        }
+        template <std::size_t N>
+        constexpr bool shimsNamed(const Call (&table)[N]) noexcept
+        {
+            for (const Call& c : table)
+                if (!shimNamed(c))
+                    return false;
+            return true;
+        }
+        static_assert(shimsNamed(kSharedCalls) && shimsNamed(kSharedHookCalls) && shimNamed(kLegatoCall)
+                      && shimsNamed(kEffectCalls) && shimsNamed(kVoiceCalls));
+        static_assert(shimNamed(kSharedHookCalls[0], kSharedHookShims[0]) && shimNamed(kSharedHookCalls[1], kSharedHookShims[1])
+                      && shimNamed(kSharedHookCalls[2], kSharedHookShims[2]));
+
         const Call* calls() noexcept { return kInstrument ? kVoiceCalls : kEffectCalls; }
         constexpr std::size_t callCount() noexcept
         {
@@ -255,6 +293,25 @@ namespace playground
                 out += line + "\n";
             }
             return out;
+        }
+
+        // What a field's attributes say about showing it (PanelSpec.h's FieldLook), in order: the last of a name counts.
+        FieldLook lookOf(const std::vector<fminus::Program::Attribute>& attributes)
+        {
+            FieldLook look;
+            std::vector<std::string> args;
+            for (const fminus::Program::Attribute& a : attributes)
+            {
+                args.clear();
+                for (const fminus::Program::Attribute::Argument& x : a.arguments)
+                {
+                    char number[32];
+                    std::snprintf(number, sizeof number, "%.17g", x.number);
+                    args.push_back(x.isString ? x.text : std::string(number));   // a number by its value: 0.5f, 0x10
+                }
+                readFieldAttribute(look, a.name, args);
+            }
+            return look;
         }
 
         // The base module name and element count of a field type: "Osc" (1), "Osc[8]" (8), "Osc[2][3]" (6); a pointer
@@ -581,12 +638,17 @@ namespace playground
         freeInstances();
     }
 
+    fminus::Program& Patch::fminusProgram() const noexcept
+    {
+        return *s_->program;
+    }
+
     void Patch::endInstances() noexcept
     {
         const fsdsp::ScopedFtz ftz;                  // end runs in the mode the program is compiled for
         // Each end within kInitBudget; after one that runs past it (or fails a bounds check), no other; and none at all
-        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget").
-        bool ran = stopped() == Method::none;
+        // once a call has stopped the Patch, whose state may be any (Patch.h, "The loop budget"), a call by name's too.
+        bool ran = stopped() == Method::none && !callStopped_;
         endsCalled_ = 0;
         const auto end = [&](auto* fn, void* self) {
             if (!ran || fn == nullptr)
@@ -1140,21 +1202,22 @@ namespace playground
         // main module's, or Shared's through its Shared* field (displayFields: "shared->level").
         std::vector<PanelField> fields, sharedFields;
         for (const fminus::Program::Module::Field& f : s.module->fields)
-            fields.push_back({ f.name, f.type });
+            fields.push_back({ f.name, f.type, lookOf(f.attributes) });
         const fminus::Program::Module* sharedModule = patch->shared_ != nullptr ? program.module(kSharedModule) : nullptr;
         if (sharedModule != nullptr)
             for (const fminus::Program::Module::Field& f : sharedModule->fields)
-                sharedFields.push_back({ f.name, f.type });
+                sharedFields.push_back({ f.name, f.type, lookOf(f.attributes) });
         fields = displayFields(fields, sharedFields);
         // What reading the panel needs (Patch.h, "The panel"), kept in the recipe so that an edit of the panel's files
-        // is read again with no compile: the fields, each one's tap (the main module's, or Shared's through its Shared*
-        // field: "shared->level"), the files FMinus read.
+        // is read again with no compile: the fields, where each sits (the main module's, or Shared's through its
+        // Shared* field: "shared->level"; an array's first element, its elements' size and count), the files FMinus
+        // read.
         PanelBase& reading = patch->recipe_.panel;
         reading.fields = fields;
-        for (const PanelField& pf : fields)
+        reading.places.assign(fields.size(), FieldPlace{});
+        for (std::size_t k = 0; k < fields.size(); ++k)
         {
-            if (pf.type != "float" && pf.type != "int" && pf.type != "bool")
-                continue;                              // a display takes these alone (GuiSpec's, PanelSpec's)
+            const PanelField& pf = fields[k];
             const std::size_t arrow = pf.name.find("->");
             const fminus::Program::Module* home = arrow == std::string::npos ? s.module : sharedModule;
             const std::string name = arrow == std::string::npos ? pf.name : pf.name.substr(arrow + 2);
@@ -1162,11 +1225,17 @@ namespace playground
                 for (const fminus::Program::Module::Field& f : home->fields)
                     if (f.name == name)
                     {
-                        Tap t;
-                        t.offset = f.offset;
-                        t.type = pf.type == "float" ? Tap::Type::real : (pf.type == "int" ? Tap::Type::integer : Tap::Type::boolean);
-                        t.shared = home != s.module;
-                        reading.taps.emplace_back(pf.name, t);
+                        std::size_t elements = 1;
+                        for (const std::size_t extent : f.extents)
+                            elements *= extent;
+                        FieldPlace& at = reading.places[k];
+                        at.offset = f.offset;
+                        at.each = elements > 0 ? f.size / elements : 0;
+                        // The elements that lie inside the module as FMinus laid it out (all of them, unless its
+                        // description and its size disagree).
+                        at.elements = at.each == 0 || f.offset >= home->size
+                                    ? 0 : std::min(elements, (home->size - f.offset) / at.each);
+                        at.shared = home != s.module;
                         break;
                     }
         }
@@ -1180,11 +1249,15 @@ namespace playground
             };
             for (const bool shared : { false, true })
             {
-                for (const auto& [name, t] : reading.taps)
-                    if (lightsName(name, shared))
+                for (const PanelField& pf : fields)
+                    if (lightsName(pf.name, shared) && (pf.type == "float" || pf.type == "int" || pf.type == "bool"))
                     {
-                        patch->lights_ = t;
-                        patch->hasLights_ = true;
+                        const Tap t = tapAt(reading, pf.name);
+                        if (t.type != Tap::Type::none)
+                        {
+                            patch->lights_ = t;
+                            patch->hasLights_ = true;
+                        }
                         break;
                     }
                 if (patch->hasLights_)
@@ -1225,12 +1298,7 @@ namespace playground
             reading.pragmas = !patch->panel_.sections.empty() || !patch->panel_.displays.empty();
             for (const PanelDisplay& d : patch->panel_.displays)
                 if (d.tap >= 0)
-                    for (const auto& [name, t] : reading.taps)
-                        if (name == d.source)
-                        {
-                            patch->taps_.push_back(t);
-                            break;
-                        }
+                    patch->taps_.push_back(tapAt(reading, d.source));
         }
         // The probe table (Patch.h, "Probes"): each main-module field of a netlist's module (a scalar or an array), its
         // elements and the probe fields' offsets in one, each checked against its type and the sizes; the netlists'
@@ -1298,6 +1366,7 @@ namespace playground
             patch->recipe_.probes.push_back(std::move(d));
         }
         patch->mapFields();
+        patch->layoutHash_ = hashLayout(program);   // run_function's "playing" (PatchCall.cpp)
         patch->reset(sampleRate);
         if (const Method stop = patch->stopped(); stop != Method::none)
         {
@@ -1346,13 +1415,31 @@ namespace playground
         PanelSpec panel = readGuiSpec(*gui, controls, base.fields, kInstrument, fileNames, notes);
         for (const PanelDisplay& d : panel.displays)
             if (d.tap >= 0)
-                for (const auto& [name, t] : base.taps)
-                    if (name == d.source)
-                    {
-                        taps.push_back(t);
-                        break;
-                    }
+                taps.push_back(tapAt(base, d.source));
         return panel;
+    }
+
+    Patch::Tap Patch::tapAt(const PanelBase& base, const std::string& source)
+    {
+        // The field, or an array's element (displaySource: "bands[2]", "grid[1][3]"), where FMinus laid it out.
+        Tap t;
+        t.type = Tap::Type::none;
+        const DisplaySource src = displaySource(base.fields, source);
+        if (src.problem != DisplaySource::Problem::none || src.field == nullptr)
+            return t;
+        const auto k = static_cast<std::size_t>(src.field - base.fields.data());
+        if (k >= base.places.size())
+            return t;
+        const FieldPlace& at = base.places[k];
+        const std::size_t wants = src.type == "double" ? sizeof(double) : src.type == "bool" ? 1 : sizeof(float);
+        if (src.element >= at.elements || at.each < wants)
+            return t;                                  // not as displaySource read it: none (the display shows 0)
+        t.offset = at.offset + src.element * at.each;
+        t.type = src.type == "float"  ? Tap::Type::real
+               : src.type == "double" ? Tap::Type::real64
+               : src.type == "int"    ? Tap::Type::integer : Tap::Type::boolean;
+        t.shared = at.shared;
+        return t;
     }
 
     void Patch::setDefaults(void* instance, std::string_view moduleName, int depth) const
@@ -1915,6 +2002,13 @@ namespace playground
                 std::memcpy(&v, at, sizeof v);
                 return std::isfinite(v) ? v : 0.0f;
             }
+            case Tap::Type::real64:
+            {
+                double v = 0.0;
+                std::memcpy(&v, at, sizeof v);
+                const float x = static_cast<float>(v);
+                return std::isfinite(x) ? x : 0.0f;
+            }
             case Tap::Type::integer:
             {
                 int32_t v = 0;
@@ -1923,6 +2017,8 @@ namespace playground
             }
             case Tap::Type::boolean:
                 return *at != 0 ? 1.0f : 0.0f;
+            case Tap::Type::none:
+                return 0.0f;
         }
         return 0.0f;
     }
@@ -1960,9 +2056,10 @@ namespace playground
                 out.push_back(std::move(f));
             }
 
-            // One element of type `type` (no array) at `offset`, of `size` bytes, as `path`.
+            // One element of type `type` (no array) at `offset`, of `size` bytes, as `path`, with its declaration's look.
             void element(const std::string& type, const std::string& path, std::size_t offset, std::size_t size,
-                         const std::string& module, const std::string& name, Patch::Field::Home home, int depth)
+                         const std::string& module, const std::string& name, Patch::Field::Home home, int depth,
+                         const FieldLook& look)
             {
                 Patch::Field f;
                 f.path = path;
@@ -1970,10 +2067,17 @@ namespace playground
                 f.name = name;
                 f.offset = offset;
                 f.home = home;
-                if (type == "float" || type == "int" || type == "bool")
+                f.look = look;
+                if (type == "float" || type == "double" || type == "int" || type == "bool")
                 {
-                    f.type = type == "float" ? Patch::Field::Type::real
-                           : type == "int"   ? Patch::Field::Type::integer : Patch::Field::Type::boolean;
+                    f.type = type == "float"  ? Patch::Field::Type::real
+                           : type == "double" ? Patch::Field::Type::real64
+                           : type == "int"    ? Patch::Field::Type::integer : Patch::Field::Type::boolean;
+                    if (size < (f.type == Patch::Field::Type::real64 ? sizeof(double) : f.type == Patch::Field::Type::boolean ? 1 : sizeof(float)))
+                    {
+                        leave(path + ": " + type + ", smaller than one");
+                        return;
+                    }
                     add(std::move(f));
                     return;
                 }
@@ -2017,27 +2121,45 @@ namespace playground
                             leave(path + ": " + f.type + ", a pointer, not followed");
                         continue;                      // Shared* and Host*: mapFields maps what they point at
                     }
-                    const std::size_t open = f.type.find('[');
-                    std::string type = f.type.substr(0, open);
-                    while (!type.empty() && type.back() == ' ')
-                        type.pop_back();
-                    std::size_t count = 1;
-                    for (std::size_t at = open; at != std::string::npos; at = f.type.find('[', at + 1))
-                        count *= static_cast<std::size_t>(std::max(1L, std::strtol(f.type.c_str() + at + 1, nullptr, 10)));
-                    if (open == std::string::npos)
+                    // An array's shape, as FMinus gives it (Module::Field::element and extents, outermost first:
+                    // float[4][16] is { 4, 16 }, its rows side by side); a 1-D or 2-D array of at most kMaxElements
+                    // elements is mapped whole, an element a path ("taps[3]", "gain[1][2]"), a larger one left out.
+                    const FieldLook look = lookOf(f.attributes);
+                    std::string type = f.element;
+                    if (type.empty())
                     {
-                        element(type, path, base + f.offset, f.size, m.name, f.name, home, depth);
+                        type = f.type.substr(0, f.type.find('['));
+                        while (!type.empty() && type.back() == ' ')
+                            type.pop_back();
+                    }
+                    if (f.extents.empty())
+                    {
+                        element(type, path, base + f.offset, f.size, m.name, f.name, home, depth, look);
                         continue;
                     }
+                    std::size_t count = 1;
+                    for (const std::size_t e : f.extents)
+                        count *= std::max<std::size_t>(e, 1);
                     if (count > kMaxElements)
                     {
-                        leave(path + ": " + f.type + ", more than " + std::to_string(kMaxElements) + " elements");
+                        leave(path + ": " + f.type + ", " + std::to_string(count) + " elements, more than "
+                              + std::to_string(kMaxElements));
                         continue;
                     }
                     const std::size_t each = f.size / count;
                     for (std::size_t k = 0; k < count; ++k)
-                        element(type, path + "[" + std::to_string(k) + "]", base + f.offset + k * each, each, m.name, f.name,
-                                home, depth);
+                    {
+                        // Element k's indexes, row-major: the last dimension's first.
+                        std::string at;
+                        std::size_t rest = k;
+                        for (std::size_t d = f.extents.size(); d-- > 0;)
+                        {
+                            const std::size_t e = std::max<std::size_t>(f.extents[d], 1);
+                            at = "[" + std::to_string(rest % e) + "]" + at;
+                            rest /= e;
+                        }
+                        element(type, path + at, base + f.offset + k * each, each, m.name, f.name, home, depth, look);
+                    }
                 }
             }
         };
@@ -2191,6 +2313,12 @@ namespace playground
                 float v = 0.0f;
                 std::memcpy(&v, at, sizeof v);
                 return static_cast<double>(v);
+            }
+            case Field::Type::real64:
+            {
+                double v = 0.0;
+                std::memcpy(&v, at, sizeof v);
+                return v;
             }
             case Field::Type::integer:
             {

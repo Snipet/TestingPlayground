@@ -46,7 +46,8 @@ namespace playground
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them
-        // (set_checks without checks only lists them, and tune_dials with a sweep only measures).
+        // (set_checks without checks only lists them, tune_dials with a sweep only measures, and write_file with `to`
+        // only exports the files).
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
                                                    "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
         constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
@@ -674,7 +675,8 @@ namespace playground
         };
 
         // The render's settings as a tool's input schema has them (measure_output's own, which the others share); with
-        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too.
+        // `metrics` (the tools that measure them: not view_sound) an instrument's base_hz too, and hold_seconds' cap the
+        // numbers' (Measure.h, "How long a render may be": 300 s; a picture's 10).
         void addRenderProps(juce::var& props, bool metrics = true)
         {
             auto* o = props.getDynamicObject();
@@ -690,8 +692,10 @@ namespace playground
                 if (metrics)
                     o->setProperty("base_hz", prop("number", "off_order_db's base (default: the expected pitch)"));
             }
-            o->setProperty("hold_seconds", prop("number", kInstrument ? "How long the notes are held; default 1, at most 10"
-                                                                      : "How long the input plays; default 1, at most 10"));
+            o->setProperty("hold_seconds", prop("number", kInstrument ? metrics ? "How long the notes are held; default 1, at most 300"
+                                                                                : "How long the notes are held; default 1, at most 10"
+                                                          : metrics ? "How long the input plays; default 1, at most 300"
+                                                                    : "How long the input plays; default 1, at most 10"));
             o->setProperty("tail_seconds", prop("number", kInstrument ? "How long to go on after the release; default 1.5, "
                                                                         "at most 10"
                                                                       : "How long to go on after it (silence); default 1.5, "
@@ -1694,7 +1698,7 @@ namespace playground
                 if (!goalOf(c, k.goal, why) || static_cast<int>(checks_.size()) >= kMaxChecks)
                     continue;
                 k.label = str(c, "label");
-                k.request = scenario::renderOf(c);
+                k.request = scenario::renderOf(c, nullptr, scenario::forNumbers());
                 if (!dialsFromOf(c.getProperty("dials_from", juce::var()), k.dialsFrom))
                     k.dialsFrom = measure::DialsFrom::current;
                 if (const auto* shot = c.getProperty("snapshot", juce::var()).getDynamicObject())
@@ -1948,6 +1952,23 @@ namespace playground
         }
     }
 
+    measure::Cancel ChatAgent::renderCancel(std::string doing)
+    {
+        measure::Cancel c;
+        c.asked = [this] { return cancel_.load(); };
+        c.seconds = measure::kRenderSeconds;                // the call's, from now: every Session it renders in shares it
+        c.start = std::chrono::steady_clock::now();
+        auto said = std::make_shared<std::chrono::steady_clock::time_point>();
+        c.progress = [this, what = std::move(doing), said](double done, double length) {
+            const auto now = std::chrono::steady_clock::now();
+            if (length < 30.0 || now - *said < std::chrono::milliseconds(250))   // a short render says nothing more
+                return;
+            *said = now;
+            setActivity(what + ": " + std::to_string(static_cast<long>(done)) + " of " + std::to_string(std::lround(length)) + " s");
+        };
+        return c;
+    }
+
     void ChatAgent::startWorker()
     {
         worker_ = std::thread([this] { runTurn(); });
@@ -2067,15 +2088,22 @@ namespace playground
                                                                  "every file)") },
                                         { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
                        {}));
+        // files, from and to (ChatImport.cpp): several files as one change, a file or folder of the user's brought in,
+        // the editor's files out to a folder; in place of name and content, so nothing is required.
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
                        "edit_file for a change to part of a file. The editor shows the file and the user can undo the "
                        "change there. A write does not play anything: call run_program after the files are ready.",
-                       claude::object({ { "name", prop("string", "The file's name: letters, digits, _, - and ., not "
-                                                                  "starting with '.', such as program.fm or "
-                                                                  "filters.fm") },
-                                        { "content", prop("string", "The file's whole text") } }),
-                       { "name", "content" }));
+                       claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
+                                        { "content", prop("string", "The file's whole text") },
+                                        { "files", claude::object({ { "type", "array" },
+                                                                    { "description", "[{name, content}] in place of those two: "
+                                                                                     "one change, all or none" } }) },
+                                        { "from", prop("string", "A file or folder on this Mac the user named: its program "
+                                                                 "files come in (text, 256 KB each at most)") },
+                                        { "to", prop("string", "A name: the editor's files go to a new folder of it on this "
+                                                               "Mac") } }),
+                       {}));
         {
             // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
             // unified diff of them (ChatFiles.cpp); name is then left out, so none is required. Its two forms as anyOf,
@@ -2109,9 +2137,9 @@ namespace playground
                                              { "maxItems", kMaxCircuitOps },
                                              { "description", "One command a line, at most 64 (the CIRCUITS guide has the grammar)" } });
             tools.add(tool("edit_circuit",
-                           "Change a .cir netlist the way the schematic editor does: add, place, connect, disconnect, set, "
-                           "rename, delete and lay out parts, one command a line in ops, applied together as one step the "
-                           "user can undo. All or none: the first command that fails is named and nothing changes. A part "
+                           "Change a .cir netlist's parts and wires as the schematic editor does, one command a line in "
+                           "ops, as one step the user can undo. Its commands add, place, connect, disconnect, set, rename, "
+                           "delete and lay out parts. All or none: the first command that fails is named and nothing changes. A part "
                            "added without at is placed beside what it connects to, and every wire is routed for you; the "
                            "netlist lines change as little as they can, and the drawing (its *@ lines) is written again. "
                            "Its result says what each command did, the netlist lines it changed, the circuit compiler's "
@@ -2133,13 +2161,11 @@ namespace playground
             juce::Array<juce::var> names;
             for (const LibraryFile& f : kLibrary)
                 names.add(juce::String(f.name));
-            juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
-            name.getDynamicObject()->setProperty("enum", names);
+            juce::var name = claude::object({ { "type", "string" }, { "enum", names } });   // the enum names them
             tools.add(tool("add_library_file",
-                           "Add a ready-made building block (THE LIBRARY in your instructions: FMinus files, and .cir "
-                           "netlists that become modules) to the editor as a tab, and get its whole text back; #include "
-                           "it in the program to use it. A file of that name "
-                           "in the editor already is left as it is.",
+                           "Add a building block from THE LIBRARY (an FMinus file, or a .cir netlist that becomes a module) "
+                           "to the editor as a tab and get its whole text; #include it in the program to use it. A file of "
+                           "that name in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
         tools.add(tool("run_program",
@@ -2163,7 +2189,7 @@ namespace playground
             if constexpr (!kInstrument)
             {
                 o->setProperty("hold_seconds", prop("number", "How long the sine and the noise play; default 1, "
-                                                              "at most 10"));
+                                                              "at most 300"));
                 o->setProperty("tail_seconds", prop("number", "How long to go on after the impulse; default 1.5, "
                                                               "at most 10"));
             }
@@ -2173,6 +2199,8 @@ namespace playground
             o->setProperty("spectrum", claude::object({ { "enum", juce::Array<juce::var>{ "octave", "third", "semitone" } },
                                                         { "description", kInstrument ? "Band levels while held, as data"
                                                                                      : "The noise's gain in bands, as data" } }));
+            // Where the CPU time goes (Measure.h's Request::profile, dsp/Profile.h).
+            o->setProperty("profile", prop("boolean", "CPU time by function"));
             tools.add(tool("measure_output",
                            "Render the program in the editor offline and measure what comes out. Its report gives "
                            "the metrics (CHECKING YOUR WORK) in words, with the strongest partials and the largest "
@@ -2321,8 +2349,8 @@ namespace playground
                                                                              "170), then the best so far"));
             tools.add(tool("tune_dials",
                            "Find values of up to eight float dials that bring measurements to goals by rendering "
-                           "offline (as measure_output does) and searching, instead of guessing; or sweep one dial "
-                           "over values: the goals' metrics at each, side by side. Goals are "
+                           "offline and searching; or sweep one dial over values: the goals' metrics at each, side by "
+                           "side. Goals are "
                            "metrics (CHECKING YOUR WORK) with min, max "
                            "or a target (a sweep's may be a metric alone). The best values go on the dials, as set_dial "
                            "sets them, unless apply is false; the result gives the dials and the measurements before "
@@ -2331,6 +2359,7 @@ namespace playground
         }
         tools.add(compareDefinition());
         tools.add(traceDefinition());
+        tools.add(functionDefinition());             // run_function (ChatFunction.cpp)
         {
             juce::var option = claude::object(
                 { { "type", "object" },
@@ -3001,8 +3030,11 @@ namespace playground
                 const bool listing = str(use, "name") == "set_checks" && (asked.isVoid() || asked.isUndefined());
                 const juce::var swept = use.getProperty("input", juce::var()).getProperty("sweep", juce::var());
                 const bool sweep = str(use, "name") == "tune_dials" && !swept.isVoid() && !swept.isUndefined();
-                // set_checks' list and tune_dials' sweep change nothing (the handlers' own tests)
-                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep)
+                const juce::var exported = use.getProperty("input", juce::var()).getProperty("to", juce::var());
+                const bool exportOnly = str(use, "name") == "write_file" && !exported.isVoid() && !exported.isUndefined();
+                // set_checks' list, tune_dials' sweep and write_file's export (`to`) change nothing (the handlers' own
+                // tests): no checks run for them when the reply ends
+                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep && !exportOnly)
                     for (const char* c : kChangingTools)
                         worked = worked || str(use, "name") == c;
                 results.add(result);
@@ -3276,7 +3308,9 @@ namespace playground
             return {};
         setActivity("Checking");
         std::string errors;
-        const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_, &errors);
+        const measure::Cancel cut = renderCancel("Checking");
+        const std::vector<measure::CheckResult> results = scenario::evaluate(host_.chatDraft().files, checks, currentDials(), host_,
+                                                                             &errors, &cut);
         // A failing check's dials off their reference, as the panel says them (the options of the program that plays).
         const Controls playing = host_.chatDials();
         const std::array<std::vector<std::string>, kMaxControls> options = host_.chatDialOptions();
@@ -3392,8 +3426,9 @@ namespace playground
             { "tune_dials", "Tune the dials", false, false },     { "get_status", "Check the plugin", true, false },
             { "listen", "Listen live", true, false, "debugging" },
             { "compare", "Compare two sounds", true, false, "debugging" },
-            { "trace", "Trace a problem", true, false, "debugging" },
+            { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
             { "capture", "Record what you play", true, false, "debugging" },
+            { "run_function", "Call a function", true, false, "debugging" },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3984,70 +4019,10 @@ namespace playground
 
         if (name == "read_file")
             return readFileText(input, isError);           // ChatFiles.cpp
+        if (name == "run_function")
+            return runFunction(input, isError);            // ChatFunction.cpp
         if (name == "write_file")
-        {
-            std::string file, content;
-            if (!stringArg("name", file) || !stringArg("content", content))
-                return fail("write_file needs a name and the content");
-            if (!validFileName(file))
-                return fail("'" + file + "' cannot name a file: use letters, digits, _, - and ., not starting with "
-                            "'.', at most " + std::to_string(kMaxNameLength) + " characters");
-            Draft d = host_.chatDraft();
-            int i = findFile(d, file);
-            int keptLines = 0;
-            if (i < 0)
-            {
-                if (d.files.size() >= kMaxFiles)
-                    return fail("The editor holds at most " + std::to_string(kMaxFiles) + " files; delete one first");
-                d.files.push_back({ file, content });
-                i = static_cast<int>(d.files.size()) - 1;
-            }
-            else
-            {
-                // A netlist written without its drawing keeps the old one (its *@ lines, put back before .end): the
-                // places the user gave its parts stay; a line naming a part that is gone goes at the next drawing.
-                const std::string& old = d.files[static_cast<std::size_t>(i)].text;
-                if (isCircuitFile(file) && layoutLines(content) == 0 && (keptLines = layoutLines(old)) > 0)
-                {
-                    std::string block;
-                    std::size_t at = 0;
-                    while (at <= old.size())
-                    {
-                        const std::size_t end = std::min(old.find('\n', at), old.size());
-                        std::string_view line = std::string_view(old).substr(at, end - at);
-                        if (!line.empty() && line.back() == '\r')
-                            line.remove_suffix(1);
-                        if (cir::isLayoutLine(line))
-                            block += std::string(line) + "\n";
-                        at = end + 1;
-                    }
-                    content = cir::withBlock(content, block);
-                }
-                d.files[static_cast<std::size_t>(i)].text = content;
-            }
-            d.active = i;
-            setActivity("Writing " + file);
-            host_.chatSetDraft(d);
-            std::string version;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                markSeen(file, content);
-                version = keepVersion(file, content);
-            }
-            const int lines = lineCount(content);
-            const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
-            note("wrote " + file + " (" + count + ")");
-            std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
-            if (keptLines > 0)
-                out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
-            bool included = i == 0;
-            for (const SourceFile& f : d.files)
-                if (f.text.find("#include \"" + file + "\"") != std::string::npos)
-                    included = true;
-            if (!included)
-                out += " No file #includes it yet.";
-            return out;
-        }
+            return writeFileText(input, isError);          // ChatImport.cpp
         if (name == "edit_file")
             return editFileText(input, isError);           // ChatFiles.cpp
         if (name == "edit_circuit")
@@ -4350,28 +4325,23 @@ namespace playground
         {
             setActivity("Measuring the sound");
             std::string why;
-            measure::Request req = scenario::renderOf(input, &why);
+            measure::Request req = scenario::renderOf(input, &why, scenario::forNumbers());
             bool defaults = false;
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 req.current = currentDials();
-            if (const juce::var sp = input.getProperty("spectrum", juce::var()); why.empty() && !sp.isVoid() && !sp.isUndefined())
-            {
-                const juce::String kind = sp.toString();
-                req.spectrum = !sp.isString()     ? measure::Bands::none
-                             : kind == "octave"   ? measure::Bands::octave
-                             : kind == "third"    ? measure::Bands::third
-                             : kind == "semitone" ? measure::Bands::semitone
-                                                  : measure::Bands::none;
-                if (req.spectrum == measure::Bands::none)
-                    why = "spectrum is octave, third or semitone: the bands' width.";
-            }
+            if (why.empty())
+                scenario::spectrumOf(input, req.spectrum, why);
+            if (why.empty())
+                scenario::profileOf(input, req.profile, why);
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
             if (!why.empty() || !scenario::resolve(req, host_, why) || !scenario::tryEdits(input, files, trials, why))
                 return fail(why);
-            const std::string report = measure::run(files, req);
+            bool cut = false;
+            const std::string report = measure::run(files, req, renderCancel("Measuring the sound"), &cut);
             note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
-                                                             : "measured the sound");
+                 : cut                                     ? "measuring the sound was cut short"
+                                                           : "measured the sound");
             return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")
@@ -4455,7 +4425,7 @@ namespace playground
                 k.label = str(c, "label");
                 if (k.label.empty())
                     k.label = k.goal.metric;
-                k.request = scenario::renderOf(c, &why);
+                k.request = scenario::renderOf(c, &why, scenario::forNumbers());
                 if (!why.empty())
                     return "Check " + std::to_string(i + 1) + ": " + why + " Nothing was changed.";
                 if (k.request.fromCapture)                   // gone after a reload: it could never pass again
@@ -4605,8 +4575,9 @@ namespace playground
         {
             measure::TuneRequest q;
             std::string unfit;
-            q.render = scenario::renderOf(input, &unfit);
+            q.render = scenario::renderOf(input, &unfit, scenario::forNumbers());
             q.render.current = currentDials();
+            q.cancelled = [this] { return cancel_.load(); };
             if (!unfit.empty() || !scenario::resolve(q.render, host_, unfit))
                 return fail(unfit);
             if (const auto* tune = input.getProperty("tune", juce::var()).getArray())
@@ -4650,10 +4621,16 @@ namespace playground
                 return !cancel_.load();
             };
             const measure::TuneResult t = measure::tune(host_.chatDraft().files, q);
+            bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
+            }
             if (!t.error.empty())
             {
                 note(sweeping ? "sweeping failed" : "tuning failed");
-                return fail(t.error);
+                // Its first render cancelled (TuneRequest::cancelled): nothing was tuned, and nothing was set.
+                return fail(t.error + (dropped ? " Claude Desktop stopped this call, so the dials are left exactly as they were." : ""));
             }
             if (sweeping)
             {
@@ -4665,11 +4642,6 @@ namespace playground
             for (const auto& [dial, v] : t.best)
                 tuned += (tuned.empty() ? "" : ", ") + dial;
             const int met = static_cast<int>(std::count(t.bestMet.begin(), t.bestMet.end(), true));
-            bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
-            }
             if (dropped)
                 out += "Claude Desktop stopped this call, so the dials are left exactly as they were (set_dial sets the "
                        "values above).";

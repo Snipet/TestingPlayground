@@ -85,6 +85,9 @@ namespace playground::measure
     // or at the defaults, as its dialsFrom says: one compile, one render for the checks that share one. A program that
     // does not compile measures none (`errors`: its messages). A check whose dials or moves name a dial the program
     // has not fails, saying so, whatever the metric gives: rendered without that dial it measures another sound.
+    // `cancel`: each render asks it as it goes (Measure.h's Session::setCancel, its time limit over them all); a render
+    // cancelled leaves its checks and those after it not measured, saying how far it got.
     std::vector<CheckResult> evaluate(const Sources& files, const std::vector<Check>& checks,
-                                      const std::map<std::string, float>& current, std::string* errors = nullptr);
+                                      const std::map<std::string, float>& current, std::string* errors = nullptr,
+                                      const Cancel* cancel = nullptr);
 }

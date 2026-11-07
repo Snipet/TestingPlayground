@@ -6,7 +6,8 @@
 // "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
 // defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
 // Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
-// rate). Its result is at most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
+// rate). Its result is at most thirteen lines (each side's render hash one of them), and a picture when asked
+// (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -14,6 +15,7 @@
 #include "plugin/SoundPicture.h"
 
 #include "dsp/Compare.h"
+#include "dsp/Export.h"
 #include "dsp/SoundView.h"
 #include "fminus/CirDoc.h"
 
@@ -246,7 +248,8 @@ namespace playground
             { { "name", "compare" },
               { "description",
                 "Compare two versions of the sound rendered offline alike: identical bits, or how and where they differ "
-                "in level, delay, bands, metrics and code. It changes nothing.\n\n"
+                "in level, delay, bands, metrics and code.\n\n"
+                "It changes nothing. "
                 "a, b: playing is the running program's own code (not the frozen copy it plays once its dials hold still); "
                 "previous_run what played before the last run that changed it ({a: \"previous_run\", b: \"playing\"}: "
                 "what that run changed); version:N is the open project's (one not kept lists those kept); project:Name@N, "
@@ -285,7 +288,9 @@ namespace playground
         if (input.hasProperty("window"))
             return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
                         "tune_dials measure one).", true);
-        measure::Request req;
+        // Its numbers alone render up to 300 s; with the picture, a picture's 10 s (Measure.h, "How long a render may be").
+        const bool picture = static_cast<bool>(input.getProperty("picture", false));
+        measure::Request req = picture ? measure::Request{} : scenario::forNumbers();
         if (!scenario::read(input, req, &why))
             return done(why, true);
         scenario::Captured recording;
@@ -343,6 +348,8 @@ namespace playground
             }
         }
         B.request.rate = rateB;
+        if (!scenario::fits(B.request, why))             // resolve() held A's to A's rate; B's at its own
+            return done("B at b_rate: " + why, true);
         int trials = 0;
         if (input.hasProperty("try_edits") && b.capture)
             return done("try_edits apply to b, which is the recording: put the program in b.", true);
@@ -350,6 +357,7 @@ namespace playground
             return done(why, true);
         measure::CompareOptions options;
         options.detail = static_cast<bool>(input.getProperty("detail", false));
+        options.cancel = renderCancel("Comparing the sounds");
         const measure::Comparison c = measure::compare(A, B, options);
         if (!c.error.empty())
             return done(scenario::trialLine(trials) + c.error, true);
@@ -367,6 +375,9 @@ namespace playground
             out += "(The recording: " + recording.about + ")\n";
         for (const std::string& line : c.lines)
             out += line + "\n";
+        // What each rendered, as bits (Export.h): a render elsewhere with either hash is the same.
+        out += "Render hashes: A " + c.hashA.substr(0, measure::kHashShown) + ", B " + c.hashB.substr(0, measure::kHashShown)
+             + " (SHA-256 of each side's float32 samples, L R interleaved).\n";
         if (!a.capture && !b.capture)
         {
             std::string dials;
@@ -393,7 +404,7 @@ namespace playground
             }
             out += "Source, B against A: " + files + "; " + (dials.empty() ? std::string("the same dials") : "dials " + dials) + ".\n";
         }
-        if (!static_cast<bool>(input.getProperty("picture", false)))
+        if (!picture)
             return done(out, false);
 
         // The picture: both levels over time and both spectra, on one scale.

@@ -33,6 +33,12 @@
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
 //             once for every control that names it; a mistake in them is a note on its line and column
+//   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
+//             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
+//             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
+//             unit too long for a display cut where a character starts, with a note on its line; the Patch's taps (one a
+//             display, in order) reading what the program wrote in a double, an element and a 2-D array's (live=), and
+//             again after a panel's edit (Patch::readPanel over the recipe) that moves them about and names others
 #include "Probe.h"
 
 #include "fminus/GuiSpec.h"
@@ -504,6 +510,117 @@ panel background=#1d1b19 accent=orange {
         // Labelled as said, else by Shared's field's own name (not "SHARED->LEVEL"), else by `as`'s name.
         P.eq("shared.pragma_labels", pd.size() == 3 && pd[0].label == "N" && pd[1].label == "level" && pd[1].name == "shared->level"
                                          && pd[2].label.empty() && pd[2].name == "lit" ? 1 : 0, 1);
+    }
+
+    // ---- ELEMENTS: a double, an array's element, a field's attributes as a display's defaults ---------------------------
+    {
+        const std::string body = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                 "    double temp [[ui::label(\"TEMP\")]] [[fminus::range(80, 100)]];\n"
+                                 "    float bands [[ui::unit(\"dB\")]][4];\n"
+                                 "    float gr [[ui::unit(\"dB\")]] [[ui::decimals(2)]];\n";
+        const std::string program = kInstrument
+            ? "module Voice\n{\n" + body + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + body + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled c = compile({ { pg::kProgramName, program },
+                                     { "panel.gui", "meter temp\nnumber bands[1]\nnumber gr unit=\"\" decimals=0\n"
+                                                    "number gr label=\"MINE\"\nknob cutoff live=bands[2]\n" } });
+        std::printf("elements: %s", c.notes.c_str());
+        const std::vector<pg::PanelDisplay>& d = c.panel.displays;
+        P.eq("elements.compiles", c.ok ? 1 : 0, 1);
+        P.eq("elements.count", static_cast<int64_t>(d.size()), 5);
+        if (d.size() == 5)
+        {
+            P.eq("elements.double_look", d[0].source == "temp" && d[0].label == "TEMP" && d[0].lo == 80.0f && d[0].hi == 100.0f
+                                             && !d[0].integer && d[0].tap == 0 ? 1 : 0, 1);
+            P.eq("elements.element_unit", d[1].source == "bands[1]" && d[1].unit == "dB" && d[1].tap == 1 ? 1 : 0, 1);
+            P.eq("elements.own_beats_look", d[2].unit.empty() && d[2].decimals == 0 ? 1 : 0, 1);
+            P.eq("elements.number_look", d[3].label == "MINE" && d[3].unit == "dB" && d[3].decimals == 2 ? 1 : 0, 1);
+            P.eq("elements.live_element", d[4].hidden && d[4].source == "bands[2]" ? 1 : 0, 1);
+        }
+        P.eq("elements.no_note", !has(c.notes, "panel.gui:") ? 1 : 0, 1);
+
+        // A field's label and unit too long for a display: cut where a character starts (the last two-byte one left
+        // out whole), with a note on the display's line.
+        const std::string longLabel = "A\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89";   // 15 bytes
+        const std::string longBody = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                     "    float bend [[ui::label(\"" + longLabel + "\")]] [[ui::unit(\"semitones\")]];\n";
+        const std::string longProgram = kInstrument
+            ? "module Voice\n{\n" + longBody + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + longBody + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled cut = compile({ { pg::kProgramName, longProgram }, { "panel.gui", "knob cutoff\nnumber bend\n" } });
+        std::printf("elements cut: %s", cut.notes.c_str());
+        P.eq("elements.long_look_cut", cut.panel.displays.size() == 1 && cut.panel.displays[0].label == longLabel.substr(0, 13)
+                                           && cut.panel.displays[0].unit == "semiton" ? 1 : 0, 1);
+        P.eq("elements.long_look_notes", has(cut.notes, "panel.gui:2:") && has(cut.notes, "(bend's ui::label) is cut to 14 characters")
+                                             && has(cut.notes, "the unit \"semitones\" (bend's ui::unit) is cut to 7 characters") ? 1 : 0, 1);
+
+        // The Patch's taps through a .gui file (Patch::readPanel): one a display, in its order, each reading what the
+        // program wrote where FMinus put it (a double rounded to a float, an array's element, a 2-D array's by live=);
+        // and again after a panel's edit (a RUN of the .gui alone: readPanel over the compile's recipe, the Engine's
+        // taps then, Engine::setTaps) that moves the displays about and names other elements.
+        const std::string tapFields = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                      "    double temp;\n    float bands[4];\n    float grid[2][3];\n    float gr;\n";
+        const std::string tapWrites = "        temp = 90.5;\n        for (int k = 0; k < 4; ++k)\n            bands[k] = k + 0.5f;\n"
+                                      "        for (int r = 0; r < 2; ++r)\n            for (int c = 0; c < 3; ++c)\n"
+                                      "                grid[r][c] = 10 * r + c;\n        gr = 6;\n";
+        const std::string tapProgram = kInstrument
+            ? "module Voice\n{\n" + tapFields + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + tapWrites + "        return true;\n    }\n};\n"
+            : "module Effect\n{\n" + tapFields + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+              + tapWrites + "    }\n};\n";
+        const pg::Sources tapFiles = { { pg::kProgramName, tapProgram },
+                                       { "panel.gui", "meter temp\nnumber bands[1]\nnumber gr\nknob cutoff live=grid[1][2]\n" } };
+        pg::Patch::Result tr = pg::Patch::compile(tapFiles, 48000.0f);
+        P.eq("elements.taps_compile", tr.patch != nullptr ? 1 : 0, 1);
+        if (!tr.errors.empty())
+            std::printf("errors:\n%s", tr.errors.c_str());
+        if (tr.patch != nullptr)
+        {
+            std::vector<float> l(16, 0.0f), rr(16, 0.0f);
+            if constexpr (kInstrument)
+            {
+                tr.patch->start(0, 60.0f, 0.8f);
+                tr.patch->render(0, l.data(), rr.data(), 16);
+            }
+            else
+                tr.patch->process(l.data(), rr.data(), 16);
+            const auto tapOf = [&](const std::string& source) {
+                for (const pg::PanelDisplay& x : tr.patch->panel().displays)
+                    if (x.source == source && x.tap >= 0)
+                        return static_cast<double>(tr.patch->tap(x.tap, 0));
+                return -1.0;
+            };
+            std::printf("elements: %d taps: temp %g, bands[1] %g, gr %g, grid[1][2] %g\n", tr.patch->taps(), tapOf("temp"),
+                        tapOf("bands[1]"), tapOf("gr"), tapOf("grid[1][2]"));
+            P.eq("elements.patch_taps", tr.patch->taps(), 4);
+            P.near("elements.tap_double", tapOf("temp"), 90.5, 0.0);
+            P.near("elements.tap_element", tapOf("bands[1]"), 1.5, 0.0);
+            P.near("elements.tap_field", tapOf("gr"), 6.0, 0.0);
+            P.near("elements.tap_live_element_2d", tapOf("grid[1][2]"), 12.0, 0.0);
+
+            const pg::Patch::Recipe recipe = tr.patch->recipe();
+            pg::Sources edited = tapFiles;
+            edited[1].text = "knob cutoff\nnumber gr\nnumber grid[0][2]\nmeter temp\nnumber bands[3]\n";
+            pg::Controls controls{};
+            std::vector<pg::Patch::Tap> taps;
+            std::string notes;
+            const pg::PanelSpec spec = pg::Patch::readPanel(recipe.panel, recipe.controls, edited, controls, taps, notes);
+            const auto editedTap = [&](const std::string& source) {
+                for (const pg::PanelDisplay& x : spec.displays)
+                    if (x.source == source && x.tap >= 0 && x.tap < static_cast<int>(taps.size()))
+                        return static_cast<double>(tr.patch->tapOf(taps[static_cast<std::size_t>(x.tap)], 0));
+                return -1.0;
+            };
+            std::printf("elements edited: %zu taps: gr %g, grid[0][2] %g, temp %g, bands[3] %g%s%s\n", taps.size(), editedTap("gr"),
+                        editedTap("grid[0][2]"), editedTap("temp"), editedTap("bands[3]"), notes.empty() ? "" : "; notes: ", notes.c_str());
+            P.eq("elements.edit_taps", static_cast<int64_t>(taps.size()), 4);
+            P.near("elements.edit_tap_field", editedTap("gr"), 6.0, 0.0);
+            P.near("elements.edit_tap_element_2d", editedTap("grid[0][2]"), 2.0, 0.0);
+            P.near("elements.edit_tap_double", editedTap("temp"), 90.5, 0.0);
+            P.near("elements.edit_tap_element", editedTap("bands[3]"), 3.5, 0.0);
+        }
     }
 
     // ---- LIMITS --------------------------------------------------------------------------------------------------------

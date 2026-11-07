@@ -25,7 +25,7 @@ namespace playground::lang
                                                                  "else",   "enum",     "false",    "for",      "if",
                                                                  "module", "param",    "parallel", "restrict", "return",
                                                                  "sizeof", "switch",   "this",     "true",     "while" };
-        constexpr std::array<std::string_view, 8> kTypeWords = { "bool", "float", "float2", "float4", "float8",
+        constexpr std::array<std::string_view, 9> kTypeWords = { "bool", "double", "float", "float2", "float4", "float8",
                                                                  "int", "poly", "void" };
 
         // ---- the builtins: name, result, parameters, what it does ---------------------------------------------------
@@ -49,6 +49,14 @@ namespace playground::lang
             { "logf", "float", "float x", "The natural logarithm, by the math mode. A float vector too." },
             { "tanhf", "float", "float x", "The hyperbolic tangent, by the math mode: a soft clipper, -1 to 1. A float "
                                            "vector too." },
+            // C's double functions that are one instruction: exact, the same in every math mode, on doubles only (an
+            // argument converts to one). sinf and the others take a double rounded to a float.
+            { "sqrt", "double", "double x", "The square root of a double, exact. sqrtf is a float's." },
+            { "fabs", "double", "double x", "A double's absolute value, exact. fabsf is a float's." },
+            { "floor", "double", "double x", "The largest whole number not above a double x, exact. floorf is a float's." },
+            { "fmin", "double", "double x, double y", "The smaller of two doubles (a NaN argument is ignored), exact." },
+            { "fmax", "double", "double x, double y", "The larger of two doubles (a NaN argument is ignored), exact." },
+            { "fma", "double", "double x, double y, double z", "x * y + z rounded once, as C's: doubles, exact." },
             { "malloc", "void*", "int size", "size bytes, zeroed and aligned to 64 (null when there are none). It "
                                              "allocates: call it in init, never in process, which FMinus refuses." },
             { "calloc", "void*", "int count, int size", "count elements of size bytes, zeroed: calloc(n, sizeof(float)) "
@@ -152,7 +160,13 @@ namespace playground::lang
             { "return", "return value;", "" },
             { "true", "true", "A bool: 1." },
             { "false", "false", "A bool: 0." },
-            { "float", "float", "IEEE single precision. In FMinus a constant without the f suffix is a float too." },
+            { "float", "float", "IEEE single precision. In FMinus a constant without the f suffix is a float too, unless "
+                                "its arithmetic has a double." },
+            { "double", "double",
+              "IEEE double precision, 8 bytes: for an accumulator, a clock or slow state a float's 24 bits round away "
+              "(t += 1e-6 at 90 never moves a float). A constant without the f suffix is a double only where its "
+              "arithmetic has one (double y = x * 0.1; d < 0.1), else a float as always. No double vectors, no double "
+              "sinf: sinf(d) computes in float; sqrt fabs floor fmin fmax fma are a double's builtins." },
             { "int", "int", "32 bits, signed; / and % as C's (1 / 2 is 0)." },
             { "bool", "bool", "0 or 1; a number becomes x != 0." },
             { "void", "void", "No value: a function's result. void* is an address with no type." },
@@ -170,12 +184,17 @@ namespace playground::lang
         };
         constexpr AttributeInfo kAttributes[] = {
             { "fminus::range", "fminus::range($0)", "A param's range: what its dial spans, low and high (FMinus does "
-                                                    "not clamp to it)." },
+                                                    "not clamp to it). A field's: what its displays span, and trace says it." },
             { "fminus::default", "fminus::default($0)", "A param's value when the program starts, and a double-click "
                                                         "on its dial." },
             { "clang::nonblocking", "clang::nonblocking", "May run on the audio thread: FMinus checks it cannot "
                                                           "allocate, lock or call what is not nonblocking itself." },
             { "clang::nonallocating", "clang::nonallocating", "Cannot reach malloc, calloc or free (checked)." },
+            // The plugin's own, on a field (PanelSpec.h's FieldLook): FMinus passes them on unread.
+            { "ui::unit", "ui::unit(\"$0\")", "A field's unit (\"dB\", \"Hz\"): its number display's readout shows it, and "
+                                             "trace's lines say it." },
+            { "ui::label", "ui::label(\"$0\")", "A field's label: what its displays are titled when the panel gives none." },
+            { "ui::decimals", "ui::decimals($0)", "A field's places, 0 to 4: its number display's, when decimals= gives none." },
         };
 
         constexpr std::string_view kPanelWords[] = { "section", "row", "label", "small", "style", "options", "color",
@@ -770,6 +789,84 @@ namespace playground::lang
                 return i;
             }
 
+            // After a declarator's name at j, C23's and FMinus's: its attribute specifiers ([[...]], what it declares
+            // carries them), then its sizes ([N], or [R][C]: a 2-D array's, rows first), and specifiers after those
+            // too (FMinus refuses them there; read so the index stays whole). `extent` gains the sizes as written
+            // ("[4][16]"), `attrs` the attributes and `attrText` their text ("[[ui::unit(\"dB\")]]"). The index after.
+            int declaratorTail(int j, std::string& extent, std::vector<Attribute>* attrs, std::string* attrText) const
+            {
+                while (j < n_)
+                {
+                    if (is(j, "[") && is(j + 1, "[") && partner(j) > j + 1)
+                    {
+                        const int close = partner(j);
+                        if (attrs != nullptr)
+                            readAttributes(j + 2, close - 1, *attrs);
+                        if (attrText != nullptr)
+                            *attrText += (attrText->empty() ? "" : " ") + joinTokens(t_, j, close + 1);
+                        j = close + 1;
+                        continue;
+                    }
+                    if (is(j, "[") && partner(j) > j)
+                    {
+                        extent += joinTokens(t_, j, partner(j) + 1);
+                        j = partner(j) + 1;
+                        continue;
+                    }
+                    break;
+                }
+                return j;
+            }
+
+            // The attributes of one specifier's tokens [from, to) (inside its [[ ]]), in order: `ns::name` or `name`,
+            // with its arguments, comma-separated, each a string's characters (adjacent ones joined) or a number's
+            // spelling. A name without a namespace that is none of C23's is dropped, as FMinus drops it (warning).
+            void readAttributes(int from, int to, std::vector<Attribute>& out) const
+            {
+                static constexpr std::string_view kStandard[] = { "deprecated", "fallthrough", "maybe_unused", "nodiscard",
+                                                                  "noreturn", "_Noreturn", "unsequenced", "reproducible" };
+                int k = from;
+                while (k < to)
+                {
+                    Attribute a;
+                    while (k < to && !is(k, ",") && !is(k, "("))
+                        a.name += std::string(tok(k++).text);
+                    if (is(k, "(") && partner(k) > k && partner(k) < to)
+                    {
+                        const int close = partner(k);
+                        int arg = k + 1;
+                        while (arg < close)
+                        {
+                            int e = arg;
+                            while (e < close && !is(e, ","))
+                                e = (is(e, "(") || is(e, "[")) && partner(e) > e ? partner(e) + 1 : e + 1;
+                            std::string text;
+                            bool strings = e > arg;
+                            for (int q = arg; q < e; ++q)
+                                strings = strings && tok(q).kind == Tok::string;
+                            if (strings)
+                                for (int q = arg; q < e; ++q)
+                                    text += stringValue(tok(q).text);
+                            else
+                                text = joinTokens(t_, arg, e);
+                            a.args.push_back(std::move(text));
+                            arg = e + 1;
+                        }
+                        k = close + 1;
+                    }
+                    std::string bare = a.name;
+                    if (bare.size() > 4 && bare.rfind("__", 0) == 0 && bare.compare(bare.size() - 2, 2, "__") == 0)
+                        bare = bare.substr(2, bare.size() - 4);
+                    const bool kept = a.name.find("::") != std::string::npos
+                                   || std::find(std::begin(kStandard), std::end(kStandard), bare) != std::end(kStandard);
+                    if (!a.name.empty() && kept)
+                        out.push_back(std::move(a));
+                    while (k < to && !is(k, ","))
+                        ++k;
+                    ++k;
+                }
+            }
+
             int add(Symbol s)
             {
                 s.file = file_;
@@ -991,11 +1088,7 @@ namespace playground::lang
                         break;
                     const Token& name = tok(j++);
                     std::string extent;
-                    if (is(j, "[") && partner(j) > j)
-                    {
-                        extent = joinTokens(t_, j, partner(j) + 1);
-                        j = partner(j) + 1;
-                    }
+                    j = declaratorTail(j, extent, nullptr, nullptr);
                     if (!any && !(is(j, "=") || is(j, ";") || is(j, ",")))
                         return -1;
                     any = true;
@@ -1067,6 +1160,8 @@ namespace playground::lang
                 s.type = ty;
                 s.at = startOf(tok(j));
                 s.container = module;
+                std::string extent;
+                (void)declaratorTail(j + 1, extent, &s.attributes, nullptr);
                 int e = j + 1;
                 while (e < limit && !is(e, ";"))
                     e = is(e, "(") || is(e, "[") ? std::max(e + 1, partner(e) + 1) : e + 1;
@@ -1076,7 +1171,7 @@ namespace playground::lang
                 return e + 1;
             }
 
-            // A field declaration at i: [const] type [*] name ([N])? (, [*] name ([N])?)* ;
+            // A field declaration at i: [const] type [*] name [[attributes]]* ([N]){0,2} (, ...)* ;
             int fields(int i, const std::string& module, int limit)
             {
                 std::string base;
@@ -1087,8 +1182,8 @@ namespace playground::lang
                 return e < 0 ? i : e;
             }
 
-            // A module's fields of type `base` declared from j on (before `limit`): [*] name ([N])? (, ...)* ; the index
-            // after its ';', -1 when j starts none.
+            // A module's fields of type `base` declared from j on (before `limit`): [*] name [[attributes]]* ([N]){0,2}
+            // (, ...)* ; the index after its ';', -1 when j starts none.
             int fieldDeclarators(int j, const std::string& base, const std::string& module, int limit)
             {
                 bool any = false;
@@ -1099,11 +1194,10 @@ namespace playground::lang
                     if (!ident(j))
                         break;
                     const Token& name = tok(j++);
-                    if (is(j, "[") && partner(j) > j)
-                    {
-                        ty += joinTokens(t_, j, partner(j) + 1);
-                        j = partner(j) + 1;
-                    }
+                    std::string extent, attrText;
+                    std::vector<Attribute> attrs;
+                    j = declaratorTail(j, extent, &attrs, &attrText);
+                    ty += extent;
                     if (!any && !(is(j, ";") || is(j, ",")))
                         return -1;
                     any = true;
@@ -1113,7 +1207,8 @@ namespace playground::lang
                     s.type = ty;
                     s.at = startOf(name);
                     s.container = module;
-                    s.signature = ty + " " + s.name;
+                    s.signature = ty + " " + s.name + (attrText.empty() ? "" : " " + attrText);
+                    s.attributes = std::move(attrs);
                     s.doc = docFor(name.line);
                     add(s);
                     if (is(j, ","))
@@ -1236,7 +1331,7 @@ namespace playground::lang
                 return localDeclarators(j, base, limit, scopeEnd, function);
             }
 
-            // A block's locals of type `base` declared from j on (before `limit`): [*] name ([N])? [= init] (, ...)* ;
+            // A block's locals of type `base` declared from j on (before `limit`): [*] name ([N]){0,2} [= init] (, ...)* ;
             // the index of its ';' (or where it stopped), -1 when j starts none.
             int localDeclarators(int j, const std::string& base, int limit, Pos scopeEnd, const std::string& function)
             {
@@ -1248,11 +1343,9 @@ namespace playground::lang
                     if (!ident(j))
                         break;
                     const Token& name = tok(j++);
-                    if (is(j, "[") && partner(j) > j)
-                    {
-                        ty += joinTokens(t_, j, partner(j) + 1);
-                        j = partner(j) + 1;
-                    }
+                    std::string extent;
+                    j = declaratorTail(j, extent, nullptr, nullptr);
+                    ty += extent;
                     if (!any && !(is(j, "=") || is(j, ";") || is(j, ",")))
                         return -1;
                     any = true;
@@ -1824,6 +1917,97 @@ namespace playground::lang
         return std::find(kTypeWords.begin(), kTypeWords.end(), word) != kTypeWords.end();
     }
     bool isBuiltin(std::string_view word) noexcept { return builtinNamed(word) != nullptr; }
+
+    std::string stringValue(std::string_view literal)
+    {
+        std::string_view s = literal;
+        if (!s.empty() && s.front() == '"')
+            s.remove_prefix(1);
+        std::string out;
+        const auto utf8 = [&](uint32_t cp) {
+            if (cp < 0x80)
+                out += static_cast<char>(cp);
+            else if (cp < 0x800)
+            {
+                out += static_cast<char>(0xC0 | (cp >> 6));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+            else if (cp < 0x10000)
+            {
+                out += static_cast<char>(0xE0 | (cp >> 12));
+                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+            else
+            {
+                out += static_cast<char>(0xF0 | (cp >> 18));
+                out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                out += static_cast<char>(0x80 | (cp & 0x3F));
+            }
+        };
+        for (std::size_t i = 0; i < s.size(); ++i)
+        {
+            if (s[i] == '"')
+                break;                                    // its closing quote
+            if (s[i] != '\\' || i + 1 >= s.size())
+            {
+                out += s[i];
+                continue;
+            }
+            const char e = s[++i];
+            switch (e)
+            {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case 'a': out += '\a'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case 'v': out += '\v'; break;
+                case 'x':
+                case 'u':
+                case 'U':
+                {
+                    // \xHH... (a byte), \uXXXX and \UXXXXXXXX (a character, as UTF-8)
+                    const std::size_t most = e == 'x' ? s.size() : i + 1 + (e == 'u' ? 4u : 8u);
+                    std::size_t k = i + 1;
+                    uint32_t v = 0;
+                    while (k < s.size() && k < most && isHexDigit(s[k]))
+                    {
+                        v = v * 16 + static_cast<uint32_t>(isDigit(s[k]) ? s[k] - '0' : (std::tolower(static_cast<unsigned char>(s[k])) - 'a' + 10));
+                        ++k;
+                    }
+                    if (k == i + 1 || (e != 'x' && k != most))
+                    {
+                        out += '\\';                    // not one: kept as written
+                        out += e;
+                        break;
+                    }
+                    if (e == 'x')
+                        out += static_cast<char>(v & 0xFF);
+                    else
+                        utf8(v);
+                    i = k - 1;
+                    break;
+                }
+                default:
+                    if (e >= '0' && e <= '7')
+                    {
+                        uint32_t v = 0;
+                        std::size_t k = i;
+                        while (k < s.size() && k < i + 3 && s[k] >= '0' && s[k] <= '7')
+                            v = v * 8 + static_cast<uint32_t>(s[k++] - '0');
+                        out += static_cast<char>(v & 0xFF);
+                        i = k - 1;
+                    }
+                    else
+                        out += e;                         // \" \\ \' \?: the character
+                    break;
+            }
+        }
+        return out;
+    }
     bool isIdentChar(char c) noexcept { return isIdentStart(c) || isDigit(c); }
 
     std::vector<std::string_view> splitLines(std::string_view text)
@@ -1915,6 +2099,18 @@ namespace playground::lang
                 }
                 push(Tok::comment, i, static_cast<int>(end) + 2, false);
                 i = static_cast<int>(end) + 2;
+                continue;
+            }
+            if (c == '"')
+            {
+                // C's string literal, to its closing quote (a backslash escapes the next character), or to the line's
+                // end, where FMinus says it is missing.
+                int j = i + 1;
+                while (j < n && at(j) != '"')
+                    j += at(j) == '\\' && j + 1 < n ? 2 : 1;
+                j = std::min(j + 1, n);
+                push(Tok::string, i, j, false);
+                i = j;
                 continue;
             }
             if (isIdentStart(c))
@@ -2880,7 +3076,7 @@ namespace playground::lang
                 const bool display = word == "meter" || word == "vu" || word == "led" || word == "number" || word == "scope";
                 if (display)
                 {
-                    const auto scalar = [](const Symbol& s) { return s.type == "float" || s.type == "int" || s.type == "bool"; };
+                    const auto scalar = [](const Symbol& s) { return s.type == "float" || s.type == "double" || s.type == "int" || s.type == "bool"; };
                     const auto squeezed = [](std::string t) {
                         t.erase(std::remove(t.begin(), t.end(), ' '), t.end());
                         return t;
@@ -3323,6 +3519,35 @@ namespace playground::lang
         const Token& t = f->code[static_cast<std::size_t>(i)];
         Hover h;
         h.range = { startOf(t), endOf(t) };
+        // An attribute's name inside [[ ]] (`ui::unit`, `fminus::range`): what it does, whatever else has the word.
+        if (t.kind == Tok::identifier)
+        {
+            const auto text = [&](int k) {
+                return k >= 0 && k < static_cast<int>(f->code.size()) ? f->code[static_cast<std::size_t>(k)].text : std::string_view{};
+            };
+            bool inside = false;
+            for (int k = i - 1; k >= 0 && k >= i - 256 && !inside; --k)
+                if (text(k) == "[" && text(k + 1) == "[" && f->match[static_cast<std::size_t>(k)] > i)
+                    inside = true;
+            const bool before = text(i + 1) == "::", after = text(i - 1) == "::";
+            const bool argument = text(i - 1) == "(" || text(i - 1) == ",";
+            if (inside && !(argument && !before))
+            {
+                const std::string name = after ? std::string(text(i - 2)) + "::" + std::string(t.text)
+                                       : before ? std::string(t.text) + "::" + std::string(text(i + 2)) : std::string(t.text);
+                h.code = "[[" + name + "]]";
+                for (const AttributeInfo& x : kAttributes)
+                    if (x.label == name)
+                        h.doc = std::string(x.doc);
+                if (h.doc.empty())
+                    h.doc = name.find("::") == std::string::npos
+                                ? "An attribute without a namespace: FMinus ignores one that is none of C23's, with a warning "
+                                  "(-Wunknown-attributes); the plugin's are ui::unit, ui::label, ui::decimals."
+                                : "An attribute FMinus passes on as written. The plugin reads ui::unit, ui::label, ui::decimals "
+                                  "and fminus::range on a field (its displays and trace); any other is the program's own.";
+                return h;
+            }
+        }
         if (t.kind == Tok::keyword || t.kind == Tok::type)
         {
             const WordDoc* d = wordDoc(t.text);

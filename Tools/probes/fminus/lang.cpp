@@ -97,6 +97,14 @@
 //             after `#` (the directives) and `#ifdef ` (DEBUG, LEVEL); the formatter keeps a skipped group as it is
 //             (prose, the other branch's brace) and formats the rest, stable; Patch::check of the program clean, and of
 //             one whose skipped group holds an error clean too, while the same error in a group read is FMinus's
+//   DOUBLES   FMinus 3ed1ba6's double, 2-D arrays and field attributes, over a program of each kind that has them
+//             (Patch::check clean): `double` a type word, a string literal one token with its escapes resolved (and
+//             one cut short at the line's end); the index: a double field, a field's attributes in order (two in one
+//             [[ ]], strings and signed numbers), an attribute before an array's size, a 2-D field, local and table
+//             with both sizes; hover on the field (its attributes in its declaration), on an attribute's name (the
+//             plugin's ui::unit), on `double` and on sqrt (a double's builtin); completion after `[[` (ui::unit); the
+//             highlighter (`double` a type, "dB" a string in an attribute); the formatter leaves it as it is; an
+//             attribute without a namespace is FMinus's warning in the check's messages, and in no symbol's list
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -1885,6 +1893,126 @@ PROBE(fminus, lang)
             P.eq("cond.check_clean", clean.errors.empty() && aside.errors.empty() ? 1 : 0, 1);
             P.eq("cond.check_read_error", has(read.errors, "program.fm:16:") && has(read.errors, "undeclared identifier 'y'") ? 1 : 0, 1);
         }
+    }
+    // ---- DOUBLES -----------------------------------------------------------------------------------------------------
+    {
+        std::vector<lg::Token> t;
+        bool inComment = false;
+        lg::lexLine("double d;", 0, inComment, t);
+        P.eq("doubles.lex_double", !t.empty() && t[0].kind == lg::Tok::type ? 1 : 0, 1);
+        t.clear();
+        lg::lexLine("float x [[ui::unit(\"dB \\\"s\\\"\")]];", 0, inComment, t);
+        const auto str = std::find_if(t.begin(), t.end(), [](const lg::Token& k) { return k.kind == lg::Tok::string; });
+        P.eq("doubles.lex_string", str != t.end() && str->text == "\"dB \\\"s\\\"\"" && str + 1 != t.end() && (str + 1)->text == ")" ? 1 : 0, 1);
+        P.eq("doubles.string_value", str != t.end() && lg::stringValue(str->text) == "dB \"s\"" ? 1 : 0, 1);
+        P.eq("doubles.string_escapes", lg::stringValue("\"a\\x41\\u00b5\\101\\n\"") == "aA\xc2\xb5" "A\n" ? 1 : 0, 1);
+        t.clear();
+        lg::lexLine("x [[ui::unit(\"dB", 0, inComment, t);
+        P.eq("doubles.string_cut_short", !t.empty() && t.back().kind == lg::Tok::string && t.back().text == "\"dB" ? 1 : 0, 1);
+
+        constexpr bool kInstrument = pg::product::kIsInstrument;
+        const std::string mainModule = kInstrument ? "Voice" : "Effect";
+        const std::string text = std::string("const float kGrid[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };\n\nmodule ") + mainModule
+                                  + "\n{\n"
+                                    "    double clock [[ui::unit(\"s\")]];\n"
+                                    "    float level [[ui::unit(\"dB\"), ui::label(\"LEVEL\")]] [[fminus::range(-60, 0)]];\n"
+                                    "    float bank[4][16];\n"
+                                    "    float taps [[app::hidden]][8];\n\n"
+                                    "    void init(float rate)\n    {\n        clock = 0;\n    }\n\n"
+                                  + (kInstrument ? "    void start(float note, float velocity)\n    {\n        clock = 0;\n    }\n\n"
+                                                   "    bool process(float* restrict left, float* restrict right, int n)\n"
+                                                 : "    void process(float* restrict left, float* restrict right, int n)\n")
+                                  + "    {\n"
+                                    "        double sum = 0;\n"
+                                    "        float g[2][3];\n"
+                                    "        for (int i = 0; i < n; ++i)\n"
+                                    "        {\n"
+                                    "            clock += 1.0 / 48000;\n"
+                                    "            sum = fma(sum, 0.5, sqrt(fabs(clock)));\n"
+                                    "            g[1][2] = kGrid[1][2];\n"
+                                    "            bank[i & 3][i & 15] = g[1][2];\n"
+                                    "            level = (float)sum;\n"
+                                    "            left[i] *= 0.5f;\n"
+                                    "            right[i] *= 0.5f;\n"
+                                    "        }\n"
+                                  + (kInstrument ? "        return true;\n" : "")
+                                  + "    }\n};\n";
+        lg::Service n;
+        n.setFiles(pg::singleFile(text));
+        const auto sym = [&](std::string_view name, lg::Kind kind) -> const lg::Symbol* {
+            for (const lg::Symbol& x : n.symbols())
+                if (x.name == name && x.kind == kind)
+                    return &x;
+            return nullptr;
+        };
+        const lg::Symbol* clock = sym("clock", lg::Kind::field);
+        const lg::Symbol* level = sym("level", lg::Kind::field);
+        const lg::Symbol* bank = sym("bank", lg::Kind::field);
+        const lg::Symbol* taps = sym("taps", lg::Kind::field);
+        const lg::Symbol* g = sym("g", lg::Kind::local);
+        const lg::Symbol* table = sym("kGrid", lg::Kind::constant);
+        std::printf("doubles: clock %s | level %s | bank %s | taps %s | g %s | kGrid %s\n",
+                    clock != nullptr ? clock->signature.c_str() : "-", level != nullptr ? level->signature.c_str() : "-",
+                    bank != nullptr ? bank->type.c_str() : "-", taps != nullptr ? taps->signature.c_str() : "-",
+                    g != nullptr ? g->type.c_str() : "-", table != nullptr ? table->type.c_str() : "-");
+        P.eq("doubles.double_field", clock != nullptr && clock->type == "double" && clock->attributes.size() == 1
+                                         && clock->attributes[0] == lg::Attribute{ "ui::unit", { "s" } } ? 1 : 0, 1);
+        P.eq("doubles.attributes", level != nullptr && level->type == "float"
+                                       && level->attributes == std::vector<lg::Attribute>{ { "ui::unit", { "dB" } },
+                                                                                          { "ui::label", { "LEVEL" } },
+                                                                                          { "fminus::range", { "-60", "0" } } } ? 1 : 0, 1);
+        P.eq("doubles.attribute_before_size", taps != nullptr && taps->type == "float[8]" && taps->attributes.size() == 1
+                                                  && taps->attributes[0].name == "app::hidden" ? 1 : 0, 1);
+        P.eq("doubles.field_2d", bank != nullptr && bank->type == "float[4][16]" ? 1 : 0, 1);
+        P.eq("doubles.local_2d", g != nullptr && g->type == "float[2][3]" ? 1 : 0, 1);
+        P.eq("doubles.table_2d", table != nullptr && table->type.find("float[2][3]") != std::string::npos ? 1 : 0, 1);
+        const std::optional<lg::Hover> hf = n.hover(0, posOf(text, "level = (float)", 1));
+        P.eq("doubles.hover_field", hf && hf->code == "float level [[ui::unit(\"dB\"), ui::label(\"LEVEL\")]] [[fminus::range(-60, 0)]]" ? 1 : 0, 1);
+        const std::optional<lg::Hover> ha = n.hover(0, posOf(text, "unit(\"dB", 1));
+        P.eq("doubles.hover_attribute", ha && ha->code == "[[ui::unit]]" && ha->doc.find("unit") != std::string::npos
+                                            && ha->doc.find("trace") != std::string::npos ? 1 : 0, 1);
+        const std::optional<lg::Hover> hd = n.hover(0, posOf(text, "double sum", 1));
+        P.eq("doubles.hover_double", hd && hd->code == "double" && hd->doc.find("double precision") != std::string::npos ? 1 : 0, 1);
+        const std::optional<lg::Hover> hs = n.hover(0, posOf(text, "sqrt(fabs", 1));
+        P.eq("doubles.hover_sqrt", hs && hs->code == "double sqrt(double x)" ? 1 : 0, 1);
+        if (hf && ha && hd && hs)
+            std::printf("doubles: hover %s | %s | %s | %s\n", hf->code.c_str(), ha->code.c_str(), hd->code.c_str(), hs->code.c_str());
+        const lg::CompletionList c = n.complete(0, posOf(text, "[[ui::unit(\"dB", 2));
+        std::printf("doubles: after [[ %s\n", labels(c, 12).c_str());
+        P.eq("doubles.complete_attributes", item(c, "ui::unit") != nullptr && item(c, "ui::label") != nullptr
+                                                && item(c, "fminus::range") != nullptr ? 1 : 0, 1);
+        {
+            auto names = std::make_shared<pg::ui::TypeNames>();
+            const pg::ui::CodeHighlighter hl(names);
+            const auto styleOf = [&](const std::string& line, const std::string& word) -> int {
+                const std::size_t at = line.find(word);
+                std::vector<funkgui::text::Span> spans;
+                hl.line(line, 0, spans);
+                for (const funkgui::text::Span& sp : spans)
+                    if (at != std::string::npos && sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at + word.size()))
+                        return sp.style;
+                return -1;
+            };
+            const std::string line = "    double clock [[ui::unit(\"s\")]];";
+            P.eq("doubles.highlight_double", styleOf(line, "double"), pg::ui::csType);
+            P.eq("doubles.highlight_string", styleOf(line, "\"s\""), pg::ui::csString);
+            P.eq("doubles.highlight_attribute", styleOf(line, "unit"), pg::ui::csAttribute);
+        }
+        const lg::Formatted fm = lg::format(text);
+        if (fm.text != text)
+            std::printf("doubles: formatted (%s)\n%s", fm.ok ? "ok" : fm.why.c_str(), fm.text.c_str());
+        P.eq("doubles.format_unchanged", fm.ok && !fm.changed && fm.text == text ? 1 : 0, 1);
+        const pg::Patch::Result clean = pg::Patch::check(pg::singleFile(text));
+        std::printf("doubles: check %s\n", clean.errors.empty() ? "clean" : clean.errors.c_str());
+        P.eq("doubles.check_clean", clean.errors.empty() ? 1 : 0, 1);
+        const std::string unknown = replaced(text, "float bank[4][16];", "float bank [[range(0, 1)]][4][16];");
+        const pg::Patch::Result warned = pg::Patch::check(pg::singleFile(unknown));
+        n.setFiles(pg::singleFile(unknown));
+        const lg::Symbol* dropped = sym("bank", lg::Kind::field);
+        std::printf("doubles: check %s", warned.errors.c_str());
+        P.eq("doubles.unknown_warned", warned.errors.find("warning: unknown attribute 'range' ignored [-Wunknown-attributes]")
+                                           != std::string::npos ? 1 : 0, 1);
+        P.eq("doubles.unknown_dropped", dropped != nullptr && dropped->type == "float[4][16]" && dropped->attributes.empty() ? 1 : 0, 1);
     }
     return P.finish();
 }

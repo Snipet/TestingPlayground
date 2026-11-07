@@ -13,6 +13,8 @@
 //   gui.code.cir.png         a netlist's tab (screamer.cir) highlighted, a check's squiggle on a broken line
 //   gui.code.conditional.png an #if 0 and an #ifndef DEBUG group dimmed, #ifdef DEBUG's group read, the directives'
 //                            parts, a -Wswitch warning's squiggle and mark after RUN and its row in the problems
+//   gui.code.doubles.png     a module with a double, a 2-D array and a field's attributes: its strings coloured, the
+//                            hover card of the field with its attributes
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -701,6 +703,67 @@ PROBE(gui, code)
             settleRun(processor, host);
             settleChecks(panel, host);
             P.eq("cond.restored", code.errorCount() + code.warningCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
+        }
+
+        // ---- DOUBLES: a double, a 2-D array and a field's attributes (FMinus 3ed1ba6) -------------------------------
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            ed.setCaret({ ed.lineCount() - 1, 0 });
+            ed.insert("\nmodule Meter\n"
+                      "{\n"
+                      "    double clock [[ui::unit(\"s\")]];\n"
+                      "    float level [[ui::unit(\"dB\"), ui::label(\"LEVEL\")]] [[fminus::range(-60, 0)]];\n"
+                      "    float bank[4][16];\n"
+                      "\n"
+                      "    void tick(float x)\n"
+                      "    {\n"
+                      "        clock += 1.0 / 48000;\n"
+                      "        level = (float)sqrt(fabs(clock)) + x;\n"
+                      "        bank[1][2] = level;\n"
+                      "    }\n"
+                      "};\n");
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            std::printf("doubles: status %d, %d error(s), %d warning(s): %s%s", port.status().ok ? 1 : 0, code.errorCount(),
+                        code.warningCount(), port.status().errors.c_str(), port.status().notes.c_str());
+            P.eq("doubles.plays", port.status().ok && port.running()[0].text == ed.text() ? 1 : 0, 1);
+            P.eq("doubles.clean", code.errorCount() + code.warningCount() == 0 ? 1 : 0, 1);
+            // The tab's highlighter: a string in an attribute a string, `double` a type.
+            const funkgui::text::Highlighter* hl = ed.highlighter();
+            const auto styleOn = [&](std::string_view lineText, std::string_view word) {
+                const int l = posIn(ed, lineText).line;
+                if (hl == nullptr || l < 0)
+                    return -1;
+                const std::string text = ed.line(l);
+                const std::size_t at = text.find(word);
+                std::vector<funkgui::text::Span> spans;
+                hl->line(text, 0, spans);
+                for (const funkgui::text::Span& sp : spans)
+                    if (at != std::string::npos && sp.start == static_cast<int>(at) && sp.end == static_cast<int>(at + word.size()))
+                        return static_cast<int>(sp.style);
+                return -1;
+            };
+            P.eq("doubles.string_coloured", styleOn("    float level [[", "\"dB\""), pg::ui::csString);
+            P.eq("doubles.double_a_type", styleOn("    double clock", "double"), pg::ui::csType);
+            const funkgui::Point at = ed.pointOf(posIn(ed, "        level = (float)", 9));
+            host.move(at.x + 3.0f, at.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            std::printf("doubles: hover %s\n", code.hoverText().c_str());
+            P.eq("doubles.hover_attributes", code.hoverOpen()
+                                                 && code.hoverText().find("[[ui::unit(\"dB\"), ui::label(\"LEVEL\")]]") != std::string::npos
+                                                 && code.hoverText().find("a field of Meter") != std::string::npos ? 1 : 0, 1);
+            writePng(P, host, "gui.code.doubles.png", "doubles");
+            host.move(10.0f, 10.0f);
+            host.tick(2);
+            ed.selectAll();
+            ed.insert(withSvf);
+            host.keys("cmd+return");
+            settleRun(processor, host);
+            settleChecks(panel, host);
+            P.eq("doubles.restored", code.errorCount() + code.warningCount() == 0 && port.running()[0].text == withSvf ? 1 : 0, 1);
         }
 
         // ---- FIND TABS ----------------------------------------------------------------------------------------------

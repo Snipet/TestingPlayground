@@ -27,18 +27,48 @@
 //   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
 //   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
 //   SHARED  a module Shared's field listed, and watched as shared->gain
-//   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so
+//   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so;
+//           stoppedFirst for pass 1's and the time limit's (the render the part before), not for pass 2's (pass 1's
+//           render whole, its hash the one a trace never stopped gives)
 //   NAN0    a NaN from the first sample: the self-check says it had nothing to compare
+//   DOUBLE  a double accumulator (90 + 1e-6 a sample) and its float twin, a 2-D grid of 2 x 3 and one of 4 x 16, and a
+//           field's attributes: listed as a double with its label, unit and range, the grid's rows by its two indexes
+//           and the large one left out with its shape; watched, the double moves (to 12 digits, as the program sums it)
+//           where the float stays at 90, and an element of the grid is read where the program put it; its raw values,
+//           evenly and a sample each around a moment, keep its 1e-6 steps
+//   GRID    CLICK's phase reset with the phase a double in a 2-D array: the element is the culprit, with the line that
+//           writes it by its two indexes, its values a double's; a double beside it that moves 1e-6 a sample is no
+//           culprit
+//   LONG    CLICK's counter watched over a render of 300 s held (a call that returns numbers: Measure.h, "How long a
+//           render may be"): not stopped, its range whole (0 to 10006), in a time printed and bounded
+//   EXPORT  trace's export (Export.h): SHA-256's own test vectors (FIPS 180-4's, a million a's in odd pieces); CLICK's
+//           counter logged every 160 samples (a row each, the count the samples played: the voice's while it sounds,
+//           empty after), no find unless asked, the effect's input kept (the sine as it went in); the render hash the
+//           samples' and in the lines, the same twice and another for another note (the effect's noise), an
+//           instrument's measure_output's (Result::hash) and an effect's view_sound's; the WAV float32 read back to the
+//           bit, its data chunk hashing to the render hash, 24-bit within half a step and past full scale clipped and
+//           counted; the same as WAVE_FORMAT_EXTENSIBLE (24-bit PCM, float) read as the plain ones, another sub-format
+//           and a GUID not the base one refused; the CSV's header and rows, a float to 9 digits and a double to 17
+//           reading back to their bits, 6 for the inline form; evenRows
 #include "Probe.h"
 
 #include "Examples.h"
 #include "Product.h"
 
 #include "dsp/Debug.h"
+#include "dsp/Export.h"
 #include "dsp/SoundView.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace pg = playground;
 namespace ms = playground::measure;
@@ -783,6 +813,177 @@ module Effect
 };
 )";
 
+    // DOUBLE: a double that counts what a float's 24 bits round away, its float twin, a small grid and a large one.
+    const char* const kDoubleVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    bool held;
+    double temp [[ui::unit("C")]] [[ui::label("TEMP")]] [[fminus::range(80, 100)]];
+    float ftemp;
+    float gain[2][3];
+    float bank[4][16];
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+        temp = 90;
+        ftemp = 90;
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col)
+                gain[row][col] = row + 0.25f * col;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            temp += 1e-6;
+            ftemp += 1e-6f;
+            bank[i & 3][i & 15] = (float)temp;
+            const float y = 0.2f * gain[1][2] * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kDoubleEffect = R"(module Effect
+{
+    double temp [[ui::unit("C")]] [[ui::label("TEMP")]] [[fminus::range(80, 100)]];
+    float ftemp;
+    float gain[2][3];
+    float bank[4][16];
+
+    void init(float r)
+    {
+        temp = 90;
+        ftemp = 90;
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col)
+                gain[row][col] = row + 0.25f * col;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            temp += 1e-6;
+            ftemp += 1e-6f;
+            bank[i & 3][i & 15] = (float)temp;
+            left[i] *= 0.5f * gain[1][2];
+            right[i] *= 0.5f * gain[1][2];
+        }
+    }
+};
+)";
+
+    // GRID: CLICK's phase reset (at sample 10005), the phase a double in a 2-D array (written ph[1][2] = ...) that adds
+    // a float step a sample, beside a double that moves 1e-6 a sample from 90: rounded to a float it would stand still
+    // for 7 or 8 samples and step one ulp (7.6e-6), and it does in sample 10005, which would make it a culprit.
+    const char* const kGridVoice = R"(module Voice
+{
+    float rate;
+    float level;
+    int count;
+    bool held;
+    double ph[2][3];
+    double temp;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        level = 0.3f;
+        held = true;
+        temp = 90;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            temp += 1e-6;
+            if (count >= 10006)
+            {
+                count = 0;
+                ph[1][2] = 0.75;
+            }
+            if (!held)
+                level *= 0.999f;
+            const float y = level * sinf(6.28318531f * (float)ph[1][2]);
+            ph[1][2] += 0.003f;
+            if (ph[1][2] >= 1)
+                ph[1][2] -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held || level > 0.0001f;
+    }
+};
+)";
+
+    const char* const kGridEffect = R"(module Effect
+{
+    float rate;
+    int count;
+    double ph[2][3];
+    double temp;
+
+    void init(float r)
+    {
+        rate = r;
+        temp = 90;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            temp += 1e-6;
+            if (count >= 10006)
+            {
+                count = 0;
+                ph[1][2] = 0.25;
+            }
+            const float gain = 0.5f + 0.5f * sinf(6.28318531f * (float)ph[1][2]);
+            ph[1][2] += 0.0000625f;
+            if (ph[1][2] >= 1)
+                ph[1][2] -= 1;
+            left[i] *= gain;
+            right[i] *= gain;
+        }
+    }
+};
+)";
+
     const char* const kSharedPart = R"(module Shared
 {
     float gain;
@@ -1084,6 +1285,7 @@ PROBE(dsp, debug)
     P.eq("watch.fields", watch.watched.size() == 2 && watch.watched[0] == "phase" && watch.watched[1] == "count" ? 1 : 0, 1);
     P.eq("watch.lines", anyHas(watch.lines, "phase: min ") && anyHas(watch.lines, "largest jump") && anyHas(watch.lines, "never non-finite") ? 1 : 0, 1);
     P.eq("watch.unknown_named", anyHas(watch.lines, "No field matches nothing.here") ? 1 : 0, 1);
+    P.eq("watch.unmatched", watch.unmatched == std::vector<std::string>{ "nothing.here" } && watch.more == 0 ? 1 : 0, 1);
     P.eq("watch.no_find", watch.problems.empty() && !anyHas(watch.lines, "Nothing found") ? 1 : 0, 1);
 
     ms::TraceRequest listReq;
@@ -1104,6 +1306,239 @@ PROBE(dsp, debug)
     const ms::TraceResult raw = ms::trace(pg::singleFile(clickProgram), rawReq);
     print("RAW", raw);
     P.eq("raw.around", anyHas(raw.lines, "count from 0.100 s (sample 4,796), a sample each: 4797 4798 4799 4800 4801 4802 4803 4804") ? 1 : 0, 1);
+
+    // ---- LONG: a field watched over 300 s ---------------------------------------------------------------------------------
+    {
+        ms::TraceRequest q = clickReq;
+        q.find = ms::TraceFind::none;
+        q.fields = { "count" };
+        q.render.longest = ms::kMaxLongSeconds;
+        q.render.phrase.clear();
+        q.render.holdSeconds = 300.0f;
+        q.render.tailSeconds = 0.1f;
+        if constexpr (kInstrument)
+            q.render.notes = { 48 };
+        const auto t0 = std::chrono::steady_clock::now();
+        const ms::TraceResult r = ms::trace(pg::singleFile(clickProgram), q);
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("trace over 300 s, in %.1f s:\n", took);
+        print("LONG", r);
+        P.eq("long.watched_300s", r.error.empty() && !r.stopped && anyHas(r.lines, "count: min 0, max 10006")
+                                      && static_cast<double>(r.l.size()) >= 300.0 * 48000.0 ? 1 : 0, 1);
+        P.le("long.trace_seconds", took, 90.0);
+    }
+
+    // ---- EXPORT: the hash, the field log, the files' formats (Export.h) -------------------------------------------------
+    {
+        const auto sha = [](const std::string& text) {
+            ms::Sha256 h;
+            h.add(text.data(), text.size());
+            return h.hex();
+        };
+        P.eq("export.sha256_abc", sha("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ? 1 : 0, 1);
+        P.eq("export.sha256_empty", sha("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ? 1 : 0, 1);
+        P.eq("export.sha256_two_blocks", sha("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+                                             == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" ? 1 : 0, 1);
+        {
+            ms::Sha256 h;                                     // a million a's, in pieces of 1 to 97 bytes
+            const std::string a(97, 'a');
+            std::size_t fed = 0;
+            for (std::size_t k = 1; fed < 1000000; k = k % 97 + 1)
+            {
+                const std::size_t n = std::min(k, 1000000 - fed);
+                h.add(a.data(), n);
+                fed += n;
+            }
+            P.eq("export.sha256_million_pieces", h.hex() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0" ? 1 : 0, 1);
+        }
+
+        // CLICK's counter (one a sample, from 0, back to 0 at 10007) logged every 160 samples over 0.6 s.
+        ms::TraceRequest q = clickReq;
+        q.find = ms::TraceFind::none;
+        q.fields = { "count" };
+        q.exporting = true;
+        q.every = 160;
+        q.render.phrase.clear();
+        q.render.holdSeconds = 0.5f;
+        q.render.tailSeconds = 0.1f;
+        if constexpr (kInstrument)
+            q.render.notes = { 48 };
+        const pg::Sources files = pg::singleFile(clickProgram);
+        const ms::TraceResult r = ms::trace(files, q);
+        print("EXPORT", r);
+        std::size_t valued = 0, right = 0;
+        for (std::size_t k = 0; k < r.log.rows(); ++k)
+            if (r.log.none[k] == 0)
+            {
+                ++valued;
+                right += r.log.values[k] == static_cast<double>(r.log.at[k] % 10007) ? 1 : 0;
+            }
+        std::printf("EXPORT: %zu samples, %zu rows (the first at %zu), %zu with a value, %zu of them the count played\n", r.l.size(),
+                    r.log.rows(), r.log.rows() > 0 ? r.log.at.front() : 0, valued, right);
+        P.eq("export.log_rows", static_cast<int64_t>(r.log.rows()), static_cast<int64_t>(r.l.size() / 160));
+        P.eq("export.log_first_row", r.log.rows() > 0 ? static_cast<int64_t>(r.log.at.front()) : -1, 160);
+        P.eq("export.log_columns", r.log.columns == std::vector<std::string>{ "count" } && r.log.kinds.size() == 1
+                                       && r.log.kinds[0] == ms::FieldLog::Kind::whole ? 1 : 0, 1);
+        P.eq("export.log_values", valued > 0 && right == valued ? 1 : 0, 1);
+        // The voice sounds while held (0.5 s: 150 rows); the effect's instance throughout.
+        P.ge("export.log_valued_rows", static_cast<double>(valued), kInstrument ? 149.0 : static_cast<double>(r.log.rows()));
+        P.eq("export.no_find", r.problems.empty() && !anyHas(r.lines, "Nothing found") ? 1 : 0, 1);
+        if constexpr (!kInstrument)
+        {
+            double inPeak = 0.0;
+            for (const float x : r.inL)
+                inPeak = std::max(inPeak, std::fabs(static_cast<double>(x)));
+            P.eq("export.input_kept", r.inL.size() == r.l.size() && r.inR.empty() ? 1 : 0, 1);
+            P.near("export.input_sine_peak", inPeak, std::pow(10.0, -12.0 / 20.0), 1e-3);
+        }
+        // The render hash: the samples', in the lines; the same twice, another with the level halved (a dial moved).
+        P.eq("export.hash_of_samples", r.hash.size() == 64 && r.hash == ms::renderHash(r.l, r.r) ? 1 : 0, 1);
+        P.eq("export.hash_line", anyHas(r.lines, "Render hash: " + r.hash.substr(0, ms::kHashShown) + " (SHA-256 of the float32 "
+                                                 "samples, L R interleaved, of the render).") ? 1 : 0, 1);
+        const ms::TraceResult again2 = ms::trace(files, q);
+        P.eq("export.hash_stable", again2.hash == r.hash && again2.l == r.l ? 1 : 0, 1);
+        {
+            ms::TraceRequest other = q;                      // another note; the effect's noise in place of its sine
+            if constexpr (kInstrument)
+                other.render.notes = { 52 };
+            else
+                other.render.signal = static_cast<int>(ms::ViewInput::noise);
+            const ms::TraceResult o = ms::trace(files, other);
+            P.eq("export.hash_differs", !o.hash.empty() && o.hash != r.hash ? 1 : 0, 1);
+        }
+        {
+            // An instrument's render hash is measure_output's (the same render, Result::hash); an effect's view_sound's.
+            ms::Session session(files);
+            const ms::Result m = session.measure(q.render);
+            ms::ViewRequest vr;
+            vr.render = q.render;
+            const ms::View v = ms::view(files, vr);
+            std::printf("EXPORT: trace's hash %s, measure_output's %s (of %s), view_sound's %s\n", r.hash.substr(0, 16).c_str(),
+                        m.hash.substr(0, 16).c_str(), m.hashed.c_str(), v.hash.substr(0, 16).c_str());
+            if constexpr (kInstrument)
+                P.eq("export.hash_is_measure_outputs", m.hash == r.hash && m.report.find("Render hash: " + r.hash.substr(0, 16)) != std::string::npos
+                                                           ? 1 : 0, 1);
+            else
+                P.eq("export.hash_is_measure_outputs", m.hashed == "the sine's, the noise's, the impulse's and silence's renders, in turn"
+                                                           && m.report.find("Render hash: " + m.hash.substr(0, 16)) != std::string::npos ? 1 : 0, 1);
+            P.eq("export.hash_is_view_sounds", v.hash == r.hash ? 1 : 0, 1);
+        }
+
+        // The WAV: float32 back to the bit, its data chunk the render hash's bytes; 24-bit within half a step, clipped.
+        std::string bytes;
+        const ms::Sink sink = [&bytes](const void* d, std::size_t n) {
+            bytes.append(static_cast<const char*>(d), n);
+            return true;
+        };
+        const auto span = [](const std::string& b) { return std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(b.data()), b.size()); };
+        const ms::WavWritten w = ms::writeWav(sink, r.l, r.r, rate, ms::WavFormat::float32);
+        ms::Wav back;
+        std::string why;
+        const bool read = ms::readWav(span(bytes), back, why);
+        P.eq("export.wav_float_back", read && w.ok && back.isFloat && back.bits == 32 && back.rate == 48000 && back.channels == 2
+                                          && back.l == r.l && back.r == r.r ? 1 : 0, 1);
+        P.eq("export.wav_float_size", w.bytes == bytes.size() && bytes.size() == ms::wavBytes(r.l.size(), ms::WavFormat::float32) ? 1 : 0, 1);
+        {
+            ms::Sha256 h;
+            const std::size_t data = bytes.size() - r.l.size() * 8;
+            h.add(bytes.data() + data, bytes.size() - data);
+            P.eq("export.wav_data_is_the_hash", data >= 8 && std::memcmp(bytes.data() + data - 8, "data", 4) == 0 && h.hex() == r.hash ? 1 : 0, 1);
+        }
+        {
+            std::vector<float> ramp(4801);
+            for (std::size_t i = 0; i < ramp.size(); ++i)
+                ramp[i] = static_cast<float>(-1.5 + 3.0 * static_cast<double>(i) / 4800.0);
+            std::size_t past = 0;
+            for (const float x : ramp)
+                past += std::nearbyint(static_cast<double>(x) * 8388608.0) > 8388607.0 || x < -1.0f ? 1 : 0;
+            bytes.clear();
+            const ms::WavWritten w24 = ms::writeWav(sink, ramp, {}, rate, ms::WavFormat::pcm24);
+            ms::Wav b24;
+            const bool read24 = ms::readWav(span(bytes), b24, why);
+            double worst = 0.0;
+            for (std::size_t i = 0; read24 && i < ramp.size(); ++i)
+                if (std::fabs(ramp[i]) < 1.0f)
+                    worst = std::max(worst, std::fabs(static_cast<double>(b24.l[i]) - ramp[i]) * 8388608.0);
+            std::printf("EXPORT: 24-bit, %zu of %zu samples clipped (%zu past full scale on each channel), the worst error %.3f steps\n",
+                        w24.clipped, 2 * ramp.size(), past, worst);
+            P.eq("export.wav_24_read", read24 && !b24.isFloat && b24.bits == 24 && b24.channels == 2 && b24.l.size() == ramp.size()
+                                           && b24.r == b24.l && bytes.size() == ms::wavBytes(ramp.size(), ms::WavFormat::pcm24) ? 1 : 0, 1);
+            P.le("export.wav_24_within_half_a_step", worst, 0.5);
+            P.eq("export.wav_24_clipped", static_cast<int64_t>(w24.clipped), 2 * static_cast<int64_t>(past));
+            P.eq("export.wav_24_full_scale", read24 && b24.l.front() == -1.0f && b24.l.back() == static_cast<float>(8388607.0 / 8388608.0) ? 1 : 0, 1);
+
+            // WAVE_FORMAT_EXTENSIBLE (what ffmpeg writes past 16 bits, two channels or 48 kHz): the same file with a fmt
+            // chunk of 40 bytes (the plain one's 16 or 18, then whatever follows it), its format 0xFFFE and the
+            // sub-format GUID's first two bytes the format (PCM 1, float 3), reads as the plain one; another sub-format
+            // (2, ADPCM) and a GUID that is not the base one are refused.
+            const auto extensible = [](const std::string& plain, uint16_t sub, bool base) {
+                std::string fmt = plain.substr(20, 16);              // the plain fmt chunk's 16 bytes
+                const uint16_t bits = static_cast<uint16_t>(static_cast<uint8_t>(fmt[14]) | static_cast<uint8_t>(fmt[15]) << 8);
+                fmt[0] = static_cast<char>(0xFE);
+                fmt[1] = static_cast<char>(0xFF);
+                const uint8_t tail[24] = { 22, 0, static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8), 3, 0, 0, 0,
+                                           static_cast<uint8_t>(sub), static_cast<uint8_t>(sub >> 8), 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+                                           0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, static_cast<uint8_t>(base ? 0x71 : 0x72) };
+                fmt.append(reinterpret_cast<const char*>(tail), sizeof tail);
+                const std::size_t plainFmt = static_cast<std::size_t>(static_cast<uint8_t>(plain[16]) | static_cast<uint8_t>(plain[17]) << 8);
+                std::string out = "RIFF....WAVEfmt " + std::string("\x28\0\0\0", 4) + fmt + plain.substr(20 + plainFmt);   // fact, data
+                const auto size = static_cast<uint32_t>(out.size() - 8);
+                for (int k = 0; k < 4; ++k)
+                    out[static_cast<std::size_t>(4 + k)] = static_cast<char>((size >> (8 * k)) & 0xFFu);
+                return out;
+            };
+            const std::string ext24 = extensible(bytes, 1, true);
+            ms::Wav e24;
+            const bool readExt24 = ms::readWav(span(ext24), e24, why);
+            bytes.clear();
+            ms::writeWav(sink, r.l, r.r, rate, ms::WavFormat::float32);
+            const std::string extFloat = extensible(bytes, 3, true);
+            ms::Wav eFloat;
+            const bool readExtFloat = ms::readWav(span(extFloat), eFloat, why);
+            std::string adpcmWhy, guidWhy;
+            ms::Wav refused;
+            const bool adpcm = ms::readWav(span(extensible(bytes, 2, true)), refused, adpcmWhy);
+            const bool guid = ms::readWav(span(extensible(bytes, 3, false)), refused, guidWhy);
+            std::printf("EXPORT: extensible 24-bit %s, float %s; ADPCM: %s; another GUID: %s\n", readExt24 ? "read" : why.c_str(),
+                        readExtFloat ? "read" : why.c_str(), adpcmWhy.c_str(), guidWhy.c_str());
+            P.eq("export.wav_extensible_24", readExt24 && !e24.isFloat && e24.bits == 24 && e24.l == b24.l && e24.r == b24.r ? 1 : 0, 1);
+            P.eq("export.wav_extensible_float", readExtFloat && eFloat.isFloat && eFloat.rate == 48000 && eFloat.l == r.l && eFloat.r == r.r ? 1 : 0, 1);
+            P.eq("export.wav_extensible_refused", !adpcm && adpcmWhy.find("extensible format 2") != std::string::npos && !guid
+                                                      && guidWhy.find("neither PCM nor float") != std::string::npos ? 1 : 0, 1);
+        }
+
+        // The CSV: the header and a row a log row; a float to 9 digits and a double to 17 read back to their bits.
+        bytes.clear();
+        const std::size_t csvBytes = ms::writeCsv(sink, r.log, rate);
+        P.eq("export.csv_rows", csvBytes == bytes.size() && bytes.rfind("time_s,sample,count\n0.003333,160,", 0) == 0
+                                    && static_cast<std::size_t>(std::count(bytes.begin(), bytes.end(), '\n')) == r.log.rows() + 1 ? 1 : 0, 1);
+        {
+            ms::FieldLog log;
+            log.columns = { "f", "d", "i" };
+            log.kinds = { ms::FieldLog::Kind::real, ms::FieldLog::Kind::real64, ms::FieldLog::Kind::whole };
+            const float f = 0.1f + 1e-7f;
+            const double d = 90.0 + 1.0e-6 / 3.0;
+            log.at = { 16, 32 };
+            log.values = { f, d, 7.0, 0.0, std::numeric_limits<double>::infinity(), 0.0 };
+            log.none = { 0, 0, 0, 1, 0, 0 };
+            bytes.clear();
+            ms::writeCsv(sink, log, rate);
+            const std::size_t row1 = bytes.find('\n') + 1;
+            const std::string first = bytes.substr(row1, bytes.find('\n', row1) - row1);
+            const std::size_t c2 = first.find(',', first.find(',') + 1), c3 = first.find(',', c2 + 1), c4 = first.find(',', c3 + 1);
+            const float fBack = std::strtof(first.c_str() + c2 + 1, nullptr);
+            const double dBack = std::strtod(first.c_str() + c3 + 1, nullptr);
+            std::printf("EXPORT: the CSV of a float, a double and an int:\n%s", bytes.c_str());
+            P.eq("export.csv_float_back", fBack == f ? 1 : 0, 1);
+            P.eq("export.csv_double_back", dBack == d ? 1 : 0, 1);
+            P.eq("export.csv_whole_and_empty", first.substr(c4 + 1) == "7" && bytes.find("\n0.000667,32,,inf,0\n") != std::string::npos ? 1 : 0, 1);
+            bytes.clear();
+            ms::writeCsv(sink, log, rate, {}, 6);
+            P.eq("export.csv_six_digits", bytes.find(",0.1,90,7\n") != std::string::npos ? 1 : 0, 1);
+        }
+        const std::vector<std::size_t> even = ms::evenRows(180, 32);
+        P.eq("export.even_rows", even.size() == 32 && even.front() == 0 && even.back() == 179 && ms::evenRows(5, 32).size() == 5 ? 1 : 0, 1);
+    }
 
     // ---- VOICE, SAME ---------------------------------------------------------------------------------------------------
     if constexpr (kInstrument)
@@ -1288,6 +1723,124 @@ PROBE(dsp, debug)
         P.eq("shared.watched", w.watched.size() == 1 && w.watched[0] == "shared->gain" && anyHas(w.lines, "shared->gain: min 0.25, max 0.25") ? 1 : 0, 1);
     }
 
+    // ---- DOUBLE: a double field, 2-D arrays and a field's attributes, listed and watched -----------------------------
+    {
+        const pg::Sources files = pg::singleFile(kInstrument ? kDoubleVoice : kDoubleEffect);
+        ms::TraceRequest q = held(ms::TraceFind::none, 0.5);
+        q.list = true;
+        const ms::TraceResult l = ms::trace(files, q);
+        print("DOUBLE list", l);
+        P.eq("double.compiles", l.error.empty() ? 1 : 0, 1);
+        P.eq("double.listed_with_its_look", has(l.lines, "temp double (\"TEMP\", C, 80 to 100)") ? 1 : 0, 1);
+        P.eq("double.float_twin", has(l.lines, "ftemp float") ? 1 : 0, 1);
+        P.eq("double.grid_rows", has(l.lines, "gain[0][0..2] float") && has(l.lines, "gain[1][0..2] float") ? 1 : 0, 1);
+        P.eq("double.large_grid_left_out", anyHas(l.lines, "left out: bank: float[4][16], 64 elements, more than 16") ? 1 : 0, 1);
+        q.list = false;
+        q.fields = { "temp", "ftemp", "gain[1][2]" };
+        const ms::TraceResult w = ms::trace(files, q);
+        print("DOUBLE watch", w);
+        // The last value each line gives ("..., last 90.0336; ..."), -1 when there is none.
+        const auto last = [&](const std::string& path) {
+            for (const std::string& x : w.lines)
+                if (x.rfind(path + " (", 0) == 0 || x.rfind(path + ":", 0) == 0)
+                    if (const std::size_t at = x.find(", last "); at != std::string::npos)
+                        return std::strtod(x.c_str() + at + 7, nullptr);
+            return -1.0;
+        };
+        // The significant digits of the last value temp's line gives ("90.0335999999": 12).
+        const auto lastDigits = [&](const std::string& path) {
+            int digits = 0;
+            for (const std::string& x : w.lines)
+                if (x.rfind(path + " (", 0) == 0 || x.rfind(path + ":", 0) == 0)
+                    if (const std::size_t at = x.find(", last "); at != std::string::npos)
+                    {
+                        bool lead = true;
+                        for (std::size_t k = at + 7; k < x.size() && x[k] != ';' && x[k] != 'e'; ++k)
+                        {
+                            if (x[k] < '0' || x[k] > '9' || (lead && x[k] == '0'))
+                                continue;
+                            lead = false;
+                            ++digits;
+                        }
+                    }
+            return static_cast<double>(digits);
+        };
+        // 1e-6 a sample from 90, summed as the program sums it: 0.7 s at 48 kHz is 33,600 samples; the synth's voice
+        // sounds its 0.5 s held, 24,000.
+        double expected = 90.0;
+        for (int k = 0; k < (kInstrument ? 24000 : 33600); ++k)
+            expected += 1e-6;
+        const double moved = last("temp"), stuck = last("ftemp");
+        std::printf("DOUBLE: temp last %.12g (expected %.15g), ftemp last %.9g\n", moved, expected, stuck);
+        P.eq("double.watched", w.watched.size() == 3 ? 1 : 0, 1);
+        P.eq("double.its_look_in_the_line", anyHas(w.lines, "temp (\"TEMP\", C, 80 to 100): min 90") ? 1 : 0, 1);
+        P.near("double.moves", moved, expected, 1e-9);
+        P.ge("double.twelve_digits", lastDigits("temp"), 10.0);
+        P.near("double.float_stays", stuck, 90.0, 0.0);
+        P.eq("double.grid_element", anyHas(w.lines, "gain[1][2]: min 1.5, max 1.5") ? 1 : 0, 1);
+
+        // Its raw values: 8 evenly over the render, then 8 around 0.25 s, a sample each; each to its 12 digits.
+        const auto points = [&](const ms::TraceResult& r, const std::string& head) {
+            std::vector<double> v;
+            for (const std::string& x : r.lines)
+                if (x.rfind("  temp ", 0) == 0 && x.find(head) != std::string::npos)
+                {
+                    const char* s = x.c_str() + x.rfind(": ") + 2;
+                    for (char* end = nullptr;; s = end)
+                    {
+                        const double d = std::strtod(s, &end);
+                        if (end == s)
+                            break;
+                        v.push_back(d);
+                    }
+                }
+            return v;
+        };
+        q.fields = { "temp" };
+        q.points = 8;
+        const ms::TraceResult even = ms::trace(files, q);
+        print("DOUBLE points", even);
+        // (The synth's voice sounds for the first 0.5 s of the 0.7: its last points are "-", where the numbers end.)
+        const std::vector<double> e = points(even, " every ");
+        bool rising = e.size() >= (kInstrument ? 5u : 8u);
+        for (std::size_t k = 1; k < e.size(); ++k)
+            rising = rising && e[k] > e[k - 1];
+        P.eq("double.points_rise", rising ? 1 : 0, 1);
+        q.around = 0.25;
+        const ms::TraceResult around = ms::trace(files, q);
+        print("DOUBLE around", around);
+        const std::vector<double> a = points(around, ", a sample each: ");
+        double worst = a.size() == 8 ? 0.0 : 1.0;
+        for (std::size_t k = 1; k < a.size(); ++k)
+            worst = std::max(worst, std::fabs(a[k] - a[k - 1] - 1e-6));
+        P.le("double.around_steps", worst, 1e-9);
+    }
+
+    // ---- GRID: a click whose culprit is a double in a 2-D array, written by its two indexes ------------------------------
+    {
+        const std::string program = kInstrument ? kGridVoice : kGridEffect;
+        const ms::TraceResult r = ms::trace(pg::singleFile(program), clickReq);
+        print("GRID", r);
+        const ms::TraceProblem* c = firstOf(r, ms::TraceFind::click);
+        const ms::TraceCulprit* ph = nullptr;
+        bool tempBlamed = false;
+        if (c != nullptr)
+            for (const ms::TraceCulprit& k : c->culprits)
+            {
+                ph = ph == nullptr && k.path == "ph[1][2]" ? &k : ph;
+                tempBlamed = tempBlamed || k.path == "temp";
+            }
+        P.eq("grid.found", c != nullptr ? 1 : 0, 1);
+        P.near("grid.at_sample", c != nullptr ? static_cast<double>(c->at) : -1.0, 10005.0, 1.0);
+        P.eq("grid.culprit_element", ph != nullptr ? 1 : 0, 1);
+        P.eq("grid.written_by_its_indexes", ph != nullptr && has(ph->writes, lineOf(program, kInstrument ? "ph[1][2] = 0.75;" : "ph[1][2] = 0.25;"))
+                                                && anyHas(r.lines, "  ph[1][2]: steps ") && !anyHas(r.lines, "no line found that writes it") ? 1 : 0, 1);
+        // A double's values as it holds them: the reset's value plus one float step (a float's is off in its 8th digit).
+        const double reset = kInstrument ? 0.75 + static_cast<double>(0.003f) : 0.25 + static_cast<double>(0.0000625f);
+        P.near("grid.values_double", ph != nullptr && !ph->after.empty() ? ph->after[0] : -1.0, reset, 1e-12);
+        P.eq("grid.no_double_blamed", c != nullptr && !tempBlamed ? 1 : 0, 1);
+    }
+
     // ---- STOP: a cancel or the time limit says so, and claims nothing it did not check ---------------------------------
     {
         // Pass 1 renders the local program's 0.7 s in 2100 calls of 16 samples, and asks keepGoing every 64th: a cancel
@@ -1310,11 +1863,19 @@ PROBE(dsp, debug)
         P.eq("stop.pass2_stopped", two.stopped && anyHas(two.lines, "cancelled") ? 1 : 0, 1);
         P.eq("stop.pass2_claims_nothing", b != nullptr && b->culprits.empty() && b->verdict.find("lives in a local") == std::string::npos
                                               && anyHas(two.lines, "not traced") && !anyHas(two.lines, "same bits") ? 1 : 0, 1);
+        // Which pass stopped (TraceResult::stoppedFirst: an export's WAV and CSV say "up to where trace stopped" for pass
+        // 1's alone): pass 1's render is cut, pass 2's stop leaves it whole, the same bits as a trace that never stopped.
+        const ms::TraceResult whole = ms::trace(pg::singleFile(localProgram), localReq);
+        std::printf("STOP: pass 1's render %zu samples cut in pass 1, %zu cut in pass 2, %zu never cut\n", one.l.size(), two.l.size(),
+                    whole.l.size());
+        P.eq("stop.pass1_first", one.stoppedFirst && one.l.size() >= 9000 && one.l.size() < whole.l.size() ? 1 : 0, 1);
+        P.eq("stop.pass2_not_first", two.stopped && !two.stoppedFirst && !whole.stopped && two.l.size() == whole.l.size()
+                                         && !two.hash.empty() && two.hash == whole.hash ? 1 : 0, 1);
         ms::TraceRequest tiny = nanReq;
         tiny.seconds = 1e-9;
         const ms::TraceResult t = ms::trace(pg::singleFile(nanProgram), tiny);
         print("STOP at the time limit", t);
-        P.eq("stop.time_limit", t.stopped && anyHas(t.lines, "the time limit") && anyHas(t.lines, "rendered before it stopped")
+        P.eq("stop.time_limit", t.stopped && t.stoppedFirst && anyHas(t.lines, "the time limit") && anyHas(t.lines, "rendered before it stopped")
                                     && !anyHas(t.lines, "same bits") ? 1 : 0, 1);
     }
 

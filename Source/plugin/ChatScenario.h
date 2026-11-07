@@ -19,7 +19,16 @@
 // read() parses it into a measure::Request (Measure.h), "host" and "capture" as flags; resolve() fills those in from
 // the plugin just before a render (the host's rate and block from ChatHost; the user's last recording through
 // captured()), so a check that keeps "host" renders at whatever the host runs at then. toVar() writes it back, for the
-// session. Times stop at 10 s (measure::kMaxPlaySeconds) and the tail follows, as the renders' caps have it.
+// session.
+//
+// How long: the request's `longest` (Measure.h, "How long a render may be"), which the tool sets before it reads the
+// rest: measure::kMaxPlaySeconds (10 s, the default) for a picture's render (view_sound, view_panel's moment, compare's
+// picture), measure::kMaxLongSeconds (300 s) for a call that returns numbers alone (measure_output, a check, tune_dials,
+// compare, trace). The scenario's times and hold_seconds stop there, tail_seconds at measure::kMaxTailSeconds, a
+// window at both (Request::endSeconds); one past its cap is refused, naming it (a picture's naming the tools that take
+// 300 s). At a rate above 96 kHz less fits (measure::kMaxRenderSamples a channel): fits() (resolve's last step, and
+// compare's for B at b_rate) refuses times past measure::longestAt the rate (145 s at 192 kHz) and a render, its tail
+// and its window longer than it holds (155 s at 192 kHz), so a Session never re-times a request the tools take.
 //
 // dials_from: current | defaults, measure_output's, view_sound's and trace's: the dials a render does not name as they
 // are in the plugin now (the default; the caller fills Request::current) or at the program's defaults (it leaves it
@@ -31,11 +40,18 @@
 // edit_file's rule (old_text occurs exactly once) and write_file's (a whole file, new or replaced): measure_output,
 // view_sound and compare (its b) render the copy; nothing in the plugin changes, and the result's first line says so.
 //
+// spectrum (measure_output's) and trace's fields, voice and export are read here too, so that the headless renderer
+// (Source/render), which takes the same JSON, reads them as the tools do: this file needs juce_core, the DSP library
+// and nothing of the plugin, and the renderer compiles it. What reaches the plugin (resolve, evaluate and captured: the
+// host's rate and block, the recording) is ChatCaptured.cpp's.
+//
 // Any thread (the agent's worker, the MCP link's): no state but what the caller passes.
 #pragma once
 
 #include "plugin/ChatAgent.h"
 
+#include "dsp/Debug.h"
+#include "dsp/Export.h"
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
@@ -56,6 +72,8 @@ namespace playground::scenario
     // (readWindow: trace refuses one before it reads them) and the scenario (read(): why, when it cannot be), over
     // `request` (trace's source "capture" starts from the recording).
     measure::Request renderOf(const juce::var& input, std::string* why = nullptr, measure::Request request = {});
+    // The request a call that returns numbers alone starts from (above, "How long"): longest kMaxLongSeconds.
+    measure::Request forNumbers();
     // The property's schema: one line, details in the guide.
     juce::var schema();
     // The tool input's `scenario` into `request` (nothing there: unchanged); false with why (naming the part) when it
@@ -64,22 +82,26 @@ namespace playground::scenario
     // A request's scenario as read() takes it (void: none), for the session.
     juce::var toVar(const measure::Request& request);
     struct Captured;
-    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there. With
+    // "host" and "capture" filled in: false with why ("nothing recorded yet") when the recording is not there, or when
+    // the render does not fit at its rate (fits(), below). With
     // `recording` given, that one (compare reads the recording once for both its sides), else captured()'s.
     bool resolve(measure::Request& request, ChatHost& host, std::string& why);
     bool resolve(measure::Request& request, ChatHost& host, std::string& why, const Captured* recording);
+    // Whether a request's render fits at its rate (above, "How long"): false with why, naming the rate's caps.
+    bool fits(const measure::Request& request, std::string& why);
     // The checks measured as measure::evaluate measures them, each resolved first (one that cannot be is not measured,
     // saying why).
     std::vector<measure::CheckResult> evaluate(const Sources& files, const std::vector<measure::Check>& checks,
                                                const std::map<std::string, float>& current, ChatHost& host,
-                                               std::string* errors);
+                                               std::string* errors, const measure::Cancel* cancel = nullptr);
 
     // ---- window ------------------------------------------------------------------------------------------------------
-    // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <=
-    // kMaxWindowSeconds, at least kMinWindowSeconds long), which renderOf reads too: absent, nothing; false with why for
+    // The render settings' `window` (measure::Window: {from, to}, seconds of the render, 0 <= from < to <= `end` (the
+    // request's endSeconds()), at least kMinWindowSeconds long), which renderOf reads too: absent, nothing; false with why for
     // one it cannot take. measure_output, view_sound, each check (which keeps it) and tune_dials measure it in place of
     // the held part (Measure.h); trace and compare take none (they refuse one).
-    bool readWindow(const juce::var& input, measure::Window& window, std::string& why);
+    bool readWindow(const juce::var& input, measure::Window& window, std::string& why,
+                    double end = measure::kMaxWindowSeconds);
     // Back as the input has it (void: none), for the session.
     juce::var windowVar(const measure::Window& window);
 
@@ -92,6 +114,33 @@ namespace playground::scenario
     bool dialsFrom(const juce::var& input, bool& defaults, std::string& why);
     // The result's line: "The dials not named are at their defaults.\n" ("" for current).
     std::string dialsLine(bool defaults);
+
+    // ---- spectrum and profile (measure_output's) ---------------------------------------------------------------------
+    // The input's `spectrum`, the report's band levels (Measure.h's Request::spectrum): octave, third or semitone into
+    // `bands` (absent: none); false with why for anything else.
+    bool spectrumOf(const juce::var& input, measure::Bands& bands, std::string& why);
+    // The input's `profile` (Measure.h's Request::profile, dsp/Profile.h): true or false into `on` (absent: false);
+    // false with why for anything else.
+    bool profileOf(const juce::var& input, bool& on, std::string& why);
+
+    // ---- trace's fields, voice and export (ChatTrace.cpp's, and the renderer's) ------------------------------------
+    // fields: a list of at most measure::kMaxTracePatterns paths or globs; voice: newest, all or a MIDI note. Into `q`
+    // (absent: as it is); false with why.
+    bool watchOf(const juce::var& input, measure::TraceRequest& q, std::string& why);
+    inline constexpr int kInlineRows = 32, kMaxInlineRows = 64;     // export's short CSV: its rows by default, at most
+    struct ExportAsk
+    {
+        bool on = false;
+        measure::WavFormat wav = measure::WavFormat::float32;
+        std::size_t every = 0;                    // samples (0: about 1 ms)
+        int rows = kInlineRows;
+        std::string name;                         // the files' stem ("": a time's)
+    };
+    // `export`: true, or {wav, every, rows, name} (a value sent as a JSON string read as one: "false" is false); false
+    // with why.
+    bool exportOf(const juce::var& input, ExportAsk& ask, std::string& why);
+    // The field log's rows: every `asked` samples (0: about 1 ms at `rate`), a multiple of 16 (pass 1's calls, Debug.h).
+    std::size_t everyOf(std::size_t asked, double rate);
 
     // ---- try_edits ------------------------------------------------------------------------------------------------
     juce::var trialSchema();

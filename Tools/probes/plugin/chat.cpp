@@ -14,7 +14,7 @@
 //            thinking, each with its levels
 //   REQUEST  each request has the model, max_tokens (the model's own limit, from /v1/models), stream, adaptive
 //            thinking (summarized), the effort, the system prompt cached for an hour, the automatic cache breakpoint,
-//            the twenty-one tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
+//            the twenty-two tools each with eager_input_streaming (add_library_file's name an enum of the library's files), "fallbacks" and server-side compaction (its edit, trigger
 //            and instructions) with their beta headers for a model that takes them, the API version and the key, and
 //            no temperature, top_p or top_k; it goes to api.anthropic.com with no other credential; the first message
 //            carries the plugin's state; the history is append-only
@@ -134,8 +134,8 @@
 //            it on one line (clang's note left out, no Notes:); one card a turn with its rows,
 //            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
-//            that only sweeps a dial (tune_dials' sweep sets nothing); the
-//            session keeps them (and loads
+//            that only sweeps a dial (tune_dials' sweep sets nothing), nor one that only exports the files (write_file's
+//            to); the session keeps them (and loads
 //            them); clearChecks forgets them (a note),
 //            and a turn after it goes on no more
 //   CHECKDIALS a check that passes at the defaults fails once the user turns the level (gain) up, and its FAIL line
@@ -161,13 +161,23 @@
 //            name (one in its dials, one moving it) names both checks and each FAILs for it, names apart a check from a
 //            snapshot that holds it (the new name at its default; it passes), and the program back, they pass
 //   WINDOW   the render settings' window through MCP: measure_output's report over it; a window it cannot take refused
-//            (to before from, from below 0, to past 20 s, from left out, a key it has not, not an object, under 0.01 s)
-//            and the least taken; trace and compare refusing one; a check with
-//            one names it on its line and in the card, is saved with it and measures the same once loaded, and a
+//            (to before from, from below 0, to past 310 s, from left out, a key it has not, not an object, under 0.01 s)
+//            and the least taken; view_sound's past 20 s refused (a picture's); trace and compare refusing one; a check
+//            with one names it on its line and in the card, is saved with it and measures the same once loaded, and a
 //            failing one says so; tune_dials takes one
+//   LONG     measure_output held 300 s through MCP: its numbers (the level as a 1 s render's), its time printed and
+//            bounded; refused in words past the caps: hold_seconds 301, view_sound's 11 (naming the tools that take 300
+//            s), tail_seconds 11, a scenario's move at 301 s (tune_dials), compare's picture with one at 11 s, trace's
+//            hold 301; at 192 kHz a hold of 200 s or 150 s (past 145 s, the times' cap there) and a window to 160 s (past
+//            the 155 s a render holds), and compare's B at b_rate 192000 with a move at 150 s (A at 48 kHz fits); Claude
+//            Desktop's cancel mid-render (the activity counting the seconds first): what it reached, nothing measured,
+//            back within 2 s, the next call free (its numbers measured)
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
+//   PROFILE  measure_output's profile through MCP, on a trial copy made heavy (a loop of sinf a call): the report's
+//            profile line (dsp/Profile.h), before the metrics, with samples where the platform takes them, the main
+//            module's process on top; a value that is no boolean refused
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
@@ -188,6 +198,18 @@
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
 //            it renders them, the dials as measure_output's
+//   EXPORT   the render hash and trace's export through MCP (dsp/Export.h): measure_output's Render hash line the same
+//            twice and another with the level (gain) moved, an instrument's trace's the same as measure_output's; view_sound's
+//            (an instrument's the same as measure_output's) and compare's (A's and B's alike for the same files); a window
+//            past the render's end leaves measure_output's and view_sound's hashes as they were, saying so; an export
+//            with fields writes a WAV, a CSV (and the effect's input) into the probe's renders folder (emptied first),
+//            named in the result, read back: the WAV's frames, rate and data hashing to the render hash, the CSV's
+//            header, its rows (the effect's count the row's sample, the synth's held 1 then 0) and their count as the
+//            result says; the CSV inline 32 rows (the first and the last) within its bytes, and `rows` fewer; the same
+//            name again numbered ("probe export 2"), the first files untouched, and "probe pair" after "probe pair
+//            input" never touching that one's WAV (the effect's "probe pair 2", whose input would be it); 24-bit reads
+//            as 24 bits; a bad wav word, a list with it and a render of the recording refused, export "false" (a JSON
+//            string) off, and nothing written for them; a trace with export cancelled as it renders writes nothing
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -253,7 +275,9 @@
 #include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
 
+#include "dsp/Export.h"
 #include "dsp/Measure.h"
+#include "dsp/Profile.h"
 #include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
 
@@ -726,8 +750,8 @@ PROBE(plugin, chat)
         int eager = 0;
         for (const auto& t : tools)
             eager += static_cast<bool>(t.getProperty("eager_input_streaming", false)) ? 1 : 0;
-        P.eq("request.tools", tools.size(), 21);               // 17, and listen, compare, trace and capture
-        P.eq("request.tools_eager", eager, 21);
+        P.eq("request.tools", tools.size(), 22);               // 17, and listen, compare, trace, capture and run_function
+        P.eq("request.tools_eager", eager, 22);
         bool libraryEnum = false;
         for (const auto& t : tools)
             if (str(t, "name") == "add_library_file")
@@ -2922,6 +2946,11 @@ PROBE(plugin, chat)
             ss->add(fake::Response::ok(fake::Sse().start().text("The level follows it.").end()));
             const int bw = turn("how does that dial change the level?", 2);
             P.eq("checks.sweep_no_nudge", ss->postCount() - bw == 2 && has(resultText(bw + 1), "No dial was set") ? 1 : 0, 1);
+            // Nor is one that only exports the files (write_file's to changes nothing in the plugin), though one fails.
+            ss->add(fake::Response::ok(fake::Sse().start().tool("toolu_c8", "write_file", input({ { "to", "backup" } })).end("tool_use")));
+            ss->add(fake::Response::ok(fake::Sse().start().text("The files are saved.").end()));
+            const int bx = turn("save a copy of the files", 2);
+            P.eq("checks.export_no_nudge", ss->postCount() - bx == 2 && has(resultText(bx + 1), "It changed nothing in the plugin") ? 1 : 0, 1);
 
             // The session keeps the checks; Clear forgets them.
             const std::string saved = sa.saveState();
@@ -3093,16 +3122,21 @@ PROBE(plugin, chat)
                                            ? 1 : 0, 1);
                 int refused = 0;
                 const juce::var unfit[] = { input({ { "from", 0.3 }, { "to", 0.2 } }), input({ { "from", -1.0 }, { "to", 1.0 } }),
-                                          input({ { "from", 0.0 }, { "to", 30.0 } }), input({ { "to", 1.0 } }),
+                                          input({ { "from", 0.0 }, { "to", 320.0 } }), input({ { "to", 1.0 } }),
                                           input({ { "from", 0.0 }, { "to", 1.0 }, { "at", 2.0 } }), juce::var("all"),
                                           input({ { "from", 0.5 }, { "to", 0.505 } }) };
                 for (const juce::var& b : unfit)
                 {
                     const pg::ChatAgent::McpResult r = sa.mcpCall("measure_output", withWindow(b));
-                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 20, at "
+                    refused += r.isError && has(allText(r), "window: {from, to}, seconds of the render, 0 <= from < to <= 310, at "
                                                             "least 0.01 s long") ? 1 : 0;
                 }
                 P.eq("window.bad_refused", refused, static_cast<int64_t>(std::size(unfit)));
+                // A picture's window ends by 20 s (its render's 10 s and the tail), the numbers' by 310 s.
+                const pg::ChatAgent::McpResult pictured = sa.mcpCall("view_sound", withWindow(input({ { "from", 0.0 }, { "to", 30.0 } })));
+                P.eq("window.picture_cap", pictured.isError && has(allText(pictured), "0 <= from < to <= 20, at least 0.01 s long")
+                                               && !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.0 }, { "to", 0.25 } }))).isError
+                                               ? 1 : 0, 1);
                 // The least window, 0.03 - 0.02 rounding under 0.01, is taken.
                 P.eq("window.least_taken", !sa.mcpCall("measure_output", withWindow(input({ { "from", 0.02 }, { "to", 0.03 } }))).isError
                                                ? 1 : 0, 1);
@@ -3149,6 +3183,98 @@ PROBE(plugin, chat)
                 P.eq("window.tune_takes_it", !tuned.isError && has(allText(tuned), "Every goal is met already") ? 1 : 0, 1);
             }
 
+            // ---- LONG: a render that returns numbers lasts up to 300 s, a picture's 10; a cancel stops one as it goes ----
+            {
+                using Clock = std::chrono::steady_clock;
+                const auto held = [&](double hold) {
+                    juce::var in = input({ { "hold_seconds", hold }, { "tail_seconds", 0.2 } });
+                    if constexpr (pg::product::kIsInstrument)
+                        in.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                    return in;
+                };
+                const auto with = [](juce::var in, const char* key, const juce::var& v) {
+                    in.getDynamicObject()->setProperty(key, v);
+                    return in;
+                };
+                // A metric's value from the report's last line ("Metrics: ... rms_db=-17.2 ...").
+                const auto metric = [](const std::string& t, const std::string& name) {
+                    const std::size_t at = t.find(" " + name + "=");
+                    return at == std::string::npos ? std::nan("") : std::atof(t.c_str() + at + name.size() + 2);
+                };
+                const char* const level = pg::product::kIsInstrument ? "rms_db" : "sine_gain_db";
+                const auto t0 = Clock::now();
+                const pg::ChatAgent::McpResult longer = sa.mcpCall("measure_output", held(300.0));
+                const double took = std::chrono::duration<double>(Clock::now() - t0).count();
+                const std::string text = allText(longer), plain = allText(sa.mcpCall("measure_output", held(1.0)));
+                std::printf("measure_output, held 300 s, in %.1f s:\n%s\n", took, text.c_str());
+                P.eq("long.measure_300s", !longer.isError && has(text, pg::product::kIsInstrument ? "held 300.00 s, then released" : "for 300.00 s")
+                                              && has(text, "Metrics: ") && !has(text, "Cancelled") ? 1 : 0, 1);
+                P.near("long.level_as_1s", metric(text, level), metric(plain, level), 0.15);
+                P.le("long.measure_300s_seconds", took, 120.0);
+                // Past the caps, refused in words that name them.
+                const auto refused = [&](const char* tool, const juce::var& in, const std::string& words) {
+                    const pg::ChatAgent::McpResult r = sa.mcpCall(tool, in);
+                    if (!(r.isError && has(allText(r), words)))
+                        std::printf("%s, expected refused with \"%s\": %s\n", tool, words.c_str(), allText(r).c_str());
+                    return r.isError && has(allText(r), words) ? 1 : 0;
+                };
+                const juce::var late = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 301.0 }, { "to", -6.0 } }) } } });
+                const juce::var pastPicture = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 11.0 }, { "to", -6.0 } }) } } });
+                P.eq("long.hold_refused", refused("measure_output", held(301.0), "hold_seconds is at most 300 s (a render that returns numbers)"), 1);
+                P.eq("long.picture_hold_refused",
+                     refused("view_sound", held(11.0), "hold_seconds is at most 10 s (a picture's render: measure_output, a check, tune_dials, "
+                                                       "trace and compare without its picture take up to 300 s)"), 1);
+                P.eq("long.tail_refused", refused("measure_output", with(held(1.0), "tail_seconds", 11.0), "tail_seconds is at most 10 s"), 1);
+                P.eq("long.scenario_refused", refused("tune_dials", with(with(held(1.0), "scenario", late), "tune", juce::Array<juce::var>{ juce::var(levelDial) }),
+                                                      "scenario.automate[0]: at is 0 to 300 s (a render that returns numbers)"), 1);
+                P.eq("long.compare_picture_refused",
+                     refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "picture", true }, { "scenario", pastPicture } }),
+                             "scenario.automate[0]: at is 0 to 10 s (a picture's render: "), 1);
+                P.eq("long.trace_takes_300", refused("trace", held(301.0), "hold_seconds is at most 300 s"), 1);
+                // At 192 kHz the times end by 145 s (a render holds 155 s there with its tail), refused past it, never cut.
+                const char* const highTimes = "At 192000 Hz a render's times (hold_seconds, the scenario's) end by 145 s, so that it "
+                                              "holds 155 s with the tail (300 s and 310 s up to 96000 Hz); this one's last is at ";
+                const juce::var high = input({ { "rate", 192000 } });
+                P.eq("long.rate_refused", refused("measure_output", with(held(200.0), "scenario", high),
+                                                  std::string(highTimes) + "200 s: render it shorter, or at a lower rate."), 1);
+                P.eq("long.rate_gap_refused", refused("measure_output", with(held(150.0), "scenario", high),
+                                                      std::string(highTimes) + "150 s: render it shorter, or at a lower rate."), 1);
+                P.eq("long.rate_window_refused",
+                     refused("measure_output", with(with(held(1.0), "scenario", high), "window", input({ { "from", 0.0 }, { "to", 160.0 } })),
+                             "The render would last 160 s at 192000 Hz, past the 155 s a render holds at that rate (310 s up to "
+                             "96000 Hz): render it shorter, or at a lower rate."), 1);
+                const juce::var at150 = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 150.0 }, { "to", -6.0 } }) } } });
+                P.eq("long.b_rate_refused", refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 192000 }, { "scenario", at150 } }),
+                                                    "B at b_rate: " + std::string(highTimes) + "150 s: render it shorter, or at a lower rate."), 1);
+                // Cancelled mid-render (Claude Desktop's cancel): what it reached, at once; the activity said how far.
+                pg::ChatAgent::McpResult cut;
+                std::atomic<bool> finished{ false };
+                std::thread desktop([&] {
+                    cut = sa.mcpCall("measure_output", held(300.0), 4242);
+                    finished.store(true);
+                });
+                std::string progress;
+                for (int tick = 0; tick < 20000 && progress.empty() && !finished.load(); ++tick)
+                {
+                    if (const std::string a = sa.chatState().activity; a.rfind("Measuring the sound: ", 0) == 0)
+                        progress = a;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                const auto asked = Clock::now();
+                sa.mcpCancel(4242);
+                desktop.join();
+                const double back = std::chrono::duration<double>(Clock::now() - asked).count();
+                const std::string cutText = allText(cut);
+                std::printf("measure_output cancelled at \"%s\", back in %.3f s:\n%s\n", progress.c_str(), back, cutText.c_str());
+                P.eq("long.cancel_mid_render", !progress.empty() && has(progress, " of 300 s") && has(cutText, "Cancelled ")
+                                                   && has(cutText, pg::product::kIsInstrument ? " into the render of the note held (300.20 s long), "
+                                                                                              : " into the sine's render (300.00 s long), ")
+                                                   && has(cutText, "Nothing was measured.") && !has(cutText, "Metrics:") ? 1 : 0, 1);
+                P.le("long.cancel_at_once", back, 2.0);
+                const pg::ChatAgent::McpResult next = sa.mcpCall("measure_output", held(1.0));
+                P.eq("long.cancel_then_free", !next.isError && has(allText(next), "Metrics: ") && !has(allText(next), "Cancelled") ? 1 : 0, 1);
+            }
+
             // ---- SPECTRUM ----------------------------------------------------------------------------------------------
             {
                 const auto withBands = [&](const juce::var& kind) {
@@ -3187,6 +3313,30 @@ PROBE(plugin, chat)
                                                   && has(plain.substr(line), pg::product::kIsInstrument ? " rms_db=" : " sine_gain_db=")
                                                   && !has(plain, "Octave bands") && !has(plain, "Third-octave bands")
                                                   && !has(plain, "Semitone bands") ? 1 : 0, 1);
+            }
+
+            // ---- PROFILE ---------------------------------------------------------------------------------------------------
+            {
+                // The program made heavy on a trial copy (a loop of sinf a call), so that the timed calls take samples.
+                juce::Array<juce::var> heavier;
+                heavier.add(input({ { "file", "program.fm" },
+                                    { "old_text", "const float g = expf(0.115129255f * " },
+                                    { "new_text", "float w = 0.0f;\n        for (int k = 0; k < 20000; ++k)\n            w = sinf(w + 0.001f * k);\n"
+                                                  "        const float g = (1.0f + 0.0000001f * w) * expf(0.115129255f * " } }));
+                juce::var in = input({ { "hold_seconds", 1.0 }, { "tail_seconds", 0.2 }, { "profile", true }, { "try_edits", heavier } });
+                const std::string profiled = toolText(sa.mcpCall("measure_output", in));
+                const std::size_t at = profiled.find("\nProfile");
+                std::printf("measure_output with profile: %s\n",
+                            at == std::string::npos ? "(no line)" : profiled.substr(at + 1, profiled.find('\n', at + 1) - at - 1).c_str());
+                const std::string processOf = pg::product::kIsInstrument ? "Voice::process " : "Effect::process ";
+                P.eq("profile.line", at != std::string::npos && profiled.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                         && (pg::profile::available() ? has(profiled, " samples of the rendering thread, about every ")
+                                                                            && has(profiled, "inlined into it): " + processOf)
+                                                                      : has(profiled, "Profile: none (this platform"))
+                                         && has(profiled, "\nMetrics: ") ? 1 : 0, 1);
+                in.getDynamicObject()->setProperty("profile", "yes");
+                const pg::ChatAgent::McpResult notBool = sa.mcpCall("measure_output", in);
+                P.eq("profile.bad_refused", notBool.isError && has(allText(notBool), "profile is true or false") ? 1 : 0, 1);
             }
 
             // ---- BASE ------------------------------------------------------------------------------------------------------
@@ -3752,6 +3902,230 @@ PROBE(plugin, chat)
                                                  && has(traced, "; dials " + dials + "; in calls of 16 samples.")
                                                  && has(traced, pg::product::kIsInstrument ? "Notes 57 (A3) 64 (E4)" : "for 0.30 s") ? 1 : 0, 1);
         }
+
+        // ---- EXPORT --------------------------------------------------------------------------------------------------------
+        {
+            namespace ms = pg::measure;
+            // The render hash a report shows ("Render hash: <16 hex> (...)"), "" with none.
+            const auto hashIn = [](const std::string& text, std::size_t from = 0) {
+                const std::size_t at = text.find("Render hash: ", from);
+                return at == std::string::npos ? std::string() : text.substr(at + 13, ms::kHashShown);
+            };
+            juce::var plain = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 }, { "dials_from", "defaults" } });
+            if constexpr (pg::product::kIsInstrument)
+                plain.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const std::string m1 = toolText(sa.mcpCall("measure_output", plain));
+            const std::string m2 = toolText(sa.mcpCall("measure_output", plain));
+            juce::var moved = juce::JSON::parse(juce::JSON::toString(plain));
+            moved.getDynamicObject()->setProperty("dials", input({ { levelDial, pg::product::kIsInstrument ? -30.0 : -6.0 } }));
+            const std::string m3 = toolText(sa.mcpCall("measure_output", moved));
+            std::printf("export: measure_output's hashes %s, %s, %s (the dial moved)\n", hashIn(m1).c_str(), hashIn(m2).c_str(),
+                        hashIn(m3).c_str());
+            P.eq("export.measure_hash_line", hashIn(m1).size() == ms::kHashShown
+                                                 && has(m1, pg::product::kIsInstrument ? "(SHA-256 of the float32 samples, L R interleaved, of "
+                                                                                         "the render of the note held).\nMetrics: "
+                                                                                       : "(SHA-256 of the float32 samples, L R interleaved, of "
+                                                                                         "the sine's, the noise's, the impulse's and silence's "
+                                                                                         "renders, in turn).\nMetrics: ") ? 1 : 0, 1);
+            P.eq("export.measure_hash_stable", !hashIn(m1).empty() && hashIn(m1) == hashIn(m2) ? 1 : 0, 1);
+            P.eq("export.measure_hash_differs", !hashIn(m3).empty() && hashIn(m3) != hashIn(m1) ? 1 : 0, 1);
+            const std::string viewed = toolText(sa.mcpCall("view_sound", plain));
+            const std::string cmp = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" } })));
+            const std::size_t hA = cmp.find("Render hashes: A ");
+            const std::string ha = hA == std::string::npos ? std::string() : cmp.substr(hA + 17, ms::kHashShown);
+            const std::string hb = hA == std::string::npos ? std::string() : cmp.substr(hA + 17 + ms::kHashShown + 4, ms::kHashShown);
+            std::printf("export: view_sound's hash %s; compare's A %s, B %s\n", hashIn(viewed).c_str(), ha.c_str(), hb.c_str());
+            P.eq("export.view_sound_hash", hashIn(viewed).size() == ms::kHashShown ? 1 : 0, 1);
+            P.eq("export.compare_hashes", ha.size() == ms::kHashShown && ha == hb && has(cmp, ", B " + ha + " (SHA-256 of each side's") ? 1 : 0, 1);
+            if constexpr (pg::product::kIsInstrument)   // the same render (the voices on the absolute grid)
+                P.eq("export.view_sound_is_measure_outputs", !hashIn(viewed).empty() && hashIn(viewed) == hashIn(m1) ? 1 : 0, 1);
+            {
+                // A window past the render's end (0.50 s) renders on to its own end, which the hash leaves out: the same
+                // sound hashes the same, and the line says what it is of (the effect's measure_output is never lengthened).
+                juce::var late = juce::JSON::parse(juce::JSON::toString(plain));
+                late.getDynamicObject()->setProperty("window", input({ { "from", 0.1 }, { "to", 2.0 } }));
+                const std::string mw = toolText(sa.mcpCall("measure_output", late)), vw = toolText(sa.mcpCall("view_sound", late));
+                std::printf("export: with a window to 2 s, measure_output's hash %s, view_sound's %s\n", hashIn(mw).c_str(), hashIn(vw).c_str());
+                P.eq("export.window_hash_same", !hashIn(mw).empty() && hashIn(mw) == hashIn(m1) && !hashIn(vw).empty() && hashIn(vw) == hashIn(viewed)
+                                                    && has(vw, "of the render up to its own end (0.50 s), not the window's part past it).")
+                                                    && (!pg::product::kIsInstrument
+                                                        || has(mw, "of the render of the note held up to its own end (0.50 s), not the window's part past it)."))
+                                                    ? 1 : 0, 1);
+            }
+
+            // The export: the effect's program with a counter (a trial edit), the synth's own fields.
+            juce::var ask = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "dials_from", "defaults" },
+                                    { "export", input({ { "every", 480 }, { "name", "probe export" } }) } });
+            if constexpr (pg::product::kIsInstrument)
+            {
+                ask.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                ask.getDynamicObject()->setProperty("fields", juce::Array<juce::var>{ "env", "held" });
+            }
+            else
+            {
+                juce::Array<juce::var> counter;
+                counter.add(input({ { "name", "program.fm" },
+                                    { "content", "module Effect\n{\n    param float gain [[fminus::range(-24, 24)]] [[fminus::default(0)]];\n"
+                                                 "    int count;\n    void process(float* restrict left, float* restrict right, int n)\n"
+                                                 "    {\n        const float g = expf(0.115129255f * gain[0]);\n"
+                                                 "        for (int i = 0; i < n; ++i)\n        {\n            count += 1;\n"
+                                                 "            left[i] *= g;\n            right[i] *= g;\n        }\n    }\n};\n" } }));
+                ask.getDynamicObject()->setProperty("try_edits", counter);
+                ask.getDynamicObject()->setProperty("fields", juce::Array<juce::var>{ "count" });
+            }
+            // The sandbox's renders folder emptied first (an export never replaces a file, so a run's names would be
+            // numbered after the last run's); only under CTest, never the user's folder.
+            if (const char* prefs = std::getenv((std::string(pg::product::kEnvPrefix) + "PREFS_DIR").c_str()); prefs != nullptr && *prefs != '\0')
+                juce::File(juce::String::fromUTF8(prefs)).getChildFile("renders").deleteRecursively();
+            const pg::ChatAgent::McpResult ex = sa.mcpCall("trace", ask);
+            const std::string exported = toolText(ex);
+            std::printf("trace with export:\n%s\n", exported.c_str());
+            const std::string lead = "Exported on this Mac (the user can open these) to ";
+            const std::size_t d0 = exported.find(lead);
+            const std::string dir = d0 == std::string::npos ? std::string() : exported.substr(d0 + lead.size(), exported.find(":\n", d0) - d0 - lead.size());
+            const juce::File folder(juce::String::fromUTF8(dir.c_str()));
+            const juce::File wavFile = folder.getChildFile("probe export.wav"), csvFile = folder.getChildFile("probe export.csv"),
+                             inFile = folder.getChildFile("probe export input.wav");
+            P.eq("export.written", !ex.isError && !dir.empty() && folder.getFileName() == "renders" && wavFile.existsAsFile()
+                                       && csvFile.existsAsFile() && inFile.existsAsFile() == !pg::product::kIsInstrument ? 1 : 0, 1);
+            juce::MemoryBlock wavBytes;
+            wavFile.loadFileAsData(wavBytes);
+            ms::Wav wav;
+            std::string wavWhy;
+            const bool read = ms::readWav(std::span<const uint8_t>(static_cast<const uint8_t*>(wavBytes.getData()), wavBytes.getSize()), wav, wavWhy);
+            const std::size_t frames = static_cast<std::size_t>(0.7 * 48000.0);
+            P.eq("export.wav_read", read && wav.isFloat && wav.bits == 32 && wav.rate == 48000 && wav.channels == 2 && wav.l.size() == frames ? 1 : 0, 1);
+            {
+                ms::Sha256 h;
+                const std::size_t data = wavBytes.getSize() - frames * 8;
+                h.add(static_cast<const char*>(wavBytes.getData()) + data, frames * 8);
+                const std::string hex = h.hex();
+                std::printf("export: the WAV's data hashes to %s; the result's render hash %s\n", hex.c_str(), hashIn(exported).c_str());
+                P.eq("export.wav_is_the_render_hash", read && !hashIn(exported).empty() && hex.rfind(hashIn(exported), 0) == 0
+                                                          && ms::renderHash(wav.l, wav.r) == hex ? 1 : 0, 1);
+                if constexpr (pg::product::kIsInstrument)   // the same render as measure_output's
+                {
+                    juce::var same = juce::JSON::parse(juce::JSON::toString(ask));
+                    same.getDynamicObject()->removeProperty("export");
+                    same.getDynamicObject()->removeProperty("fields");
+                    P.eq("export.trace_hash_is_measure_outputs", hashIn(toolText(sa.mcpCall("measure_output", same))) == hashIn(exported) ? 1 : 0, 1);
+                }
+            }
+            const juce::StringArray rows = juce::StringArray::fromLines(csvFile.loadFileAsString().trimEnd());
+            const std::size_t want = frames / 480;
+            int right = 0;
+            for (int k = 1; k < rows.size(); ++k)
+            {
+                const juce::StringArray cells = juce::StringArray::fromTokens(rows[k], ",", "");
+                if constexpr (pg::product::kIsInstrument)
+                    right += cells.size() == 4 && cells[3] == (cells[1].getIntValue() <= 24000 ? "1" : "0") ? 1 : 0;
+                else
+                    right += cells.size() == 3 && cells[2] == cells[1] && cells[1].getIntValue() == 480 * k ? 1 : 0;
+            }
+            std::printf("export: the CSV's %d lines, %d rows as they should be; its header %s\n", rows.size(), right, rows[0].toRawUTF8());
+            P.eq("export.csv_header", rows[0] == (pg::product::kIsInstrument ? "time_s,sample,env,held" : "time_s,sample,count") ? 1 : 0, 1);
+            P.eq("export.csv_rows", static_cast<int64_t>(rows.size() - 1), static_cast<int64_t>(want));
+            P.eq("export.csv_values", static_cast<int64_t>(right), static_cast<int64_t>(want));
+            P.eq("export.csv_rows_said", has(exported, "a row every 480 samples (0.01 s), " + std::to_string(want) + " rows, ") ? 1 : 0, 1);
+            const std::string inlineLead = "The CSV inline (32 of its " + std::to_string(want) + " rows, evenly, to 6 digits):\n";
+            const std::size_t i0 = exported.find(inlineLead);
+            const std::string inlined = i0 == std::string::npos ? std::string() : exported.substr(i0 + inlineLead.size());
+            const juce::StringArray inlineRows = juce::StringArray::fromLines(juce::String(inlined).trimEnd());
+            std::printf("export: the CSV inline, %zu bytes, %d lines\n", inlined.size(), inlineRows.size());
+            P.eq("export.inline_rows", inlineRows.size() == 33 && inlineRows[0] == rows[0]
+                                           && inlineRows[1].startsWith("0.010000,480,") && inlineRows[32].fromFirstOccurrenceOf(",", false, false).startsWith(juce::String(480 * static_cast<int>(want)) + ",")
+                                           ? 1 : 0, 1);
+            P.le("export.inline_bytes", static_cast<double>(inlined.size()), 6000.0);
+            // An export adds files and never replaces one (trace is no destructive tool): a file's time set back stays so.
+            const juce::Time old(2001, 0, 1, 0, 0);
+            {
+                juce::var fewer = juce::JSON::parse(juce::JSON::toString(ask));
+                fewer.getDynamicObject()->setProperty("export", input({ { "every", 480 }, { "name", "probe export" }, { "rows", 4 } }));
+                wavFile.setLastModificationTime(old);
+                csvFile.setLastModificationTime(old);
+                const std::string again = toolText(sa.mcpCall("trace", fewer));
+                P.eq("export.inline_rows_asked", has(again, "The CSV inline (4 of its ") ? 1 : 0, 1);
+                P.eq("export.same_name_numbered", has(again, " (\"probe export\" was taken, and nothing is replaced):\n- probe export 2.wav: ")
+                                                      && folder.getChildFile("probe export 2.wav").existsAsFile()
+                                                      && folder.getChildFile("probe export 2.csv").existsAsFile()
+                                                      && wavFile.getLastModificationTime() == old && csvFile.getLastModificationTime() == old ? 1 : 0, 1);
+            }
+            {
+                // A name never reaches another export's files: "probe pair input" (the synth's WAV, the effect's too, beside
+                // its own input), then "probe pair", whose input the effect would write where that WAV is: "probe pair 2".
+                juce::var first = juce::JSON::parse(juce::JSON::toString(ask)), second = juce::JSON::parse(juce::JSON::toString(ask));
+                first.getDynamicObject()->setProperty("export", input({ { "name", "probe pair input" } }));
+                second.getDynamicObject()->setProperty("export", input({ { "name", "probe pair" } }));
+                const juce::File pairInput = folder.getChildFile("probe pair input.wav");
+                const bool made = !sa.mcpCall("trace", first).isError && pairInput.existsAsFile() && pairInput.setLastModificationTime(old);
+                const std::string said = toolText(sa.mcpCall("trace", second));
+                const std::size_t e0 = said.find("Exported on this Mac");
+                std::printf("export: \"probe pair\" after \"probe pair input\": %s\n",
+                            e0 == std::string::npos ? said.c_str() : said.substr(e0, said.find("\n- ", said.find("\n- ", e0) + 3) - e0).c_str());
+                P.eq("export.names_kept_apart", made && pairInput.getLastModificationTime() == old
+                                                    && (pg::product::kIsInstrument ? has(said, ":\n- probe pair.wav: ") && !has(said, "was taken")
+                                                                                   : has(said, " (\"probe pair\" was taken, and nothing is replaced):\n- probe pair 2.wav: ")
+                                                                                         && has(said, "- probe pair 2 input.wav: "))
+                                                    ? 1 : 0, 1);
+            }
+            {
+                juce::var deep = juce::JSON::parse(juce::JSON::toString(ask));
+                deep.getDynamicObject()->setProperty("export", input({ { "wav", "24" }, { "name", "probe export 24" } }));
+                const std::string said = toolText(sa.mcpCall("trace", deep));
+                juce::MemoryBlock b24;
+                folder.getChildFile("probe export 24.wav").loadFileAsData(b24);
+                ms::Wav w24;
+                P.eq("export.wav_24", ms::readWav(std::span<const uint8_t>(static_cast<const uint8_t*>(b24.getData()), b24.getSize()), w24, wavWhy)
+                                          && w24.bits == 24 && !w24.isFloat && w24.l.size() == frames && has(said, "stereo 24-bit PCM") ? 1 : 0, 1);
+            }
+            {
+                // Refused: a wav word it does not take, a list, a render of the recording; nothing written.
+                const juce::Array<juce::File> filesBefore = folder.findChildFiles(juce::File::findFiles, false);
+                const pg::ChatAgent::McpResult badWav = sa.mcpCall("trace", input({ { "export", input({ { "wav", "mp3" } }) } }));
+                const pg::ChatAgent::McpResult listed = sa.mcpCall("trace", input({ { "export", true }, { "list", true } }));
+                const pg::ChatAgent::McpResult captured = sa.mcpCall("trace", input({ { "export", true }, { "source", "capture" } }));
+                std::printf("export refused: %s | %s | %s\n", toolText(badWav).c_str(), toolText(listed).c_str(), toolText(captured).c_str());
+                P.eq("export.bad_wav_refused", badWav.isError && has(toolText(badWav), "export's wav is float32 (the default) or 24") ? 1 : 0, 1);
+                P.eq("export.list_refused", listed.isError && has(toolText(listed), "list names the fields") ? 1 : 0, 1);
+                P.eq("export.capture_refused", captured.isError && has(toolText(captured), "export writes no render of the user's recording") ? 1 : 0, 1);
+                // Declined as a JSON string (a client that sends its arguments so): "false" is false, so a trace and no file.
+                juce::var declined = juce::JSON::parse(juce::JSON::toString(ask));
+                declined.getDynamicObject()->setProperty("export", "false");
+                const pg::ChatAgent::McpResult no = sa.mcpCall("trace", declined);
+                std::printf("export \"false\": %s\n", toolText(no).substr(0, 400).c_str());
+                P.eq("export.false_string_off", !no.isError && has(toolText(no), "Traced offline") && !has(toolText(no), "Exported") ? 1 : 0, 1);
+                P.eq("export.refused_write_nothing", folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
+            }
+            {
+                // Cancelled mid-render (Claude Desktop's cancel): the trace says how far it got, and writes no file.
+                const juce::Array<juce::File> filesBefore = folder.findChildFiles(juce::File::findFiles, false);
+                juce::var longer = juce::JSON::parse(juce::JSON::toString(ask));
+                longer.getDynamicObject()->setProperty("hold_seconds", 300.0);
+                longer.getDynamicObject()->setProperty("export", input({ { "name", "probe cancelled" } }));
+                pg::ChatAgent::McpResult cut;
+                std::atomic<bool> finished{ false };
+                std::thread desktop([&] {
+                    cut = sa.mcpCall("trace", longer, 4343);
+                    finished.store(true);
+                });
+                bool tracing = false;
+                for (int tick = 0; tick < 20000 && !tracing && !finished.load(); ++tick)
+                {
+                    tracing = sa.chatState().activity == "Tracing the program";
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                const bool early = !finished.load();
+                sa.mcpCancel(4343);
+                desktop.join();
+                const std::string said = toolText(cut);
+                std::printf("export cancelled (%s):\n%s\n", early ? "while it rendered" : "after it ended", said.c_str());
+                P.eq("export.cancel_writes_nothing", tracing && early && has(said, "Cancelled, so nothing was exported: no file was written.")
+                                                         && has(said, "cancelled") && !has(said, "Exported on this Mac")
+                                                         && !folder.getChildFile("probe cancelled.wav").exists()
+                                                         && folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
+            }
+        }
     }
 
     // ---- PLANNER -------------------------------------------------------------------------------------------------------
@@ -4170,7 +4544,7 @@ PROBE(plugin, chat)
         int at = script->postCount();
         agent.send("hello");
         agent.waitIdle();
-        P.eq("web.off_no_tools", toolsOf(at).size() == 21 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
+        P.eq("web.off_no_tools", toolsOf(at).size() == 22 && webTool(at, "web_search").isVoid() ? 1 : 0, 1);
         agent.setWeb(true);
         P.eq("web.on", agent.chatState().web ? 1 : 0, 1);
         const juce::var result = input({ { "type", "web_search_tool_result" },
@@ -4209,7 +4583,7 @@ PROBE(plugin, chat)
         agent.waitIdle();
         {
             const juce::var search = webTool(at, "web_search"), fetch = webTool(at, "web_fetch");
-            P.eq("web.tools", toolsOf(at).size() == 23 && str(search, "type") == "web_search_20260209"
+            P.eq("web.tools", toolsOf(at).size() == 24 && str(search, "type") == "web_search_20260209"
                                   && static_cast<int>(search.getProperty("max_uses", 0)) == 5
                                   && str(fetch, "type") == "web_fetch_20260209"
                                   && static_cast<int>(fetch.getProperty("max_content_tokens", 0)) > 0
