@@ -359,6 +359,23 @@ namespace playground::measure
                  + ".\n";
         }
 
+        // level_wobble_db's line, after wobble_db's (the same frames): "Its level moves 1.62 dB about its trend (the SD
+        // of 28 frames' levels, each against a line fit within 0.5 s of it; the most, 2.71 dB)."
+        std::string levelWobbleLine(const std::string& lead, const LevelWobble& w)
+        {
+            return lead + fmt(" moves %.2f dB about its trend", w.db) + " (the SD of " + std::to_string(w.frames)
+                 + " frames' levels, each against a line fit within " + fmt("%.1f s", kLevelTrendSeconds) + " of it; the most, "
+                 + fmt("%.2f dB", w.mostDb) + ").\n";
+        }
+
+        // level_wobble_db's when wobble_db's frames sound but fewer than three of them have a level (a sound that is all
+        // but silent).
+        std::string levelSilentWhy(const LevelWobble& w)
+        {
+            return "the output is silent in " + std::to_string(w.silent) + " of its " + std::to_string(w.frames + w.silent)
+                 + " frames, and fewer than three sound";
+        }
+
         // wobble_db's reason when frames enough were there but too few of them sounded.
         std::string silentWhy(const Wobble& w)
         {
@@ -546,6 +563,10 @@ namespace playground::measure
               "the SD of each third-octave band's share of the power over the spectrum's frames, power-weighted over bands "
               "within 30 dB of the loudest: flanging, chorus",
               0.5, false, 0.0 },
+            { "level_wobble_db", "dB",
+              "while held, the SD of wobble_db's frames' levels, each about a line fit to those within 0.5 s: tremolo, not a "
+              "fade",
+              0.5, false, 0.0 },
             { "step", "", "the largest step between two samples of a channel, the whole render (a jump's is the same at any "
                           "rate, a smooth wave's smaller at a higher one)",
               0.01, false, 0.0 },
@@ -607,6 +628,10 @@ namespace playground::measure
               "a steady tone's output (partials every 10 Hz, flat, -18 dBFS RMS): the SD of each third-octave band's share "
               "of its power over 0.1 s frames on the tone's period while held (an effect that holds still, a delay or a "
               "reverb, reads about 0), power-weighted over bands within 30 dB of the loudest: a flanger",
+              0.5, false, 0.0 },
+            { "level_wobble_db", "dB",
+              "while held, the SD of wobble_db's frames' levels, each about a line fit to those within 0.5 s: tremolo, not a "
+              "fade",
               0.5, false, 0.0 },
             { "impulse_peak_db", "dBFS", "the largest output sample after an impulse of 0.5 (-6 dBFS)", 1.0, false, 0.0 },
             { "impulse_delay_ms", "ms", "when that sample comes", 0.05, true, 0.1 },
@@ -1575,6 +1600,87 @@ namespace playground::measure
             }
         }
         w.db = den > 0.0 ? num / den : 0.0;
+        return w;
+    }
+
+    LevelWobble levelWobble(const std::vector<float>& l, const std::vector<float>& r, double rate, const std::vector<Span>& spans,
+                            bool onPeriod)
+    {
+        LevelWobble w;
+        const std::size_t size = std::min(l.size(), r.size());
+        const std::size_t frame = wobbleFrame(rate);
+        std::vector<double> hann(frame);
+        double hannSum = 0.0;
+        for (std::size_t i = 0; i < frame; ++i)
+        {
+            hann[i] = 0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * (static_cast<double>(i) + 0.5) / static_cast<double>(frame));
+            hannSum += hann[i];
+        }
+        struct Level
+        {
+            double t = 0.0;                                  // the frame's centre, seconds
+            double db = 0.0;
+            std::size_t span = 0;
+        };
+        std::vector<Level> levels;
+        for (std::size_t k = 0; k < spans.size(); ++k)
+        {
+            const auto& [from, to] = spans[k];
+            const std::size_t end = std::min(to, size);
+            if (end < from + frame)
+                continue;
+            // wobble()'s frames: spread evenly, at most half a frame apart; or end to end on the tone's period.
+            const std::size_t len = end - from, first = (from + frame - 1) / frame * frame;
+            const std::size_t count = onPeriod ? (end >= first + frame ? (end - first) / frame : 0)
+                                    : len <= frame ? 1 : (len - frame + frame / 2 - 1) / (frame / 2) + 1;
+            for (std::size_t f = 0; f < count; ++f)
+            {
+                const std::size_t at = onPeriod ? first + f * frame : from + (count == 1 ? 0 : (len - frame) * f / (count - 1));
+                double power = 0.0;
+                for (std::size_t i = 0; i < frame; ++i)
+                {
+                    const double a = l[at + i], b = r[at + i];
+                    power += hann[i] * 0.5 * (a * a + b * b);
+                }
+                power /= hannSum;
+                if (!(power > 1e-20))
+                {
+                    ++w.silent;
+                    continue;
+                }
+                levels.push_back({ (static_cast<double>(at) + 0.5 * static_cast<double>(frame)) / rate, 10.0 * std::log10(power), k });
+            }
+        }
+        w.frames = static_cast<int>(levels.size());
+        if (w.frames < 3)
+            return w;
+        double loudest = -kInf;
+        for (const Level& x : levels)
+            loudest = std::max(loudest, x.db);
+        for (Level& x : levels)
+            x.db = std::max(x.db, loudest - kWobbleFloorDb);
+        double dev = 0.0;
+        for (const Level& x : levels)
+        {
+            // The line through the span's frames within kLevelTrendSeconds of this one (itself among them).
+            double n = 0.0, st = 0.0, sy = 0.0, stt = 0.0, sty = 0.0;
+            for (const Level& y : levels)
+                if (y.span == x.span && std::fabs(y.t - x.t) <= kLevelTrendSeconds + 1e-9)
+                {
+                    const double t = y.t - x.t;
+                    n += 1.0;
+                    st += t;
+                    sy += y.db;
+                    stt += t * t;
+                    sty += t * y.db;
+                }
+            const double d = n * stt - st * st;
+            const double trend = d > 1e-12 ? (sy * stt - st * sty) / d : sy / n;   // the line's value at this frame
+            const double off = x.db - trend;
+            dev += off * off;
+            w.mostDb = std::max(w.mostDb, std::fabs(off));
+        }
+        w.db = std::sqrt(dev / static_cast<double>(levels.size()));
         return w;
     }
 
@@ -3290,8 +3396,8 @@ namespace playground::measure
                     out += ordersLine(lead, o, os);
                 }
             }
-            // How the spectrum's shape moves over the same part (0.1 s frames; three at least).
-            if (need({ "wobble_db" }))
+            // How the spectrum's shape moves over the same part (0.1 s frames; three at least), and its level.
+            if (need({ "wobble_db", "level_wobble_db" }))
             {
                 const Wobble wb = wobble(r.out.l, r.out.r, rate, held);
                 if (wb.frames < 3)
@@ -3306,6 +3412,7 @@ namespace playground::measure
                                               : " (each note's held stretch makes its own, half a frame apart: three take "
                                                 "one over 0.15 s, so a note held over 0.2 s)");
                     res.unmeasured["wobble_db"] = why;
+                    res.unmeasured["level_wobble_db"] = why;
                     out += "Wobble: not measured, " + why + ".\n";
                 }
                 else
@@ -3314,6 +3421,14 @@ namespace playground::measure
                     out += wobbleLine(std::string(windowed ? "Wobble in the window" : "Wobble while held")
                                           + ": each third-octave band's share of the power",
                                       wb, "power-weighted over the bands within 30 dB of the loudest");
+                    const LevelWobble lw = levelWobble(r.out.l, r.out.r, rate, held);
+                    if (lw.frames < 3)
+                        res.unmeasured["level_wobble_db"] = levelSilentWhy(lw);
+                    else
+                    {
+                        v["level_wobble_db"] = lw.db;
+                        out += levelWobbleLine("Its level", lw);
+                    }
                 }
             }
 
@@ -3701,10 +3816,10 @@ namespace playground::measure
                     }
                 }
             }
-            // How a steady tone's shape moves through it (wobble_db alone: a signal its steps, alerts and CPU time do not
-            // count in): its output's frames on the tone's period, after its fade-in, so that an effect that holds still
-            // reads 0 once its memory has settled (three frames at least).
-            if (need({ "wobble_db" }))
+            // How a steady tone's shape moves through it (wobble_db and level_wobble_db alone: a signal its steps, alerts
+            // and CPU time do not count in): its output's frames on the tone's period, after its fade-in, so that an
+            // effect that holds still reads 0 once its memory has settled (three frames at least).
+            if (need({ "wobble_db", "level_wobble_db" }))
             {
                 const std::string lead = "Steady tone (partials every 10 Hz, flat) at " + fmt("%.1f dBFS RMS", kSteadyToneDb)
                                        + " for " + seconds(hold);
@@ -3715,6 +3830,7 @@ namespace playground::measure
                                               : "the window holds less than " + seconds(kMinWindowSeconds)
                                                     + " of the steady tone (it ends at hold_seconds, " + seconds(hold) + ")";
                     res.unmeasured["wobble_db"] = why;
+                    res.unmeasured["level_wobble_db"] = why;
                     out += lead + ": not measured, " + why + ".\n";
                 }
                 else
@@ -3740,6 +3856,7 @@ namespace playground::measure
                                                         + (windowed ? "any window of 0.4 s holds three" : "hold_seconds 0.4 holds three")
                                                         + ")";
                         res.unmeasured["wobble_db"] = why;
+                        res.unmeasured["level_wobble_db"] = why;
                         out += lead + ": wobble not measured, " + why + ".\n";
                     }
                     else
@@ -3747,6 +3864,14 @@ namespace playground::measure
                         v["wobble_db"] = wb.db;
                         out += wobbleLine(lead + (windowed ? ", in the window" : "") + ": each third-octave band's share of the output's power",
                                           wb, "on the tone's period, power-weighted over the bands within 30 dB of the loudest");
+                        const LevelWobble lw = levelWobble(o.l, o.r, rate, after, true);
+                        if (lw.frames < 3)
+                            res.unmeasured["level_wobble_db"] = levelSilentWhy(lw);
+                        else
+                        {
+                            v["level_wobble_db"] = lw.db;
+                            out += levelWobbleLine("Its output's level", lw);
+                        }
                     }
                 }
             }

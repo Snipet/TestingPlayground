@@ -75,6 +75,10 @@
 //            allpass, a 37 ms feedback comb and a tremolo about 0 (the echo and the allpass under a tenth of the
 //            flanger), a flanger at least 0.7 dB; the same at both rates; a held part under 0.2 s, and an effect's
 //            silent output, not measured, saying why
+//   LEVEL    level_wobble_db at 48 and 192 kHz: a steady sound (an effect's steady tone passed) under 0.05 dB, a 3 Hz
+//            tremolo (the voice's level 0.5 to 1.5 times; the effect's gain 0.5 to 1) at least 1 dB, a slow fade (6 dB a
+//            second, a straight line in dB) under 0.05 dB, its trend taking it; its line in the report; the tremolo's
+//            within 5 % at both rates; a held part under 0.2 s not measured, saying why
 //   LINE     the report's last line every metric measured, name=value, in the table's order
 //   TERMS    every metric's words name what metricTerms() defines or a span of its own; toleranceText is Goals'
 //            toleranceOf
@@ -750,6 +754,60 @@ module Voice
     }
 };
 )";
+
+    // kHarmonicVoice's eight harmonics falling `db` dB a second while held: a slow fade, a straight line in dB.
+    [[maybe_unused]] std::string fadingVoice(double db)
+    {
+        return R"(module Voice
+{
+    float rate, ph, step, t, env;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; env = 0; ph = 0; t = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        const float up = 1 / (0.005f * rate);
+        const float fall = expf(-6.90775528f / (0.2f * rate));
+        for (int i = 0; i < n; ++i)
+        {
+            if (held) env = fminf(1, env + up); else env *= fall;
+            float x = 0;
+            for (int h = 1; h <= 8; ++h)
+                x += sinf(6.28318531f * h * ph) / h;
+            x *= 0.1f * expf(-)" + lit(db * 0.115129255) + R"( * t);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+            t += 1 / rate;
+            left[i] += env * x;
+            right[i] += env * x;
+        }
+        return held || env > 0.00001f;
+    }
+};
+)";
+    }
+
+    // An effect whose gain falls `db` dB a second: a slow fade of whatever comes in.
+    [[maybe_unused]] std::string fadingEffect(double db)
+    {
+        return R"(module Effect
+{
+    float rate, t;
+    void init(float r) { rate = r; }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float g = expf(-)" + lit(db * 0.115129255) + R"( * t);
+            left[i] = g * left[i];
+            right[i] = g * right[i];
+            t += 1 / rate;
+        }
+    }
+};
+)";
+    }
 
     ms::Result measured(const pg::Sources& files, double rate, ms::Request r)
     {
@@ -1995,6 +2053,43 @@ PROBE(dsp, metrics)
                          && has(b.report, kInstrument ? "Wobble: not measured, " : "wobble not measured, ") ? 1 : 0, 1);
         }
         P.near("wobble.rates", moved[1] / moved[0], 1.0, kInstrument ? 0.05 : 0.15);
+    }
+
+    // ---- LEVEL: level_wobble_db ------------------------------------------------------------------------------------
+    {
+        std::array<double, 2> trembled{};
+        for (const double rate : { 48000.0, 192000.0 })
+        {
+            const std::string tag = rate == 48000.0 ? "48k" : "192k";
+            ms::Request r;
+            r.holdSeconds = 1.5f;
+            r.tailSeconds = 0.1f;
+            r.want = { "level_wobble_db" };
+            // A steady sound 0; a tremolo (3 Hz) high; a slow fade (6 dB a second, a straight line in dB) about 0:
+            // the trend takes it.
+            const ms::Result steady = measured(pg::singleFile(kInstrument ? kHarmonicVoice : kPassEffect), rate, r);
+            const ms::Result tremolo = measured(pg::singleFile(kInstrument ? movingVoice(0.5, 0.0) : std::string(kTremoloEffect)), rate, r);
+            const ms::Result fade = measured(pg::singleFile(kInstrument ? fadingVoice(6.0) : fadingEffect(6.0)), rate, r);
+            const double s0 = at(steady.values, "level_wobble_db"), t0 = at(tremolo.values, "level_wobble_db");
+            const double f0 = at(fade.values, "level_wobble_db");
+            trembled[rate == 48000.0 ? 0 : 1] = t0;
+            std::printf("level wobble at %s: steady %.4f dB, a tremolo %.3f dB, a fade of 6 dB a second %.4f dB\n%s", tag.c_str(), s0,
+                        t0, f0, tremolo.report.c_str());
+            P.le("level.steady_" + tag, s0, 0.05);
+            P.ge("level.tremolo_" + tag, t0, 1.0);
+            P.le("level.fade_" + tag, f0, 0.05);
+            P.eq("level.line_" + tag, has(tremolo.report, kInstrument ? "Its level moves " : "Its output's level moves ")
+                                          && has(tremolo.report, " about its trend (the SD of ")
+                                          && has(tremolo.report, " frames' levels, each against a line fit within 0.5 s of it; the most, ")
+                                          ? 1 : 0, 1);
+            // Too short a held part: not measured, with wobble_db's reason.
+            ms::Request brief = r;
+            brief.holdSeconds = 0.2f;
+            const ms::Result b = measured(pg::singleFile(kInstrument ? kHarmonicVoice : kPassEffect), rate, brief);
+            const auto why = b.unmeasured.find("level_wobble_db");
+            P.eq("level.too_short_" + tag, b.values.count("level_wobble_db") == 0 && why != b.unmeasured.end() ? 1 : 0, 1);
+        }
+        P.near("level.rates", trembled[1] / trembled[0], 1.0, 0.05);
     }
 
     // ---- LINE: the report ends with the metrics measured, name=value ---------------------------------------------------

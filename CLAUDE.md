@@ -1072,8 +1072,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `sameRender` tells bases apart), wobble_db each third's share of the power over the spectrum's frames (`wobble`; an
   effect's of a steady tone's output, `steadyTone`: partials every 10 Hz repeating every 0.1 s, its frames end to end on
   that period (`onPeriod`), so that an effect that holds still reads 0 however long its memory, where a ratio of noise
-  out over in would read a delay's memory as motion; the tone renders for wobble_db alone, uncounted in step, alerts and
-  cpu_percent) (`dsp.metrics` checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
+  out over in would read a delay's memory as motion; the tone renders for wobble_db and level_wobble_db alone,
+  uncounted in step, alerts and cpu_percent), level_wobble_db the SD of the same frames' levels about their trend
+  (`levelWobble`: each frame's Hann-weighted mean square in dB, floored 60 dB under the loudest, against a least-squares
+  line through its span's frames within `kLevelTrendSeconds`, so a fade or a decay reads about 0 and a tremolo high;
+  unmeasured where wobble_db is, with its reason) (`dsp.metrics` checks each at 48 and 192 kHz). The render settings' `window` ({from, to}, `Request::window`, at least
   `kMinWindowSeconds`) takes the held part's place: seconds of an instrument's render, which then lasts to its end,
   for the metrics "while held", peak_db and cpu_percent (the calls that render it); attack_s and release_s keep the
   notes', and the whole render's metrics the length it has without the window (`Timeline::plain`, where a call ends);
