@@ -11,9 +11,10 @@
 //   gui.projects.explorer.png  the explorer's PROJECTS in groups, one folded
 // and checks:
 //   GROUPS    FACTORY on top, then a category a group by name (told apart case aside: "Pad" and "pad" one group,
-//             spelt as its first project), UNCATEGORISED last; each group's projects by name; a click on a group's
+//             titled by the least spelling), UNCATEGORISED last; each group's projects by name; a click on a group's
 //             header folds it (its rows gone, the header there, nothing chosen) and opens it again; the fold kept
-//             (this Mac's view)
+//             (this Mac's view); a fold another instance made while the card is open kept beside one made here, and
+//             an unfold here takes out only its own
 //   FAVOURITE a click on a row's star stars it: FAVOURITES on top holding it, the project in its own group too; a
 //             factory project starred the same; the star again unstars; kept (the view's); a star another instance
 //             made while the card is open kept beside one made here
@@ -23,15 +24,16 @@
 //             kind's categories and the user's own, None, New category...); a category chosen is theirs (the rest of
 //             their info as it was), and None clears it; a factory project's Category and Delete greyed
 //   INLINE    New category...: the field names a category (its pill CATEGORY, Save "Set category"), typed and Return
-//             set it, the field its project's name again; Escape goes back, nothing set; a category group's Rename...
-//             moves every project of it
+//             set it, the field its project's name again; Escape goes back, nothing set; Return with it empty refused
+//             (the category as it was); typed in another case, spelt as the kind's or as the group's it joins; a
+//             category group's Rename... moves every project of it, also while a search shows only one
 //   DRAG      two chosen carried onto a category's group take its category; one let go outside the lists, nothing;
 //             onto UNCATEGORISED, none; onto FAVOURITES, starred; onto FACTORY, refused (it says so), as it was
 //   SEARCH    Cmd-F: the projects whose name, description or a tag holds each word typed, a folded group's matches
 //             shown, a group of none gone; Escape clears it and the folds are back; the tag filter's menu (Any tag,
 //             each tag with how many have it) keeps those with the tag; the search and the tag remembered when
 //             PROJECTS opens again; the clear (x) and Any tag end them
-//   SORT      By last saved: each group's newest first; By name: by name again
+//   SORT      By last saved: each group's newest first, its title spelt as before; By name: by name again
 //   A11Y      a group item a group shown (in the projects' list), its header a toggle (checked while open) and its
 //             rows in it, each row's star a toggle in its row; the search a text field, the tag and the order combo
 //             boxes; a header pressed folds its group and a star pressed stars
@@ -39,7 +41,8 @@
 //             UNCATEGORISED last), the newest first in each; a click on a caption folds the group there and in
 //             PROJECTS (one view), another opens it
 //   EXPORT    a project's category goes out with its export and comes back with its import (.fmpack and .zip); the
-//             factory projects carry theirs (their info's); EXPORT offers a project's own category as a pill
+//             factory projects carry theirs (their info's); EXPORT offers a project's own category as a pill, and
+//             lights the kind's for one kept in another case (writing nothing)
 #include "Probe.h"
 
 #include "editor/Explorer.h"
@@ -329,6 +332,20 @@ PROBE(gui, projects)
         P.eq("groups.fold_kept", port.projectsView().folded == std::vector<std::string>{ k0 } ? 1 : 0, 1);
         drive.click(b.headerOf(k0));
         P.eq("groups.unfold", b.rowOf("Deep Sub") >= 0 && port.projectsView().folded.empty() ? 1 : 0, 1);
+        // Another instance folds a group while this card is open: a fold here keeps both, an unfold here only its own.
+        std::string why;
+        pg::ProjectsView other = port.projectsView();
+        other.folded.push_back(k1);
+        P.eq("groups.another_folds", port.setProjectsView(other, why) ? 1 : 0, 1);
+        drive.click(b.headerOf(k0));
+        const std::vector<std::string> both = port.projectsView().folded;
+        P.eq("groups.fold_merged", both.size() == 2 && std::find(both.begin(), both.end(), k0) != both.end()
+                                       && std::find(both.begin(), both.end(), k1) != both.end() && groupOf(b, k1) != nullptr
+                                       && groupOf(b, k1)->folded ? 1 : 0, 1);
+        drive.click(b.headerOf(k0));
+        P.eq("groups.unfold_own", port.projectsView().folded == std::vector<std::string>{ k1 } ? 1 : 0, 1);
+        drive.click(b.headerOf(k1));
+        P.eq("groups.unfold_theirs", port.projectsView().folded.empty() && groupOf(b, k1) != nullptr && !groupOf(b, k1)->folded ? 1 : 0, 1);
     }
 
     // ---- FAVOURITE -------------------------------------------------------------------------------------------------
@@ -439,7 +456,40 @@ PROBE(gui, projects)
         host.keys("escape");
         host.settle();
         P.eq("inline.escape", !b.categoryMode() && b.isOpen() && port.projectInfo("Acid Line").category == c0 && b.name() == "Acid Line" ? 1 : 0, 1);
-        drive.click(b.headerOf(gr::keyOf(gr::Kind::category, "Drones")), ctrl());
+        // Return with the field empty is refused, as an empty name is: None clears a category.
+        drive.clickName("Acid Line", ctrl());
+        host.chooseMenuItem("New category...");
+        host.settle();
+        host.keys("return");
+        host.settle();
+        std::printf("inline empty: %s\n", b.why().c_str());
+        P.eq("inline.empty_refused", b.categoryMode() && port.projectInfo("Acid Line").category == c0
+                                         && b.why().find("Name the category first") != std::string::npos ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        // Typed in another case (and with spaces round it), a category is spelt as the kind's, or as the group it joins.
+        drive.clickName("Sketch 3", ctrl());
+        host.chooseMenuItem("New category...");
+        host.settle();
+        typeText(host, gr::lower(c1));
+        host.keys("return");
+        host.settle();
+        P.eq("inline.kind_spelling", port.projectInfo("Sketch 3").category == c1 && membersOf(b, k1).size() == 2 ? 1 : 0, 1);
+        drive.clickName("Sketch 3", ctrl());
+        host.chooseMenuItem("New category...");
+        host.settle();
+        typeText(host, " drones ");
+        host.keys("return");
+        host.settle();
+        const std::string kd = gr::keyOf(gr::Kind::category, "Drones");
+        P.eq("inline.group_spelling", port.projectInfo("Sketch 3").category == "Drones" && membersOf(b, kd).size() == 2 ? 1 : 0, 1);
+        // Rename... while a search shows one of the group's two: both renamed, the group never split.
+        host.keys("cmd+f");
+        typeText(host, "sub");
+        host.settle();
+        const gr::Group* dg = groupOf(b, kd);
+        P.eq("inline.filtered", dg != nullptr && dg->members.size() == 1 && dg->total == 2 && b.rowOf("Sketch 3") < 0 ? 1 : 0, 1);
+        drive.click(b.headerOf(kd), ctrl());
         const funkgui::MenuRequest* m = host.pendingMenu();
         P.eq("inline.rename_offered", m != nullptr && itemLabelled(m->items, "Rename Drones...") != nullptr ? 1 : 0, 1);
         host.chooseMenuItem("Rename Drones...");
@@ -448,9 +498,16 @@ PROBE(gui, projects)
         typeText(host, "Ambient Drones");                // over the name, all of it chosen
         host.keys("return");
         host.settle();
-        P.eq("inline.renamed", port.projectInfo("Deep Sub").category == "Ambient Drones"
+        std::printf("inline rename: %s\n", b.why().c_str());
+        P.eq("inline.renamed", port.projectInfo("Deep Sub").category == "Ambient Drones" && port.projectInfo("Sketch 3").category == "Ambient Drones"
+                                   && b.why().find("2 projects are in Ambient Drones") != std::string::npos
                                    && b.headerOf(gr::keyOf(gr::Kind::category, "Ambient Drones")) >= 0
-                                   && b.headerOf(gr::keyOf(gr::Kind::category, "Drones")) < 0 ? 1 : 0, 1);
+                                   && b.headerOf(kd) < 0 ? 1 : 0, 1);
+        drive.clickRect(b.places(W, H).clear);           // the search cleared, Sketch 3 back to none
+        drive.clickName("Sketch 3", ctrl());
+        host.chooseMenuItem("None (Uncategorised)");
+        host.settle();
+        P.eq("inline.restored", b.search().empty() && port.projectInfo("Sketch 3").category.empty() ? 1 : 0, 1);
     }
 
     // ---- DRAG ------------------------------------------------------------------------------------------------------
@@ -558,6 +615,8 @@ PROBE(gui, projects)
                 newest = newest && b.projectList()[static_cast<std::size_t>(g.members[i - 1])].savedMs
                                        >= b.projectList()[static_cast<std::size_t>(g.members[i])].savedMs;
         P.eq("sort.newest_first", b.view().byDate && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
+        // Night Choir, spelt in lower case, first now: the group's title spelt as before (the least spelling).
+        P.eq("sort.one_spelling", groupOf(b, k2) != nullptr && groupOf(b, k2)->title == c2 ? 1 : 0, 1);
         drive.clickRect(b.places(W, H).sort);
         host.chooseMenuItem("By name");
         host.settle();
@@ -726,6 +785,13 @@ PROBE(gui, projects)
         card.close();
         host.settle();
         P.eq("export.kept_as_is", port.projectInfo("Deep Sub").category == "Ambient Drones" ? 1 : 0, 1);
+        // One of the kind's kept in another case: that category's pill lit, no pill of its own, nothing written.
+        card.open("Night Choir");
+        host.settle();
+        P.eq("export.case_aside_pill", card.isOpen() && card.info().category == c2 && card.choices() == pg::ui::ExportCard::categories() ? 1 : 0, 1);
+        card.close();
+        host.settle();
+        P.eq("export.case_kept", port.projectInfo("Night Choir").category == gr::lower(c2) ? 1 : 0, 1);
     }
 
     pg::projectstore::setDirectoryForTests({});

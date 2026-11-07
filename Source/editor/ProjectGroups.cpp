@@ -114,7 +114,12 @@ namespace playground::ui::projectgroups
             else if (e.category.empty())
                 add(groupFor(Kind::uncategorised, {}), i, shown);
             else
-                add(groupFor(Kind::category, e.category), i, shown);
+            {
+                Group& g = groupFor(Kind::category, e.category);
+                if (e.category < g.category)             // one spelling whatever the order or the filter: the least
+                    g.category = g.title = e.category;
+                add(g, i, shown);
+            }
         }
         groups.erase(std::remove_if(groups.begin(), groups.end(), [](const Group& g) { return g.members.empty(); }), groups.end());
         const auto rank = [](Kind k) { return k == Kind::favourites ? 0 : k == Kind::factory ? 1 : k == Kind::category ? 2 : 3; };
@@ -146,9 +151,15 @@ namespace playground::ui::projectgroups
     {
         std::vector<std::string> out;
         for (const ProjectEntry& e : projects)
-            if (!e.factory && !e.name.empty() && !e.category.empty()
-                && std::none_of(out.begin(), out.end(), [&](const std::string& c) { return same(c, e.category); }))
+        {
+            if (e.factory || e.name.empty() || e.category.empty())
+                continue;
+            const auto it = std::find_if(out.begin(), out.end(), [&](const std::string& c) { return same(c, e.category); });
+            if (it == out.end())
                 out.push_back(e.category);
+            else if (e.category < *it)                   // spelt as arrange() titles its group: the least
+                *it = e.category;
+        }
         std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
         return out;
     }

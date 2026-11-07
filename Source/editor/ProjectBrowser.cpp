@@ -54,6 +54,32 @@ namespace playground::ui
             return std::any_of(names.begin(), names.end(), [&](const std::string& n) { return same(n, name); });
         }
 
+        // A typed category as the store keeps one (projectstore::tidyInfo): printable, the spaces collapsed and trimmed,
+        // cut to its length.
+        std::string tidyCategory(const std::string& typed)
+        {
+            std::string out;
+            bool space = false;
+            for (const char ch : typed)
+            {
+                const auto c = static_cast<unsigned char>(ch);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+                {
+                    space = !out.empty();
+                    continue;
+                }
+                if (space)
+                    out += ' ';
+                space = false;
+                out += c >= 0x20 && c <= 0x7E ? ch : '?';
+            }
+            if (out.size() > static_cast<std::size_t>(ProjectBrowser::kMaxCategoryLength))
+                out.resize(static_cast<std::size_t>(ProjectBrowser::kMaxCategoryLength));
+            while (!out.empty() && out.back() == ' ')
+                out.pop_back();
+            return out;
+        }
+
         // "\"Glass Bloom\"" for one, "3 projects" for more.
         std::string them(const std::vector<std::string>& names)
         {
@@ -108,15 +134,17 @@ namespace playground::ui
     {
         const ProjectsView now = port_.projectsView();
         ProjectsView out = now;
-        for (const std::string& n : kept_.favourites)    // unstarred here
-            if (!has(view_.favourites, n))
-                out.favourites.erase(std::remove_if(out.favourites.begin(), out.favourites.end(), [&](const std::string& x) { return same(x, n); }),
-                                     out.favourites.end());
-        for (const std::string& n : view_.favourites)    // starred here
-            if (!has(kept_.favourites, n) && !has(out.favourites, n))
-                out.favourites.push_back(n);
-        if (view_.folded != kept_.folded)
-            out.folded = view_.folded;
+        // A list (the stars, the groups folded): what this card took out of it and put in since, over the list now.
+        const auto merge = [](std::vector<std::string>& list, const std::vector<std::string>& kept, const std::vector<std::string>& mine) {
+            for (const std::string& n : kept)            // taken out here
+                if (!has(mine, n))
+                    list.erase(std::remove_if(list.begin(), list.end(), [&](const std::string& x) { return same(x, n); }), list.end());
+            for (const std::string& n : mine)            // put in here
+                if (!has(kept, n) && !has(list, n))
+                    list.push_back(n);
+        };
+        merge(out.favourites, kept_.favourites, view_.favourites);
+        merge(out.folded, kept_.folded, view_.folded);
         if (view_.search != kept_.search)
             out.search = view_.search;
         if (view_.tag != kept_.tag)
@@ -186,8 +214,27 @@ namespace playground::ui
         return out;
     }
 
-    void ProjectBrowser::setCategory(const std::vector<std::string>& names, const std::string& category)
+    // A category as the projects keep it: tidied as the store tidies one, spelt as the kind's when it is one case aside
+    // (so EXPORT lights its pill), else as the projects of it not being set spell it (a group keeps one spelling: the
+    // least, as ProjectGroups titles it), else as typed. Those being set are left out, so a rename may change the case.
+    std::string ProjectBrowser::spellingOf(const std::string& typed, const std::vector<std::string>& setting) const
     {
+        const std::string c = tidyCategory(typed);
+        if (c.empty())
+            return c;
+        for (const std::string& k : ExportCard::categories())
+            if (same(k, c))
+                return k;
+        std::string spelt;
+        for (const ProjectEntry& e : projects_)
+            if (!e.factory && same(e.category, c) && !has(setting, e.name) && (spelt.empty() || e.category < spelt))
+                spelt = e.category;
+        return spelt.empty() ? c : spelt;
+    }
+
+    void ProjectBrowser::setCategory(const std::vector<std::string>& names, const std::string& typed)
+    {
+        const std::string category = spellingOf(typed, names);
         int done = 0, factory = 0;
         std::string failed;
         for (const std::string& n : names)
@@ -356,8 +403,11 @@ namespace playground::ui
                 request.items.push_back({ kUnfoldAll, "Unfold every group" });
                 if (g.kind == Kind::category)
                 {
-                    for (const int i : g.members)
-                        names.push_back(projects_[static_cast<std::size_t>(i)].name);
+                    // Every project of the category, not only those a search or a tag shows (members): a rename
+                    // never splits a group.
+                    for (const ProjectEntry& e : projects_)
+                        if (!e.factory && same(e.category, g.category))
+                            names.push_back(e.name);
                     request.items.push_back(dropdown::separator());
                     request.items.push_back({ kRename, "Rename " + g.title + "..." });
                 }
@@ -919,6 +969,12 @@ namespace playground::ui
         {
             const std::vector<std::string> names = categoryFor_;
             const std::string category = name_.buffer;
+            if (tidyCategory(category).empty())          // as an empty name is refused: clearing is None's
+            {
+                why_ = "Name the category first: None (Uncategorised) in a project's menu clears it.";
+                ++revision_;
+                return;
+            }
             endCategory();
             setCategory(names, category);
             return;

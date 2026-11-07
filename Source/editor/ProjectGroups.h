@@ -5,7 +5,7 @@
 //                  project starred is in its own group too
 //   FACTORY        the factory projects (plugin/Factory.h), read-only, whatever their category
 //   <a category>   the user's projects of that category (their info's: ProjectInfo::category), one group a category
-//                  told apart case aside, the groups by name
+//                  told apart case aside (titled by the least of its spellings, whatever the order), the groups by name
 //   UNCATEGORISED  the user's projects with none, last
 //
 // Each group's projects by name (case aside) or the newest save first (byDate), and a group of none is left out. A
@@ -61,7 +61,7 @@ namespace playground::ui::projectgroups
     std::vector<Group> arrange(const std::vector<ProjectEntry>& projects, const Options& options);
 
     // The tags of the projects given (case aside, each once with how many have it), by name; and the user's projects'
-    // categories, each once (the first spelling), by name.
+    // categories, each once (spelt as its group's title), by name.
     std::vector<std::pair<std::string, int>> tagsOf(const std::vector<ProjectEntry>& projects);
     std::vector<std::string> categoriesOf(const std::vector<ProjectEntry>& projects);
 }

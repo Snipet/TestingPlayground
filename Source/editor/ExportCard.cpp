@@ -28,6 +28,13 @@ namespace playground::ui
 
         float pillW(const std::string& label) { return std::round(7.2f * static_cast<float>(label.size()) + 26.0f); }
 
+        bool sameCategory(const std::string& a, const std::string& b)   // case aside
+        {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                   });
+        }
+
         std::string joined(const std::vector<std::string>& v)
         {
             std::string out;
@@ -98,12 +105,7 @@ namespace playground::ui
     std::vector<std::string> ExportCard::choices() const
     {
         std::vector<std::string> out = categories();
-        const auto same = [](const std::string& a, const std::string& b) {
-            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
-                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
-                   });
-        };
-        if (!saved_.category.empty() && std::none_of(out.begin(), out.end(), [&](const std::string& c) { return same(c, saved_.category); }))
+        if (!saved_.category.empty() && std::none_of(out.begin(), out.end(), [&](const std::string& c) { return sameCategory(c, saved_.category); }))
             out.push_back(saved_.category);
         return out;
     }
@@ -114,6 +116,11 @@ namespace playground::ui
         project_ = project;
         readOnly_ = isFactoryName(project);
         saved_ = port_.projectInfo(project);
+        // One of the kind's in another case ("pad", kept so elsewhere) is that one, its pill lit: the file keeps its
+        // spelling until the info changes.
+        for (const std::string& c : categories())
+            if (sameCategory(c, saved_.category))
+                saved_.category = c;
         description_.set(saved_.description, kDescriptionLength);
         author_.set(saved_.author, kAuthorLength);
         tags_.set(joined(saved_.tags), kTagsLength);

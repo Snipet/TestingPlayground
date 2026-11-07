@@ -13,11 +13,13 @@
 //               chooses the rows from the last one clicked; a double-click opens its newest version. The projects
 //               chosen take a category: by the context menu (a right-click: Category, its list and New category...,
 //               None), by a drag onto a group (a category's, UNCATEGORISED for none, FAVOURITES stars them), or typed
-//               (the menu's New category..., or a category group's Rename category...: the field then names the
-//               category, its pill saying CATEGORY; Return sets it, Escape goes back). A factory project's category
-//               stays its own. The one open, chosen, puts the name its copy would take into the field ("Warm Pad",
-//               "Warm Pad 2" when a project of this Mac's has that); another leaves the field at the program open's
-//               (homeName: Save saves the editor's program, never the chosen one's) and says to open it first
+//               (the menu's New category..., or a category group's Rename...: every project of it, whatever a filter
+//               shows; the field then names the category, its pill saying CATEGORY; Return sets it, an empty field
+//               refused (None clears one), Escape goes back). A category set is spelt as the kind's or as the group it
+//               joins spells it, case aside (spellingOf). A factory project's category stays its own. The one open,
+//               chosen, puts the name its copy would take into the field ("Warm Pad", "Warm Pad 2" when a project of
+//               this Mac's has that); another leaves the field at the program open's (homeName: Save saves the
+//               editor's program, never the chosen one's) and says to open it first
 //   VERSIONS    the chosen project's, the newest first, each with when and what changed; the one open marked. A click
 //               chooses one, a double-click opens it
 //   PRESETS     the chosen project's dial settings; the one applied marked. A click chooses one (its name goes into the
@@ -174,11 +176,13 @@ namespace playground::ui
         void arrange();                                  // the groups and the rows, from the projects and the view
         bool filtering() const noexcept { return !view_.search.empty() || !view_.tag.empty(); }
         void keepView();                                 // what changed of the view to the port's (this Mac's), merged
+                                                         // (the stars and the folds item by item)
         bool starredName(const std::string& name) const;
         void star(const std::vector<std::string>& names, bool on);
         void toggleFold(int group);
         void setSearch(const std::string& text);
-        void setCategory(const std::vector<std::string>& names, const std::string& category);
+        std::string spellingOf(const std::string& typed, const std::vector<std::string>& setting) const;
+        void setCategory(const std::vector<std::string>& names, const std::string& typed);   // as spellingOf spells it
         void startCategory(const std::vector<std::string>& names, const std::string& now);   // the field names one
         void endCategory();
         void dropOn(int group);                          // the projects dragged, onto a group
