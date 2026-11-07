@@ -7,6 +7,7 @@
 //   gui.explorer.folded.png  folded away, the program's card wider, the button that opens it in its header
 //   gui.explorer.paper.png   in PAPER
 //   gui.explorer.small.png   the least size with the chat folded, scrolled to the end
+//   gui.explorer.assets.png  ASSETS with three samples, the one the program reads ticked
 // and checks:
 //   OPEN      open at first: its card at the left, the program's card after it and the chat's at the right, none
 //             overlapping; the sections FILES, PRESETS, PROJECTS, LIBRARY and EXAMPLES; a row a tab, the shown one
@@ -37,6 +38,9 @@
 //             session still keeping it open; the CODE view shows it again
 //   A11Y      the explorer speaks as a list, its rows as buttons and its headers as toggles; a row pressed through
 //             accessibility does what its click does
+//   ASSETS    none at first, its header's + a chooser of WAV, AIFF and FLAC files, those chosen its rows (a name and
+//             its length), a file dropped on the panel one more (its name tidied), the one the program that plays reads
+//             ticked, its cross removing one
 //   NARROW    at the least size with the chat open there is no room for it: it is away (still open in the session),
 //             the program's card keeps kProgramMinW; its button folds the chat and shows it; the chat opened again,
 //             away again; at the default size it shows
@@ -64,6 +68,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -88,6 +93,31 @@ namespace
                    "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                    "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= level[i];\n"
                    "            right[i] *= level[i];\n        }\n    }\n};\n";
+    }
+
+    // A mono 32-bit float WAV of `frames` frames at 48 kHz: a decaying tone.
+    juce::File writeWav(const juce::File& dir, const char* name, int frames)
+    {
+        juce::MemoryOutputStream out;
+        const auto u32 = [&](uint32_t v) { out.writeInt(static_cast<int>(v)); };
+        const auto u16 = [&](uint16_t v) { out.writeShort(static_cast<short>(v)); };
+        out.write("RIFF", 4);
+        u32(36 + 4 * static_cast<uint32_t>(frames));
+        out.write("WAVEfmt ", 8);
+        u32(16);
+        u16(3);
+        u16(1);
+        u32(48000);
+        u32(48000 * 4);
+        u16(4);
+        u16(32);
+        out.write("data", 4);
+        u32(4 * static_cast<uint32_t>(frames));
+        for (int i = 0; i < frames; ++i)
+            out.writeFloat(static_cast<float>(0.5 * std::exp(-i / 2000.0) * std::sin(0.03 * i)));
+        const juce::File f = dir.getChildFile(name);
+        f.replaceWithData(out.getData(), out.getDataSize());
+        return f;
     }
 
     const char* kGoodLib = "float twice(float x) { return x * 2.0f; }\n";
@@ -491,6 +521,52 @@ PROBE(gui, explorer)
         const int file = find(ex, S::files, "diodetone.cir");
         P.eq("circuit.file_icon", file >= 0 && ex.row(S::files, file)->icon == pg::ui::chat::Icon::circuit ? 1 : 0, 1);
         P.eq("circuit.program_icon", ex.row(S::files, 0) != nullptr && ex.row(S::files, 0)->icon == pg::ui::chat::Icon::code ? 1 : 0, 1);
+    }
+
+    // ---- ASSETS: the program's samples ------------------------------------------------------------------------------
+    {
+        P.eq("assets.default_size", host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight) || panel.width() == pg::ui::kDefaultWidth ? 1 : 0, 1);
+        panel.setChatOpen(true);
+        ex.scrollTo(0.0f);
+        host.settle();
+        (void)folder.createDirectory();
+        const juce::File kick = writeWav(folder, "kick.wav", 9600), snare = writeWav(folder, "snare.wav", 4800),
+                         hat = writeWav(folder, "Hat Open.wav", 2400);
+        P.eq("assets.none", ex.rows(S::assets) == 0 && ex.centreOfAction(S::assets).has_value() ? 1 : 0, 1);
+        clickAt(host, ex.centreOfAction(S::assets));
+        const funkgui::FileRequest* asked = host.pendingFiles();
+        P.eq("assets.chooser", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::openMany
+                                   && asked->pattern.find("*.flac") != std::string::npos ? 1 : 0, 1);
+        P.eq("assets.chosen", host.returnFiles({ kick.getFullPathName().toStdString(), snare.getFullPathName().toStdString() }) ? 1 : 0, 1);
+        host.tick(2);
+        host.settle();
+        P.eq("assets.rows", ex.rows(S::assets), 2);
+        P.eq("assets.row_words", find(ex, S::assets, "kick.wav") == 0 && ex.row(S::assets, 0)->detail == "0.20 s" ? 1 : 0, 1);
+        const funkgui::Rect pc = panel.programCard();
+        P.eq("assets.drop", host.dropFiles({ hat.getFullPathName().toStdString() }, pc.centreX(), pc.centreY()) ? 1 : 0, 1);
+        host.tick(2);
+        host.settle();
+        P.eq("assets.dropped", ex.rows(S::assets) == 3 && find(ex, S::assets, "Hat-Open.wav") == 2 ? 1 : 0, 1);
+        // A program that reads kick.wav: its row ticked once it plays.
+        std::string reads = "#include \"sample.fm\"\n#pragma sample kick \"kick.wav\"\n" + ::program();
+        reads.insert(reads.find('{') + 1, "\n    Sample kick;");
+        pg::Draft withSample;
+        withSample.files = { { "program.fm", reads }, { "lib.fm", kGoodLib } };
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            if (std::string(f.name) == "sample.fm")
+                withSample.files.push_back({ "sample.fm", f.source });
+        port.setDraft(withSample);
+        port.run(withSample.files);
+        settleRun(processor, host);
+        P.eq("assets.compiles", processor.compiler().status().ok ? 1 : 0, 1);
+        P.eq("assets.ticked", ex.row(S::assets, 0) != nullptr && ex.row(S::assets, 0)->marked
+                                  && !ex.row(S::assets, 1)->marked ? 1 : 0, 1);
+        writePng(P, host, "gui.explorer.assets.png");
+        if (const auto r = ex.centreOfRow(S::assets, 1))
+            host.move(r->x, r->y);
+        host.settle();
+        clickAt(host, ex.centreOfClose(S::assets, 1));
+        P.eq("assets.cross_removes", ex.rows(S::assets) == 2 && find(ex, S::assets, "snare.wav") < 0 ? 1 : 0, 1);
     }
 
     pg::projectstore::setDirectoryForTests({});
