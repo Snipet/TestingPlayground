@@ -66,8 +66,11 @@ namespace playground::ui
     class GuiControlItem final : public Item
     {
     public:
-        GuiControlItem(funkgui::ParamPort& port, uint32_t id, std::function<funkgui::Theme()> menuTheme)
-            : value_(port), id_(id), menuTheme_(std::move(menuTheme)) {}
+        // `menuOpen`: whether a menu opened from this rect is open (the Panel's menuOpenAt; none in the GUI sandbox): a
+        // menu control's box draws open while its menu is (Dropdown.h).
+        GuiControlItem(funkgui::ParamPort& port, uint32_t id, std::function<funkgui::Theme()> menuTheme,
+                       std::function<bool(const funkgui::Rect&)> menuOpen = {})
+            : value_(port), id_(id), menuTheme_(std::move(menuTheme)), menuOpen_(std::move(menuOpen)) {}
 
         GuiValue& value() noexcept { return value_; }
         // Its element (its kind, size, direction and style), its cell, the panel's area, whether it is on the panel,
@@ -85,9 +88,10 @@ namespace playground::ui
 
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
-        uint64_t drawKey() const override                // its value (a host's automation too) and its live= mark
+        uint64_t drawKey() const override                // its value (a host's automation too), its live= mark, its menu
         {
-            return DrawKey{}.mix(value_.value01()).mix(live01_).mix(hovered_).mix(hoverButton_).mix(dragging_).h;
+            return DrawKey{}.mix(value_.value01()).mix(live01_).mix(hovered_).mix(hoverButton_).mix(dragging_)
+                .mix(menuOpenNow()).h;
         }
         bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
@@ -105,20 +109,24 @@ namespace playground::ui
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_ && value_.control().used; }
 
-        // For probes and the Panel: the button a point is over (buttons), else -1; the slider's track.
+        // For probes and the Panel: the button a point is over (buttons), else -1; the slider's track; a menu's box
+        // (its trigger, under its label: the menu's anchor).
         int buttonAt(funkgui::Point p) const;
         funkgui::Rect track() const;
+        funkgui::Rect menuBox() const noexcept;
 
     private:
         bool clicks() const noexcept { return kind_ == GuiKind::toggle || kind_ == GuiKind::buttons || kind_ == GuiKind::menu; }
         void drawKnob(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void drawSlider(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void openMenu(funkgui::GestureController& g, funkgui::HostServices& h);
+        bool menuOpenNow() const { return kind_ == GuiKind::menu && menuOpen_ && menuOpen_(menuBox()); }
         float sliderValueAt(funkgui::Point p) const;
 
         GuiValue value_;
         uint32_t id_;
         std::function<funkgui::Theme()> menuTheme_;
+        std::function<bool(const funkgui::Rect&)> menuOpen_;
         GuiKind kind_ = GuiKind::knob;
         GuiSize size_ = GuiSize::medium;
         bool vertical_ = true, vintage_ = false;

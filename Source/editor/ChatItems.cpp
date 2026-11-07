@@ -1,6 +1,8 @@
 // Source/editor/ChatItems.cpp: see ChatItems.h.
 #include "editor/ChatItems.h"
 
+#include "editor/Dropdown.h"
+
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/TextFit.h>
 
@@ -343,7 +345,8 @@ namespace playground::ui
             .mix(spec_.checked ? (spec_.checked() ? 2 : 1) : 0)
             .mix(bounds_.x).mix(bounds_.y).mix(bounds_.w).mix(bounds_.h)
             .mix(hovered_)
-            .mix(focused_);
+            .mix(focused_)
+            .mix(open());
         return k.h;
     }
 
@@ -354,6 +357,25 @@ namespace playground::ui
         const Look look = spec_.look ? spec_.look() : Look::ghost;
         const chat::Icon icon = spec_.icon ? spec_.icon() : chat::Icon::none;
         const funkgui::Rect& r = bounds_;
+        if (spec_.chevron && spec_.shape == Shape::pill)
+        {
+            // A dropdown's trigger: the one look (Dropdown.h), its base from the button's look.
+            const dropdown::Base base = look == Look::outlined ? dropdown::Base::outlined
+                                      : look == Look::raised   ? dropdown::Base::field
+                                                               : dropdown::Base::ghost;
+            const dropdown::State state{ on, hovered_ && on, open(), ring && focused_ };
+            const funkgui::Col labelInk = dropdown::drawTrigger(c, p, r, base, state);
+            float lx = r.x + 12.0f;
+            if (icon != chat::Icon::none)
+            {
+                chat::drawIcon(c, icon, lx + 6.0f, r.centreY(), 12.0f, labelInk);
+                lx += 18.0f;
+            }
+            const std::string label = spec_.label ? spec_.label() : std::string();
+            c.text(fitText(c, label, chat::kSmall, dropdown::labelRoom(r, lx)).c_str(), lx,
+                   c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, labelInk);
+            return;
+        }
         const float radius = spec_.shape == Shape::square ? 8.0f : r.h * 0.5f;
         funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = on ? p.soft : p.faint;
         if (look == Look::primary)
@@ -421,7 +443,9 @@ namespace playground::ui
     {
         funkgui::A11yItem item;
         item.id = id_;
-        item.role = spec_.checked ? funkgui::A11yRole::toggleButton : funkgui::A11yRole::button;
+        item.role = spec_.checked ? funkgui::A11yRole::toggleButton
+                  : spec_.chevron ? funkgui::A11yRole::comboBox
+                                  : funkgui::A11yRole::button;
         item.bounds = bounds_;
         item.title = spec_.a11yTitle;
         if (spec_.checked)

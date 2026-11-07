@@ -42,8 +42,8 @@ namespace playground::ui
             tabs_.push_back(add(std::make_unique<GuiTabsItem>(idFor(), hooks.choosePage)));
         controls_.assign(static_cast<std::size_t>(kMaxControls), -1);
         for (int c = 0; c < kMaxControls && c < static_cast<int>(ports.size()); ++c)
-            controls_[static_cast<std::size_t>(c)] =
-                add(std::make_unique<GuiControlItem>(*ports[static_cast<std::size_t>(c)], idFor(), hooks.menuTheme));
+            controls_[static_cast<std::size_t>(c)] = add(std::make_unique<GuiControlItem>(
+                *ports[static_cast<std::size_t>(c)], idFor(), hooks.menuTheme, hooks.menuOpen));
         for (int k = 0; k < kPool; ++k)
             pads_.push_back(add(std::make_unique<GuiXyItem>(idFor())));
         for (int k = 0; k < kPool; ++k)

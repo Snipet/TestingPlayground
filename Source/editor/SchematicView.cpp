@@ -2,6 +2,7 @@
 #include "editor/SchematicView.h"
 
 #include "editor/ChatStyle.h"
+#include "editor/Dropdown.h"
 #include "editor/Items.h"
 #include "editor/Theme.h"
 #include "plugin/EditorPort.h"                      // shortcutText
@@ -113,6 +114,15 @@ namespace playground::ui
         };
 
         float dist(funkgui::Point a, funkgui::Point b) noexcept { return std::hypot(a.x - b.x, a.y - b.y); }
+
+        // A menu's commands written "Label   Key": each key in the shortcut column (Dropdown.h), as the user's keyboard
+        // names it (Ctrl- on Windows).
+        void withKeys(funkgui::MenuRequest& request)
+        {
+            for (funkgui::MenuItem& item : request.items)
+                if (!item.separator)
+                    item = dropdown::command(item.id, shortcutText(item.label), item.enabled);
+        }
 
         float distToSegment(funkgui::Point p, funkgui::Point a, funkgui::Point b) noexcept
         {
@@ -2682,7 +2692,7 @@ namespace playground::ui
             request.anchor = buttonRect(Button::more);
             for (std::size_t i = 0; i < std::size(kMore); ++i)
             {
-                funkgui::MenuItem item{ static_cast<int>(i) + 1, kMore[i].label };
+                funkgui::MenuItem item = dropdown::command(static_cast<int>(i) + 1, shortcutText(kMore[i].label));
                 if (kMore[i].kind == cir::Kind::Input && nl_.input)
                 {
                     item.enabled = false;
@@ -2724,8 +2734,7 @@ namespace playground::ui
                     request.items.push_back({ 10, "Show " + n.name + " as wires" });
                 }
             }
-            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-                item.label = shortcutText(item.label);
+            withKeys(request);
             host_->showMenu(request, [this, name, tagged](int chosen) {
                 if (!showing())
                     return;
@@ -2761,8 +2770,7 @@ namespace playground::ui
                               { 17, "Cut   Cmd-X", parts },   { 0, {}, true, false, true },      { 18, "Probe this net" },
                               { 19, pinned ? "Unpin probe   Alt-click" : "Pin probe   Alt-click", !ground },
                               { 0, {}, true, false, true },   { 13, "Show in netlist" } };
-            for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-                item.label = shortcutText(item.label);
+            withKeys(request);
             host_->showMenu(request, [this, net, at, r](int chosen) {
                 if (!showing())
                     return;
@@ -2810,8 +2818,7 @@ namespace playground::ui
         request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 23, "Tidy" },
                           { 0, {}, true, false, true },   { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
                           { 25, "Undo   Cmd-Z", ed_->canUndo() }, { 26, "Redo   Cmd-Shift-Z", ed_->canRedo() } };
-        for (funkgui::MenuItem& item : request.items)   // Ctrl- on Windows
-            item.label = shortcutText(item.label);
+        withKeys(request);
         host_->showMenu(request, [this, pasteAt](int chosen) {
             if (!showing())
                 return;
@@ -4415,12 +4422,14 @@ namespace playground::ui
         request.anchor = { at->x - 32.0f, at->y - 0.5f * kChipH2, 64.0f, kChipH2 };
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         const std::string now = probeElement();
+        int current = 0;
         for (std::size_t i = 0; i < paths.size(); ++i)
         {
-            funkgui::MenuItem item{ static_cast<int>(i) + 1, paths[i] };
-            item.checked = paths[i] == now;
-            request.items.push_back(std::move(item));
+            if (paths[i] == now)
+                current = static_cast<int>(i) + 1;
+            request.items.push_back(dropdown::choice(static_cast<int>(i) + 1, paths[i], paths[i] == now));
         }
+        request.selectedId = current;
         host_->showMenu(request, [this, paths](int chosen) {
             if (chosen >= 1 && chosen <= static_cast<int>(paths.size()) && showing())
                 setProbeElement(paths[static_cast<std::size_t>(chosen - 1)]);

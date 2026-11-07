@@ -1409,7 +1409,7 @@ PROBE(gui, schematic)
                 return ok;
             };
             const cir::Orient o = partOf(v.drawing(), "R2")->orient;
-            P.eq("menus.part_rotate", partMenu("R2", "Rotate   ") && partOf(v.drawing(), "R2")->orient == cir::rotatedCw(o) ? 1 : 0, 1);
+            P.eq("menus.part_rotate", partMenu("R2", "Rotate") && partOf(v.drawing(), "R2")->orient == cir::rotatedCw(o) ? 1 : 0, 1);
             P.eq("menus.part_rotate_back", partMenu("R2", "Rotate back") && partOf(v.drawing(), "R2")->orient == o ? 1 : 0, 1);
             P.eq("menus.part_mirror", partMenu("R2", "Mirror") && partOf(v.drawing(), "R2")->orient == cir::mirrored(o) ? 1 : 0, 1);
             P.eq("menus.part_show", partMenu("R2", "Show in netlist") && !panel.schematicShown() && ed.caret().line == 5

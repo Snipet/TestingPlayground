@@ -3,6 +3,7 @@
 
 #include "editor/ChatItems.h"
 #include "editor/ChatStyle.h"
+#include "editor/Dropdown.h"
 #include "editor/Items.h"
 #include "editor/Theme.h"
 
@@ -106,7 +107,8 @@ namespace playground::ui
         // A pill's width for its label (a chevron when a menu opens, an icon before it).
         float pillW(const std::string& label, bool menu, bool icon)
         {
-            return std::ceil(14.0f + (icon ? 18.0f : 0.0f) + textW(label, chat::kSmall) + (menu ? 34.0f : 14.0f));
+            return std::ceil(14.0f + (icon ? 18.0f : 0.0f) + textW(label, chat::kSmall)
+                             + (menu ? dropdown::kChevronRoom + 10.0f : 14.0f));
         }
 
         bool meet(const funkgui::Rect& a, const funkgui::Rect& b)
@@ -464,29 +466,34 @@ namespace playground::ui
         constexpr int kNone = 1000;                      // the input's None
         funkgui::MenuRequest request;
         const DeviceSetup& s = setup_;
-        const auto items = [&](const std::vector<std::string>& names, const std::string& current) {
+        int current = 0;                                 // the choice now, highlighted when the menu opens
+        const auto choice = [&](int id, std::string label, bool now) {
+            if (now)
+                current = id;
+            request.items.push_back(dropdown::choice(id, std::move(label), now));
+        };
+        const auto items = [&](const std::vector<std::string>& names, const std::string& now) {
             for (std::size_t i = 0; i < names.size(); ++i)
-                request.items.push_back({ static_cast<int>(i) + 1, names[i], true, names[i] == current, false });
+                choice(static_cast<int>(i) + 1, names[i], names[i] == now);
         };
         switch (c.act)
         {
             case Act::type:   items(s.types, s.type); break;
             case Act::output: items(s.outputs, s.output); break;
             case Act::input:
-                request.items.push_back({ kNone, "None", true, s.input.empty(), false });
+                choice(kNone, "None", s.input.empty());
                 if (!s.inputs.empty())
-                    request.items.push_back({ 0, {}, true, false, true });
+                    request.items.push_back(dropdown::separator());
                 items(s.inputs, s.input);
                 break;
             case Act::rate:
                 for (std::size_t i = 0; i < s.rates.size(); ++i)
-                    request.items.push_back({ static_cast<int>(i) + 1, rateLabel(s.rates[i]), true,
-                                              std::lround(s.rates[i]) == std::lround(s.rate), false });
+                    choice(static_cast<int>(i) + 1, rateLabel(s.rates[i]), std::lround(s.rates[i]) == std::lround(s.rate));
                 break;
             case Act::buffer:
                 for (std::size_t i = 0; i < s.buffers.size(); ++i)
-                    request.items.push_back({ static_cast<int>(i) + 1, bufferLabel(s.buffers[i].samples, s.buffers[i].ms), true,
-                                              s.buffers[i].samples == s.buffer, false });
+                    choice(static_cast<int>(i) + 1, bufferLabel(s.buffers[i].samples, s.buffers[i].ms),
+                           s.buffers[i].samples == s.buffer);
                 break;
             case Act::test:
             case Act::outputPair:
@@ -496,7 +503,7 @@ namespace playground::ui
             case Act::done:
                 return;
         }
-        request.anchor = c.r;
+        dropdown::dropdownMenu(request, c.r, current);
         request.theme = productTheme(funkgui::Theme::byIndex(host->themeIndex()));
         const Act act = c.act;
         const DeviceSetup choices = s;                   // what the menu lists, whatever changes meanwhile
@@ -686,15 +693,13 @@ namespace playground::ui
                 const Control& k = at.controls[i];
                 const funkgui::Rect& r = k.r;
                 const bool hover = hovered(k);
-                const funkgui::Col ink = k.enabled ? p.text : p.faint;
                 if (k.menu)
                 {
-                    c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? p.hover : p.composer, 1.0f, p.composerEdge);
-                    c.text(fitText(c, k.label, chat::kSmall, r.w - 38.0f).c_str(), r.x + 14.0f, c.capCentreTop(r.centreY(), chat::kSmall),
-                           chat::kSmall, ink);
-                    chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 15.0f, r.centreY() + 0.5f, 8.0f, k.enabled ? p.soft : p.faint);
-                    if (static_cast<int>(i) == focus)
-                        ring(k, r.h * 0.5f);
+                    // A select: a dropdown's trigger in a form (Dropdown.h).
+                    const dropdown::State state{ k.enabled, hover, menuOpen_ && menuOpen_(r), static_cast<int>(i) == focus };
+                    const funkgui::Col labelInk = dropdown::drawTrigger(c, p, r, dropdown::Base::field, state);
+                    c.text(fitText(c, k.label, chat::kSmall, dropdown::labelRoom(r, r.x + 14.0f)).c_str(), r.x + 14.0f,
+                           c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, labelInk);
                 }
                 else if (k.toggle)
                 {

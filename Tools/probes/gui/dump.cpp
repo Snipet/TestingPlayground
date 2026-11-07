@@ -994,7 +994,7 @@ PROBE(gui, dump)
             for (const funkgui::MenuItem& it : libMenu->items)
             {
                 files += it.id > 0 && it.id <= static_cast<int>(std::size(pg::kLibrary)) ? 1 : 0;
-                headings += it.id > static_cast<int>(std::size(pg::kLibrary)) && !it.enabled ? 1 : 0;
+                headings += it.header ? 1 : 0;
             }
             P.eq("library.every_file", files, static_cast<int64_t>(std::size(pg::kLibrary)));
             P.ge("library.headings", static_cast<double>(headings), 4.0);

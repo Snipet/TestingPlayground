@@ -1,6 +1,8 @@
 // Source/editor/GuiItems.cpp: a .gui file's controls, pads, envelopes, tabs and decorations (GuiItems.h).
 #include "editor/GuiItems.h"
 
+#include "editor/ChatStyle.h"
+#include "editor/Dropdown.h"
 #include "editor/Looks.h"
 #include "fminus/GuiSpec.h"
 
@@ -292,17 +294,17 @@ namespace playground::ui
             }
             case GuiKind::menu:
             {
+                // A dropdown's trigger in a form (Dropdown.h), as the editor's own: its colour (tinted) on its edge,
+                // its focus ring the trigger's.
                 c.text(label.c_str(), r.x + 2.0f, r.y, type::kCaption, labelInk);
-                const Rect b{ r.x, r.y + kGuiLabelH, r.w, 22.0f };
-                c.rrect(b.x, b.y, b.w, b.h, 3.0f, funkgui::mix(th.ground, th.ink16, hot ? 0.6f : 0.35f), 1.0f,
-                        hot ? th.accent : (tinted ? col : th.ink32));
-                c.text(fitText(c, text, type::kMicro, b.w - 26.0f).c_str(), b.x + 8.0f, c.capCentreTop(b.centreY(), type::kMicro),
-                       type::kMicro, th.ink100);
-                // A chevron at the right.
-                const float cx = b.right() - 11.0f, cyy = b.centreY();
-                c.segment(cx - 4.0f, cyy - 2.0f, cx, cyy + 2.0f, 1.5f, th.ink70);
-                c.segment(cx, cyy + 2.0f, cx + 4.0f, cyy - 2.0f, 1.5f, th.ink70);
-                break;
+                const Rect b = menuBox();
+                const dropdown::State state{ true, hot, menuOpenNow(), focusRing };
+                const funkgui::Col ink = dropdown::drawTrigger(c, chat::palette(th), b, dropdown::Base::field, state,
+                                                               tinted ? col : Col{});
+                const float x = b.x + 8.0f;
+                c.text(fitText(c, text, type::kMicro, dropdown::labelRoom(b, x)).c_str(), x,
+                       c.capCentreTop(b.centreY(), type::kMicro), type::kMicro, ink);
+                return;
             }
             case GuiKind::row: case GuiKind::column: case GuiKind::grid: case GuiKind::section: case GuiKind::box:
             case GuiKind::tabs: case GuiKind::page: case GuiKind::spacer: case GuiKind::divider: case GuiKind::label:
@@ -557,19 +559,17 @@ namespace playground::ui
         }
     }
 
+    funkgui::Rect GuiControlItem::menuBox() const noexcept { return { cell_.x, cell_.y + kGuiLabelH, cell_.w, 22.0f }; }
+
+    // Its values as a dropdown's radio set, under its box, the value now highlighted when it opens.
     void GuiControlItem::openMenu(funkgui::GestureController& g, funkgui::HostServices& h)
     {
         funkgui::MenuRequest request;
         const int n = std::min(value_.count(), kMaxMenuOptions);
         for (int k = 0; k < n; ++k)
-        {
-            funkgui::MenuItem item;
-            item.id = k + 1;
-            item.label = value_.nameOf(k);
-            item.checked = k == value_.index();
-            request.items.push_back(std::move(item));
-        }
-        request.anchor = { cell_.x, cell_.y + kGuiLabelH, cell_.w, 22.0f };
+            request.items.push_back(dropdown::choice(k + 1, value_.nameOf(k), k == value_.index()));
+        const int now = value_.index();
+        dropdown::dropdownMenu(request, menuBox(), now >= 0 && now < n ? now + 1 : 0);
         if (menuTheme_)
             request.theme = menuTheme_();
         funkgui::GestureController* gestures = &g;
