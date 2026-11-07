@@ -458,6 +458,8 @@ def cmd_rename(args: argparse.Namespace) -> int:
     n = rewrite_tokens(root, rename_rules(cur, new))
     print(f"Renamed: products/{key}.cmake and {n} files rewritten. Delete the build directories (rm -rf build-*) "
           "before building again.")
+    print("Read README.md and CLAUDE.md (git diff): where they name the repository rather than the product (its URL, "
+          "its history), put the old name back.")
     return 0
 
 
