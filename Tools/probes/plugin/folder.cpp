@@ -12,8 +12,9 @@
 //   IN       a save in the folder waits for the folder to hold still, then lands in the draft in one write (two files
 //            saved together, still one); with run on save it runs
 //   ATOMIC   a save that renames a temporary file over the file lands; a save in JetBrains' steps (the file moved
-//            aside, the new one renamed in) lands once, and the draft never loses the file meanwhile; a save written
-//            in two parts lands whole, never the half
+//            aside, the new one renamed in) lands once, and the draft never loses the file meanwhile (both of the old
+//            file's size and, but on Windows, given its time back: only the file's identity tells them, as within one
+//            tick of a file clock); a save written in two parts lands whole, never the half
 //   SWAP     an editor's swap, backup and lock files (.x.swp, x~, #x#, .#x, 4913, x.crswap) are never taken
 //   FOLDER   a new file there is appended to the draft; renamed, it keeps its place (its tab still shown); deleted,
 //            it goes; the program deleted there is written back (a note says so), renamed there it is renamed in the
@@ -78,6 +79,7 @@
 #include <vector>
 
 #if !defined(_WIN32)
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -164,6 +166,37 @@ namespace
         writeFile(temp, text);
         fs::rename(temp, dir / name);
     }
+#if !defined(_WIN32)
+    // A file as it was before a save: its time, size and inode.
+    struct Was
+    {
+        fs::file_time_type time{};
+        std::uintmax_t size = 0;
+        ino_t inode = 0;
+    };
+    Was wasOf(const fs::path& p)
+    {
+        Was w;
+        std::error_code ec;
+        w.time = fs::last_write_time(p, ec);
+        w.size = fs::file_size(p, ec);
+        struct stat st{};
+        if (::stat(p.c_str(), &st) == 0)
+            w.inode = st.st_ino;
+        return w;
+    }
+    // A save that renamed a new file in, given back the time the old file had: its size and time are then the old
+    // one's, as two saves of one size within one tick of the kernel's file clock are (Linux before 6.13), and only its
+    // identity tells it apart, as FolderSync must. Whether that holds. (Not on Windows, where FolderSync keeps no
+    // identity and a file's time moves by 100 ns.)
+    bool onlyIdentityDiffers(const fs::path& p, const Was& was)
+    {
+        std::error_code ec;
+        fs::last_write_time(p, was.time, ec);
+        const Was now = wasOf(p);
+        return !ec && now.time == was.time && now.size == was.size && now.inode != was.inode && now.inode != 0;
+    }
+#endif
     bool there(const fs::path& p)
     {
         std::error_code ec;
@@ -305,20 +338,34 @@ PROBE(plugin, folder)
     sync.setRunOnSave(false);
 
     // ---- ATOMIC --------------------------------------------------------------------------------------------------------
+    // Each save of the same size as the file before it, and (but on Windows) given back that file's time, so that only
+    // the file's identity tells FolderSync it changed: as within one tick of the file clock, on every machine.
     {
         const std::string atomic = program("float a = 5.0f;");
+#if !defined(_WIN32)
+        const Was beforeAtomic = wasOf(dir / "program.fm");
+#endif
         writeAtomic(dir, "program.fm", atomic);
+#if !defined(_WIN32)
+        P.eq("atomic.rename_over_alike", onlyIdentityDiffers(dir / "program.fm", beforeAtomic) ? 1 : 0, 1);
+#endif
         passFor(sync, t, 0.5);
         P.eq("atomic.rename_over", *fake.text("program.fm") == atomic ? 1 : 0, 1);
         // JetBrains' safe write: the new text beside, the old moved aside, the new renamed in, the old deleted.
         const std::string jb = program("float a = 6.0f;");
         const int writes = fake.writes;
         writeFile(dir / "program.fm___jb_tmp___", jb);
+#if !defined(_WIN32)
+        const Was beforeJb = wasOf(dir / "program.fm");
+#endif
         fs::rename(dir / "program.fm", dir / "program.fm___jb_old___");
         passFor(sync, t, 0.05);
         const bool kept = fake.text("program.fm") != nullptr;
         fs::rename(dir / "program.fm___jb_tmp___", dir / "program.fm");
         fs::remove(dir / "program.fm___jb_old___");
+#if !defined(_WIN32)
+        P.eq("atomic.jetbrains_alike", onlyIdentityDiffers(dir / "program.fm", beforeJb) ? 1 : 0, 1);
+#endif
         passFor(sync, t, 0.5);
         P.eq("atomic.mid_save_kept", kept ? 1 : 0, 1);
         P.eq("atomic.jetbrains", *fake.text("program.fm") == jb && fake.writes == writes + 1 ? 1 : 0, 1);
