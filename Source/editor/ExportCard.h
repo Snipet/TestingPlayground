@@ -3,8 +3,8 @@
 //
 //   DESCRIPTION  a few sentences (one field, wrapped)
 //   AUTHOR       a name                 TAGS  words, commas between ("warm, analog, slow attack")
-//   CATEGORY     one of this kind's (a synth's: Bass, Lead, Pad, ...; an effect's: Reverb, Delay, ...); a second click
-//                on the chosen one clears it
+//   CATEGORY     one of this kind's (a synth's: Bass, Lead, Pad, ...; an effect's: Reverb, Delay, ...), or the project's
+//                own when it is another (one typed in PROJECTS); a second click on the chosen one clears it
 //   GENRES       any of them
 //   VERSIONS     every version the project keeps, or the newest only
 //   Export source (.zip)       the code, a README and project.json, to read and edit anywhere
@@ -85,6 +85,7 @@ namespace playground::ui
         Field focus() const noexcept { return focus_; }
         const std::string& why() const noexcept { return why_; }
         static std::vector<std::string> categories();     // this kind's
+        std::vector<std::string> choices() const;         // its pills: this kind's, and the project's own when another
 
     private:
         funkgui::text::LineEdit& field(Field f);

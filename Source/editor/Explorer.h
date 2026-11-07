@@ -14,7 +14,10 @@
 //   PRESETS   the presets of the project open (dial settings for its program; the one applied marked): a click applies
 //             one; the header's + saves the dials as a new one (PROJECTS, its field a preset's name)
 //   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
-//             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version)
+//             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version).
+//             Grouped as PROJECTS groups them (ProjectGroups.h: FAVOURITES, the factory's starred ones among them, a
+//             category a group, UNCATEGORISED last) once there is more than one group: a caption a group, which folds
+//             it (the groups folded are PROJECTS', this Mac's: EditorPort::projectsView)
 //   FACTORY   the factory projects (plugin/Factory.h), by name (the one open marked), folded at first: a click opens
 //             one (read-only: a save makes the user's own copy)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
@@ -51,6 +54,7 @@ namespace playground::ui
             std::string detail;                       // faint, at the right ("2026-10-27 14:02"); "" for none
             chat::Icon icon = chat::Icon::file;
             bool heading = false;                     // a library category's caption: no action
+            uint8_t fold = 0;                         // a caption that folds its group: 1 open, 2 folded (a click: open())
             bool active = false;                      // the tab shown
             bool marked = false;                      // a library file the program has: a tick
             bool error = false;                       // a file with errors: a red dot
@@ -72,6 +76,7 @@ namespace playground::ui
             std::string actionTitle;                  // its name to a screen reader ("New file")
             std::string empty;                        // shown when there are no rows ("No presets yet")
             bool counted = true;                      // the header counts its rows ("FILES  2")
+            int total = -1;                           // the count it says (-1: its rows, captions aside)
         };
 
         struct Hooks

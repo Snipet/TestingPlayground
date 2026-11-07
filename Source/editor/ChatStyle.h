@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 namespace playground::ui::chat
 {
@@ -73,8 +74,44 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window, folder
+        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search
     };
+
+    // A convex polygon filled (its vertices in order): cut at its vertices' x into the canvas's trapezoids.
+    inline void fillConvex(funkgui::Canvas& c, const float* xs, const float* ys, int n, funkgui::Col ink)
+    {
+        float cuts[16];
+        int m = 0;
+        for (int i = 0; i < n && m < 16; ++i)
+        {
+            bool seen = false;
+            for (int k = 0; k < m; ++k)
+                seen = seen || std::fabs(cuts[k] - xs[i]) < 1.0e-4f;
+            if (!seen)
+                cuts[m++] = xs[i];
+        }
+        for (int i = 1; i < m; ++i)                   // a few: by insertion
+            for (int k = i; k > 0 && cuts[k - 1] > cuts[k]; --k)
+                std::swap(cuts[k - 1], cuts[k]);
+        for (int k = 0; k + 1 < m; ++k)
+        {
+            const float a = cuts[k], b = cuts[k + 1];
+            float top0 = 1.0e9f, top1 = 1.0e9f, bot0 = -1.0e9f, bot1 = -1.0e9f;
+            for (int i = 0; i < n; ++i)
+            {
+                const float x0 = xs[i], y0 = ys[i], x1 = xs[(i + 1) % n], y1 = ys[(i + 1) % n];
+                if (std::fmin(x0, x1) > a + 1.0e-4f || std::fmax(x0, x1) < b - 1.0e-4f || std::fabs(x1 - x0) < 1.0e-6f)
+                    continue;                         // an edge across the whole slab: its y at both ends
+                const float ya = y0 + (y1 - y0) * (a - x0) / (x1 - x0), yb = y0 + (y1 - y0) * (b - x0) / (x1 - x0);
+                top0 = std::fmin(top0, ya);
+                top1 = std::fmin(top1, yb);
+                bot0 = std::fmax(bot0, ya);
+                bot1 = std::fmax(bot1, yb);
+            }
+            if (top0 < bot0 || top1 < bot1)
+                c.area(a, b, top0, top1, bot0, bot1, ink);
+        }
+    }
 
     inline void drawIcon(funkgui::Canvas& c, Icon icon, float cx, float cy, float size, funkgui::Col ink)
     {
@@ -400,6 +437,45 @@ namespace playground::ui::chat
                 c.segment(cx - s * 0.8f, cy - s * 0.18f, cx + s * 0.8f, cy - s * 0.18f, w, ink);
                 break;
             }
+            case Icon::star:
+            case Icon::starFilled:
+            {
+                // A five-pointed star, a point up: a favourite (filled when it is one).
+                float xs[10], ys[10];
+                for (int k = 0; k < 10; ++k)
+                {
+                    const float r = (k % 2 == 0 ? 0.92f : 0.40f) * s;
+                    const float a = -1.5707963f + static_cast<float>(k) * 0.62831853f;
+                    xs[k] = cx + r * std::cos(a);
+                    ys[k] = cy + 0.08f * s + r * std::sin(a);
+                }
+                if (icon == Icon::starFilled)
+                {
+                    float px[5], py[5];
+                    for (int k = 0; k < 5; ++k)
+                    {
+                        px[k] = xs[2 * k + 1];
+                        py[k] = ys[2 * k + 1];
+                        const float tx[3] = { xs[(2 * k + 9) % 10], xs[2 * k], xs[2 * k + 1] };
+                        const float ty[3] = { ys[(2 * k + 9) % 10], ys[2 * k], ys[2 * k + 1] };
+                        fillConvex(c, tx, ty, 3, ink);   // a point
+                    }
+                    fillConvex(c, px, py, 5, ink);       // the middle
+                }
+                float ox[11], oy[11];
+                for (int k = 0; k < 11; ++k)
+                {
+                    ox[k] = xs[k % 10];
+                    oy[k] = ys[k % 10];
+                }
+                c.polyline(ox, oy, 11, w, ink);
+                break;
+            }
+            case Icon::search:
+                // A magnifier: a ring, its handle to the lower right.
+                c.disc(cx - s * 0.16f, cy - s * 0.16f, s * 0.52f, ink.withAlpha(0.0f), w, ink);
+                c.segment(cx + s * 0.22f, cy + s * 0.22f, cx + s * 0.78f, cy + s * 0.78f, w * 1.3f, ink);
+                break;
             case Icon::probe:
             {
                 // A probe: a pen-like body at a slant, its tip at the lower left, a ring at its tail (a live voltage).

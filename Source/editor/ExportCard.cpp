@@ -8,6 +8,7 @@
 #include "Product.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 namespace playground::ui
@@ -90,6 +91,20 @@ namespace playground::ui
         else
             for (const char* c : kEffectCategories)
                 out.emplace_back(c);
+        return out;
+    }
+
+    // This kind's categories, and the project's own when it is none of them (one typed in PROJECTS), last.
+    std::vector<std::string> ExportCard::choices() const
+    {
+        std::vector<std::string> out = categories();
+        const auto same = [](const std::string& a, const std::string& b) {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                   });
+        };
+        if (!saved_.category.empty() && std::none_of(out.begin(), out.end(), [&](const std::string& c) { return same(c, saved_.category); }))
+            out.push_back(saved_.category);
         return out;
     }
 
@@ -242,7 +257,7 @@ namespace playground::ui
             at.author = { x0, y, authorW, 34.0f };
             at.tags = { x0 + authorW + 12.0f, y, inner - authorW - 12.0f, 34.0f };
             y = at.author.bottom() + kGap + kCaption;
-            y = flow(categories(), y, at.categories) + kGap + kCaption;
+            y = flow(choices(), y, at.categories) + kGap + kCaption;
             y = flow(genres, y, at.genres) + kGap;
             at.versions = { x0, y, 230.0f, kPillH };
             const float by = box.bottom() - kPad - kButtonH;
@@ -275,7 +290,7 @@ namespace playground::ui
             ask(Want::package);
         else if (!readOnly_)
         {
-            const std::vector<std::string> cats = categories();
+            const std::vector<std::string> cats = choices();
             for (std::size_t i = 0; i < at.categories.size(); ++i)
                 if (at.categories[i].contains(p))
                     category_ = category_ == cats[i] ? std::string() : cats[i];
@@ -434,7 +449,7 @@ namespace playground::ui
             c.text(label.c_str(), r.centreX(), c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, on ? p.onAccent : p.soft,
                    funkgui::Align::centre);
         };
-        const std::vector<std::string> cats = categories();
+        const std::vector<std::string> cats = choices();
         if (!at.categories.empty())
             caption(at.categories.front(), "CATEGORY");
         for (std::size_t i = 0; i < at.categories.size(); ++i)
@@ -509,7 +524,7 @@ namespace playground::ui
             it.help = help;
             out.push_back(std::move(it));
         };
-        const std::vector<std::string> cats = categories();
+        const std::vector<std::string> cats = choices();
         for (std::size_t i = 0; i < at.categories.size(); ++i)
             toggle(kCategoryId + static_cast<uint32_t>(i), at.categories[i], cats[i], category_ == cats[i], "Category", !readOnly_);
         for (std::size_t i = 0; i < at.genres.size(); ++i)

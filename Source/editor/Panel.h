@@ -556,6 +556,7 @@ namespace playground::ui
         bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
+        bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
                                                          // items, under the code editor's overlays)
@@ -672,6 +673,7 @@ namespace playground::ui
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<ProjectEntry> projectList_;
         std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects): read once
+        ProjectsView projectsView_;                      // PROJECTS' stars and folded groups, as the poll last read them
         bool factoryRead_ = false;
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of

@@ -1,36 +1,52 @@
 // Source/editor/ProjectBrowser.h: PROJECTS, a card over the panel, as the key dialog is: the projects saved on this Mac
 // (EditorPort::projects), each a program and its dials kept as versions, with presets (dial settings for it).
 //
-//   PROJECTS   a row a project, its name, its newest version and when it was saved; the one open marked. A click
-//              chooses one (its name goes into the field, its versions and presets show at the right), a double-click
-//              opens its newest version. Under the FACTORY caption (a row of no name: never chosen), the factory
-//              projects (EditorPort::factoryProjects), read-only, nothing of them deleted. The one open, chosen, puts the
-//              name its copy would take into the field ("Warm Pad", "Warm Pad 2" when a project of this Mac's has
-//              that); another leaves the field at the program open's (homeName: Save saves the editor's program, never
-//              the chosen one's) and says to open it first
-//   VERSIONS   the chosen project's, the newest first, each with when and what changed; the one open marked. A click
-//              chooses one, a double-click opens it
-//   PRESETS    the chosen project's dial settings; the one applied marked. A click chooses one (its name goes into the
-//              field, which then names a preset), a click under the rows starts a new one, a double-click applies it
-//   the field  the name Save saves under: a project's, or, while the presets are chosen from, a preset's (its pill
-//              says which)
-//   Save       a project: the editor's files and dials as a new version of the project named (the one open, or a new
-//              one; another's, a second click: Add version); a factory project open, a new name saves the user's own
-//              copy (EditorPort::saveVersion). A preset: the dials as a preset of the project open (one of that name, a
-//              second click: Replace); never a factory project's
-//   Open       the chosen project's newest version, or the chosen version; Apply, the chosen preset (its project
-//              opened first when it is not the one open). When the editor's files have changes no version holds, a
-//              second click: Open anyway
-//   Delete     the chosen project, version or preset (a second click: Delete it)
-//   Import...  a .zip or a .fmpack another playground exported (the Panel's chooser), a project of its own here
-//   Export...  the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h)
-//   A/B...     the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
-//              the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
-//   Close      or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
-//              chosen from, Tab moves to the next list
-// While it is open it takes every pointer event and key. What it did, it says once (takeNotice) for the status line.
+//   the top     the search field (Cmd-F: the name, the description and the tags, each word; Escape clears it), the
+//               tag filter (a dropdown: any tag, or one of those the projects have) and the order (by name, or the
+//               newest save first): ProjectGroups.h
+//   PROJECTS    in groups that fold (a click on a group's header; ProjectGroups.h): FAVOURITES (the projects starred,
+//               pinned at the top), FACTORY (the factory projects, EditorPort::factoryProjects: read-only, nothing of
+//               them deleted, their category theirs), one a category (the user's projects' info's), UNCATEGORISED
+//               last. A row a project: its name, its newest version and when it was saved, the one open marked, and
+//               its star (a click stars it or not). A click chooses one (its name goes into the field, its versions
+//               and presets show at the right), Cmd-click adds one to the projects chosen or takes it out, Shift-click
+//               chooses the rows from the last one clicked; a double-click opens its newest version. The projects
+//               chosen take a category: by the context menu (a right-click: Category, its list and New category...,
+//               None), by a drag onto a group (a category's, UNCATEGORISED for none, FAVOURITES stars them), or typed
+//               (the menu's New category..., or a category group's Rename category...: the field then names the
+//               category, its pill saying CATEGORY; Return sets it, Escape goes back). A factory project's category
+//               stays its own. The one open, chosen, puts the name its copy would take into the field ("Warm Pad",
+//               "Warm Pad 2" when a project of this Mac's has that); another leaves the field at the program open's
+//               (homeName: Save saves the editor's program, never the chosen one's) and says to open it first
+//   VERSIONS    the chosen project's, the newest first, each with when and what changed; the one open marked. A click
+//               chooses one, a double-click opens it
+//   PRESETS     the chosen project's dial settings; the one applied marked. A click chooses one (its name goes into the
+//               field, which then names a preset), a click under the rows starts a new one, a double-click applies it
+//   the field   the name Save saves under: a project's, or, while the presets are chosen from, a preset's, or a category
+//               being named (its pill says which)
+//   Save        a project: the editor's files and dials as a new version of the project named (the one open, or a new
+//               one; another's, a second click: Add version); a factory project open, a new name saves the user's own
+//               copy (EditorPort::saveVersion). A preset: the dials as a preset of the project open (one of that name, a
+//               second click: Replace); never a factory project's. A category: Set category
+//   Open        the chosen project's newest version, or the chosen version; Apply, the chosen preset (its project
+//               opened first when it is not the one open). When the editor's files have changes no version holds, a
+//               second click: Open anyway
+//   Delete      the chosen project, version or preset (a second click: Delete it)
+//   Import...   a .zip or a .fmpack another playground exported (the Panel's chooser), a project of its own here
+//   Export...   the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h)
+//   A/B...      the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
+//               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
+//   Close       or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
+//               chosen from, Tab moves to the next list
+// The stars, the groups folded, the search, the tag and the order are this Mac's (EditorPort::projectsView): kept as
+// they change, the same in every instance and the explorer's PROJECTS (which groups as this does). While a search or
+// a tag filters, every group with a match shows its matches (a fold then is the filter's alone, the groups folded kept
+// for after it). While it is open it takes every pointer event and key. What it did, it says once (takeNotice) for the
+// status line. Its menus are the host's (the context menu, the tag filter's, the order's); a menu's answer calls the
+// Panel's hook (setAnswered) as an event does.
 #pragma once
 
+#include "editor/ProjectGroups.h"
 #include "plugin/EditorPort.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -43,6 +59,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +70,8 @@ namespace playground::ui
     {
     public:
         static constexpr int kMaxNameLength = 40;        // projectstore::kMaxName
+        static constexpr int kMaxCategoryLength = 24;    // projectstore::kMaxTag
+        static constexpr int kMaxSearchLength = 60;      // projectstore::kMaxSearch
         static constexpr uint32_t kA11yBase = 0x7FFE0000u;   // its accessibility ids, past every item's
 
         enum class List : uint8_t { projects, versions, presets };
@@ -63,19 +82,23 @@ namespace playground::ui
         // The lists read afresh, the project open chosen; the field `name` (a project's), or, with `preset`, the
         // presets chosen from and the field the preset applied or a new preset's name.
         void open(const std::string& name, bool preset);
+        void setSize(float width, float height) noexcept { width_ = width; height_ = height; }   // the panel's, before open()
         void close();
 
         // Its places, for the panel's size.
         struct Places
         {
             funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
+            funkgui::Rect search, clear, tag, sort;      // the top's: the search field, its clear (x), the tag, the order
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
         };
         Places places(float width, float height) const;
 
-        // Events, the panel's size given. The pointer goes nowhere else while it is open.
-        void pointerDown(funkgui::Point p, float width, float height);
+        // Events, the panel's size given. The pointer goes nowhere else while it is open. `host` shows its menus.
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::HostServices* host, float width, float height);
+        void pointerDrag(funkgui::Point p, float width, float height);
+        void pointerUp(funkgui::Point p, float width, float height);
         void doubleClick(funkgui::Point p, float width, float height);
         void wheel(const funkgui::WheelEvent& e, float width, float height);
         void key(const funkgui::KeyEvent& e, funkgui::HostServices* host, float width, float height);
@@ -83,8 +106,12 @@ namespace playground::ui
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, float width, float height, funkgui::Point pointer,
                   bool hasPointer) const;
         void accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const;
-        bool a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height);
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, funkgui::HostServices* host, float width, float height);
         uint32_t revision() const noexcept { return revision_; }   // bumps when its items change
+        // The Panel's: a menu's answer has acted (afterProjects), and whether a menu opens at a rect (its trigger then
+        // draws open).
+        void setAnswered(std::function<void()> answered) { answered_ = std::move(answered); }
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> menuOpen) { menuOpen_ = std::move(menuOpen); }
 
         // What it did last ("SAVED: GLASS BLOOM V3"), once; "" for nothing new.
         std::string takeNotice();
@@ -97,13 +124,32 @@ namespace playground::ui
         // The name a factory project's copy takes: its own, else "<own> 2", ... (case aside, as the store's add()).
         std::string copyName(const std::string& factory) const;
 
-        // For probes.
+        // For probes. The projects (this Mac's, then the factory's), and the rows of the projects' list: a group's
+        // header (its project -1) or a project of it.
+        struct Row
+        {
+            int group = -1;                              // in groups()
+            int project = -1;                            // in projectList(); -1: the group's header
+        };
         const std::vector<ProjectEntry>& projectList() const noexcept { return projects_; }
+        const std::vector<projectgroups::Group>& groups() const noexcept { return groups_; }
+        const std::vector<Row>& rowList() const noexcept { return rows_; }
+        const ProjectEntry* rowProject(int row) const;   // none for a header
+        int rowOf(const std::string& project, bool inFavourites = false) const;   // its row (-1: not shown)
+        int headerOf(const std::string& key) const;      // a group's header row (-1: none)
         const std::vector<VersionEntry>& versionList() const noexcept { return versions_; }
         const std::vector<PresetEntry>& presetList() const noexcept { return presets_; }
-        int chosen(List l) const noexcept { return chosen_[static_cast<std::size_t>(l)]; }
+        int chosen(List l) const noexcept;               // the projects': the chosen project's row (-1: none shown)
+        int firstShown(List l) const noexcept { return first_[static_cast<std::size_t>(l)]; }
+        std::string chosenProject() const { return chosenName_; }
+        const std::vector<std::string>& selection() const noexcept { return selected_; }   // the projects chosen
+        const ProjectsView& view() const noexcept { return view_; }
+        bool searching() const noexcept { return searching_; }   // keys type the search
+        const std::string& search() const noexcept { return search_.buffer; }
+        bool categoryMode() const noexcept { return categoryMode_; }
+        bool dragging() const noexcept { return dragging_; }
         List focus() const noexcept { return focus_; }
-        bool presetMode() const noexcept { return focus_ == List::presets; }
+        bool presetMode() const noexcept { return focus_ == List::presets && !categoryMode_; }
         const std::string& name() const noexcept { return name_.buffer; }
         const std::string& why() const noexcept { return why_; }
         std::string saveLabel() const;
@@ -111,45 +157,89 @@ namespace playground::ui
         std::string removeLabel() const;
         funkgui::Point centreOfRow(List l, int i, float width, float height) const;   // a row shown, else far away
         funkgui::Point centreOfEmpty(List l, float width, float height) const;        // under its rows, else far away
+        funkgui::Point centreOfStar(int row, float width, float height) const;        // a project row's star
+        // The categories its menus offer: the kind's (ExportCard::categories()), then the user's others, by name.
+        std::vector<std::string> categoryChoices() const;
 
     private:
         enum class Ask : uint8_t { none, addTo, replace, open, remove };
+        enum class Menu : uint8_t { row, header, tag, sort };
 
         funkgui::Rect listRect(const Places& at, List l) const;
+        funkgui::Rect rowRect(const Places& at, List l, int i) const;   // a row shown (its index), in the list
+        static funkgui::Rect starRect(const funkgui::Rect& row);
         int count(List l) const;
         int rowAt(funkgui::Point p, const Places& at, List l) const;
-        void readProjects();                             // this Mac's, then the FACTORY caption and the factory's
+        void readProjects();                             // this Mac's, then the factory's; arranged
+        void arrange();                                  // the groups and the rows, from the projects and the view
+        bool filtering() const noexcept { return !view_.search.empty() || !view_.tag.empty(); }
+        void keepView();                                 // the view to the port (this Mac's)
+        bool starredName(const std::string& name) const;
+        void star(const std::vector<std::string>& names, bool on);
+        void toggleFold(int group);
+        void setSearch(const std::string& text);
+        void setCategory(const std::vector<std::string>& names, const std::string& category);
+        void startCategory(const std::vector<std::string>& names, const std::string& now);   // the field names one
+        void endCategory();
+        void dropOn(int group);                          // the projects dragged, onto a group
+        void showMenu(Menu m, int row, funkgui::Point at);
+        void menuChosen(Menu m, int row, int id, const std::vector<std::string>& names, const std::vector<std::string>& choices);
+        std::vector<std::string> targets(int row) const; // the projects a row's menu or drag acts on (the chosen ones,
+                                                         // when the row is one of them)
         std::string homeName() const;                    // the field for the program open: its project's (copy's), else its title
         std::string fieldFor(const std::string& project) const;   // the field when `project` is chosen
-        bool heading(int i) const;                       // the projects' row i is the FACTORY caption
         bool factoryChosen() const;                      // the chosen project is a factory one
         void readChosen();                               // the chosen project's versions and presets
-        void choose(List l, int i, int rowsShown, int step = 1);   // a caption skipped in the step's direction
+        void chooseProject(int row, int rowsShown);      // a project's row: it alone chosen
+        void choose(List l, int i, int rowsShown, int step = 1);   // a header skipped in the step's direction
         void startPreset();                              // the presets chosen from, the field a new preset's name
         void save();
         void openChosen();
         void remove();
         bool chosenIsOpen() const;                       // the chosen project is the one open
-        std::string chosenProject() const;
 
         EditorPort& port_;
         bool open_ = false;
         std::vector<ProjectEntry> projects_;
+        std::vector<projectgroups::Group> groups_;
+        std::vector<Row> rows_;
+        ProjectsView view_;                              // as the port had it, and as it changed since
+        std::vector<std::string> filterFolded_;          // the groups folded while a filter is on
         std::vector<VersionEntry> versions_;
         std::vector<PresetEntry> presets_;
         ProjectState state_;                             // EditorPort::project when it opened, or after it acted
         std::string title_;                              // the name it opened with (the program's title when none is open)
-        std::array<int, 3> chosen_{ -1, -1, -1 };
+        std::string chosenName_;                         // the chosen project ("" for none)
+        std::string chosenGroup_;                        // the key of the group it was chosen in (a favourite has two)
+        std::vector<std::string> selected_;              // the projects chosen, the chosen one among them
+        int anchor_ = -1;                                // the row a Shift-click chooses from
+        std::array<int, 3> chosen_{ -1, -1, -1 };        // the versions' and the presets' (the projects': chosenName_)
         std::array<int, 3> first_{ 0, 0, 0 };            // each list's first row shown
         List focus_ = List::projects;
         funkgui::text::LineEdit name_;
+        funkgui::text::LineEdit search_;
+        bool searching_ = false;
         bool typed_ = false;                             // a name typed since it opened, or since a row was chosen
+        bool categoryMode_ = false;                      // the field names a category for categoryFor_
+        std::vector<std::string> categoryFor_;
+        std::string nameBefore_;                         // the field before it named a category
         Ask ask_ = Ask::none;                            // what the next click on that button does
         std::string why_;                                // the line under the field
         std::string notice_;
         bool import_ = false;
         std::string export_;
         std::pair<std::string, int> ab_;
+        // A press on a project's row, and the drag it may become.
+        int pressRow_ = -1;
+        funkgui::Point pressAt_{};
+        bool dragging_ = false;
+        bool chooseOnUp_ = false;                        // a press on one of several chosen: the row alone on release
+        funkgui::Point dragAt_{};
+        std::vector<std::string> dragged_;
+        float width_ = 0.0f, height_ = 0.0f;             // the panel's, at the last event
+        funkgui::HostServices* host_ = nullptr;
+        std::function<void()> answered_;
+        std::function<bool(const funkgui::Rect&)> menuOpen_;
         uint32_t revision_ = 0;
     };
 }

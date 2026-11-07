@@ -12,6 +12,7 @@
 #include "editor/GuiView.h"
 #include "editor/IrView.h"
 #include "editor/Looks.h"
+#include "editor/ProjectGroups.h"
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
 #include "editor/SchematicView.h"
@@ -3135,6 +3136,8 @@ namespace playground::ui
             return projects_.isOpen();
         });
         settings_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
+        projects_.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
+        projects_.setAnswered([this] { afterProjects(true); });   // a menu's answer, as an event's
 
         // The Standalone's muted input (an effect's: JUCE's guard against a feedback loop): a notice in the status bar,
         // left of the zoom, and this button, which opens SETTINGS.
@@ -4166,10 +4169,12 @@ namespace playground::ui
             std::sort(projects.begin(), projects.end(),
                       [](const ProjectEntry& a, const ProjectEntry& b) { return a.when != b.when ? a.when > b.when : a.name < b.name; });
             std::vector<PresetEntry> presets = st.name.empty() ? std::vector<PresetEntry>() : port_.presetsPolled(st.name);
-            if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name)
+            ProjectsView view = port_.projectsView();    // the stars and the groups folded (a look at a small file)
+            if (projects != projectList_ || presets != presetList_ || presetsOf_ != st.name || view != projectsView_)
                 ++listsRevision_;
             projectList_ = std::move(projects);
             presetList_ = std::move(presets);
+            projectsView_ = std::move(view);
             presetsOf_ = st.name;
             projectsAt_ = now;
         }
@@ -4344,15 +4349,45 @@ namespace playground::ui
             g.action = chat::Icon::plus;
             g.actionTitle = "Save the project";
             g.empty = "None yet: + saves this program";
-            for (const ProjectEntry& e : projectList_)
+            // Grouped as PROJECTS groups them (ProjectGroups.h), the newest first in each: a caption a group once there
+            // is more than one (the factory's starred ones among the favourites), each folding its group.
+            std::vector<ProjectEntry> all = projectList_;
+            all.insert(all.end(), factoryList_.begin(), factoryList_.end());
+            projectgroups::Options o;
+            o.favourites = &projectsView_.favourites;
+            o.folded = &projectsView_.folded;
+            o.byDate = true;
+            o.factoryGroup = false;
+            const std::vector<projectgroups::Group> grouped = projectgroups::arrange(all, o);
+            const bool captions = grouped.size() > 1 || (grouped.size() == 1 && grouped[0].kind != projectgroups::Kind::uncategorised);
+            g.total = static_cast<int>(projectList_.size());
+            for (const projectgroups::Group& grp : grouped)
             {
-                ExplorerItem::Row r;
-                r.label = e.name;
-                r.detail = "v" + std::to_string(e.latest);
-                r.icon = chat::Icon::list;
-                r.active = e.name == st.name;
-                r.key = e.name;
-                g.rows.push_back(std::move(r));
+                if (captions)
+                {
+                    ExplorerItem::Row h;
+                    h.label = upper(grp.title);
+                    h.heading = true;
+                    h.fold = grp.folded ? 2 : 1;
+                    h.key = grp.key;
+                    h.detail = std::to_string(grp.total);
+                    h.help = grp.title + ": " + std::to_string(grp.total) + (grp.total == 1 ? " project" : " projects");
+                    h.spec = upper(grp.title) + "   SHOW OR HIDE ITS PROJECTS (AS PROJECTS DOES)";
+                    g.rows.push_back(std::move(h));
+                    if (grp.folded)
+                        continue;
+                }
+                for (const int m : grp.members)
+                {
+                    const ProjectEntry& e = all[static_cast<std::size_t>(m)];
+                    ExplorerItem::Row r;
+                    r.label = ownName(e.name);
+                    r.detail = e.factory ? std::string("factory") : "v" + std::to_string(e.latest);
+                    r.icon = chat::Icon::list;
+                    r.active = e.name == st.name;
+                    r.key = e.name;
+                    g.rows.push_back(std::move(r));
+                }
             }
             groups.push_back(std::move(g));
         }
@@ -4442,6 +4477,21 @@ namespace playground::ui
                 break;
             case S::projects:
             case S::factory:
+                if (row.heading)
+                {
+                    // A group's caption: folded or opened, in PROJECTS too (this Mac's view).
+                    ProjectsView v = port_.projectsView();
+                    const auto it = std::find_if(v.folded.begin(), v.folded.end(), [&](const std::string& k) { return projectgroups::same(k, row.key); });
+                    if (it != v.folded.end())
+                        v.folded.erase(it);
+                    else
+                        v.folded.push_back(row.key);
+                    std::string why;
+                    if (!port_.setProjectsView(v, why))
+                        notice("NOT KEPT: " + upper(why));
+                    projectsAt_ = -100.0;                // read again at once
+                    break;
+                }
                 openProjectNamed(row.key);
                 break;
             case S::ir:
@@ -5706,6 +5756,7 @@ namespace playground::ui
             }
         }
         pushEditor();                                    // what Save saves is what the tabs show
+        projects_.setSize(width_, height_);
         projects_.open(name, preset);
         focusBeforeProjects_ = focus_;
         setFocus(-1);
@@ -6737,7 +6788,14 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "A/B   A, B OR SPACE SWITCH   UP AND DOWN CHOOSE B, SHIFT A   TAB THE NEXT FILE   "
                                              "RETURN KEEPS THE ONE PLAYING   ESCAPE GOES BACK");
         else if (projects_.isOpen())
-            std::snprintf(line, sizeof line, "PROJECTS   UP AND DOWN CHOOSE   TAB THE NEXT LIST   RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES");
+        {
+            const char* what = projects_.searching()    ? "PROJECTS   TYPE TO SEARCH: NAMES, DESCRIPTIONS, TAGS   RETURN CHOOSES THE FIRST   ESCAPE CLEARS"
+                             : projects_.categoryMode() ? "PROJECTS   TYPE A CATEGORY   RETURN SETS IT   ESCAPE GOES BACK"
+                             : projects_.dragging()     ? "PROJECTS   DROP ONTO A GROUP: ITS CATEGORY (FAVOURITES STARS THEM)"
+                                                        : "PROJECTS   CMD-F SEARCHES   CMD-CLICK CHOOSES MORE   RIGHT-CLICK OR DRAG: THE CATEGORY   "
+                                                          "RETURN SAVES A NAME TYPED, ELSE OPENS   ESCAPE CLOSES";
+            std::snprintf(line, sizeof line, "%s", what);
+        }
         else
         {
             int src = pressed_;
@@ -6869,6 +6927,7 @@ namespace playground::ui
             return;
         }
         closingPress_ = false;
+        projectsPress_ = false;
         if (dialogOpen())
         {
             pressed_ = -1;
@@ -6891,7 +6950,8 @@ namespace playground::ui
             }
             else
             {
-                projects_.pointerDown(pointer_, width_, height_);
+                projectsPress_ = true;
+                projects_.pointerDown(e, host_, width_, height_);
                 afterProjects(true);
             }
             closingPress_ = !dialogOpen();
@@ -6940,6 +7000,11 @@ namespace playground::ui
         noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
         pointer_ = { e.x, e.y };
+        if (projectsPress_ && projects_.isOpen())
+        {
+            projects_.pointerDrag(pointer_, width_, height_);   // a project's row carried onto a group
+            return;
+        }
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerDrag(e, *gestures_);
         dirty_ = true;
@@ -6949,6 +7014,13 @@ namespace playground::ui
     {
         noteInput(true);                                 // FunkGui's EditorHost nudges the pump on no release
         dirty_ = true;                                   // input: drawn at the next frame
+        if (std::exchange(projectsPress_, false) && projects_.isOpen())
+        {
+            projects_.pointerUp({ e.x, e.y }, width_, height_);
+            afterProjects(true);
+            pressed_ = -1;
+            return;
+        }
         if (pressed_ >= 0 && gestures_)
             items_[static_cast<std::size_t>(pressed_)]->pointerUp(e, *gestures_);
         pressed_ = -1;
@@ -7306,7 +7378,7 @@ namespace playground::ui
         }
         if (projects_.isOpen())
         {
-            projects_.a11yAction(id, a, width_, height_);
+            projects_.a11yAction(id, a, host_, width_, height_);
             afterProjects(true);
             return;
         }
