@@ -49,7 +49,8 @@
 //   VIEW     PROJECTS' view (projectsView: the stars, the groups folded, the search, the tag, the order) none at first;
 //            kept, it reads back the same from another processor, from the folder's hidden file (no project listed
 //            for it), tidied (a name starred twice in two cases once, a factory project's name kept as spelt, the search
-//            cut to 60); a project deleted loses its star
+//            cut to 60); a project deleted loses its star; the file rewritten from outside (as another process would)
+//            read again when its size moved and when its time did
 //   DELETE   a preset deleted (no longer applied); a version deleted, never the only one; a project deleted: gone from
 //            the list, project() none
 //   PANEL    a panel dial (Controls.h's isPanelDial: the 34th of 34, past the host's 32) is kept by name as a host
@@ -723,6 +724,27 @@ PROBE(plugin, projects)
         starred.favourites.push_back("Star Gone");
         P.eq("view.starred", sp.setProjectsView(starred, why) && sp.projectsView().favourites.size() == 4 ? 1 : 0, 1);
         P.eq("view.deleted_unstars", sp.deleteProject("Star Gone", why) && sp.projectsView().favourites.size() == 3 ? 1 : 0, 1);
+        {
+            // Another process (a Standalone beside the DAW) rewrites the file: read again when its size moved (its time
+            // set back as it was), and when its time moved (the same size), never served from what this one cached.
+            const juce::File vf = dir.getChildFile(pg::projectstore::kViewFile);
+            const auto rewrite = [&](const std::string& filter, juce::Time at) {
+                return vf.replaceWithText("{\"format\": \"funk-playground-projects-view\", \"version\": 1, \"favourites\": [\"Old Sound\"], "
+                                          "\"folded\": [], \"search\": \"\", \"tag\": \"" + filter + "\", \"sort\": \"name\"}\n",
+                                          false, false, "\n")
+                    && vf.setLastModificationTime(at);
+            };
+            const auto reads = [&](const std::string& filter) {
+                const pg::ProjectsView now = pa.projectsView();
+                return now.favourites == std::vector<std::string>{ "Old Sound" } && now.tag == filter && !now.byDate && now.folded.empty();
+            };
+            (void)pa.projectsView();                     // cached as it is
+            const juce::Time was = vf.getLastModificationTime();
+            const juce::int64 size = vf.getSize();
+            P.eq("view.reread_size", rewrite("dark", was) && vf.getSize() != size && vf.getLastModificationTime() == was && reads("dark") ? 1 : 0, 1);
+            const juce::int64 sameSize = vf.getSize();
+            P.eq("view.reread_time", rewrite("warm", was + juce::RelativeTime::seconds(2.0)) && vf.getSize() == sameSize && reads("warm") ? 1 : 0, 1);
+        }
         P.eq("view.reset", pa.setProjectsView({}, why) && pa.projectsView() == pg::ProjectsView{} ? 1 : 0, 1);
     }
 
