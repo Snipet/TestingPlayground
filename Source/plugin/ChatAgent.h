@@ -375,6 +375,10 @@ namespace playground
         // end, or the next keep, writes it): getStateInformation's, which a host may call at every change.
         enum class OwnerChange : uint8_t { open, carry, move };
         bool setOwner(const std::string& owner, const std::string& label, OwnerChange how);
+        // A thread acting for the turn that runs (the message thread, while it runs a job a tool of the turn waits for:
+        // the projects tool's, Processor::runClaudeJob): an open asked from it waits for the turn's end, as one asked
+        // from the turn's own thread does (it could not stop and join the turn that waits for it).
+        void actForTurn(bool on);
         void restoreChat(const std::string& owner, const std::string& label, const std::string& id,
                          const std::string& from = {});
         void adoptChat(const std::string& json, const std::string& owner, const std::string& label);
@@ -719,6 +723,7 @@ namespace playground
         PendingOwner pendingOwner_;                                 // mutex held
         bool keepFailed_ = false;                                   // the last keep failed, and the chat said so (mutex held)
         std::atomic<std::thread::id> turnThread_{};
+        std::atomic<std::thread::id> helperThread_{};               // actForTurn's
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work

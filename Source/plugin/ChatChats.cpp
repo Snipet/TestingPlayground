@@ -109,7 +109,13 @@ namespace playground
         return "New chat";
     }
 
-    bool ChatAgent::onTurnThread() const { return turnThread_.load() == std::this_thread::get_id(); }
+    bool ChatAgent::onTurnThread() const
+    {
+        const std::thread::id me = std::this_thread::get_id(), turn = turnThread_.load();
+        return turn == me || (turn != std::thread::id{} && helperThread_.load() == me);
+    }
+
+    void ChatAgent::actForTurn(bool on) { helperThread_.store(on ? std::this_thread::get_id() : std::thread::id{}); }
 
     ChatAgent::ChatRef ChatAgent::chatRef() const
     {

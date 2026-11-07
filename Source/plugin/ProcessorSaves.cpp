@@ -131,7 +131,9 @@ namespace playground
             claudeJobRunning_ = true;
         }
         claudeJobDone_.notify_all();
+        chat_.actForTurn(true);                                  // a project it opens shows its chats at the turn's end
         job();
+        chat_.actForTurn(false);
         {
             const std::lock_guard<std::mutex> lock(claudeJobMutex_);
             claudeJobRunning_ = false;
