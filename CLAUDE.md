@@ -212,10 +212,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `withPanelNotes`; its `carry` the program's: poll() may see the edit's status and never its compile's, and then
   `apply` writes that carry, once, and moves previous_run, as for the compile: a panel-only status is a run's unless
   its program is the one `apply` last took, `plugin.reload` SKIPPED). It is one only while a program plays (the status
-  ok and of the recipe's program, not stopped, no refine held), the other files are the same in their order, a panel
-  file changed and none was read by FMinus (`PanelBase::read`), both sides have the same first .gui file, and every
-  dial means what it meant (type, range, default, taper; an int's option names: the carry keeps a value's name): else
-  it compiles, as does a RUN that changes nothing (it starts the program afresh). `request(files, false)` never edits
+  ok and of the recipe's program, not stopped, no refine held, no self-test answer waiting for a RUN because its Shared
+  ticks: `fminus.circuit` REFRESH), the other files are the same in their order, a panel file changed and none was
+  read by FMinus (`PanelBase::read`), both sides have the same first .gui file, and every dial means what it meant
+  (type, range, default, taper; an int's option names: the carry keeps a value's name): else it compiles, as does a
+  RUN that changes nothing (it starts the program afresh). `request(files, false)` never edits
   (the A/B's sides and its end, a recording's restart, a fresh start, a project version opened: `plugin.reload`
   OPEN); the processor asks for edits only while no A/B is on (`panelEdits`), never in compileNow. Displays that read
   other fields send their taps to the Engine (`Engine::setTaps`: a seqlock and a count, read at the end of the next

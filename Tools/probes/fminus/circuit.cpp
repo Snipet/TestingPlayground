@@ -82,7 +82,8 @@
 //                note, no job) and the refine is dropped; an instrument's refine waits while a key is held (no new
 //                program id), and lands after the release, once the voice has ended; an instrument's program whose
 //                Shared ticks (Patch.h, "Shared on its own") is never refined, silent though it is (its program and
-//                revision stay, the answer due), and the next RUN plays the answer; with the tests on, a RUN whose
+//                revision stay, the answer due), and the next RUN plays the answer, one that changes only its panel.gui
+//                too (a panel's edit before the answer, a compile once it waits); with the tests on, a RUN whose
 //                files drop the netlist cancels its test, which stores nothing, and a RUN made while the test runs has
 //                its status before landed() moves (by order), the refine after it
 //   DEDUP        two Compilers wanting one key run one test (the in-flight set), and both refine
@@ -1328,6 +1329,36 @@ namespace
             const pg::CompileStatus b = live.compiler->compileNow(ticking);
             P.eq("refresh.synth_ticking_next_run", b.ok && !provisional(b) && live.play(8).program == b.request
                                                        && !live.compiler->selfTesting() ? 1 : 0, 1);
+        }
+        // ... a RUN that changes only its panel.gui among them (Compiler.h, "A panel's edit"): a panel's edit while no
+        // answer waits, and a compile that plays the answer once one does.
+        if constexpr (kInstrument)
+        {
+            store.clearForTests();
+            Live live(false);
+            const auto ticking = [](const char* label) {
+                pg::Sources f = clipperFiles(false, "\nmodule Shared\n{\n    int ticks;\n    void tick(int n) { ticks += 1; }\n};\n");
+                f.push_back({ "panel.gui", std::string("panel {\n    column {\n        label \"") + label + "\"\n    }\n}\n" });
+                return f;
+            };
+            const auto provisional = [](const pg::CompileStatus& c) { return c.notes.find("; provisional: ") != std::string::npos; };
+            const pg::CompileStatus a = live.compiler->compileNow(ticking("TICKS"));
+            live.compiler->request(ticking("TICKING"));
+            live.compiler->wait();
+            const pg::CompileStatus e = live.compiler->status();
+            live.play(8);
+            P.eq("refresh.synth_ticking_panel_edit", a.ok && provisional(a) && e.ok && e.panelOnly && e.program == a.program
+                                                         && provisional(e) ? 1 : 0, 1);
+            store.store(key, answer);                    // another instance's answer lands: it waits for a RUN
+            const bool refined = live.compiler->selfTestNow();
+            const uint64_t run = live.compiler->request(ticking("TICKS"));
+            live.compiler->wait();
+            const pg::CompileStatus s = live.compiler->status();
+            std::printf("refresh: a panel-only RUN with an answer waiting: panelOnly %d, %s\n", s.panelOnly ? 1 : 0,
+                        provisional(s) ? "provisional" : "the answer plays");
+            P.eq("refresh.synth_ticking_panel_run", !refined && s.request == run && s.ok && !s.panelOnly && s.program != a.program
+                                                        && !provisional(s) && live.play(8).program == s.program
+                                                        && !live.compiler->selfTesting() ? 1 : 0, 1);
         }
         // With the tests on: a RUN whose files drop the netlist cancels its test, which stores nothing.
         const pg::Sources potFiles = clipperFiles(true);

@@ -54,9 +54,10 @@
 // while a RUN is queued (which reads the store itself: the refine is then dropped), while a recording is armed
 // (Engine::ownCode) and, for an instrument, until no voice sounds, fades or is held (Meters), so no held note starts
 // again; an instrument's program whose Shared ticks (Patch.h, "Shared on its own": its state moves between notes, and a
-// new program's Shared starts afresh) is never refined, its answer playing from the next RUN (which reads the store);
-// and it looks again once the compile is done, just before it offers: a refine that may not play then is held,
-// and offered at the first pass that may (dropped when another program plays first, or when an answer it lacks lands).
+// new program's Shared starts afresh) is never refined, its answer playing from the next RUN (which reads the store;
+// one of the panel's files alone compiles then too: "A panel's edit"); and it looks again once the compile is done,
+// just before it offers: a refine that may not play then is held, and offered at the first pass that may (dropped when
+// another program plays first, or when an answer it lacks lands).
 // A refine answers no request: it brings the status up to date (CompileStatus::refined), which still answers the
 // request before it (`request`, `ok`, and a failed compile's `errors` and `sources`, which the editor and Claude go on
 // showing), with the refined program as `program` and, when that request compiled, the refine's notes ending with what
@@ -105,7 +106,8 @@
 // that a panel reads only the fields of its own table, editor/DisplayItem.h's TapsShown), and the thread waits for the
 // audio thread's next block to read them (unless it is idle), so the panel that shows the status reads its own fields
 // at once. It is panel-only when all of these hold, and else a compile as any RUN is:
-//   - a program plays, as the last status says (it compiled; not stopped; no refine compiled and held);
+//   - a program plays, as the last status says (it compiled; not stopped; no refine compiled and held), and no
+//     self-test answer waits for a RUN to play it (a program whose Shared ticks: below, "The self-test");
 //   - the files other than the panel's are the same, in the same order, and at least one panel file changed (an
 //     unchanged RUN compiles: it starts the program afresh), none of them one that FMinus read (an #include of it);
 //   - both the files that play and the new ones have a .gui file, the same first one (a .gui added, removed or renamed
@@ -333,6 +335,8 @@ namespace playground
         void checkOutcomes();
         bool mayRefine() const;
         bool quiet() const;
+        // Whether the store holds an answer for a netlist the program that plays used provisionally (under mutex_).
+        bool answered() const;
         bool refine(std::unique_lock<std::mutex>& lock);
         // The status brought up to date by a refine that plays (above): its notes end with `chosen`.
         void finishRefine(CompileStatus s, const std::string& chosen);

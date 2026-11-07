@@ -612,9 +612,10 @@ namespace playground
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (recipe_.program == 0 || recipe_.program == stoppedProgram_ || held_ || !status_.ok
-                || status_.program != recipe_.program)
-                return false;                          // nothing plays, it stopped, a refine waits, or the status is
-                                                       // not of what plays
+                || status_.program != recipe_.program || (recipe_.sharedTick && (refineDue_ || answered())))
+                return false;                          // nothing plays, it stopped, a refine waits, the status is not
+                                                       // of what plays, or an answer waits for the next RUN (a Shared
+                                                       // that ticks is never refined): this RUN compiles to play it
             base = recipe_;
             was = status_;
         }
@@ -1118,8 +1119,12 @@ namespace playground
         if (tester_.busy())
             return true;
         const std::lock_guard<std::mutex> lock(mutex_);
-        return refineDue_ || held_ || std::any_of(playing_.begin(), playing_.end(), [](const circuits::Job& j) {
-                   return circuits::answers().find(j.key).has_value();
-               });
+        return refineDue_ || held_ || answered();
+    }
+
+    bool Compiler::answered() const
+    {
+        return std::any_of(playing_.begin(), playing_.end(),
+                           [](const circuits::Job& j) { return circuits::answers().find(j.key).has_value(); });
     }
 }
