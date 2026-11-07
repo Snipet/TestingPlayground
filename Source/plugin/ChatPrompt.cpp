@@ -338,7 +338,7 @@ A run keeps each dial's value in its units, never its knob's turn: a new range o
 
 How a knob looks: look=modern (the default) | vintage (a black knob over a printed scale) | flat | minimal (an arc only) | ring (a ring of dots) | led (a ring of lights) | chicken (a pointer knob) | soft (a raised cap) | dot; arc=, track=, cap= (colours, or none), pointer=line|dot|triangle|none, pointercolor=, thickness= (the arc's px), sweep= (the degrees it turns, 60 to 360; 270), ticks= (marks around it, up to 61), tickcolor=, bipolar (its arc from the middle: a pan, a detune), labelpos=top|bottom|none, value=always|hover|never, valuecolor=, labelcolor=, shadow=true|false, and live=field: a mark on its ring where a field of the program puts the parameter now (the cutoff after its envelope and LFO, in the parameter's units), which makes modulation visible. A slider takes arc=, track=, cap=, thickness=, bipolar, labelpos=, value=, live= too.
 
-Shaders: for what a knob cannot show (a filter's glow that follows its cutoff, a waveform of light, a ground of its own). The file (write_file, beside the program; a name ending in .sc) holds the body of a fragment shader in bgfx's language, which is GLSL (vec2, vec3, vec4, mix, smoothstep, clamp, sin, exp, fract, length, ...): helper functions and a main() that sets gl_FragColor, straight RGBA (its alpha blends it over the panel). It reads v_uv (0..1 across and down), v_px (px from its top left corner), u_size (its size in px, a vec2), u_time (seconds: it moves while the panel is open) and its inputs (16 at most), in inputs= order, as in0 to in15 or by name as in_<name>: a parameter's value 0..1 (its knob's turn), a field's value as the program writes it, in and out the audio's peak level 0..1. No textures, no uniforms of your own. It compiles with the program (shaderc); one that does not is a note on its own line ("glow.sc:9:1: note: the shader does not compile: ..."), which run_program reports, and it draws nothing until fixed:
+Shaders: for what a knob cannot show (a filter's glow that follows its cutoff, a waveform of light, a ground of its own). The file (write_file, beside the program; a name ending in .sc) holds the body of a fragment shader in bgfx's language, which is GLSL (vec2, vec3, vec4, mix, smoothstep, clamp, sin, exp, fract, length, ...): helper functions and a main() that sets gl_FragColor, straight RGBA (its alpha blends it over the panel). It reads v_uv (0..1 across and down), v_px (px from its top left corner), u_size (its size in px, a vec2), u_time (seconds: it moves while the panel is open), u_px (one screen pixel in px: the width to smooth an edge over) and its inputs (16 at most), in inputs= order, as in0 to in15 or by name as in_<name>: a parameter's value 0..1 (its knob's turn), a field's value as the program writes it, in and out the audio's peak level 0..1. No uniforms or textures of your own. It compiles with the program (shaderc); one that does not is a note on its own line ("glow.sc:9:1: note: the shader does not compile: ..."), which run_program reports, and it draws nothing until fixed:
 
 // glow.sc: a glow that follows the cutoff and the output's level, breathing slowly.
 float ring(vec2 p, float r, float w)
@@ -353,6 +353,27 @@ void main()
     glow += 0.25 * ring(p, 0.3 + 0.02 * sin(2.0 * u_time), 0.01);
     vec3 c = mix(vec3(0.05, 0.02, 0.0), vec3(1.0, 0.55, 0.1), clamp(glow, 0.0, 1.0));
     gl_FragColor = vec4(c, 1.0);
+}
+
+Text and shapes: #include "funk/text.sh" and "funk/shapes.sh" (the plugin's library), and .sh files of the program's own (write_file: functions several shaders share; a .sc or a .sh includes one, each read once). Their functions take the point, v_px, and give a coverage 0..1 to mix a colour in by: col = mix(col, ink, circle(v_px, c, 4.0)). Positions and sizes are px, angles degrees clockwise from straight up.
+- text.sh: text(p, at, size, align, "RPM") (a string in quotes, up to 48 characters: ASCII, \u00B0 for the degree sign), number(p, at, size, align, value, decimals), textWidth(size, "RPM"). at: the text's left end, middle or right end (align 0, 0.5 or 1), at the middle of its capitals; size as the panel's text (11: a label).
+- shapes.sh: box(p, c, size, radius), circle(p, c, r), ring(p, c, r, w), segment(p, a, b, w), arc(p, c, r, w, from, to), ticks(p, c, r0, r1, w, from, to, n), needle(p, c, angle, length, w), digit7(p, c, h, digit), number7(p, at, h, value, digits) (8888888.0: the unlit segments), cover(d) and glow(d, r) of a distance (sdBox, sdLine), ramp(a, b, t), ramp3(a, b, c, t), along(p, a, b), around(p, c, r), angleOf(p, c), dirOf(angle).
+
+// gauge.sc: a dial's ticks, redline and needle, its title and its value (in_rpm: its dial's turn, 0..1).
+#include "funk/text.sh"
+#include "funk/shapes.sh"
+
+void main()
+{
+    vec2 c = vec2(0.5 * u_size.x, 0.55 * u_size.y);
+    float r = 0.4 * u_size.y;
+    vec3 col = vec3(0.05, 0.05, 0.06);
+    col = mix(col, vec3(0.6, 0.6, 0.65), ticks(v_px, c, 0.82 * r, r, 1.5, -135.0, 135.0, 9.0));
+    col = mix(col, vec3(0.9, 0.2, 0.1), arc(v_px, c, r, 3.0, 90.0, 135.0));
+    col = mix(col, vec3(1.0, 0.55, 0.1), needle(v_px, c, -135.0 + 270.0 * in_rpm, 0.9 * r, 3.0));
+    col = mix(col, vec3(0.7, 0.7, 0.7), text(v_px, c + vec2(0.0, 0.3 * r), 10.0, 0.5, "RPM"));
+    col = mix(col, vec3(1.0, 1.0, 1.0), number(v_px, c + vec2(0.0, 0.6 * r), 13.0, 0.5, in_rpm * 8000.0, 0.0));
+    gl_FragColor = vec4(col, 1.0);
 }
 
 Classes and defaults, written at the top: class "main" size=large arc=orange, then knob cutoff class="main" (or class="main warm": several, in order); defaults knob look=ring gives every knob that look, defaults section look=card radius=8 every section. An element's own properties beat its classes', which beat the defaults.
