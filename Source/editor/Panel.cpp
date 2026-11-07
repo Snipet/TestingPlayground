@@ -3236,23 +3236,28 @@ namespace playground::ui
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
         // Claude Desktop's badge in the chat's header, while it is connected and its calls go to another instance (or to
-        // none: several open, none chosen): a click makes this one its target.
+        // none: several open, none chosen): a click makes this one its target. The chat folded, a mark on its rail says
+        // it instead (its footer line the badge's words), and does the same.
         {
-            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::bubble; }, [this] { return desktopBadge_; }, false,
-                              [] { return B::Look::outlined; }, {},
-                              [this] {
-                                  port_.chooseDesktop(desktopState_.id, true);
-                                  notice("CLAUDE DESKTOP: ITS CALLS COME HERE NOW");
-                                  syncDesktop();
-                                  dirty_ = true;
-                              },
-                              "Claude Desktop's target", {});
-            sp.specNow = [this] {
+            const auto act = [this] {
+                port_.chooseDesktop(desktopState_.id, true);
+                notice("CLAUDE DESKTOP: ITS CALLS COME HERE NOW");
+                syncDesktop();
+                dirty_ = true;
+            };
+            const auto footer = [this] {
                 return desktopState_.targetName.empty()
                          ? std::string("CLAUDE DESKTOP   SEVERAL OPEN, NONE CHOSEN: IT ASKS WHICH   A CLICK SENDS ITS CALLS HERE")
                          : "CLAUDE DESKTOP   ITS CALLS GO TO " + upper(desktopState_.targetName) + "   A CLICK SENDS THEM HERE";
             };
+            B::Spec sp = spec(B::Shape::pill, [] { return chat::Icon::bubble; }, [this] { return desktopBadge_; }, false,
+                              [] { return B::Look::outlined; }, {}, act, "Claude Desktop's target", {});
+            sp.specNow = footer;
             desktopItem_ = add(std::make_unique<B>(idFor(), std::move(sp)));
+            B::Spec mark = spec(B::Shape::square, [] { return chat::Icon::alert; }, {}, false, [] { return B::Look::outlined; }, {},
+                                act, "Claude Desktop's target", {});
+            mark.specNow = footer;
+            desktopMarkItem_ = add(std::make_unique<B>(idFor(), std::move(mark)));
         }
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
@@ -3703,6 +3708,7 @@ namespace playground::ui
         {
             toggle.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f, kIconButton, kIconButton });
             headerY_ = hy;
+            placeDesktopBadge();                         // its mark on the rail
             ++layoutRevision_;
             dirty_ = true;
             return;
@@ -5576,10 +5582,11 @@ namespace playground::ui
         }
     }
 
-    // The badge at the left of the header's buttons, as wide as its label where there is room after the title.
+    // The badge at the left of the header's buttons, as wide as its label where there is room after the title; the chat
+    // folded, its mark on the rail, under the rail's button and its light.
     void Panel::placeDesktopBadge()
     {
-        if (desktopItem_ < 0 || newChatItem_ < 0)
+        if (desktopItem_ < 0 || desktopMarkItem_ < 0 || newChatItem_ < 0)
             return;
         auto& badge = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]);
         const funkgui::Rect newChat = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds();
@@ -5589,6 +5596,12 @@ namespace playground::ui
         const bool shown = chatOpen_ && hasChat() && !desktopBadge_.empty() && room >= 90.0f;
         badge.setHidden(!shown);
         badge.setBounds({ right - w, headerY_ + std::floor(0.5f * (kIconButton - kPillH)), w, kPillH });
+        auto& mark = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(desktopMarkItem_)]);
+        mark.setHidden(chatOpen_ || !hasChat() || desktopBadge_.empty());
+        mark.setBounds({ card_.centreX() - 0.5f * kIconButton, card_.y + 8.0f + 2.0f * kIconButton, kIconButton, kIconButton });
+        // Either gone once clicked (this one the target now) or with the fold: the focus to the chat's own button.
+        if ((focus_ == desktopItem_ || focus_ == desktopMarkItem_) && !items_[static_cast<std::size_t>(focus_)]->shown())
+            setFocus(chatToggleItem_);
         ++layoutRevision_;
         dirty_ = true;
     }
@@ -5598,6 +5611,14 @@ namespace playground::ui
         if (desktopItem_ < 0 || !items_[static_cast<std::size_t>(desktopItem_)]->shown())
             return std::nullopt;
         const funkgui::Rect r = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopItem_)]).bounds();
+        return funkgui::Point{ r.centreX(), r.centreY() };
+    }
+
+    std::optional<funkgui::Point> Panel::centreOfDesktopMark() const
+    {
+        if (desktopMarkItem_ < 0 || !items_[static_cast<std::size_t>(desktopMarkItem_)]->shown())
+            return std::nullopt;
+        const funkgui::Rect r = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(desktopMarkItem_)]).bounds();
         return funkgui::Point{ r.centreX(), r.centreY() };
     }
 

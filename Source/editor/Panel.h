@@ -348,10 +348,11 @@ namespace playground::ui
         ExportCard& exportCard() noexcept { return export_; }
         NameCard& nameCard() noexcept { return name_; }
         // Claude Desktop as this Panel shows it (probes): the chat header's subtitle and badge ("" for none), and where
-        // the badge is while it shows.
+        // the badge is while it shows (the chat open), and its mark on the rail (the chat folded).
         const std::string& desktopLine() const noexcept { return desktop_; }
         const std::string& desktopBadge() const noexcept { return desktopBadge_; }
         std::optional<funkgui::Point> centreOfDesktopBadge() const;
+        std::optional<funkgui::Point> centreOfDesktopMark() const;
         void chooseImport();
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
@@ -804,7 +805,8 @@ namespace playground::ui
         // Claude Desktop (EditorPort::desktop): what this Panel last read of it (syncDesktop, each refresh: a copy); the
         // chat header's subtitle (what a call does here now, else the name Claude Desktop calls it by while it is the
         // target) and its badge, while Claude Desktop is connected and its calls go to another or to none (a click makes
-        // this one the target); the explorer's CLAUDE DESKTOP rows (desktopRow: what a row does); the name card.
+        // this one the target; folded, the badge is a mark on the rail, under its button, which does the same); the
+        // explorer's CLAUDE DESKTOP rows (desktopRow: what a row does); the name card.
         DesktopState desktopState_;
         std::string desktop_;                            // the subtitle ("" for none)
         std::string desktopBadge_;                       // the badge's label ("" for none)
@@ -812,6 +814,7 @@ namespace playground::ui
         std::string desktopSeen_;                        // what the explorer's rows show of it, as text
         uint64_t desktopRevision_ = 0;                   // bumps when that changes
         int desktopItem_ = -1;                           // the badge
+        int desktopMarkItem_ = -1;                       // ... its mark on the folded chat's rail
         void syncDesktop();
         void placeDesktopBadge();
         void desktopRow(const ExplorerItem::Row& row);
