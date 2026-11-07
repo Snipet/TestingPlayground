@@ -765,6 +765,8 @@ namespace playground::ui
             problems_ = &problems;
             close_ = std::move(close);
         }
+        // ... and its menuOpenAt, which the Schematic view's triggers (More, the probe chip) draw open by.
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { schematic_.setMenuOpen(std::move(open)); }
         // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
         // fields, a dial's port and control, and RUN (the Panel's).
         void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
@@ -2929,6 +2931,7 @@ namespace playground::ui
                 return productTheme(host_ != nullptr ? funkgui::Theme::byIndex(host_->themeIndex()) : funkgui::Theme::graphite());
             };
             hooks.menuOpen = [this](const funkgui::Rect& r) { return menuOpenAt(r); };
+            hooks.menuHost = [this] { return host_; };
             hooks.choosePage = [this](int node, int page) { chooseGuiPage(node, page); };
             hooks.playNote = [this](int note, float velocity) { port_.playNote(note, velocity); };
             hooks.playWheel = [this](bool pitch, float value) { port_.playWheel(pitch, value); };
@@ -3176,6 +3179,7 @@ namespace playground::ui
     {
         FilesItem& fi = files();
         fi.setPanelHooks(problems_, [this](int tab) { closeFile(tab); });
+        fi.setMenuOpen([this](const funkgui::Rect& r) { return menuOpenAt(r); });
         fi.setNotice([this](const std::string& text) { notice(text); });
         // The status line's Panel switch: the panel under the code, for the tab shown (none in the code window, which
         // has no panel: the editor's window shows it).

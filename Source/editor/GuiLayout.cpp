@@ -259,7 +259,7 @@ namespace playground::ui
                     {
                         float w = labelW(n.slot);
                         for (const std::string& o : optionsOf(n.slot))
-                            w = std::max(w, measure_(o, kGuiSmall) + 30.0f);
+                            w = std::max(w, measure_(o, kGuiSmall) + kGuiMenuRoom);
                         return { std::max(w, 76.0f), kGuiLabelH + 24.0f };
                     }
                     case GuiKind::xy:

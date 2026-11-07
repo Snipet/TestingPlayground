@@ -12,7 +12,9 @@
 //            kChevronInset from its right edge; a click opens its menu under it (the anchor its bounds), at least as
 //            wide when it holds choices; while the menu is open the trigger's pill has the accent's edge and the one
 //            open fill (every trigger's the same), and once it is dismissed neither; Projects' while its card is open;
-//            the focus ring (Tab) 2 px outside its pill
+//            the focus ring (Tab) 2 px outside its pill; the .gui menu at its natural width showing every value whole,
+//            and Return, Space and a screen reader's press and showMenu opening its menu as a click does (its value
+//            kept); the Schematic view's More: its chevron, its label whole, its menu under it, open and closed
 //   ROWS     EXAMPLES an item an example; LIBRARY every file once under its category's header (the library's order),
 //            its label starting with its file name (the menu's type-ahead), the files the program has ticked, no
 //            disabled row standing for a header; MODEL its two headers, a radio set under each, the current one dotted
@@ -46,12 +48,14 @@
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -739,6 +743,14 @@ PROBE(gui, menus)
             const funkgui::Rect box = control.menuBox();
             R.eq("panel.box_under_label", box.y > cell.y && box.bottom() <= cell.bottom() + 0.5f ? 1 : 0, 1);
             const funkgui::Point at{ box.centreX(), box.centreY() };
+            // Laid out at its natural width (a spacer beside it), its box shows every value whole: none cut to "...".
+            {
+                int cut = 0;
+                const float room = dd::labelRoom(box, box.x + pg::ui::kGuiMenuInset);
+                for (const char* v : { "SINE", "SAW", "SQUARE", "TRIANGLE", "NOISE" })
+                    cut += funkgui::text::fits(funkgui::FontService::get().atlas(), v, funkgui::type::kMicro, room) ? 0 : 1;
+                R.eq("panel.values_whole", cut, 0);
+            }
             if (const funkgui::MenuRequest* m = openTrigger(R, host, "panel", at, true, seen, box))
             {
                 radioSet(R, "rows.panel", *m, choicesOf(*m), "SAW");
@@ -756,6 +768,26 @@ PROBE(gui, menus)
                 host.tick(1);
                 const funkgui::Theme th = pg::ui::productTheme(funkgui::Theme::byIndex(host.themeIndex()));
                 P.eq("trigger.panel.focus_ring", ringAround(host.draw(), box, th.accent) ? 1 : 0, 1);
+                // Return and Space open its menu as a click does (every trigger the same), and so does a screen
+                // reader's press or showMenu; none of them steps the value.
+                const float before = processor.ports()[0]->value01();
+                const std::optional<funkgui::A11yItem> item = itemAt(host, at);
+                const auto opensMenu = [&](const std::string& how, const std::function<void()>& ask) {
+                    ask();
+                    host.tick(1);
+                    const funkgui::MenuRequest* m = host.pendingMenu();
+                    const bool open = m != nullptr && same(m->anchor, box);
+                    const std::optional<Box> pill = pillAt(host.draw(), box);
+                    P.eq("trigger.panel." + how + "_opens",
+                         open && pill && pill->edge == packed(th.accent) && host.cancelMenu() ? 1 : 0, 1);
+                    host.tick(1);
+                    P.near("trigger.panel." + how + "_keeps_value", static_cast<double>(processor.ports()[0]->value01()),
+                           static_cast<double>(before), 1e-6);
+                };
+                opensMenu("return", [&] { host.keys("return"); });
+                opensMenu("space", [&] { host.keys("space"); });
+                opensMenu("a11y_press", [&] { if (item) panel.a11yAction(item->id, funkgui::A11yAction::press); });
+                opensMenu("a11y_show_menu", [&] { if (item) panel.a11yAction(item->id, funkgui::A11yAction::showMenu); });
             }
         }
     }
@@ -809,6 +841,30 @@ PROBE(gui, menus)
                     picture(P, pics, host, panel, *m, "schematic", t);
                     R.eq("rows.schematic.chooses", host.chooseMenuItem("Select all")
                                                        && panel.schematic().selection().size() == panel.schematic().drawing().parts.size() ? 1 : 0, 1);
+                }
+                // The toolbar's More, a trigger too (no screen-reader item: none of the schematic's toolbar is one, the
+                // Netlist view being the keyboard's way): its chevron at the one inset, "More" whole, its menu under
+                // it, the accent's edge while it is open and not once it is dismissed.
+                if (rows)
+                {
+                    using SV = pg::ui::SchematicView;
+                    const funkgui::Rect more = panel.schematic().buttonRect(SV::Button::more);
+                    const funkgui::Theme th = pg::ui::productTheme(funkgui::Theme::byIndex(host.themeIndex()));
+                    host.move(more.centreX(), more.centreY());
+                    host.tick(1);
+                    P.eq("trigger.more.chevron", chevronAt(host.draw(), more) ? 1 : 0, 1);
+                    P.eq("trigger.more.label_whole", funkgui::text::fits(funkgui::FontService::get().atlas(), "More", pg::ui::chat::kSmall,
+                                                                         dd::labelRoom(more, more.x + 8.0f)) ? 1 : 0, 1);
+                    host.click(more.centreX(), more.centreY());
+                    host.tick(1);
+                    const funkgui::MenuRequest* mm = host.pendingMenu();
+                    P.eq("trigger.more.under_it", mm != nullptr && same(mm->anchor, more) ? 1 : 0, 1);
+                    const std::optional<Box> open = pillAt(host.draw(), more);
+                    P.eq("trigger.more.open_edge", open && open->edge == packed(th.accent) && std::abs(open->edgeW - 1.0f) < 0.01f ? 1 : 0, 1);
+                    host.cancelMenu();
+                    host.tick(1);
+                    const std::optional<Box> after = pillAt(host.draw(), more);
+                    P.eq("trigger.more.closed", !(after && after->edge == packed(th.accent)) ? 1 : 0, 1);
                 }
             }
         }

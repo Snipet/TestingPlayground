@@ -2,8 +2,9 @@
 //
 // A trigger is every control whose click opens a menu of choices or commands: the program card's Examples and Library,
 // the top bar's Projects (its card), the chat's model and thinking pills, the status bar's zoom, the Settings card's
-// selects and a .gui interface's menu control. Each is a pill with its label at the left and a chevron at its right, in
-// one of three bases (a toolbar's ghost, an outlined pill, a form's field), and every one has the same states:
+// selects, a .gui interface's menu control and the Schematic view's More and probe chip. Each is a pill with its label
+// at the left and a chevron at its right, in one of three bases (a toolbar's ghost, an outlined pill, a form's field),
+// and every one has the same states:
 //   - rest      the base's fill and edge, its label in `soft` (a field's in `text`)
 //   - hover     `hover`'s fill, the label in `text`
 //   - open      while its menu is open (the press that opened it, or the keys): the accent's tint over `hover` and an

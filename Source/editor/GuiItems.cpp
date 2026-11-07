@@ -28,6 +28,8 @@ namespace playground::ui
         constexpr float kPi = 3.14159265358979f;
         constexpr float kDeg = kPi / 180.0f;
         constexpr uint32_t kTabIdStep = 1u;                          // a tab's accessibility id: the item's + 1 + its index
+        // A menu control at its natural width (GuiLayout) shows its widest value whole.
+        static_assert(kGuiMenuRoom >= kGuiMenuInset + dropdown::kChevronRoom + 2.0f);
 
         float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
 
@@ -301,7 +303,7 @@ namespace playground::ui
                 const dropdown::State state{ true, hot, menuOpenNow(), focusRing };
                 const funkgui::Col ink = dropdown::drawTrigger(c, chat::palette(th), b, dropdown::Base::field, state,
                                                                tinted ? col : Col{});
-                const float x = b.x + 8.0f;
+                const float x = b.x + kGuiMenuInset;
                 c.text(fitText(c, text, type::kMicro, dropdown::labelRoom(b, x)).c_str(), x,
                        c.capCentreTop(b.centreY(), type::kMicro), type::kMicro, ink);
                 return;
@@ -579,6 +581,17 @@ namespace playground::ui
         });
     }
 
+    bool GuiControlItem::openMenuFromHost(funkgui::GestureController& g)
+    {
+        if (kind_ != GuiKind::menu || !menuHost_)
+            return false;
+        funkgui::HostServices* h = menuHost_();
+        if (h == nullptr || (h->services() & funkgui::hostservice::menus) == 0)
+            return false;
+        openMenu(g, *h);
+        return true;
+    }
+
     void GuiControlItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h)
     {
         if (e.popup || !shown())
@@ -691,7 +704,8 @@ namespace playground::ui
             case funkgui::Key::space:
                 if (!clicks())
                     return false;
-                g.tap(value_.port(), value_.normOfIndex((value_.index() + 1) % std::max(1, value_.count())));
+                if (!openMenuFromHost(g))    // a menu opens as on a click (Dropdown.h); else the next value
+                    g.tap(value_.port(), value_.normOfIndex((value_.index() + 1) % std::max(1, value_.count())));
                 return true;
             case funkgui::Key::character: case funkgui::Key::tab: case funkgui::Key::escape:
             case funkgui::Key::backspace: case funkgui::Key::del:
@@ -746,7 +760,7 @@ namespace playground::ui
             case funkgui::A11yAction::press:
             case funkgui::A11yAction::toggle:
             case funkgui::A11yAction::showMenu:
-                if (clicks())
+                if (clicks() && !openMenuFromHost(g))
                     g.tap(value_.port(), value_.normOfIndex((value_.index() + 1) % std::max(1, value_.count())));
                 break;
             case funkgui::A11yAction::focus:

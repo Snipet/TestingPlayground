@@ -67,10 +67,14 @@ namespace playground::ui
     {
     public:
         // `menuOpen`: whether a menu opened from this rect is open (the Panel's menuOpenAt; none in the GUI sandbox): a
-        // menu control's box draws open while its menu is (Dropdown.h).
+        // menu control's box draws open while its menu is (Dropdown.h). `menuHost`: the host a key (Return, Space) or a
+        // screen reader's press opens a menu control's menu from, as a click does (none in the GUI sandbox: they step
+        // its value there).
         GuiControlItem(funkgui::ParamPort& port, uint32_t id, std::function<funkgui::Theme()> menuTheme,
-                       std::function<bool(const funkgui::Rect&)> menuOpen = {})
-            : value_(port), id_(id), menuTheme_(std::move(menuTheme)), menuOpen_(std::move(menuOpen)) {}
+                       std::function<bool(const funkgui::Rect&)> menuOpen = {},
+                       std::function<funkgui::HostServices*()> menuHost = {})
+            : value_(port), id_(id), menuTheme_(std::move(menuTheme)), menuOpen_(std::move(menuOpen)),
+              menuHost_(std::move(menuHost)) {}
 
         GuiValue& value() noexcept { return value_; }
         // Its element (its kind, size, direction and style), its cell, the panel's area, whether it is on the panel,
@@ -120,6 +124,7 @@ namespace playground::ui
         void drawKnob(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void drawSlider(funkgui::Canvas& c, const funkgui::Theme& th, bool hot) const;
         void openMenu(funkgui::GestureController& g, funkgui::HostServices& h);
+        bool openMenuFromHost(funkgui::GestureController& g);   // a menu control's, from menuHost_: false when none
         bool menuOpenNow() const { return kind_ == GuiKind::menu && menuOpen_ && menuOpen_(menuBox()); }
         float sliderValueAt(funkgui::Point p) const;
 
@@ -127,6 +132,7 @@ namespace playground::ui
         uint32_t id_;
         std::function<funkgui::Theme()> menuTheme_;
         std::function<bool(const funkgui::Rect&)> menuOpen_;
+        std::function<funkgui::HostServices*()> menuHost_;
         GuiKind kind_ = GuiKind::knob;
         GuiSize size_ = GuiSize::medium;
         bool vertical_ = true, vintage_ = false;

@@ -213,6 +213,9 @@ namespace playground::ui
         // so that Claude's conditional write sees the gesture. False when a write of Claude's came in that the Panel has
         // not merged yet: the gesture is undone (one step) and the strip says to do it again, so neither is overwritten.
         void setSyncHook(std::function<bool()> sync) { sync_ = std::move(sync); }
+        // Whether a menu opened from this rect is open (the Panel's menuOpenAt): More and the probe chip, dropdown
+        // triggers (Dropdown.h), draw open while their menus are.
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { menuOpen_ = std::move(open); }
         // The file shown in Schematic view: its tab's editor, its name and its state (FilesItem's; null: none shown).
         void show(funkgui::TextEditor* ed, const std::string& file, SchematicFile* state);
         bool showing() const noexcept { return ed_ != nullptr && st_ != nullptr; }
@@ -345,6 +348,7 @@ namespace playground::ui
         funkgui::Rect probeLane(int lane) const;
         std::optional<funkgui::Point> centreOfPin() const;
         std::optional<funkgui::Point> centreOfChip() const;
+        std::optional<funkgui::Rect> chipRect() const;   // the chip's pill (its menu's anchor)
         // A slot's scope as drawn: its window (the newest kTraceSamples from the last rising crossing of its mean that
         // leaves one whole, else the newest; while no more than a window is of the set that plays, as after an effect's
         // host block over 1,024 samples, which leaves its newest 1,024, from the first rising crossing in them that leaves
@@ -510,6 +514,8 @@ namespace playground::ui
         float knobFrom_ = 0.0f, knobY_ = 0.0f;           // a knob's drag: the value it started at, the pointer's y
         int knobPart_ = -1;                              // ... and its part
         funkgui::HostServices* host_ = nullptr;
+        std::function<bool(const funkgui::Rect&)> menuOpen_;
+        bool menuOpenAt(const funkgui::Rect& r) const { return menuOpen_ && menuOpen_(r); }
         funkgui::TextEditor* ed_ = nullptr;
         std::string file_;
         SchematicFile* st_ = nullptr;
