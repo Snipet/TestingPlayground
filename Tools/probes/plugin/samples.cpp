@@ -4,26 +4,30 @@
 //   DECODE    a 32-bit float WAV read as its floats bit for bit, a 16-bit and a 24-bit one as their integers over 2^15
 //             and 2^23 exactly (stereo, planar); an AIFF and a FLAC the same; a file of another kind refused in words
 //   PLAY      a #pragma sample field holds the file at its rate (frames, channels, rate), and a program that plays it
-//             through the Engine gives its floats back bit for bit; the frozen copy plays it too
-//   NOTES     a sample the set lacks, a field that is not there and one of another type: notes, the program plays
-//             (frames 0)
+//             through the Engine gives its floats back bit for bit; the frozen copy, taken, plays it (within 10^-6)
+//   NOTES     a sample the set lacks, a field that is not there, one of another type and a module whose data is a
+//             float* (the sound is shared, read only): notes, the program plays (frames 0)
 //   RESAMPLE  44.1 kHz to 48: a 1 kHz sine within -115 dB of the ideal one, a 15 kHz one within -110 dB, its length the
 //             same in seconds; 96 kHz to 48: a 30 kHz sine (past the new Nyquist) 105 dB down, a 1 kHz one within
 //             -115 dB (away from the ends, which the kernel reaches past); a Patch reset at another rate holds that
 //             rate's sound, and one back at a rate made before makes nothing again
 //   CAPS      the refusals in words: a file past 8 MB, the 17th sample, past 32 MB in all, three channels, past 60 s, a
-//             name that is no audio file's; a project's files past 64 MB refuse a save
+//             name that is no audio file's; a project's files past 64 MB refuse a save; what a damaged header claims,
+//             before anything is allocated: a rate of 2 GHz, a data chunk past the file's bytes (a file cut short), a
+//             FLAC past 64 MB decoded, a rate under 1 kHz
 //   AUDIO     the audio thread never decodes or resamples: a processor plays a 44.1 kHz sample at 48 and 96 kHz
 //             (prepareToPlay resamples, off the audio thread) and processBlock adds no decode and no resample
-//   SESSION   a state keeps the samples, as added; a processor that loads it plays them; a sample removed plays on in
-//             the program that has it until its next run
+//   SESSION   a state keeps the samples, as added; a processor that loads it plays them (one of two of a name, in a
+//             damaged state); a sample removed plays on in the program that has it until its next run
 //   PROJECT   a version keeps its samples (two versions, one file), its note says what changed (new, changed, gone),
-//             saving it as it is adds none, opening it makes them the plugin's, the edited mark follows them; a
-//             .fmpack and a .zip carry them out and back
+//             saving it as it is adds none, opening it makes them the plugin's, the edited mark follows them; compare's
+//             sides each with their own (a version's, what plays, previous_run after a run that changed only a
+//             sample); a .fmpack and a .zip carry them out and back
 //   TOOLS     write_file's path adds one (its name tidied), get_status lists it (and which the program reads),
 //             rename_file and delete_file act on it, content for an audio file's name refused
-//   EXAMPLE   sample.fm's one-shot: the synth's voice plays the hit at note 60 bit for bit and an octave up in half
-//             the time; the effect plays it over its input
+//   EXAMPLE   sample.fm's one-shot (readAt: the index and the fraction apart): the synth's voice plays the hit at note
+//             60 bit for bit and an octave up in half the time, and 3 s a semitone up ends after frames / step samples;
+//             the effect plays it over its input
 #include "Probe.h"
 
 #include "Rig.h"
@@ -101,6 +105,40 @@ namespace
 
     // A mono 32-bit float WAV of `x` at `rate`.
     std::string floatWav(const std::vector<float>& x, int rate) { return wav(1, rate, 32, {}, x); }
+
+    // A WAV's 44-byte header as a damaged file may have it: its rate and its data chunk's length whatever they say,
+    // then `tail` bytes of sound (zeros).
+    std::string claimedWav(int channels, uint32_t rate, int bits, uint32_t dataBytes, std::size_t tail)
+    {
+        std::string s = "RIFF";
+        put(s, 36 + static_cast<uint32_t>(tail), 4);
+        s += "WAVEfmt ";
+        put(s, 16, 4);
+        put(s, 1, 2);
+        put(s, static_cast<uint32_t>(channels), 2);
+        put(s, rate, 4);
+        put(s, rate * static_cast<uint32_t>(channels * bits / 8), 4);
+        put(s, static_cast<uint32_t>(channels * bits / 8), 2);
+        put(s, static_cast<uint32_t>(bits), 2);
+        s += "data";
+        put(s, dataBytes, 4);
+        return s + std::string(tail, '\0');
+    }
+
+    // A FLAC file of its STREAMINFO alone (no frames): its rate, channels and length whatever they say, 16-bit.
+    std::string claimedFlac(uint32_t rate, int channels, uint64_t frames)
+    {
+        std::string s = "fLaC";
+        s += static_cast<char>(0x80);                       // the last metadata block, STREAMINFO
+        s += std::string("\0\0\x22", 3);                    // 34 bytes
+        s += std::string("\x10\0\x10\0", 4);                // blocks of 4096
+        s += std::string(6, '\0');                          // frame sizes not known
+        const uint64_t packed = (static_cast<uint64_t>(rate) << 44) | (static_cast<uint64_t>(channels - 1) << 41)
+                              | (uint64_t{ 15 } << 36) | (frames & ((uint64_t{ 1 } << 36) - 1));
+        for (int i = 7; i >= 0; --i)
+            s += static_cast<char>((packed >> (8 * i)) & 0xffu);
+        return s + std::string(16, '\0');                   // no MD5
+    }
 
     // A file written by one of JUCE's writers (AIFF, FLAC), stereo, 24-bit: the integers given (each channel's), as
     // its writers take them (left-justified in 32 bits).
@@ -364,12 +402,24 @@ PROBE(plugin, samples)
         for (std::size_t i = kick.size(); i < out.l.size(); ++i)
             after = std::max(after, static_cast<double>(std::fabs(out.l[i])));
         P.le("play.silent_after", after, 0.0);
-        // The frozen copy plays it through the same instances: the same sound (not the same bits: Math::Fast).
+        // The frozen copy plays it through the same instances: the same sound (within Math::Fast's last bits). The
+        // synth's first note over, a new one; the effect's loop on, 4,800 samples a turn (the hit, then 50 ms of none).
         probe::Rig frozen(48000.0, kBlock);
         (void)frozen.load(withLibrary(player("kick.wav")), &errors, true, true, kit);
-        (void)render(frozen, kBlock);
+        constexpr std::size_t lead = 4096;
+        (void)render(frozen, lead);
         std::string why;
         P.eq("play.frozen", frozen.freeze(&why) ? 1 : 0, 1);
+        const probe::Stereo again = render(frozen, 4800);   // the copy taken at its first block's start
+        P.eq("play.frozen_plays", frozen.engine().frozen() ? 1 : 0, 1);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < again.l.size(); ++i)
+        {
+            const std::size_t k = kInstrument ? i : (lead + i) % 4800;
+            const double want = k < kick.size() ? static_cast<double>(kick[k]) : 0.0;
+            worst = std::max({ worst, std::fabs(again.l[i] - want), std::fabs(again.r[i] - want) });
+        }
+        P.le("play.frozen_sound", worst, 1.0e-6);
     }
 
     // ---- NOTES -----------------------------------------------------------------------------------------------------
@@ -383,6 +433,14 @@ PROBE(plugin, samples)
         const pg::Patch::Result typed = pg::Patch::compile(withLibrary(player("kick.wav", "#pragma sample pos \"kick.wav\"\n")), 48000.0f,
                                                            false, nullptr, true, true, kit);
         P.eq("notes.wrong_type", typed.patch != nullptr && has(typed.notes, "pos is of type int: a sample's field is a Sample") ? 1 : 0, 1);
+        // A module of the program's own whose data is float*: the sound is shared, so it is no sample's field.
+        std::string own = player("kick.wav", "module Mine\n{\n    float* data;\n    int frames;\n"
+                                             "    float at(int c, int i) { return i >= 0 && i < frames && c >= 0 ? data[i] : 0; }\n};\n");
+        own.replace(own.find("Sample s;"), 9, "Mine s;");
+        const pg::Patch::Result writable = pg::Patch::compile(withLibrary(own), 48000.0f, false, nullptr, true, true, kit);
+        P.eq("notes.writable", writable.patch != nullptr && writable.patch->sample("s") == nullptr
+                                   && has(writable.notes, "s's Mine has `float* data`: data must be `const float* data`, as the "
+                                                          "sound is shared, read only, so it is left out") ? 1 : 0, 1);
         const pg::Patch::Result bare = pg::Patch::compile(withLibrary(player("kick.wav", "#pragma sample\n")), 48000.0f,
                                                           false, nullptr, true, true, kit);
         P.eq("notes.bare", bare.patch != nullptr && has(bare.notes, "it names a field and a sample") ? 1 : 0, 1);
@@ -446,6 +504,22 @@ PROBE(plugin, samples)
         const std::vector<int32_t> longOne(static_cast<std::size_t>(8000 * 61), 0);
         P.eq("caps.length", !pg::assetfiles::decode(wav(1, 8000, 16, longOne, {}), "long.wav", why).has_value()
                                 && has(why, "long.wav is 61.0 s long: a sample may be 60 s at most") ? 1 : 0, 1);
+        // What a damaged header claims, refused before anything is allocated (JUCE's readers take it as given and give
+        // silence for what the bytes lack): a rate of 2 GHz with a data chunk of 4 GB in 50 bytes; a data chunk of 10 s
+        // in 100 bytes; a whole file cut short (and whole, read); a FLAC whose STREAMINFO says 57 s of stereo at
+        // 192 kHz.
+        P.eq("caps.rate", !pg::assetfiles::decode(claimedWav(1, 2000000000u, 8, 0xFFFFFFFFu, 6), "fast.wav", why).has_value()
+                              && has(why, "fast.wav says its rate is 2000000 kHz: a sample's is 1 kHz to 768 kHz") ? 1 : 0, 1);
+        P.eq("caps.rate_range", has(as::refusal("low.wav", 800.0, 1, 100), "low.wav says its rate is 0.8 kHz")
+                                    && as::refusal("dxd.wav", 768000.0, 2, 768000 * 5).empty() ? 1 : 0, 1);
+        P.eq("caps.claimed", !pg::assetfiles::decode(claimedWav(1, 48000, 16, 960000, 56), "short.wav", why).has_value()
+                                 && has(why, "short.wav is damaged or cut short: its header names more sound than its 100 bytes hold") ? 1 : 0, 1);
+        const std::string second = wav(1, 8000, 16, std::vector<int32_t>(8000, 1000), {});
+        const bool cut = !pg::assetfiles::decode(second.substr(0, second.size() - 200), "cut.wav", why).has_value()
+                      && has(why, "cut.wav is damaged or cut short");
+        P.eq("caps.cut_short", cut && pg::assetfiles::decode(second, "whole.wav", why).has_value() ? 1 : 0, 1);
+        P.eq("caps.decoded", !pg::assetfiles::decode(claimedFlac(192000, 2, 11000000), "big.flac", why).has_value()
+                                 && has(why, "big.flac would take 83.9 MB decoded: a sample's sound may take 64.0 MB at most") ? 1 : 0, 1);
         // From disk: the size refused before the file is read.
         const juce::File big = writeFile(dir, "big.wav", std::string((std::size_t{ 8 } << 20) + 10, '\0'));
         const uint64_t decodes = pg::assetfiles::decodes();
@@ -509,6 +583,21 @@ PROBE(plugin, samples)
         P.eq("session.kept", kept.size() == 1 && kept[0].name == "kick.wav" && kept[0].used ? 1 : 0, 1);
         const std::vector<float> out = play(b, 12, 48000.0);
         P.eq("session.plays_bits", differing(kick, out.data(), kick.size()), 0);
+        // A damaged state with two samples of one name: one, the caps counted once.
+        {
+            const std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+            juce::XmlElement* held = xml != nullptr ? xml->getChildByName("ASSETS") : nullptr;
+            if (held != nullptr && held->getFirstChildElement() != nullptr)
+                held->addChildElement(new juce::XmlElement(*held->getFirstChildElement()));
+            juce::MemoryBlock twice;
+            if (xml != nullptr)
+                juce::AudioProcessor::copyXmlToBinary(*xml, twice);
+            pg::Processor d;
+            d.setRateAndBufferSizeDetails(48000.0, kBlock);
+            d.prepareToPlay(48000.0, kBlock);
+            d.setStateInformation(twice.getData(), static_cast<int>(twice.getSize()));
+            P.eq("session.one_of_a_name", held != nullptr && held->getNumChildElements() == 2 && d.editorPort().assets().size() == 1 ? 1 : 0, 1);
+        }
         // Removed, the sample plays on in the program that has it, until its next run (silent then).
         P.eq("session.removed", b.editorPort().removeAsset("kick.wav", why) && b.editorPort().assets().empty() ? 1 : 0, 1);
         P.ge("session.plays_on", peakOf(play(b, 12, 48000.0)), 0.5);
@@ -554,6 +643,21 @@ PROBE(plugin, samples)
         pr = ps::load("Drum Kit", &why);
         P.eq("project.note_changed", pr && has(pr->latest().note, "kick.wav changed") && has(pr->latest().note, "snare.wav gone") ? 1 : 0, 1);
         P.eq("project.files_each_once", pr && pr->samples.size() == 3 ? 1 : 0, 1);
+        // compare's sides each with their own samples: version 1 its kick, the editor's files the plugin's (the other
+        // kick), the latest version the same; what plays the kick it compiled with (no run since the kick was
+        // replaced).
+        const auto compared = [&](const char* a, const char* b) {
+            return textOf(p.chatAgent().mcpCall("compare", object({ { "a", a }, { "b", b } })));
+        };
+        const std::string first = compared("version:1", "editor"), latest = compared("version:3", "editor");
+        P.eq("project.compare_version_own", has(first, "Compared offline") && !has(first, "Identical bits")
+                                                && has(latest, "Identical bits") ? 1 : 0, 1);
+        P.eq("project.compare_playing_own", !has(compared("playing", "editor"), "Identical bits")
+                                                && has(compared("playing", "version:1"), "Identical bits") ? 1 : 0, 1);
+        // A run of the same files that only changed the kick: previous_run is what played (the first kick).
+        run(p, withLibrary(player("kick.wav")));
+        P.eq("project.compare_previous_own", has(compared("previous_run", "version:1"), "Identical bits")
+                                                 && has(compared("playing", "editor"), "Identical bits") ? 1 : 0, 1);
         // Opening version 1 makes its samples the plugin's.
         P.eq("project.open", port.openProject("Drum Kit", 1, why) ? 1 : 0, 1);
         p.settle();
@@ -625,14 +729,20 @@ PROBE(plugin, samples)
         std::string errors;
         if constexpr (kInstrument)
         {
-            const std::string voice = "#include \"sample.fm\"\n#pragma sample kick \"kick.wav\"\n"
-                                      "module Voice\n{\n    Sample kick;\n    float pos;\n    float step;\n    float gain;\n"
-                                      "    void start(float note, float velocity)\n    {\n        pos = 0;\n"
-                                      "        step = expf(0.0577622650f * (note - 60));\n        gain = velocity;\n    }\n"
-                                      "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
-                                      "        for (int i = 0; i < n; ++i)\n        {\n"
-                                      "            left[i] += gain * kick.read(0, pos);\n            right[i] += gain * kick.read(1, pos);\n"
-                                      "            pos += step;\n        }\n        return pos < kick.frames;\n    }\n};\n";
+            // The index and the fraction apart (readAt), so a long sample keeps its pitch.
+            const auto voiceOf = [](const std::string& file) {
+                return "#include \"sample.fm\"\n#pragma sample kick \"" + file + "\"\n"
+                       "module Voice\n{\n    Sample kick;\n    int index;\n    float frac;\n    float step;\n    float gain;\n"
+                       "    void start(float note, float velocity)\n    {\n        index = 0;\n        frac = 0;\n"
+                       "        step = expf(0.0577622650f * (note - 60));\n        gain = velocity;\n    }\n"
+                       "    bool process(float* restrict left, float* restrict right, int n)\n    {\n"
+                       "        for (int i = 0; i < n; ++i)\n        {\n"
+                       "            left[i] += gain * kick.readAt(0, index, frac);\n"
+                       "            right[i] += gain * kick.readAt(1, index, frac);\n"
+                       "            frac += step;\n            const int k = (int)frac;\n            index += k;\n"
+                       "            frac -= k;\n        }\n        return index < kick.frames;\n    }\n};\n";
+            };
+            const std::string voice = voiceOf("kick.wav");
             P.eq("example.loads", rig.load(withLibrary(voice), &errors, true, true, kit) ? 1 : 0, 1);
             const probe::Stereo at60 = rig.run(probe::Stereo(4096), kBlock, { { 0, pg::EventKind::noteOn, 60, 1.0f } });
             P.eq("example.note60_bits", differing(kick, at60.l.data(), kick.size()), 0);
@@ -644,6 +754,18 @@ PROBE(plugin, samples)
                 if (at72.l[i] != 0.0f)
                     last = i;
             P.in("example.octave_up_length", static_cast<double>(last), 1180.0, 1205.0);   // half the hit's 2400
+            // 3 s a semitone up: it ends after frames / step samples (a float position, read(), would round the step
+            // to 1.0625 past 2^16 samples and end about 200 samples early).
+            const std::shared_ptr<const pg::assets::Asset> pad = asset("pad.wav", floatWav(std::vector<float>(144000, 0.5f), 48000));
+            probe::Rig slow(48000.0, kBlock);
+            P.eq("example.long_loads", slow.load(withLibrary(voiceOf("pad.wav")), &errors, true, true, setOf({ pad })) ? 1 : 0, 1);
+            const probe::Stereo at61 = slow.run(probe::Stereo(140000), kBlock, { { 0, pg::EventKind::noteOn, 61, 1.0f } });
+            std::size_t end = 0;
+            for (std::size_t i = 0; i < at61.l.size(); ++i)
+                if (at61.l[i] != 0.0f)
+                    end = i;
+            const double ideal = std::ceil(144000.0 / static_cast<double>(std::exp(0.0577622650f))) - 1.0;
+            P.in("example.long_semitone_end", static_cast<double>(end), ideal - 2.0, ideal + 2.0);
         }
         else
         {
