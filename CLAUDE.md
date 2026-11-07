@@ -729,10 +729,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## The chat (Claude)
 
 - **The network.** The chat is the only code that reaches the network at run time, through `claude::Transport`
-  (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network), to one host at a time, and only when
+  (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network; never following a redirect,
+  `withNumRedirectsToFollow(0)`: a 3xx comes back with its location, as an error), to one host at a time, and only when
   the user sends a message or chooses a provider: `api.anthropic.com` with the user's own key (the Messages API,
   streamed; `GET /v1/models` once per key), or the provider the user chose (below, "Other model providers"): its own
-  server alone, with its own key. The build never reaches the network. Probes never do: they give the agent
+  server alone, with its own key. The build never reaches the network. Probes never do (`plugin.providers` REDIRECT
+  runs the real transport against two servers of its own on 127.0.0.1, nothing beyond): they give the agent
   `fake::Transport` (`Tools/probes/plugin/FakeClaude.h`, a scripted API, and the other providers' recorded answers:
   `OpenAiSse`, `GeminiSse`, their models lists) and a key folder of their own (`chatstore::setDirectoryForTests`;
   under CTest the default folder is the test's sandbox, `<prefix>PREFS_DIR/chat`). A session never makes a live call to
@@ -830,9 +832,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   - **Anthropic's path does not change.** No provider chosen (chat.json without "provider") is Anthropic; its requests,
     its key, its models and its options are the members and the code they were (`model_`, `models_`, `key_`;
     another provider's are `provider_`, `otherModel_`, `otherModels_`, `otherKey_`), and its probes (`plugin.chat`,
-    `gui.chat`) are unchanged. The one difference in its request: `providers::forAnthropic` takes another provider's
+    `gui.chat`) are unchanged. The one difference in its requests: `providers::forAnthropic` takes another provider's
     own fields off the history (a Gemini call's `thought_signature`), and gives the history as it is when there are
-    none.
+    none: the builder's request (`buildRequest`) and the planner's (`forAnotherModel` starts from it) both.
   - **One history, one loop.** The history stays in the Messages API's shape whatever the provider; another provider's
     request is `buildRequest`'s translated (`providers::body`: its model, system, tools and messages; everything else
     is Anthropic's alone and left out) and its streamed answer translated back into the Messages API's events
@@ -844,7 +846,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
     search, the planner (`ask_planner` refuses), the cache marks, compaction, fallbacks; their pills are hidden and
     their setters refuse. `limitNote` is Anthropic's.
   - **Degrading**: a 400 that says the model takes no pictures (`aboutImages`, while the request holds one) makes the
-    request again with a line of text in each picture's place and marks the model so (`workAround`, a note); Gemini's
+    request again with a line of text in each picture's place and marks the model so (`workAround`, a note); a model
+    its list already marks so gets the same lines, said once a chat (`picturesNoted_`); a 4xx that says the model
+    cannot serve this chat (`aboutModel`: OpenAI's Responses API alone, not a chat model, no tools) takes it off the
+    menu and out of the choice, and the error says to choose another (never a model switched to here); OpenAI's list
+    leaves those out from the start (its `-pro`, codex, deep-research, `chatgpt-` and `-chat-latest` models); Gemini's
     400 refusing `parametersJsonSchema` makes it again with Gemini's own schema subset, and keeps that (`schemaRefused_`);
     a model whose context is under `kShortPromptBelow` tokens (as its list says), or one a server on this Mac or the
     local network does not describe, gets `shortPrompt()` (the prompt up to THREADS and a line of what it left out);
@@ -852,8 +858,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
     chat. A change to the prompt's headings keeps `shortPrompt` cut at THREADS (`plugin.providers` checks it).
   - **Servers and keys**: a base URL is `https://`, or `http://` to this Mac or the local network only
     (`providers::canonical`); a key is bound to its server's origin (above, "The key") and the headers carry it to that
-    server alone (`Authorization: Bearer` for an OpenAI-compatible one, `x-goog-api-key` for Gemini); a server here
-    needs none. A turn uses the key of the turn's own provider even when the user switched meanwhile.
+    server alone (`Authorization: Bearer` for an OpenAI-compatible one, `x-goog-api-key` for Gemini), and no redirect
+    takes either elsewhere (above, "The network"; `redirectText`); a server here needs none. A turn uses the key of
+    the turn's own provider even when the user switched meanwhile.
+  - **A turn's start** (`startTurn`): the provider, its key, its model and the turn's options from one moment (a
+    provider chosen while the models list was on its way, nothing sent yet, is the turn's: it looks again). With no
+    model chosen, Gemini's first and a server's here are taken (`picksFirst`); OpenAI's, OpenRouter's and another
+    remote server's lists are long and of every price, so the turn asks the user to choose one and sends nothing. A
+    list that could not be read says why (`otherListError_`: is the server running?, the key refused, a redirect);
+    its fetch from `setProvider` ends on `listCancel_` (a Stop, the agent's end), never on a turn's stop left over.
   - **Tests** use recorded shapes of each provider's documented API (`FakeClaude.h`); what no probe could check
     against a live service is listed in the README for the user to try. `plugin.providers`, `gui.providers` and
     `gui.menus` PROVIDER check it all.
@@ -1054,11 +1067,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
   nudge is a billed request.
 - **The planner** (`setPlanner`, chat.json "planner"; ChatAgent.h "A planner"): `planTurn` sends a message's
   history to the planning model through `forAnotherModel` (no thinking blocks, which are bound to the builder's model
-  and prompt; no compaction or server-tool blocks; citations dropped) with `tool_choice` none and the tools defined
+  and prompt; no compaction or server-tool blocks; citations dropped; no field another provider left on a call,
+  `providers::forAnthropic`) with `tool_choice` none and the tools defined
   (the history's tool calls stay valid), a brief after the user's words; the plan streams into a
   `ChatEntry::Kind::plan` entry and is appended to the user's message before the builder's first request (never to
   a message already sent). `ask_planner` sends the history up to the reply that asks. A failing planner leaves the
-  turn to the builder with a note. `plugin.chat` PLANNER checks the requests' shapes.
+  turn to the builder with a note. `plugin.chat` PLANNER checks the requests' shapes, `plugin.providers` BACK a
+  planner's request after another provider's turns.
 - **MCP** (`ChatAgent::mcpTools`, `mcpGuide`, `mcpGuidePart`, `mcpLive`, `mcpCall`, `mcpCancel`; `plugin/McpLink`;
   `Source/mcp`): Claude Desktop drives the plugin with the chat's own tools, so a tool changed or added reaches it
   with no change elsewhere; ask_user and ask_planner stay the chat's. A new tool gets a line in `kFaces`
