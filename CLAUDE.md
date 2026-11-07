@@ -537,7 +537,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   whoever reads, the host block the programs read (the transport, an instrument's wheels and pedal), the samples
   counted, an instrument's voices (sounding, released, held by the pedal, fading), the keys held, the player's
   note-ons (`Engine::heard`, in the event loops only: the held keys a new program starts are none), the steals (set on
-  the steal paths in `noteOn`) and the last voice dropped for going non-finite (its key and sample); counts run on from
+  the steal paths in `noteOn`) and the last voice dropped for going non-finite (its key and sample), whether the program
+  plays mono at the block's end (`Meters::mono`, `Engine::monoNow`: listen's voices "of 1: mono", measure_output's CPU
+  line "mono: one voice at a time", never sixteen; `dsp.mono` SWITCH); counts run on from
   the Engine's making, so readers take differences. `Engine::blocks` is a ring of atomics of each block's cost and
   context (`BlockStat`, written after the load measurement). The processor keeps the host's bypass, its largest block
   and its block count in atomics (`hostBlock`). Scalar stores only: no lock, no allocation. Readers never call
@@ -1407,7 +1409,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   that takes seconds (`ChatAgent::mcpLiveWaits`), so the link runs each on a thread of its own (`McpLink::listen`, four
   at once at most; a cancel or the connection closing stops it, the link going cancels and joins them), never on the
   poll thread; it raises the meters' reader count while it listens (`ChatHost::chatListening`, lowered on every exit)
-  and polls `ChatHost::chatLive` about 25 times a second; a cancel that comes before it starts is kept (`mcpStopped_`,
+  and polls `ChatHost::chatLive` about 25 times a second, counting a frame's fields under the panel's displays only
+  when the frame is of the panel's program and tap table (`LiveRead::tapTable`, as `ui::TapsShown` reads them: a
+  panel's edit moves fields between indices), the newest such panel's alone (`plugin.reload` LISTEN); a cancel that comes before it starts is kept (`mcpStopped_`,
   every one, not only the last). get_status ends with a token of the processor's journal (`plugin/Journal.h`: about 256
   changes, drags merged, under its own mutex; what Claude Desktop does itself is not kept, `ChatAgent::mcpWorking`; each
   token handed out is a new one), and `since` lists what changed after it, in the third person ("the user moved", "the

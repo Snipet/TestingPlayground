@@ -3489,8 +3489,15 @@ namespace playground::measure
                 }
                 v["cpu16_percent"] = best;
                 // Its words only when more than one voice sounds (a program that plays one voice, its others ending
-                // at once, has no sixteen to time), saying how many when fewer than sixteen.
-                if (most >= Patch::kVoices)
+                // at once, has no sixteen to time), saying how many when fewer than sixteen. A mono program (#pragma
+                // mono, its dial on at these dials) plays one voice at a time: the others counted are fading out, so it
+                // says so, never sixteen.
+                const Patch* playing = impl_->engine.playingPatch();
+                const bool mono = playing != nullptr && playing->mono()
+                               && (playing->monoDial() < 0 || dials.plain[static_cast<std::size_t>(playing->monoDial())] != 0.0f);
+                if (mono)
+                    out += "; mono: one voice at a time";
+                else if (most >= Patch::kVoices)
                     out += "; sixteen voices at once take " + percent(best);
                 else if (most > 1)
                     out += "; sixteen keys at once take " + percent(best) + " (" + std::to_string(most) + " voices sound)";

@@ -30,7 +30,12 @@
 //           what played before Q (before poll() and after: only panel.gui differs from what plays), and a dial moved
 //           under Q (1.0) keeps its value across the next compile (its meaning Q's, not the program's before)
 //   WAIT    an edit that adds a display while the audio thread plays blocks of its own, a millisecond apart: when its
-//           status is out, the newest frame was read by the edit's table already (editPanel waited for that block)
+//           status is out, the newest frame was read by the edit's table already (editPanel waited for that block). A
+//           try in which the audio thread stalled 15 ms or more (a busy machine; the wait rightly takes 20 ms for idle)
+//           proves nothing and is made again with another edit (a display taken away, then added), eight at most
+//   LISTEN  then, before poll() takes the edit (the processor's panel the one before it, every frame the edit's table's):
+//           listen counts no field under a display (their indices are other fields there); after it, the displays'
+//           own (mark 0.75, the meter's gain 1)
 //   OPEN    a project version opened whose files differ from what plays only in panel.gui compiles (as it was saved)
 //   AB      a RUN of the panel's files alone while an A/B is on compiles. Not covered: a held refine, a stopped
 //           program and a .sc that FMinus #includes, which also compile (Compiler::editPanel's first checks)
@@ -496,36 +501,102 @@ PROBE(plugin, reload)
     }
 
     // ---- WAIT: an edit's new table read before its status is out, the audio thread playing ---------------------------
+    // Then LISTEN: listen while the processor's panel is still the one before the edit (poll() has not taken its status)
+    // and every frame is of the edit's table, and again once poll() has.
     {
+        using Clock = std::chrono::steady_clock;
+        const auto nsNow = [] { return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count(); };
         std::atomic<bool> stop{ false };
+        std::atomic<int64_t> longestGap{ 0 };        // ns from a block's end to the next one's start, since reset
+        std::atomic<int> played{ 0 };
         std::thread audio([&] {
             juce::AudioBuffer<float> buffer(2, kBlock);
             juce::MidiBuffer midi;
+            if constexpr (kInstrument)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 69, 0.8f), 0);   // a voice sounds: its fields are the displays'
+            int64_t ended = nsNow();
             while (!stop.load())
             {
+                const int64_t began = nsNow();
+                for (int64_t was = longestGap.load(); began - ended > was && !longestGap.compare_exchange_weak(was, began - ended);)
+                {
+                }
                 buffer.clear();
                 skip.p.processBlock(buffer, midi);
+                midi.clear();
+                ended = nsNow();
+                played.fetch_add(1);
                 // A millisecond apart: an edit's status out with no wait would most often find the frame before its
                 // table, and the gap far under the 20 ms that make the audio thread idle (Compiler::audioIdle).
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         });
-        std::string more = relabelled(kGuiTaper, "\"LEVEL\"", "\"DRIVE\"");
-        more = relabelled(more, "        meter level", "        number ph\n        meter level");
+        // The row holds whenever the audio thread kept playing: an edit whose wait saw it idle (a gap of 20 ms between
+        // two of its blocks, which a busy machine may give a thread that sleeps a millisecond; or the wait's 500 ms
+        // spent) rightly sent its status out without the read, and says nothing of the wait: it is tried again, another
+        // edit each time (a display added, then taken away), up to eight times. A try whose audio kept playing and
+        // whose status came out before the read fails the row.
+        // The audio thread playing first: before its first blocks the Engine's last block ended long ago, which the wait
+        // rightly takes for idle.
+        for (const auto until = Clock::now() + std::chrono::seconds(2); played.load() < 8 && Clock::now() < until;)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         pg::EditorPort& port = skip.p.editorPort();
-        const pg::Sources files = filesOf(program("    // a comment\n"), more, kGlow);
-        port.setDraft({ files, 0 });
-        port.run(files);
-        skip.p.compiler().wait();
-        const pg::CompileStatus s = port.status();
-        const pg::Meters m = skip.meters();          // the newest frame as the status comes out
+        pg::CompileStatus s;
+        pg::Meters m;
+        int tries = 0, idle = 0;
+        bool read = false, conclusive = false;
+        for (; tries < 8 && !conclusive; ++tries)
+        {
+            std::string more = relabelled(kGuiTaper, "\"LEVEL\"", "\"DRIVE" + std::to_string(tries) + "\"");
+            if (tries % 2 == 0)
+                more = relabelled(more, "        meter level", "        number ph\n        meter level");
+            const pg::Sources files = filesOf(program("    // a comment\n"), more, kGlow);
+            longestGap.store(0);
+            port.setDraft({ files, 0 });
+            port.run(files);
+            skip.p.compiler().wait();
+            s = port.status();
+            m = skip.meters();                       // the newest frame as the status comes out
+            // Two blocks more, so that a gap still open as the status came out is counted too.
+            const int seen = played.load();
+            for (const auto until = Clock::now() + std::chrono::seconds(2); played.load() < seen + 2 && Clock::now() < until;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            const double gapMs = static_cast<double>(longestGap.load()) * 1e-6;
+            read = m.program == s.program && m.tapTable == s.panel.tapTable;
+            const bool sawIdle = gapMs >= 15.0 || s.ms >= 450.0;
+            conclusive = read || !sawIdle;
+            std::printf("wait, try %d: the edit out in %.1f ms (its table %llu, the newest frame's %llu), the audio's longest gap "
+                        "%.1f ms%s\n", tries + 1, s.ms, static_cast<unsigned long long>(s.panel.tapTable),
+                        static_cast<unsigned long long>(m.tapTable), gapMs, conclusive ? "" : ": idle as far as the wait knew, again");
+            if (!conclusive)
+            {
+                ++idle;
+                skip.p.poll();
+            }
+        }
+        std::printf("wait: %d tr%s, %d of them with the audio thread idle as far as the wait knew\n", tries, tries == 1 ? "y" : "ies", idle);
+        P.eq("wait.panel_only", s.ok && s.panelOnly && s.panel.tapTable != 0 ? 1 : 0, 1);
+        P.eq("wait.table_read_first", conclusive && read ? 1 : 0, 1);
+
+        // LISTEN: the processor's panel the one before the edit, every frame the edit's table's (whose indices are
+        // other fields: a display added moves the meter's to the second tap, one taken away the meter's field into the
+        // added one's place): listen counts no field under a display; once poll() has taken the edit, its own.
+        const auto listen = [&] {
+            auto* in = new juce::DynamicObject();
+            in->setProperty("seconds", 0.3);
+            return text(skip.p.chatAgent().mcpCall("listen", juce::var(in)));
+        };
+        const bool stale = skip.p.editorPort().panel().tapTable != s.panel.tapTable;
+        const std::string before = listen();
+        skip.p.poll();
+        const std::string after = listen();
+        std::printf("listen, the panel before the edit's: %s\nlisten, the edit's: %s\n", before.c_str(), after.c_str());
+        P.eq("listen.panel_before_edit", stale ? 1 : 0, 1);
+        P.eq("listen.other_table_no_field", read && !has(before, "Displays:") ? 1 : 0, 1);
+        P.eq("listen.own_table_fields", has(after, "Displays: ") && has(after, "mark (number) now 0.75") && has(after, "level (meter) now 1")
+                                            ? 1 : 0, 1);
         stop.store(true);
         audio.join();
-        P.eq("wait.panel_only", s.ok && s.panelOnly && s.panel.tapTable != 0 ? 1 : 0, 1);
-        P.eq("wait.table_read_first", m.program == s.program && m.tapTable == s.panel.tapTable ? 1 : 0, 1);
-        std::printf("wait: the edit out in %.1f ms (its table %llu, the newest frame's %llu)\n", s.ms,
-                    static_cast<unsigned long long>(s.panel.tapTable), static_cast<unsigned long long>(m.tapTable));
-        skip.p.poll();
     }
 
     // ---- OPEN and AB: a version opened, a RUN during an A/B ------------------------------------------------------------

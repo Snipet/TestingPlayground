@@ -18,7 +18,8 @@
 //   PEDAL    the pedal holds the last note when no key does (a key then takes it by legato); a key let go under it
 //            gives the voice back to one still held; the pedal's going up stops it, after Shared's noteOffs
 //   SWITCH   #pragma mono <dial>: off, the voices' rules (two voices); on, the next note goes to the newest voice by
-//            legato and the other fades; off again, a new note a voice of its own
+//            legato and the other fades; off again, a new note a voice of its own; the meters say mono while it is on
+//            (Meters::mono)
 //   BEND     the pitch wheel across notes: the voice's pitch is its note's plus the bend after a legato and after the
 //            return, its one start, and its sine never steps
 //   SWAP     the held keys start again on a new mono program: its Shared's noteOns in the order they were pressed, one
@@ -586,17 +587,25 @@ PROBE(dsp, mono)
         pg::Engine& e = rig.engine();
         const pg::Patch* p = e.playingPatch();
         rig.run(silence(1000), 100, { on(100, 60), on(200, 64) });
+        // The meters say whether it plays mono at a block's end (Meters::mono: listen's voice count).
+        const auto monoNow = [&] {
+            pg::Meters m;
+            return e.meters(m) && m.mono;
+        };
         sameText(P, "switch.off_two_voices", text(logOf(p)), "1060 2060 1064 2064");
         P.eq("switch.off_held", static_cast<int>(heldVoices(e).size()), 2);
+        P.eq("switch.off_meters_not_mono", monoNow() ? 0 : 1, 1);
         rig.norm()[0] = 1.0f;                            // on: from the next note
         rig.run(silence(1000), 100, { on(100, 67) });
         sameText(P, "switch.on_legato_newest", logFrom(p, 4), "1067 3060 5067");
         const std::vector<pg::Engine::VoiceInfo> held = heldVoices(e);
         P.eq("switch.on_one_voice", held.size() == 1 && held.front().key == 67 ? 1 : 0, 1);
+        P.eq("switch.on_meters_mono", monoNow() ? 1 : 0, 1);
         rig.norm()[0] = 0.0f;
         rig.run(silence(1000), 100, { on(100, 69) });
         sameText(P, "switch.off_again", logFrom(p, 7), "1069 2069");
         P.eq("switch.off_again_held", static_cast<int>(heldVoices(e).size()), 2);
+        P.eq("switch.off_again_meters", monoNow() ? 0 : 1, 1);
     }
     {
         // The switch's steps: a chord of two voices, then mono: the next note's legato leaves one voice, faded.
