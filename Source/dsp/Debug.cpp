@@ -117,12 +117,28 @@ namespace playground::measure
 
         bool finite(double v) noexcept { return std::isfinite(v); }
 
-        // A field's value as text: an int's or a bool's whole.
+        // A field's value as text: an int's or a bool's whole; a double's to 12 digits, the precision it is kept for.
         std::string val(const Patch::Field& f, double v)
         {
-            if (f.type != Patch::Field::Type::real && std::isfinite(v))
+            if (!f.real() && std::isfinite(v))
                 return fmt("%.0f", v);
+            if (f.type == Patch::Field::Type::real64 && std::isfinite(v))
+                return fmt("%.12g", v);
             return num(v);
+        }
+
+        // What a field's attributes say (PanelSpec.h's FieldLook), as trace's lines add it after its path:
+        // ` ("LEVEL", dB, -60 to 0)`, "" for none.
+        std::string lookWords(const Field& f)
+        {
+            std::vector<std::string> parts;
+            if (!f.look.label.empty())
+                parts.push_back("\"" + f.look.label + "\"");
+            if (!f.look.unit.empty())
+                parts.push_back(f.look.unit);
+            if (f.look.ranged)
+                parts.push_back(num(f.look.lo) + " to " + num(f.look.hi));
+            return parts.empty() ? std::string() : " (" + joined(parts, ", ") + ")";
         }
 
         // ---- the time limit and the cancel --------------------------------------------------------------------------
@@ -275,7 +291,7 @@ namespace playground::measure
                 if (field >= scanOf_.size() || scanOf_[field] < 0 || s >= slots_ || from_[s] == kStart || lastAt_ < from_[s] + first_)
                     return false;
                 const double a = std::fabs(v);
-                return std::isfinite(v) && map_[field].type == Field::Type::real && a > kBig
+                return std::isfinite(v) && map_[field].real() && a > kBig
                     && a >= kGrowth * size_[s * scan_.size() + static_cast<std::size_t>(scanOf_[field])];
             }
 
@@ -328,7 +344,7 @@ namespace playground::measure
                             record(ci == kStart ? startBad : bad, { ci, slot, scan_[k], v });
                         }
                     }
-                    else if (f.type == Field::Type::real)
+                    else if (f.real())
                     {
                         double& size = size_[s * scan_.size() + k];
                         if (first)
@@ -1231,7 +1247,7 @@ namespace playground::measure
                                 const Field& fd = x.map[p.pairs[t].field];
                                 if (t == t0 || p.pairs[t].slot != p.pairs[t0].slot || fd.path.compare(0, prefix.size(), prefix) != 0
                                     || fd.path.find_first_of(".[", prefix.size()) != std::string::npos
-                                    || (fd.type == Field::Type::real) != reals || !finite(p.value(S - 1, t)))
+                                    || fd.real() != reals || !finite(p.value(S - 1, t)))
                                     continue;
                                 fields.push_back(fd.path.substr(prefix.size()) + " " + val(fd, p.value(S - 1, t)));
                             }
@@ -1244,7 +1260,7 @@ namespace playground::measure
                     double best = 10.0;
                     for (std::size_t t = 0; t < T; ++t)
                     {
-                        if ((p.pairs[t].slot != voiceSlot && p.pairs[t].slot >= 0) || x.map[p.pairs[t].field].type != Field::Type::real || wentBad(t))
+                        if ((p.pairs[t].slot != voiceSlot && p.pairs[t].slot >= 0) || !x.map[p.pairs[t].field].real() || wentBad(t))
                             continue;
                         const double v = p.value(S - 1, t);
                         if (!finite(v) || std::fabs(v) < 1e-3 || std::fabs(v) > kBig)
@@ -1345,7 +1361,7 @@ namespace playground::measure
                         const double step = std::fabs(b - a), usual = median(steps);
                         if (step < 10.0 * usual)
                             continue;
-                        const bool real = x.map[p.pairs[t].field].type == Field::Type::real;
+                        const bool real = x.map[p.pairs[t].field].real();
                         cands.push_back({ t, step, usual, step / std::max({ usual, 1e-6 * std::max(top, std::fabs(b)), 1e-12 }), real });
                     }
                 std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) {
@@ -1397,7 +1413,7 @@ namespace playground::measure
                     }
                 const std::vector<std::string> near = nearEvents(x, p, S);
                 const bool ended = std::any_of(near.begin(), near.end(), [](const std::string& e) { return e.find("ends, its process") != std::string::npos; });
-                if (f.kind == TraceFind::click && ended && (cs.empty() || !cs[0].field || cs[0].field->type != Field::Type::real))
+                if (f.kind == TraceFind::click && ended && (cs.empty() || !cs[0].field || !cs[0].field->real()))
                     pr.verdict = "a voice stops at once there: its process returned false while it still sounded; let it fade "
                                  "to silence (a release) before it returns false.";
                 else if (f.kind == TraceFind::click && started >= 0)
@@ -1563,14 +1579,14 @@ namespace playground::measure
                     ++n;
                 }
                 const Field& f = x.map[watch[w]];
-                std::string line = f.path + ": ";
+                std::string line = f.path + lookWords(f) + ": ";
                 if (n == 0 && badFrom < 0)
                 {
                     line += kInstrument ? "no value (no voice of that choice sounded)" : "no value";
                     out.push_back(line);
                     continue;
                 }
-                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + num(n > 0 ? sum / static_cast<double>(n) : 0.0) + ", first "
+                line += "min " + val(f, lo) + ", max " + val(f, hi) + ", mean " + (f.type == Field::Type::real64 ? val(f, n > 0 ? sum / static_cast<double>(n) : 0.0) : num(n > 0 ? sum / static_cast<double>(n) : 0.0)) + ", first "
                       + val(f, first) + ", last " + val(f, last);
                 line += badFrom < 0 ? std::string("; never non-finite") : "; non-finite from " + seconds(static_cast<double>(badFrom) / x.rate);
                 if (p.jumpSize[w] > 0.0)
@@ -1582,7 +1598,10 @@ namespace playground::measure
         }
 
         // ---- list -------------------------------------------------------------------------------------------------------
-        const char* typeWord(Field::Type t) { return t == Field::Type::real ? "float" : t == Field::Type::integer ? "int" : "bool"; }
+        const char* typeWord(Field::Type t)
+        {
+            return t == Field::Type::real ? "float" : t == Field::Type::real64 ? "double" : t == Field::Type::integer ? "int" : "bool";
+        }
 
         std::vector<std::string> listLines(const Patch& patch)
         {
@@ -1629,7 +1648,7 @@ namespace playground::measure
                     path = path.substr(0, at) + "[" + std::to_string(lo) + ".." + std::to_string(hi) + "]" + path.substr(close + 1);
                 }
                 if (shown < kMaxListed)
-                    out.push_back(path + " " + typeWord(map[i].type));
+                    out.push_back(path + " " + typeWord(map[i].type) + lookWords(map[i]));
                 ++shown;
                 i = j;
             }

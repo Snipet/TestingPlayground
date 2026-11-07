@@ -437,26 +437,33 @@ namespace playground
         bool probeArmed(int c, int e, int i) const noexcept;
 
         // The field display t (PanelDisplay::tap) shows: its value in instance i (a field of Shared's: in its one
-        // Shared, whatever i is, -1 too), as a float (an int's number, a bool's 0 or 1); 0 for an instance's field with
-        // no instance i. After a block, on the audio thread.
+        // Shared, whatever i is, -1 too), as a float (a double's rounded, an int's number, a bool's 0 or 1; an array's
+        // element when the display names one, PanelSpec.h's displaySource); 0 for an instance's field with no instance
+        // i, and for a value that is not finite. After a block, on the audio thread.
         int taps() const noexcept { return static_cast<int>(taps_.size()); }
         float tap(int t, int i) const noexcept;
 
         // ---- the fields, for a tool that watches the program (dsp/Debug.h) ---------------------------------------
         // Offline only (a Session's Engine, Measure.h; never the one that plays), between calls. The main module's
         // scalar fields as paths, in declaration order: "phase", a held module's "filter.ic2", an array's elements (of
-        // at most 16) "osc[1].phase", a vector's lanes "v.x" (float8 and poly float: "v.s5"), the module Shared's through
-        // the main module's Shared* field "shared->gain" and Host's through its Host* "host->bpm". Parameters (the
-        // dials) are left out, and pointers never followed.
+        // at most 16) "osc[1].phase", a 2-D array's (the whole grid, 16 elements at most) "gain[1][3]", a vector's lanes
+        // "v.x" (float8 and poly float: "v.s5"), the module Shared's through the main module's Shared* field
+        // "shared->gain" and Host's through its Host* "host->bpm"; a float, a double (8 bytes, read as one), an int or a
+        // bool each. Parameters (the dials) are left out, and pointers never followed; a larger array is left out
+        // (unmapped(), with its shape). Each keeps what its declaration's attributes say (PanelSpec.h's FieldLook: a
+        // unit, a label, a range), which trace's lines show.
         struct Field
         {
-            enum class Type : uint8_t { real, integer, boolean };
+            enum class Type : uint8_t { real, integer, boolean, real64 };   // real64: a double
             enum class Home : uint8_t { instance, shared, host };   // each instance's, or the one Shared's or Host's
             std::string path;
             std::string module, name;                  // the module that declares it and its name there: "Svf", "ic2"
             std::size_t offset = 0;                    // in bytes, from its home's address
             Type type = Type::real;
             Home home = Home::instance;
+            FieldLook look = {};                       // its declaration's attributes (PanelSpec.h)
+            // A number, not a whole one: a float or a double (trace's runaways, clicks and steps are of these).
+            bool real() const noexcept { return type == Type::real || type == Type::real64; }
         };
         const std::vector<Field>& fieldMap() const noexcept { return fields_; }
         // What the map leaves out, a line each ("buffer: float *, a pointer, not followed").
@@ -492,8 +499,8 @@ namespace playground
         PanelSpec panel_;
         struct Tap
         {
-            enum class Type : uint8_t { real, integer, boolean };
-            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes
+            enum class Type : uint8_t { real, integer, boolean, real64 };
+            std::size_t offset = 0;                    // in an instance (or in Shared), in bytes: an array's element's
             Type type = Type::real;
             bool shared = false;                       // a field of the module Shared ("shared->level")
         };

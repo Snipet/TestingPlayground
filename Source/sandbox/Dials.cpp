@@ -110,11 +110,33 @@ namespace playground::sandbox
             return "int" + type.substr(k);
         }
 
-        // A field a display may name: an identifier, or Shared's through a pointer ("shared->level").
+        // What a field's attributes say about showing it, as Lang read them (PanelSpec.h's FieldLook; Patch reads
+        // FMinus's), so that a display shows here what it shows in the plugin.
+        FieldLook lookOf(const lang::Symbol& s)
+        {
+            FieldLook look;
+            for (const lang::Attribute& a : s.attributes)
+                readFieldAttribute(look, a.name, a.args);
+            return look;
+        }
+
+        // A field a display may name: an identifier, or Shared's through a pointer ("shared->level"), either with an
+        // array's indexes after it ("bands[2]", "grid[1][3]": displaySource).
         bool fieldName(const std::string& s)
         {
-            const std::size_t arrow = s.find("->");
-            return arrow == std::string::npos ? identifier(s) : identifier(s.substr(0, arrow)) && identifier(s.substr(arrow + 2));
+            const std::size_t open = s.find('[');
+            const std::string name = s.substr(0, open);
+            for (std::size_t k = open; k != std::string::npos && k < s.size();)
+            {
+                const std::size_t close = s.find(']', k);
+                if (s[k] != '[' || close == std::string::npos || close == k + 1
+                    || !std::all_of(s.begin() + static_cast<std::ptrdiff_t>(k + 1), s.begin() + static_cast<std::ptrdiff_t>(close),
+                                    [](char c) { return c >= '0' && c <= '9'; }))
+                    return false;
+                k = close + 1;
+            }
+            const std::size_t arrow = name.find("->");
+            return arrow == std::string::npos ? identifier(name) : identifier(name.substr(0, arrow)) && identifier(name.substr(arrow + 2));
         }
     }
 
@@ -146,13 +168,13 @@ namespace playground::sandbox
                 out.file = service.files()[static_cast<std::size_t>(s.file)].name;
             }
             if (s.container == "Shared" && s.kind == lang::Kind::field)
-                sharedFields.push_back({ s.name, reflected(s.type) });
+                sharedFields.push_back({ s.name, reflected(s.type), lookOf(s) });
             if (s.container != module)
                 continue;
             if (s.kind == lang::Kind::param)
                 params.push_back(&s);
             else if (s.kind == lang::Kind::field)
-                out.fields.push_back({ s.name, reflected(s.type) });
+                out.fields.push_back({ s.name, reflected(s.type), lookOf(s) });
         }
         out.fields = displayFields(out.fields, sharedFields);
         std::stable_sort(params.begin(), params.end(), [](const lang::Symbol* a, const lang::Symbol* b) {
@@ -463,8 +485,8 @@ namespace playground::sandbox
                 words.push_back("\"");
                 continue;
             }
-            if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '=')
-                w += c;
+            if (std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_' || c == '=' || ((c == '[' || c == ']') && !w.empty()))
+                w += c;                                   // bands[2]: an array's element, one name
             else if (c == '-' && next == '>' && !w.empty())
             {
                 w += "->";                                // shared->level: one name

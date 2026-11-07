@@ -149,6 +149,16 @@ namespace playground
                         if (k + 2 < s.size() && s[k] == '-' && s[k + 1] == '>' && nameStart(s[k + 2]))
                             k += 2;                      // shared->level: a field of Shared, one name
                     }
+                    // bands[2], grid[1][3]: an array's element (displaySource), one name: digits in brackets.
+                    while (k + 2 < s.size() && s[k] == '[' && digit(s[k + 1]))
+                    {
+                        std::size_t e = k + 1;
+                        while (e < s.size() && digit(s[e]))
+                            ++e;
+                        if (e >= s.size() || s[e] != ']')
+                            break;
+                        k = e + 1;
+                    }
                     std::string v(s.substr(i, k - i));
                     advance(k - i);
                     push(Token::Kind::name, std::move(v), 0.0, l, cl);
@@ -727,27 +737,27 @@ namespace playground
             }
 
             // A field a display, a live= or a shader may read: the main module's, or Shared's through its pointer
-            // (displayFields: "shared->level"); and why not, when it is none.
+            // (displayFields: "shared->level"), or an element of an array of them (displaySource: "bands[2]"); and why
+            // not, when it is none.
             bool fieldOk(const Token& at, const std::string& name, const char* who)
             {
-                const auto f = std::find_if(fields_.begin(), fields_.end(), [&](const PanelField& x) { return x.name == name; });
-                if (f == fields_.end() || f->type.rfind("param", 0) == 0 || (f->type != "float" && f->type != "int" && f->type != "bool"))
-                {
-                    std::string have;
-                    for (const PanelField& x : fields_)
-                        if (x.type == "float" || x.type == "int" || x.type == "bool")
-                            have += (have.empty() ? "" : ", ") + x.name;
-                    const bool viaPointer = name.find("->") != std::string::npos;
-                    note(at, f == fields_.end() ? "there is no field " + name + (viaPointer ? "" : " in the main module") + " (" + who
-                                                      + " reads a float, int or bool field of the main module, or of Shared "
-                                                        "through its pointer" + (have.empty() ? std::string(")") : ": " + have + ")")
-                             : f->type.rfind("param", 0) == 0 ? name + " is a dial; " + who + " reads a field the program "
-                                                                           "writes"
-                                                              : name + " is a " + f->type + "; " + who + " reads a float, "
-                                                                                                         "int or bool field");
-                    return false;
-                }
-                return true;
+                const DisplaySource src = displaySource(fields_, name);
+                if (src.problem == DisplaySource::Problem::none)
+                    return true;
+                std::string have;
+                for (const PanelField& x : fields_)
+                    if (displayable(x.type))
+                        have += (have.empty() ? "" : ", ") + x.name;
+                const bool viaPointer = name.find("->") != std::string::npos;
+                note(at, src.problem == DisplaySource::Problem::noField
+                             ? "there is no field " + src.why + (viaPointer ? "" : " in the main module") + " (" + who
+                                   + " reads a float, double, int or bool field of the main module, or of Shared through its "
+                                     "pointer, or an element of an array of them" + (have.empty() ? std::string(")") : ": " + have + ")")
+                         : src.problem == DisplaySource::Problem::dial ? name + " is a dial; " + who + " reads a field the program writes"
+                                                                       : src.why + "; " + who + " reads a float, double, int or "
+                                                                                                "bool field, or an element of an "
+                                                                                                "array of them");
+                return false;
             }
 
             // A tap of a field, for a live= or a shader: a display that is never drawn. Its index, or -1.
@@ -1594,7 +1604,7 @@ namespace playground
                 GuiNode n;
                 n.kind = GuiKind::display;
                 n.line = e.name.line;
-                bool lo = false, hi = false;
+                bool lo = false, hi = false, labelled = false, unitGiven = false;
                 const bool sized = d.kind == DisplayKind::scope || d.kind == DisplayKind::spectrum;
                 const bool readout = d.kind == DisplayKind::number;
                 const Prop* formatProp = nullptr;          // a number's unit=, decimals= or scale=, for a note on audio
@@ -1607,7 +1617,10 @@ namespace playground
                         // As a knob's value reads (formatValue): its unit, its places (0 to 4), times its scale.
                         formatProp = formatProp != nullptr ? formatProp : &p;
                         if (p.key == "unit")
+                        {
                             d.unit = text(p.value, sizeof(Control::unit) - 1, "unit");
+                            unitGiven = true;            // unit="" says none, over the field's own
+                        }
                         else if (p.key == "decimals")
                             d.decimals = static_cast<int8_t>(number(p, 0.0f, 4.0f, -1.0f));
                         else
@@ -1619,7 +1632,10 @@ namespace playground
                         }
                     }
                     else if (p.key == "label")
+                    {
                         d.label = text(p.value, kMaxDialLabel, "label");
+                        labelled = true;
+                    }
                     else if (p.key == "color")
                         d.color = n.color = color(p.value);
                     else if (p.key == "min")
@@ -1668,9 +1684,23 @@ namespace playground
                 if (!d.audio() && !fieldOk(e.args[0], d.source, "a display"))
                     return;
                 if (!d.audio())
-                    for (const PanelField& f : fields_)
-                        if (f.name == d.source)
-                            d.integer = f.type != "float";
+                {
+                    // What the display leaves out, its field's attributes give (FieldLook): a label, a range, a number's unit and places.
+                    const DisplaySource src = displaySource(fields_, d.source);
+                    d.integer = src.type == "int" || src.type == "bool";
+                    const FieldLook& look = src.field->look;
+                    if (!labelled && !look.label.empty())
+                        d.label = look.label;
+                    if (!lo && !hi && look.ranged)
+                    {
+                        d.lo = look.lo;
+                        d.hi = look.hi;
+                    }
+                    if (readout && d.unit.empty() && !unitGiven)
+                        d.unit = look.unit;
+                    if (readout && d.decimals < 0)
+                        d.decimals = look.decimals;
+                }
                 if (static_cast<int>(spec_.displays.size()) >= kMaxDisplays)
                 {
                     note(e.name, "a panel shows " + std::to_string(kMaxDisplays) + " displays at most: this " + w

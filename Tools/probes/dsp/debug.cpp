@@ -29,6 +29,10 @@
 //   SHARED  a module Shared's field listed, and watched as shared->gain
 //   STOP    a cancel in pass 1 (the NaN found so far listed, not traced), one in pass 2, the time limit: each says so
 //   NAN0    a NaN from the first sample: the self-check says it had nothing to compare
+//   DOUBLE  a double accumulator (90 + 1e-6 a sample) and its float twin, a 2-D grid of 2 x 3 and one of 4 x 16, and a
+//           field's attributes: listed as a double with its label, unit and range, the grid's rows by its two indexes
+//           and the large one left out with its shape; watched, the double moves (to 12 digits) where the float stays
+//           at 90, and an element of the grid is read where the program put it
 #include "Probe.h"
 
 #include "Examples.h"
@@ -38,6 +42,7 @@
 #include "dsp/SoundView.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 namespace pg = playground;
@@ -783,6 +788,88 @@ module Effect
 };
 )";
 
+    // DOUBLE: a double that counts what a float's 24 bits round away, its float twin, a small grid and a large one.
+    const char* const kDoubleVoice = R"(module Voice
+{
+    float rate;
+    float phase;
+    float step;
+    bool held;
+    double temp [[ui::unit("C")]] [[ui::label("TEMP")]] [[fminus::range(80, 100)]];
+    float ftemp;
+    float gain[2][3];
+    float bank[4][16];
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        step = 440 * expf(0.0577622650f * (note - 69)) / rate;
+        held = true;
+        temp = 90;
+        ftemp = 90;
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col)
+                gain[row][col] = row + 0.25f * col;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            temp += 1e-6;
+            ftemp += 1e-6f;
+            bank[i & 3][i & 15] = (float)temp;
+            const float y = 0.2f * gain[1][2] * sinf(6.28318531f * phase);
+            phase += step;
+            if (phase >= 1)
+                phase -= 1;
+            left[i] += y;
+            right[i] += y;
+        }
+        return held;
+    }
+};
+)";
+
+    const char* const kDoubleEffect = R"(module Effect
+{
+    double temp [[ui::unit("C")]] [[ui::label("TEMP")]] [[fminus::range(80, 100)]];
+    float ftemp;
+    float gain[2][3];
+    float bank[4][16];
+
+    void init(float r)
+    {
+        temp = 90;
+        ftemp = 90;
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 3; ++col)
+                gain[row][col] = row + 0.25f * col;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            temp += 1e-6;
+            ftemp += 1e-6f;
+            bank[i & 3][i & 15] = (float)temp;
+            left[i] *= 0.5f * gain[1][2];
+            right[i] *= 0.5f * gain[1][2];
+        }
+    }
+};
+)";
+
     const char* const kSharedPart = R"(module Shared
 {
     float gain;
@@ -1286,6 +1373,41 @@ PROBE(dsp, debug)
         const ms::TraceResult w = ms::trace(files, q);
         print("SHARED watch", w);
         P.eq("shared.watched", w.watched.size() == 1 && w.watched[0] == "shared->gain" && anyHas(w.lines, "shared->gain: min 0.25, max 0.25") ? 1 : 0, 1);
+    }
+
+    // ---- DOUBLE: a double field, 2-D arrays and a field's attributes, listed and watched -----------------------------
+    {
+        const pg::Sources files = pg::singleFile(kInstrument ? kDoubleVoice : kDoubleEffect);
+        ms::TraceRequest q = held(ms::TraceFind::none, 0.5);
+        q.list = true;
+        const ms::TraceResult l = ms::trace(files, q);
+        print("DOUBLE list", l);
+        P.eq("double.compiles", l.error.empty() ? 1 : 0, 1);
+        P.eq("double.listed_with_its_look", has(l.lines, "temp double (\"TEMP\", C, 80 to 100)") ? 1 : 0, 1);
+        P.eq("double.float_twin", has(l.lines, "ftemp float") ? 1 : 0, 1);
+        P.eq("double.grid_rows", has(l.lines, "gain[0][0..2] float") && has(l.lines, "gain[1][0..2] float") ? 1 : 0, 1);
+        P.eq("double.large_grid_left_out", anyHas(l.lines, "left out: bank: float[4][16], 64 elements, more than 16") ? 1 : 0, 1);
+        q.list = false;
+        q.fields = { "temp", "ftemp", "gain[1][2]" };
+        const ms::TraceResult w = ms::trace(files, q);
+        print("DOUBLE watch", w);
+        // The last value each line gives ("..., last 90.0336; ..."), -1 when there is none.
+        const auto last = [&](const std::string& path) {
+            for (const std::string& x : w.lines)
+                if (x.rfind(path + " (", 0) == 0 || x.rfind(path + ":", 0) == 0)
+                    if (const std::size_t at = x.find(", last "); at != std::string::npos)
+                        return std::strtod(x.c_str() + at + 7, nullptr);
+            return -1.0;
+        };
+        // 1e-6 a sample from 90: 0.7 s at 48 kHz is 33,600 samples (the synth's voice its 0.5 s held and its last call).
+        const double moved = last("temp"), stuck = last("ftemp");
+        std::printf("DOUBLE: temp last %.12g, ftemp last %.9g\n", moved, stuck);
+        P.eq("double.watched", w.watched.size() == 3 ? 1 : 0, 1);
+        P.eq("double.its_look_in_the_line", anyHas(w.lines, "temp (\"TEMP\", C, 80 to 100): min 90") ? 1 : 0, 1);
+        P.in("double.moves", moved, 90.02, 90.04);
+        P.eq("double.twelve_digits", anyHas(w.lines, ", last 90.02") || anyHas(w.lines, ", last 90.03") ? 1 : 0, 1);
+        P.near("double.float_stays", stuck, 90.0, 0.0);
+        P.eq("double.grid_element", anyHas(w.lines, "gain[1][2]: min 1.5, max 1.5") ? 1 : 0, 1);
     }
 
     // ---- STOP: a cancel or the time limit says so, and claims nothing it did not check ---------------------------------
