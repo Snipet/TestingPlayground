@@ -534,8 +534,9 @@ PROBE(gui, switch)
         t0 = std::chrono::steady_clock::now();
         (void)ps::load("Engine");
         const double load = msSince(t0);
-        std::printf("TIME store: list %.2f ms, projects() cached %.3f ms, presets() cached %.3f ms, a 4 MB project read whole %.1f ms\n",
-                    warmList, cachedList, presets, load);
+        const double megabytes = static_cast<double>(folder.getChildFile("Engine.fmproject").getSize()) / 1.0e6;
+        std::printf("TIME store: list %.2f ms, projects() cached %.3f ms, presets() cached %.3f ms, a project of %.1f MB read "
+                    "whole %.1f ms\n", warmList, cachedList, presets, megabytes, load);
     }
 
     ps::setDirectoryForTests(juce::File());
