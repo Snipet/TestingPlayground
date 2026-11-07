@@ -320,8 +320,9 @@ namespace playground::providers
         }
 
         // Gemini's own schema (its OpenAPI subset, the fallback): types in upper case, what it lacks left out (additional
-        // properties; an alternative of several, the first with a type kept), and a property it cannot describe (an
-        // object with no properties, an array of such) left out with its place in required. Void: nothing left.
+        // properties; an alternative of several, the first with a type kept), an enum of words with no type (the tools
+        // leave it out, as JSON Schema allows: the projects tool's action) a STRING, and a property it cannot describe
+        // (an object with no properties, an array of such) left out with its place in required. Void: nothing left.
         juce::var geminiSubset(const juce::var& schema)
         {
             const auto* o = schema.getDynamicObject();
@@ -330,6 +331,13 @@ namespace playground::providers
             juce::var s = schema;
             if (!o->hasProperty("type"))
             {
+                const juce::Array<juce::var> values = arrayOf(o->getProperty("enum"));
+                if (!values.isEmpty() && std::all_of(values.begin(), values.end(), [](const juce::var& v) { return v.isString(); }))
+                {
+                    juce::var typed = copyOf(schema);
+                    typed.getDynamicObject()->setProperty("type", "string");
+                    return geminiSubset(typed);
+                }
                 for (const char* key : { "anyOf", "oneOf" })
                     for (const juce::var& alt : arrayOf(o->getProperty(key)))
                         if (alt.hasProperty("type"))

@@ -32,7 +32,8 @@
 //             (user and model), the tools' functionDeclarations with JSON Schema; a call with its thought signature
 //             run, the signature kept on its tool_use block and sent back on its functionCall, its result a
 //             functionResponse by name; a 400 that refuses parametersJsonSchema: Gemini's own subset from then on
-//             (types in upper case, no additionalProperties); a key it calls not valid: refused, said
+//             (types in upper case, no additionalProperties; an enum with no type a STRING: the projects tool's
+//             action, compare's dials and measure_output's spectrum keep theirs); a key it calls not valid: refused, said
 //   KEPT      a new processor talks to the provider chosen last, its model kept
 //   BACK      Anthropic again, with the planner chosen before the Gemini turns: its request as before (the full
 //             prompt cached, thinking, its key alone), the history without another provider's thought_signature in the
@@ -617,11 +618,25 @@ PROBE(plugin, providers)
         const juce::var retry = claude::parseJson(script->body(b2 + 1));
         const juce::Array<juce::var> d2 = arr(arr(retry.getProperty("tools", {}))[0].getProperty("functionDeclarations", {}));
         bool subset = !d2.isEmpty();
+        juce::var action, dials, spectrum;       // enums with no type in the tools' own schemas
         for (const juce::var& dcl : d2)
+        {
             subset = subset && !dcl.hasProperty("parametersJsonSchema")
                   && (!dcl.hasProperty("parameters") || str(dcl.getProperty("parameters", {}), "type") == "OBJECT");
+            const juce::var props = dcl.getProperty("parameters", {}).getProperty("properties", {});
+            if (str(dcl, "name") == "projects")
+                action = props.getProperty("action", {});
+            else if (str(dcl, "name") == "compare")
+                dials = props.getProperty("dials", {});
+            else if (str(dcl, "name") == "measure_output")
+                spectrum = props.getProperty("spectrum", {});
+        }
         P.eq("gemini.subset", script->postCount() - b2 == 2 && subset && !anyHas(retry.getProperty("tools", {}), "additionalProperties")
                                   && !anyHas(retry.getProperty("tools", {}), "anyOf") ? 1 : 0, 1);
+        std::printf("gemini subset: projects' action %s\n", claude::toJson(action).c_str());
+        const auto words = [](const juce::var& p, int n) { return str(p, "type") == "STRING" && arr(p.getProperty("enum", {})).size() == n; };
+        P.eq("gemini.subset_enums", words(action, 5) && arr(action.getProperty("enum", {}))[0].toString() == "list"
+                                        && words(dials, 3) && words(spectrum, 3) ? 1 : 0, 1);
         P.eq("gemini.subset_noted", has(allOf(agent.chatState(), pg::ChatEntry::Kind::note), "refused the tools' schemas") ? 1 : 0, 1);
         script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("Still OK.").finish("STOP").str()));
         agent.send("once more");

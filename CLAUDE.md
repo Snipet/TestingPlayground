@@ -979,7 +979,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
     cannot serve this chat (`aboutModel`: OpenAI's Responses API alone, not a chat model, no tools) takes it off the
     menu and out of the choice, and the error says to choose another (never a model switched to here); OpenAI's list
     leaves those out from the start (its `-pro`, codex, deep-research, `chatgpt-` and `-chat-latest` models); Gemini's
-    400 refusing `parametersJsonSchema` makes it again with Gemini's own schema subset, and keeps that (`schemaRefused_`);
+    400 refusing `parametersJsonSchema` makes it again with Gemini's own schema subset (an enum of words with no type
+    a STRING, as the projects tool's action), and keeps that (`schemaRefused_`);
     a model whose context is under `kShortPromptBelow` tokens (as its list says), or one a server on this Mac or the
     local network does not describe, gets `shortPrompt()` (the prompt up to THREADS and a line of what it left out);
     a server here that read under half of what was sent cut the conversation (Ollama does, silently): noted once a
