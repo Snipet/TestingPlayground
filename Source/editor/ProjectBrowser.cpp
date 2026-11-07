@@ -641,7 +641,7 @@ namespace playground::ui
         ++revision_;
     }
 
-    void ProjectBrowser::reread(bool claude)
+    void ProjectBrowser::reread(Because why)
     {
         if (!open_)
             return;
@@ -669,8 +669,9 @@ namespace playground::ui
         if (ask_ != Ask::none)
         {
             ask_ = Ask::none;
-            why_ = claude ? "The lists changed (Claude's projects tool): choose again, then confirm."
-                          : "The lists changed (a project was saved elsewhere): choose again, then confirm.";
+            why_ = why == Because::claude ? "The lists changed (Claude's projects tool): choose again, then confirm."
+                 : why == Because::saved  ? "The lists changed (your save finished): choose again, then confirm."
+                                          : "The lists changed (a project was saved elsewhere): choose again, then confirm.";
         }
         if (!dragging_)
         {
@@ -752,6 +753,32 @@ namespace playground::ui
 
     bool ProjectBrowser::chosenIsOpen() const { return !state_.name.empty() && same(chosenName_, state_.name); }
 
+    // Whether what it shows (the projects, the chosen one's versions and presets, the project open's name, version and
+    // preset) differs from the store's cache and the project open now.
+    bool ProjectBrowser::listsChanged() const
+    {
+        std::vector<ProjectEntry> now = port_.projectsPolled();
+        const std::vector<ProjectEntry> factory = port_.factoryProjects();
+        now.insert(now.end(), factory.begin(), factory.end());
+        const ProjectDetail d = chosenName_.empty() ? ProjectDetail{} : port_.projectPolled(chosenName_);
+        const ProjectState open = port_.project();
+        bool same = now == projects_ && d.presets == presets_ && d.versions.size() == versions_.size()
+                 && (chosenName_.empty() || !d.exists || d.read) == chosenRead_
+                 && open.name == state_.name && open.version == state_.version && open.preset == state_.preset;
+        for (std::size_t i = 0; same && i < versions_.size(); ++i)
+            same = d.versions[i].number == versions_[i].number && d.versions[i].when == versions_[i].when
+                && d.versions[i].note == versions_[i].note;
+        return !same;
+    }
+
+    bool ProjectBrowser::rereadIfChanged(Because why)
+    {
+        if (!open_ || !listsChanged())
+            return false;
+        reread(why);
+        return true;
+    }
+
     bool ProjectBrowser::poll()
     {
         if (!open_ || port_.projectsRead() == readSeen_)
@@ -759,21 +786,12 @@ namespace playground::ui
         // Read again only when what it shows changed (the Reader reads other files too: the explorer's, another
         // instance's), so that a confirmation asked for stands over lists that did not.
         const uint64_t seen = port_.projectsRead();
-        std::vector<ProjectEntry> now = port_.projectsPolled();
-        const std::vector<ProjectEntry> factory = port_.factoryProjects();
-        now.insert(now.end(), factory.begin(), factory.end());
-        const ProjectDetail d = chosenName_.empty() ? ProjectDetail{} : port_.projectPolled(chosenName_);
-        bool same = now == projects_ && d.presets == presets_ && d.versions.size() == versions_.size()
-                 && (chosenName_.empty() || !d.exists || d.read) == chosenRead_;
-        for (std::size_t i = 0; same && i < versions_.size(); ++i)
-            same = d.versions[i].number == versions_[i].number && d.versions[i].when == versions_[i].when
-                && d.versions[i].note == versions_[i].note;
-        if (same)
+        if (!listsChanged())
         {
             readSeen_ = seen;
             return false;
         }
-        reread(false);
+        reread(Because::elsewhere);
         return true;
     }
 

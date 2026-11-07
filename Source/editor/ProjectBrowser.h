@@ -89,8 +89,18 @@ namespace playground::ui
         void close();
         // While open: the lists read again after a change made elsewhere (Claude's projects tool saved, opened or applied
         // one), the project chosen kept, its versions and presets read afresh, the version and the preset chosen kept by
-        // number and name; a confirmation asked for is withdrawn (the next click asks again), a press let go.
-        void reread(bool claude = true);                 // false: read again for poll(), its words saying so
+        // number and name; a confirmation asked for is withdrawn (the next click asks again, the words saying what
+        // changed them: `why`), a press let go.
+        enum class Because : uint8_t
+        {
+            claude,                                      // Claude's projects tool
+            elsewhere,                                   // a file the store's Reader read (poll)
+            saved                                        // the editor's own save, landed (Cmd-S here or in the code window)
+        };
+        void reread(Because why = Because::claude);
+        // While open: the lists read again (reread) only when what it shows differs from the store's cache or the project
+        // open, so that a confirmation asked for stands over lists that did not change. Whether it read them.
+        bool rereadIfChanged(Because why);
         // While open, each frame: the lists read again once the store's Reader has read a file (EditorPort::projectsRead):
         // the card reads the store's cache alone (projectsPolled, projectPolled), never a project's file whole on the
         // message thread, so one it lacks shows when the Reader has it. Whether it read them.
@@ -214,6 +224,7 @@ namespace playground::ui
         void openChosen();
         void remove();
         bool chosenIsOpen() const;                       // the chosen project is the one open
+        bool listsChanged() const;                       // rereadIfChanged's and poll()'s test
 
         EditorPort& port_;
         bool open_ = false;

@@ -5040,7 +5040,8 @@ namespace playground::ui
             syncSave();
     }
 
-    // What a save of the editor's came to, said once it has ended (SaveState::done moved): the lists read again.
+    // What a save of the editor's came to, said once it has ended (SaveState::done moved): the explorer's lists read
+    // again, and PROJECTS' when what it shows changed (a confirmation it asks for stands over lists that did not).
     void Panel::syncSave()
     {
         const SaveState s = port_.saving();
@@ -5062,7 +5063,7 @@ namespace playground::ui
                : saved.created   ? "PROJECT SAVED: " + upper(saved.name)
                                  : "SAVED: " + at);
         projectsAt_ = -100.0;
-        projects_.reread();
+        (void)projects_.rereadIfChanged(ProjectBrowser::Because::saved);
         dirty_ = true;
     }
 

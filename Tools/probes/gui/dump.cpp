@@ -105,7 +105,9 @@
 //             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
-//             version to it; Delete asks, then deletes a project, and a version; Escape closes. FACTORY: the factory
+//             version to it; Delete asks, then deletes a project, and a version; a save of the editor's landing while
+//             Delete asks leaves the question when it changes nothing the card shows, and withdraws it (saying the
+//             save did) when it adds a version; Escape closes. FACTORY: the factory
 //             projects' group on top, by name, the user's after it under UNCATEGORISED; a click on its header folds
 //             it, choosing nothing, another opens it; one chosen (not the one open), its one version, the field left
 //             at the project open's (Save version) with a line saying to open it first, Delete refused (it says so);
@@ -1727,6 +1729,35 @@ PROBE(gui, dump)
         click(browser.places(W, H).remove);
         click(browser.places(W, H).remove);
         P.eq("projects.version_deleted", versionsOf("My Patch") == 1 && browser.versionList().size() == 1 ? 1 : 0, 1);
+        // A save of the editor's lands while Delete asks (the code window's Cmd-S, through the port): one that changes
+        // nothing the card shows leaves the question standing; one that adds a version withdraws it, saying the save
+        // changed the lists (never Claude), and deletes nothing.
+        {
+            clickRow(BL::projects, browser.rowOf("My Patch"));
+            click(browser.places(W, H).remove);
+            const bool asked = browser.removeLabel() == "Delete it";
+            const std::string openName = port.project().name;
+            const int openVersion = port.project().version;
+            std::string why;
+            const bool same = port.startSave(openName, why);
+            saved();
+            std::printf("save lands, nothing new, Delete asked: %s / [%s] / %s\n", browser.removeLabel().c_str(),
+                        browser.why().c_str(), panel.statusText().c_str());
+            P.eq("projects.save_lands_question_stands", asked && same && browser.isOpen() && port.project().version == openVersion
+                                                            && browser.removeLabel() == "Delete it"
+                                                            && browser.why().find("The lists changed") == std::string::npos ? 1 : 0, 1);
+            pg::Draft d = port.draft();
+            d.files[0].text += "\n// a line the saved version lacks\n";
+            port.setDraft(d);
+            const bool more = port.startSave(openName, why);
+            saved();
+            std::printf("save lands, a version more, Delete asked: %s / [%s]\n", browser.removeLabel().c_str(), browser.why().c_str());
+            P.eq("projects.save_lands_question_withdrawn", more && browser.isOpen() && port.project().version == openVersion + 1
+                                                               && browser.removeLabel() == "Delete"
+                                                               && browser.why().find("your save finished") != std::string::npos
+                                                               && browser.why().find("Claude") == std::string::npos
+                                                               && pg::projectstore::exists("My Patch") ? 1 : 0, 1);
+        }
         // FACTORY: its group on top (its header, then the factory projects by name), the user's two after it under
         // UNCATEGORISED.
         {

@@ -157,14 +157,23 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `ExportCard::poll`, each frame; gui.projects READS, plugin.projects DETAIL). The A/B card's versions are still read
   whole. **The editor's save** (Cmd-S, PROJECTS' Save: `EditorPort::startSave`, `saving`; `Processor::takeSave`,
   `runSave`, `landSave`) takes what it keeps on the message thread (the draft, the dials, the answers, the MIDI map, the
-  samples, the project open and its version), reads and writes the file on a thread of its own (`saver_`), and lands at
-  poll(): the project open made the one saved unless another project or version was opened meanwhile (the version saved
-  all the same); one asked for while one is in flight saves after it, with what the editor has then; a factory
-  project's copy is saved at once. `saveVersion` (Claude's projects tool, the probes) runs the same three parts in turn.
-  The Panel says SAVING until `saving().done` moves, then the outcome (`Panel::syncSave`, at full rate meanwhile);
-  `settle()` lands one in flight, and `setSaveGate` (probes only) holds it before the store's work. The store keeps one
-  writer in the process (`writeMutex`, recursive: `update`, `saveVersion`, `add`, `remove`), so the saver and a write on
-  the message thread never write over each other (plugin.projects ASYNC, gui.dump PROJECTS). The poll waits `kPollAfterShow` after the frame that shows the explorer again
+  samples, the project open, its version and `projectOpens_`), reads and writes the file on a thread of its own
+  (`saver_`), and lands at poll(): the project open made the one saved unless a project or version was opened meanwhile,
+  the same version again included (`projectOpens_`, which an open, a fresh start, a session, the open one deleted and
+  A/B's Keep of a version bump; the version saved all the same). The saver also finds the project saved's id for the
+  chats when it is not the one known (`SaveJob::ownerId`: a version added to another project, a new project), so a
+  landing reads no file however large the project. One asked for while one is in flight saves after it, with what the
+  editor has then; a processor that goes with one in flight lands it and saves the one asked for meanwhile
+  (`finishSave`); a factory project's copy is saved at once. `saveVersion` (Claude's projects tool, the probes) runs the
+  same three parts in turn. The Panel says SAVING until `saving().done` moves, then the outcome (`Panel::syncSave`, at
+  full rate meanwhile), and an open PROJECTS reads its lists again only when what it shows changed
+  (`ProjectBrowser::rereadIfChanged`: a confirmation it asks for stands over lists that did not, and one withdrawn says
+  the save changed them); `settle()` lands one in flight, `setSaveGate` (probes only) holds it before the store's work and
+  `saveWritten` says its store's work is done. The store keeps one writer in the process (`writeMutex`, recursive:
+  `update` and every write made through it, `saveVersion`, `add`, `remove`, `idOf`'s new id, made through `update` over
+  the file as it is now, never the project as read, and the migration while there are presets from before projects, so
+  the explorer's listing never waits for a save), so the saver and a write on the message thread never write over each
+  other (plugin.projects ASYNC, plugin.chats ID, gui.dump PROJECTS). The poll waits `kPollAfterShow` after the frame that shows the explorer again
   (the Code view), and the explorer hashes what its rows show each frame (the lists by a revision a poll bumps).
   `list()` and `presetsOf` (PROJECTS, EXPORT) still read what the cache lacks, outside its lock. A listing's entry
   carries the info's category, tags and description (`Entry`, `ProjectEntry`), which PROJECTS and the explorer group
