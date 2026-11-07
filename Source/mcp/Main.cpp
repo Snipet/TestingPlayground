@@ -8,9 +8,11 @@
 //                and the chat's own tools (ChatAgent::mcpTools, each with its title) from an instance running, else
 //                from the tools.json the last one left; each takes `instance` (described on the first alone:
 //                mcp/McpSchema.h's rule, as the plugin's own repeated words)
-//   tools/call   any of the chat's tools goes to the instance named: by its name ("Synth 2", or just "2"), its
-//                track's, or its project's (whole or in part, case aside); else to the one used last; else to the only
-//                one open. With several open and none named, the reply describes them so that Claude asks the user
+//   tools/call   any of the chat's tools goes to the instance named: by its name (the user's, "Bass", or its number's,
+//                "Synth 2", or just "2"), its track's, or its project's (whole or in part, case aside); else to Claude
+//                Desktop's target (mcp/McpTarget.h: the one the user chose in the plugin, else the only one open). With
+//                several open, none named and none chosen, the call is refused, never guessed: the reply describes
+//                them so that Claude asks the user
 //   prompts      Make a sound, Improve the sound, Explain the sound, Fix what I hear: requests the user picks in Claude
 //                Desktop (one whose tools the plugin lacks is not listed); those about what plays carry the plugin's
 //                state, so Claude starts from it
@@ -32,6 +34,7 @@
 #include "mcp/McpGuide.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpSchema.h"
+#include "mcp/McpTarget.h"
 #include "sandbox/SandboxProtocol.h"
 
 #include "Library.h"
@@ -316,13 +319,13 @@ namespace
     // What the user knows an instance by: its name, its track, its project, where it runs.
     struct Seen
     {
-        std::string id, name, track, project, host, preset, files;
+        std::string id, name, number, track, project, host, preset, files;   // number: its number's name, "Synth 2"
         int version = 0;
         bool edited = false, compiled = true, busy = false;
 
         std::string describe() const
         {
-            std::string s = name;
+            std::string s = name + (name == number ? std::string() : " (" + number + ")");
             if (!track.empty())
                 s += " on the track \"" + track + "\"";
             if (!project.empty())
@@ -576,12 +579,13 @@ namespace
                   "the plugin's state, write the program, run it, measure it and look at it, fix what is wrong, and leave "
                   "its dials at good settings. Tell the user what you made in a few plain sentences, and what to play to "
                   "hear it.\n"
-                  "Each open " + thing + " has a name the plugin shows (\"" + (kInstrument ? "Synth" : "Effect") + " 1\", \""
-                + (kInstrument ? "Synth" : "Effect") + " 2\"). When only one is open, use it. When several are, work out from "
-                  "what the user said which one they mean (its track, its project, its name) and pass that as "
-                  "`instance` (its name, as \"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\" or \"2\", or its "
-                  "track's or its project's, in the user's words); if you cannot tell, ask them in their words, "
-                  "describing each by its track and project.\n"
+                  "Each open " + thing + " has a name the plugin shows (\"" + (kInstrument ? "Synth" : "Effect") + " 2\", or one "
+                  "the user gave it). A call without `instance` goes to the target: the one the user chose in the plugin, "
+                  "else the only one open (list_instances says which). When the user means another, or several are open "
+                  "and none is chosen, work out from what they said which one they mean (its name, its track, its project) "
+                  "and pass that as `instance` (its name, its number as \"2\", or its track's or its project's, in the "
+                  "user's words); if you cannot tell, ask them in their words, describing each by its track and project, "
+                  "or ask them to choose one in the plugin (Use with Claude Desktop).\n"
                   "To design or rework a panel (the plugin's interface, panel.gui), with or without the plugin open, use "
                   "gui_sandbox (read the guide's \"interface\" part first): it draws the panel as the plugin would and never "
                   "touches what the plugin plays or shows; apply its design to the plugin only when the user asks.";
@@ -632,7 +636,10 @@ namespace
                 if (fd < 0)
                 {
                     if (pg::mcp::refused())
+                    {
                         pg::mcp::removePath(path);       // nothing listens: its instance is gone (a crash, a host killed)
+                        pg::mcp::target::removeCard(dir, id);
+                    }
                     continue;
                 }
                 if (!pg::mcp::nonBlocking(fd))
@@ -864,9 +871,10 @@ namespace
                         {
                             Seen s;
                             s.id = id;
+                            s.number = pg::mcp::target::numberName(id);
                             s.name = i["name"].toString().toStdString();
                             if (s.name.empty())
-                                s.name = std::string(kInstrument ? "Synth " : "Effect ") + id;
+                                s.name = s.number;
                             s.track = i["track"].toString().toStdString();
                             s.project = i["project"].toString().toStdString();
                             s.host = i["host"].toString().toStdString();
@@ -915,14 +923,16 @@ namespace
             return out;
         }
 
-        // The instances `wanted` names: its id or its name ("2", "Synth 2"), its track's or its project's name, whole
-        // (case aside); else those sharing the most words with it ("the moog one" for the project "Moog Bass").
+        // The instances `wanted` names: its id, its name or its number's name ("2", "Bass", "Synth 2"), its track's or
+        // its project's name, whole (case aside); else those sharing the most words with it ("the moog one" for the
+        // project "Moog Bass").
         static std::vector<const Seen*> matching(const std::vector<Seen>& all, const std::string& wanted)
         {
             const std::string w = lower(juce::String(str(wanted)).trim().toStdString());
             std::vector<const Seen*> exact;
             for (const Seen& s : all)
-                if (w == s.id || w == lower(s.name) || (!s.track.empty() && w == lower(s.track)) || (!s.project.empty() && w == lower(s.project)))
+                if (w == s.id || w == lower(s.name) || w == lower(s.number) || (!s.track.empty() && w == lower(s.track))
+                    || (!s.project.empty() && w == lower(s.project)))
                     exact.push_back(&s);
             if (!exact.empty())
                 return exact;
@@ -976,8 +986,9 @@ namespace
             juce::Array<juce::var> out;
             const std::string thing = kThing, things = kThings;
             out.add(ownTool("list_instances", "Find the open " + things,
-                            "Which " + things + " (" + pg::product::kName + ") are open now: each one's name (as the plugin "
-                            "shows it), its track, its project and where it runs. Use it when more than one may be open.",
+                            "Which " + things + " (" + pg::product::kName + ") are open now: each one's name, track and "
+                            "project, where it runs, and the target (the one the user chose in the plugin, else the only one "
+                            "open), which calls without `instance` go to.",
                             juce::var(new juce::DynamicObject())));
             out.add(ownTool("playground_guide", "Read the guide",
                             "The guide to this plugin and to FMinus, the language its sound is written in, in parts. Read its "
@@ -1003,7 +1014,7 @@ namespace
                         if (juce::DynamicObject* props = schema->getProperty("properties").getDynamicObject())
                             props->setProperty("instance",
                                                object({ { "type", "string" },
-                                                        { "description", str("Which " + thing + ", when several are open") } }));
+                                                        { "description", str("Which " + thing + " (else the target)") } }));
                     }
                     out.add(tool);
                 }
@@ -1092,8 +1103,18 @@ namespace
             withInstance(id, wanted, [this, id, name, args](const std::string& instance) { callTool(id, instance, name, args); });
         }
 
-        // The instance `wanted` names (its name, number, track or project), else the one used last, else the only one
-        // open, to `go`; when none is open, or it is not clear which, the client is answered (for Claude to ask the user).
+        // Claude Desktop's target among those open (mcp/McpTarget.h): the one the user chose, else the only one open; ""
+        // for none (several open, none chosen).
+        std::string targetId() const
+        {
+            const std::string dir = pg::mcp::folder();
+            if (const std::string c = dir.empty() ? std::string() : pg::mcp::target::chosen(dir); !c.empty() && instances_.count(c) != 0)
+                return c;
+            return instances_.size() == 1 ? instances_.begin()->first : std::string();
+        }
+
+        // The instance `wanted` names (its name, number, track or project), else the target, to `go`; when none is
+        // open, or it is not clear which, the client is answered (for Claude to ask the user), never guessed.
         void withInstance(const juce::var& id, const std::string& wanted, std::function<void(const std::string&)> go)
         {
             const std::string thing = kThing;
@@ -1128,17 +1149,17 @@ namespace
                 });
                 return;
             }
-            if (instances_.count(chosen_) != 0)
-                go(chosen_);
-            else if (instances_.size() == 1)
-                go(instances_.begin()->first);
+            if (const std::string target = targetId(); !target.empty())
+                go(target);
             else
                 gather([this, id](std::vector<Seen> all) {
                     std::string list;
                     for (const Seen& s : all)
                         list += "- " + s.describe() + "\n";
-                    reply(id, textContent(std::to_string(all.size()) + " " + kThings + " are open. Ask the user which one they mean "
-                                          "(by its track or its project, as below), then call again with `instance` set to what they said:\n" + list,
+                    reply(id, textContent(std::to_string(all.size()) + " " + kThings + " are open and the user has chosen none "
+                                          "for you, so nothing was done. Ask the user which one they mean (by its name, its "
+                                          "track or its project, as below), then call again with `instance` set to what they "
+                                          "said (or they can choose one in the plugin: Use with Claude Desktop):\n" + list,
                                           true));
                 });
         }
@@ -1152,10 +1173,7 @@ namespace
                 [this, id, instance](Got g, const juce::var& r, const std::string& why) {
                     const std::string thing = kThing;
                     if (g == Got::result)
-                    {
-                        chosen_ = instance;
                         reply(id, r);
-                    }
                     else if (g == Got::late)
                         reply(id, textContent("Still running after " + std::to_string(callMs_ / 1000) + " s, longer than a call may "
                                               "take here, so the " + thing + " was asked to stop it; nothing more will come of "
@@ -1175,13 +1193,20 @@ namespace
             if (all.empty())
                 return textContent("No " + thing + " is open (" + pg::product::kName + "). Ask the user to open it in their DAW ("
                                    + (kInstrument ? "on an instrument track" : "on an audio track") + ") or as its own app.");
+            const std::string target = targetId();
+            const bool chosen = !target.empty() && all.size() > 1;
             std::string text = std::to_string(all.size()) + (all.size() == 1 ? " " + thing + " is" : " " + things + " are") + " open:\n";
             for (const Seen& s : all)
-                text += "- " + s.describe() + (s.id == chosen_ ? " (the one used last)" : "")
+                text += "- " + s.describe() + (s.id != target ? std::string()
+                                               : chosen      ? std::string(" (the target, which the user chose)")
+                                                             : std::string(" (the target, the only one open)"))
                       + "; its files: " + s.files + (s.compiled ? "" : "; its last run did not compile")
                       + (s.busy ? "; its own chat is busy" : "") + "\n";
             if (all.size() > 1)
-                text += "Pass the one the user means as `instance` (its name, its track or its project).";
+                text += target.empty() ? "None is the target (the user has chosen none in the plugin), so pass the one the user means "
+                                         "as `instance` (its name, its track or its project) with every call."
+                                       : "Calls without `instance` go to the target; pass `instance` (its name, its track or its project) "
+                                         "for another the user means.";
             return textContent(text);
         }
 
@@ -1688,7 +1713,6 @@ namespace
                                 reply(id, textContent("Could not read the " + std::string(kThing) + "'s program: " + why, true));
                                 return;
                             }
-                            chosen_ = instance;
                             juce::Array<juce::var> list;
                             for (const auto& [name, text] : files)
                                 list.add(object({ { "name", str(name) }, { "text", str(text) } }));
@@ -1843,7 +1867,6 @@ namespace
                         const std::string hint = hintOf(w);
                         ask(instance, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }), callMs_, true,
                             key(id), [this, id, instance, target, text, before, had, number, thing, hint](Got g3, const juce::var& run, const std::string& why3) {
-                                chosen_ = instance;
                                 const auto [added, removed] = lineChanges(before, text);
                                 std::string said = (hint.empty() ? std::string() : hint + "\n") + "Applied sandbox #" + std::to_string(number)
                                                  + " to " + instanceName(instance) + ": wrote " + target + " into its program ("
@@ -1972,12 +1995,8 @@ namespace
                     fail(id, -32602, std::string("The prompt ") + info->name + " needs tools this " + kThing + " does not have");
                     return;
                 }
-                // The plugin's state, when it is clear which instance: what Claude would read first anyway.
-                std::string which;
-                if (instances_.count(chosen_) != 0)
-                    which = chosen_;
-                else if (instances_.size() == 1)
-                    which = instances_.begin()->first;
+                // The plugin's state, when it is clear which instance (the target): what Claude would read first anyway.
+                const std::string which = targetId();
                 if (!info->state || which.empty())
                 {
                     finish(text);
@@ -1995,7 +2014,6 @@ namespace
         uint64_t serials_ = 0;                           // the connections made so far
         std::list<Ask> asks_;
         std::set<std::string> open_;                     // the client's requests not answered yet (key(id))
-        std::string chosen_;
         bool listedPlain_ = false;                       // the last tools/list had none of the plugin's tools
         bool oldTitles_ = false;                         // a client of MCP before 2025-06-18: titles in the annotations
         const int callMs_ = callDeadlineMs();

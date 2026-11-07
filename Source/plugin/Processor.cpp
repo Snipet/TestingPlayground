@@ -44,6 +44,9 @@ namespace playground
         // again still says which files changed (a state from before them has none).
         const juce::Identifier kMcpTag{ "MCP" }, kMarkTag{ "MARK" }, kToken{ "token" }, kHash{ "hash" }, kNetlist{ "netlist" },
                                kLines{ "lines" };
+        // <MCP desktopName="Bass">: the user's name for the instance (McpLink::setName), when it has one; a state without
+        // one leaves the name as it is.
+        const juce::Identifier kDesktopName{ "desktopName" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         // its CODE view's panel under the code and under the interface's files: "hidden"
@@ -351,10 +354,62 @@ namespace playground
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
+                                                         [this] {
+                                                             std::pair<std::string, std::string> place;
+                                                             {
+                                                                 const std::lock_guard<std::mutex> lock(trackMutex_);
+                                                                 place.first = trackName_;
+                                                             }
+                                                             const std::lock_guard<std::mutex> lock(programMutex_);
+                                                             place.second = projectName_;
+                                                             return place;
+                                                         },
                                                          [this](const std::string& name, const juce::var& arguments, uint64_t call) {
                                                              return chat_.mcpCall(name, arguments, call);
                                                          },
                                                          [this](uint64_t call) { chat_.mcpCancel(call); } });
+    }
+
+    // Claude Desktop and this instance, as the explorer and the chat's header show it (any thread).
+    DesktopState Processor::desktop() const
+    {
+        DesktopState d;
+        if (mcp_ == nullptr || !mcp_->listening())
+            return d;
+        const McpLink::View v = mcp_->view();
+        d.linked = true;
+        d.id = mcp_->id();
+        d.name = mcp_->name();
+        d.number = mcp_->numberName();
+        d.connected = mcp_->connected();
+        d.chosen = v.chosen == d.id;
+        d.target = d.chosen || (v.chosen.empty() && v.others.empty());   // chosen, else the only one open
+        for (const McpLink::Peer& p : v.others)
+        {
+            d.others.push_back({ p.id, p.name, p.track, p.project, p.id == v.chosen });
+            if (p.id == v.chosen)
+                d.targetName = p.name;
+        }
+        d.doing = v.tool.empty() ? std::string() : ChatAgent::mcpTitle(v.tool);
+        d.running = v.running;
+        d.ago = v.ago;
+        return d;
+    }
+
+    bool Processor::setDesktopName(const std::string& name, std::string& why)
+    {
+        if (mcp_ == nullptr || !mcp_->listening())
+        {
+            why = "Claude Desktop cannot reach this instance";
+            return false;
+        }
+        return mcp_->setName(name, why);
+    }
+
+    void Processor::chooseDesktop(const std::string& id, bool on)
+    {
+        if (mcp_ != nullptr)
+            mcp_->choose(id, on);
     }
 
     void Processor::updateTrackProperties(const TrackProperties& properties)
@@ -1416,10 +1471,12 @@ namespace playground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
-        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty() || (mcp_ != nullptr && mcp_->named()))
         {
             const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
             juce::ValueTree mcp{ kMcpTag };
+            if (mcp_ != nullptr && mcp_->named())
+                mcp.setProperty(kDesktopName, juce::String::fromUTF8(mcp_->name().c_str()), nullptr);
             for (const KeptMark& m : marks)
             {
                 juce::ValueTree mark{ kMarkTag };
@@ -1600,6 +1657,11 @@ namespace playground
                     marks.push_back(std::move(m));
                 }
             chat_.restoreMcpMarks(std::move(marks));
+            if (mcp.isValid() && mcp.hasProperty(kDesktopName) && mcp_ != nullptr)
+            {
+                std::string why;
+                (void)mcp_->setName(mcp.getProperty(kDesktopName).toString().toStdString(), why);   // one it cannot take: as it was
+            }
             if (mcp.isValid())
                 state.removeChild(mcp, nullptr);
         }

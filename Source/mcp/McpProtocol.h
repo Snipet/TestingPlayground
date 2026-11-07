@@ -3,9 +3,9 @@
 //
 //   the folder   one per user and plugin, private (0700): <the user's temp folder>/Funk-<plugin>-mcp/, or
 //                <ENV_PREFIX>MCP_DIR when set (the probes' own). In it each instance's socket, <n>.sock: the lowest
-//                number free when it started, its name to the user ("Synth 2", shown in the plugin while Claude Desktop
-//                talks to it); and what the newest instance wrote for a server that finds none running: tools.json and
-//                guide.md
+//                number free when it started, its number's name to the user ("Synth 2", unless the user named it);
+//                its card, <n>.json, and Claude Desktop's target, target.json (mcp/McpTarget.h); and what the newest
+//                instance wrote for a server that finds none running: tools.json and guide.md
 //   a request    one JSON object a line: { "id": 1, "method": "info" | "tools" | "guide" | "call" | "cancel",
 //                "params": { ... } }; several may be in flight on one connection
 //   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }, exactly one a request, in the
@@ -14,7 +14,7 @@
 //                waits to send the rest: a large request and a large reply crossing each other (more than a socket's
 //                buffer, 8 KB on macOS) never leave both ends waiting for the other to read
 //                  info    the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
-//                          files, compiled, busy }
+//                          files, compiled, busy } (name: the user's for it, else its number's, "Synth 2")
 //                  tools   the tools, as MCP lists them ({ name, title, description, inputSchema, annotations })
 //                  guide   { part } -> a part of what the plugin's own chat works from, for an assistant that drives it
 //                          from outside (mcp/McpGuide.h; an error for a part that is not). Without `part` (a 0.2.0
@@ -53,6 +53,7 @@
 #else
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -123,6 +124,19 @@ namespace playground::mcp
         return e == WSAECONNREFUSED || e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == WSAENETDOWN;
     }
     inline int processId() { return static_cast<int>(GetCurrentProcessId()); }
+    // Whether process `pid` still runs (an instance's card names its process: one left by a crash is not listed).
+    inline bool processAlive(int pid)
+    {
+        if (pid <= 0)
+            return false;
+        const HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        if (h == nullptr)
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        DWORD code = 0;
+        const bool alive = GetExitCodeProcess(h, &code) != 0 && code == STILL_ACTIVE;
+        CloseHandle(h);
+        return alive;
+    }
 
     inline int pollFds(PollFd* fds, std::size_t n, int timeoutMs)
     {
@@ -293,6 +307,7 @@ namespace playground::mcp
     inline bool wouldBlock() { return errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS; }
     inline bool refused() { return errno == ECONNREFUSED || errno == ENOENT; }
     inline int processId() { return static_cast<int>(getpid()); }
+    inline bool processAlive(int pid) { return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM); }
     inline int pollFds(PollFd* fds, std::size_t n, int timeoutMs) { return poll(fds, static_cast<nfds_t>(n), timeoutMs); }
 
     inline bool peerAlive(int fd)

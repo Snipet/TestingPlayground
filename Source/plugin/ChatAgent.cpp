@@ -3543,6 +3543,12 @@ namespace playground
             "idle minutes, and comes back on the next call with the panel as it was.";
     }
 
+    std::string ChatAgent::mcpTitle(const std::string& name)
+    {
+        const Face* f = faceOf(juce::String::fromUTF8(name.c_str()));
+        return f != nullptr ? std::string(f->title) : name;
+    }
+
     juce::var ChatAgent::mcpTools()
     {
         // MCP's copy of the schemas (mcp/McpSchema.h): a property's words given once unless they hold a number (the

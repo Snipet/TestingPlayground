@@ -1,7 +1,6 @@
 // Source/plugin/McpLink.h: one instance of the plugin, reachable by its MCP server (mcp/Main.cpp, which Claude Desktop
 // starts): a socket of its own in the folder mcp/McpProtocol.h names, its number the lowest free ("Synth 2" to the
-// user: the plugin shows it while Claude Desktop talks to it), answering info, tools, guide, call and cancel (the
-// protocol there). It also leaves tools.json and guide.md in the folder, for a server started while no instance runs.
+// user, until the user names it: setName), answering info, tools, guide, call and cancel (the protocol there). It also leaves tools.json and guide.md in the folder, for a server started while no instance runs.
 //
 // Two threads. The poll thread accepts connections, reads their lines and answers at once what never waits: info,
 // tools, guide (a part of it), cancel, and the live calls (ChatAgent::mcpLive: reads of what plays now, which keep
@@ -21,8 +20,13 @@
 // connection closing stops it through the hook; the poll thread joins it once it is done, and the link going cancels
 // and waits for every one.
 //
+// Claude Desktop's target (mcp/McpTarget.h): the poll thread also writes this instance's card into the folder when it
+// changes (its name, track and project) and reads the others' and target.json about once a second (at once after
+// choose() or setName()), which view() copies for the plugin to show, with what Claude Desktop's calls do here (the last
+// call's tool, whether one runs, since when). choose() writes or clears target.json (the user's Use with Claude Desktop).
+//
 // Made by the Processor after its chat; gone first: its poll thread stopped, the call running cancelled and waited for,
-// its socket removed. Nothing it does touches the audio thread.
+// its socket, its card and a target.json naming it removed. Nothing it does touches the audio thread.
 #pragma once
 
 #include "plugin/ChatAgent.h"
@@ -30,6 +34,7 @@
 #include <juce_core/juce_core.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -39,6 +44,8 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace playground
 {
@@ -47,7 +54,9 @@ namespace playground
     public:
         struct Hooks
         {
-            std::function<juce::var()> info;             // the instance, for list_instances (its id added here)
+            std::function<juce::var()> info;             // the instance, for list_instances (its id and name added here)
+            // Its track's and its project's names, for its card (the poll thread, about once a second).
+            std::function<std::pair<std::string, std::string>()> place;
             // A tool call (ChatAgent::mcpCall), numbered for cancel; and the cancel of a call by its number (any thread).
             std::function<ChatAgent::McpResult(const std::string&, const juce::var&, uint64_t)> call;
             std::function<void(uint64_t)> cancel;
@@ -59,11 +68,41 @@ namespace playground
         McpLink& operator=(const McpLink&) = delete;
 
         const std::string& id() const noexcept { return id_; }           // "2"
-        const std::string& name() const noexcept { return name_; }       // "Synth 2" ("" when not listening)
+        // Its name to Claude Desktop and the user: the user's ("Bass"), else its number's ("Synth 2"); "" when not
+        // listening. Any thread.
+        std::string name() const;
+        std::string numberName() const;                  // "Synth 2" ("" when not listening)
+        // The user's name for it ("" or its number's name: none); false, with why, for one it cannot take
+        // (mcp::target::nameRefusal). Its card says it within a poll.
+        bool setName(const std::string& name, std::string& why);
+        bool named() const;                              // the user gave it a name
         const std::string& socketPath() const noexcept { return path_; }
         bool listening() const noexcept { return listen_ >= 0; }
         // A client has spoken to it and is still there: Claude Desktop knows this instance (any thread).
         bool connected() const noexcept { return talking_.load() > 0; }
+
+        // The other instances open and which one the user chose as Claude Desktop's target, as the poll thread last
+        // read them; and Claude Desktop's calls here.
+        struct Peer
+        {
+            std::string id, name, track, project;
+            bool operator==(const Peer&) const = default;
+        };
+        struct View
+        {
+            std::vector<Peer> others;                    // the other instances open, by number
+            std::string chosen;                          // the instance the user chose: this one's id, another's, "" none
+            std::string tool;                            // the newest call acting on it, else the last that ended ("": none
+                                                         // since it opened)
+            bool running = false;                        // a call acts on this instance now
+            double ago = 0.0;                            // seconds since that call began (running) or ended
+            uint64_t revision = 0;                       // bumps when the others or the choice change
+        };
+        View view() const;
+        // The user's choice (any instance's Use with Claude Desktop): `id` (this one's, or another open's) made the
+        // target, or, `on` false, the choice cleared when it is that one. The message thread.
+        void choose(const std::string& id, bool on);
+        void rescan();                                   // read the folder again soon (probes)
 
     private:
         struct Client;                                   // a connection: its socket (closed with the last owner), its lines,
@@ -89,9 +128,25 @@ namespace playground
                                                                 // as far as it goes; the poll thread woken for the rest
         void wake();                                     // the poll thread, out of poll() (stop_, or an outbox to send)
         static juce::var resultOf(const ChatAgent::McpResult& r);
+        void scan();                                     // the poll thread: its card written, the others' read
+        void began(const std::string& tool);             // a call acts on it (any thread)
+        void ended(const std::string& tool);
 
         Hooks hooks_;
-        std::string id_, name_, path_;
+        std::string id_, path_, dir_;
+        std::string token_;                              // its card's: its own, random (mcp/McpTarget.h)
+        mutable std::mutex nameMutex_;
+        std::string name_;                               // the user's ("" none)
+        mutable std::mutex viewMutex_;
+        View view_;
+        std::vector<std::pair<std::string, std::string>> tokens_;   // each other's id and card token (viewMutex_)
+        std::string written_;                            // its card as last written (the poll thread)
+        std::atomic<bool> scanNow_{ true };
+        std::chrono::steady_clock::time_point scanned_{};
+        // The calls acting on it now, each tool with when it began, the newest last; and the last that ended (viewMutex_).
+        std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> acting_;
+        std::string lastTool_;
+        std::chrono::steady_clock::time_point lastAt_{};
         std::atomic<int> talking_{ 0 };
         int listen_ = -1;
         int wake_[2] = { -1, -1 };

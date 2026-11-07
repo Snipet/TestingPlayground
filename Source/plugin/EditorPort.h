@@ -370,6 +370,28 @@ namespace playground
         float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
     };
 
+    // Claude Desktop and this instance (EditorPort::desktop; plugin/McpLink.h, mcp/McpTarget.h), as the explorer's
+    // CLAUDE DESKTOP section and the chat's header show it.
+    struct DesktopPeer
+    {
+        std::string id, name, track, project;    // another instance open: its number, its name ("Synth 1", or the user's)
+        bool target = false;                     // Claude Desktop's target
+        friend bool operator==(const DesktopPeer&, const DesktopPeer&) = default;
+    };
+    struct DesktopState
+    {
+        bool linked = false;                     // it has its socket (else nothing below means anything)
+        std::string id, name, number;            // "2"; its name to Claude Desktop ("Bass", else "Synth 2"); "Synth 2"
+        bool connected = false;                  // Claude Desktop's server talks to it now
+        bool chosen = false;                     // the user chose it as Claude Desktop's target (here or in another)
+        bool target = false;                     // it is the target: chosen, or the only one open with none chosen
+        std::string targetName;                  // the target's name when another one is ("" for none)
+        std::vector<DesktopPeer> others;         // the other instances open, by number
+        std::string doing;                       // the last call's title in words ("Measure the sound"; "" none yet)
+        bool running = false;                    // a call of Claude Desktop's acts on it now
+        double ago = 0.0;                        // seconds since that call began (running) or ended
+    };
+
     // A sample as the explorer lists it (EditorPort::assets).
     struct AssetEntry
     {
@@ -500,10 +522,16 @@ namespace playground
         virtual void setAbMatch(bool on) = 0;
         virtual bool keepAb(int side, std::string& why) = 0;
         virtual void endAb() = 0;
-        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
-        // whether Claude Desktop is talking to it now.
+        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Bass", else "Synth 2"; "" when there is no
+        // link), and whether Claude Desktop is talking to it now; all of it, with the target and the others open
+        // (desktop(), any thread: a copy). The user's name for it ("" its number's again; kept with the session; false,
+        // with why, for one it cannot take: mcp::target::nameRefusal), and the user's choice of Claude Desktop's target
+        // (`id`, this one's or another open's; `on` false clears it when it is that one).
         virtual std::string desktopName() const = 0;
         virtual bool desktopConnected() const = 0;
+        virtual DesktopState desktop() const = 0;
+        virtual bool setDesktopName(const std::string& name, std::string& why) = 0;
+        virtual void chooseDesktop(const std::string& id, bool on) = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;

@@ -295,6 +295,9 @@ namespace playground
         void endAb() override;
         std::string desktopName() const override { return mcp_ != nullptr ? mcp_->name() : std::string(); }
         bool desktopConnected() const override { return mcp_ != nullptr && mcp_->connected(); }
+        DesktopState desktop() const override;
+        bool setDesktopName(const std::string& name, std::string& why) override;
+        void chooseDesktop(const std::string& id, bool on) override;
         ChatPort& chat() override { return chat_; }
         bool panelView() const override { return panelView_.load(); }
         void setPanelView(bool on) override { panelView_.store(on); }

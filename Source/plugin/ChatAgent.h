@@ -338,6 +338,8 @@ namespace playground
         // Of the live calls, those that take seconds (listen): the link runs each on a thread of its own, so its poll
         // thread stays free (McpLink.h). One line a tool.
         static bool mcpLiveWaits(const std::string& name);
+        // A tool's title in words, as Claude Desktop shows it ("Measure the sound"; the name itself for one with none).
+        static std::string mcpTitle(const std::string& name);
         McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
         void mcpCancel(uint64_t call);
         // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
