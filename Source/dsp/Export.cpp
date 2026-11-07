@@ -318,7 +318,7 @@ namespace playground::measure
         }
         int format = 0;
         std::size_t at = 12;
-        bool fmt = false;
+        bool fmt = false, extensible = false;
         while (at + 8 <= b.size())
         {
             const uint8_t* c = b.data() + at;
@@ -335,6 +335,16 @@ namespace playground::measure
                 out.rate = get32(c + 12);
                 out.bits = static_cast<int>(get16(c + 22));
                 fmt = true;
+                // WAVE_FORMAT_EXTENSIBLE (0xFFFE, what most tools write past 16 bits, two channels or 48 kHz): the format
+                // is its SubFormat GUID's first two bytes (KSDATAFORMAT_SUBTYPE_PCM 1, _IEEE_FLOAT 3) when the rest of
+                // the GUID is the base one's, xxxxxxxx-0000-0010-8000-00AA00389B71; the container's bits are read whole
+                // (fewer valid bits are the low ones, zero).
+                if (format == 0xFFFE)
+                {
+                    static constexpr uint8_t kBase[14] = { 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+                    extensible = true;
+                    format = size >= 40 && std::memcmp(c + 8 + 26, kBase, sizeof kBase) == 0 ? static_cast<int>(get16(c + 8 + 24)) : -1;
+                }
             }
             else if (std::memcmp(c, "data", 4) == 0)
             {
@@ -346,7 +356,9 @@ namespace playground::measure
                 out.isFloat = format == 3;
                 if (!((format == 1 && (out.bits == 16 || out.bits == 24 || out.bits == 32)) || (format == 3 && out.bits == 32)))
                 {
-                    why = "format " + std::to_string(format) + " at " + std::to_string(out.bits) + " bits is not read here";
+                    why = extensible && format < 0 ? std::string("an extensible WAV whose sub-format is neither PCM nor float is not read here")
+                        : (extensible ? "extensible format " : "format ") + std::to_string(format) + " at " + std::to_string(out.bits)
+                              + " bits is not read here (PCM at 16, 24 or 32 bits, or float at 32)";
                     return false;
                 }
                 const std::size_t width = static_cast<std::size_t>(out.bits / 8), frames = size / (width * static_cast<std::size_t>(out.channels));

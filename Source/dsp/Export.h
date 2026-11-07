@@ -75,8 +75,9 @@ namespace playground::measure
     // The samples as a stereo WAV (above): frames = l.size() (r shorter: 0 past its end; empty: l on both).
     WavWritten writeWav(const Sink& sink, const std::vector<float>& l, const std::vector<float>& r, double rate, WavFormat format);
 
-    // A WAV read back (format 1 at 16, 24 or 32 bits, or format 3 at 32; one or two channels): for the probes, and a
-    // check that what was written reads as it should.
+    // A WAV read back (format 1 at 16, 24 or 32 bits, or format 3 at 32, either as WAVE_FORMAT_EXTENSIBLE's sub-format
+    // too; one or two channels): for the probes, a check that what was written reads as it should, and the renderer's
+    // input.
     struct Wav
     {
         uint32_t rate = 0;

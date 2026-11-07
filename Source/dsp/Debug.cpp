@@ -1781,8 +1781,8 @@ namespace playground::measure
         for (std::size_t k = 0; k < map.size() && scan.size() < kMaxScanned; ++k)
             if (map[k].home != Field::Home::host)
                 scan.push_back(k);
-        std::vector<std::string> unmatched;
-        std::size_t more = 0;
+        std::vector<std::string>& unmatched = out.unmatched;
+        std::vector<std::size_t> past;                       // matched past kMaxTraceWatched, each field once
         for (std::size_t i = 0; i < q.fields.size() && i < kMaxTracePatterns; ++i)
         {
             bool any = false;
@@ -1790,16 +1790,14 @@ namespace playground::measure
                 if (tracePathMatches(q.fields[i], map[k].path))
                 {
                     any = true;
-                    if (std::find(watch.begin(), watch.end(), k) != watch.end())
+                    if (std::find(watch.begin(), watch.end(), k) != watch.end() || std::find(past.begin(), past.end(), k) != past.end())
                         continue;
-                    if (watch.size() < kMaxTraceWatched)
-                        watch.push_back(k);
-                    else
-                        ++more;
+                    (watch.size() < kMaxTraceWatched ? watch : past).push_back(k);
                 }
             if (!any)
                 unmatched.push_back(q.fields[i]);
         }
+        const std::size_t more = out.more = past.size();
         const TraceFind find = q.find == TraceFind::none && q.fields.empty() && !q.exporting ? TraceFind::any : q.find;
         for (const std::size_t k : watch)
             out.watched.push_back(map[k].path);

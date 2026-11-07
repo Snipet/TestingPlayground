@@ -117,6 +117,8 @@ namespace playground::measure
         bool stopped = false;                     // the time limit or a cancel cut it short (either pass)
         bool stoppedFirst = false;                // in pass 1: what it rendered (l, r, the hash, the log) is the part
                                                   // before the stop; a stop in pass 2 alone leaves pass 1's render whole
+        std::vector<std::string> unmatched;       // the fields' patterns that matched no field (the lines say so)
+        std::size_t more = 0;                     // the fields matched past kMaxTraceWatched, not watched (the lines say so)
         std::vector<std::string> fromStart;       // fields already non-finite before the first call
         Patch::Method stopCall = Patch::Method::none; // pass 1's render stopped (Patch.h, "The loop budget"): the call, and
         std::size_t stopAt = 0;                   // the sample its call's block or part began at (the lines say so)

@@ -47,8 +47,9 @@
 //           samples' and in the lines, the same twice and another for another note (the effect's noise), an
 //           instrument's measure_output's (Result::hash) and an effect's view_sound's; the WAV float32 read back to the
 //           bit, its data chunk hashing to the render hash, 24-bit within half a step and past full scale clipped and
-//           counted; the CSV's header and rows, a float to 9 digits and a double to 17 reading back to their bits, 6
-//           for the inline form; evenRows
+//           counted; the same as WAVE_FORMAT_EXTENSIBLE (24-bit PCM, float) read as the plain ones, another sub-format
+//           and a GUID not the base one refused; the CSV's header and rows, a float to 9 digits and a double to 17
+//           reading back to their bits, 6 for the inline form; evenRows
 #include "Probe.h"
 
 #include "Examples.h"
@@ -1284,6 +1285,7 @@ PROBE(dsp, debug)
     P.eq("watch.fields", watch.watched.size() == 2 && watch.watched[0] == "phase" && watch.watched[1] == "count" ? 1 : 0, 1);
     P.eq("watch.lines", anyHas(watch.lines, "phase: min ") && anyHas(watch.lines, "largest jump") && anyHas(watch.lines, "never non-finite") ? 1 : 0, 1);
     P.eq("watch.unknown_named", anyHas(watch.lines, "No field matches nothing.here") ? 1 : 0, 1);
+    P.eq("watch.unmatched", watch.unmatched == std::vector<std::string>{ "nothing.here" } && watch.more == 0 ? 1 : 0, 1);
     P.eq("watch.no_find", watch.problems.empty() && !anyHas(watch.lines, "Nothing found") ? 1 : 0, 1);
 
     ms::TraceRequest listReq;
@@ -1464,6 +1466,45 @@ PROBE(dsp, debug)
             P.le("export.wav_24_within_half_a_step", worst, 0.5);
             P.eq("export.wav_24_clipped", static_cast<int64_t>(w24.clipped), 2 * static_cast<int64_t>(past));
             P.eq("export.wav_24_full_scale", read24 && b24.l.front() == -1.0f && b24.l.back() == static_cast<float>(8388607.0 / 8388608.0) ? 1 : 0, 1);
+
+            // WAVE_FORMAT_EXTENSIBLE (what ffmpeg writes past 16 bits, two channels or 48 kHz): the same file with a fmt
+            // chunk of 40 bytes (the plain one's 16 or 18, then whatever follows it), its format 0xFFFE and the
+            // sub-format GUID's first two bytes the format (PCM 1, float 3), reads as the plain one; another sub-format
+            // (2, ADPCM) and a GUID that is not the base one are refused.
+            const auto extensible = [](const std::string& plain, uint16_t sub, bool base) {
+                std::string fmt = plain.substr(20, 16);              // the plain fmt chunk's 16 bytes
+                const uint16_t bits = static_cast<uint16_t>(static_cast<uint8_t>(fmt[14]) | static_cast<uint8_t>(fmt[15]) << 8);
+                fmt[0] = static_cast<char>(0xFE);
+                fmt[1] = static_cast<char>(0xFF);
+                const uint8_t tail[24] = { 22, 0, static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8), 3, 0, 0, 0,
+                                           static_cast<uint8_t>(sub), static_cast<uint8_t>(sub >> 8), 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+                                           0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, static_cast<uint8_t>(base ? 0x71 : 0x72) };
+                fmt.append(reinterpret_cast<const char*>(tail), sizeof tail);
+                const std::size_t plainFmt = static_cast<std::size_t>(static_cast<uint8_t>(plain[16]) | static_cast<uint8_t>(plain[17]) << 8);
+                std::string out = "RIFF....WAVEfmt " + std::string("\x28\0\0\0", 4) + fmt + plain.substr(20 + plainFmt);   // fact, data
+                const auto size = static_cast<uint32_t>(out.size() - 8);
+                for (int k = 0; k < 4; ++k)
+                    out[static_cast<std::size_t>(4 + k)] = static_cast<char>((size >> (8 * k)) & 0xFFu);
+                return out;
+            };
+            const std::string ext24 = extensible(bytes, 1, true);
+            ms::Wav e24;
+            const bool readExt24 = ms::readWav(span(ext24), e24, why);
+            bytes.clear();
+            ms::writeWav(sink, r.l, r.r, rate, ms::WavFormat::float32);
+            const std::string extFloat = extensible(bytes, 3, true);
+            ms::Wav eFloat;
+            const bool readExtFloat = ms::readWav(span(extFloat), eFloat, why);
+            std::string adpcmWhy, guidWhy;
+            ms::Wav refused;
+            const bool adpcm = ms::readWav(span(extensible(bytes, 2, true)), refused, adpcmWhy);
+            const bool guid = ms::readWav(span(extensible(bytes, 3, false)), refused, guidWhy);
+            std::printf("EXPORT: extensible 24-bit %s, float %s; ADPCM: %s; another GUID: %s\n", readExt24 ? "read" : why.c_str(),
+                        readExtFloat ? "read" : why.c_str(), adpcmWhy.c_str(), guidWhy.c_str());
+            P.eq("export.wav_extensible_24", readExt24 && !e24.isFloat && e24.bits == 24 && e24.l == b24.l && e24.r == b24.r ? 1 : 0, 1);
+            P.eq("export.wav_extensible_float", readExtFloat && eFloat.isFloat && eFloat.rate == 48000 && eFloat.l == r.l && eFloat.r == r.r ? 1 : 0, 1);
+            P.eq("export.wav_extensible_refused", !adpcm && adpcmWhy.find("extensible format 2") != std::string::npos && !guid
+                                                      && guidWhy.find("neither PCM nor float") != std::string::npos ? 1 : 0, 1);
         }
 
         // The CSV: the header and a row a log row; a float to 9 digits and a double to 17 read back to their bits.
