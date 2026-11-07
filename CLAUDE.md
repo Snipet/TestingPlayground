@@ -149,9 +149,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   info; `SavedVersion::copied`, `name`); an export takes its own name, the folder too; the session keeps the name while
   the build has it. The editor shows the own name (`ownName`) in rows, the browser lists them after the user's under a
   caption row (a `ProjectEntry` of no name: never chosen, never matched), the explorer in FACTORY (folded at first).
-  The set is compiled in once per product; a project file's format does not change. `plugin.factory` checks it all,
-  the import too (`scripts/import-factory.py`, run with python3 against made-up projects in a folder of its own:
-  `--factory` and `--products` point it there); a probe never reads the user's projects.
+  The browser's field never takes a factory name over another program: a factory row chosen puts its copy's name
+  there only when it is the one open, else the program open's (`ProjectBrowser::fieldFor`, `homeName`); EXPORT shows a
+  factory project's info read-only and keeps nothing (`ExportCard::readOnly`). The set is compiled in once per
+  product; a project file's format does not change. Each text is one raw string literal in `FactoryProjects.h`, which
+  turns off `-Woverlength-strings` around them (a text over 64 KB compiles; a configure and the import print the
+  largest). `plugin.factory` checks it all (its PRIVATE the import's own shapes over every string of each), the import
+  too (`scripts/import-factory.py`, run with python3 against made-up projects in a folder of its own: `--factory` and
+  `--products` point it there); a probe never reads the user's projects.
 - `cmake --workflow --preset release-build`: Release with LTO in `build-release`, both products. `scripts/install.sh`
   copies both products' AU and VST3 into `~/Library/Audio/Plug-Ins` and their Standalone apps into `/Applications`
   (`~/Applications` when that is not writable; `scripts/install.sh synth`: one; `--dry-run` says what it would copy);
