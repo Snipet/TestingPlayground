@@ -20,8 +20,16 @@
 //   OFF      the overhead with the profile off is nil: a measure without it makes no Sampler (profile::made() the same
 //            before and after: no thread, no code listed) and has no profile line nor shares; with it one Sampler; the
 //            render hash and every metric but the CPU's the same with the profile on and off (sampling changes no bit)
+//   CALLS    a program whose process calls FMinus's runtime (an FFT, forward and back, a few times a call): where the
+//            platform charges a call to its caller (profile::chargesCalls(): macOS, the stack walked) process has
+//            the time (80 % or more), most of it in its calls (Share::calls 50 % or more), outside the program's code
+//            under 20 %, and the line says so ("in its calls out of the program's code ...: FMinus's runtime (an FFT,
+//            a called math function, the threads' pool) ..."); elsewhere the time is outside the program's code
+//   PARALLEL a program whose process has a parallel { }: its region's code listed (CodeRange::parallel), and the line
+//            says that only this thread is sampled; the heavy program's (no region) says nothing of it
 //   CODE     Patch::codeRanges: sorted, none overlapping, each named; a program with a module Shared names its init
-//            "Shared::init"
+//            "Shared::init" (the method's own code and the plugin's appended call, at least two ranges), no range
+//            named for the appended call itself ("playground_", the main module's "shared_init")
 // Printed: each report's profile line, and cpu_percent with the profile off and on (not asserted: the thread's time,
 // barely touched by the sampler).
 #include "Probe.h"
@@ -111,6 +119,116 @@ module Effect
             float y = heavy.run(left[i]);
             left[i] = half(left[i]) + 0.001f * y;
             right[i] = half(right[i]) + 0.001f * y;
+        }
+    }
+};
+)";
+    }
+
+    // A program whose process calls FMinus's runtime: an FFT of 1024, forward and back, `rounds` times a call.
+    std::string fftProgram(int rounds)
+    {
+        const std::string fields = R"(    void* plan;
+    float buf[1024];
+    float back[1024];
+    float2 bins[513];
+)";
+        const std::string spin = "        for (int k = 0; k < " + std::to_string(rounds) + R"(; ++k)
+        {
+            buf[k] = left[0] + 0.0001f * back[k];
+            fft_forward(plan, buf, bins);
+            bins[3].x = 0.5f * bins[3].x;
+            fft_inverse(plan, bins, back);
+        }
+)";
+        if constexpr (kInstrument)
+            return "module Voice\n{\n" + fields + R"(    float rate, ph, step;
+    bool held;
+    void init(float r) { rate = r; plan = fft_create(1024); }
+    void end() { fft_destroy(plan); }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; ph = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = right[i] = 0.25f * sinf(6.28318531f * ph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+        }
+)" + spin + R"(        left[0] += 0.000001f * back[0];
+        return held;
+    }
+};
+)";
+        else
+            return "module Effect\n{\n" + fields + R"(    void init(float rate) { plan = fft_create(1024); }
+    void end() { fft_destroy(plan); }
+    void process(float* restrict left, float* restrict right, int n)
+    {
+)" + spin + R"(        left[0] += 0.000001f * back[0];
+    }
+};
+)";
+    }
+
+    // A program whose process runs a parallel { } of two chains, one a channel.
+    std::string parallelProgram()
+    {
+        const std::string chain = R"(module Chain
+{
+    float z;
+    void run(float* x, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            float s = x[i];
+            for (int k = 0; k < 16; ++k)
+                s = sinf(1.1f * s + z);
+            z = 0.001f * s;
+            x[i] = x[i] + z;
+        }
+    }
+};
+)";
+        if constexpr (kInstrument)
+            return chain + R"(
+module Voice
+{
+    Chain a, b;
+    float rate, ph, step;
+    bool held;
+    void init(float r) { rate = r; }
+    void start(float note, float v) { step = 440 * expf(0.0577622650f * (note - 69)) / rate; held = true; ph = 0; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            left[i] = right[i] = 0.25f * sinf(6.28318531f * ph);
+            ph += step;
+            if (ph >= 1) ph -= 1;
+        }
+        parallel
+        {
+            a.run(left, n);
+            b.run(right, n);
+        }
+        return held;
+    }
+};
+)";
+        else
+            return chain + R"(
+module Effect
+{
+    Chain a, b;
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        parallel
+        {
+            a.run(left, n);
+            b.run(right, n);
         }
     }
 };
@@ -300,6 +418,7 @@ PROBE(dsp, profile)
     P.eq("words.inlined", proc == nullptr || (has(line, ", " + process + " ") && has(line, "% (inlined into it: " + half + ")")) ? 1 : 0, 1);
     P.eq("words.outside", has(line, "; outside the program's code ") ? 1 : 0, 1);
     P.eq("words.steady", has(line, "Few samples") ? 0 : 1, 1);
+    P.eq("words.no_region", has(line, "Only this thread is sampled") ? 0 : 1, 1);
     {
         ms::Request windowed = withProfile;
         windowed.want = { "cpu_percent" };
@@ -337,6 +456,70 @@ PROBE(dsp, profile)
         P.eq("code.sorted_apart", sorted ? 1 : 0, 1);
         P.eq("code.named", named ? 1 : 0, 1);
         P.eq("code.shared_init", sharedInit ? 1 : 0, 1);
+        // The appended call's code is named as the method it calls (PatchCode.cpp): Shared::init twice at least (the
+        // method's own and the call's), and no name of the call's own.
+        int sharedInits = 0, callNames = 0;
+        for (const auto& r : lc)
+        {
+            sharedInits += r.function == "Shared::init" && r.module == "Shared" ? 1 : 0;
+            callNames += has(r.function, "playground_") || r.function == std::string(kMain) + "::shared_init" ? 1 : 0;
+        }
+        std::printf("Shared::init ranges %d, ranges named for an appended call %d\n", sharedInits, callNames);
+        P.ge("code.shared_init_call", sharedInits, 2);
+        P.eq("code.no_call_names", callNames, 0);
+    }
+
+    // ---- CALLS -------------------------------------------------------------------------------------------------------
+    {
+        ms::Session fft(pg::singleFile(fftProgram(kInstrument ? 4 : 64)), 48000.0);
+        P.eq("calls.compiles", fft.compiled() ? 1 : 0, 1);
+        if (!fft.compiled())
+            std::printf("does not compile:\n%s\n", fft.errors().c_str());
+        else
+        {
+            const ms::Result c = fft.measure(withProfile);
+            const std::string cl = profileLine(c.report);
+            std::printf("%s\n", cl.c_str());
+            const auto* called = shareOf(c.profile, process);
+            std::printf("process %.2f %% (in its calls %.2f %%), outside %.2f %%, %zu samples\n", called != nullptr ? called->share * 100.0 : -1.0,
+                        called != nullptr ? called->calls * 100.0 : -1.0, c.profileOutside * 100.0, c.profileSamples);
+            if (pg::profile::chargesCalls())
+            {
+                P.ge("calls.process_share", called != nullptr ? called->share : 0.0, 0.8);
+                P.ge("calls.in_its_calls", called != nullptr ? called->calls : 0.0, 0.5);
+                P.le("calls.outside_small", c.profileOutside, 0.2);
+                P.eq("calls.words", has(cl, "): " + process + " ") && has(cl, "in its calls out of the program's code ")
+                                        && has(cl, "FMinus's runtime (an FFT, a called math function, the threads' pool) ") ? 1 : 0, 1);
+            }
+            else
+            {
+                P.ge("calls.outside", c.profileOutside, 0.5);
+                P.eq("calls.words", has(cl, "in its calls out of the program's code") ? 0 : 1, 1);
+            }
+        }
+    }
+
+    // ---- PARALLEL ----------------------------------------------------------------------------------------------------
+    {
+        ms::Session par(pg::singleFile(parallelProgram()), 48000.0);
+        P.eq("parallel.compiles", par.compiled() ? 1 : 0, 1);
+        if (!par.compiled())
+            std::printf("does not compile:\n%s\n", par.errors().c_str());
+        else
+        {
+            std::string why;
+            int regions = 0;
+            for (const auto& r : par.patch()->codeRanges(why))
+                regions += r.parallel ? 1 : 0;
+            P.ge("parallel.listed", regions, 1);
+            ms::Request held = withProfile;
+            held.holdSeconds = 1.0f;
+            held.want = { "cpu_percent" };
+            const ms::Result r = par.measure(held);
+            const std::string pl = profileLine(r.report);
+            std::printf("%s\n", pl.c_str());
+            P.eq("parallel.said", has(pl, ". Only this thread is sampled: a parallel region's work on the pool's other threads is not in it.") ? 1 : 0, 1);
+        }
     }
     return P.finish();
 }

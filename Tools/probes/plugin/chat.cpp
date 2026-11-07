@@ -175,8 +175,9 @@
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
-//   PROFILE  measure_output's profile through MCP: the report's profile line (dsp/Profile.h), before the metrics; a
-//            value that is no boolean refused
+//   PROFILE  measure_output's profile through MCP, on a trial copy made heavy (a loop of sinf a call): the report's
+//            profile line (dsp/Profile.h), before the metrics, with samples where the platform takes them, the main
+//            module's process on top; a value that is no boolean refused
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
@@ -276,6 +277,7 @@
 
 #include "dsp/Export.h"
 #include "dsp/Measure.h"
+#include "dsp/Profile.h"
 #include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
 
@@ -3310,14 +3312,22 @@ PROBE(plugin, chat)
 
             // ---- PROFILE ---------------------------------------------------------------------------------------------------
             {
-                juce::var in = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "profile", true } });
+                // The program made heavy on a trial copy (a loop of sinf a call), so that the timed calls take samples.
+                juce::Array<juce::var> heavier;
+                heavier.add(input({ { "file", "program.fm" },
+                                    { "old_text", "const float g = expf(0.115129255f * " },
+                                    { "new_text", "float w = 0.0f;\n        for (int k = 0; k < 20000; ++k)\n            w = sinf(w + 0.001f * k);\n"
+                                                  "        const float g = (1.0f + 0.0000001f * w) * expf(0.115129255f * " } }));
+                juce::var in = input({ { "hold_seconds", 1.0 }, { "tail_seconds", 0.2 }, { "profile", true }, { "try_edits", heavier } });
                 const std::string profiled = toolText(sa.mcpCall("measure_output", in));
                 const std::size_t at = profiled.find("\nProfile");
                 std::printf("measure_output with profile: %s\n",
                             at == std::string::npos ? "(no line)" : profiled.substr(at + 1, profiled.find('\n', at + 1) - at - 1).c_str());
-                P.eq("profile.line", at != std::string::npos
-                                         && (has(profiled, "samples of the rendering thread") || has(profiled, "Profile: no samples (")
-                                             || has(profiled, "Profile: none (this platform"))
+                const std::string processOf = pg::product::kIsInstrument ? "Voice::process " : "Effect::process ";
+                P.eq("profile.line", at != std::string::npos && profiled.rfind("With 1 trial edit; nothing in the plugin changed.\n", 0) == 0
+                                         && (pg::profile::available() ? has(profiled, " samples of the rendering thread, about every ")
+                                                                            && has(profiled, "inlined into it): " + processOf)
+                                                                      : has(profiled, "Profile: none (this platform"))
                                          && has(profiled, "\nMetrics: ") ? 1 : 0, 1);
                 in.getDynamicObject()->setProperty("profile", "yes");
                 const pg::ChatAgent::McpResult notBool = sa.mcpCall("measure_output", in);
