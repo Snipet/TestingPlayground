@@ -3298,6 +3298,23 @@ namespace playground::ui
             sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
+        // The recorder's Mark (the capture tool's recording for Claude): in the status bar, right of its REC notice, while
+        // it records; it marks this moment for Claude (Cmd-Shift-M too).
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::flag; };
+            sp.label = [] { return std::string("Mark"); };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] {
+                return recording_.stage == RecordingState::Stage::waiting || recording_.stage == RecordingState::Stage::recording;
+            };
+            sp.enabled = [this] { return recording_.stage == RecordingState::Stage::recording && recording_.room; };
+            sp.act = [this] { markNow(); };
+            sp.a11yTitle = "Mark this moment in the recording for Claude";
+            sp.spec = upper(shortcutText("Mark   this moment in the recording, for Claude to find (Cmd-Shift-M)"));
+            markItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
         // Claude Desktop's badge in the chat's header, while it is connected and its calls go to another instance (or to
         // none: several open, none chosen): a click makes this one its target. The chat folded, a mark on its rail says
         // it instead (its footer line the badge's words), and does the same.
@@ -3750,6 +3767,7 @@ namespace playground::ui
             z.setBounds({ right - w, H - kFooterH + 4.0f, w, kFooterH - 8.0f });
         }
         placeMutedNotice();
+        placeRecordNotice();
         placeMeter();
         ++layoutRevision_;
         ++layouts_;
@@ -5596,6 +5614,7 @@ namespace playground::ui
         if (role_ == Role::code)
             return;                                      // no settings card and no chat in the code window
         syncSettings();
+        syncRecording(nowSec);
         refreshChat(nowSec);
     }
 
@@ -6999,6 +7018,81 @@ namespace playground::ui
 
     funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
 
+    // ---- the recorder: REC in the status bar while the capture tool records for Claude, and the user's marks ----------
+    std::string Panel::recordText() const
+    {
+        char buf[96] = {};
+        switch (recording_.stage)
+        {
+            case RecordingState::Stage::off:     return {};
+            case RecordingState::Stage::waiting: return "REC   WAITING TO START";
+            case RecordingState::Stage::recording:
+            case RecordingState::Stage::ended:
+                std::snprintf(buf, sizeof buf, "REC   %.1f S%s", recording_.seconds,
+                              recording_.stage == RecordingState::Stage::ended ? ", ENDED" : "");
+                break;
+        }
+        std::string out = buf;
+        if (recording_.marks > 0)
+            out += "   " + std::to_string(recording_.marks) + (recording_.marks == 1 ? " MARK" : " MARKS");
+        return out;
+    }
+
+    // Ten looks a second at most (EditorPort::recording never waits): a frame when what the notice says changes.
+    void Panel::syncRecording(double nowSec)
+    {
+        if (recordingAt_ >= 0.0 && nowSec - recordingAt_ < 0.1 && nowSec >= recordingAt_)
+            return;
+        recordingAt_ = nowSec;
+        const RecordingState r = port_.recording();
+        const bool shownBefore = recordShown();
+        recording_ = r;
+        if (const std::string text = recordText(); text != recordShownText_ || shownBefore != recordShown())
+        {
+            recordShownText_ = text;
+            placeRecordNotice();
+            dirty_ = true;
+        }
+    }
+
+    // The Mark button at the status bar's right (left of the muted notice and the zoom); REC's words left of it.
+    void Panel::placeRecordNotice()
+    {
+        auto& b = static_cast<ButtonItem&>(*items_[static_cast<std::size_t>(markItem_)]);
+        const auto& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
+        const auto& muted = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(mutedItem_)]);
+        const float y = height_ - kFooterH + 4.0f, h = kFooterH - 8.0f;
+        const funkgui::Rect before = b.bounds();
+        b.setBounds({ 0.0f, y, 10.0f, h });
+        const float w = b.preferredWidth();
+        float right = zoom.shown() ? zoom.bounds().x - 10.0f : width_ - kMargin;
+        if (mutedShown_)                                 // the muted notice's words and button, right of it
+            right = muted.bounds().x - 10.0f - funkgui::text::width(funkgui::FontService::get().atlas(), kMutedText, chat::kSmall)
+                  - 18.0f - 14.0f;
+        b.setBounds({ right - w, y, w, h });
+        const funkgui::Rect now = b.bounds();
+        if (now.x != before.x || now.y != before.y || now.w != before.w || now.h != before.h)
+        {
+            ++layoutRevision_;                           // its accessibility item moved
+            dirty_ = true;
+        }
+    }
+
+    funkgui::Point Panel::centreOfMark() const { return centreOf(markItem_); }
+
+    void Panel::markNow()
+    {
+        std::string why;
+        recordingAt_ = -1.0;                             // looked at again in the next refresh
+        if (port_.markRecording(why))
+        {
+            const RecordingState r = port_.recording();
+            notice("MARKED M" + std::to_string(r.marks) + " IN THE RECORDING");
+        }
+        else
+            notice("NOT MARKED: " + upper(why));
+    }
+
     void Panel::chooseImport()
     {
         if (host_ == nullptr)
@@ -7597,7 +7691,7 @@ namespace playground::ui
         }
         k.mix(status_).mix(meter_).mix(meterAlerts_).mix(meterLoad_).mix(port_.alerts() != 0).mix(projectText_).mix(title_)
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
-            .mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
+            .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
@@ -7912,11 +8006,27 @@ namespace playground::ui
             c.text(kMutedText, tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
             noticeW = b.right() - (tx - 18.0f) + 12.0f;
         }
+        // The recorder's notice (REC, its seconds and marks), left of its Mark (or where Mark would be).
+        float recordW = 0.0f;
+        if (recordShown())
+        {
+            const funkgui::Canvas::Scope s(c, kRecordTag, false);
+            const ButtonItem& mark = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(markItem_)]);
+            const funkgui::Rect b = mark.bounds();
+            const std::string text = recordText();
+            const float right = mark.shown() ? b.x - 10.0f : b.right();
+            const float tx = right - c.textWidth(text.c_str(), chat::kSmall);
+            constexpr funkgui::Col kRecording{ 0xE5, 0x48, 0x4D, 255 };   // a recorder's red, in either theme
+            const bool live = recording_.stage == RecordingState::Stage::recording;
+            c.disc(tx - 9.0f, b.centreY(), 3.5f, live ? kRecording : pal.faint);
+            c.text(text.c_str(), tx, c.capCentreTop(b.centreY(), chat::kSmall), chat::kSmall, pal.soft);
+            recordW = b.right() - (tx - 16.0f) + 12.0f;
+        }
         if (line[0] != '\0')
         {
             const ButtonItem& zoom = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(zoomItem_)]);
             const float zoomW = zoom.shown() ? zoom.bounds().w + 12.0f : 0.0f;
-            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - 8.0f);
+            const std::string shown = fitFields(c, line, contentW - zoomW - noticeW - recordW - 8.0f);
             const funkgui::Canvas::Scope s(c, funkgui::tags::hint, false);
             c.text(shown.c_str(), kMargin + 8.0f, c.capCentreTop(height_ - 0.5f * kFooterH, funkgui::type::kMicro),
                    funkgui::type::kMicro, th.ink52);
@@ -8298,6 +8408,14 @@ namespace playground::ui
             if (full() || role_ == Role::code)
                 return false;
             toggleCodePanel();
+            return true;
+        }
+        // Cmd-Shift-M: a mark in the recording for Claude, while the capture tool records (anywhere in the panel).
+        if (e.key == funkgui::Key::character && e.mods.cmd && e.mods.shift && !e.mods.alt && (e.ch == 'm' || e.ch == 'M'))
+        {
+            if (!recordShown())
+                return false;
+            markNow();
             return true;
         }
         // Cmd-Shift-D: a netlist's Netlist / Schematic view, in either view; nothing while the IR tab shows.

@@ -44,6 +44,11 @@
 //             replay's line in their result, compare with what plays identical bits, a part (from, to) named so, and
 //             status then reports the replay's line; from and to without "capture" are refused
 //             trace's source "capture" replays it through the program that played it, a part of it too
+//   MARKS     the user's marks (Processor::markRecording, the status bar's Mark): refused before the take starts, two
+//             made while it records, each at the samples played when it was made; stop's report names them ("m1 at
+//             ..."), LAST's (none made) says "Marks: none"; a scenario's from and to take them by name ("m1", "m2"):
+//             the part between them replayed; a mark the take lacks, a later mark before an earlier one and a word
+//             that names none refused in words
 //   CIRCUITS  a program playing a netlist's provisional configuration (AutoClipper.h's clipper, the self-test off),
 //             recorded (mode next); the self-test's answer stored after it: the take keeps the configuration its
 //             netlist played with (CompileStatus::circuits), and its replay (and trace's "capture") plays it bit for bit,
@@ -556,6 +561,7 @@ PROBE(plugin, capture)
         const pg::ChatAgent::McpResult st = tool(r.rec, object({ { "action", "stop" } }));
         stopText = textOf(st);
         std::printf("arm: %s\nstatus while recording:\n%s\nstop:\n%s", armText.c_str(), statusText.c_str(), stopText.c_str());
+        P.eq("marks.none", has(stopText, "Marks: none (the user marks a moment while it records") ? 1 : 0, 1);
         const cap::Reply taken = r.rec.recorder().act(cap::Action::take, {});
         P.eq("last.kept", taken.state == cap::State::kept && taken.take != nullptr ? 1 : 0, 1);
         if (taken.take != nullptr)
@@ -913,8 +919,20 @@ PROBE(plugin, capture)
         // 1061 (four parts of 256 and one of 37).
         constexpr std::size_t kFrom = 4;
         uint64_t sound = ~uint64_t{ 0 };
+        // The user's marks: one before the take starts (refused), two while it records, at the samples played then.
+        std::string earlyWhy;
+        bool early = true;
+        std::vector<uint64_t> markedAt;
         for (std::size_t k = 0; r.pos < static_cast<uint64_t>(2.4 * kFs); ++k)
         {
+            if (k == 1)
+                early = r.rec.editorPort().markRecording(earlyWhy);
+            if (k == kFrom + 20 || k == kFrom + 45)
+            {
+                std::string why;
+                if (r.rec.editorPort().markRecording(why))
+                    markedAt.push_back(r.pos - r.starts[kFrom]);
+            }
             const int n = patternAt(k);
             if (k == kFrom)
                 sound = r.pos + static_cast<uint64_t>(n / 3);
@@ -947,6 +965,11 @@ PROBE(plugin, capture)
             P.eq("replay.forecast_fresh", has(stopText, kInstrument ? "Replay: no voice sounded when it started"
                                                                     : "Replay: no tail rang when it started") ? 1 : 0, 1);
             P.eq("replay.bits", replaysBitForBit(t) ? 1 : 0, 1);
+            P.eq("marks.waiting_refused", !early && has(earlyWhy, "has not started yet") ? 1 : 0, 1);
+            P.eq("marks.take", t.marks.size() == 2 && markedAt.size() == 2 && t.marks[0].number == 1 && t.marks[1].number == 2
+                                   && t.marks[0].sample == markedAt[0] && t.marks[1].sample == markedAt[1] ? 1 : 0, 1);
+            P.eq("marks.report", has(stopText, "The user's marks (a scenario's from and to take one by its name, \"m1\"): m1 at ")
+                                     && has(stopText, "; m2 at ") ? 1 : 0, 1);
             cap::Replay rp;
             std::string why;
             const cap::Fidelity f = cap::replayOf(t, 0.0, -1.0, rp, why) ? cap::nullTest(t, rp) : cap::Fidelity{};
@@ -988,6 +1011,28 @@ PROBE(plugin, capture)
         const std::string wt = textOf(w);
         std::printf("replay, a part: %s\n", wt.substr(0, wt.find("Played:")).c_str());
         P.eq("replay.part", !w.isError && has(wt, "this part starts mid-take") && has(wt, " of its 1.49 s (from 0.4") ? 1 : 0, 1);
+        // The user's marks as the part's ends: the part between them.
+        if (markedAt.size() == 2)
+        {
+            const auto marked = [&](const juce::var& from, const juce::var& to) {
+                return r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", object({ { kInstrument ? "phrase" : "input", "capture" },
+                                                                                                   { "from", from }, { "to", to } }) } }));
+            };
+            const pg::ChatAgent::McpResult mk = marked("m1", "m2");
+            const std::string mkt = textOf(mk);
+            char from[64];
+            std::snprintf(from, sizeof from, " (from %.2f s to ", static_cast<double>(markedAt[0]) / kFs);
+            std::printf("replay, from m1 to m2: %s\n", mkt.substr(0, mkt.find("Played:")).c_str());
+            P.eq("marks.part", !mk.isError && has(mkt, from) && has(mkt, "this part starts mid-take") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult missing = marked("m1", "m3");
+            P.eq("marks.missing", missing.isError && has(textOf(missing), "to is m3, but the recording has m1, m2") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult order = marked("m2", "m1");
+            P.eq("marks.order", order.isError && has(textOf(order), "a mark after from's") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult word = marked("later", "m2");
+            P.eq("marks.word", word.isError && has(textOf(word), "one of the user's marks by its name") ? 1 : 0, 1);
+        }
+        else
+            P.eq("marks.made", 0, 1);
         const pg::ChatAgent::McpResult bad = r.rec.chatAgent().mcpCall("measure_output", object({ { "scenario", object({ { "from", 0.5 } }) } }));
         P.eq("replay.from_needs_capture", bad.isError && has(textOf(bad), "scenario.from") ? 1 : 0, 1);
         const pg::ChatAgent::McpResult v = r.rec.chatAgent().mcpCall("view_sound", object({ { "scenario", capture } }));

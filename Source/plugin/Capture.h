@@ -47,6 +47,14 @@
 // (each ring announces what it is about to write), so stop and status never wait for the audio thread, and need no
 // block to come.
 //
+// Marks. While it records, the user marks a moment (the status bar's Mark, Cmd-Shift-M: Processor::markRecording, the
+// message thread): mark() takes what the audio thread announced last (the end of the block it writes or wrote last,
+// within a block of the moment), under the recorder's mutex, into the ring's list (the reader's alone, never the audio
+// thread's), numbered from 1 in the order made, kMaxMarks at most. A take keeps those inside it, at their samples from
+// its start (last: those before the part it keeps are counted, Take::marksBefore), and the tools read them: the
+// report's line, and a scenario's from and to ("m2", ChatScenario.h). glance() is the status bar's look (the message
+// thread, at most 20 times a second): it never waits for the mutex (a call copying keeps it) and says so.
+//
 // Privacy. Nothing here is written anywhere: a take lives in memory until forget, the next arm, or ten minutes without
 // a call (housekeep), and leaves only as the numbers the tool reports.
 #pragma once
@@ -78,6 +86,7 @@ namespace playground::capture
     inline constexpr float kSoundThreshold = 0.001f;        // -60 dBFS: an effect's first sound (next)
     inline constexpr int kEventCapacity = 32768;            // an instrument's events a recording holds
     inline constexpr int kAverageBlock = 32;                // the host blocks a ring is sized for, on average
+    inline constexpr int kMaxMarks = 32;                    // the user's marks a recording keeps
 
     enum class Mode : uint8_t { last, next };
     enum class Action : uint8_t { arm, stop, take, status, forget, replayed };
@@ -177,6 +186,14 @@ namespace playground::capture
         }
     };
 
+    // A mark the user made while it recorded (Recorder::mark): its number (from 1, in the order made) and its sample
+    // from the take's start.
+    struct Mark
+    {
+        int number = 0;
+        uint64_t sample = 0;
+    };
+
     // A recording taken: its own copy (stop), or one still recording as it stands (a snapshot: status).
     struct Take
     {
@@ -205,6 +222,8 @@ namespace playground::capture
         std::vector<std::pair<uint64_t, Sources>> programs;   // the files of each program that played, for a replay
         std::vector<std::pair<uint64_t, Controls>> programDials;   // and its dials (what its blocks' values are of)
         std::vector<std::pair<uint64_t, CircuitPins>> programPins;   // and its netlists' configurations (the replay's)
+        std::vector<Mark> marks;    // the user's, inside the take, in order
+        int marksBefore = 0;        // made before the part it keeps (last)
         std::size_t bytes = 0;      // what it holds
 
         uint64_t samples() const noexcept { return out[0].size(); }
@@ -280,6 +299,15 @@ namespace playground::capture
         std::string why;
     };
 
+    // What the status bar shows of the recorder (Recorder::glance).
+    struct Glance
+    {
+        State state = State::off;   // waiting, recording, ended (not stopped yet): the bar shows it
+        double seconds = 0.0;       // recorded so far
+        int marks = 0;              // made so far
+        bool room = true;           // another mark fits (kMaxMarks)
+    };
+
     class Recorder
     {
     public:
@@ -300,6 +328,11 @@ namespace playground::capture
         // recording that ended by itself (the program's own code then need not play), and after kIdleSeconds without
         // a call forgets everything. Skips a round while a call holds the mutex.
         void housekeep();
+        // The user's mark (above, "Marks"): false, with why, when nothing records now (not armed, waiting for its start,
+        // ended) or it holds kMaxMarks already.
+        bool mark(std::string& why);
+        // The recorder as the status bar shows it: false (and `out` as it was) when a call holds the mutex now.
+        bool glance(Glance& out) const;
         // A program that plays now (a compile that landed: Processor::apply): its files, its dials and the configuration
         // each of its netlists was generated with (CompileStatus::circuits), for a replay.
         void noteProgram(uint64_t program, const Sources& files, const Controls& controls = {}, const CircuitPins& pins = {});

@@ -335,6 +335,18 @@ namespace playground
         friend bool operator==(const PresetEntry&, const PresetEntry&) = default;
     };
 
+    // The capture tool's recorder as the status bar shows it (recording(); plugin/Capture.h, "Marks"): what it does, the
+    // seconds it has recorded, the user's marks so far and whether another fits.
+    struct RecordingState
+    {
+        enum class Stage : uint8_t { off, waiting, recording, ended };
+        Stage stage = Stage::off;
+        double seconds = 0.0;
+        int marks = 0;
+        bool room = true;
+        friend bool operator==(const RecordingState&, const RecordingState&) = default;
+    };
+
     // The open project's presets in turn (presetCycle()): what the top bar's arrows step through and its list shows,
     // what [ and ] step, what MIDI's program change and the host's programs choose by number.
     struct PresetCycle
@@ -569,6 +581,15 @@ namespace playground
         virtual float load() const = 0;
         virtual uint32_t alerts() const = 0;
         virtual bool frozen() const = 0;                 // the dials are frozen into the code (Patch.h)
+        // The recorder (RecordingState; the message thread: it never waits for a call that holds the recorder, and says
+        // what it saw last then), and the user's mark of this moment in its recording (the status bar's Mark,
+        // Cmd-Shift-M): false, with why, when nothing records.
+        virtual RecordingState recording() const { return {}; }
+        virtual bool markRecording(std::string& why)
+        {
+            why = "nothing is recording";
+            return false;
+        }
 
         virtual std::vector<ProjectEntry> projects() const = 0;
         virtual std::vector<ProjectEntry> factoryProjects() const = 0;

@@ -313,9 +313,11 @@ namespace playground::measure
         std::string recording;
         // What the plugin fills in before it renders (plugin/ChatScenario.h): the host's rate and block ("host"), the
         // user's last recording ("capture"; captureFrom and captureTo, in seconds of it, the part replayed, -1: to its
-        // end). Measure renders what the fields above say and ignores these.
+        // end; or the user's marks in it by number, captureFromMark and captureToMark, 0: none, which the plugin reads
+        // from the take). Measure renders what the fields above say and ignores these.
         bool hostRate = false, hostBlock = false, fromCapture = false;
         double captureFrom = 0.0, captureTo = -1.0;
+        int captureFromMark = 0, captureToMark = 0;
         // The program's samples (dsp/Assets.h), which its #pragma sample lines read: the plugin's, filled in with the
         // above (none: each such field empty). A Session made for the request compiles with them.
         Assets assets;

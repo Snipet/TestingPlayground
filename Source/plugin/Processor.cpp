@@ -2229,6 +2229,27 @@ namespace playground
 
     float Processor::load() const { return engine_.load(); }
     bool Processor::frozen() const { return engine_.frozen(); }
+
+    // The status bar's look at the recorder: never a wait for a call that copies a take (Recorder::glance).
+    RecordingState Processor::recording() const
+    {
+        (void)capture_.glance(glanced_);
+        RecordingState r;
+        switch (glanced_.state)
+        {
+            case capture::State::waiting:   r.stage = RecordingState::Stage::waiting; break;
+            case capture::State::recording: r.stage = RecordingState::Stage::recording; break;
+            case capture::State::ended:     r.stage = RecordingState::Stage::ended; break;
+            case capture::State::off:
+            case capture::State::kept:      r.stage = RecordingState::Stage::off; break;
+        }
+        r.seconds = glanced_.seconds;
+        r.marks = glanced_.marks;
+        r.room = glanced_.room;
+        return r;
+    }
+
+    bool Processor::markRecording(std::string& why) { return capture_.mark(why); }
     uint32_t Processor::alerts() const { return alerts_.load(); }
 
     // ---- projects --------------------------------------------------------------------------------------------------------

@@ -22,6 +22,8 @@
 //   gui.dump.export.png  EXPORT: a project's info typed and chosen, the line that its chats never go with it;
 //                        .export.factory.png a factory project's, read-only
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
+//   gui.dump.recording.png the capture tool recording for Claude: REC, its seconds and two marks in the status bar,
+//                        Mark beside them; .recording.paper.png
 //   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
 //                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
 //   gui.dump.1x.png      the default program at 1x (a screen that is not Retina): the top bar's mark hinted for it
@@ -116,6 +118,11 @@
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
 //             accessibility title saying what it means) and its load's text no longer says FROZEN
+//   RECORD    the capture tool's recorder armed (as its arm arms it): before any block, REC waiting and Mark shown but
+//             not taking a click; once blocks play, REC with the seconds recorded; Mark (a click) and Cmd-Shift-M mark
+//             the moment (the status confirms "MARKED M2"), REC counts them, and the take keeps both, numbered in order,
+//             each within a block of the samples played when it was made; Mark's accessibility title says what it
+//             does; stopped (the take kept), the notice goes and Cmd-Shift-M is no key of the panel's
 //   STOPPED   a program whose process never ends once it plays (its loop budget: Patch.h), run: once blocks play it
 //             stops, the status says so and that the program before plays again, which the processor plays (its
 //             files), and the problems list has the message at process's line; one that writes outside its array (its
@@ -1938,6 +1945,87 @@ PROBE(gui, dump)
             funkgui::UiPreferences::get().setTheme(0);
         }
         processor.compiler().setFreezing(true);                  // back to its own delay
+    }
+
+    // RECORD: the capture tool's recorder, armed as its arm arms it (mode last); the status bar's REC and Mark.
+    {
+        constexpr double kRate = 48000.0;
+        constexpr int kBlock = 256;
+        processor.prepareToPlay(kRate, kBlock);
+        juce::AudioBuffer<float> buffer(2, kBlock);
+        const auto blocks = [&](int count) {
+            for (int k = 0; k < count; ++k)
+            {
+                juce::MidiBuffer midi;
+                buffer.clear();
+                processor.processBlock(buffer, midi);
+            }
+        };
+        const auto has = [](const std::string& text, const std::string& part) { return text.find(part) != std::string::npos; };
+        P.eq("record.off", panel.recordShown() ? 0 : 1, 1);
+        const pg::capture::Reply armed = processor.recorder().act(pg::capture::Action::arm, {});
+        P.eq("record.armed", armed.armedNow ? 1 : 0, 1);
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s\n", panel.recordText().c_str());
+        P.eq("record.waiting", panel.recordShown() && panel.recordText() == "REC   WAITING TO START" ? 1 : 0, 1);
+        std::string why;
+        P.eq("record.waiting_no_mark", port.markRecording(why) ? 0 : 1, 1);
+        blocks(100);                                             // 25,600 samples: 0.53 s
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s\n", panel.recordText().c_str());
+        P.eq("record.shown", panel.recordText() == "REC   0.5 S" ? 1 : 0, 1);
+        const funkgui::Point mark = panel.centreOfMark();
+        host.click(mark.x, mark.y);                              // m1 at 25,600
+        host.tick(1);
+        P.eq("record.click_marks", has(panel.statusText(), "MARKED M1") ? 1 : 0, 1);
+        blocks(60);
+        host.keys("cmd+shift+m");                                // m2 at 40,960
+        host.tick(1);
+        P.eq("record.key_marks", has(panel.statusText(), "MARKED M2") ? 1 : 0, 1);
+        blocks(40);
+        host.tick(8);
+        host.settle();
+        std::printf("record: %s; status: %s\n", panel.recordText().c_str(), panel.statusText().c_str());
+        P.eq("record.counts", panel.recordText() == "REC   1.1 S   2 MARKS" ? 1 : 0, 1);
+        const funkgui::PrimList& frame = host.draw();
+        P.ge("record.drawn", countTag(frame, pg::ui::kRecordTag), 2.0);   // the dot and the words
+        P.eq("record.missing_glyphs", static_cast<int64_t>(frame.missingGlyphs), 0);
+        bool titled = false;
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        for (const funkgui::A11yItem& it : items)
+            titled = titled || (it.bounds.contains(mark) && it.title == "Mark this moment in the recording for Claude");
+        P.eq("record.a11y_title", titled ? 1 : 0, 1);
+        writePng(P, host, "gui.dump.recording.png", "recording");
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.setZoom({ 100, 125, 150, 200 }, 100);
+            paperHost.tick(8);
+            paperHost.settle();
+            P.eq("record.paper_shown", paper.recordShown() ? 1 : 0, 1);
+            writePng(P, paperHost, "gui.dump.recording.paper.png", "recording.paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        const pg::capture::Reply stopped = processor.recorder().act(pg::capture::Action::stop, {});
+        const std::vector<pg::capture::Mark> marks = stopped.take != nullptr ? stopped.take->marks : std::vector<pg::capture::Mark>{};
+        for (const pg::capture::Mark& m : marks)
+            std::printf("mark m%d at sample %llu\n", m.number, static_cast<unsigned long long>(m.sample));
+        const auto near = [](uint64_t at, uint64_t want) { return at + kBlock >= want && at <= want + kBlock; };
+        P.eq("record.take_marks", marks.size() == 2 && marks[0].number == 1 && marks[1].number == 2
+                                      && near(marks[0].sample, 100 * kBlock) && near(marks[1].sample, 160 * kBlock) ? 1 : 0, 1);
+        host.tick(8);
+        host.settle();
+        P.eq("record.gone_when_kept", panel.recordShown() ? 0 : 1, 1);
+        funkgui::KeyEvent cmdShiftM;
+        cmdShiftM.ch = U'm';
+        cmdShiftM.mods.cmd = true;
+        cmdShiftM.mods.shift = true;
+        P.eq("record.key_idle", !panel.key(cmdShiftM) && processor.recorder().act(pg::capture::Action::take, {}).take->marks.size() == 2 ? 1 : 0, 1);
+        processor.recorder().act(pg::capture::Action::forget, {});
     }
 
     // STOPPED: a program whose process never ends, run while blocks play (Compiler.h, "A program that stops"): it

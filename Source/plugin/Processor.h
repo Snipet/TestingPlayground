@@ -269,6 +269,8 @@ namespace playground
         int probe(int slot, float* out, int n) const override { return engine_.probe(slot, out, n); }
         float load() const override;
         bool frozen() const override;
+        RecordingState recording() const override;
+        bool markRecording(std::string& why) override;
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
         std::vector<ProjectEntry> factoryProjects() const override;
@@ -662,6 +664,7 @@ namespace playground
         Compiler compiler_{ engine_ };                           // after engine_: stops before the Engine goes
         // What the host plays, recorded for Claude (Capture.h; the audio thread writes it in hostBlock and play).
         capture::Recorder capture_;
+        mutable capture::Glance glanced_;                // the recorder as recording() saw it last (the message thread's)
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.

@@ -110,17 +110,37 @@ namespace playground
                  + fmt("; left/right correlation %.2f.\n", s.correlation);
         }
 
-        // The largest steps between two samples of what played, each with its nearest recorded moment.
-        std::string stepsLine(const capture::Take& t, const Controls& controls)
+        // The take's recorded moments (its events, its dials' moves, the host's starts and stops), which nearestMark reads.
+        measure::Timeline timelineFor(const capture::Take& t, const Controls& controls)
         {
-            const std::vector<measure::Step> steps = measure::largestSteps(t.out[0], t.out[1], kSteps, t.rate);
-            if (steps.empty())
-                return "Largest steps: none (silent).\n";
             capture::Replay plan;
             std::string why;
             measure::Timeline tl;
             if (capture::replayOf(t, 0.0, -1.0, plan, why, false))
                 tl = capture::timelineOf(t, plan, controls);
+            return tl;
+        }
+
+        // The user's marks (Capture.h, "Marks"), each at its time and nearest recorded moment.
+        std::string marksLine(const capture::Take& t, const measure::Timeline& tl)
+        {
+            if (t.marks.empty() && t.marksBefore == 0)
+                return shortcutText("Marks: none (the user marks a moment while it records: the status bar's Mark, or Cmd-Shift-M).\n");
+            std::string out;
+            for (const capture::Mark& m : t.marks)
+                out += (out.empty() ? "" : "; ") + fmt("m%d at %.2f s (", m.number, static_cast<double>(m.sample) / t.rate)
+                     + measure::nearestMark(tl, static_cast<std::size_t>(m.sample), t.rate) + ")";
+            if (t.marksBefore > 0)
+                out += (out.empty() ? "" : "; ") + fmt("%d before the part kept", t.marksBefore);
+            return "The user's marks (a scenario's from and to take one by its name, \"m1\"): " + out + ".\n";
+        }
+
+        // The largest steps between two samples of what played, each with its nearest recorded moment.
+        std::string stepsLine(const capture::Take& t, const measure::Timeline& tl)
+        {
+            const std::vector<measure::Step> steps = measure::largestSteps(t.out[0], t.out[1], kSteps, t.rate);
+            if (steps.empty())
+                return "Largest steps: none (silent).\n";
             std::string out;
             for (const measure::Step& st : steps)
                 out += (out.empty() ? "" : "; ") + fmt("%.3f at %.3f s, ", st.size, static_cast<double>(st.at) / t.rate)
@@ -247,7 +267,9 @@ namespace playground
             "the user first. stop_on_alert ends it 0.5 s after a NaN or a clip. status and stop are live (not with a "
             "picture); status after stop reads the take again. The report ends with the largest steps, each named by its "
             "nearest recorded moment, and how closely a replay matches what played; the take replays as a render's "
-            "scenario (CHECKING YOUR WORK). While armed the program's own code plays, not its frozen copy: the CPU may "
+            "scenario (CHECKING YOUR WORK). The user can mark moments while it records (the status bar's Mark, or "
+            "Cmd-Shift-M: ask them to, at what they hear): the report lists each, m1, m2, ..., at its time and nearest "
+            "recorded moment, and a scenario's from and to take one by its name (from \"m1\", to \"m2\"). While armed the program's own code plays, not its frozen copy: the CPU may "
             "rise a little.";
         return claude::object({ { "name", "capture" },
                                 { "description", description },
@@ -316,6 +338,8 @@ namespace playground
         }
         else if (t.peakBefore > 0.0f && t.start != capture::Start::arm)
             out += "When it started the output was not silent (a tail still rang: the program's state was not fresh).\n";
+        const measure::Timeline tl = timelineFor(t, controls);
+        out += marksLine(t, tl);
 
         // The dials, the program, the frozen copy.
         if (s.dials.empty())
@@ -402,7 +426,7 @@ namespace playground
         }
         out += levelsLine(t.input ? "Out (the program's, before the bypass)" : "Out", s.out);
         out += spectrumLine("Out", capture::spectrumOf(t.out[0], t.out[1], t.rate), t.rate);
-        out += stepsLine(t, controls);
+        out += stepsLine(t, tl);
         if (r.state == capture::State::kept || r.state == capture::State::ended)
             out += (r.replay.empty() ? capture::forecast(t) : r.replay) + "\n";
         out += "It stays in the plugin's memory (" + megabytes(r.bytes) + "), never on disk or sent; capture forget frees it.\n";

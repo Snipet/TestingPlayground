@@ -98,6 +98,7 @@ namespace playground::capture
         std::array<std::unique_ptr<std::atomic<float>[]>, 4> audio;   // in L, in R, out L, out R
         std::unique_ptr<std::atomic<uint64_t>[]> blocks, events;
         std::size_t bytes = 0;
+        std::vector<uint64_t> marks;                         // the user's (mark()): the reader's, under the mutex
 
         // The audio thread's; the header (from `started` on) published with the first block.
         uint64_t s = 0, e = 0, b = 0;                        // samples, events, blocks published
@@ -434,6 +435,42 @@ namespace playground::capture
             forget();
     }
 
+    bool Recorder::mark(std::string& why)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        const State st = current_ != nullptr ? stateOf(*current_) : State::off;
+        if (st != State::recording)
+        {
+            why = st == State::waiting ? "the recording has not started yet" : st == State::ended ? "the recording has ended" : "nothing is recording";
+            return false;
+        }
+        if (current_->marks.size() >= static_cast<std::size_t>(kMaxMarks))
+        {
+            why = "a recording keeps " + std::to_string(kMaxMarks) + " marks at most";
+            return false;
+        }
+        current_->marks.push_back(current_->samplesAnnounced.load(std::memory_order_acquire));
+        return true;
+    }
+
+    bool Recorder::glance(Glance& out) const
+    {
+        const std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+        if (!lock.owns_lock())
+            return false;
+        Glance g;
+        if (current_ != nullptr)
+        {
+            g.state = stateOf(*current_);
+            if (g.state == State::recording || g.state == State::ended)
+                g.seconds = static_cast<double>(current_->samplesAnnounced.load(std::memory_order_acquire)) / static_cast<double>(current_->rate);
+            g.marks = static_cast<int>(current_->marks.size());
+            g.room = g.marks < kMaxMarks;
+        }
+        out = g;
+        return true;
+    }
+
     void Recorder::noteProgram(uint64_t program, const Sources& files, const Controls& controls, const CircuitPins& pins)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -554,6 +591,7 @@ namespace playground::capture
         r->blocks = std::make_unique<std::atomic<uint64_t>[]>(static_cast<std::size_t>(r->blockCap) * kBlockWords);
         if (r->eventCap > 0)
             r->events = std::make_unique<std::atomic<uint64_t>[]>(static_cast<std::size_t>(r->eventCap) * kNoteWords);
+        r->marks.reserve(static_cast<std::size_t>(kMaxMarks));
         r->bytes = static_cast<std::size_t>(r->frames) * sizeof(float) * (r->input ? 4u : 2u)
                  + static_cast<std::size_t>(r->blockCap) * sizeof(Block) + static_cast<std::size_t>(r->eventCap) * sizeof(Note);
         Ring* ring = r.get();
@@ -737,6 +775,14 @@ namespace playground::capture
         t->blocks = std::move(blocks);
         t->clock = r.clock + base;
         t->fromSeconds = static_cast<double>(base) / static_cast<double>(r.rate);
+        // The user's marks inside it (a mark's sample is where the audio thread had got to: within a block of the end).
+        for (std::size_t k = 0; k < r.marks.size(); ++k)
+        {
+            if (r.marks[k] < base)
+                ++t->marksBefore;
+            else
+                t->marks.push_back({ static_cast<int>(k) + 1, std::min(r.marks[k] - base, sEnd - base) });
+        }
         t->bytes = t->blocks.size() * sizeof(Block) + t->events.size() * sizeof(Note)
                  + (t->out[0].size() + t->out[1].size() + t->in[0].size() + t->in[1].size()) * sizeof(float);
         for (const Block& b : t->blocks)
