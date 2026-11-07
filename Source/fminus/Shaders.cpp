@@ -467,8 +467,10 @@ namespace playground
             {
                 int status = 0;
                 const pid_t done = waitpid(pid, &status, WNOHANG);
+                // 127: the child could not run it. POSIX lets posix_spawn succeed and report a failed exec so (glibc's
+                // does under Rosetta's emulation of x86-64 Linux); shaderc itself exits 0 or 1.
                 if (done == pid)
-                    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+                    return WIFEXITED(status) && WEXITSTATUS(status) != 127 ? WEXITSTATUS(status) : -1;
                 if (done < 0 && errno != EINTR)
                     return -1;
                 if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(kTimeoutMs))
