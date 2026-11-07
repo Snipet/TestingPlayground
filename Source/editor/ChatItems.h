@@ -7,7 +7,8 @@
 //   ButtonItem  a button of the chat column: an icon in a rounded square (the header's new chat and key), a pill (a
 //               label, an icon, a chevron when a menu opens: the model, the thinking level) or a round button (send,
 //               which turns into stop). It acts on press, as the panel's other buttons do, and on Return or Space
-//               when focused.
+//               when focused. A pill with a chevron is a dropdown's trigger (Dropdown.h): drawn as every trigger is,
+//               open while its menu is (`open`), a combo box to a screen reader.
 //
 // transcriptText() is the conversation as plain text (YOU and CLAUDE above the turns), what the probes read; the text
 // it holds goes through asciiText() (Items.h), what the panel's font draws.
@@ -109,7 +110,8 @@ namespace playground::ui
             Shape shape = Shape::pill;
             std::function<chat::Icon()> icon;         // none when null
             std::function<std::string()> label;       // a pill's text
-            bool chevron = false;                     // a menu opens
+            bool chevron = false;                     // a menu opens: a dropdown's trigger (Dropdown.h)
+            std::function<bool()> open;               // ... its menu (or card) is open now: drawn pressed
             std::function<Look()> look;               // ghost when null
             std::function<bool()> enabled;            // enabled when null
             std::function<bool()> shown;              // shown when null
@@ -125,6 +127,7 @@ namespace playground::ui
         void setBounds(funkgui::Rect r) { bounds_ = r; }
         funkgui::Rect bounds() const noexcept { return bounds_; }
         void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
+        void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
         float preferredWidth() const;                 // a pill's, for its label now
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override
@@ -150,6 +153,7 @@ namespace playground::ui
 
     private:
         bool enabled() const { return !spec_.enabled || spec_.enabled(); }
+        bool open() const { return spec_.open && spec_.open(); }
 
         uint32_t id_;
         Spec spec_;

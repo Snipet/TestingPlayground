@@ -1,6 +1,9 @@
-// Source/dsp/Controls.h: the program's dials (JUCE-free). The plugin has kMaxControls host parameters, P1 to P32, each
-// normalised 0..1; the running program's first kMaxControls parameters (its main module's, in declaration order) take
-// them, and a Control says how slot i's normalised value maps onto the program's parameter:
+// Source/dsp/Controls.h: the program's dials (JUCE-free). The running program's first kMaxControls parameters (its
+// main module's, in declaration order; then its circuits' dials, Patch.h) are its dials, a slot each, each normalised
+// 0..1. The first kHostControls slots are the plugin's host parameters, P1 to P32, which a host sees and automates;
+// the rest, slots 32 to 63 (isPanelDial), are the panel's own dials: the panel, Claude, a session, a project's versions
+// and presets set them as they set the others, and a host never sees them (no parameter, no automation). A Control says
+// how slot i's normalised value maps onto the program's parameter:
 //
 //   real     a float parameter: min + v (max - min), smoothed by the Engine and read sample by sample (a stream);
 //            with a log taper (a .gui file's taper=log, for a frequency or a time) min (max / min)^v instead, so
@@ -26,8 +29,16 @@
 
 namespace playground
 {
-    inline constexpr int kMaxControls = 32;
+    inline constexpr int kHostControls = 32;           // the host's parameters, P1 to P32: slots 0 to 31
+    inline constexpr int kPanelControls = 32;          // the panel's own dials after them: slots 32 to 63
+    inline constexpr int kMaxControls = kHostControls + kPanelControls;
     inline constexpr int kFirstControls = 16;          // the parameters of the plugin's first version (P1 to P16)
+
+    // Whether slot c is a panel dial (above): no host parameter, never automated.
+    inline constexpr bool isPanelDial(int c) noexcept { return c >= kHostControls && c < kMaxControls; }
+    // A slot's bit in a mask of slots (uint64_t: one a slot).
+    inline constexpr uint64_t slotBit(int c) noexcept { return uint64_t{ 1 } << static_cast<unsigned>(c); }
+    static_assert(kMaxControls <= 64, "a mask of slots holds a bit a slot");
 
     enum class ControlType : uint8_t { real, integer, toggle };
     enum class ControlTaper : uint8_t { linear, log };   // log: a real one whose min is above 0
@@ -234,7 +245,7 @@ namespace playground
     {
         uint64_t from = 0;                             // the program whose controls the host's values were in
         uint64_t ticket = 0;                           // the processor's count of carries made (only the newest writes)
-        uint32_t slots = 0;                            // the slots it holds (bit c): the used ones
+        uint64_t slots = 0;                            // the slots it holds (slotBit(c)): the used ones
         std::array<float, kMaxControls> fromNorm{};    // each one's normalised value when it was made
         std::array<float, kMaxControls> plain{};       // and the plain value the new program plays for it
     };

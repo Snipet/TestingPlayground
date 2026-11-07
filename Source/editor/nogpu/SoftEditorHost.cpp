@@ -58,20 +58,6 @@ namespace playground::ui
             return ext.find_first_of("*?;, ") == std::string_view::npos ? fromUtf8(ext) : juce::String();
         }
 
-        bool menuIsValid(const funkgui::MenuRequest& request)
-        {
-            bool anyItem = false;
-            for (const funkgui::MenuItem& it : request.items)
-            {
-                if (it.separator)
-                    continue;
-                if (it.id <= 0)
-                    return false;
-                anyItem = true;
-            }
-            return anyItem;
-        }
-
         template <typename T>
         bool sameBytes(const std::vector<T>& a, const std::vector<T>& b)
         {
@@ -524,25 +510,31 @@ namespace playground::ui
     bool SoftEditorHost::showMenu(const funkgui::MenuRequest& request, funkgui::MenuCallback done)
     {
         dismissMenus();                                  // a second menu replaces the first, even when refused
-        if (!menuIsValid(request))
+        if (!funkgui::validMenu(request))                // HostServices' rule: headers and submenus too (0.25.0)
             return false;
         if (look_ == nullptr)
             look_ = std::make_unique<funkgui::MenuLook>(request.theme);
         look_->setTheme(request.theme);
 
-        juce::PopupMenu m;
+        // Every field of the request, as HostServicesJuce gives it to JUCE (its menuOptions): the rows (headers, radio
+        // items, shortcuts, submenus), one column that scrolls, the dropdown's width and current choice, and the anchor
+        // that puts the look's panel, not its shadow's margin, against the trigger.
+        juce::PopupMenu m = funkgui::MenuLook::popupMenuFor(request);
         m.setLookAndFeel(look_.get());
-        for (const funkgui::MenuItem& it : request.items)
-        {
-            if (it.separator)
-                m.addSeparator();
-            else
-                m.addItem(it.id, fromUtf8(it.label), it.enabled, it.checked);
-        }
         const float scale = logicalW_ > 0 ? static_cast<float>(getWidth()) / static_cast<float>(logicalW_) : 1.0f;
         const funkgui::Rect& r = request.anchor;
-        const juce::Rectangle<int> area = localAreaToGlobal(
+        const juce::Rectangle<int> anchor = localAreaToGlobal(
             juce::Rectangle<float>(r.x * scale, r.y * scale, r.w * scale, r.h * scale).toNearestInt());
+        const float menuScale = juce::Component::getApproximateScaleFactorForComponent(this);
+        juce::PopupMenu::Options options = juce::PopupMenu::Options()
+                                               .withTargetComponent(this)
+                                               .withTargetScreenArea(look_->targetAreaFor(anchor, menuScale))
+                                               .withMaximumNumColumns(1);
+        if (request.minWidth > 0.0f)                     // in the window's px, which are this component's
+            options = options.withMinimumWidth(juce::roundToInt(request.minWidth * scale) + 2 * look_->shadowPx());
+        if (request.selectedId > 0)
+            options = options.withInitiallySelectedItem(request.selectedId)
+                          .withItemThatMustBeVisible(request.selectedId);
 
         Pending& p = *pending_;
         const uint32_t serial = ++p.menuSerial;
@@ -557,7 +549,7 @@ namespace playground::ui
                 callback(id > 0 ? id : 0);
         };
         p.asking = true;
-        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(area),
+        m.showMenuAsync(options,
                         [pending = pending_, finish](int id) {
                             if (pending->asking)
                                 juce::MessageManager::callAsync([finish, id] { finish(id); });

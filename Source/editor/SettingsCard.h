@@ -2,7 +2,7 @@
 // chat's look (ChatStyle.h), in place of JUCE's dialog. It reads and changes the devices through EditorPort::devices
 // (plugin/DevicePort.h), which only the Standalone has: in a host there is no card.
 //
-//   OUTPUT  the output device (a pill: its menu, the host's, lists the type's devices), Test (a tone through it); its
+//   OUTPUT  the output device (a select: its menu, the host's, lists the type's devices), Test (a tone through it); its
 //           channels as switches, a pair each, when it has more than one pair
 //   INPUT   an effect's only: the input device (None among them), its pairs, and Mute input with a line on why (a
 //           loop through the speakers would feed back); unmuting is the user's click alone
@@ -15,7 +15,9 @@
 // follow the devices while it is open: it reads them again whenever DevicePort::serial moves (a device plugged in, a
 // change made elsewhere). Tab and Shift-Tab (or Down and Up) move the focus over its controls, Return or Space acts
 // on the focused one; the wheel scrolls it when the window is too short for it. While it is open it takes every
-// pointer event and key, and the rest of the panel is dimmed.
+// pointer event and key, and the rest of the panel is dimmed. Its selects are dropdowns (Dropdown.h): a field's trigger,
+// open while their menu is (setMenuOpen: the Panel's menuOpenAt), their menu a radio set as wide as the select, the
+// current choice highlighted when it opens.
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -28,8 +30,10 @@
 #include <funkgui/panel/Input.h>
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace playground::ui
@@ -75,6 +79,8 @@ namespace playground::ui
         };
 
         explicit SettingsCard(EditorPort& port) : port_(port) {}
+        // Whether a menu opened from this rect is open (the Panel's menuOpenAt): a select draws open while it is.
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> menuOpen) { menuOpen_ = std::move(menuOpen); }
 
         bool isOpen() const noexcept { return open_; }
         bool open();                             // false when there are no devices (a host)
@@ -116,6 +122,7 @@ namespace playground::ui
         void changed();                          // after an action: the devices read at once
 
         EditorPort& port_;
+        std::function<bool(const funkgui::Rect&)> menuOpen_;
         bool open_ = false;
         bool has_ = false;
         uint64_t seen_ = 0;                      // the serial setup_ was read at

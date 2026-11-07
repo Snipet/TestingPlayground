@@ -25,6 +25,10 @@
 //             holding no page, a page outside tabs, a label without text, a log taper from 0, decimals out of range;
 //             a second .gui file, and #pragma panel lines beside a .gui file, are notes too
 //   PRAGMAS   without a .gui file the #pragma panel lines still make the panel (no tree)
+//   LIMITS    each at its edge and one past it: 64 dials (a knob of the 33rd and the 64th, the panel's own dials:
+//             isPanelDial, at their slots; the 65th parameter none, a note), 32 displays (number f1 to f32, each its
+//             tap in order; the 33rd a note, left out), a shader of 16 inputs (inputs= of 17 names: the first 16
+//             kept in order, the 17th a note)
 //   STYLES    classes and defaults reach their elements (an element's own property beats its class's, which beats
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
@@ -500,6 +504,52 @@ panel background=#1d1b19 accent=orange {
         // Labelled as said, else by Shared's field's own name (not "SHARED->LEVEL"), else by `as`'s name.
         P.eq("shared.pragma_labels", pd.size() == 3 && pd[0].label == "N" && pd[1].label == "level" && pd[1].name == "shared->level"
                                          && pd[2].label.empty() && pd[2].name == "lit" ? 1 : 0, 1);
+    }
+
+    // ---- LIMITS --------------------------------------------------------------------------------------------------------
+    {
+        // 65 parameters p1 to p65 and 33 fields f1 to f33.
+        std::string params, fields;
+        for (int k = 1; k <= pg::kMaxControls + 1; ++k)
+            params += "    param float p" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            fields += "    float f" + std::to_string(k) + ";\n";
+        const std::string body = params + fields;
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + body + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + body + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        std::string gui = "knob p33\nknob p64\nknob p65\n";
+        for (int k = 1; k <= pg::kMaxDisplays + 1; ++k)
+            gui += "number f" + std::to_string(k) + "\n";
+        std::string inputs;
+        for (int k = 1; k <= pg::kMaxShaderInputs + 1; ++k)
+            inputs += (k == 1 ? "" : " ") + std::string("p") + std::to_string(k);
+        gui += "shader \"many.sc\" inputs=\"" + inputs + "\"\n";
+        const Compiled c = compile({ { pg::kProgramName, source }, { "panel.gui", gui }, { "many.sc", "void main() { gl_FragColor = vec4(in15); }\n" } });
+        std::printf("LIMITS notes:\n%s", c.notes.c_str());
+        P.eq("limits.compiles", c.ok ? 1 : 0, 1);
+        const pg::GuiTree& t = c.panel.gui;
+        const int first = pg::kHostControls, last = pg::kMaxControls - 1;
+        P.eq("limits.panel_dial_knobs", find(t, pg::GuiKind::knob, "", first) >= 0 && find(t, pg::GuiKind::knob, "", last) >= 0
+                                            && c.controls[static_cast<std::size_t>(first)].used && c.controls[static_cast<std::size_t>(last)].used
+                                            && std::string(c.controls[static_cast<std::size_t>(last)].name) == "p64" ? 1 : 0, 1);
+        P.eq("limits.past_dials_noted", has(c.notes, "p65 has no dial") && has(c.notes, "panel.gui:3:6: note:") ? 1 : 0, 1);
+        bool inOrder = static_cast<int>(c.panel.displays.size()) == pg::kMaxDisplays;
+        for (int k = 0; inOrder && k < pg::kMaxDisplays; ++k)
+            inOrder = c.panel.displays[static_cast<std::size_t>(k)].source == "f" + std::to_string(k + 1)
+                   && c.panel.displays[static_cast<std::size_t>(k)].tap == k;
+        P.eq("limits.displays_most", inOrder ? 1 : 0, 1);
+        P.eq("limits.display_past_noted", has(c.notes, "a panel shows " + std::to_string(pg::kMaxDisplays) + " displays at most")
+                                              && has(c.notes, "panel.gui:" + std::to_string(4 + pg::kMaxDisplays) + ":") ? 1 : 0, 1);
+        const int sh = find(t, pg::GuiKind::shader);
+        bool sixteen = sh >= 0 && c.panel.shaders.size() == 1 && static_cast<int>(c.panel.shaders[0].inputs.size()) == pg::kMaxShaderInputs;
+        for (int k = 0; sixteen && k < pg::kMaxShaderInputs; ++k)
+            sixteen = t.nodes[static_cast<std::size_t>(sh)].inputs[static_cast<std::size_t>(k)] == "param:" + std::to_string(k)
+                   && c.panel.shaders[0].inputs[static_cast<std::size_t>(k)] == "p" + std::to_string(k + 1);
+        P.eq("limits.shader_inputs_most", sixteen ? 1 : 0, 1);
+        P.eq("limits.shader_input_past_noted", has(c.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
+                                                                + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

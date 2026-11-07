@@ -187,6 +187,9 @@ namespace playground
         // The user's A/B listening (EditorPort::ab) in words, one line ("" while there is none): its sides, the one that
         // plays, the dials, the loudness. Any thread (a copy under its own mutex): get_status and plugin_state say it.
         virtual std::string chatAb() const { return {}; }
+        // run_program's line on a .gui file's layout (EditorPort.h's panelFitLine): its content larger than the PANEL view
+        // at the editor's size, in words; "" when it fits, or when it cannot be said now. The worker's.
+        virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
     };
 
     class ChatAgent final : public ChatPort

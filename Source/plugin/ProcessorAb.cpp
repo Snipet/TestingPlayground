@@ -295,7 +295,7 @@ namespace playground
             circuits::restore(a.key, a.text);
         // Its trim published before its compile is offered (Patch::program is its request); the program that plays until
         // then keeps its gain, known or not (trimOutput).
-        const uint64_t id = compiler_.request(ab_.st.sides[i].files);
+        const uint64_t id = compiler_.request(ab_.st.sides[i].files, false);   // a side is a compile of its own
         ab_.requests.push_back(id);
         ab_.request[i] = ab_.program[i] = id;
         ab_.st.pending = side;
@@ -452,7 +452,7 @@ namespace playground
         uint64_t ending = 0;
         if (!same && !ab_.beforeFiles.empty())
         {
-            ending = compiler_.request(ab_.beforeFiles);
+            ending = compiler_.request(ab_.beforeFiles, false);
             abEndingFiles_ = ab_.beforeFiles;
             abEndingDials_.clear();
             if (ab_.st.ownDials)

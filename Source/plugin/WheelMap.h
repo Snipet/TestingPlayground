@@ -70,6 +70,25 @@ namespace playground::wheel
     inline constexpr int kRange = 900;                       // degrees lock to lock, as the wheel's own default
     inline constexpr uint16_t kSpring = 0x6000;              // a moderate spring (a game's 37 %): fe 0d 03 03 48
 
+    // ---- the shift lights ----------------------------------------------------------------------------------------
+    // The G27's and the G29's five shift lights (the LEDs over the wheel's hub, a pair each, lit from the outside in as
+    // a tach rises), as hid-lg4ff drives them (lg4ff_set_leds; its LED class names them RPM1 to RPM5): a mask, bit 0
+    // the first to light (the outermost pair), bit 4 the last (the middle). The program's field shiftLights says
+    // which (Patch::lightsTap, dsp/Meters.h's lights); the Driver sends them only when they change (WheelDriver.h).
+    inline constexpr int kLights = 5;
+    inline constexpr int kAllLights = (1 << kLights) - 1;    // 0x1F
+    // The report that lights them: the extended command f8 12, the mask, then 00 00 00 01 (lightsReport). How sure:
+    // written from memory, with no copy of hid-lg4ff's source at hand, and checked on no device. The command (f8 12,
+    // then the mask in the third byte) is hid-lg4ff's lg4ff_set_leds; the last byte is the doubt: 01 here, as the G27's
+    // protocol notes have it, where the driver may send 00 (the wheel is believed to ignore it). kLightsLast is the one
+    // place to change it; wheel-dump --leds tries the lights on a wheel (README, "A racing wheel").
+    inline constexpr uint8_t kLightsLast = 0x01;
+    Report lightsReport(int mask) noexcept;                  // the mask's low five bits
+    // A program's shiftLights as the mask (dsp/Meters.h's lights and lightsKind): an int's low five bits (`isMask`);
+    // a float's (a bool's) share of the five, lit from bit 0: floor(5 v) of them (0.2 one, 0.99 four, 1 all five; 0
+    // and below none; not finite none).
+    int lightsMask(float value, bool isMask) noexcept;
+
     // ---- the table: the G29's elements in its own mode, by HID usage -----------------------------------------------
     inline constexpr uint32_t kDesktop = 0x01;               // the Generic Desktop page
     inline constexpr uint32_t kButtonPage = 0x09;
