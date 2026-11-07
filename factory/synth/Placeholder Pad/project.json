@@ -1,0 +1,84 @@
+{
+  "format": "funk-playground-project",
+  "version": 1,
+  "plugin": "TestingPlaygroundSynth",
+  "kind": "instrument",
+  "name": "Placeholder Pad",
+  "versions": [
+    {
+      "number": 1,
+      "saved": 1762400000000,
+      "note": "factory version",
+      "active": 0,
+      "files": [
+        {
+          "name": "program.fm"
+        }
+      ],
+      "dials": [
+        {
+          "name": "detune",
+          "value": 8
+        },
+        {
+          "name": "cutoff",
+          "value": 1800
+        },
+        {
+          "name": "attack",
+          "value": 600
+        },
+        {
+          "name": "release",
+          "value": 1200
+        },
+        {
+          "name": "level",
+          "value": -18
+        }
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "name": "Bright",
+      "saved": 1762400100000,
+      "from": 1,
+      "dials": [
+        {
+          "name": "cutoff",
+          "value": 6000
+        },
+        {
+          "name": "detune",
+          "value": 14
+        }
+      ]
+    },
+    {
+      "name": "Dark",
+      "saved": 1762300100000,
+      "from": 0,
+      "dials": [
+        {
+          "name": "cutoff",
+          "value": 500
+        },
+        {
+          "name": "release",
+          "value": 2500
+        }
+      ]
+    }
+  ],
+  "info": {
+    "description": "A placeholder: a simple pad, two detuned sawtooths through a gentle low-pass under a slow envelope. The factory import replaces it.",
+    "author": "",
+    "category": "Pad",
+    "tags": [
+      "placeholder",
+      "warm"
+    ],
+    "genres": []
+  }
+}

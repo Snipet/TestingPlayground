@@ -7,6 +7,8 @@
 //   gui.explorer.folded.png  folded away, the program's card wider, the button that opens it in its header
 //   gui.explorer.paper.png   in PAPER
 //   gui.explorer.small.png   the least size with the chat folded, scrolled to the end
+//   gui.explorer.assets.png  ASSETS with three samples, the one the program reads ticked
+//   gui.explorer.factory.png FACTORY open, a factory project open (its presets, no + to save one)
 // and checks:
 //   OPEN      open at first: its card at the left, the program's card after it and the chat's at the right, none
 //             overlapping; the sections FILES, PRESETS, PROJECTS, LIBRARY and EXAMPLES; a row a tab, the shown one
@@ -23,6 +25,11 @@
 //             the header's + opens PROJECTS to save
 //   PRESETS   the presets of the project open, the one applied marked; a click applies one (its dial at once, no
 //             compile); the header's + opens PROJECTS with a preset's name to save
+//   FACTORY   the factory projects (plugin/Factory.h), folded at first (its header there); open, a row each, by its own
+//             name; a click opens one (asking first over the editor's changes), its row marked; PRESETS then lists its
+//             presets with no + (a factory project's stay as they are), and a preset's click applies it; PROJECTS'
+//             + opens PROJECTS with the copy's name in its field (Save as mine), whose Save makes the user's own copy,
+//             then open
 //   POLL      the projects and the open one's presets are read again every 3 s: with nothing changed, no project's
 //             file is read whole (ProjectStore's parses()) and the rows are not made again (Panel::explorerBuilds); a
 //             preset this process saves shows at the next poll with no file read (the store kept what it wrote), the
@@ -37,6 +44,9 @@
 //             session still keeping it open; the CODE view shows it again
 //   A11Y      the explorer speaks as a list, its rows as buttons and its headers as toggles; a row pressed through
 //             accessibility does what its click does
+//   ASSETS    none at first, its header's + a chooser of WAV, AIFF and FLAC files, those chosen its rows (a name and
+//             its length), a file dropped on the panel one more (its name tidied), the one the program that plays reads
+//             ticked, its cross removing one
 //   NARROW    at the least size with the chat open there is no room for it: it is away (still open in the session),
 //             the program's card keeps kProgramMinW; its button folds the chat and shows it; the chat opened again,
 //             away again; at the default size it shows
@@ -64,6 +74,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <thread>
@@ -88,6 +99,31 @@ namespace
                    "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
                    "        for (int i = 0; i < n; ++i)\n        {\n            left[i] *= level[i];\n"
                    "            right[i] *= level[i];\n        }\n    }\n};\n";
+    }
+
+    // A mono 32-bit float WAV of `frames` frames at 48 kHz: a decaying tone.
+    juce::File writeWav(const juce::File& dir, const char* name, int frames)
+    {
+        juce::MemoryOutputStream out;
+        const auto u32 = [&](uint32_t v) { out.writeInt(static_cast<int>(v)); };
+        const auto u16 = [&](uint16_t v) { out.writeShort(static_cast<short>(v)); };
+        out.write("RIFF", 4);
+        u32(36 + 4 * static_cast<uint32_t>(frames));
+        out.write("WAVEfmt ", 8);
+        u32(16);
+        u16(3);
+        u16(1);
+        u32(48000);
+        u32(48000 * 4);
+        u16(4);
+        u16(32);
+        out.write("data", 4);
+        u32(4 * static_cast<uint32_t>(frames));
+        for (int i = 0; i < frames; ++i)
+            out.writeFloat(static_cast<float>(0.5 * std::exp(-i / 2000.0) * std::sin(0.03 * i)));
+        const juce::File f = dir.getChildFile(name);
+        f.replaceWithData(out.getData(), out.getDataSize());
+        return f;
     }
 
     const char* kGoodLib = "float twice(float x) { return x * 2.0f; }\n";
@@ -334,10 +370,71 @@ PROBE(gui, explorer)
         host.settle();
     }
 
+    // ---- FACTORY -------------------------------------------------------------------------------------------------------
+    {
+        const std::vector<pg::ProjectEntry> factory = port.factoryProjects();
+        P.ge("factory.some", static_cast<double>(factory.size()), 1.0);
+        ex.scrollTo(0.0f);
+        host.settle();
+        P.eq("factory.folded_at_first", !ex.sectionOpen(S::factory) && ex.centreOfHeader(S::factory).has_value()
+                                            && !ex.centreOfRow(S::factory, 0).has_value() ? 1 : 0, 1);
+        clickAt(host, ex.centreOfHeader(S::factory));
+        P.eq("factory.opens_section", ex.sectionOpen(S::factory) ? 1 : 0, 1);
+        P.eq("factory.rows", ex.rows(S::factory), static_cast<int64_t>(factory.size()));
+        bool own = ex.rows(S::factory) == static_cast<int>(factory.size());
+        for (int i = 0; own && i < ex.rows(S::factory); ++i)
+            own = ex.row(S::factory, i)->label == pg::ownName(factory[static_cast<std::size_t>(i)].name)
+               && ex.row(S::factory, i)->key == factory[static_cast<std::size_t>(i)].name;
+        P.eq("factory.own_names", own ? 1 : 0, 1);
+        const std::string openBefore = port.project().name;
+        if (!factory.empty())
+        {
+            const std::string key = factory.front().name;
+            if (!ex.centreOfRow(S::factory, 0))
+                ex.scrollTo(ex.contentHeight());
+            host.settle();
+            clickAt(host, ex.centreOfRow(S::factory, 0));
+            if (host.pendingMenu() != nullptr)
+                host.chooseMenuItem(1);
+            settleRun(processor, host);
+            host.tick(10);
+            host.settle();
+            P.eq("factory.opened", port.project().name == key && port.project().version == 1 ? 1 : 0, 1);
+            P.eq("factory.marked", ex.row(S::factory, 0) != nullptr && ex.row(S::factory, 0)->active ? 1 : 0, 1);
+            P.eq("factory.presets_listed", ex.rows(S::presets), factory.front().presets);
+            P.eq("factory.presets_no_plus", ex.centreOfAction(S::presets).has_value() ? 0 : 1, 1);
+            ex.scrollTo(0.0f);
+            host.settle();
+            writePng(P, host, "gui.explorer.factory.png");
+            if (factory.front().presets > 0)
+            {
+                const std::string name = ex.row(S::presets, 0)->key;
+                clickAt(host, ex.centreOfRow(S::presets, 0));
+                host.settle();
+                P.eq("factory.preset_applies", port.project().preset == name ? 1 : 0, 1);
+            }
+            clickAt(host, ex.centreOfAction(S::projects));   // PROJECTS, its field the copy's name
+            const std::string mine = pg::ownName(key);
+            pg::ui::ProjectBrowser& browser = panel.projectBrowser();
+            P.eq("factory.plus_names_copy", browser.isOpen() && browser.name() == mine && browser.saveLabel() == "Save as mine" ? 1 : 0, 1);
+            const funkgui::Rect save = browser.places(static_cast<float>(pg::ui::kDefaultWidth), static_cast<float>(pg::ui::kDefaultHeight)).save;
+            clickAt(host, funkgui::Point{ save.centreX(), save.centreY() });
+            P.eq("factory.save_copies", !browser.isOpen() && port.project().name == mine && port.project().version == 1 ? 1 : 0, 1);
+            std::string gone;
+            P.eq("factory.copy_removed", port.deleteProject(mine, gone) ? 1 : 0, 1);
+        }
+        std::string why;
+        P.eq("factory.project_back", port.openProject(openBefore, 0, why) ? 1 : 0, 1);
+        settleRun(processor, host);
+        ex.setSectionOpen(S::factory, false);
+        host.settle();
+    }
+
     // ---- EXAMPLES ------------------------------------------------------------------------------------------------------
     ex.scrollTo(0.0f);
     host.settle();
     ex.setSectionOpen(S::library, false);                // room for the examples in view
+    ex.scrollTo(ex.contentHeight());                     // and at the end (CLAUDE DESKTOP above them when the link listens)
     host.settle();
     const std::string projectBefore = port.project().name;
     panel.editor().setCaret(panel.editor().endPos());     // a change, which the example would take away
@@ -356,6 +453,7 @@ PROBE(gui, explorer)
         P.eq("examples.project_back", port.openProject(projectBefore, 0, why) ? 1 : 0, 1);
         settleRun(processor, host);
     }
+    ex.scrollTo(0.0f);                                   // the list from its top again
 
     // ---- FOLD ----------------------------------------------------------------------------------------------------------
     ex.setSectionOpen(S::library, true);
@@ -491,6 +589,52 @@ PROBE(gui, explorer)
         const int file = find(ex, S::files, "diodetone.cir");
         P.eq("circuit.file_icon", file >= 0 && ex.row(S::files, file)->icon == pg::ui::chat::Icon::circuit ? 1 : 0, 1);
         P.eq("circuit.program_icon", ex.row(S::files, 0) != nullptr && ex.row(S::files, 0)->icon == pg::ui::chat::Icon::code ? 1 : 0, 1);
+    }
+
+    // ---- ASSETS: the program's samples ------------------------------------------------------------------------------
+    {
+        P.eq("assets.default_size", host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight) || panel.width() == pg::ui::kDefaultWidth ? 1 : 0, 1);
+        panel.setChatOpen(true);
+        ex.scrollTo(0.0f);
+        host.settle();
+        (void)folder.createDirectory();
+        const juce::File kick = writeWav(folder, "kick.wav", 9600), snare = writeWav(folder, "snare.wav", 4800),
+                         hat = writeWav(folder, "Hat Open.wav", 2400);
+        P.eq("assets.none", ex.rows(S::assets) == 0 && ex.centreOfAction(S::assets).has_value() ? 1 : 0, 1);
+        clickAt(host, ex.centreOfAction(S::assets));
+        const funkgui::FileRequest* asked = host.pendingFiles();
+        P.eq("assets.chooser", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::openMany
+                                   && asked->pattern.find("*.flac") != std::string::npos ? 1 : 0, 1);
+        P.eq("assets.chosen", host.returnFiles({ kick.getFullPathName().toStdString(), snare.getFullPathName().toStdString() }) ? 1 : 0, 1);
+        host.tick(2);
+        host.settle();
+        P.eq("assets.rows", ex.rows(S::assets), 2);
+        P.eq("assets.row_words", find(ex, S::assets, "kick.wav") == 0 && ex.row(S::assets, 0)->detail == "0.20 s" ? 1 : 0, 1);
+        const funkgui::Rect pc = panel.programCard();
+        P.eq("assets.drop", host.dropFiles({ hat.getFullPathName().toStdString() }, pc.centreX(), pc.centreY()) ? 1 : 0, 1);
+        host.tick(2);
+        host.settle();
+        P.eq("assets.dropped", ex.rows(S::assets) == 3 && find(ex, S::assets, "Hat-Open.wav") == 2 ? 1 : 0, 1);
+        // A program that reads kick.wav: its row ticked once it plays.
+        std::string reads = "#include \"sample.fm\"\n#pragma sample kick \"kick.wav\"\n" + ::program();
+        reads.insert(reads.find('{') + 1, "\n    Sample kick;");
+        pg::Draft withSample;
+        withSample.files = { { "program.fm", reads }, { "lib.fm", kGoodLib } };
+        for (const pg::LibraryFile& f : pg::kLibrary)
+            if (std::string(f.name) == "sample.fm")
+                withSample.files.push_back({ "sample.fm", f.source });
+        port.setDraft(withSample);
+        port.run(withSample.files);
+        settleRun(processor, host);
+        P.eq("assets.compiles", processor.compiler().status().ok ? 1 : 0, 1);
+        P.eq("assets.ticked", ex.row(S::assets, 0) != nullptr && ex.row(S::assets, 0)->marked
+                                  && !ex.row(S::assets, 1)->marked ? 1 : 0, 1);
+        writePng(P, host, "gui.explorer.assets.png");
+        if (const auto r = ex.centreOfRow(S::assets, 1))
+            host.move(r->x, r->y);
+        host.settle();
+        clickAt(host, ex.centreOfClose(S::assets, 1));
+        P.eq("assets.cross_removes", ex.rows(S::assets) == 2 && find(ex, S::assets, "snare.wav") < 0 ? 1 : 0, 1);
     }
 
     pg::projectstore::setDirectoryForTests({});

@@ -251,7 +251,7 @@ namespace playground::measure
                 out.error = why;
                 return out;
             }
-        Session session(files, request.render.rate);
+        Session session(files, request.render.rate, nullptr, request.render.assets);
         if (!session.compiled())
         {
             out.error = "It did not compile, so nothing was tuned:\n" + session.errors();

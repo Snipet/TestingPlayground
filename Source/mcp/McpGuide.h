@@ -21,7 +21,7 @@
 //                         heading of the prompt's, only a line of what they are for, since CHECKING YOUR WORK (in
 //                         start) says when to use each
 //   examples              THIS PLUGIN'S EXAMPLES
-//   projects              RANDOM AND PROJECTS
+//   projects              RANDOM AND PROJECTS (when to save, and how), and the notes of the tools it uses (projects')
 //   circuits              CIRCUITS: .cir NETLISTS (analog circuits as modules, and THE SCHEMATIC: the drawing's *@
 //                         lines and edit_circuit's grammar), and the notes of the tools it uses (edit_circuit's); a
 //                         guide from before it (an older plugin's guide.md) cuts as it did, without the part
@@ -264,7 +264,8 @@ namespace playground::mcp::guide
                    "called). Read it before you "
                    "first use one of them: when the user says something sounds wrong, or a measurement shows a problem.\n"
                    "- \"examples\": this plugin's examples (its EXAMPLES menu), whole.\n"
-                   "- \"projects\": RANDOM, and the user's projects and presets.\n"
+                   "- \"projects\": RANDOM, and the user's projects and presets: read it before you save, open or apply "
+                   "one.\n"
                    "- \"circuits\": .cir netlists, analog circuits as modules. Read it before you write or #include one.\n"
                    "- \"all\": all of it at once (about " + std::to_string((g.size() / 4 + 500) / 1000) + "K tokens).\n";
         }
@@ -296,7 +297,7 @@ namespace playground::mcp::guide
         if (n == "examples")
             return g.substr(c.examples, c.projects - c.examples);
         if (n == "projects")
-            return trimmed(g.substr(c.projects, c.circuits - c.projects)) + "\n";
+            return trimmed(g.substr(c.projects, c.circuits - c.projects)) + "\n" + notes(g, c.notes, "projects");
         if (n == "circuits")
         {
             if (c.hasCircuits)

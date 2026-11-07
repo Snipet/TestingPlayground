@@ -248,13 +248,15 @@ namespace playground
         // must be of.
         const std::string changed = "The program that plays changed as it was copied (a newer run was on its way in, or its "
                                     "state is laid out otherwise): call it again.";
+        // The samples too (dsp/Assets.h): those what plays compiled with, else the plugin's as a RUN would take them.
         Sources files;
         CircuitPins pins;
+        Assets samples;
         uint64_t program = 0;
         if (playing)
         {
             const CompileStatus st = host_.chatLastStatus();
-            files = host_.chatRunning();
+            files = host_.chatPlaying(samples);
             if (files.empty())
                 return fail("Nothing plays yet: run_program plays the editor's files (or call it on: fresh).");
             if (host_.chatLastStatus().revision != st.revision)
@@ -263,10 +265,13 @@ namespace playground
             program = st.program;
         }
         else
+        {
             files = host_.chatDraft().files;
+            samples = host_.chatAssets();
+        }
         const double hostRate = host_.chatHostRate();
         const float rate = hostRate > 0.0 ? static_cast<float>(hostRate) : 48000.0f;
-        Patch::Result compiled = Patch::compile(files, rate, false, playing && !pins.empty() ? &pins : nullptr);
+        Patch::Result compiled = Patch::compile(files, rate, false, playing && !pins.empty() ? &pins : nullptr, true, true, samples);
         if (!compiled.patch)
             return fail(std::string(playing ? "The program that plays" : "The editor's files") + " did not compile here, so nothing "
                         "was called:\n" + compiled.errors.substr(0, kMaxOutput));

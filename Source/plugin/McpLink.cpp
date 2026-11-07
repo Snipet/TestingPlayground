@@ -2,24 +2,31 @@
 #include "plugin/McpLink.h"
 
 #include "mcp/McpProtocol.h"
+#include "mcp/McpTarget.h"
 
 #include "Product.h"
 
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <random>
 #include <vector>
 
 namespace playground
 {
     namespace
     {
-        // Written beside, then renamed over: another instance or the server may be reading it.
-        void writeAtomically(const juce::File& f, const juce::String& text)
+        using mcp::target::writeAtomically;
+
+        constexpr auto kScanEvery = std::chrono::milliseconds(1000);   // the folder read again (the others, the choice)
+
+        // A card's token: random, its own (an instance that takes the number of one gone is never taken for it).
+        std::string newToken()
         {
-            const juce::File temp = f.getSiblingFile("." + f.getFileName() + "." + juce::String(mcp::processId()) + ".writing");
-            if (temp.replaceWithText(text, false, false, "\n"))
-                temp.moveFileTo(f);
+            std::random_device rd;
+            const uint64_t a = (static_cast<uint64_t>(rd()) << 32) ^ rd();
+            const uint64_t b = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+            return juce::String::toHexString(static_cast<juce::int64>(a ^ (b * 0x9E3779B97F4A7C15ull))).paddedLeft('0', 16).toStdString();
         }
 
         juce::var words(const std::string& t)
@@ -70,7 +77,8 @@ namespace playground
             return;
         }
         id_ = std::to_string(number);
-        name_ = std::string(product::kIsInstrument ? "Synth " : "Effect ") + id_;
+        dir_ = dir;
+        token_ = newToken();
         if (!mcp::socketPair(wake_) || !mcp::nonBlocking(wake_[0]) || !mcp::nonBlocking(wake_[1]))
         {
             mcp::closeFd(listen_);
@@ -118,10 +126,141 @@ namespace playground
         {
             mcp::closeFd(listen_);
             mcp::removePath(path_);
+            mcp::target::removeCard(dir_, id_, token_);
+            mcp::target::clearTarget(dir_, token_);    // the user's choice goes with it
         }
         for (const int fd : wake_)
             if (fd >= 0)
                 mcp::closeFd(fd);
+    }
+
+    std::string McpLink::name() const
+    {
+        if (id_.empty())
+            return {};
+        const std::lock_guard<std::mutex> lock(nameMutex_);
+        return name_.empty() ? mcp::target::numberName(id_) : name_;
+    }
+
+    std::string McpLink::numberName() const { return id_.empty() ? std::string() : mcp::target::numberName(id_); }
+
+    bool McpLink::named() const
+    {
+        const std::lock_guard<std::mutex> lock(nameMutex_);
+        return !name_.empty();
+    }
+
+    std::string McpLink::userName() const
+    {
+        const std::lock_guard<std::mutex> lock(nameMutex_);
+        return name_;
+    }
+
+    bool McpLink::setName(const std::string& name, std::string& why)
+    {
+        const std::string trimmed = juce::String::fromUTF8(name.c_str()).trim().toStdString();
+        if (why = mcp::target::nameRefusal(trimmed, id_); !why.empty())
+            return false;
+        {
+            const std::lock_guard<std::mutex> lock(nameMutex_);
+            name_ = trimmed == numberName() ? std::string() : trimmed;
+        }
+        rescan();
+        return true;
+    }
+
+    McpLink::View McpLink::view() const
+    {
+        const std::lock_guard<std::mutex> lock(viewMutex_);
+        View v = view_;
+        const auto now = std::chrono::steady_clock::now();
+        v.running = !acting_.empty();
+        v.tool = v.running ? acting_.back().first : lastTool_;
+        v.ago = v.tool.empty() ? 0.0 : std::chrono::duration<double>(now - (v.running ? acting_.back().second : lastAt_)).count();
+        return v;
+    }
+
+    void McpLink::choose(const std::string& id, bool on)
+    {
+        if (id_.empty() || dir_.empty())
+            return;
+        std::string token;
+        {
+            const std::lock_guard<std::mutex> lock(viewMutex_);
+            if (id == id_)
+                token = token_;
+            for (const auto& [other, t] : tokens_)
+                if (other == id)
+                    token = t;
+            if (token.empty())
+                return;                                  // not open (any more)
+        }
+        // Shown at once only once it is so for the server too: a write that failed leaves the view as it was.
+        if (on ? mcp::target::writeTarget(dir_, { id, token }) : mcp::target::clearTarget(dir_, token))
+        {
+            const std::lock_guard<std::mutex> lock(viewMutex_);
+            if (on)
+                view_.chosen = id;
+            else if (view_.chosen == id)
+                view_.chosen.clear();
+            ++view_.revision;
+        }
+        rescan();
+    }
+
+    void McpLink::rescan()
+    {
+        scanNow_.store(true);
+        wake();
+    }
+
+    // This instance's card when it changed; the others', and the choice, read.
+    void McpLink::scan()
+    {
+        mcp::target::Card mine{ token_, id_, name(), {}, {}, mcp::processId() };
+        if (hooks_.place)
+            std::tie(mine.track, mine.project) = hooks_.place();
+        const std::string card = mine.token + '\n' + mine.name + '\n' + mine.track + '\n' + mine.project;
+        // Written when it changed, or when it is gone (a server that found this number's socket refused, while it was
+        // being taken again, removed the card of the one before).
+        if ((card != written_ || !mcp::target::in(dir_, id_ + ".json").existsAsFile()) && mcp::target::writeCard(dir_, mine))
+            written_ = card;
+        std::vector<Peer> others;
+        std::vector<std::pair<std::string, std::string>> tokens;
+        for (const mcp::target::Card& c : mcp::target::cards(dir_))
+            if (c.id != id_)
+            {
+                others.push_back({ c.id, c.name.empty() ? mcp::target::numberName(c.id) : c.name, c.track, c.project });
+                tokens.push_back({ c.id, c.token });
+            }
+        const std::string chosen = mcp::target::chosen(dir_);
+        const std::lock_guard<std::mutex> lock(viewMutex_);
+        tokens_ = std::move(tokens);
+        if (others != view_.others || chosen != view_.chosen)
+        {
+            view_.others = std::move(others);
+            view_.chosen = chosen;
+            ++view_.revision;
+        }
+    }
+
+    void McpLink::began(const std::string& tool)
+    {
+        const std::lock_guard<std::mutex> lock(viewMutex_);
+        acting_.push_back({ tool, std::chrono::steady_clock::now() });
+    }
+
+    void McpLink::ended(const std::string& tool)
+    {
+        const std::lock_guard<std::mutex> lock(viewMutex_);
+        for (auto it = acting_.end(); it != acting_.begin();)
+            if ((--it)->first == tool)
+            {
+                acting_.erase(it);
+                break;
+            }
+        lastTool_ = tool;
+        lastAt_ = std::chrono::steady_clock::now();
     }
 
     void McpLink::wake()
@@ -145,12 +284,19 @@ namespace playground
                 for (const auto& c : clients)
                     fds.push_back({ c->reader.fd(), static_cast<short>(POLLIN | (c->out.empty() ? 0 : POLLOUT)), 0 });
             }
-            const int r = mcp::pollFds(fds.data(), fds.size(), -1);
+            const auto untilScan = std::chrono::duration_cast<std::chrono::milliseconds>(scanned_ + kScanEvery - std::chrono::steady_clock::now());
+            const int r = mcp::pollFds(fds.data(), fds.size(),
+                                       scanNow_.load() ? 0 : static_cast<int>(std::clamp<long long>(untilScan.count() + 1, 0, 1000)));
             if (r < 0)
             {
                 if (mcp::interrupted())
                     continue;
                 break;
+            }
+            if (scanNow_.exchange(false) || std::chrono::steady_clock::now() >= scanned_ + kScanEvery)
+            {
+                scan();
+                scanned_ = std::chrono::steady_clock::now();
             }
             if (fds[0].revents != 0)
             {
@@ -235,7 +381,7 @@ namespace playground
             if (juce::DynamicObject* i = info.getDynamicObject())
             {
                 i->setProperty("id", juce::String(id_));
-                i->setProperty("name", juce::String(name_));
+                i->setProperty("name", juce::String::fromUTF8(name().c_str()));
             }
             o.setProperty("result", info);
         }
@@ -283,7 +429,11 @@ namespace playground
                 o.setProperty("result", resultOf(r));
             }
             else
+            {
+                began(name);
                 o.setProperty("result", resultOf(hooks_.call(name, arguments, 0)));
+                ended(name);
+            }
         }
         else
             o.setProperty("error", "there is no method \"" + method + "\"");
@@ -357,8 +507,10 @@ namespace playground
         l.id = id;
         l.call = nextCall_++;
         l.done = std::make_shared<std::atomic<bool>>(false);
+        began(name);
         l.thread = std::thread([this, client, id, name, arguments, call = l.call, done = l.done] {
             const ChatAgent::McpResult r = hooks_.call(name, arguments, call);
+            ended(name);
             juce::var reply = replyTo(id);
             reply.getDynamicObject()->setProperty("result", resultOf(r));
             answer(*client, reply);                      // to a connection gone: nothing is read, nothing breaks
@@ -397,7 +549,9 @@ namespace playground
                 runningClient_ = job.client;
                 runningId_ = job.id;
             }
+            began(job.name);
             const ChatAgent::McpResult r = hooks_.call(job.name, job.arguments, job.call);
+            ended(job.name);
             {
                 const std::lock_guard<std::mutex> lock(jobMutex_);
                 running_ = 0;

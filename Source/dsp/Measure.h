@@ -316,6 +316,9 @@ namespace playground::measure
         // end). Measure renders what the fields above say and ignores these.
         bool hostRate = false, hostBlock = false, fromCapture = false;
         double captureFrom = 0.0, captureTo = -1.0;
+        // The program's samples (dsp/Assets.h), which its #pragma sample lines read: the plugin's, filled in with the
+        // above (none: each such field empty). A Session made for the request compiles with them.
+        Assets assets;
 
         // The same render (the notes, the levels, the times, the dials asked for, the host and the scenario) measured
         // over the same window with the same base, `want` and `spectrum` aside.
@@ -481,11 +484,13 @@ namespace playground::measure
     };
 
     // One compile, measured as often as asked. `pins`: its netlists generated with these configurations (Sources.h's
-    // CircuitPins, a recording's: what played), not the self-test's store.
+    // CircuitPins, a recording's: what played), not the self-test's store. `assets`: the samples its #pragma sample
+    // lines read (Patch.h, "Samples": Request::assets, the plugin's).
     class Session
     {
     public:
-        explicit Session(const Sources& files, double rate = 48000.0, const CircuitPins* pins = nullptr);
+        explicit Session(const Sources& files, double rate = 48000.0, const CircuitPins* pins = nullptr,
+                         const Assets& assets = nullptr);
         ~Session();
         Session(const Session&) = delete;
         Session& operator=(const Session&) = delete;

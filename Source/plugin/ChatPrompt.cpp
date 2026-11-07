@@ -16,6 +16,7 @@
 #include "Product.h"
 
 #include "dsp/Measure.h"
+#include "mcp/McpGuide.h"
 
 #include <algorithm>
 #include <string>
@@ -94,6 +95,7 @@ module Effect
 - A call whose loops run far longer than its samples last (a loop that never ends), or that indexes outside an array, is stopped, and the program before it plays instead; run_program and get_status say where.
 - Subnormals are flushed to zero (the audio thread's mode), so decaying filters and feedback cost nothing extra.
 - A module named Shared, when the program has one, is made once for the program (its init(float rate) before the effect's, its end() after) and every field of Effect of type Shared* points at it: how an instrument's voices share a table built once. An effect, one instance, may as well hold what it needs.
+- #pragma sample ir "ir.wav" fills the field Sample ir; (sample.fm: an audio file of the user's, an impulse response say) before init, at the plugin's rate.
 )";
 
         const char* const kInstrumentContract = R"(
@@ -147,6 +149,7 @@ module Voice
 - start begins a note on a voice that may have played another before: set everything the note needs (fields keep their values between notes). stop releases it. process adds the voice's next n samples into both channels (they arrive at 0, so writing works too) and returns false once the voice is silent for good, which frees it. A voice that never returns false holds its slot forever: always let the release end.
 - The signatures must be exactly these. Sixteen voices sound at once; a seventeenth note steals the oldest released voice (else the oldest): stop() at once, then a 2 ms fade. A key pressed again while its note sounds stops that voice first. Each start() gets one stop() (BUILDING A LARGE PROGRAM says when). The sustain pedal is the plugin's: a key let go while it is down gets its stop when the pedal comes up.
 - #pragma mono [bool dial]: one voice, the newest key; a key pressed while it is held calls legato(float note, float velocity), not start (BUILDING A LARGE PROGRAM).
+- #pragma sample kick "kick.wav" fills the field Sample kick; (sample.fm: an audio file of the user's) of Voice or Shared before init, at the plugin's rate.
 - The module's fields are its state: they start at 0 when the program runs; init sets the rate-dependent ones. Keep state per sample, so the output does not depend on the host's block size (the plugin calls voices in parts that end on multiples of 16 samples).
 - Dials: the module's first 32 parameters, in declaration order, are the dials and the host's P1 to P32 (the next 32: the panel's alone), the same values in every voice. A float parameter is read sample by sample, cutoff[i], and glides over 20 ms when its dial turns (cutoff[0] reads it once a call). An int or bool parameter is read once a call. fminus::range sets the dial's span and fminus::default its starting value.
 - The audio thread: start, stop and process may not allocate (FMinus refuses a program whose methods could reach calloc, malloc or free from them). Allocate in init (each voice's own, calloc: zeroed) and free in end, or use a fixed array field.
@@ -872,12 +875,25 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
                  "The PROJECTS button keeps programs on " + std::string(kThisMachine)
                + " as projects (the editor's files and the dials' values, under a "
                  "name): each save is a new version (Cmd-S saves one), and an older version opens again. A project's presets are "
-                 "dial settings for its program, no code, applied at once. Saving and opening projects and presets is the user's: "
-                 "you have no tool for it, so when they ask, tell them to use PROJECTS (a name in its field, then Save) or the "
-                 "explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
-                 "code is a project of its own. Its A/B plays two versions (or the editor's files and a version) in turn "
+                 "dial settings for its program, no code, applied at once. You keep them with the projects tool, only as the user "
+                 "wants: save when they ask (\"save this\", \"keep it as a preset called Warm\") or at a milestone they agreed to "
+                 "(\"save a version each time it works\"), never on your own and never silently. Give a version a note of what "
+                 "changed, and say in a sentence what you saved (\"Saved version 5 of Engine: a brighter filter\"). A save only "
+                 "adds: every version is kept, and a preset of the name is replaced only when they asked; deleting a project, a "
+                 "version or a preset is theirs alone, in PROJECTS. Opening a project or applying a preset would drop what the "
+                 "editor holds unsaved, so the tool refuses and names it: save it first if they want it, or ask; pass discard "
+                 "only when they said to drop it. They save themselves with PROJECTS (a name in its field, then Save), Cmd-S or "
+                 "the explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
+                 "code is a project of its own. The factory projects (FACTORY in both, \"Factory: <name>\") come with the plugin, "
+                 "read-only: saving one makes the user's own copy. Its A/B plays two versions (or the editor's files and a version) in turn "
                  "while the user plays, the louder turned down to match, until they keep one: get_status says when one is on, "
                  "its sides and which plays, and compare renders a version (version:N, project:Name@N).\n";
+            s += product::kIsInstrument
+                     ? "A dial can follow a knob on the user's MIDI controller (MIDI learn, the user's to set: right-click the "
+                       "dial, Learn MIDI CC, move the knob; Forget in the same menu); the dial lines then say which control "
+                       "moves it, and a project version keeps them.\n"
+                     : "The effect takes no MIDI: to turn a dial from a MIDI controller, the user maps it in the host (right-click "
+                       "the dial for the host's menu).\n";
             s += kCircuits;
             return shortcutText(s);                      // Ctrl- on Windows
         }
@@ -902,6 +918,25 @@ panel accent=teal background=#1a1d1e gradient=#101213 {
     const std::string& ChatAgent::systemPrompt()
     {
         static const std::string prompt = build(false);
+        return prompt;
+    }
+
+    // The short form (ChatAgent.h): the prompt up to THREADS (what the plugin is, how to work, the contract, the host,
+    // FMinus, DSP practice, checking the work), then what it leaves out.
+    const std::string& ChatAgent::shortPrompt()
+    {
+        static const std::string prompt = [] {
+            const std::string& full = systemPrompt();
+            const std::size_t cut = mcp::guide::detail::heading(full, mcp::guide::kThreads);
+            std::string s = cut == std::string::npos ? full : full.substr(0, cut);
+            s += "THIS PROMPT'S SHORT FORM\n\nThe model you run on has a small context window, so the plugin sends this "
+                 "short form of its instructions: what it says below or later about building a large program, threads, "
+                 "THE INTERFACE (panel.gui), THE LIBRARY, the examples, projects and circuits is left out. Write each "
+                 "program in one file from what is above, its dials plain params (the plugin shows them as knobs; no "
+                 "panel.gui), read a file before you change it, and keep your replies short: the conversation fills the "
+                 "same window.\n";
+            return s;
+        }();
         return prompt;
     }
 

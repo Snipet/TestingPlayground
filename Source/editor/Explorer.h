@@ -4,17 +4,31 @@
 //   FILES     the program's files, the editor's tabs (the one shown marked, one with errors a red dot): a click shows
 //             it, a double click renames it, the cross on a row closes it (not the program, the first); the header's
 //             + makes a new file
+//   ASSETS    the program's samples (dsp/Assets.h: WAV, AIFF and FLAC files a program reads with #pragma sample),
+//             each with its length, channels, rate and size, a tick on those the program that plays reads: the
+//             header's + adds files (a chooser), a file dropped on the panel is added too, the cross on a row removes it
 //   FOLDER    the program's files in a folder on disk, synced both ways (plugin/FolderSync.h): off, a row that turns
 //             it on; on, Open in VS Code, Show in Finder (the folder's name), Run on save (ticked when on), a row a
 //             conflict (a red dot: a click asks which side to keep), and its notes as captions; the header's cross
 //             turns it off
+//   CLAUDE DESKTOP  this instance as Claude Desktop knows it (EditorPort::desktop; plugin/McpLink.h): its name (a click
+//             renames it), Use with Claude Desktop (ticked while it is the target: chosen, or the only one open; a click
+//             chooses it, or clears the choice), what Claude Desktop's last call here did and when (lit while one acts
+//             on it; a click opens the chat, where it shows), and the other instances open (the target ticked; a click
+//             chooses one); none without a socket
 //   LLVM IR   what FMinus made of the program (IrView.h), none of its files: a caption saying so, then a row a view
 //             (optimised, lowered, and the frozen copy's while it plays; the one shown marked): a click opens the
 //             read-only IR tab on it
 //   PRESETS   the presets of the project open (dial settings for its program; the one applied marked): a click applies
 //             one; the header's + saves the dials as a new one (PROJECTS, its field a preset's name)
 //   PROJECTS  the projects saved on this Mac, the newest first, each with its newest version (the one open marked): a
-//             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version)
+//             click opens its newest version; the header's button opens PROJECTS (to save, or to open an older version).
+//             Grouped as PROJECTS groups them (ProjectGroups.h: FAVOURITES, the factory's starred ones among them, a
+//             category a group, UNCATEGORISED last): a caption a group, which folds it (the groups folded are
+//             PROJECTS', this Mac's: EditorPort::projectsView), unless the one group is UNCATEGORISED (none starred,
+//             none given a category: a flat list)
+//   FACTORY   the factory projects (plugin/Factory.h), by name (the one open marked), folded at first: a click opens
+//             one (read-only: a save makes the user's own copy)
 //   LIBRARY   the library's building blocks by category, a tick on those the program has: a click adds one as a tab
 //             (and #includes it), or shows it
 //   EXAMPLES  a click starts afresh from the example (Panel::loadExample: its files the only tabs, the dials at their
@@ -40,8 +54,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder };
-        static constexpr int kSections = 7;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder, assets, desktop, factory };
+        static constexpr int kSections = 10;
 
         struct Row
         {
@@ -49,6 +63,7 @@ namespace playground::ui
             std::string detail;                       // faint, at the right ("2026-10-27 14:02"); "" for none
             chat::Icon icon = chat::Icon::file;
             bool heading = false;                     // a library category's caption: no action
+            uint8_t fold = 0;                         // a caption that folds its group: 1 open, 2 folded (a click: open())
             bool active = false;                      // the tab shown
             bool marked = false;                      // a library file the program has: a tick
             bool error = false;                       // a file with errors: a red dot
@@ -70,6 +85,7 @@ namespace playground::ui
             std::string actionTitle;                  // its name to a screen reader ("New file")
             std::string empty;                        // shown when there are no rows ("No presets yet")
             bool counted = true;                      // the header counts its rows ("FILES  2")
+            int total = -1;                           // the count it says (-1: its rows, captions aside)
         };
 
         struct Hooks
@@ -80,7 +96,7 @@ namespace playground::ui
             std::function<void(Section)> action;                // the header's button
         };
 
-        // a11yBase: the first of its accessibility ids (it uses up to 4096 of them).
+        // a11yBase: the first of its accessibility ids (it uses up to kSections * 512 of them).
         ExplorerItem(uint32_t a11yBase, Hooks hooks);
 
         void setBounds(funkgui::Rect r);
@@ -145,7 +161,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true, true, true, true, false };   // FACTORY folded at first
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

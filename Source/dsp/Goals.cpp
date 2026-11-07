@@ -149,7 +149,7 @@ namespace playground::measure
             std::unique_ptr<Session>& s = sessions[rate];
             if (!s)
             {
-                s = std::make_unique<Session>(files, rate);
+                s = std::make_unique<Session>(files, rate, nullptr, checks.front().request.assets);
                 if (cancel != nullptr)
                     s->setCancel(shared);
             }

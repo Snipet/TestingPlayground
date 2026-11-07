@@ -17,8 +17,10 @@
 //   gui.dump.reset.png   EXAMPLES' Init over that program and its interface: Init alone, its dials, no interface
 //   gui.dump.displays.png a program with every display and every dial style, audio flowing; .displays.paper.png
 //   gui.dump.random.png  a program RANDOM made, running
-//   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen
-//   gui.dump.export.png  EXPORT: a project's info typed and chosen
+//   gui.dump.projects.png PROJECTS: three projects, another than the open one chosen, its older version chosen;
+//                        .projects.factory.png a factory project chosen in the FACTORY group
+//   gui.dump.export.png  EXPORT: a project's info typed and chosen, the line that its chats never go with it;
+//                        .export.factory.png a factory project's, read-only
 //   gui.dump.frozen.png  the frozen copy playing: the snowflake left of the load in the top bar; .frozen.paper.png
 //   gui.dump.stopped.png a program that stopped as it played: the status, its message at process's line;
 //                        .stopped.bounds.png one that wrote outside its array: the status, its message at the access
@@ -100,9 +102,16 @@
 //             1"); opened again, the projects listed by name, the open one chosen with its versions and presets; another
 //             project and its older version chosen, Open first asks (the files have changes no version holds), then
 //             opens it: the text back, EDITED gone; Save under another project's name asks (Add version), then adds a
-//             version to it; Delete asks, then deletes a project, and a version; Escape closes. EXPORT (from Export...)
+//             version to it; Delete asks, then deletes a project, and a version; Escape closes. FACTORY: the factory
+//             projects' group on top, by name, the user's after it under UNCATEGORISED; a click on its header folds
+//             it, choosing nothing, another opens it; one chosen (not the one open), its one version, the field left
+//             at the project open's (Save version) with a line saying to open it first, Delete refused (it says so);
+//             Up from the first stays, Down from the last skips UNCATEGORISED's header; Save then saves the program
+//             open, no project of the factory one's name made. EXPORT (from Export...)
 //             takes a description, an author, tags, a category and genres, asks where (a save chooser), writes the
-//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen
+//             package and keeps the info; Import... (an open chooser) adds it as a project of its own, chosen; a factory
+//             project's EXPORT is read-only (a click or a key changes none of its info), writes its package, and Done
+//             closes it
 //   KEYS      Escape leaves the editor, after which Tab moves the focus ring (and no key reaches the text)
 //   FROZEN    blocks played with no dial moving until the frozen copy plays (one wait; the freezer's delay a quarter
 //             second): the top bar shows the snowflake (drawn, left of the load, clear of the CODE / PANEL switch, its
@@ -1558,6 +1567,16 @@ PROBE(gui, dump)
             host.settle();
         };
         const auto clickRow = [&](BL l, int i) {
+            // A project's row scrolled into view first (the list shows so many: its groups make it long).
+            const funkgui::Rect list = browser.places(W, H).projects;
+            for (int k = 0; k < 64 && l == BL::projects && i >= 0; ++k)
+            {
+                const int first = browser.firstShown(BL::projects), rows = browser.places(W, H).rows[0];
+                if (i >= first && i < first + rows)
+                    break;
+                host.wheel(list.centreX(), list.centreY(), i < first ? 1.0f / 6.0f : -1.0f / 6.0f);
+                host.settle();
+            }
             const funkgui::Point at = browser.centreOfRow(l, i, W, H);
             host.click(at.x, at.y);
             host.settle();
@@ -1566,13 +1585,18 @@ PROBE(gui, dump)
             const std::optional<pg::projectstore::Project> p = pg::projectstore::load(name);
             return p ? static_cast<int64_t>(p->versions.size()) : int64_t{ -1 };
         };
+        // The user's projects in the list (the factory's follow them, under their caption).
+        const auto mine = [&] {
+            return static_cast<int64_t>(std::count_if(browser.projectList().begin(), browser.projectList().end(),
+                                                      [](const pg::ProjectEntry& e) { return !e.factory; }));
+        };
         const funkgui::Point open = panel.centreOfProjects();
         host.click(open.x, open.y);
         host.settle();
         P.eq("projects.opens", browser.isOpen() ? 1 : 0, 1);
         const std::string title = program.substr(3, program.find(':') - 3);   // "// <Title>: ..."
         P.eq("projects.title_in_field", browser.name() == title && browser.saveLabel() == "Save project" ? 1 : 0, 1);
-        P.eq("projects.empty_list", browser.projectList().empty() ? 1 : 0, 1);
+        P.eq("projects.empty_list", mine(), 0);
         host.keys("cmd+a");
         typeText(host, "My Patch");
         host.keys("return");
@@ -1636,12 +1660,13 @@ PROBE(gui, dump)
         host.click(open.x, open.y);
         host.settle();
         const std::vector<pg::ProjectEntry>& list = browser.projectList();
-        P.eq("projects.listed_by_name", list.size() == 3 && list[0].name == "Another One" && list[1].name == "My Patch"
+        P.eq("projects.listed_by_name", mine() == 3 && list[0].name == "Another One" && list[1].name == "My Patch"
                                             && list[2].name == "Zebra Pad" ? 1 : 0, 1);
-        P.eq("projects.open_chosen", browser.chosen(BL::projects) == 2 && browser.versionList().size() == 1
-                                         && browser.presetList().size() == 1 && browser.chosen(BL::presets) == 0 ? 1 : 0, 1);
-        clickRow(BL::projects, 1);
-        P.eq("projects.row_chosen", browser.chosen(BL::projects) == 1 && browser.name() == "My Patch"
+        P.eq("projects.open_chosen", browser.chosen(BL::projects) == browser.rowOf("Zebra Pad") && browser.chosenProject() == "Zebra Pad"
+                                         && browser.versionList().size() == 1 && browser.presetList().size() == 1
+                                         && browser.chosen(BL::presets) == 0 ? 1 : 0, 1);
+        clickRow(BL::projects, browser.rowOf("My Patch"));
+        P.eq("projects.row_chosen", browser.chosen(BL::projects) == browser.rowOf("My Patch") && browser.name() == "My Patch"
                                         && browser.versionList().size() == 2 && browser.versionList()[0].number == 2 ? 1 : 0, 1);
         clickRow(BL::versions, 1);
         P.eq("projects.version_chosen", browser.focus() == BL::versions && browser.openLabel() == "Open v1" ? 1 : 0, 1);
@@ -1667,17 +1692,76 @@ PROBE(gui, dump)
         // Delete: a project, then a version, each asked first; Escape closes.
         host.click(open.x, open.y);
         host.settle();
-        clickRow(BL::projects, 0);
+        clickRow(BL::projects, browser.rowOf("Another One"));
         click(browser.places(W, H).remove);
         P.eq("projects.delete_asks", browser.isOpen() && pg::projectstore::exists("Another One") ? 1 : 0, 1);
         click(browser.places(W, H).remove);
-        P.eq("projects.deleted", browser.isOpen() && !pg::projectstore::exists("Another One") && browser.projectList().size() == 2
-                                     ? 1 : 0, 1);
-        clickRow(BL::projects, 0);                       // My Patch
+        P.eq("projects.deleted", browser.isOpen() && !pg::projectstore::exists("Another One") && mine() == 2 ? 1 : 0, 1);
+        clickRow(BL::projects, browser.rowOf("My Patch"));
         clickRow(BL::versions, 0);                       // its v2
         click(browser.places(W, H).remove);
         click(browser.places(W, H).remove);
         P.eq("projects.version_deleted", versionsOf("My Patch") == 1 && browser.versionList().size() == 1 ? 1 : 0, 1);
+        // FACTORY: its group on top (its header, then the factory projects by name), the user's two after it under
+        // UNCATEGORISED.
+        {
+            const std::vector<pg::ProjectEntry> factory = port.factoryProjects();
+            const int header = browser.headerOf("factory"), mineAt = browser.headerOf("uncategorised");
+            bool listed = !factory.empty() && header == 0 && mineAt == header + 1 + static_cast<int>(factory.size());
+            std::vector<std::string> names;
+            for (const pg::ProjectEntry& e : factory)
+                names.push_back(e.name);
+            std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
+                return pg::ui::projectgroups::lower(a) < pg::ui::projectgroups::lower(b);
+            });
+            for (std::size_t i = 0; listed && i < names.size(); ++i)
+            {
+                const pg::ProjectEntry* e = browser.rowProject(header + 1 + static_cast<int>(i));
+                listed = e != nullptr && e->name == names[i] && e->factory;
+            }
+            P.eq("factory.listed", listed ? 1 : 0, 1);
+            P.eq("factory.mine_after", mineAt >= 0 && browser.rowProject(mineAt + 1) != nullptr && !browser.rowProject(mineAt + 1)->factory ? 1 : 0, 1);
+            // A click on its header folds it (nothing chosen), another opens it.
+            const std::string before = browser.chosenProject();
+            clickRow(BL::projects, header);
+            P.eq("factory.header_folds", browser.headerOf("uncategorised") == 1 && browser.chosenProject() == before ? 1 : 0, 1);
+            clickRow(BL::projects, header);
+            P.eq("factory.header_opens", browser.headerOf("uncategorised") == mineAt ? 1 : 0, 1);
+            if (listed)
+            {
+                const std::string first = names.front();
+                clickRow(BL::projects, browser.rowOf(first));
+                P.eq("factory.chosen", browser.chosenProject() == first && browser.versionList().size() == 1
+                                           && browser.versionList()[0].number == 1 ? 1 : 0, 1);
+                const std::string openName = port.project().name;
+                std::printf("factory chosen: field [%s], open [%s], %s\n", browser.name().c_str(), openName.c_str(), browser.why().c_str());
+                P.eq("factory.field_keeps_open", !openName.empty() && browser.name() == openName && browser.saveLabel() == "Save version"
+                                                     && browser.why().find("open it") != std::string::npos ? 1 : 0, 1);
+                const auto f0 = std::find_if(factory.begin(), factory.end(), [&](const pg::ProjectEntry& e) { return e.name == first; });
+                P.eq("factory.presets", static_cast<int64_t>(browser.presetList().size()), f0->presets);
+                writePng(P, host, "gui.dump.projects.factory.png", "projects_factory");
+                click(browser.places(W, H).remove);
+                P.eq("factory.delete_refused", browser.isOpen() && browser.why().find("factory project") != std::string::npos
+                                                   && pg::projectstore::exists(first) ? 1 : 0, 1);
+                host.keys("up");                         // the first row: nothing above it but the header
+                host.settle();
+                P.eq("factory.up_stays", browser.chosenProject() == first ? 1 : 0, 1);
+                clickRow(BL::projects, browser.rowOf(names.back()));
+                host.keys("down");                       // past UNCATEGORISED's header, to the user's first
+                host.settle();
+                P.eq("factory.down_skips_header", browser.chosen(BL::projects) == browser.headerOf("uncategorised") + 1 ? 1 : 0, 1);
+                // Save with it chosen: the program open saved under its own name, no project of the factory one's.
+                clickRow(BL::projects, browser.rowOf(first));
+                const std::size_t projectsBefore = pg::projectstore::list().size();
+                click(browser.places(W, H).save);
+                std::printf("factory chosen, Save: %s\n", panel.statusText().c_str());
+                P.eq("factory.save_keeps_program", !browser.isOpen() && pg::projectstore::list().size() == projectsBefore
+                                                       && !pg::projectstore::exists(pg::ownName(first))
+                                                       && port.project().name == openName ? 1 : 0, 1);
+                host.click(open.x, open.y);
+                host.settle();
+            }
+        }
         host.keys("escape");
         host.settle();
         P.eq("projects.escape_closes", browser.isOpen() ? 0 : 1, 1);
@@ -1686,7 +1770,7 @@ PROBE(gui, dump)
         {
             host.click(open.x, open.y);
             host.settle();
-            clickRow(BL::projects, 0);                   // My Patch
+            clickRow(BL::projects, browser.rowOf("My Patch"));
             click(browser.places(W, H).exportIt);
             pg::ui::ExportCard& card = panel.exportCard();
             P.eq("export.opens", card.isOpen() && !browser.isOpen() && card.project() == "My Patch" ? 1 : 0, 1);
@@ -1709,6 +1793,11 @@ PROBE(gui, dump)
                                     && entered.tags == std::vector<std::string>{ "bright", "short" }
                                     && entered.category == pg::ui::ExportCard::categories()[1] && entered.genres.size() == 2 ? 1 : 0, 1);
             writePng(P, host, "gui.dump.export.png", "export");
+            // The card says a project's chats never go with it (drawn, and to a screen reader).
+            bool says = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                says = says || (a.title == "Export My Patch" && a.help.find("chats with Claude never do") != std::string::npos);
+            P.eq("export.says_no_chats", says ? 1 : 0, 1);
             click(card.places(W, H).package);
             const funkgui::FileRequest* asked = host.pendingFiles();
             P.eq("export.asks_where", asked != nullptr && asked->mode == funkgui::FileRequest::Mode::save
@@ -1733,11 +1822,41 @@ PROBE(gui, dump)
             host.settle();
             const int chosen = browser.chosen(BL::projects);
             P.eq("import.added", pg::projectstore::exists("My Patch 2") && browser.isOpen() && chosen >= 0
-                                     && browser.projectList()[static_cast<std::size_t>(chosen)].name == "My Patch 2"
+                                     && browser.chosenProject() == "My Patch 2"
                                      && panel.statusText().find("IMPORTED: MY PATCH 2") != std::string::npos ? 1 : 0, 1);
             P.eq("import.info_with_it", port.projectInfo("My Patch 2").tags == entered.tags ? 1 : 0, 1);
             host.keys("escape");
             host.settle();
+            // A factory project's: its info shown as it is, read-only; its package written; Done closes.
+            if (const std::vector<pg::ProjectEntry> factory = port.factoryProjects(); !factory.empty())
+            {
+                host.click(open.x, open.y);
+                host.settle();
+                clickRow(BL::projects, browser.rowOf(factory[0].name));
+                click(browser.places(W, H).exportIt);
+                P.eq("export.factory_opens", card.isOpen() && card.readOnly() && card.project() == factory[0].name ? 1 : 0, 1);
+                const pg::ProjectInfo shown = card.info();
+                const pg::ui::ExportCard::Places fs = card.places(W, H);
+                click(fs.description);
+                typeText(host, "x");
+                host.keys("tab");
+                typeText(host, "y");
+                click(fs.categories[0]);
+                click(fs.genres[0]);
+                P.eq("export.factory_info_as_is", card.info() == shown && shown == port.projectInfo(factory[0].name) ? 1 : 0, 1);
+                writePng(P, host, "gui.dump.export.factory.png", "export_factory");
+                click(fs.package);
+                asked = host.pendingFiles();
+                const std::string file = pg::ownName(factory[0].name) + ".fmpack";
+                P.eq("export.factory_asks_where", asked != nullptr && asked->suggestedName == file ? 1 : 0, 1);
+                const juce::File packed = folder.getChildFile("out").getChildFile(juce::String(file));
+                host.returnFiles({ packed.getFullPathName().toStdString() });
+                host.settle();
+                std::printf("factory export: %s\n", card.why().c_str());
+                P.eq("export.factory_written", packed.existsAsFile() && card.why().find("Exported ") != std::string::npos ? 1 : 0, 1);
+                click(card.places(W, H).done);
+                P.eq("export.factory_done_closes", card.isOpen() ? 0 : 1, 1);
+            }
         }
         // Back: the program as it was.
         editor.selectAll();

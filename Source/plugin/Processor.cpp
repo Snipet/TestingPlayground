@@ -1,8 +1,11 @@
 // Source/plugin/Processor.cpp: see Processor.h.
 #include "plugin/Processor.h"
 
+#include "plugin/ChatStore.h"
+#include "plugin/Factory.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
+#include "plugin/WheelMap.h"
 
 #include "Examples.h"
 #include "Product.h"
@@ -19,6 +22,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -35,14 +40,22 @@ namespace playground
         const juce::Identifier kProgramTag{ "PROGRAM" }, kRunTag{ "RUN" }, kDraftTag{ "DRAFT" }, kFileTag{ "FILE" };
         const juce::Identifier kCircuitsTag{ "CIRCUITS" }, kAnswerTag{ "ANSWER" }, kKey{ "key" };
         const juce::Identifier kActive{ "active" }, kName{ "name" }, kText{ "text" }, kPreset{ "preset" },
-                               kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" };
+                               kProject{ "project" }, kProjectVersion{ "projectVersion" }, kProjectPreset{ "projectPreset" },
+                               kProjectId{ "projectId" };
         const juce::Identifier kSource{ "source" }, kDraft{ "draft" };   // the version before files
-        const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" };      // the chat with Claude (ChatAgent::saveState)
+        // The chat with Claude: which one it is, never what was said (ChatAgent.h, "The chats"; CLAUDE.md, "The chats: on
+        // this Mac only"): <CHAT instance=".." owner=".." chat=".."/>, the instance's id (its chats while no project is
+        // open), the chat's owner and id. A session from before kept the conversation itself (json=".."): it is kept on
+        // this Mac when the session loads (ChatAgent::adoptChat), and the session's next save leaves it out.
+        const juce::Identifier kChatTag{ "CHAT" }, kJson{ "json" }, kInstance{ "instance" }, kOwner{ "owner" }, kChatId{ "chat" };
         // MCP's marks (ChatAgent::mcpMarksToKeep, Live.h's KeptMark): <MCP><MARK token><FILE name hash netlist lines/>
         // </MARK></MCP>, the hashes in hex, so that get_status `since` with a token from before the plugin was opened
         // again still says which files changed (a state from before them has none).
         const juce::Identifier kMcpTag{ "MCP" }, kMarkTag{ "MARK" }, kToken{ "token" }, kHash{ "hash" }, kNetlist{ "netlist" },
                                kLines{ "lines" };
+        // <MCP desktopName="Bass">: the user's name for the instance (McpLink::setName), when it has one; a state without
+        // one leaves the name as it is.
+        const juce::Identifier kDesktopName{ "desktopName" };
         const juce::Identifier kEditorTag{ "EDITOR" }, kWidth{ "w" }, kHeight{ "h" };   // the editor's size
         const juce::Identifier kView{ "view" };                                          // and its view: "panel"
         // its CODE view's panel under the code and under the interface's files: "hidden"
@@ -62,7 +75,45 @@ namespace playground
         // <PANEL><DIAL slot="32" value="0.5"/>...</PANEL>, normalised in the program's controls as those are (a state
         // from before them has none: their defaults).
         const juce::Identifier kPanelTag{ "PANEL" }, kDialTag{ "DIAL" }, kSlot{ "slot" };
+        // MIDI learn's mappings (MidiLearn.h): <MIDI><MAP dial="cutoff" channel="1" cc="74" fine="1"/>...</MIDI> (a
+        // state without it has none)
+        const juce::Identifier kMidiTag{ "MIDI" }, kMapTag{ "MAP" }, kDial{ "dial" }, kChannel{ "channel" }, kCc{ "cc" },
+            kFine{ "fine" };
         constexpr int kMaxEditorSide = 16384;
+
+        // The instance ids this process's processors hold (their chats while no project is open: ChatAgent.h, "The
+        // chats"): a state another live instance's id is in (a track duplicated, a default preset applied to a new
+        // instance) gives this one an id of its own.
+        std::mutex heldMutex;
+        std::multiset<std::string> heldIds;
+
+        void holdId(const std::string& id)
+        {
+            const std::lock_guard<std::mutex> lock(heldMutex);
+            heldIds.insert(id);
+        }
+
+        void releaseId(const std::string& id)
+        {
+            const std::lock_guard<std::mutex> lock(heldMutex);
+            if (const auto it = heldIds.find(id); it != heldIds.end())
+                heldIds.erase(it);
+        }
+
+        // `mine` given up for `next` (one lock: two processors loading one state at once each find the other's);
+        // false, and `mine` kept, when another processor holds `next`.
+        bool takeId(const std::string& mine, const std::string& next)
+        {
+            const std::lock_guard<std::mutex> lock(heldMutex);
+            if (next == mine)
+                return true;
+            if (heldIds.count(next) != 0)
+                return false;
+            if (const auto it = heldIds.find(mine); it != heldIds.end())
+                heldIds.erase(it);
+            heldIds.insert(next);
+            return true;
+        }
 
         // What building a .gui file's shaders needs (fminus/Shaders.h): shaderc, bundled in the plugin
         // (Contents/Resources/shaderc: CMakeLists.txt copies the pinned bgfx's there; on Windows shaderc.exe, there in
@@ -345,11 +396,73 @@ namespace playground
         apply(s, true, true, Given{});
         syncDials();                                             // the journal's dials start here
         startTimerHz(20);
+        // The chat's owner: this instance (no project is open yet).
+        holdId(instanceId_);
+        chat_.setOwner(chatstore::instanceOwner(instanceId_), {}, ChatAgent::OwnerChange::carry);
         mcp_ = std::make_unique<McpLink>(McpLink::Hooks{ [this] { return mcpInfo(); },
+                                                         [this] {
+                                                             std::pair<std::string, std::string> place;
+                                                             {
+                                                                 const std::lock_guard<std::mutex> lock(trackMutex_);
+                                                                 place.first = trackName_;
+                                                             }
+                                                             const std::lock_guard<std::mutex> lock(programMutex_);
+                                                             place.second = projectName_;
+                                                             return place;
+                                                         },
                                                          [this](const std::string& name, const juce::var& arguments, uint64_t call) {
                                                              return chat_.mcpCall(name, arguments, call);
                                                          },
                                                          [this](uint64_t call) { chat_.mcpCancel(call); } });
+    }
+
+    // Claude Desktop and this instance, as the explorer and the chat's header show it (any thread).
+    DesktopState Processor::desktop() const
+    {
+        DesktopState d;
+        if (mcp_ == nullptr || !mcp_->listening())
+            return d;
+        const McpLink::View v = mcp_->view();
+        d.linked = true;
+        d.id = mcp_->id();
+        d.name = mcp_->name();
+        d.number = mcp_->numberName();
+        d.connected = mcp_->connected();
+        d.chosen = v.chosen == d.id;
+        d.target = d.chosen || (v.chosen.empty() && v.others.empty());   // chosen, else the only one open
+        for (const McpLink::Peer& p : v.others)
+        {
+            d.others.push_back({ p.id, p.name, p.track, p.project, p.id == v.chosen });
+            if (p.id == v.chosen)
+                d.targetName = p.name;
+        }
+        d.doing = v.tool.empty() ? std::string() : ChatAgent::mcpTitle(v.tool);
+        d.running = v.running;
+        d.ago = v.ago;
+        return d;
+    }
+
+    bool Processor::setDesktopName(const std::string& name, std::string& why)
+    {
+        if (mcp_ == nullptr || !mcp_->listening())
+        {
+            why = "Claude Desktop cannot reach this instance";
+            return false;
+        }
+        const std::string before = mcp_->userName();
+        if (!mcp_->setName(name, why))
+            return false;
+        // No parameter moved, but the session did (it keeps the name): a host that saves on change (VST3's dirty flag)
+        // is told. The user's rename alone: a session's restore names it straight (setStateInformation).
+        if (mcp_->userName() != before)
+            updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+        return true;
+    }
+
+    void Processor::chooseDesktop(const std::string& id, bool on)
+    {
+        if (mcp_ != nullptr)
+            mcp_->choose(id, on);
     }
 
     void Processor::updateTrackProperties(const TrackProperties& properties)
@@ -371,12 +484,14 @@ namespace playground
             o->setProperty("track", juce::String::fromUTF8(trackName_.c_str()));
         }
         juce::Array<juce::var> files;
+        const Assets samples = assetsNow();
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             o->setProperty("project", juce::String::fromUTF8(projectName_.c_str()));
             o->setProperty("version", projectVersion_);
             o->setProperty("preset", juce::String::fromUTF8(projectPreset_.c_str()));
-            o->setProperty("edited", !projectName_.empty() && draft_.files != projectFiles_);
+            o->setProperty("edited", !projectName_.empty()
+                                         && (draft_.files != projectFiles_ || !assets::same(samples.get(), projectAssets_.get())));
             for (const SourceFile& f : draft_.files)
                 files.add(juce::String::fromUTF8(f.name.c_str()));
         }
@@ -390,6 +505,10 @@ namespace playground
     {
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
+        midiTimer_.stopTimer();
+        endMidiGestures();                                       // a touch of MIDI's still open, closed for the host
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        releaseId(instanceId_);
     }
 
     const juce::String Processor::getName() const { return product::kName; }
@@ -491,6 +610,12 @@ namespace playground
             uiNoteTail_.store(tail, std::memory_order_release);
             for (const juce::MidiMessageMetadata m : midi)
             {
+                if (m.numBytes >= 2 && m.data[0] == 0xc0)        // a program change on channel 1: poll() applies it
+                {
+                    const uint32_t before = midiProgram_.load(std::memory_order_relaxed);
+                    midiProgram_.store((((before >> 8) + 1u) << 8) | (m.data[1] & 0x7fu), std::memory_order_release);
+                    continue;
+                }
                 Event e;
                 if (!toEvent(m, e) || (bypassed && e.kind == EventKind::noteOn))
                     continue;
@@ -599,7 +724,7 @@ namespace playground
         std::string name;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
-            name = projectName_;
+            name = ownName(projectName_);                        // a factory project's: its own name
         }
         if (name.empty())
             name = desktopName();
@@ -728,7 +853,12 @@ namespace playground
         return it == schematicPins_.end() ? std::string() : it->second;
     }
 
-    void Processor::setWindowHooks(WindowHooks hooks) { windowHooks_ = std::move(hooks); }
+    void Processor::setWindowHooks(WindowHooks hooks)
+    {
+        windowHooks_ = std::move(hooks);
+        wheelKnown_ = false;                                     // the racing wheel read again from these (syncWheel)
+        syncWheel();
+    }
 
     void Processor::placeWindowButtons(float x, float middle)
     {
@@ -860,6 +990,7 @@ namespace playground
         hostBlocks_.store(hostBlocks_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
         if (buffer.getNumSamples() > largestHostBlock_.load(std::memory_order_relaxed))
             largestHostBlock_.store(buffer.getNumSamples(), std::memory_order_relaxed);
+        midiControls(midi);                                      // MIDI learn's (bypassed or not, as automation)
         if (!prepared_)
         {
             runUnprepared(buffer);
@@ -895,6 +1026,16 @@ namespace playground
         capture_.end(engine_);
     }
 
+    // The block's control changes to MIDI learn (MidiLearn.h), while it listens: a dial learning, or a mapping bound.
+    void Processor::midiControls(const juce::MidiBuffer& midi) noexcept
+    {
+        if (!learn_.listening())
+            return;
+        for (const juce::MidiMessageMetadata m : midi)
+            if (m.numBytes >= 3 && (m.data[0] & 0xf0) == 0xb0)
+                learn_.controlChange(m.data[0] & 0x0f, m.data[1] & 0x7f, m.data[2] & 0x7f);
+    }
+
     void Processor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
     {
         hostBlock(buffer, midi, false);
@@ -913,10 +1054,29 @@ namespace playground
         return playground::createEditor(*this);
     }
 
-    int Processor::getNumPrograms() { return 1; }
-    int Processor::getCurrentProgram() { return 0; }
-    void Processor::setCurrentProgram(int) {}
-    const juce::String Processor::getProgramName(int) { return {}; }
+    // The host's programs: the project open's presets (refreshPresets keeps them; never a file read here).
+    int Processor::getNumPrograms() { return programCount(); }
+    int Processor::getCurrentProgram() { return std::clamp(hostCurrent_.load(), 0, programCount() - 1); }
+
+    void Processor::setCurrentProgram(int index)
+    {
+        // A host may ask on another thread: the message thread applies it (poll), as it applies every preset.
+        if (juce::MessageManager::existsAndIsCurrentThread())
+            (void)choosePreset(index, "the host");
+        else
+            hostProgramAsked_.store(index);
+    }
+
+    const juce::String Processor::getProgramName(int index)
+    {
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        if (index >= 0 && index < static_cast<int>(heldPresets_.size()))
+            return juce::String::fromUTF8(heldPresets_[static_cast<std::size_t>(index)].name.c_str());
+        if (heldPresets_.empty() && index == 0)
+            return heldProject_.empty() ? "(no project open)" : "(no presets)";
+        return "-";
+    }
+
     void Processor::changeProgramName(int, const juce::String&) {}
 
     Control Processor::control(int c) const
@@ -955,8 +1115,12 @@ namespace playground
                 panel_ = s.panel;
                 program_ = s.program;
                 previous_ = running_;
+                previousAssets_ = runningAssets_;
                 running_ = s.restored;
+                runningAssets_ = s.assets;
+                runningSamples_ = s.samples;
             }
+            learn_.bind(s.controls);                             // MIDI learn's mappings follow the dials by name
             if (run)
                 writeCarry(s, s.controls, s.panel.options, given);
             updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
@@ -993,14 +1157,23 @@ namespace playground
             controls_ = s.controls;
             panel_ = s.panel;
             program_ = s.program;
-            // compare's previous_run: what a run replaced. A state's program (a host's recall, a project reopened) is
-            // no run's: nothing played before it, though Init played until then.
+            // compare's previous_run: what a run replaced (its files, or the samples it read). A state's program (a
+            // host's recall, a project reopened) is no run's: nothing played before it, though Init played until then.
             if (loaded)
+            {
                 previous_.clear();
-            else if (!edit && !running_.empty() && !cir::sameProgram(running_, s.sources))
+                previousAssets_ = nullptr;
+            }
+            else if (!edit && changesProgram(s))
+            {
                 previous_ = running_;
+                previousAssets_ = runningAssets_;
+            }
             running_ = s.sources;
+            runningAssets_ = s.assets;
+            runningSamples_ = s.samples;
         }
+        learn_.bind(s.controls);
         if (run)
             writeCarry(s, s.controls, s.panel.options, given);
         updateHostDisplay(juce::AudioProcessor::ChangeDetails().withParameterInfoChanged(true));
@@ -1170,12 +1343,22 @@ namespace playground
         pictureView_ = view;
         picturePage_ = name;
         pictureState_ = state;
-        if (!pictureDone_.wait_for(lock, std::chrono::seconds(10), [this] { return pictureReady_; }))
+        // 10 s at most, and not past a stop: the message thread that draws it may be the one that stopped the turn and
+        // waits for it to end (a project opened, a chat switched), which draws nothing until it has.
+        using Clock = std::chrono::steady_clock;
+        const Clock::time_point until = Clock::now() + std::chrono::seconds(10);
+        while (!pictureReady_)
         {
-            pictureAsked_ = false;
-            PanelPicture none;
-            none.why = "the plugin's message thread did not draw the picture in time (the host may be busy); try again";
-            return none;
+            const bool stopped = chat_.stopping();
+            if (stopped || Clock::now() >= until)
+            {
+                pictureAsked_ = false;
+                PanelPicture none;
+                none.why = stopped ? "stopped before the picture was drawn"
+                                   : "the plugin's message thread did not draw the picture in time (the host may be busy); try again";
+                return none;
+            }
+            pictureDone_.wait_until(lock, std::min(until, Clock::now() + std::chrono::milliseconds(20)));
         }
         pictureReady_ = false;
         return std::move(picture_);
@@ -1277,6 +1460,32 @@ namespace playground
                 abDialsRequest_ = 0;
             }
         }
+        // The presets in turn: a program MIDI or the host asked for, the list read again, the host told of a change.
+        if constexpr (product::kIsInstrument)
+            if (const uint32_t m = midiProgram_.load(std::memory_order_acquire); (m >> 8) != (midiProgramSeen_ >> 8))
+            {
+                midiProgramSeen_ = m;
+                (void)choosePreset(static_cast<int>(m & 0x7fu), "MIDI's program change");
+            }
+        if (const int asked = hostProgramAsked_.exchange(-1); asked >= 0)
+            (void)choosePreset(asked, "the host");
+        refreshPresets(false);
+        {
+            const int now = hostCurrent_.load();
+            uint64_t names = 0;
+            {
+                const std::lock_guard<std::mutex> lock(presetsMutex_);
+                names = heldNames_;
+            }
+            if (now != hostTold_ || names != namesTold_)
+            {
+                const bool first = hostTold_ < 0;
+                hostTold_ = now;
+                namesTold_ = names;
+                if (!first)
+                    updateHostDisplay(juce::AudioProcessor::ChangeDetails().withProgramChanged(true));
+            }
+        }
         abMatched();                                             // the A/B's loudness, once measured
         abFollowDials();                                         // and again once its dials moved and came to rest
         // Dials Claude set, after the compile that may have brought them: host gestures, on this thread.
@@ -1293,7 +1502,10 @@ namespace playground
             ownDials_.fetch_or(slotBit(slot));                   // journalled when Claude set it (chatSetDial)
             (void)writeDial(slot, normOf(c, plain));
         }
+        runClaudeJob();                                          // Claude's projects tool: after its dials, as it set them
         capture_.housekeep();                                    // frees what the audio thread handed back
+        if ((learn_.listening() || midiGestures_ != 0) && !midiTimer_.isTimerRunning())
+            midiTimer_.startTimerHz(kMidiHz);                    // MIDI learn's, while it has anything to do
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
         {
@@ -1351,6 +1563,8 @@ namespace playground
             if (!projectName_.empty())
             {
                 program.setProperty(kProject, juce::String::fromUTF8(projectName_.c_str()), nullptr);
+                if (!projectId_.empty())
+                    program.setProperty(kProjectId, juce::String(projectId_), nullptr);
                 program.setProperty(kProjectVersion, projectVersion_, nullptr);
                 if (!projectPreset_.empty())
                     program.setProperty(kProjectPreset, juce::String::fromUTF8(projectPreset_.c_str()), nullptr);
@@ -1403,13 +1617,32 @@ namespace playground
             program.appendChild(tree, nullptr);
         }
         state.appendChild(program, nullptr);
-        juce::ValueTree chat{ kChatTag };
-        chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
-        state.appendChild(chat, nullptr);
-        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty())
+        {
+            // The chat stays on this Mac (written now, when it changed, unless a turn runs: its end writes it, and a
+            // host may ask for the state at every change); the session names it only.
+            chat_.keepIdle();
+            const ChatAgent::ChatRef ref = chat_.chatRef();
+            std::string instance;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                instance = instanceId_;
+            }
+            juce::ValueTree chat{ kChatTag };
+            chat.setProperty(kInstance, juce::String(instance), nullptr);
+            chat.setProperty(kOwner, juce::String(ref.owner), nullptr);
+            if (!ref.id.empty())
+                chat.setProperty(kChatId, juce::String(ref.id), nullptr);
+            state.appendChild(chat, nullptr);
+        }
+        // The user's name, kept even while the link has no socket (its name() is "" then, and a name restored into such
+        // an instance must survive its next save).
+        const std::string desktopName = mcp_ != nullptr ? mcp_->userName() : std::string();
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty() || !desktopName.empty())
         {
             const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
             juce::ValueTree mcp{ kMcpTag };
+            if (!desktopName.empty())
+                mcp.setProperty(kDesktopName, juce::String::fromUTF8(desktopName.c_str()), nullptr);
             for (const KeptMark& m : marks)
             {
                 juce::ValueTree mark{ kMarkTag };
@@ -1502,6 +1735,24 @@ namespace playground
                 state.appendChild(folder, nullptr);
             }
         }
+        if (const std::vector<midilearn::Mapping> maps = learn_.mappings(); !maps.empty())
+        {
+            juce::ValueTree midi{ kMidiTag };
+            for (const midilearn::Mapping& m : maps)
+            {
+                juce::ValueTree map{ kMapTag };
+                map.setProperty(kDial, juce::String::fromUTF8(m.dial.c_str()), nullptr);
+                map.setProperty(kChannel, m.channel, nullptr);
+                map.setProperty(kCc, m.cc, nullptr);
+                if (m.fine)
+                    map.setProperty(kFine, 1, nullptr);
+                midi.appendChild(map, nullptr);
+            }
+            state.appendChild(midi, nullptr);
+        }
+        // The samples, each file as it was added (ProcessorAssets.cpp).
+        if (juce::ValueTree samples = assetsState(); samples.getNumChildren() > 0)
+            state.appendChild(samples, nullptr);
         if (const std::unique_ptr<juce::XmlElement> xml = state.createXml())
             copyXmlToBinary(*xml, destData);
     }
@@ -1548,12 +1799,10 @@ namespace playground
                 }
             state.removeChild(panel, nullptr);
         }
+        // The chat: which one (applied once the project open is known, below), or a conversation from before.
         const juce::ValueTree chat = state.getChildWithName(kChatTag);
         if (chat.isValid())
-        {
-            chat_.loadState(chat.getProperty(kJson).toString().toStdString());
             state.removeChild(chat, nullptr);
-        }
         {
             // MCP's marks, now of before the plugin was opened again (none in a state from before them).
             const juce::ValueTree mcp = state.getChildWithName(kMcpTag);
@@ -1572,6 +1821,11 @@ namespace playground
                     marks.push_back(std::move(m));
                 }
             chat_.restoreMcpMarks(std::move(marks));
+            if (mcp.isValid() && mcp.hasProperty(kDesktopName) && mcp_ != nullptr)
+            {
+                std::string why;
+                (void)mcp_->setName(mcp.getProperty(kDesktopName).toString().toStdString(), why);   // one it cannot take: as it was
+            }
             if (mcp.isValid())
                 state.removeChild(mcp, nullptr);
         }
@@ -1589,6 +1843,19 @@ namespace playground
                 folderWanted_ = k;
             }
             state.removeChild(folder, nullptr);
+        }
+        // MIDI learn's mappings (a state from before them, or saved with none, has none), bound when its program applies.
+        {
+            std::vector<midilearn::Mapping> maps;
+            const juce::ValueTree midi = state.getChildWithName(kMidiTag);
+            for (int k = 0; midi.isValid() && k < midi.getNumChildren() && k < 4 * kMaxControls; ++k)
+                if (const juce::ValueTree map = midi.getChild(k); map.hasType(kMapTag))
+                    maps.push_back({ map.getProperty(kDial).toString().substring(0, 64).toStdString(),
+                                     static_cast<int>(map.getProperty(kChannel, 0)), static_cast<int>(map.getProperty(kCc, -1)),
+                                     static_cast<int>(map.getProperty(kFine, 0)) != 0 });
+            learn_.setMappings(std::move(maps));
+            if (midi.isValid())
+                state.removeChild(midi, nullptr);
         }
         const juce::ValueTree editor = state.getChildWithName(kEditorTag);
         panelView_.store(editor.isValid() && editor.getProperty(kView).toString() == "panel");
@@ -1643,28 +1910,48 @@ namespace playground
             setEditorSize(static_cast<int>(editor.getProperty(kWidth, 0)), static_cast<int>(editor.getProperty(kHeight, 0)));
             state.removeChild(editor, nullptr);
         }
+        // The samples (a state from before them, or saved with none, has none), decoded here, before its program
+        // compiles with them.
+        std::vector<std::string> samplesRefused;
+        const Assets samples = assetsOfState(state, samplesRefused);
+        state.removeChild(state.getChildWithName("ASSETS"), nullptr);
+        replaceAssets(samples, Journal::Who::host, "");
+        if (!samplesRefused.empty())
+            journal_.note(Journal::Who::host, "left out of the saved state's samples: " + samplesRefused.front()
+                                                  + (samplesRefused.size() > 1 ? " (and " + std::to_string(samplesRefused.size() - 1) + " more)" : ""));
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            projectAssets_ = samples;                            // the session's samples are its version's, as saved
             // The project open; a session from before projects names a preset, now a project of that name.
             if (program.hasProperty(kProject))
             {
-                projectName_ = projectstore::tidyName(program.getProperty(kProject).toString().toStdString());
+                // A factory project's name as it is (tidyName would take its colon), while this build has it.
+                const std::string named = program.getProperty(kProject).toString().toStdString();
+                projectName_ = !isFactoryName(named)                              ? projectstore::tidyName(named)
+                             : factory::find(named) != nullptr ? factory::find(named)->name
+                                                               : std::string();
                 projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
                 projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
+                projectId_ = program.getProperty(kProjectId).toString().toLowerCase().substring(0, 64).toStdString();
+                projectIdName_.clear();                          // checked against the project's file (chatOwnerNow)
             }
             else
             {
                 projectName_ = projectstore::tidyName(program.getProperty(kPreset).toString().toStdString());
                 projectVersion_ = 0;
                 projectPreset_.clear();
+                projectId_.clear();
+                projectIdName_.clear();
             }
             projectLatest_ = projectVersion_;
             projectFiles_ = draft.files;                         // the session's files are its version's, as saved
-            baseDials_.clear();
+            baseDials_.clear();                                  // restoreProjectBase's, below
+            midiOpened_.reset();                                 // the session's mappings are its own
             draft_ = std::move(draft);
             ++draftRevision_;
             abKept_ = {};                                        // an A/B's: the session's program plays, as saved
         }
+        restoreProjectBase();
         // An A/B (ProcessorAb.cpp) ends: its compile still waiting is taken back (it would play over the session's
         // program), the session's program plays untrimmed from its first block, and poll() ends it once that is out.
         abLoading_.store(true);
@@ -1692,6 +1979,124 @@ namespace playground
         journal_.dialsNote(Journal::Who::host, "loaded a saved state (the program, its files and its dials)");
         syncDials();
         abStateLoaded_.store(std::max<uint64_t>(1, s.request));
+        // The session's project's presets (restoreProjectBase read them into the cache), its preset the host's program.
+        refreshPresets(true);
+
+        // The chat (ChatAgent.h, "The chats"): this instance's id (its chats while no project is open), then the project
+        // open's chat the session names, else that project's newest; a session from before keeps its conversation on this
+        // Mac now; a state with no chat at all (a preset from before chats) shows the project's chats all the same.
+        loadChat(chat);
+    }
+
+    // The chat a state names (setStateInformation). The instance's id: the state's own when it is this instance's, or
+    // when its chats are there to find and no other live instance holds it; a new one when another does (a track
+    // duplicated, a default preset applied: the chat the state names is shown as a copy of this instance's own), and
+    // when there is nothing of it to find (a template's or a default preset's from an instance that kept no chat, a
+    // state from another Mac): so copies of one state never share chats. A session from before has no id: one made from
+    // its conversation when that is adoptable and kept with the instance (loaded again unsaved, the same instance finds
+    // the chat it became), else a new one (every untouched instance's conversation was alike).
+    void Processor::loadChat(const juce::ValueTree& chat)
+    {
+        if (!chat.isValid())
+        {
+            std::string owner, label;
+            chatOwnerNow(owner, label);
+            chat_.setOwner(owner, label, ChatAgent::OwnerChange::open);
+            return;
+        }
+        const bool old = chat.hasProperty(kJson);
+        const std::string json = old ? chat.getProperty(kJson).toString().toStdString() : std::string();
+        const std::string sessionOwner = chat.getProperty(kOwner).toString().toStdString();
+        const std::string sessionChat = chat.getProperty(kChatId).toString().toStdString();
+        std::string mine;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            mine = instanceId_;
+        }
+        // The project's chats first (the owner when one is open): the instance's id matters only without one.
+        std::string owner, label;
+        chatOwnerNow(owner, label);
+        const bool project = owner.rfind(chatstore::kInstancePrefix, 0) != 0;
+        std::string wanted = old ? std::string() : chat.getProperty(kInstance).toString().toStdString();
+        if (old && !project && ChatAgent::adoptable(json))
+            wanted = ChatAgent::sessionChatId(json);
+        if (!chatstore::validId(wanted))
+            wanted.clear();
+        else if (wanted != mine && !old && !chatstore::hasChats(chatstore::instanceOwner(wanted)))
+            wanted.clear();                                      // nothing of it here to find
+        std::string copyFrom;                                     // the instance whose chat this one shows a copy of
+        std::string next = wanted.empty() ? chatstore::newId() : wanted;
+        if (!takeId(mine, next))
+        {
+            if (!project && sessionOwner == chatstore::instanceOwner(next))
+                copyFrom = sessionOwner;
+            next = chatstore::newId();
+            (void)takeId(mine, next);
+        }
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            instanceId_ = next;
+        }
+        if (!project)
+            owner = chatstore::instanceOwner(next);
+        if (old)
+            chat_.adoptChat(json, owner, label);
+        else if (!copyFrom.empty())
+            chat_.restoreChat(owner, label, sessionChat, copyFrom);
+        else
+            chat_.restoreChat(owner, label, sessionOwner == owner ? sessionChat : std::string());
+    }
+
+    // The chats' owner now (ChatAgent.h, "The chats"): the project open's id (made now when its file has none: a project
+    // from before ids; found by the id the session kept when the project was renamed in the Finder since), its name the
+    // label; else this instance's own. projectId_ follows.
+    void Processor::chatOwnerNow(std::string& owner, std::string& label, const projectstore::Project* opened)
+    {
+        std::string name, kept, keptFor, instance;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+            kept = projectId_;
+            keptFor = projectIdName_;
+            instance = instanceId_;
+        }
+        std::string id;
+        if (!name.empty() && !kept.empty() && projectstore::sameName(name, keptFor) && opened == nullptr)
+            id = kept;                                           // the same project as before (a version saved): no read
+        else if (opened != nullptr && projectstore::sameName(opened->name, name))
+            id = projectstore::idOf(*opened);                    // read already: not read again
+        else if (!name.empty())
+        {
+            id = projectstore::idOf(name);
+            if (id.empty() && projectstore::validProjectId(kept))
+                if (const std::string renamed = projectstore::nameOfId(kept); !renamed.empty())
+                {
+                    name = renamed;                              // renamed in the Finder since the session named it
+                    id = projectstore::idOf(name);
+                }
+        }
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (!id.empty() && !projectstore::sameName(projectName_, name))
+                projectName_ = name;
+            projectId_ = id;
+            projectIdName_ = id.empty() ? std::string() : name;
+        }
+        owner = id.empty() ? chatstore::instanceOwner(instance) : id;
+        label = id.empty() ? std::string() : name;
+    }
+
+    void Processor::syncChatOwner(ChatAgent::OwnerChange how, const projectstore::Project* opened)
+    {
+        std::string owner, label;
+        chatOwnerNow(owner, label, opened);
+        // A save carries the chat from a project that has no file any more (deleted since it was opened: the save made a
+        // new project of its name): it moves, as nothing is left with that project. One renamed away keeps its own.
+        if (how == ChatAgent::OwnerChange::carry)
+            if (const std::string from = chat_.chatOwner(); from != owner && projectstore::validProjectId(from)
+                                                             && projectstore::nameOfId(from).empty())
+                how = ChatAgent::OwnerChange::move;
+        chat_.setOwner(owner, label, how);
     }
 
     // ---- EditorPort ------------------------------------------------------------------------------------------------------
@@ -1854,6 +2259,15 @@ namespace playground
         return entriesOf(projectstore::list());
     }
 
+    std::vector<ProjectEntry> Processor::factoryProjects() const
+    {
+        std::vector<ProjectEntry> out;
+        for (const projectstore::Entry& e : projectstore::factoryList())
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), true,
+                            e.category, e.tags, e.description, e.savedMs });
+        return out;
+    }
+
     std::vector<ProjectEntry> Processor::projectsPolled() const
     {
         std::vector<std::string> unread;
@@ -1869,7 +2283,7 @@ namespace playground
         std::vector<PresetEntry> out;
         if (const auto ps = projectstore::presetsCached(project, unread))
             for (const projectstore::PresetSummary& pr : *ps)
-                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from, pr.category });
         if (!unread.empty())
             reader_->request(unread);
         return out;
@@ -1881,7 +2295,8 @@ namespace playground
     {
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : list)
-            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()) });
+            out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
+                            e.category, e.tags, e.description, e.savedMs });
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))
@@ -1903,6 +2318,7 @@ namespace playground
         std::vector<projectstore::Dial> base;
         Controls cs;
         std::array<std::vector<std::string>, kMaxControls> options;
+        const Assets samples = assetsNow();
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             options = panel_.options;
@@ -1910,27 +2326,37 @@ namespace playground
             st.version = projectVersion_;
             st.latest = std::max(projectLatest_, projectVersion_);
             st.preset = projectPreset_;
-            st.edited = !projectName_.empty() && draft_.files != projectFiles_;
-            st.changed = draft_.files != projectFiles_;
+            st.changed = draft_.files != projectFiles_ || !assets::same(samples.get(), projectAssets_.get());
+            st.edited = !projectName_.empty() && st.changed;
             base = baseDials_;
             cs = controls_;
         }
         // The dials against the ones the version or the preset set (not while its compile is on its way).
         if (dialsRequest_ == 0)
-            for (int c = 0; c < kMaxControls && !st.dialsEdited; ++c)
-            {
-                const Control& k = cs[static_cast<std::size_t>(c)];
-                if (!k.used)
-                    continue;
-                const auto it = std::find_if(base.begin(), base.end(), [&](const projectstore::Dial& d) { return d.name == k.name; });
-                if (it == base.end())
-                    continue;
-                const float norm = raw_[static_cast<std::size_t>(c)]->load();
-                const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
-                const float saved = projectstore::valueOf(*it, k, options[static_cast<std::size_t>(c)]);
-                st.dialsEdited = std::fabs(plain - saved) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min));
-            }
+            st.dialsEdited = !dialsAgainst(cs, options, base).second;
         return st;
+    }
+
+    std::pair<int, bool> Processor::dialsAgainst(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
+                                                 const std::vector<projectstore::Dial>& dials) const
+    {
+        int found = 0;
+        for (int c = 0; c < kMaxControls; ++c)
+        {
+            const Control& k = cs[static_cast<std::size_t>(c)];
+            if (!k.used)
+                continue;
+            const auto it = std::find_if(dials.begin(), dials.end(), [&](const projectstore::Dial& d) { return d.name == k.name; });
+            if (it == dials.end())
+                continue;
+            ++found;
+            const float norm = raw_[static_cast<std::size_t>(c)]->load();
+            const float plain = std::isfinite(norm) ? plainOf(k, norm) : k.def;
+            const float saved = projectstore::valueOf(*it, k, options[static_cast<std::size_t>(c)]);
+            if (std::fabs(plain - saved) > 1.0e-4f * std::max(1.0e-6f, std::fabs(k.max - k.min)))
+                return { found, false };
+        }
+        return { found, true };
     }
 
     std::vector<VersionEntry> Processor::versions(const std::string& project) const
@@ -1947,7 +2373,7 @@ namespace playground
         std::vector<PresetEntry> out;
         if (const auto ps = projectstore::presetsOf(project))   // its file read only when it changed
             for (const projectstore::PresetSummary& pr : *ps)
-                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from });
+                out.push_back({ pr.name, whenOf(pr.savedMs), pr.from, pr.category });
         return out;
     }
 
@@ -2037,12 +2463,117 @@ namespace playground
             updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
             return true;
         }
+        // A gesture of its own, through the dial's port: nested in one the editor's hand or a MIDI touch holds open (the
+        // host sees that one go on, never ended under it, and its own end then the last), and not the editor's move in
+        // the journal (GesturePort::beginOwnGesture).
         juce::RangedAudioParameter& p = *params_[static_cast<std::size_t>(c)];
+        GesturePort& port = *portStore_[static_cast<std::size_t>(c)];
         const bool moved = p.getValue() != norm;
-        p.beginChangeGesture();
+        port.beginOwnGesture();
         p.setValueNotifyingHost(norm);
-        p.endChangeGesture();
+        port.endGesture();
         return moved;
+    }
+
+    // ---- MIDI learn (MidiLearn.h) ------------------------------------------------------------------------------------
+    bool Processor::midiLearnable() const { return product::kIsInstrument; }
+
+    // The Standalone's racing wheel on or not (MidiLearn.h: its controls on channel 1 are not learned while it is), read
+    // from its devices when they say something changed; none in a host. Message thread (the devices are its alone).
+    void Processor::syncWheel()
+    {
+        DevicePort* d = windowHooks_.devices;
+        if (d == nullptr)
+        {
+            learn_.setWheel(false);
+            return;
+        }
+        const uint64_t serial = d->serial();
+        if (wheelKnown_ && serial == wheelSerial_)
+            return;
+        wheelKnown_ = true;
+        wheelSerial_ = serial;
+        const DeviceSetup s = d->setup();
+        learn_.setWheel(std::any_of(s.midi.begin(), s.midi.end(),
+                                    [](const MidiInputDevice& m) { return m.on && m.identifier == wheel::kIdentifier; }));
+    }
+
+    void Processor::pollMidi(double nowMs)
+    {
+        if (learn_.learning())
+            syncWheel();                                         // switched on or off while a dial learns
+        midilearn::Learn::Tick t;
+        learn_.tick(nowMs, t);
+        if (t.learned)
+            journal_.note(Journal::Who::user, "learned MIDI " + midilearn::describe(t.mapping) + " for " + t.mapping.dial);
+        // The touches that ended close their gestures first, so a slot's next touch is a gesture of its own; then the
+        // moves, through the dial's port as the editor's hand writes (an int's or a bool's on one of its values), a
+        // gesture beginning with the first that moves it.
+        for (int c = 0; c < kMaxControls; ++c)
+            if ((t.ended & midiGestures_ & slotBit(c)) != 0)
+            {
+                ports_[static_cast<std::size_t>(c)]->endGesture();
+                midiGestures_ &= ~slotBit(c);
+            }
+        for (const midilearn::Learn::Move& m : t.moves)
+        {
+            const Control k = control(m.slot);
+            if (!k.used || !std::isfinite(m.value))
+                continue;
+            const float v = std::clamp(m.value, 0.0f, 1.0f);
+            const float to = k.type == ControlType::real ? v : normOf(k, plainOf(k, v));
+            funkgui::ParamPort& port = *ports_[static_cast<std::size_t>(m.slot)];
+            if (port.value01() == to)
+                continue;
+            if ((midiGestures_ & slotBit(m.slot)) == 0)
+            {
+                port.beginGesture();
+                midiGestures_ |= slotBit(m.slot);
+            }
+            port.setValue01(to);
+        }
+        if (!learn_.listening() && midiGestures_ == 0 && learn_.touching() == 0)
+            midiTimer_.stopTimer();                              // poll() starts it again when there is something
+    }
+
+    void Processor::endMidiGestures()
+    {
+        for (int c = 0; c < kMaxControls; ++c)
+            if ((midiGestures_ & slotBit(c)) != 0)
+                ports_[static_cast<std::size_t>(c)]->endGesture();
+        midiGestures_ = 0;
+    }
+
+    bool Processor::learnMidi(int slot)
+    {
+        if (!midiLearnable())
+            return false;
+        syncWheel();
+        if (!learn_.arm(slot))
+            return false;
+        if (!midiTimer_.isTimerRunning())
+            midiTimer_.startTimerHz(kMidiHz);
+        return true;
+    }
+
+    void Processor::cancelMidiLearn() { learn_.cancel(); }
+
+    bool Processor::forgetMidi(int slot)
+    {
+        const midilearn::View v = learn_.view();
+        const std::string words = slot >= 0 && slot < kMaxControls ? v.words[static_cast<std::size_t>(slot)] : std::string();
+        if (!learn_.forget(slot))
+            return false;
+        journal_.note(Journal::Who::user, "forgot the MIDI control of " + std::string(control(slot).name) + " (" + words + ")");
+        return true;
+    }
+
+    int Processor::forgetAllMidi()
+    {
+        const int n = learn_.forgetAll();
+        if (n > 0)
+            journal_.note(Journal::Who::user, "forgot every MIDI control learned (" + std::to_string(n) + ")");
+        return n;
     }
 
     float Processor::dialDefault01(int c) const
@@ -2050,7 +2581,8 @@ namespace playground
         return isPanelDial(c) || c < 0 || c >= kHostControls ? 0.5f : params_[static_cast<std::size_t>(c)]->getDefaultValue();
     }
 
-    bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why)
+    bool Processor::openVersion(const projectstore::Project& p, const projectstore::Version& v, std::string& why,
+                                ChatAgent::OwnerChange how)
     {
         Draft d;
         d.files = tidyFiles(v.files);
@@ -2060,28 +2592,49 @@ namespace playground
             return false;
         }
         d.active = std::clamp(v.active, 0, static_cast<int>(d.files.size()) - 1);
+        std::vector<midilearn::Mapping> left = learn_.mappings();
+        // Its samples (none: none), decoded before it compiles with them (ProcessorAssets.cpp).
+        std::vector<std::string> refused;
+        const Assets samples = assetsOfVersion(p, v, assetsNow(), refused);
+        replaceAssets(samples, Journal::Who::user, "");
+        if (!refused.empty())
+            journal_.note(Journal::Who::user, "left out of the version's samples: " + refused.front()
+                                                  + (refused.size() > 1 ? " (and " + std::to_string(refused.size() - 1) + " more)" : ""));
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             draft_ = d;
             ++draftRevision_;                                    // the editor shows the version's files
+            projectAssets_ = samples;
             projectName_ = p.name;
             projectVersion_ = v.number;
             projectLatest_ = p.latest().number;
             projectPreset_.clear();
             projectFiles_ = d.files;
             baseDials_ = v.dials;
+            if (v.midi.empty())
+                midiOpened_ = std::move(left);                   // what it leaves: no change of its own (saveVersion)
+            else
+                midiOpened_.reset();
         }
         projectDials_ = v.dials;
         for (const projectstore::Answer& a : v.circuits)            // its netlists' answers, before it compiles
             circuits::restore(a.key, a.text);
+        if (!v.midi.empty())                                     // its MIDI learn's mappings, when it has some (a
+            learn_.setMappings(v.midi);                          // version with none leaves those there are)
         // The version as it was saved: compiled (its netlists' answers in, its program from its init), never a panel's
         // edit (Compiler.h).
         const uint64_t id = compiler_.request(d.files, false);
         dialsRequest_ = id;
+        syncChatOwner(how, &p);                                  // another project: its chats (or the chat goes along)
         return true;
     }
 
     bool Processor::openProject(const std::string& name, int version, std::string& why)
+    {
+        return openProjectAs(name, version, Journal::Who::user, why);
+    }
+
+    bool Processor::openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why)
     {
         const std::optional<projectstore::Project> p = projectstore::load(name, &why);
         if (!p)
@@ -2092,10 +2645,44 @@ namespace playground
             why = "\"" + p->name + "\" keeps no version " + std::to_string(version);
             return false;
         }
-        if (!openVersion(*p, *v, why))
+        // The plugin's own chat asked for it in a turn: the conversation that asked goes on with the project (carry, as
+        // a save), never left behind with the project before (CLAUDE.md, "The chats"). Claude Desktop's open is the
+        // user's own chat's change of project, as PROJECTS' (open: at the call's end, ChatAgent's pendingOwner_).
+        if (!openVersion(*p, *v, why, who == Journal::Who::chat ? ChatAgent::OwnerChange::carry : ChatAgent::OwnerChange::open))
             return false;
-        journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        if (who)
+            journal_.dialsNote(*who, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        refreshPresets(true);
         return true;
+    }
+
+    // A state load (not a host's program call): the session's project read whole, outside programMutex_. Its base is
+    // as openVersion and applyPreset leave it: the version's dials, the preset applied over them. A project gone, or a
+    // version no more kept, leaves what is known (none: nothing reads as edited). The read also puts its presets in the
+    // store's cache, so refreshPresets has them at once, even in a host just started.
+    void Processor::restoreProjectBase()
+    {
+        std::string name, preset;
+        int version = 0;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            name = projectName_;
+            preset = projectPreset_;
+            version = projectVersion_;
+        }
+        if (name.empty())
+            return;
+        const std::optional<projectstore::Project> p = projectstore::load(name);
+        if (!p)
+            return;
+        std::vector<projectstore::Dial> base;
+        if (const projectstore::Version* v = p->version(version))
+            base = v->dials;
+        if (const projectstore::Preset* pr = preset.empty() ? nullptr : p->preset(preset))
+            base = overlay(std::move(base), pr->dials);
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        if (projectName_ == name && projectPreset_ == preset && projectVersion_ == version)
+            baseDials_ = std::move(base);
     }
 
     // EXAMPLES and RANDOM (EditorPort::startAfresh): `files` as a new instance plays Init. They are the whole draft, no
@@ -2115,40 +2702,65 @@ namespace playground
             projectVersion_ = projectLatest_ = 0;
             projectPreset_.clear();
             projectFiles_ = d.files;                             // nothing to lose yet, as in a new instance
+            projectAssets_ = assetsNow();                        // the samples stay: the user's, for the next program
             baseDials_.clear();
+            midiOpened_.reset();
         }
         projectDials_.clear();
         dialsRequest_ = 0;
         setGuiPages({});
+        syncChatOwner(ChatAgent::OwnerChange::open);             // no project: this instance's chats
         chat_.clearChecks();
         const uint64_t id = compiler_.request(d.files, false);   // a fresh start: compiled, whatever changed
         defaultsRequest_ = id;
         userRun_.store(id);
         journal_.dialsNote(Journal::Who::user,
                            "started afresh from " + what + " (its files only, every dial at its default)");
+        refreshPresets(true);
     }
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
     {
+        return saveVersionAs(name, {}, Journal::Who::user, saved, why);
+    }
+
+    bool Processor::saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
+                                  SavedVersion& saved, std::string& why)
+    {
         Sources files;
         int active = 0;
+        std::string open;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             files = draft_.files;
             active = draft_.active;
+            open = projectName_;
         }
         const std::vector<projectstore::Dial> dials = dialsNow();
         // The self-test's answers for its netlists (fminus/Circuits.h), kept with the version.
         std::vector<projectstore::Answer> answers;
         for (auto& [key, text] : circuits::answers().of(circuits::keysOf(files)))
             answers.push_back({ std::move(key), std::move(text) });
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why);
+        // MIDI learn's mappings; those a version with none left as they were (opening it) are no change of their own.
+        projectstore::VersionMidi midi{ learn_.mappings() };
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            midi.inherited = midiOpened_ && *midiOpened_ == midi.mappings
+                          && projectstore::sameName(projectstore::tidyName(name), projectName_);
+        }
+        const Assets samples = assetsNow();
+        // A factory project is never written: its name, or a new project's while one is open, saves the user's own copy.
+        if (isFactoryName(name) || (isFactoryName(open) && !projectstore::exists(name)))
+            return saveCopy(isFactoryName(name) ? name : open, isFactoryName(name) ? std::string() : name, files, active, dials,
+                            answers, midi.mappings, samples, lead, who, saved, why);
+        const std::optional<projectstore::Saved> r =
+            projectstore::saveVersion(name, files, active, dials, answers, midi, samples.get(), &why, lead);
         if (!r)
             return false;
-        saved = { r->number, r->unchanged, r->created };
-        if (!r->unchanged)
-            journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
+        saved = { r->number, r->unchanged, r->created, projectstore::tidyName(name), false };
+        if (!r->unchanged && who)
+            journal_.note(*who, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+        std::unique_lock<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
         bool keep = projectstore::sameName(tidy, projectName_) && !projectPreset_.empty();
@@ -2158,26 +2770,126 @@ namespace playground
                     keep = false;
         if (!keep)
             projectPreset_.clear();
+        // The project's id as the save left its file: another than the one kept (a new file made where the project
+        // open's was deleted or renamed away since it was opened) is looked up again (chatOwnerNow).
+        if (r->id.empty() || r->id != projectId_ || !projectstore::sameName(tidy, projectIdName_))
+            projectIdName_.clear();
         projectName_ = tidy;
         projectVersion_ = r->number;
         projectLatest_ = r->number;
         projectFiles_ = files;
+        projectAssets_ = samples;
         baseDials_ = dials;
+        presetsStale_.store(true);                               // the next poll reads its presets (refreshPresets)
+        if (!r->unchanged)
+            midiOpened_.reset();                                 // the version saved has these mappings
+        lock.unlock();
+        syncChatOwner(ChatAgent::OwnerChange::carry);            // the conversation goes on with what it made
         return true;
     }
 
+    // The user's own copy of the factory project `from` (Factory.h): a new project named `as` (else the factory one's
+    // own name), or "<name> 2", ... when one has it (projectstore::add), of one version, the editor's files and dials,
+    // its note saying whose copy it is, with the factory project's presets and info. It is then the project open.
+    bool Processor::saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
+                             const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
+                             const std::vector<midilearn::Mapping>& midi, const Assets& samples, const std::string& lead,
+                             std::optional<Journal::Who> who, SavedVersion& saved, std::string& why)
+    {
+        if (files.empty())
+        {
+            why = "there is no program to save";
+            return false;
+        }
+        const std::optional<projectstore::Project> origin = projectstore::load(from, &why);
+        if (!origin)
+            return false;
+        projectstore::Project p;
+        p.name = as.empty() ? ownName(origin->name) : projectstore::tidyName(as);
+        if (p.name.empty())
+        {
+            why = "a project needs a name";
+            return false;
+        }
+        projectstore::Version v;
+        v.number = 1;
+        v.savedMs = juce::Time::currentTimeMillis();
+        v.midi = midilearn::tidy(midi);
+        v.samples = projectstore::refsOf(samples.get());
+        const std::string changed = projectstore::describeChange(&origin->latest(), files, dials, &v.midi, &v.samples);
+        v.note = "a copy of the factory's \"" + ownName(origin->name) + "\"" + (changed == "the tab shown" ? "" : ", " + changed);
+        if (const std::string l = projectstore::noteLead(lead); !l.empty())
+            v.note = l + " (" + v.note + ")";
+        v.files = files;
+        v.active = active;
+        v.dials = dials;
+        v.circuits = answers;
+        if (v.circuits.size() > projectstore::kMaxAnswers)
+            v.circuits.resize(projectstore::kMaxAnswers);
+        p.versions.push_back(std::move(v));
+        p.presets = origin->presets;
+        p.info = origin->info;
+        if (samples != nullptr)                          // the copy's own sample files, as saveVersion keeps them
+            for (const std::shared_ptr<const assets::Asset>& a : samples->items)
+                if (std::none_of(p.samples.begin(), p.samples.end(), [&](const projectstore::SampleFile& f) { return f.hash == a->hash(); }))
+                    p.samples.push_back({ a->hash(), a->bytes() });
+        if (const std::string refused = projectstore::samplesRefusal(p); !refused.empty())
+        {
+            why = refused;
+            return false;
+        }
+        const std::optional<std::string> added = projectstore::add(std::move(p), &why);
+        if (!added)
+            return false;
+        saved = { 1, false, true, *added, true };
+        if (who)
+            journal_.note(*who, "saved \"" + *added + "\", a copy of the factory project \"" + ownName(origin->name)
+                                    + "\" (its presets with it)");
+        std::unique_lock<std::mutex> lock(programMutex_);
+        projectName_ = *added;
+        projectIdName_.clear();                                  // its new id is looked up (chatOwnerNow)
+        projectVersion_ = projectLatest_ = 1;
+        projectFiles_ = files;
+        projectAssets_ = samples;
+        midiOpened_.reset();                                     // the copy saved has these mappings
+        // The preset applied stays named while the dials are still its: the copy has it too.
+        for (const projectstore::Dial& d : dials)
+            for (const projectstore::Dial& b : baseDials_)
+                if (b.name == d.name && b.value != d.value)
+                    projectPreset_.clear();
+        baseDials_ = dials;
+        presetsStale_.store(true);
+        lock.unlock();
+        syncChatOwner(ChatAgent::OwnerChange::carry);            // the conversation goes on with the copy it made
+        return true;
+    }
+
+    // A project deleted, its chats on this Mac with it (the Projects card says so); while it was open, this instance's
+    // chats show after it.
     bool Processor::deleteProject(const std::string& name, std::string& why)
     {
+        const std::optional<projectstore::Project> p = projectstore::load(name);
+        const std::string id = p ? p->id : std::string();
         if (!projectstore::remove(name, &why))
             return false;
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        if (projectstore::sameName(projectName_, name))
+        bool open = false;
         {
-            projectName_.clear();
-            projectVersion_ = projectLatest_ = 0;
-            projectPreset_.clear();
-            baseDials_.clear();
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            open = projectstore::sameName(projectName_, name);
+            if (open)
+            {
+                projectName_.clear();
+                projectVersion_ = projectLatest_ = 0;
+                projectPreset_.clear();
+                baseDials_.clear();
+            }
         }
+        presetsStale_.store(true);
+        if (open)
+            syncChatOwner(ChatAgent::OwnerChange::open);
+        // Its chats, unless another project's file still holds its id (a copy made in the Finder).
+        if (projectstore::validProjectId(id) && projectstore::nameOfId(id).empty())
+            chatstore::removeOwner(id);
         return true;
     }
 
@@ -2193,6 +2905,11 @@ namespace playground
 
     bool Processor::savePreset(const std::string& preset, std::string& why)
     {
+        return savePresetAs(preset, Journal::Who::user, why);
+    }
+
+    bool Processor::savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why)
+    {
         std::string project;
         int version = 0;
         {
@@ -2205,6 +2922,12 @@ namespace playground
             why = "save the project first: a preset is kept in its project";
             return false;
         }
+        if (isFactoryName(project))
+        {
+            why = "\"" + ownName(project) + "\" is a factory project, whose presets stay as they are: save the project first "
+                  "(your own copy, its presets with it), then the preset";
+            return false;
+        }
         if (!projectstore::exists(project))
         {
             why = "\"" + project + "\" is not on " + kThisMachine + " any more: save it again first";
@@ -2213,14 +2936,24 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
-        journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        projectPreset_ = projectstore::tidyName(preset);
-        baseDials_ = dials;
+        if (who)
+            journal_.note(*who, "saved preset \"" + projectstore::tidyName(preset) + "\"");
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            projectPreset_ = projectstore::tidyName(preset);
+            baseDials_ = dials;
+        }
+        refreshPresets(true);
         return true;
     }
 
     bool Processor::applyPreset(const std::string& project, const std::string& preset, std::string& why)
+    {
+        return applyPresetAs(project, preset, Journal::Who::user, why);
+    }
+
+    bool Processor::applyPresetAs(const std::string& project, const std::string& preset, std::optional<Journal::Who> who,
+                                  std::string& why)
     {
         const std::optional<projectstore::Project> p = projectstore::load(project, &why);
         if (!p)
@@ -2252,20 +2985,224 @@ namespace playground
         else
             setDialsByName(cs, options, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.dialsNote(Journal::Who::user, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        projectPreset_ = pr->name;
-        baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
+        if (who)
+            journal_.dialsNote(*who, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            projectPreset_ = pr->name;
+            baseDials_ = open ? overlay(baseDials_, pr->dials) : overlay(p->latest().dials, pr->dials);
+        }
+        refreshPresets(true);
         return true;
+    }
+
+    bool Processor::setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                                      std::string& why)
+    {
+        if (!projectstore::setPresetCategory(project, preset, category, &why))
+            return false;
+        refreshPresets(true);
+        return true;
+    }
+
+    // ---- the presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change) -------------------
+    // The preset applied (by name, in `list`), else the first whose dials (at least one the program has) are all where
+    // the dials are; -1: none. Any thread: the dials' values are atomics, the rest under programMutex_.
+    int Processor::currentPreset(const std::vector<projectstore::PresetSummary>& list, bool& applied) const
+    {
+        applied = false;
+        Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
+        std::string preset;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            preset = projectPreset_;
+            if (preset.empty())
+            {
+                cs = controls_;
+                options = panel_.options;
+            }
+        }
+        if (!preset.empty())
+        {
+            for (std::size_t i = 0; i < list.size(); ++i)
+                if (projectstore::sameName(list[i].name, preset))
+                {
+                    applied = true;
+                    return static_cast<int>(i);
+                }
+            return -1;                                           // deleted since: none, not another that matches
+        }
+        for (std::size_t i = 0; i < list.size(); ++i)
+            if (const auto [found, all] = dialsAgainst(cs, options, list[i].dials); found > 0 && all)
+                return static_cast<int>(i);
+        return -1;
+    }
+
+    // The project open's presets from the store's cache (never a file read whole: one it lacks goes to the Reader, and
+    // the next read has it), when `force` or after kPresetsPollMs; and the program the host is told.
+    void Processor::refreshPresets(bool force)
+    {
+        std::string project;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            project = projectName_;
+        }
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        bool read = false;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            read = force || presetsStale_.exchange(false) || heldProject_ != project || now - heldAt_ >= kPresetsPollMs
+                || reader_->revision() != heldRead_;
+            if (read)
+            {
+                heldAt_ = now;
+                heldRead_ = reader_->revision();
+            }
+        }
+        if (read)
+        {
+            std::vector<projectstore::PresetSummary> list;
+            if (!project.empty())
+            {
+                std::vector<std::string> unread;
+                if (auto ps = projectstore::presetsCached(project, unread))
+                    list = std::move(*ps);
+                if (!unread.empty())
+                    reader_->request(unread);
+            }
+            uint64_t names = 1469598103934665603ull;             // FNV-1a over the project's and the presets' names
+            const auto mix = [&names](const std::string& t) {
+                for (const char ch : t)
+                    names = (names ^ static_cast<unsigned char>(ch)) * 1099511628211ull;
+                names = (names ^ 0xffu) * 1099511628211ull;
+            };
+            mix(project);
+            for (const projectstore::PresetSummary& pr : list)
+                mix(pr.name);
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            heldProject_ = project;
+            heldPresets_ = std::move(list);
+            heldNames_ = names;
+        }
+        std::vector<projectstore::PresetSummary> list;
+        std::string held;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            list = heldPresets_;
+            held = heldProject_;
+        }
+        bool applied = false;
+        const int at = currentPreset(list, applied);
+        const int count = programCount();
+        // None applied or matched: the "-" past the presets in the VST3 (its 128th at most), the first elsewhere.
+        const int none = wrapperType == wrapperType_VST3 ? std::min(static_cast<int>(list.size()), count - 1) : 0;
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        if (at >= 0 && at < count)
+        {
+            hostCurrent_.store(at);
+            hostFor_ = held;
+        }
+        else if (list.empty() || hostFor_ != held)
+        {
+            // Another project's number names another preset here: a VST3 host told it would take it for the one
+            // playing and never apply that preset when chosen (JUCE sets a program only when it is not the current).
+            hostCurrent_.store(none);
+            hostFor_ = list.empty() ? std::string() : held;
+        }
+        // else kept: the dials match none, in the project it was set in
+    }
+
+    PresetCycle Processor::presetCycle() const
+    {
+        PresetCycle out;
+        std::vector<projectstore::PresetSummary> list;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            out.project = heldProject_;
+            list = heldPresets_;
+        }
+        if (out.project.empty())
+            return out;
+        for (const projectstore::PresetSummary& pr : list)
+            out.presets.push_back({ pr.name, {}, pr.from, pr.category });
+        out.current = currentPreset(list, out.applied);
+        if (out.applied)
+        {
+            Controls cs;
+            std::array<std::vector<std::string>, kMaxControls> options;
+            std::vector<projectstore::Dial> base;
+            {
+                const std::lock_guard<std::mutex> lock(programMutex_);
+                cs = controls_;
+                options = panel_.options;
+                base = baseDials_;
+            }
+            out.edited = dialsRequest_ == 0 && !dialsAgainst(cs, options, base).second;
+        }
+        return out;
+    }
+
+    bool Processor::stepPreset(int step, std::string& why)
+    {
+        refreshPresets(false);
+        const PresetCycle c = presetCycle();
+        if (c.project.empty())
+        {
+            why = "open a project first: the arrows step through its presets";
+            return false;
+        }
+        const int n = static_cast<int>(c.presets.size());
+        if (n == 0)
+        {
+            why = "\"" + ownName(c.project) + "\" has no presets yet";
+            return false;
+        }
+        const int at = c.current < 0 ? (step >= 0 ? 0 : n - 1) : ((c.current + step) % n + n) % n;
+        return applyPreset(c.project, c.presets[static_cast<std::size_t>(at)].name, why);
+    }
+
+    // A program by number (the host's list, MIDI's program change): the project open's preset at that index.
+    bool Processor::choosePreset(int index, const char* who)
+    {
+        refreshPresets(false);
+        std::string project, name;
+        {
+            const std::lock_guard<std::mutex> lock(presetsMutex_);
+            if (index < 0 || index >= static_cast<int>(heldPresets_.size()) || heldProject_.empty())
+                return false;
+            project = heldProject_;
+            name = heldPresets_[static_cast<std::size_t>(index)].name;
+        }
+        std::string why;
+        if (!applyPresetAs(project, name, Journal::Who::host, why))
+        {
+            journal_.note(Journal::Who::host, std::string(who) + " chose preset " + std::to_string(index + 1) + ", not applied: " + why);
+            return false;
+        }
+        return true;
+    }
+
+    // The host's list: the project open's presets. A VST3 host reads how many when the plugin is made and never again
+    // (JUCE's program parameter), so it is told kVst3Programs, those past the presets named "-".
+    int Processor::programCount() const
+    {
+        if (wrapperType == wrapperType_VST3)
+            return kVst3Programs;
+        const std::lock_guard<std::mutex> lock(presetsMutex_);
+        return std::max(1, static_cast<int>(heldPresets_.size()));
     }
 
     bool Processor::deletePreset(const std::string& project, const std::string& preset, std::string& why)
     {
         if (!projectstore::removePreset(project, preset, &why))
             return false;
-        const std::lock_guard<std::mutex> lock(programMutex_);
-        if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
-            projectPreset_.clear();
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            if (projectstore::sameName(projectName_, project) && projectstore::sameName(projectPreset_, preset))
+                projectPreset_.clear();
+        }
+        refreshPresets(true);
         return true;
     }
 
@@ -2282,6 +3219,22 @@ namespace playground
         return projectstore::setInfo(project, { info.description, info.author, info.category, info.tags, info.genres }, &why);
     }
 
+    bool Processor::setProjectCategory(const std::string& project, const std::string& category, std::string& why)
+    {
+        return projectstore::setCategory(project, category, &why);
+    }
+
+    ProjectsView Processor::projectsView() const
+    {
+        const projectstore::View v = projectstore::view();
+        return { v.favourites, v.folded, v.search, v.tag, v.byDate };
+    }
+
+    bool Processor::setProjectsView(const ProjectsView& view, std::string& why)
+    {
+        return projectstore::setView({ view.favourites, view.folded, view.search, view.tag, view.byDate }, &why);
+    }
+
     bool Processor::exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
                                   Exported& out, std::string& why)
     {
@@ -2295,7 +3248,9 @@ namespace playground
             return false;
         }
         projectexport::Result r;
-        if (!(package ? projectexport::writePackage(*p, allVersions, to, r, &why) : projectexport::writeSource(*p, allVersions, to, r, &why)))
+        projectstore::Project q = *p;
+        q.name = ownName(q.name);                                // a factory project's: its own name
+        if (!(package ? projectexport::writePackage(q, allVersions, to, r, &why) : projectexport::writeSource(q, allVersions, to, r, &why)))
             return false;
         out.bytes = r.bytes;
         out.raw = r.raw;
@@ -2409,13 +3364,36 @@ namespace playground
         return running_;
     }
 
-    Sources Processor::chatPrevious() const
+    Sources Processor::chatPlaying(Assets& samples) const
+    {
+        const CompileStatus s = compiler_.status();
+        if (s.ok)
+        {
+            samples = s.assets;
+            return s.sources;                                    // as chatRunning
+        }
+        const std::lock_guard<std::mutex> lock(programMutex_);
+        samples = runningAssets_;
+        return running_;
+    }
+
+    bool Processor::changesProgram(const CompileStatus& s) const
+    {
+        return !running_.empty() && (!cir::sameProgram(running_, s.sources) || runningSamples_ != s.samples);
+    }
+
+    Sources Processor::chatPrevious(Assets& samples) const
     {
         const CompileStatus s = compiler_.status();
         const std::lock_guard<std::mutex> lock(programMutex_);
-        if (s.ok && !(s.panelOnly && s.program == program_) && !running_.empty() && !cir::sameProgram(running_, s.sources))
-            return running_;                                     // poll() has not taken the newest yet: it comes after this
-                                                                 // (a panel's edit of a program it has not: its compile)
+        // poll() has not taken the newest yet: it comes after this (a panel's edit of a program it has not: its
+        // compile).
+        if (s.ok && !(s.panelOnly && s.program == program_) && changesProgram(s))
+        {
+            samples = runningAssets_;
+            return running_;
+        }
+        samples = previousAssets_;
         return previous_;
     }
 

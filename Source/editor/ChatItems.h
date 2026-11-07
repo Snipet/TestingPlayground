@@ -110,6 +110,8 @@ namespace playground::ui
             Shape shape = Shape::pill;
             std::function<chat::Icon()> icon;         // none when null
             std::function<std::string()> label;       // a pill's text
+            std::function<std::string()> detail;      // a dropdown's trigger's faint text at its right ("3/7"): none when null
+            std::function<bool()> dot;                // ... a modified dot after its label, while true
             bool chevron = false;                     // a menu opens: a dropdown's trigger (Dropdown.h)
             std::function<bool()> open;               // ... its menu (or card) is open now: drawn pressed
             std::function<Look()> look;               // ghost when null

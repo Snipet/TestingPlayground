@@ -94,6 +94,9 @@ namespace playground::claude
                 for (const auto& [k, v] : headers)
                     extra << juce::String(k) << ": " << juce::String::fromUTF8(v.c_str()) << "\r\n";
                 stream.withExtraHeaders(extra).withConnectionTimeout(120000);   // idle time allowed between data
+                // No redirect followed (JUCE follows five by default, keeping the headers): the conversation and the
+                // key go to the host asked for, never to where its answer points (another origin, or plain HTTP).
+                stream.withNumRedirectsToFollow(0);
 
                 // A blocking read ends only by data or cancel(): a watcher cancels it when asked.
                 std::atomic<bool> done{ false };
@@ -122,8 +125,12 @@ namespace playground::claude
                 r.status = stream.getStatusCode();
                 const juce::StringPairArray responseHeaders = stream.getResponseHeaders();
                 for (const auto& key : responseHeaders.getAllKeys())
+                {
                     if (key.equalsIgnoreCase("retry-after"))
                         r.retryAfterSeconds = responseHeaders[key].getIntValue();
+                    else if (key.equalsIgnoreCase("location") && r.status >= 300 && r.status < 400)
+                        r.location = responseHeaders[key].toStdString();
+                }
                 if (r.status == 200 && onChunk)
                 {
                     char buffer[8192];

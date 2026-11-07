@@ -58,6 +58,10 @@
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
 //                     versions (every save adds one), with presets (dial settings for it)
+//   factoryProjects() the factory projects, compiled into the plugin (plugin/Factory.h), by name: each one version
+//                     with its presets and info, read-only. Every function here that takes a project's name takes one
+//                     of theirs too, as factoryName() spells it ("Factory: Warm Pad"), which no project of this Mac's
+//                     can be named; one that would write it refuses (why), but saveVersion(), which saves a copy
 //   projectFolder()   where they are, "~/..." for the home folder
 //   tidyName()        a typed project's or preset's name as it would be saved ("" when nothing is left of it)
 //   project()         the project open (the one opened or saved last; none at first), its version, the preset applied,
@@ -70,7 +74,10 @@
 //                     projectsRead() moves when that thread has read one, and the explorer then polls again
 //   saveVersion()     the editor's files (the draft) and the dials as they are now, by name, as a new version of the
 //                     project `name` (a new project when there is none): it is then the project open. No new version
-//                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot
+//                     when nothing changed since the latest (Saved::unchanged). False, with why, when it cannot. A
+//                     factory project's name, or a new name while a factory project is open, saves the user's own
+//                     copy: a new project (the factory one's own name, else "<name> 2", ...) of one version, the
+//                     editor's, with the factory project's presets and info (SavedVersion::name says which)
 //   openProject()     a version's files (0: the latest) become the draft (the editor shows them: draftRevision bumps)
 //                     and run; its dials are set by name once they compile
 //   startAfresh()     `files` as a new instance plays Init (EXAMPLES' example, RANDOM's program, each with the library
@@ -83,8 +90,20 @@
 //   savePreset()      the dials as they are now, by name, as a preset of the project open (over one of that name)
 //   applyPreset()     a preset's dials, by name: at once when its project is open, else after its latest version is
 //                     opened and compiled
-//   deletePreset()    a preset deleted
+//   deletePreset()    a preset deleted; setPresetCategory() its category alone ("" for none), which the top bar's
+//                     list groups by (a factory project's refused)
+//   presetCycle()     the project open's presets in turn (PresetCycle below): the one applied (edited or not) or the
+//                     one the dials match, by its index; the list read from the store's cache only, never a file
+//                     whole, so it is cheap at every frame
+//   stepPreset()      the next preset (step +1) or the one before (-1) of the project open applied, wrapping at the
+//                     ends; from none, the first or the last. Its dials glide there as any dial change does; changes
+//                     to the one applied are not kept (save it first), as when the browser applies another
+//   claudeNotice()    what Claude did last to the projects (ClaudeNotice below: its projects tool saved, opened or
+//                     applied one), which the editor's status says once, and the explorer and PROJECTS read again
 //   projectInfo()     a project's description, author, category, tags and genres; setProjectInfo() keeps them (tidied)
+//   setProjectCategory() its category alone ("" for none: Uncategorised), as PROJECTS sets it (a menu, a drag, typed)
+//   projectsView()    how PROJECTS shows them (ProjectsView): the projects starred, the groups folded, the search, the
+//   setProjectsView() tag filtered on and the order; this Mac's (ProjectStore.h's View), every instance's
 //   exportProject()   a project written as a .zip of its source or a .fmpack (ProjectExport.h), every version or the
 //                     newest only; exportFolder() where a chooser starts (the Desktop)
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
@@ -104,6 +123,10 @@
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
 //   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
+//   midi()            MIDI learn (MidiLearn.h): each dial's MIDI control, the dial learning and learning's note
+//                     (midiRevision() moves when any changes); learnMidi() a dial learns the next control moved,
+//                     cancelMidiLearn(), forgetMidi() a dial's control, forgetAllMidi() every one. The instrument's
+//                     alone: midiLearnable() is false in an effect, which gets no MIDI
 #pragma once
 
 #include <array>
@@ -112,7 +135,9 @@
 
 #include "plugin/ChatPort.h"
 #include "plugin/DevicePort.h"
+#include "plugin/MidiLearn.h"
 
+#include "dsp/Assets.h"
 #include "dsp/Compiler.h"
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
@@ -259,13 +284,38 @@ namespace playground
         friend bool operator==(const Draft&, const Draft&) = default;
     };
 
+    // A factory project's name, as the port's functions take it and ProjectState::name says it: "Factory: " and its
+    // own name. A project of this Mac's never has a colon in its name (ProjectStore's tidyName), so a user project of
+    // the same own name stays apart, and the prefix reads as words where a name is shown whole (the journal, Claude's
+    // get_status). isFactoryName tells one, case aside; ownName drops the prefix (the name the rows show).
+    inline constexpr std::string_view kFactoryPrefix = "Factory: ";
+    inline bool isFactoryName(std::string_view name)
+    {
+        if (name.size() <= kFactoryPrefix.size())
+            return false;
+        for (std::size_t i = 0; i < kFactoryPrefix.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(name[i])) != std::tolower(static_cast<unsigned char>(kFactoryPrefix[i])))
+                return false;
+        return true;
+    }
+    inline std::string factoryName(std::string_view own) { return std::string(kFactoryPrefix) + std::string(own); }
+    inline std::string ownName(std::string_view name)
+    {
+        return std::string(isFactoryName(name) ? name.substr(kFactoryPrefix.size()) : name);
+    }
+
     struct ProjectEntry
     {
-        std::string name;
+        std::string name;                        // a factory project's as factoryName() spells it
         std::string when;                        // its latest version's save, "2026-10-25 14:02" (local time)
         int latest = 0;                          // its latest version's number
         int versions = 0;                        // how many it keeps
         int presets = 0;
+        bool factory = false;                    // a factory project (factoryProjects()): read-only
+        std::string category;                    // its info's ("" for none): PROJECTS' group (editor/ProjectGroups.h)
+        std::vector<std::string> tags;           // its info's
+        std::string description;                 // its info's: PROJECTS' search reads it, with the name and the tags
+        int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -281,7 +331,21 @@ namespace playground
         std::string name;
         std::string when;
         int from = 0;                            // the version it was saved with
+        std::string category = {};               // "" for none: the top bar's list groups by it (editor/PresetPicker.h)
         friend bool operator==(const PresetEntry&, const PresetEntry&) = default;
+    };
+
+    // The open project's presets in turn (presetCycle()): what the top bar's arrows step through and its list shows,
+    // what [ and ] step, what MIDI's program change and the host's programs choose by number.
+    struct PresetCycle
+    {
+        std::string project;                     // the project open ("" for none: nothing to cycle)
+        std::vector<PresetEntry> presets;        // its presets, by name, case aside (a number is an index here)
+        int current = -1;                        // the preset applied (project().preset), else the first whose every
+                                                 // dial the program has is where the dials are now; -1: none
+        bool applied = false;                    // current is the preset applied, not a match
+        bool edited = false;                     // ... and a dial moved since (the modified dot)
+        friend bool operator==(const PresetCycle&, const PresetCycle&) = default;
     };
 
     struct ProjectState
@@ -290,11 +354,20 @@ namespace playground
         int version = 0;                         // the version opened or saved last (0: none kept)
         int latest = 0;                          // the project's newest
         std::string preset;                      // the preset applied last ("" for none)
-        bool edited = false;                     // the editor's files differ from that version's
+        bool edited = false;                     // the editor's files (or the samples) differ from that version's
         bool changed = false;                    // the editor's files differ from those last opened, saved or loaded
                                                  // (a version, an example, the session, a new instance's Init), with a
                                                  // project open or not: what loading another would lose
         bool dialsEdited = false;                // a dial moved from the preset's (or the version's) value
+    };
+
+    // What Claude did last to the projects (the projects tool, ChatAgent.h: a version or a preset saved, a project
+    // opened, a preset applied), in the words the editor's status says ("CLAUDE SAVED VERSION 5 OF ENGINE"); `count`
+    // moves with each, so an editor says each once (none: 0).
+    struct ClaudeNotice
+    {
+        uint64_t count = 0;
+        std::string text;
     };
 
     struct ProjectInfo
@@ -305,6 +378,19 @@ namespace playground
         std::vector<std::string> tags;
         std::vector<std::string> genres;
         friend bool operator==(const ProjectInfo&, const ProjectInfo&) = default;
+    };
+
+    // How PROJECTS shows the projects (projectsView(); ProjectStore.h's View): the projects starred (by name, a factory
+    // one's as factoryName() spells it), the groups folded (editor/ProjectGroups.h's keys), the search typed, the tag
+    // filtered on ("" for any) and the order (byDate: the newest save first, else by name).
+    struct ProjectsView
+    {
+        std::vector<std::string> favourites;
+        std::vector<std::string> folded;
+        std::string search;
+        std::string tag;
+        bool byDate = false;
+        friend bool operator==(const ProjectsView&, const ProjectsView&) = default;
     };
 
     // A file's name a project export's (ProjectExport.h): what Import offers and a drop on the panel imports.
@@ -364,11 +450,43 @@ namespace playground
         float width = 0.0f, height = 0.0f;       // window points; 0 x 0: none over the editor
     };
 
+    // Claude Desktop and this instance (EditorPort::desktop; plugin/McpLink.h, mcp/McpTarget.h), as the explorer's
+    // CLAUDE DESKTOP section and the chat's header show it.
+    struct DesktopPeer
+    {
+        std::string id, name, track, project;    // another instance open: its number, its name ("Synth 1", or the user's)
+        bool target = false;                     // Claude Desktop's target
+        friend bool operator==(const DesktopPeer&, const DesktopPeer&) = default;
+    };
+    struct DesktopState
+    {
+        bool linked = false;                     // it has its socket (else nothing below means anything)
+        std::string id, name, number;            // "2"; its name to Claude Desktop ("Bass", else "Synth 2"); "Synth 2"
+        bool connected = false;                  // Claude Desktop's server talks to it now
+        bool chosen = false;                     // the user chose it as Claude Desktop's target (here or in another)
+        bool target = false;                     // it is the target: chosen, or the only one open with none chosen
+        std::string targetName;                  // the target's name when another one is ("" for none)
+        std::vector<DesktopPeer> others;         // the other instances open, by number
+        std::string doing;                       // the last call's title in words ("Measure the sound"; "" none yet)
+        bool running = false;                    // a call of Claude Desktop's acts on it now
+        double ago = 0.0;                        // seconds since that call began (running) or ended
+    };
+
+    // A sample as the explorer lists it (EditorPort::assets).
+    struct AssetEntry
+    {
+        std::string name;                        // "kick.wav"
+        std::string detail;                      // "0.42 s, mono, 44.1 kHz, 37 KB"
+        bool used = false;                       // a #pragma sample line of the program that plays reads it
+    };
+
     struct SavedVersion
     {
         int number = 0;
         bool unchanged = false;                  // nothing changed since the latest: no version added
         bool created = false;                    // a new project
+        std::string name;                        // the project saved into (a factory project's copy: its own new name)
+        bool copied = false;                     // the user's own copy of a factory project
     };
 
     // A/B listening (EditorPort::ab): its two sides and how it plays them.
@@ -453,6 +571,7 @@ namespace playground
         virtual bool frozen() const = 0;                 // the dials are frozen into the code (Patch.h)
 
         virtual std::vector<ProjectEntry> projects() const = 0;
+        virtual std::vector<ProjectEntry> factoryProjects() const = 0;
         virtual std::string projectFolder() const = 0;
         virtual std::string tidyName(const std::string& typed) const = 0;
         virtual ProjectState project() const = 0;
@@ -469,8 +588,16 @@ namespace playground
         virtual bool savePreset(const std::string& preset, std::string& why) = 0;
         virtual bool applyPreset(const std::string& project, const std::string& preset, std::string& why) = 0;
         virtual bool deletePreset(const std::string& project, const std::string& preset, std::string& why) = 0;
+        virtual bool setPresetCategory(const std::string& project, const std::string& preset, const std::string& category,
+                                       std::string& why) = 0;
+        virtual PresetCycle presetCycle() const = 0;
+        virtual bool stepPreset(int step, std::string& why) = 0;
+        virtual ClaudeNotice claudeNotice() const = 0;
         virtual ProjectInfo projectInfo(const std::string& project) const = 0;
         virtual bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) = 0;
+        virtual bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) = 0;
+        virtual ProjectsView projectsView() const = 0;
+        virtual bool setProjectsView(const ProjectsView& view, std::string& why) = 0;
         virtual bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
@@ -486,10 +613,16 @@ namespace playground
         virtual void setAbMatch(bool on) = 0;
         virtual bool keepAb(int side, std::string& why) = 0;
         virtual void endAb() = 0;
-        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Synth 2"; "" when there is no link), and
-        // whether Claude Desktop is talking to it now.
+        // Claude Desktop (plugin/McpLink.h): this instance's name to it ("Bass", else "Synth 2"; "" when there is no
+        // link), and whether Claude Desktop is talking to it now; all of it, with the target and the others open
+        // (desktop(), any thread: a copy). The user's name for it ("" its number's again; kept with the session; false,
+        // with why, for one it cannot take: mcp::target::nameRefusal), and the user's choice of Claude Desktop's target
+        // (`id`, this one's or another open's; `on` false clears it when it is that one).
         virtual std::string desktopName() const = 0;
         virtual bool desktopConnected() const = 0;
+        virtual DesktopState desktop() const = 0;
+        virtual bool setDesktopName(const std::string& name, std::string& why) = 0;
+        virtual void chooseDesktop(const std::string& id, bool on) = 0;
         virtual ChatPort& chat() = 0;
 
         virtual bool panelView() const = 0;
@@ -607,5 +740,43 @@ namespace playground
         //                    found when it was made)
         virtual DevicePort* devices() { return nullptr; }
         virtual uint64_t settingsAsked() const { return 0; }
+
+        // MIDI learn (above; plugin/MidiLearn.h). learnMidi: false when the slot has no dial (or nothing learns here);
+        // forgetMidi: false when the dial had no control; forgetAllMidi: how many went.
+        virtual bool midiLearnable() const { return false; }
+        virtual midilearn::View midi() const { return {}; }
+        virtual uint64_t midiRevision() const { return 0; }
+        virtual bool learnMidi(int slot) { (void)slot; return false; }
+        virtual void cancelMidiLearn() {}
+        virtual bool forgetMidi(int slot) { (void)slot; return false; }
+        virtual int forgetAllMidi() { return 0; }
+
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS): audio files a program reads as tables (`#pragma
+        // sample`), kept with the session and with each project version. assets() lists them in the order they were
+        // added; addAssets decodes the files at `paths` (WAV, AIFF, FLAC: a file of a name the samples have replaces it)
+        // on the calling thread, the message thread, and says in words what it refused (`why`: the caps, a file that is
+        // none of those; the others added still): how many it added; removeAsset takes one away. A program plays a
+        // changed sample from its next RUN.
+        virtual std::vector<AssetEntry> assets() const { return {}; }
+        virtual uint64_t assetsRevision() const { return 0; }
+        virtual int addAssets(const std::vector<std::string>& paths, std::string& why)
+        {
+            (void)paths;
+            why = "no samples here";
+            return 0;
+        }
+        virtual bool removeAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "no samples here";
+            return false;
+        }
     };
+
+    // Whether a path names an audio file a sample may be made of (dsp/Assets.h: .wav, .aif, .aiff, .flac): what a drop
+    // on the panel adds to the samples.
+    inline bool isAudioPath(std::string_view path)
+    {
+        return assets::isAudioName(path);
+    }
 }

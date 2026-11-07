@@ -28,11 +28,15 @@
 //            (no copy asked) and a call with a wrong count says so (checked before a copy is asked); a newer run
 //            offered while the swap to the last one is under way (blocks of 16 samples, slowly): the copy is of the
 //            program before, refused, and once the newest plays, its own code on its own state
+//   SAMPLE   a program that reads a sample (#pragma sample) the plugin holds: on fresh its field holds the sound (its
+//            frames), and on playing too, the copy's field its own compile's, not refused as a pointer into what plays
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
+
+#include "fminus/LibraryIncludes.h"
 
 #include "Product.h"
 
@@ -159,10 +163,42 @@ namespace
         return mainModule("    int count;\n    int version() { return " + std::to_string(v) + "; }\n");
     }
 
+    // A sample's field (#pragma sample; the library's sample.fm), its sound the plugin's samples' kick.wav.
+    std::string sampleProgram()
+    {
+        return "#include \"sample.fm\"\n#pragma sample hit \"kick.wav\"\n"
+             + mainModule("    Sample hit;\n    int count;\n    int frames() { return hit.frames; }\n"
+                          "    float at100() { return hit.at(0, 100); }\n");
+    }
+
+    // A mono 16-bit WAV at 48 kHz of `frames` frames of a ramp, (i * 50 - 12000) / 32768 at frame i.
+    std::string wav16(int frames)
+    {
+        const auto le = [](std::string& s, uint32_t v, int bytes) {
+            for (int i = 0; i < bytes; ++i)
+                s += static_cast<char>((v >> (8 * i)) & 0xFF);
+        };
+        std::string s = "RIFF";
+        le(s, static_cast<uint32_t>(36 + frames * 2), 4);
+        s += "WAVEfmt ";
+        le(s, 16, 4);
+        le(s, 1, 2);
+        le(s, 1, 2);
+        le(s, 48000, 4);
+        le(s, 96000, 4);
+        le(s, 2, 2);
+        le(s, 16, 2);
+        s += "data";
+        le(s, static_cast<uint32_t>(frames * 2), 4);
+        for (int i = 0; i < frames; ++i)
+            le(s, static_cast<uint32_t>(static_cast<uint16_t>(static_cast<int16_t>(i * 50 - 12000))), 2);
+        return s;
+    }
+
     bool load(pg::Processor& p, const std::string& text)
     {
         pg::Draft d;
-        d.files = pg::singleFile(text);
+        d.files = pg::withLibraryIncludes(pg::singleFile(text));
         p.editorPort().setDraft(d);
         p.editorPort().run(d.files);
         p.settle();
@@ -446,6 +482,29 @@ PROBE(plugin, function)
         error = false;
         t = call(object({ { "name", "Voice::seen" }, { "on", "playing" } }), &error);
         P.eq("playing.voice_still_no_voice", error && has(t, "No voice sounds now") ? 1 : 0, 1);
+    }
+
+    {
+        // A sample's field: on fresh the editor's files compiled with the plugin's samples; on playing the copy's own
+        // (the sound its compile holds, at the host's rate), never refused as a pointer into what plays.
+        projects.createDirectory();
+        const juce::File kick = projects.getChildFile("kick.wav");
+        const std::string bytes = wav16(480);
+        kick.replaceWithData(bytes.data(), bytes.size());
+        std::string why;
+        const int added = p.editorPort().addAssets({ kick.getFullPathName().toStdString() }, why);
+        std::printf("a sample added: %d %s\n", added, why.c_str());
+        P.eq("sample.added", added, 1);
+        P.eq("sample.compiles", load(p, sampleProgram()) ? 1 : 0, 1);
+        Host host(p, true);
+        host.waitBlocks(5);
+        bool error = true;
+        std::string t = call(object({ { "name", kMain + "::frames" } }), &error);
+        P.eq("sample.fresh", !error && has(t, "Returned 480.") ? 1 : 0, 1);
+        t = call(object({ { "name", kMain + "::frames" }, { "on", "playing" } }), &error);
+        P.eq("sample.playing", !error && has(t, "Returned 480.") ? 1 : 0, 1);
+        t = call(object({ { "name", kMain + "::at100" }, { "on", "playing" } }), &error);
+        P.eq("sample.playing_reads", !error && std::abs(returned(t) - (100.0 * 50.0 - 12000.0) / 32768.0) < 1e-6 ? 1 : 0, 1);
     }
 
     owned.reset();

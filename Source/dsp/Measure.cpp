@@ -2699,10 +2699,10 @@ namespace playground::measure
         }
     }
 
-    Session::Session(const Sources& files, double rate, const CircuitPins* pins)
+    Session::Session(const Sources& files, double rate, const CircuitPins* pins, const Assets& assets)
         : impl_(std::make_unique<Impl>()), rate_(rate > 1000.0 ? rate : 48000.0)
     {
-        Patch::Result r = Patch::compile(files, static_cast<float>(rate_), false, pins);
+        Patch::Result r = Patch::compile(files, static_cast<float>(rate_), false, pins, true, true, assets);
         if (!r.patch)
         {
             errors_ = r.errors + r.notes;
@@ -3884,13 +3884,13 @@ namespace playground::measure
 
     std::string run(const Sources& files, const Request& request)
     {
-        Session session(files, request.rate);
+        Session session(files, request.rate, nullptr, request.assets);
         return session.measure(request).report;
     }
 
     std::string run(const Sources& files, const Request& request, const Cancel& cancel, bool* cancelled)
     {
-        Session session(files, request.rate);
+        Session session(files, request.rate, nullptr, request.assets);
         session.setCancel(cancel);
         Result r = session.measure(request);
         if (cancelled != nullptr)

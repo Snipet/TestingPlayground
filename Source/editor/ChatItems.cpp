@@ -339,6 +339,8 @@ namespace playground::ui
     {
         DrawKey k;
         k.mix(spec_.label ? spec_.label() : std::string())
+            .mix(spec_.detail ? spec_.detail() : std::string())
+            .mix(spec_.dot && spec_.dot())
             .mix(static_cast<int>(spec_.look ? spec_.look() : Look::ghost))
             .mix(static_cast<int>(spec_.icon ? spec_.icon() : chat::Icon::none))
             .mix(enabled())
@@ -372,8 +374,16 @@ namespace playground::ui
                 lx += 18.0f;
             }
             const std::string label = spec_.label ? spec_.label() : std::string();
-            c.text(fitText(c, label, chat::kSmall, dropdown::labelRoom(r, lx)).c_str(), lx,
-                   c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, labelInk);
+            const std::string detail = spec_.detail ? spec_.detail() : std::string();
+            const bool dot = spec_.dot && spec_.dot();
+            const float detailW = detail.empty() ? 0.0f : c.textWidth(detail.c_str(), chat::kSmall) + 10.0f;
+            const std::string shown = fitText(c, label, chat::kSmall, dropdown::labelRoom(r, lx) - detailW - (dot ? 12.0f : 0.0f));
+            c.text(shown.c_str(), lx, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, labelInk);
+            if (dot)                                  // the modified dot
+                c.disc(lx + c.textWidth(shown.c_str(), chat::kSmall) + 7.0f, r.centreY(), 3.0f, on ? p.accent : p.faint);
+            if (!detail.empty())
+                c.text(detail.c_str(), r.right() - dropdown::kChevronRoom - 2.0f, c.capCentreTop(r.centreY(), chat::kSmall),
+                       chat::kSmall, p.faint, funkgui::Align::right);
             return;
         }
         const float radius = spec_.shape == Shape::square ? 8.0f : r.h * 0.5f;
@@ -454,7 +464,13 @@ namespace playground::ui
             item.checked = spec_.checked();
         }
         else if (spec_.label)
+        {
             item.value = spec_.label();
+            if (spec_.detail && !spec_.detail().empty())
+                item.value += ", " + spec_.detail();
+            if (spec_.dot && spec_.dot())
+                item.value += ", edited";
+        }
         item.enabled = enabled();
         out.push_back(std::move(item));
     }

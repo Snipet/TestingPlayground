@@ -14,7 +14,8 @@
 //            past its budget after a quarter of a second: 3, the report beginning with the stop, the WAV still written
 //            whole; one that reaches past its array: 3, saying so; one whose init never ends: 3, nothing written; a hold
 //            past 300 s, the user's recording, JSON that is none, a folder without program.fm, an option it has not: 1,
-//            each saying why
+//            each saying why; a program that reads a sample (#pragma sample): 1, naming it, nothing written (its
+//            fields still listed)
 //   MORE     a library file the program #includes and the folder lacks: added, saying so; --list-fields names the
 //            fields; measure_output's profile (its line in the report); the effect's own input (--input, a WAV at 44.1
 //            kHz): rendered at its rate, the same bits as trace's export of it in this process; the extension
@@ -489,6 +490,18 @@ PROBE(plugin, render)
         P.eq("exit.not_json", notJson.code == 1 && has(notJson.out, "not JSON") ? 1 : 0, 1);
         P.eq("exit.no_program", noProgram.code == 1 && has(noProgram.out, "has no program.fm") ? 1 : 0, 1);
         P.eq("exit.no_option", noOption.code == 1 && has(noOption.out, "no option --loudly") ? 1 : 0, 1);
+    }
+    {
+        // A program that reads a sample (#pragma sample): the plugin's own (its session, its projects), which no folder
+        // holds, so the renderer refuses it rather than render it silent where it reads one; its fields still list.
+        const juce::File sampled = work.getChildFile("sampled");
+        writeProgram(sampled, "#include \"sample.fm\"\n#pragma sample hit \"kick.wav\"\n" + program("    Sample hit;\n", ""));
+        const Ran r = render({ sampled.getFullPathName().toStdString(), "-w", w + "sampled.wav" });
+        const Ran listed = render({ sampled.getFullPathName().toStdString(), "--list-fields" });
+        std::printf("reads a sample (exit %d): %s", r.code, r.out.c_str());
+        P.eq("exit.samples", r.code == 1 && has(r.out, "reads samples (#pragma sample: 'kick.wav')") && has(r.out, "not in a folder")
+                                 && !work.getChildFile("sampled.wav").exists() ? 1 : 0, 1);
+        P.eq("exit.samples_fields_listed", listed.code == 0 && has(listed.out, "hit.frames") ? 1 : 0, 1);
     }
 
     // ---- MORE ---------------------------------------------------------------------------------------------------------

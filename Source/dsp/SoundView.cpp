@@ -231,7 +231,7 @@ namespace playground::measure
 
     Sound renderSound(const Sources& files, const ViewRequest& request)
     {
-        Session session(files, request.render.rate);
+        Session session(files, request.render.rate, nullptr, request.render.assets);
         return renderSound(session, request);
     }
 

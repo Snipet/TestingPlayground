@@ -3,9 +3,9 @@
 //
 //   the folder   one per user and plugin, private (0700): <the user's temp folder>/Funk-<plugin>-mcp/, or
 //                <ENV_PREFIX>MCP_DIR when set (the probes' own). In it each instance's socket, <n>.sock: the lowest
-//                number free when it started, its name to the user ("Synth 2", shown in the plugin while Claude Desktop
-//                talks to it); and what the newest instance wrote for a server that finds none running: tools.json and
-//                guide.md
+//                number free when it started, its number's name to the user ("Synth 2", unless the user named it);
+//                its card, <n>.json, and Claude Desktop's target, target.json (mcp/McpTarget.h); and what the newest
+//                instance wrote for a server that finds none running: tools.json and guide.md
 //   a request    one JSON object a line: { "id": 1, "method": "info" | "tools" | "guide" | "call" | "cancel",
 //                "params": { ... } }; several may be in flight on one connection
 //   a reply      one line: { "id": 1, "result": ... } or { "id": 1, "error": "why" }, exactly one a request, in the
@@ -14,7 +14,7 @@
 //                waits to send the rest: a large request and a large reply crossing each other (more than a socket's
 //                buffer, 8 KB on macOS) never leave both ends waiting for the other to read
 //                  info    the instance: { id, name, kind, plugin, host, track, project, version, preset, edited,
-//                          files, compiled, busy }
+//                          files, compiled, busy } (name: the user's for it, else its number's, "Synth 2")
 //                  tools   the tools, as MCP lists them ({ name, title, description, inputSchema, annotations })
 //                  guide   { part } -> a part of what the plugin's own chat works from, for an assistant that drives it
 //                          from outside (mcp/McpGuide.h; an error for a part that is not). Without `part` (a 0.2.0
@@ -34,6 +34,7 @@
 #include "Product.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -46,6 +47,7 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #undef near                                          // windows.h's 16-bit leftovers: plain names to every includer
@@ -53,6 +55,7 @@
 #else
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -108,6 +111,23 @@ namespace playground::mcp
 
     inline void closeFd(int fd) { closesocket(asSocket(fd)); }
     inline void removePath(const std::string& path) { DeleteFileW(wide(path).c_str()); }
+    // `from` renamed over `to` in one step: a reader finds the old file or the new one, never none. One holding `to` open
+    // without FILE_SHARE_DELETE (JUCE's readers share it; a scanner may not) refuses it for that moment: tried again for
+    // up to half a second.
+    inline bool replacePath(const std::string& from, const std::string& to)
+    {
+        const std::wstring f = wide(from), t = wide(to);
+        for (int tries = 0; tries < 100; ++tries)
+        {
+            if (MoveFileExW(f.c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
+                return true;
+            const DWORD e = GetLastError();
+            if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
     inline bool pathExists(const std::string& path) { return GetFileAttributesW(wide(path).c_str()) != INVALID_FILE_ATTRIBUTES; }
     inline long long recvSome(int fd, char* data, std::size_t n) { return recv(asSocket(fd), data, static_cast<int>(n), 0); }
     inline long long sendSome(int fd, const char* data, std::size_t n) { return send(asSocket(fd), data, static_cast<int>(n), 0); }
@@ -123,6 +143,19 @@ namespace playground::mcp
         return e == WSAECONNREFUSED || e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == WSAENETDOWN;
     }
     inline int processId() { return static_cast<int>(GetCurrentProcessId()); }
+    // Whether process `pid` still runs (an instance's card names its process: one left by a crash is not listed).
+    inline bool processAlive(int pid)
+    {
+        if (pid <= 0)
+            return false;
+        const HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+        if (h == nullptr)
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        DWORD code = 0;
+        const bool alive = GetExitCodeProcess(h, &code) != 0 && code == STILL_ACTIVE;
+        CloseHandle(h);
+        return alive;
+    }
 
     inline int pollFds(PollFd* fds, std::size_t n, int timeoutMs)
     {
@@ -275,6 +308,8 @@ namespace playground::mcp
     inline bool netStarted() { return true; }
     inline void closeFd(int fd) { close(fd); }
     inline void removePath(const std::string& path) { unlink(path.c_str()); }
+    // `from` renamed over `to` in one step (rename(2)): a reader finds the old file or the new one, never none.
+    inline bool replacePath(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
     inline bool pathExists(const std::string& path)
     {
         struct stat st{};
@@ -293,6 +328,7 @@ namespace playground::mcp
     inline bool wouldBlock() { return errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS; }
     inline bool refused() { return errno == ECONNREFUSED || errno == ENOENT; }
     inline int processId() { return static_cast<int>(getpid()); }
+    inline bool processAlive(int pid) { return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM); }
     inline int pollFds(PollFd* fds, std::size_t n, int timeoutMs) { return poll(fds, static_cast<nfds_t>(n), timeoutMs); }
 
     inline bool peerAlive(int fd)

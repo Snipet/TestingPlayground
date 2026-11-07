@@ -1,0 +1,5 @@
+// shape.fm: Placeholder Bass's soft clip, a file of its own as a project's helper may be.
+float softClip(float x)
+{
+    return x / (1 + fabsf(x));
+}

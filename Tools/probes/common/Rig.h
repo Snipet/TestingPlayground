@@ -45,11 +45,12 @@ namespace probe
 
         // The same for a program of several files (Sources.h). `loopBudget` false: without the loop budget (Patch.h),
         // dsp.budget's measure of what it costs; `boundsCheck` false: without the bounds checks, dsp.bounds's.
+        // `assets`: the samples its #pragma sample lines read (Patch.h, "Samples").
         bool load(const playground::Sources& files, std::string* errors = nullptr, bool loopBudget = true,
-                  bool boundsCheck = true)
+                  bool boundsCheck = true, const playground::Assets& assets = nullptr)
         {
             playground::Patch::Result r = playground::Patch::compile(files, engine_.rate(), false, nullptr, loopBudget,
-                                                                     boundsCheck);
+                                                                     boundsCheck, assets);
             if (errors != nullptr)
                 *errors = r.errors + r.notes;
             if (!r.patch)

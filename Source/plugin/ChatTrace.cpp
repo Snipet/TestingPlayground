@@ -365,6 +365,8 @@ namespace playground
         // The source.
         const std::string source = input.getProperty("source", "editor").toString().toLowerCase().trim().toStdString();
         Sources files;
+        Assets samples;                                // the program that plays: the samples it compiled with
+        bool playing = false;
         std::string words;
         scenario::Captured recording;
         std::string why;
@@ -375,7 +377,8 @@ namespace playground
         }
         else if (source == "playing")
         {
-            files = host_.chatRunning();
+            files = host_.chatPlaying(samples);
+            playing = true;
             words = "the program that plays (its own code; once its dials hold still the plugin plays a frozen copy whose "
                     "last bits differ, which this does not render)";
             if (files.empty())
@@ -409,7 +412,8 @@ namespace playground
                 words = "the user's recording, replayed through the program that played it (" + recording.about + ")";
                 if (files.empty())
                 {
-                    files = host_.chatRunning();
+                    files = host_.chatPlaying(samples);
+                    playing = true;
                     words = "the user's recording, replayed through the program that plays now (the one that played it is "
                             "no longer known; " + recording.about + ")";
                 }
@@ -424,6 +428,8 @@ namespace playground
             q.render.current = currentDials();
         if (!scenario::resolve(q.render, host_, why, q.render.fromCapture ? &recording : nullptr))
             return done(why, true);
+        if (playing)
+            q.render.assets = samples;
         int trials = 0;
         if (!scenario::tryEdits(input, files, trials, why))
             return done(why, true);

@@ -6,6 +6,11 @@
 //   chatState()      the conversation as the view shows it, the models and the choice, the key's state
 //   saveKey()        stores the key, encrypted (ChatStore.h), and uses it; false, with why, for one that is not a key
 //   forgetKey()      deletes the stored key
+//   setProvider()    the model provider (Anthropic, an OpenAI-compatible server by base URL, Google Gemini), with its
+//                    key, stored encrypted and bound to that server ("" keeps the one stored, or none: a server on this
+//                    Mac or the local network needs none), and its model; false, with why, for a base URL or a key it
+//                    cannot take. providerInfo() what is kept for one (its key, its model); forgetProviderKey() deletes
+//                    its key. Anthropic's stays as it was: saveKey and forgetKey are its key's
 //   setPlanner()     the model that plans each request before the chosen model builds it ("" for none): it writes a
 //                    plan, which the chat shows and the builder follows, and answers the builder's ask_planner
 //   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
@@ -21,7 +26,12 @@
 //                    Claude's turn goes on with it
 //   clearChecks()    forgets Claude's checks (set_checks): the plugin no longer measures them after a run
 //   stop()           ends Claude's turn as soon as it can; the work done so far stays
-//   newChat()        forgets the conversation
+//   newChat()        a new conversation; the one shown stays in the chat list
+//   chatList()       the chats kept on this Mac (ChatStore.h) for the project open, or for this plugin while none is
+//                    (a chat with no project stays with it): the newest first, the one shown marked
+//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there
+//   renameChat()     the chat shown named ("" for its first message's words again)
+//   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
 #pragma once
 
 #include <algorithm>
@@ -127,6 +137,72 @@ namespace playground
         bool fast = false;                    // it takes fast mode: the same model, its answers written faster, at a
                                               // higher price (the API's speed "fast")
         bool web = true;                      // it takes web search (/v1/models' server_tools.web_search)
+        // Another provider's model (Providers.h): whether it takes pictures (a model that refuses one is told so and
+        // is sent them as a line of text from then on), and its context window in tokens (0: not said), by which a
+        // small one gets the prompt's short form.
+        bool images = true;
+        int context = 0;
+    };
+
+    // The model provider the chat talks to (plugin/Providers.h): Anthropic (the default), any server that speaks
+    // OpenAI's Chat Completions by its base URL (OpenAI, OpenRouter, a server on this Mac or the local network such as
+    // Ollama or LM Studio), or Google Gemini. Machine-wide, as the model is.
+    struct ChatProvider
+    {
+        std::string kind = "anthropic";       // "anthropic", "openai" (OpenAI-compatible) or "gemini"
+        std::string base;                     // an OpenAI-compatible server's base URL ("https://openrouter.ai/api/v1")
+        std::string model;                    // its model ("" for the first the server lists); Anthropic's is the picker's
+        friend bool operator==(const ChatProvider&, const ChatProvider&) = default;
+    };
+
+    // What the chat keeps for a provider (providerInfo): whether a key is stored for it (bound to its server), whether it
+    // needs none (a server on this Mac or the local network), the model chosen with it last, its name as the chat says it.
+    struct ChatProviderInfo
+    {
+        bool hasKey = false;
+        bool keyless = false;
+        bool picksFirst = false;              // with no model chosen a turn takes its list's first (else the user chooses)
+        std::string model;
+        std::string name;                     // "OpenRouter", "Ollama (this Mac)", a server's host
+    };
+
+    // The providers the settings offer: a kind and a base URL each (the kind's own for Gemini and Anthropic); "custom"
+    // is any OpenAI-compatible server, its base URL typed. `key` is how its keys start ("" for a server that needs none),
+    // `keys` where one is made.
+    struct ChatPreset
+    {
+        const char* id;
+        const char* name;
+        const char* kind;
+        const char* base;
+        const char* key;
+        const char* keys;
+    };
+    inline constexpr ChatPreset kChatPresets[] = {
+        { "anthropic", "Anthropic", "anthropic", "https://api.anthropic.com", "sk-ant-", "console.anthropic.com (API keys)" },
+        { "openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-", "platform.openai.com (API keys)" },
+        { "openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1", "sk-or-", "openrouter.ai (Keys)" },
+        { "gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com", "AIza", "aistudio.google.com (Get API key)" },
+        { "ollama", "Ollama (this Mac)", "openai", "http://localhost:11434/v1", "", "" },
+        { "lmstudio", "LM Studio (this Mac)", "openai", "http://localhost:1234/v1", "", "" },
+        { "custom", "Other OpenAI-compatible server", "openai", "", "", "" },
+    };
+
+    inline constexpr std::size_t kMaxChatTitle = 60;       // a chat's name, characters at most
+
+    // A chat of the list (chatList): its title, and when it last changed.
+    struct ChatListEntry
+    {
+        std::string id;
+        std::string title;
+        std::string when;                     // "14:02" today, "Nov 6" this year, else "2025-11-06" (local time)
+        bool current = false;                 // the one shown
+    };
+
+    struct ChatList
+    {
+        std::string owner;                    // the project the chats are kept with ("" for none: this plugin's own)
+        std::vector<ChatListEntry> chats;     // the newest first
     };
 
     struct ChatState
@@ -147,9 +223,15 @@ namespace playground
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         bool web = false;                     // web search chosen
         std::string usage;                    // the last reply's tokens, for the footer
+        std::string title;                    // the chat shown: its name, else its first message's words, else
+                                              // "New chat"
+        std::string owner;                    // the project its chats are kept with ("" for none)
+        ChatProvider provider;                // the provider the chat talks to (its model is `model`)
+        std::string providerName;             // as the chat says it ("Anthropic", "OpenRouter", a server's host)
+        bool keyless = false;                 // the provider needs no key (a server on this Mac or the local network)
 
-        // The chat has what it needs to send: a key is stored.
-        bool ready() const noexcept { return hasKey; }
+        // The chat has what it needs to send: a key is stored, or the provider needs none.
+        bool ready() const noexcept { return hasKey || keyless; }
     };
 
     class ChatPort
@@ -162,6 +244,9 @@ namespace playground
 
         virtual bool saveKey(const std::string& key, std::string& why) = 0;
         virtual void forgetKey() = 0;
+        virtual bool setProvider(const ChatProvider& provider, const std::string& key, std::string& why) = 0;
+        virtual ChatProviderInfo providerInfo(const ChatProvider& provider) const = 0;
+        virtual void forgetProviderKey(const ChatProvider& provider) = 0;
         virtual void setModel(const std::string& id) = 0;
         virtual void setPlanner(const std::string& id) = 0;
         virtual void setEffort(const std::string& effort) = 0;
@@ -175,5 +260,9 @@ namespace playground
         virtual void clearChecks() = 0;
         virtual void stop() = 0;
         virtual void newChat() = 0;
+        virtual ChatList chatList() const = 0;
+        virtual bool openChat(const std::string& id) = 0;
+        virtual void renameChat(const std::string& title) = 0;
+        virtual void deleteChat() = 0;
     };
 }

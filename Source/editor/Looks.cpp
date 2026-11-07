@@ -80,6 +80,17 @@ namespace playground::ui::looks
         c.rrect(cell.x - 2.0f, cell.y - 2.0f, cell.w + 4.0f, cell.h + 4.0f, 0.0f, th.ground.withAlpha(0.0f), 1.0f, th.accent);
     }
 
+    void midiMark(funkgui::Canvas& c, const funkgui::Theme& th, funkgui::Point at, bool mapped, bool learning)
+    {
+        if (!mapped && !learning)
+            return;
+        const float x = at.x, y = at.y;
+        if (learning)
+            c.disc(x, y, kMidiMarkR + 1.0f, th.ground.withAlpha(0.0f), 1.5f, th.accent);
+        else
+            c.disc(x, y, kMidiMarkR, th.accent);
+    }
+
     // ---- controls ----------------------------------------------------------------------------------------------------
     void vintage(funkgui::Canvas& c, const funkgui::Theme& th, const Knob& k)
     {

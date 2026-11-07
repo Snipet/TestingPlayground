@@ -1,0 +1,4 @@
+# Written by scripts/import-factory.py: the factory projects its last run wrote here, one a line,
+# which its next run replaces. A folder not listed here is not the import's: it never touches one.
+Placeholder Bass
+Placeholder Pad

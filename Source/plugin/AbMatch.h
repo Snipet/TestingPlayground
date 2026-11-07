@@ -17,6 +17,7 @@
 // sound: well under a second or two).
 #pragma once
 
+#include "dsp/Assets.h"
 #include "dsp/Sources.h"
 
 #include <array>
@@ -43,6 +44,7 @@ namespace playground::ab
         std::array<std::map<std::string, float>, 2> dials;    // each side's own, by name (none: `current`'s)
         std::map<std::string, float> current;                 // the plugin's dials now, by name
         double rate = 48000.0;
+        Assets assets;                                        // the program's samples (dsp/Assets.h), both sides'
     };
 
     struct Result
@@ -56,7 +58,8 @@ namespace playground::ab
     // One side's loudness (LUFS; NaN when it does not compile or stops, `why` then the words after its name: "does not
     // compile: ...", "stops in the test (...): process() ran past its budget (...)").
     double loudness(const Sources& files, const std::map<std::string, float>& dials,
-                    const std::map<std::string, float>& current, double rate, std::string* why = nullptr);
+                    const std::map<std::string, float>& current, double rate, std::string* why = nullptr,
+                    const Assets& assets = nullptr);
     // The trims for two loudnesses: the louder turned down to the quieter (at most kMaxTrimDb); 0 dB both when either is
     // not a number or under kSilentLufs.
     std::array<float, 2> trims(const std::array<double, 2>& lufs);

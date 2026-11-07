@@ -18,10 +18,13 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <vector>
 
@@ -192,10 +195,18 @@ namespace playground::chatstore
             return diff == 0;
         }
 
-        // Writes `bytes` to `file` (0600) through a temporary beside it, renamed over it.
-        bool writePrivate(const juce::File& file, const void* bytes, std::size_t n, std::string* why)
+        // Writes `bytes` to `file` (0600) through a temporary beside it, renamed over it. `unique`: the temporary's name
+        // is this write's own (a chat's file, which two processes may write at once).
+        bool writePrivate(const juce::File& file, const void* bytes, std::size_t n, std::string* why, bool unique = false)
         {
-            const juce::File temp = file.getSiblingFile(file.getFileName() + ".tmp");
+            std::string suffix = ".tmp";
+            if (unique)
+            {
+                std::array<uint8_t, 8> r{};
+                (void)randomBytes(r.data(), r.size());
+                suffix = "." + juce::String::toHexString(r.data(), static_cast<int>(r.size()), 0).toStdString() + ".tmp";
+            }
+            const juce::File temp = file.getSiblingFile(file.getFileName() + juce::String(suffix));
             temp.deleteFile();
             {
                 juce::FileOutputStream out(temp);
@@ -266,75 +277,113 @@ namespace playground::chatstore
 
     namespace
     {
-        // `secret` sealed into `file` (ChatStore.h: FPK1).
-        bool seal(const juce::File& file, std::string_view secret, std::string* why)
+        struct Keys
         {
-            if (!ensureDirectory(why))
-                return false;
-            std::array<uint8_t, kSaltBytes> salt{};
+            std::array<uint8_t, 32> enc{}, mac{};
+        };
+
+        // `secret` sealed under `magic` with `salt` (named in the bytes) and the keys made from it: the bytes of a file.
+        bool sealBytes(const char* magic, const uint8_t* salt, const Keys& keys, std::string_view secret,
+                       std::vector<uint8_t>& bytes, std::string* why)
+        {
             std::array<uint8_t, kIvBytes> iv{};
-            if (!randomBytes(salt.data(), salt.size()) || !randomBytes(iv.data(), iv.size()))
+            if (!randomBytes(iv.data(), iv.size()))
             {
                 if (why != nullptr)
                     *why = "no random bytes";
                 return false;
             }
-            std::array<uint8_t, 32> enc{}, mac{};
-            if (!deriveKeys(salt.data(), enc, mac))
-            {
-                if (why != nullptr)
-                    *why = "the key derivation failed";
-                return false;
-            }
             std::vector<uint8_t> cipher;
-            if (!aesCbc(true, enc, iv.data(), reinterpret_cast<const uint8_t*>(secret.data()), secret.size(), cipher))
+            if (!aesCbc(true, keys.enc, iv.data(), reinterpret_cast<const uint8_t*>(secret.data()), secret.size(), cipher))
             {
                 if (why != nullptr)
                     *why = "the encryption failed";
                 return false;
             }
-            std::vector<uint8_t> bytes;
-            bytes.insert(bytes.end(), kMagic, kMagic + 4);
-            bytes.insert(bytes.end(), salt.begin(), salt.end());
+            bytes.clear();
+            bytes.reserve(4 + kSaltBytes + kIvBytes + cipher.size() + kMacBytes);
+            bytes.insert(bytes.end(), magic, magic + 4);
+            bytes.insert(bytes.end(), salt, salt + kSaltBytes);
             bytes.insert(bytes.end(), iv.begin(), iv.end());
             bytes.insert(bytes.end(), cipher.begin(), cipher.end());
-            const auto tag = hmac(mac, bytes.data(), bytes.size());
+            const auto tag = hmac(keys.mac, bytes.data(), bytes.size());
             bytes.insert(bytes.end(), tag.begin(), tag.end());
-            return writePrivate(file, bytes.data(), bytes.size(), why);
+            return true;
         }
 
-        // What `file` holds, opened; nothing, with why, when it is missing, damaged or made elsewhere. `what` names
-        // it in the reasons ("key").
-        std::optional<std::string> unseal(const juce::File& file, const std::string& what, std::string* why)
+        // What sealed bytes hold, opened (`keysFor` makes the keys of the salt they name); nothing, with why, when they
+        // are damaged or were made elsewhere. `what` names them in the reasons ("key").
+        std::optional<std::string> unsealBytes(const char* magic, const uint8_t* bytes, std::size_t n,
+                                               const std::function<std::optional<Keys>(const uint8_t*)>& keysFor,
+                                               const std::string& what, std::string* why)
         {
             const auto fail = [&](const std::string& reason) -> std::optional<std::string> {
                 if (why != nullptr)
                     *why = reason;
                 return std::nullopt;
             };
-            juce::MemoryBlock block;
-            if (!file.loadFileAsData(block))
-                return fail("no " + what + " saved");
-            const auto* bytes = static_cast<const uint8_t*>(block.getData());
-            const std::size_t n = block.getSize();
             constexpr std::size_t head = 4 + kSaltBytes + kIvBytes;
-            if (n < head + kBlockBytes + kMacBytes
-                || !sameBytes(bytes, reinterpret_cast<const uint8_t*>(kMagic), 4))
+            if (n < head + kBlockBytes + kMacBytes || !sameBytes(bytes, reinterpret_cast<const uint8_t*>(magic), 4))
                 return fail("the saved " + what + " is damaged");
-            std::array<uint8_t, 32> enc{}, mac{};
-            if (!deriveKeys(bytes + 4, enc, mac))
+            const std::optional<Keys> keys = keysFor(bytes + 4);
+            if (!keys)
                 return fail("the key derivation failed");
-            const auto tag = hmac(mac, bytes, n - kMacBytes);
+            const auto tag = hmac(keys->mac, bytes, n - kMacBytes);
             if (!sameBytes(tag.data(), bytes + n - kMacBytes, kMacBytes))
                 return fail("the saved " + what + " was made on " + kAnotherMachine + " or account, or is damaged");
             const uint8_t* cipher = bytes + head;
             const std::size_t cipherBytes = n - head - kMacBytes;
             std::vector<uint8_t> plain;
-            if (!aesCbc(false, enc, bytes + 4 + kSaltBytes, cipher, cipherBytes, plain))
+            if (!aesCbc(false, keys->enc, bytes + 4 + kSaltBytes, cipher, cipherBytes, plain))
                 return fail("the saved " + what + " does not decrypt");
             std::string secret(reinterpret_cast<const char*>(plain.data()), plain.size());
             std::fill(plain.begin(), plain.end(), uint8_t{ 0 });
             return secret;
+        }
+
+        std::optional<Keys> derived(const uint8_t* salt)
+        {
+            Keys k;
+            if (!deriveKeys(salt, k.enc, k.mac))
+                return std::nullopt;
+            return k;
+        }
+
+        // `secret` sealed into `file` (ChatStore.h: FPK1, a fresh salt each time).
+        bool seal(const juce::File& file, std::string_view secret, std::string* why)
+        {
+            if (!ensureDirectory(why))
+                return false;
+            std::array<uint8_t, kSaltBytes> salt{};
+            if (!randomBytes(salt.data(), salt.size()))
+            {
+                if (why != nullptr)
+                    *why = "no random bytes";
+                return false;
+            }
+            const std::optional<Keys> keys = derived(salt.data());
+            if (!keys)
+            {
+                if (why != nullptr)
+                    *why = "the key derivation failed";
+                return false;
+            }
+            std::vector<uint8_t> bytes;
+            return sealBytes(kMagic, salt.data(), *keys, secret, bytes, why) && writePrivate(file, bytes.data(), bytes.size(), why);
+        }
+
+        // What `file` holds, opened; nothing, with why, when it is missing, damaged or made elsewhere. `what` names
+        // it in the reasons ("key").
+        std::optional<std::string> unseal(const juce::File& file, const std::string& what, std::string* why)
+        {
+            juce::MemoryBlock block;
+            if (!file.loadFileAsData(block))
+            {
+                if (why != nullptr)
+                    *why = "no " + what + " saved";
+                return std::nullopt;
+            }
+            return unsealBytes(kMagic, static_cast<const uint8_t*>(block.getData()), block.getSize(), derived, what, why);
         }
 
         // chat.json as an object (empty when it is missing or damaged), and back with `edit` applied.
@@ -392,6 +441,130 @@ namespace playground::chatstore
         return !f.existsAsFile() || f.deleteFile();
     }
 
+    // ---- the other providers' keys (ChatStore.h) -------------------------------------------------------------------------
+    namespace
+    {
+        // A provider's kind as it may name a file: a-z alone (the callers' are "openai" and "gemini").
+        bool plainKind(std::string_view kind)
+        {
+            return !kind.empty() && kind.size() <= 16
+                && std::all_of(kind.begin(), kind.end(), [](char c) { return c >= 'a' && c <= 'z'; });
+        }
+
+        juce::File providerKeyFile(std::string_view kind, std::string_view origin)
+        {
+            uint64_t h = 1469598103934665603ull;     // FNV-1a over the origin: its file's name, never its text
+            for (const char c : origin)
+            {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1099511628211ull;
+            }
+            char hex[17];
+            std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(h));
+            return directory().getChildFile(juce::String("key-") + juce::String(std::string(kind)) + "-" + juce::String(hex) + ".bin");
+        }
+    }
+
+    bool hasProviderKey(std::string_view kind, std::string_view origin)
+    {
+        return plainKind(kind) && !origin.empty() && providerKeyFile(kind, origin).existsAsFile();
+    }
+
+    std::optional<std::string> loadProviderKey(std::string_view kind, std::string_view origin, std::string* why)
+    {
+        if (!plainKind(kind) || origin.empty())
+        {
+            if (why != nullptr)
+                *why = "no API key saved";
+            return std::nullopt;
+        }
+        std::optional<std::string> sealed = unseal(providerKeyFile(kind, origin), "key", why);
+        if (!sealed)
+        {
+            if (why != nullptr && why->find(kAnotherMachine) != std::string::npos)
+                *why += ": add it again";
+            if (why != nullptr && *why == "no key saved")
+                *why = "no API key saved";
+            return std::nullopt;
+        }
+        // The origin it was saved for, a line, then the key: another server's (a copied file) is none.
+        const std::size_t nl = sealed->find('\n');
+        if (nl == std::string::npos || std::string_view(*sealed).substr(0, nl) != origin || nl + 1 >= sealed->size())
+        {
+            std::fill(sealed->begin(), sealed->end(), '\0');
+            if (why != nullptr)
+                *why = "the saved key is for another server";
+            return std::nullopt;
+        }
+        std::string key = sealed->substr(nl + 1);
+        std::fill(sealed->begin(), sealed->end(), '\0');
+        return key;
+    }
+
+    bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why)
+    {
+        if (!plainKind(kind) || origin.empty() || origin.find('\n') != std::string_view::npos || key.empty()
+            || key.find('\n') != std::string_view::npos)
+        {
+            if (why != nullptr)
+                *why = "that key or server cannot be stored";
+            return false;
+        }
+        std::string secret = std::string(origin) + "\n" + std::string(key);
+        const bool ok = seal(providerKeyFile(kind, origin), secret, why);
+        std::fill(secret.begin(), secret.end(), '\0');
+        return ok;
+    }
+
+    bool forgetProviderKey(std::string_view kind, std::string_view origin)
+    {
+        if (!plainKind(kind) || origin.empty())
+            return true;
+        const juce::File f = providerKeyFile(kind, origin);
+        return !f.existsAsFile() || f.deleteFile();
+    }
+
+    std::string modelKey(std::string_view kind, std::string_view base)
+    {
+        return base.empty() ? std::string(kind) : std::string(kind) + " " + std::string(base);
+    }
+
+    ProviderChoice loadProvider()
+    {
+        ProviderChoice c;
+        const juce::var v = juce::JSON::parse(choiceFile());
+        if (auto* o = v.getDynamicObject())
+        {
+            if (const juce::String kind = o->getProperty("provider").toString(); kind.isNotEmpty())
+                c.kind = kind.toStdString();
+            c.base = o->getProperty("base").toString().toStdString();
+            // [{ "for": modelKey, "model": id }]: an array, as a key holds a URL
+            const juce::var models = o->getProperty("models");
+            if (const juce::Array<juce::var>* list = models.getArray())
+                for (const juce::var& m : *list)
+                    if (const juce::String k = m.getProperty("for", "").toString(); k.isNotEmpty())
+                        c.models[k.toStdString()] = m.getProperty("model", "").toString().toStdString();
+        }
+        return c;
+    }
+
+    void saveProvider(const ProviderChoice& choice)
+    {
+        saveChatJson([&](juce::DynamicObject& o) {
+            o.setProperty("provider", juce::String(choice.kind));
+            o.setProperty("base", juce::String(choice.base));
+            juce::Array<juce::var> models;
+            for (const auto& [k, m] : choice.models)
+            {
+                auto* entry = new juce::DynamicObject();
+                entry->setProperty("for", juce::String(k));
+                entry->setProperty("model", juce::String(m));
+                models.add(juce::var(entry));
+            }
+            o.setProperty("models", models);
+        });
+    }
+
     Choice loadChoice()
     {
         Choice c;
@@ -432,5 +605,366 @@ namespace playground::chatstore
             json.removeProperty("account");
             json.removeProperty("use");
         });
+    }
+
+    // ---- the chats (ChatStore.h) -----------------------------------------------------------------------------------------
+    namespace
+    {
+        constexpr char kChatMagic[4] = { 'F', 'P', 'C', '1' };
+        constexpr const char* kChatExtension = ".chat";
+        constexpr const char* kMetaExtension = ".meta";
+        constexpr const char* kSaltFile = ".salt";
+
+        // The chats' keys by the salt they were made from: PBKDF2's 100,000 rounds once a salt in a process, so a list
+        // of every chat of a project (each file sealed under the store's salt) costs one derivation, not one a file.
+        std::mutex keysMutex;
+        std::map<std::array<uint8_t, kSaltBytes>, Keys> chatKeys;
+
+        std::optional<Keys> keysOf(const uint8_t* salt)
+        {
+            std::array<uint8_t, kSaltBytes> s{};
+            std::copy(salt, salt + kSaltBytes, s.begin());
+            const std::lock_guard<std::mutex> lock(keysMutex);
+            if (const auto it = chatKeys.find(s); it != chatKeys.end())
+                return it->second;
+            std::optional<Keys> k = derived(salt);
+            if (!k)
+                return std::nullopt;
+            if (chatKeys.size() >= 16)                   // salts of files written elsewhere: a few at most
+                chatKeys.clear();
+            chatKeys.emplace(s, *k);
+            return k;
+        }
+
+        bool privateFolder(const juce::File& dir, std::string* why)
+        {
+            if (!dir.isDirectory() && !dir.createDirectory())
+            {
+                if (why != nullptr)
+                    *why = "cannot create " + dir.getFullPathName().toStdString();
+                return false;
+            }
+            makePrivate(dir, 0700);
+            return true;
+        }
+
+        // The store's folders, made private: the chat's folder, chats/, and the owner's.
+        bool ownerFolder(std::string_view owner, juce::File& dir, std::string* why)
+        {
+            if (!validOwner(owner))
+            {
+                if (why != nullptr)
+                    *why = "not a chat's owner";
+                return false;
+            }
+            dir = chatsDirectory().getChildFile(juce::String(std::string(owner)));
+            return ensureDirectory(why) && privateFolder(chatsDirectory(), why) && privateFolder(dir, why);
+        }
+
+        juce::File ownerPath(std::string_view owner)
+        {
+            return validOwner(owner) ? chatsDirectory().getChildFile(juce::String(std::string(owner))) : juce::File();
+        }
+
+        // The store's salt (chats/.salt, made once, 0600). Two processes that make it at once each seal with their
+        // own: either reads, since a file names its salt.
+        bool storeSalt(std::array<uint8_t, kSaltBytes>& salt, std::string* why)
+        {
+            const juce::File f = chatsDirectory().getChildFile(kSaltFile);
+            juce::MemoryBlock b;
+            if (f.loadFileAsData(b) && b.getSize() == kSaltBytes)
+            {
+                std::copy(static_cast<const uint8_t*>(b.getData()), static_cast<const uint8_t*>(b.getData()) + kSaltBytes, salt.begin());
+                return true;
+            }
+            if (!randomBytes(salt.data(), salt.size()))
+            {
+                if (why != nullptr)
+                    *why = "no random bytes";
+                return false;
+            }
+            return writePrivate(f, salt.data(), salt.size(), why, true);
+        }
+
+        bool sealChat(const juce::File& file, std::string_view text, std::string* why)
+        {
+            std::array<uint8_t, kSaltBytes> salt{};
+            if (!storeSalt(salt, why))
+                return false;
+            const std::optional<Keys> keys = keysOf(salt.data());
+            if (!keys)
+            {
+                if (why != nullptr)
+                    *why = "the key derivation failed";
+                return false;
+            }
+            std::vector<uint8_t> bytes;
+            return sealBytes(kChatMagic, salt.data(), *keys, text, bytes, why)
+                && writePrivate(file, bytes.data(), bytes.size(), why, true);
+        }
+
+        std::optional<std::string> unsealChat(const juce::File& file, std::string* why)
+        {
+            juce::MemoryBlock block;
+            if (!file.loadFileAsData(block))
+            {
+                if (why != nullptr)
+                    *why = "there is no such chat";
+                return std::nullopt;
+            }
+            return unsealBytes(kChatMagic, static_cast<const uint8_t*>(block.getData()), block.getSize(), keysOf, "chat", why);
+        }
+
+        Stamp stampOf(const juce::File& f)
+        {
+            if (!f.existsAsFile())
+                return {};
+            return { f.getLastModificationTime().toMilliseconds(), f.getSize() };
+        }
+
+        juce::File chatFile(const juce::File& dir, std::string_view id) { return dir.getChildFile(juce::String(std::string(id)) + kChatExtension); }
+        juce::File metaFile(const juce::File& dir, std::string_view id) { return dir.getChildFile(juce::String(std::string(id)) + kMetaExtension); }
+
+        std::string metaJson(const ChatMeta& m)
+        {
+            auto* o = new juce::DynamicObject();
+            const juce::var v(o);
+            o->setProperty("format", "funk-playground-chat");
+            o->setProperty("version", 1);
+            o->setProperty("id", juce::String(m.id));
+            o->setProperty("title", juce::String::fromUTF8(m.title.c_str()));
+            o->setProperty("named", m.named);
+            o->setProperty("created", static_cast<juce::int64>(m.createdMs));
+            o->setProperty("updated", static_cast<juce::int64>(m.updatedMs));
+            return juce::JSON::toString(v, true).toStdString();
+        }
+
+        // A chat's .meta, or what its .chat file says of it when that is missing or damaged.
+        ChatMeta readMeta(const juce::File& dir, std::string_view id)
+        {
+            ChatMeta m;
+            m.id = std::string(id);
+            if (const std::optional<std::string> text = unsealChat(metaFile(dir, id), nullptr))
+            {
+                const juce::var v = juce::JSON::parse(juce::String::fromUTF8(text->c_str()));
+                if (v.getDynamicObject() != nullptr && v["format"].toString() == "funk-playground-chat")
+                {
+                    m.title = tidyTitle(v["title"].toString().toStdString());
+                    m.named = static_cast<bool>(v["named"]);
+                    m.createdMs = static_cast<int64_t>(static_cast<juce::int64>(v["created"]));
+                    m.updatedMs = static_cast<int64_t>(static_cast<juce::int64>(v["updated"]));
+                }
+            }
+            if (m.updatedMs <= 0)
+            {
+                const juce::File f = chatFile(dir, id);
+                m.updatedMs = f.getLastModificationTime().toMilliseconds();
+                if (m.createdMs <= 0)
+                    m.createdMs = m.updatedMs;
+            }
+            if (m.title.empty())
+                m.title = "Chat";
+            return m;
+        }
+
+        std::mutex writeMutex;                           // this process's chat writes, one at a time
+    }
+
+    std::string newId()
+    {
+        std::array<uint8_t, 16> r{};
+        (void)randomBytes(r.data(), r.size());
+        return juce::String::toHexString(r.data(), static_cast<int>(r.size()), 0).toLowerCase().toStdString();
+    }
+
+    bool validId(std::string_view id)
+    {
+        return id.size() == 32 && std::all_of(id.begin(), id.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+    }
+
+    bool validOwner(std::string_view owner)
+    {
+        if (owner.empty() || owner.size() > 64 || owner.front() == '-')
+            return false;
+        return std::all_of(owner.begin(), owner.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '-'; });
+    }
+
+    std::string instanceOwner(std::string_view instanceId) { return std::string(kInstancePrefix) + std::string(instanceId); }
+
+    std::string tidyTitle(std::string_view title)
+    {
+        // The spaces (tabs, line breaks) collapsed and trimmed, control characters dropped, at most kMaxTitle characters
+        // (UTF-8 kept whole: the panel draws it as asciiText).
+        std::string out;
+        bool space = false;
+        std::size_t chars = 0;
+        for (std::size_t i = 0; i < title.size() && chars < kMaxTitle;)
+        {
+            const auto c = static_cast<unsigned char>(title[i]);
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            {
+                space = !out.empty();
+                ++i;
+                continue;
+            }
+            if (c < 0x20 || c == 0x7F)
+            {
+                ++i;
+                continue;
+            }
+            const std::size_t n = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+            if (space)
+            {
+                out += ' ';
+                ++chars;
+                space = false;
+                if (chars >= kMaxTitle)
+                    break;
+            }
+            out.append(title.substr(i, std::min(n, title.size() - i)));
+            ++chars;
+            i += n;
+        }
+        while (!out.empty() && out.back() == ' ')
+            out.pop_back();
+        return out;
+    }
+
+    juce::File chatsDirectory() { return directory().getChildFile("chats"); }
+
+    std::vector<ChatMeta> chatsOf(std::string_view owner)
+    {
+        std::vector<ChatMeta> out;
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !dir.isDirectory())
+            return out;
+        for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kChatExtension))
+        {
+            const std::string id = f.getFileNameWithoutExtension().toStdString();
+            if (validId(id))
+                out.push_back(readMeta(dir, id));
+        }
+        std::sort(out.begin(), out.end(), [](const ChatMeta& a, const ChatMeta& b) {
+            return a.updatedMs != b.updatedMs ? a.updatedMs > b.updatedMs : a.id < b.id;
+        });
+        return out;
+    }
+
+    bool hasChat(std::string_view owner, std::string_view id)
+    {
+        const juce::File dir = ownerPath(owner);
+        return dir != juce::File() && validId(id) && chatFile(dir, id).existsAsFile();
+    }
+
+    bool hasOwner(std::string_view owner)
+    {
+        const juce::File dir = ownerPath(owner);
+        return dir != juce::File() && dir.isDirectory();
+    }
+
+    bool hasChats(std::string_view owner)
+    {
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !dir.isDirectory())
+            return false;
+        for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kChatExtension))
+            if (validId(f.getFileNameWithoutExtension().toStdString()))
+                return true;
+        return false;
+    }
+
+    std::optional<Loaded> loadChat(std::string_view owner, std::string_view id, std::string* why)
+    {
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !validId(id))
+        {
+            if (why != nullptr)
+                *why = "there is no such chat";
+            return std::nullopt;
+        }
+        const juce::File f = chatFile(dir, id);
+        Loaded l;
+        l.stamp = stampOf(f);
+        std::optional<std::string> state = unsealChat(f, why);
+        if (!state)
+            return std::nullopt;
+        l.state = std::move(*state);
+        l.meta = readMeta(dir, id);
+        return l;
+    }
+
+    SaveResult saveChat(std::string_view owner, const ChatMeta& meta, const std::string& state, Stamp& stamp, std::string* why)
+    {
+        juce::File dir;
+        if (!validId(meta.id))
+        {
+            if (why != nullptr)
+                *why = "not a chat's id";
+            return SaveResult::failed;
+        }
+        const std::lock_guard<std::mutex> lock(writeMutex);
+        if (!ownerFolder(owner, dir, why))
+            return SaveResult::failed;
+        const juce::File f = chatFile(dir, meta.id);
+        if (f.existsAsFile() && (stamp.none() || stampOf(f) != stamp))
+            return SaveResult::conflict;
+        ChatMeta m = meta;
+        m.title = tidyTitle(m.title);
+        if (!sealChat(f, state, why) || !sealChat(metaFile(dir, m.id), metaJson(m), why))
+            return SaveResult::failed;
+        stamp = stampOf(f);
+        return SaveResult::ok;
+    }
+
+    bool renameChat(std::string_view owner, std::string_view id, std::string_view title)
+    {
+        const std::lock_guard<std::mutex> lock(writeMutex);
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !validId(id) || !chatFile(dir, id).existsAsFile())
+            return false;
+        ChatMeta m = readMeta(dir, id);
+        m.title = tidyTitle(title);
+        m.named = !m.title.empty();
+        if (m.title.empty())
+            m.title = "Chat";
+        return sealChat(metaFile(dir, id), metaJson(m), nullptr);
+    }
+
+    bool removeChat(std::string_view owner, std::string_view id)
+    {
+        const std::lock_guard<std::mutex> lock(writeMutex);
+        const juce::File dir = ownerPath(owner);
+        if (dir == juce::File() || !validId(id))
+            return false;
+        const juce::File c = chatFile(dir, id), m = metaFile(dir, id);
+        const bool had = c.existsAsFile();
+        c.deleteFile();
+        m.deleteFile();
+        return had && !c.existsAsFile();
+    }
+
+    bool moveChat(std::string_view from, std::string_view to, std::string_view id)
+    {
+        const std::lock_guard<std::mutex> lock(writeMutex);
+        const juce::File src = ownerPath(from);
+        juce::File dst;
+        if (src == juce::File() || !validId(id) || !chatFile(src, id).existsAsFile() || !ownerFolder(to, dst, nullptr))
+            return false;
+        if (chatFile(dst, id).existsAsFile())
+            return false;
+        if (!chatFile(src, id).moveFileTo(chatFile(dst, id)))
+            return false;
+        if (metaFile(src, id).existsAsFile())
+            metaFile(src, id).moveFileTo(metaFile(dst, id));
+        if (src.getNumberOfChildFiles(juce::File::findFilesAndDirectories) == 0)
+            src.deleteFile();                            // an empty owner's folder goes
+        return true;
+    }
+
+    bool removeOwner(std::string_view owner)
+    {
+        const std::lock_guard<std::mutex> lock(writeMutex);
+        const juce::File dir = ownerPath(owner);
+        return dir == juce::File() || !dir.exists() || dir.deleteRecursively();
     }
 }

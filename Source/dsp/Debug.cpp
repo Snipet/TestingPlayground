@@ -1753,7 +1753,7 @@ namespace playground::measure
     TraceResult trace(const Sources& files, const TraceRequest& q)
     {
         TraceResult out;
-        Session session(files, q.render.rate, q.pins.empty() ? nullptr : &q.pins);
+        Session session(files, q.render.rate, q.pins.empty() ? nullptr : &q.pins, q.render.assets);
         if (!session.compiled())
         {
             out.error = "It did not compile, so nothing was traced:\n" + session.errors();

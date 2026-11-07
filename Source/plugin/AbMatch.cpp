@@ -45,9 +45,9 @@ namespace playground::ab
     }
 
     double loudness(const Sources& files, const std::map<std::string, float>& dials,
-                    const std::map<std::string, float>& current, double rate, std::string* why)
+                    const std::map<std::string, float>& current, double rate, std::string* why, const Assets& assets)
     {
-        measure::Session session(files, rate);
+        measure::Session session(files, rate, nullptr, assets);
         if (!session.compiled())
         {
             if (why != nullptr)
@@ -112,7 +112,7 @@ namespace playground::ab
         {
             if (stale && stale())
                 return std::nullopt;
-            r.lufs[k] = loudness(job.files[k], job.dials[k], job.current, job.rate, &failed[k]);
+            r.lufs[k] = loudness(job.files[k], job.dials[k], job.current, job.rate, &failed[k], job.assets);
         }
         r.trimDb = trims(r.lufs);
         const char* names[2] = { "A", "B" };

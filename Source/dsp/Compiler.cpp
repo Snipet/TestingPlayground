@@ -216,11 +216,12 @@ namespace playground
     };
 
     std::unique_ptr<Compiler::Built> Compiler::build(float rate, Sources files, uint64_t id, const ShaderTools& tools,
-                                                     ShaderCache& cache, bool keepIr, const CircuitPins* pins)
+                                                     ShaderCache& cache, bool keepIr, const CircuitPins* pins,
+                                                     const Assets& assets)
     {
         auto b = std::make_unique<Built>();
         EarlyShaders early(files, tools, cache);
-        Patch::Result r = Patch::compile(files, rate, keepIr, pins);
+        Patch::Result r = Patch::compile(files, rate, keepIr, pins, true, true, assets);
         b->ir = std::move(r.ir);
         b->keepIr = keepIr;
         b->jobs = std::move(r.circuitJobs);
@@ -250,6 +251,8 @@ namespace playground
             s.circuits = b->recipe.pins;
             s.circuitDials = b->recipe.bindings;
             s.probes = b->recipe.probes;
+            s.samples = b->recipe.samples;
+            s.assets = b->recipe.assets;
             b->patch = std::move(r.patch);
         }
         return b;
@@ -503,6 +506,7 @@ namespace playground
     {
         uint64_t id = 0;
         ShaderTools tools;
+        Assets assets;
         {
             // One compile offers at a time (above): the thread's (a RUN's, a refine's) ends first, and the thread starts
             // none while this one compiles, so this program, offered last, is the one that plays.
@@ -511,11 +515,13 @@ namespace playground
             compiling_ = true;
             id = ++nextId_;
             tools = tools_;
+            assets = assets_;
         }
         // Never the IR here (the calling thread may be the message thread): someone looking has it made on the
         // compiler's thread (tookProgram).
         const uint64_t landed = circuits::answers().landed();
-        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false), landed, carry);
+        CompileStatus s = land(build(engine_.rate(), std::move(files), id, tools, shaders_, false, nullptr, assets), landed,
+                               carry);
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             compiling_ = false;
@@ -604,7 +610,7 @@ namespace playground
     }
 
     // ---- a panel's edit (Compiler.h) ---------------------------------------------------------------------------------
-    bool Compiler::editPanel(const Sources& files, uint64_t id, const ShaderTools& tools)
+    bool Compiler::editPanel(const Sources& files, uint64_t id, const ShaderTools& tools, const Assets& assets)
     {
         const auto t0 = std::chrono::steady_clock::now();
         Patch::Recipe base;
@@ -621,6 +627,12 @@ namespace playground
         }
         if (!panelEditOf(base.files, files, base.panel.read))
             return false;
+        for (const auto& [name, hash] : base.samples)   // a sample it reads added, changed or gone: a compile
+        {
+            const std::shared_ptr<const assets::Asset> now = assets != nullptr ? assets->find(name) : nullptr;
+            if ((now != nullptr ? now->hash() : std::string()) != hash)
+                return false;
+        }
         // The panel as it plays (its taps: the program's own, or a panel's edit's before this one), and as it is now.
         Controls before, after;
         std::vector<Patch::Tap> tapsBefore, tapsAfter;
@@ -706,7 +718,7 @@ namespace playground
             const bool was = compiling_;
             compiling_ = true;
             lock.unlock();
-            std::unique_ptr<Built> b = build(rate, before.files, id, tools, shaders_, keepIr, &before.pins);
+            std::unique_ptr<Built> b = build(rate, before.files, id, tools, shaders_, keepIr, &before.pins, before.assets);
             lock.lock();
             if (b->patch && recipe_.program == st.program)   // (else another program plays now)
             {
@@ -722,6 +734,8 @@ namespace playground
                 s.circuits = b->status.circuits;
                 s.circuitDials = b->status.circuitDials;
                 s.probes = b->status.probes;
+                s.samples = b->status.samples;
+                s.assets = b->status.assets;
                 lock.unlock();
                 played(std::move(b->recipe), std::move(b->jobs), landed, false);
                 tookProgram(id, fileOf(b->status), b->keepIr, b->ir);
@@ -754,6 +768,8 @@ namespace playground
             s.circuits = recipe_.pins;
             s.circuitDials = recipe_.bindings;
             s.probes = recipe_.probes;
+            s.samples = recipe_.samples;
+            s.assets = recipe_.assets;
         }
         s.revision = status_.revision + 1;
         status_ = std::move(s);
@@ -765,6 +781,12 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         tools_ = std::move(tools);
+    }
+
+    void Compiler::setAssets(Assets assets)
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        assets_ = std::move(assets);
     }
 
     void Compiler::setDialCarrier(DialCarrier carrier)
@@ -833,13 +855,15 @@ namespace playground
                 const ShaderTools tools = tools_;
                 const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
                 const bool panelEdits = queuedPanel_;
+                const Assets assets = assets_;
                 hasQueued_ = false;
                 compiling_ = true;
                 lock.unlock();
                 const uint64_t landed = circuits::answers().landed();
                 // An edit of the panel's files alone plays on (Compiler.h, "A panel's edit"); else a compile.
-                if (!(panelEdits && editPanel(files, id, tools)))
-                    land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr), landed, true, true);
+                if (!(panelEdits && editPanel(files, id, tools, assets)))
+                    land(build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr, nullptr, assets), landed, true,
+                         true);
                 lock.lock();
                 compiling_ = false;
                 compiled = true;
@@ -987,6 +1011,7 @@ namespace playground
             // new program id, now with the answers stored.
             refineDue_ = false;
             Sources files = recipe_.files;
+            const Assets assets = recipe_.assets;     // the samples it plays with
             const uint64_t base = recipe_.program;
             const uint64_t id = ++nextId_;
             const ShaderTools tools = tools_;
@@ -994,7 +1019,7 @@ namespace playground
             const uint64_t landed = circuits::answers().landed();
             compiling_ = true;
             lock.unlock();
-            std::unique_ptr<Built> b = build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr);
+            std::unique_ptr<Built> b = build(engine_.rate(), std::move(files), id, tools, shaders_, keepIr, nullptr, assets);
             b->landed = landed;
             lock.lock();
             compiling_ = false;
@@ -1081,6 +1106,8 @@ namespace playground
             out.circuits = std::move(s.circuits);
             out.circuitDials = std::move(s.circuitDials);
             out.probes = std::move(s.probes);
+            out.samples = std::move(s.samples);
+            out.assets = std::move(s.assets);
         }
         out.notes += chosen;
         out.refined = true;

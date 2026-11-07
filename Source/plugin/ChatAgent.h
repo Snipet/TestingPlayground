@@ -30,10 +30,16 @@
 // may be"), and every render stops as it goes at the stop button, an MCP cancel or kRenderSeconds (renderCancel),
 // its result saying how far it got.
 //
+// Projects (the projects tool, ChatProjects.cpp; ChatHost::chatProjects, ProjectCall below): Claude lists the user's
+// projects and presets and, when the user asks, saves a version or a preset, opens a project or applies a preset, as
+// the editor's PROJECTS does. Safe by design: a save only adds, a preset is replaced only with replace, unsaved changes
+// are dropped only with discard, a factory project is never written, and nothing is deleted.
+//
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
 // planTurn sends the conversation to the planner as another model sees it (forAnotherModel: no thinking, which is bound
-// to the builder's model; no compaction or web blocks, which go back only to their own requests; the tools defined
+// to the builder's model; no compaction or web blocks, which go back only to their own requests; no field another
+// provider's answers left on a call, which the API refuses (providers::forAnthropic); the tools defined
 // and tool_choice "none", so the history's calls stay valid and it calls none) with a brief after the user's message;
 // its plan streams into a plan entry (ChatEntry::Kind::plan) and joins the user's message, which the builder has not
 // seen yet, so the history stays append-only. The builder's ask_planner asks it again mid-turn (kMaxPlannerAsks a
@@ -107,6 +113,32 @@
 // the key was refused: it stays, and the chat says so until the user replaces or removes it. When it starts, the
 // agent deletes what an earlier version kept of a sign-in it no longer has (chatstore::forgetOldSignIn).
 //
+// Other providers (Providers.h; setProvider): an OpenAI-compatible server by its base URL (OpenAI, OpenRouter, Ollama
+// or LM Studio on this Mac) or Google Gemini, each with its own key, encrypted and bound to its server (none for a server
+// on this Mac or the local network), and its models (the server's list, or one typed; with none chosen, Gemini's and a
+// local server's first, else the user chooses: Providers.h, picksFirst). Anthropic stays the default and its requests
+// are as they were. Another's turn (startTurn: its provider, key and model from one moment) runs the same loop over
+// the same history: the request is the
+// Messages API's translated, the answer translated back, so the tools, the checks and their nudges, the retries, a
+// reply cut off and ask_user work alike. What only Anthropic has is off for it (thinking kept, caching, compaction,
+// fallbacks, fast mode, web search, the planner and the thinking levels: their pills are hidden); its own reasoning
+// shows and is never kept; a model that takes no pictures (its list says so, or it refuses one) gets them as lines of
+// text, with a note; a model the server says cannot serve this chat leaves the menu; a small context window gets the
+// prompt's short form (shortPrompt); a server that cut the conversation to fit its context is noted once (its
+// prompt's tokens far under the request's).
+//
+// The chats, on this Mac only (ChatStore.h; CLAUDE.md, "The chats: on this Mac only"). The conversation shown is one of
+// its owner's chats: the project open's (by the project's id), or, while none is, this instance's own. The processor
+// names the owner (setOwner): opening another project keeps the chat shown with its project and shows that project's
+// newest (a new chat when it has none); saving the editor's files as a project carries the chat to it (moved from the
+// instance, copied from another project), and so does a project the chat's own turn opens (the projects tool: the
+// conversation that asked for it goes on with it). The chat is written to the store (keep(): the conversation as
+// saveState(true) has it, the panel's pictures kept, so a chat opened again keeps its thinking) when a turn ends, when
+// the session is saved (keepIdle: not while a turn runs, whose end does), before another chat shows and when the agent
+// goes; the session keeps only which chat it is (chatRef()), and a session from before keeps its conversation here
+// once (adoptChat). A copy of a state in another live instance shows its chat as a chat of its own (restoreChat's `from`;
+// the processor decides). The chat list (chatList) is its owner's, the newest first: new, open, rename, delete.
+//
 // Threads: the ChatPort calls run on the message thread; a turn runs on the agent's worker thread, which calls
 // ChatHost (whose implementation must be safe from that thread) and the transport. Pictures are read on a job thread
 // of their own, so the message thread never waits for them.
@@ -114,6 +146,7 @@
 
 #include "plugin/Capture.h"
 #include "plugin/ChatPort.h"
+#include "plugin/ChatStore.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Live.h"
@@ -137,8 +170,42 @@
 #include <thread>
 #include <vector>
 
+namespace playground::projectstore
+{
+    struct Project;
+    struct Version;
+}
+
 namespace playground
 {
+    // Claude's projects (the projects tool: ChatProjects.cpp, ChatHost::chatProjects). Safe by design: a save only adds
+    // (a version, a preset, the user's own copy of a factory project), a preset is replaced only with `replace` (the old
+    // values said), and opening a project or applying a preset over unsaved changes (the editor's files, its samples or
+    // the dials changed since they were opened or saved) only with `discard`, which the user must have asked for;
+    // nothing is deleted (that is the user's alone).
+    struct ProjectCall
+    {
+        enum class Action : uint8_t { list, saveVersion, savePreset, applyPreset, open };
+        Action action = Action::list;
+        std::string name;                        // list: the project shown whole (none: every one); save_version: the
+                                                 // project (none: the one open; another: a new one, or a version of it);
+                                                 // save_preset, apply_preset: the preset; open: the project, Name@N a
+                                                 // version (none or "@N": the one open)
+        std::string note;                        // save_version: what changed, in Claude's words (the version's note)
+        std::string category;                    // save_preset: the preset's; save_version: the project's
+        bool replace = false;                    // save_preset: over a preset of that name
+        bool discard = false;                    // open, apply_preset: over unsaved changes
+        bool desktop = false;                    // Claude Desktop's (MCP: not journalled, it knows), else the plugin's chat
+    };
+    struct ProjectAnswer
+    {
+        bool ok = false;
+        std::string text;                        // the tool's result (why, when not ok)
+        std::string entry;                       // the chat's line ("saved version 5 of \"Engine\""), "" for none
+        bool another = false;                    // open: another project's program is the editor's now (Claude's checks
+                                                 // were the one before's: the agent clears them)
+    };
+
     // What Claude's tools act on. Every call may come from the agent's worker thread.
     class ChatHost
     {
@@ -157,16 +224,37 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
-        // What played before the last run that changed what plays (a netlist's drawing aside): compare's previous_run.
-        // None until a run has changed the program since the plugin opened or loaded a state (it is not kept with the
-        // session, and a state's program is no run's).
-        virtual Sources chatPrevious() const { return {}; }
+        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets), from one
+        // look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
+        virtual Sources chatPlaying(Assets& samples) const
+        {
+            samples = chatAssets();
+            return chatRunning();
+        }
+        // What played before the last run that changed what plays (its files, a netlist's drawing aside, or the samples
+        // its lines read), and in `samples` the samples it compiled with: compare's previous_run. None until a run has
+        // changed the program since the plugin opened or loaded a state (it is not kept with the session, and a state's
+        // program is no run's).
+        virtual Sources chatPrevious(Assets& samples) const
+        {
+            samples = nullptr;
+            return {};
+        }
+        // A project version's samples, decoded (those the samples now hold of the same file shared, not decoded again;
+        // a file it names that cannot be one left out, in words in `refused`): what a render of that version takes.
+        virtual Assets chatVersionSamples(const projectstore::Project& p, const projectstore::Version& v,
+                                          std::vector<std::string>& refused) const
+        {
+            (void)p, (void)v, (void)refused;
+            return chatAssets();
+        }
         virtual Controls chatDials() const = 0;                     // the running program's
         virtual float chatDialValue(int slot) const = 0;            // plain value
         virtual void chatSetDial(int slot, float plain) = 0;        // a host gesture, applied soon on the message thread
         virtual float chatLoad() const = 0;
         virtual uint32_t chatAlerts() const = 0;
-        // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most): the panel (`name`
+        // A picture (view_panel), made on the message thread; this thread waits for it (10 s at most, and no longer than
+        // the agent's stopping(): the message thread may be the one waiting for the turn to end): the panel (`name`
         // a tabs page's title, "" for the user's), the whole editor, or a netlist's schematic (`name` its .cir file);
         // the panel or the editor with `state` drawn in place of what plays (picturePanel: view_panel's values and at).
         virtual PanelPicture chatPicture(PictureView view, const std::string& name, const PictureState& state) = 0;
@@ -202,6 +290,37 @@ namespace playground
         // run_program's line on a .gui file's layout (EditorPort.h's panelFitLine): its content larger than the PANEL view
         // at the editor's size, in words; "" when it fits, or when it cannot be said now. The worker's.
         virtual std::string chatPanelFit(const PanelSpec&, const Controls&) { return {}; }
+        // MIDI learn (plugin/MidiLearn.h): the mappings and the dial learning. Any thread (under its own mutex): the dial
+        // lines and get_status say them, matched to the controls they list by name (its `words` are by the slots of
+        // the program apply() took, which a compile apply() has not taken yet may have moved).
+        virtual midilearn::View chatMidi() const { return {}; }
+        // The program's samples (dsp/Assets.h; the explorer's ASSETS), which its #pragma sample lines read: every render
+        // of a tool compiles with them (scenario::resolve). Any thread (a copy under its own mutex). chatAddAsset adds
+        // the audio file at `path` (a WAV, AIFF or FLAC on this computer) as `name` (its own name tidied when ""),
+        // decoded on the calling thread; chatRemoveAsset and chatRenameAsset act on one by name. False, with why in
+        // words (the caps, a file that is none of those), when it cannot; `done` says what was done.
+        virtual Assets chatAssets() const { return {}; }
+        virtual bool chatAddAsset(const std::string& path, const std::string& name, std::string& done, std::string& why)
+        {
+            (void)path, (void)name, (void)done;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRemoveAsset(const std::string& name, std::string& why)
+        {
+            (void)name;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        virtual bool chatRenameAsset(const std::string& name, const std::string& to, std::string& why)
+        {
+            (void)name, (void)to;
+            why = "this plugin keeps no samples";
+            return false;
+        }
+        // The projects tool (ProjectCall below): the projects and presets listed, or one saved, opened or applied as the
+        // editor's PROJECTS would (on the message thread: this thread waits), and the answer in words. Never a delete.
+        virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {}, false }; }
     };
 
     class ChatAgent final : public ChatPort
@@ -219,6 +338,9 @@ namespace playground
         ChatState chatState() const override;
         bool saveKey(const std::string& key, std::string& why) override;
         void forgetKey() override;
+        bool setProvider(const ChatProvider& provider, const std::string& key, std::string& why) override;
+        ChatProviderInfo providerInfo(const ChatProvider& provider) const override;
+        void forgetProviderKey(const ChatProvider& provider) override;
         void setModel(const std::string& id) override;
         void setPlanner(const std::string& id) override;
         void setEffort(const std::string& effort) override;
@@ -231,11 +353,67 @@ namespace playground
         void clearChecks() override;
         void stop() override;
         void newChat() override;
+        ChatList chatList() const override;
+        bool openChat(const std::string& id) override;
+        void renameChat(const std::string& title) override;
+        void deleteChat() override;
 
-        // The conversation in the session (the API's messages and the view's entries, as JSON), and back. A turn that
-        // is running is not saved half-done: its user message and what came back so far are.
-        std::string saveState() const;
+        // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
+        // saved half-done: its user message and what came back so far are. The panel's pictures (view_panel's,
+        // view_sound's) are left out, a line in each one's place, unless `pictures` (the chat's own file on this Mac):
+        // a history without them loads without its thinking. A chat whose tools' pictures pass kKeptPictureBytes (base64)
+        // in all is kept without them too: its file would be rewritten whole after every turn.
+        static constexpr std::size_t kKeptPictureBytes = 12u << 20;
+        std::string saveState(bool pictures = false) const;
         void loadState(const std::string& json);
+
+        // The chats (above). setOwner: the owner the conversation belongs to now (a project's id, or
+        // chatstore::instanceOwner of the instance's id) and its name for the list ("" for none); open shows the new
+        // owner's newest chat (the one shown kept with its owner), carry takes the chat shown along (a project saved:
+        // from the instance it moves, from another project a copy goes, the old project keeping its own), move takes it
+        // along from a project whose file is gone (nothing is left with that project). The same owner again changes
+        // nothing but the name. An open asked from a turn's own thread waits for the turn's end (a carry or a move runs
+        // at once: it never joins the worker). True when another chat shows. restoreChat: a session's chat (its id) when
+        // it is this owner's (read from `from`'s chats when that is not "": a copy of another instance's state, shown as
+        // a new chat of `owner`, written at once); else, for a project, its newest, and for an instance (or none
+        // found) a new one. adoptChat: a session from before the chats were kept here: its conversation, when it holds
+        // more than the chat's notes (adoptable), kept under `owner`, its id made from its text, so a session loaded
+        // again finds the chat it became (and what was said since); else a new chat (restoreChat with no id). chatRef:
+        // what the session keeps (keep() first). keep: the chat written when it changed since it was last written and
+        // holds more than the chat's notes (any thread, no lock of the agent's held); a chat whose file another writer
+        // changed meanwhile (another instance with it open) is kept under a new id, nothing lost; a project's chat
+        // whose folder is gone since it was kept (the project deleted, with its chats, in another instance) is not
+        // written back. A write that fails (or is held back so) says so in the chat once, is tried again at each keep,
+        // and says so again when it is kept. keepIdle: keep, unless a turn or a call of Claude Desktop's runs (its
+        // end, or the next keep, writes it): getStateInformation's, which a host may call at every change.
+        enum class OwnerChange : uint8_t { open, carry, move };
+        bool setOwner(const std::string& owner, const std::string& label, OwnerChange how);
+        // A thread acting for the turn that runs (the message thread, while it runs a job a tool of the turn waits for:
+        // the projects tool's, Processor::runClaudeJob): an open asked from it waits for the turn's end, as one asked
+        // from the turn's own thread does (it could not stop and join the turn that waits for it). Such an open is
+        // Claude Desktop's (the plugin's own chat's open is a carry: the processor's openProjectAs).
+        void actForTurn(bool on);
+        void restoreChat(const std::string& owner, const std::string& label, const std::string& id,
+                         const std::string& from = {});
+        void adoptChat(const std::string& json, const std::string& owner, const std::string& label);
+        struct ChatRef
+        {
+            std::string owner, id;                                  // id "" while the chat holds nothing to keep
+        };
+        ChatRef chatRef() const;
+        void keep();
+        void keepIdle();
+        // The id adoptChat gives a session's conversation (32 hex digits from its text); a session from before has no
+        // instance id either, so the processor takes this one for it when the conversation is adoptable and kept with
+        // the instance: the same session loaded again is the same owner. adoptable: whether a session's conversation
+        // holds more than the chat's notes (a message, a check, an entry other than a note or an error): an empty one
+        // (every instance's alike) or a lone note (the key saved) is nothing to keep, and no instance's.
+        static std::string sessionChatId(const std::string& json);
+        static bool adoptable(const std::string& json);
+        // Whether the turn (or Claude Desktop's call) running was asked to stop: a host's wait for another thread
+        // (chatPicture's for the message thread) ends at it, so a switch that stops and joins the turn never waits long.
+        bool stopping() const noexcept { return cancel_.load(); }
+        std::string chatOwner() const;
 
         // For probes: the transport (the next turn uses it), waiting for the current turn (and for the pictures
         // being read), the Messages API request bodies sent.
@@ -250,6 +428,12 @@ namespace playground
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
+        // The prompt's short form, for another provider's model whose context window is small (under
+        // kShortPromptBelow tokens, or not said by a server on this Mac or the local network): systemPrompt() up to
+        // its THREADS, then a line of what was left out (the large program, the interface, the library, the examples,
+        // the projects, the circuits) and how to work without it.
+        static constexpr int kShortPromptBelow = 96000;
+        static const std::string& shortPrompt();
         // The system prompt as the MCP guide has it (mcpGuide): without the lines of "How you work" that only the
         // plugin's own chat needs (its <plugin_state>, the planner, web search, ask_user, its panel's markdown), which
         // are chatOnlyLines(), a line each, in their order; the two together are systemPrompt()'s text.
@@ -260,6 +444,7 @@ namespace playground
         static juce::var toolDefinitions();
         static juce::var compareDefinition();                       // compare's (ChatCompare.cpp)
         static juce::var traceDefinition();                         // trace's (ChatTrace.cpp)
+        static juce::var projectsDefinition();                      // projects' (ChatProjects.cpp)
         static juce::var functionDefinition();                      // run_function's (ChatFunction.cpp)
 
         // MCP (plugin/McpLink.h): an assistant outside the plugin (Claude Desktop, through mcp/Main.cpp) working with the
@@ -297,6 +482,8 @@ namespace playground
         // Of the live calls, those that take seconds (listen): the link runs each on a thread of its own, so its poll
         // thread stays free (McpLink.h). One line a tool.
         static bool mcpLiveWaits(const std::string& name);
+        // A tool's title in words, as Claude Desktop shows it ("Measure the sound"; the name itself for one with none).
+        static std::string mcpTitle(const std::string& name);
         McpResult mcpCall(const std::string& name, const juce::var& arguments, uint64_t call = 0);
         void mcpCancel(uint64_t call);
         // A call of Claude Desktop's that is not live runs (any thread): what it changes is its own, which get_status
@@ -316,11 +503,37 @@ namespace playground
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                         int& status, std::string& error, int& retryAfter);
         juce::var buildRequest(std::string& beta) const;
+        // The request the turn sends (ChatProviderTurn.cpp): buildRequest's for Anthropic, as it was; for another
+        // provider, buildRequest's translated (Providers.h) with the turn's options. streamOther: streamOnce's for
+        // another provider (its server, its key, its answer translated back into the builder). The worker's.
+        std::string requestBody(std::string& beta);
+        bool streamOther(const std::string& body, claude::MessageBuilder& builder, int& status, std::string& error,
+                         int& retryAfter);
+        // Another provider: its key (mutex held; "" for none), its models fetched (the worker's, `cancel_` ending it, or
+        // the job thread's, `listCancel_`: once a provider; a failure kept in otherListError_), whether this turn is
+        // another provider's, and a request refused for a reason the turn can work around (a model that takes no
+        // pictures, Gemini refusing the tools' JSON Schema): the request made again without it, said in the chat; true
+        // when the turn should ask again.
+        void loadOtherKey();
+        void fetchOtherModels(const std::atomic<bool>& cancel);
+        bool otherTurn() const;
+        bool workAround(int status, const std::string& error);
+        // The start of a turn (the worker's, first): the provider, and for another one its key, its models and the
+        // turn's model and options, all from one moment (a provider chosen while the list was on its way, nothing
+        // sent yet, is the turn's: it looks again). anthropic: the turn is Anthropic's (turnProvider_ set);
+        // other: another provider's, ready (`maxTokens` its model's); ended: it cannot start, said in the chat.
+        enum class Start : uint8_t { anthropic, other, ended };
+        Start startTurn(int& maxTokens);
+        // The provider's state in chatState (mutex held), the settings kept (chat.json), a model's entry of the list.
+        void otherState(ChatState& s) const;
+        void saveProviderChoice() const;
+        const ChatModel* otherModel(const std::string& id) const;
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
+        std::string projectsText(const juce::var& input, bool& isError);   // projects' (ChatProjects.cpp)
         // view_panel's values and at: the state its picture draws (at's render of the program that plays, offline, to
         // its moment, the dials not named the plugin's or, with dials_from, the defaults: `defaults`, which the result's
         // first line says); "" or why it cannot be.
@@ -390,6 +603,24 @@ namespace playground
         measure::Cancel renderCancel(std::string doing);
         void startWorker();
         void joinWorker();
+        // loadState without stopping a turn (its own thread may call it: a change of owner it waited for).
+        void readState(const std::string& json);
+
+        // The chats (ChatChats.cpp). keepLocked: keep() with storeMutex_ held. The chat shown replaced (storeMutex_ held,
+        // no turn running): by a chat of the store, by a copy of one (another owner's, as a new chat of `owner`, written
+        // at once), by the owner's newest (else a new one), by a new one. clearChat: the conversation forgotten (mutex
+        // held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner asked from the turn's thread,
+        // at its end.
+        void keepLocked();
+        void showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
+        void showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
+        void showNewest(const std::string& owner, const std::string& label);
+        void showFresh(const std::string& owner, const std::string& label);
+        void clearChat();
+        bool worthKeeping() const;
+        std::string titleNow() const;
+        void applyPendingOwner();
+        bool onTurnThread() const;
 
         ChatHost& host_;
         std::unique_ptr<claude::Transport> transport_;
@@ -414,6 +645,26 @@ namespace playground
         std::string usage_;
         std::string key_;                                           // loaded on first use
         std::string keyProblem_;
+        // The provider (Providers.h; setProvider), machine-wide. Anthropic's state is the members above (model_,
+        // models_, key_, effort_, ...), untouched while another is chosen; another's is here: its model, its models
+        // (the server's list, else the one chosen), its key (bound to its server) and why it cannot be used, the model
+        // chosen with each provider (chatstore::modelKey). The turn under way's: its provider, whether its pictures go
+        // (the model takes them), Gemini's schemas as JSON Schema, the prompt's short form (a small context).
+        ChatProvider provider_;
+        std::vector<ChatModel> otherModels_;
+        std::string otherModel_;
+        std::string otherKey_, otherKeyFor_, otherKeyProblem_;     // the key, the server it was read for
+        std::map<std::string, std::string> otherChosen_;
+        bool otherFetched_ = false;
+        std::string otherListError_;                                // why its list was not read, in words ("" when it was)
+        std::atomic<bool> listCancel_{ false };                     // the job's list fetch: set by stop() and the end
+        ChatProvider turnProvider_;
+        bool turnImages_ = true, turnJsonSchema_ = true, turnShort_ = false;
+        bool turnHadPictures_ = false;                              // the request holds pictures
+        bool schemaRefused_ = false;                                // Gemini refused JSON Schema: its subset from then on
+        std::size_t turnTextBytes_ = 0;                             // the request's text (its pictures aside), bytes
+        bool cutNoted_ = false;                                     // the chat said a server cut the conversation
+        bool picturesNoted_ = false;                                // the chat said the model gets no pictures
         std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
                                                                     // (hashText; Claude Desktop's: mcpMarks_)
         struct FileVersion
@@ -478,6 +729,29 @@ namespace playground
                                                                     // (a listen, one about to start): mcpCancel's
         std::string mcpLook_;                                       // the journal's token at MCP's last result
         std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
+
+        // The chat shown (above): its owner, the owner's name, its id, the user's title (named), when it was made, its file
+        // as last written or read here (another writer's change shows), revision_ when it was last written; storeMutex_
+        // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). An open asked from a
+        // turn's own thread (turnThread_: the worker's, or an MCP call's; Claude Desktop's projects open) waits in
+        // pendingOwner_.
+        std::string chatOwner_, ownerLabel_;
+        std::string chatId_ = chatstore::newId();
+        std::string chatTitle_;
+        bool chatNamed_ = false;
+        int64_t chatCreated_ = 0;
+        chatstore::Stamp chatStamp_;
+        uint64_t storedRevision_ = 0;
+        mutable std::mutex storeMutex_;
+        struct PendingOwner
+        {
+            bool set = false;
+            std::string owner, label;
+        };
+        PendingOwner pendingOwner_;                                 // mutex held
+        bool keepFailed_ = false;                                   // the last keep failed, and the chat said so (mutex held)
+        std::atomic<std::thread::id> turnThread_{};
+        std::atomic<std::thread::id> helperThread_{};               // actForTurn's
 
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work

@@ -427,6 +427,8 @@ namespace playground
                 abKept_.dials = false;
             }
         }
+        if (kept.version > 0)
+            syncChatOwner(ChatAgent::OwnerChange::open);         // a version of another project: its chats
         if (ending != 0)
         {
             abEndingFiles_ = kept.files;
@@ -736,6 +738,7 @@ namespace playground
         ab_.restless = false;
         const double rate = engine_.rate();
         job.rate = rate >= 8000.0 ? rate : 48000.0;
+        job.assets = chatAssets();
         ab_.st.measuring = true;
         abMatcher_.start(std::move(job));
     }

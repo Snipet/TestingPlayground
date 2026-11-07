@@ -6,6 +6,7 @@
 #include "plugin/ChatScenario.h"
 
 #include "plugin/ChatStore.h"
+#include "plugin/Providers.h"
 
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
@@ -29,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -47,7 +49,8 @@ namespace playground
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them
         // (set_checks without checks only lists them, tune_dials with a sweep only measures, and write_file with `to`
-        // only exports the files).
+        // only exports the files). projects is none of them: what it opens or applies is what the user asked for, never
+        // Claude's work for the checks to judge (an open of another project clears them: ChatProjects.cpp).
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
                                                    "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
         constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
@@ -308,6 +311,7 @@ namespace playground
         {
             std::string out;
             const std::array<std::vector<std::string>, kMaxControls> options = host.chatDialOptions();
+            const midilearn::View midi = host.chatMidi();
             for (int c = 0; c < kMaxControls; ++c)
             {
                 const Control& k = controls[static_cast<std::size_t>(c)];
@@ -328,10 +332,59 @@ namespace playground
                         range += (i == 0 ? "" : " ") + names[i];
                     range += ")";
                 }
+                // A dial's MIDI control by its name in `controls` (a compile apply() has not taken yet may have put
+                // it in another slot than the mappings were bound to: MidiLearn.h's View).
+                const midilearn::Mapping* m = midi.forDial(std::string_view(k.name, strnlen(k.name, sizeof k.name)));
                 out += std::to_string(c + 1) + " " + k.name + ": " + controlType(k) + range + " default " + said(k.def)
-                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "") + "\n";
+                     + ", now " + said(host.chatDialValue(c)) + (isPanelDial(c) ? ", panel only" : "")
+                     + (m == nullptr ? std::string() : ", moved by MIDI " + midilearn::describe(*m)) + "\n";
             }
             return out.empty() ? "none\n" : out;
+        }
+
+        // MIDI learn's state beyond the dial lines (plugin/MidiLearn.h), "" when there is none to say: a dial learning
+        // (and a control it refused), mappings whose dial `controls` (the dial lines') have none of.
+        std::string midiLines(const Controls& controls, const ChatHost& host)
+        {
+            const midilearn::View midi = host.chatMidi();
+            std::string out;
+            if (midi.learning >= 0)
+                out += "MIDI learn: " + midi.learningDial + " waits for the user to move a control on a MIDI controller"
+                     + (midi.note.empty() ? std::string() : " (" + midi.note + ")") + "\n";
+            std::string waiting;
+            for (const midilearn::Mapping& m : midi.mappings)
+                if (std::none_of(controls.begin(), controls.end(), [&](const Control& k) {
+                        return k.used && std::string_view(k.name, strnlen(k.name, sizeof k.name)) == m.dial;
+                    }))
+                    waiting += (waiting.empty() ? " " : ", ") + m.dial + " (" + midilearn::describe(m) + ")";
+            if (!waiting.empty())
+                out += "MIDI mappings waiting for a dial of their name:" + waiting + "\n";
+            return out;
+        }
+
+        // The samples (dsp/Assets.h; ChatHost::chatAssets), a line, "" when there are none and no #pragma sample line of
+        // the program that plays names one: each one's name, length, channels, rate and size, and whether the program
+        // that plays reads it; then the names its lines read that the samples lack.
+        std::string samplesLine(const ChatHost& host)
+        {
+            const Assets now = host.chatAssets();
+            const CompileStatus s = host.chatLastStatus();
+            std::string out;
+            if (now != nullptr)
+                for (const std::shared_ptr<const assets::Asset>& a : now->items)
+                {
+                    const bool read = std::any_of(s.samples.begin(), s.samples.end(),
+                                                  [&](const auto& u) { return u.first == a->name() && u.second == a->hash(); });
+                    out += (out.empty() ? "" : ", ") + a->name() + " (" + a->describe() + (read ? "; the program reads it" : "") + ")";
+                }
+            std::string missing;
+            for (const auto& [file, hash] : s.samples)
+                if (hash.empty())
+                    missing += (missing.empty() ? "" : ", ") + file;
+            if (out.empty() && missing.empty())
+                return {};
+            return "Samples: " + (out.empty() ? std::string("none") : out)
+                 + (missing.empty() ? std::string() : "; named by #pragma sample but not there: " + missing) + "\n";
         }
 
         // The dials' declarations (each used one's name, type, range, taper, default, unit, scale and options' names),
@@ -871,12 +924,18 @@ namespace playground
 
         // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
         // the prompt and the conversation that made it), a compaction block as its summary in words, no server tools'
-        // blocks (their results go back only to their own requests), text without citations (which point at them). A
-        // message left empty says so, and a history that starts at a summary gets a user message before it.
-        juce::Array<juce::var> forAnotherModel(const juce::Array<juce::var>& messages)
+        // blocks (their results go back only to their own requests), text without citations (which point at them), and
+        // none of what another provider's answers carry of their own (a Gemini call's thought_signature, which the
+        // Messages API refuses: providers::forAnthropic). A message left empty says so, and a history that starts at a
+        // summary gets a user message before it.
+        juce::Array<juce::var> forAnotherModel(const juce::Array<juce::var>& history)
         {
+            const juce::var clean = providers::forAnthropic(history);   // held: its array is read below
             juce::Array<juce::var> out;
-            for (const juce::var& m : messages)
+            const juce::Array<juce::var>* messages = clean.getArray();
+            if (messages == nullptr)
+                return out;
+            for (const juce::var& m : *messages)
             {
                 const std::string role = str(m, "role");
                 const juce::var content = m.getProperty("content", juce::var());
@@ -1106,12 +1165,29 @@ namespace playground
         fast_ = choice.fast;
         web_ = choice.web;
         planner_ = choice.planner;
+        // The provider chosen last (none: Anthropic, as before), and the model chosen with each other one.
+        const chatstore::ProviderChoice provider = chatstore::loadProvider();
+        otherChosen_ = provider.models;
+        if (const providers::Kind k = providers::kindOf(provider.kind); k != providers::Kind::anthropic)
+        {
+            ChatProvider p;
+            p.kind = providers::idOf(k);
+            p.base = k == providers::Kind::openai ? provider.base : std::string();
+            if (!providers::baseOf(p).empty())
+            {
+                provider_ = p;
+                otherModel_ = otherChosen_[chatstore::modelKey(p.kind, p.base)];
+                if (!otherModel_.empty())
+                    otherModels_.push_back(providers::plainModel(otherModel_));
+            }
+        }
         chatstore::forgetOldSignIn();              // what an earlier version kept of a sign-in (ChatStore.h)
     }
 
     ChatAgent::~ChatAgent()
     {
         cancel_.store(true);
+        listCancel_.store(true);
         {
             const std::lock_guard<std::mutex> lock(jobMutex_);
             jobStop_ = true;                       // a job still queued is dropped
@@ -1120,6 +1196,7 @@ namespace playground
         joinWorker();
         if (jobThread_.joinable())
             jobThread_.join();
+        keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)
@@ -1128,6 +1205,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         transport_ = std::move(transport);
         modelsFetched_ = false;
+        otherFetched_ = false;
     }
 
     void ChatAgent::waitIdle()
@@ -1215,6 +1293,12 @@ namespace playground
         s.fast = fast_;
         s.web = web_;
         s.usage = usage_;
+        s.title = titleNow();
+        s.owner = ownerLabel_;
+        s.provider = provider_;
+        s.providerName = providers::nameOf(provider_);
+        if (provider_.kind != "anthropic")
+            otherState(s);                         // its key, its models, and none of Anthropic's own
         return s;
     }
 
@@ -1246,6 +1330,17 @@ namespace playground
     void ChatAgent::setModel(const std::string& id)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+        {
+            // Another provider's: one of its list, kept with it.
+            if (otherModel(id) == nullptr)
+                return;
+            otherModel_ = id;
+            otherChosen_[chatstore::modelKey(provider_.kind, provider_.base)] = id;
+            saveProviderChoice();
+            touch();
+            return;
+        }
         const auto it = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; });
         if (it == models_.end())
             return;
@@ -1262,6 +1357,8 @@ namespace playground
     void ChatAgent::setPlanner(const std::string& id)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;                                // Anthropic's alone (its models plan)
         if (!id.empty() && std::none_of(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == id; }))
             return;
         planner_ = id;
@@ -1272,6 +1369,8 @@ namespace playground
     void ChatAgent::setEffort(const std::string& effort)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;                                // Anthropic's alone: another provider's models show no levels
         const auto it = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == model_; });
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take
@@ -1283,6 +1382,8 @@ namespace playground
     void ChatAgent::setFast(bool on)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;
         fast_ = on;
         chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
@@ -1291,6 +1392,8 @@ namespace playground
     void ChatAgent::setWeb(bool on)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (provider_.kind != "anthropic")
+            return;
         web_ = on;
         chatstore::saveChoice({ model_, effort_, fast_, web_, planner_ });
         touch();
@@ -1402,7 +1505,7 @@ namespace playground
                 content.add(text(trimmed));
             if (!context.empty())
                 content.add(text(context));
-            if (effort_ == "xhigh" || effort_ == "max")
+            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
                 content.add(text(limitNote(maxTokensFor(model_))));
             planNext_ = !planner_.empty();
             deliver(std::move(content));
@@ -1439,7 +1542,7 @@ namespace playground
             juce::Array<juce::var> content = missingResults(answerText(qs, given));
             if (!context.empty())
                 content.add(text(context));
-            if (effort_ == "xhigh" || effort_ == "max")
+            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
                 content.add(text(limitNote(maxTokensFor(model_))));
             deliver(std::move(content));
         }
@@ -1522,6 +1625,7 @@ namespace playground
     void ChatAgent::stop()
     {
         cancel_.store(true);
+        listCancel_.store(true);                   // a models list the turn waits for (setProvider's job)
         const std::lock_guard<std::mutex> lock(mutex_);
         if (busy_)
         {
@@ -1530,11 +1634,25 @@ namespace playground
         }
     }
 
+    // A new chat: the one shown kept on this Mac (it stays in the list), then a new one of the same owner.
     void ChatAgent::newChat()
     {
         stop();
         joinWorker();
-        const std::lock_guard<std::mutex> lock(mutex_);
+        const std::lock_guard<std::mutex> store(storeMutex_);
+        keepLocked();
+        std::string owner, label;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            owner = chatOwner_;
+            label = ownerLabel_;
+        }
+        showFresh(owner, label);
+    }
+
+    // The conversation forgotten (mutex held): what a new chat starts without.
+    void ChatAgent::clearChat()
+    {
         messages_.clear();
         entries_.clear();
         seen_.clear();
@@ -1547,11 +1665,13 @@ namespace playground
         ++attachEpoch_;
         checks_.clear();
         checksFailing_ = false;
+        cutNoted_ = false;
+        picturesNoted_ = false;
         touch();
     }
 
     // ---- the session --------------------------------------------------------------------------------------------------
-    std::string ChatAgent::saveState() const
+    std::string ChatAgent::saveState(bool keepPictures) const
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         juce::Array<juce::var> entries;
@@ -1597,16 +1717,29 @@ namespace playground
             }
             entries.add(entry);
         }
-        // The panel's pictures (view_panel's images, hundreds of KB each) stay out of the session: a line in each one's
-        // place, and a mark that the history was changed, so a session that loads it drops its thinking (bound to the
-        // pictures).
+        // The panel's pictures (view_panel's images, hundreds of KB each) stay out (but in the chat's own file, which
+        // keeps them up to kKeptPictureBytes in all): a line in each one's place, and a mark that the history was
+        // changed, so a chat that loads it drops its thinking (bound to the pictures).
+        if (keepPictures)
+        {
+            std::size_t bytes = 0;
+            for (const juce::var& m : messages_)
+                if (const juce::Array<juce::var>* content = m.getProperty("content", juce::var()).getArray())
+                    for (const juce::var& b : *content)
+                        if (str(b, "type") == "tool_result")
+                            if (const auto* inner = b.getProperty("content", juce::var()).getArray())
+                                for (const juce::var& x : *inner)
+                                    if (str(x, "type") == "image")
+                                        bytes += static_cast<std::size_t>(x.getProperty("source", juce::var()).getProperty("data", juce::var()).toString().length());
+            keepPictures = bytes <= kKeptPictureBytes;
+        }
         bool cut = false;
         juce::Array<juce::var> messages;
         for (const juce::var& m : messages_)
         {
             const juce::Array<juce::var>* content = m.getProperty("content", juce::var()).getArray();
             bool pictures = false;
-            if (content != nullptr)
+            if (content != nullptr && !keepPictures)
                 for (const juce::var& b : *content)
                     if (str(b, "type") == "tool_result")
                         if (const auto* inner = b.getProperty("content", juce::var()).getArray())
@@ -1674,10 +1807,33 @@ namespace playground
         return buf;
     }
 
+    // A session's conversation from before (ChatAgent.h): worth adopting when it holds more than the chat's notes, as
+    // worthKeeping tells of the chat shown.
+    bool ChatAgent::adoptable(const std::string& json)
+    {
+        const juce::var v = claude::parseJson(json);
+        const auto some = [&](const char* key) {
+            const juce::Array<juce::var>* a = v.getProperty(key, juce::var()).getArray();
+            return a != nullptr && !a->isEmpty();
+        };
+        if (some("messages") || some("checks"))
+            return true;
+        if (const juce::Array<juce::var>* entries = v.getProperty("entries", juce::var()).getArray())
+            for (const juce::var& e : *entries)
+                if (const ChatEntry::Kind k = kindOf(str(e, "k")); k != ChatEntry::Kind::note && k != ChatEntry::Kind::error)
+                    return true;
+        return false;
+    }
+
     void ChatAgent::loadState(const std::string& json)
     {
         stop();
         joinWorker();
+        readState(json);
+    }
+
+    void ChatAgent::readState(const std::string& json)
+    {
         const juce::var v = claude::parseJson(json);
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
@@ -1688,6 +1844,8 @@ namespace playground
         asking_.clear();
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
+        cutNoted_ = false;
+        picturesNoted_ = false;
         checks_.clear();
         checksFailing_ = false;
         if (const auto* cs = v.getProperty("checks", juce::var()).getArray())
@@ -2024,6 +2182,8 @@ namespace playground
             d.files.empty() ? std::string(kProgramName)
                             : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
         const std::string ab = host_.chatAb();
+        const Controls controls = host_.chatDials();
+        const std::string dials = dialLines(controls, host_);
         std::string tail = "What plays: "
                          + std::string(cir::sameProgram(running, d.files) ? "these files"
                                        : !ab.empty()                       ? "a side of the user's A/B listening (below)"
@@ -2031,7 +2191,8 @@ namespace playground
                                                                              "were edited since the last run)")
                          + (ab.empty() ? std::string() : "\n" + ab)
                          + "\nLast compile: " + compileLine(status) + "Dials of the program that plays:\n"
-                         + dialLines(host_.chatDials(), host_) + (status.ok ? panelLine(status.panel, status.controls) : "");
+                         + dials + midiLines(controls, host_) + samplesLine(host_)
+                         + (status.ok ? panelLine(status.panel, status.controls) : "");
         const uint32_t a = host_.chatAlerts();
         tail += "Output alerts: ";
         tail += a == 0 ? "none" : ((a & 1u) != 0 ? ((a & 2u) != 0 ? "NaN or inf replaced, clipped" : "NaN or inf replaced")
@@ -2088,14 +2249,18 @@ namespace playground
                                                                  "every file)") },
                                         { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
                        {}));
-        // files, from and to (ChatImport.cpp): several files as one change, a file or folder of the user's brought in,
-        // the editor's files out to a folder; in place of name and content, so nothing is required.
+        // path, files, from and to (ChatImport.cpp): a sample added by its path, several files as one change, a file
+        // or folder of the user's brought in, the editor's files out to a folder; in place of name and content, so
+        // nothing is required.
         tools.add(tool("write_file",
                        "Create a file or replace a file's whole text. Use it for a new program or a large rewrite; use "
                        "edit_file for a change to part of a file. The editor shows the file and the user can undo the "
                        "change there. A write does not play anything: call run_program after the files are ready.",
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "content", prop("string", "The file's whole text") },
+                                        { "path", prop("string", "In place of content: a WAV, AIFF or FLAC on this "
+                                                                 "computer, added as the sample name (delete_file and "
+                                                                 "rename_file take a sample too)") },
                                         { "files", claude::object({ { "type", "array" },
                                                                     { "description", "[{name, content}] in place of those two: "
                                                                                      "one change, all or none" } }) },
@@ -2163,9 +2328,9 @@ namespace playground
                 names.add(juce::String(f.name));
             juce::var name = claude::object({ { "type", "string" }, { "enum", names } });   // the enum names them
             tools.add(tool("add_library_file",
-                           "Add a building block from THE LIBRARY (an FMinus file, or a .cir netlist that becomes a module) "
-                           "to the editor as a tab and get its whole text; #include it in the program to use it. A file of "
-                           "that name in the editor already is left as it is.",
+                           "Add a building block of THE LIBRARY (FMinus files, and .cir netlists that become modules) to "
+                           "the editor as a tab, and get its whole text back; #include it to use it. A file of that name "
+                           "in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
         tools.add(tool("run_program",
@@ -2210,9 +2375,9 @@ namespace playground
                            props, {}));
         }
         tools.add(tool("view_panel",
-                       "See the plugin's interface: a picture of the program's panel as the user sees it in the PANEL "
-                       "view (its panel.gui, or its dials), drawn from the program that plays, or of a .cir file's "
-                       "schematic. Use it after "
+                       "See the plugin's interface: a picture of the program's panel as the user sees it (its panel.gui, "
+                       "or its dials), drawn from the program that plays, or of a .cir file's schematic. The panel is "
+                       "the PANEL view's. Use it after "
                        "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
@@ -2416,6 +2581,7 @@ namespace playground
         tools.add(statusDefinition());               // get_status (Live.cpp)
         tools.add(listenDefinition());               // listen (Live.cpp)
         tools.add(captureToolDefinition());          // capture (ChatCapture.cpp)
+        tools.add(projectsDefinition());             // projects (ChatProjects.cpp)
         return juce::var(tools);
     }
 
@@ -2423,8 +2589,10 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         juce::Array<juce::var> system;
+        // Another provider's model with a small context: the prompt's short form (an Anthropic turn's never is).
+        const std::string& prompt = turnShort_ ? shortPrompt() : systemPrompt();
         system.add(claude::object({ { "type", "text" },
-                                    { "text", juce::String::fromUTF8(systemPrompt().c_str()) },
+                                    { "text", juce::String::fromUTF8(prompt.c_str()) },
                                     { "cache_control", claude::object({ { "type", "ephemeral" }, { "ttl", "1h" } }) } }));
         const auto model = std::find_if(models_.begin(), models_.end(),
                                         [&](const ChatModel& m) { return m.id == turnModel_; });
@@ -2435,7 +2603,9 @@ namespace playground
                                           { "system", system },
                                           { "tools", turnWeb_ ? withWebTools(toolDefinitions(), webDirect_.count(turnModel_) > 0)
                                                               : toolDefinitions() },
-                                          { "messages", messages_ },
+                                          // what another provider's answers carry of their own taken off (Providers.h)
+                                          { "messages", turnProvider_.kind == "anthropic" ? providers::forAnthropic(messages_)
+                                                                                          : juce::var(messages_) },
                                           { "thinking", claude::object({ { "type", "adaptive" },
                                                                          { "display", "summarized" } }) } });
         auto* o = body.getDynamicObject();
@@ -2474,6 +2644,8 @@ namespace playground
     bool ChatAgent::streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                                int& status, std::string& error, int& retryAfter)
     {
+        if (otherTurn())
+            return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
         std::string key;
         claude::Transport* transport = nullptr;
         {
@@ -2519,6 +2691,16 @@ namespace playground
 
     void ChatAgent::fetchModels()
     {
+        bool other = false;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            other = provider_.kind != "anthropic";
+        }
+        if (other)
+        {
+            fetchOtherModels(cancel_);             // another provider's list, once a provider (ChatProviderTurn.cpp)
+            return;
+        }
         std::string key;
         claude::Transport* transport = nullptr;
         {
@@ -2586,24 +2768,42 @@ namespace playground
 
     void ChatAgent::runTurn()
     {
-        ensureKey();
+        turnThread_.store(std::this_thread::get_id());
+        // The provider for the whole turn (startTurn, ChatProviderTurn.cpp): a change while it runs applies to the next
+        // one. Another provider's turn has its key, its model and its options from there.
+        int maxTokens = 0;                         // what one reply of this turn's model holds
+        const Start start = startTurn(maxTokens);
+        if (start == Start::ended)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (key_.empty())
+            busy_ = false;
+            activity_.clear();
+            turnThread_.store(std::thread::id{});
+            touch();
+            return;
+        }
+        const bool other = start == Start::other;
+        if (!other)
+            ensureKey();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!other && key_.empty())
             {
                 addEntry(ChatEntry::Kind::error, keyProblem_.empty()
                                                      ? "Add your Anthropic API key (KEY, above) to chat with Claude."
                                                      : "The saved API key cannot be used: " + keyProblem_);
                 busy_ = false;
                 activity_.clear();
+                turnThread_.store(std::thread::id{});
                 return;
             }
         }
-        fetchModels();
-        int maxTokens = 0;                         // what one reply of this turn's model holds
+        if (!other)
         {
+            fetchModels();
             // The model and the thinking level for the whole turn: a change while it runs applies to the next one.
             const std::lock_guard<std::mutex> lock(mutex_);
+            turnShort_ = false;
             turnModel_ = model_;
             turnEffort_ = effort_;
             const auto model = std::find_if(models_.begin(), models_.end(),
@@ -2622,7 +2822,7 @@ namespace playground
         bool plan = false;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            plan = std::exchange(planNext_, false) && !planner_.empty();
+            plan = std::exchange(planNext_, false) && !planner_.empty() && !other;   // the planner is Anthropic's
         }
         if (plan && !cancel_.load())
             planTurn();
@@ -2640,7 +2840,7 @@ namespace playground
         for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
         {
             std::string beta;
-            std::string body = claude::toJson(buildRequest(beta));
+            std::string body = requestBody(beta);  // Anthropic's as it was; another provider's translated
             int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
 
             std::unique_ptr<claude::MessageBuilder> builder;
@@ -2745,6 +2945,14 @@ namespace playground
                                    && (builder->error().empty() || et == "overloaded_error" || et == "api_error");
                 if (ok && !brokeOff)
                     break;
+                // Another provider's refusal the turn can work around (a model that takes no pictures, Gemini refusing
+                // the tools' JSON Schema): the request made again without it, said in the chat.
+                if (!ok && other && workAround(status, error))
+                {
+                    body = requestBody(beta);
+                    --attempt;
+                    continue;
+                }
                 // Fast mode turned away: busy again after one wait (its rate limit, or its capacity), or refused
                 // (not open to this key, not on this model). The turn goes on at standard speed (the fast-mode docs'
                 // fallback; the cache starts again, as speeds share no cached prefix), and a refusal turns it off.
@@ -2850,6 +3058,10 @@ namespace playground
                         kept.add(blocks[i]);
                 blocks = kept;
             }
+            // Another provider's reasoning was shown as it came; it goes back as nothing (a thinking block without
+            // Anthropic's signature is refused there, and its own servers keep none).
+            if (other)
+                blocks.removeIf([](const juce::var& b) { return str(b, "type") == "thinking"; });
             const std::string stopReason = builder != nullptr ? builder->stopReason() : std::string();
             const bool complete = builder != nullptr && builder->finished() && builder->error().empty();
 
@@ -2864,6 +3076,19 @@ namespace playground
                                             : std::string())
                        + (u.compactions > 0 ? "; the conversation was summarized" : "")
                        + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_);
+                // A server here that took far fewer tokens than the request holds cut it to fit its context (Ollama
+                // does, with no error; a remote API refuses a request too long instead): said once a chat.
+                const int64_t took = u.input + u.cacheRead + u.cacheWrite;
+                const int64_t sent = static_cast<int64_t>(turnTextBytes_ / 4);
+                if (other && providers::keyless(turnProvider_) && !cutNoted_ && took > 0 && took * 2 < sent)
+                {
+                    cutNoted_ = true;
+                    addEntry(ChatEntry::Kind::note,
+                             providers::nameOf(turnProvider_) + " read " + thousands(took) + " tokens of a request of about "
+                                 + thousands(sent) + ": it cut the conversation to fit the model's context, so the model "
+                                   "misses part of the plugin's instructions. Give the model a longer context in the "
+                                   "server's settings (32K tokens or more), or choose a model with one.");
+                }
                 touch();
             }
 
@@ -2892,7 +3117,8 @@ namespace playground
                 if (stopped)
                     addEntry(ChatEntry::Kind::note, "Stopped.");
                 else if (stopReason == "refusal")
-                    addEntry(ChatEntry::Kind::error, "Claude declined this request.");
+                    addEntry(ChatEntry::Kind::error, other ? "The model (" + turnModel_ + ") declined this request."
+                                                           : std::string("Claude declined this request."));
                 else
                     addEntry(ChatEntry::Kind::error, builder != nullptr && !builder->error().empty()
                                                          ? "The answer broke off: " + builder->error()
@@ -2920,7 +3146,7 @@ namespace playground
             const bool endsHere = cutOff && cutOffs >= kMaxCutOffs;
             if (cutOff)
             {
-                const std::string limit = "Claude's reply reached its length limit (" + thousands(maxTokens)
+                const std::string limit = std::string(other ? "The model's reply" : "Claude's reply") + " reached its length limit (" + thousands(maxTokens)
                                         + " tokens, its thinking included)";
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::note,
@@ -2978,8 +3204,25 @@ namespace playground
             juce::Array<juce::var> results;
             std::string askId;
             std::vector<ChatQuestion> askQuestions;
-            for (const auto& use : toolUses)
+            // A call Gemini made against its own subset of the schemas: the values it gave as text read back
+            // (providers::fromSubset), so each tool takes them as from any other model.
+            bool subset = false;
             {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                subset = turnProvider_.kind == "gemini" && !turnJsonSchema_;
+            }
+            const juce::var definitions = subset ? toolDefinitions() : juce::var();
+            for (const auto& given : toolUses)
+            {
+                juce::var use = given;
+                if (const juce::Array<juce::var>* defs = definitions.getArray(); subset && defs != nullptr)
+                    for (const juce::var& d : *defs)
+                        if (str(d, "name") == str(given, "name"))
+                        {
+                            use = claude::parseJson(claude::toJson(given));
+                            use.getDynamicObject()->setProperty("input", providers::fromSubset(given.getProperty("input", juce::var()),
+                                                                                              d.getProperty("input_schema", juce::var())));
+                        }
                 const std::string id = str(use, "id");
                 bool invalid = false;
                 std::string raw;
@@ -3109,10 +3352,15 @@ namespace playground
                 addEntry(ChatEntry::Kind::note, list);
             touch();
         }
-        const std::lock_guard<std::mutex> lock(mutex_);
-        busy_ = false;
-        activity_.clear();
-        touch();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            busy_ = false;
+            activity_.clear();
+            touch();
+        }
+        turnThread_.store(std::thread::id{});
+        keep();                                    // the turn's work, on this Mac at once
+        applyPendingOwner();
     }
 
     // ---- the planner (setPlanner) -------------------------------------------------------------------------------------
@@ -3429,6 +3677,7 @@ namespace playground
             { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
             { "capture", "Record what you play", true, false, "debugging" },
             { "run_function", "Call a function", true, false, "debugging" },
+            { "projects", "Projects and presets", false, true, "projects" },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3521,6 +3770,12 @@ namespace playground
             "idle minutes, and comes back on the next call with the panel as it was.";
     }
 
+    std::string ChatAgent::mcpTitle(const std::string& name)
+    {
+        const Face* f = faceOf(juce::String::fromUTF8(name.c_str()));
+        return f != nullptr ? std::string(f->title) : name;
+    }
+
     juce::var ChatAgent::mcpTools()
     {
         // MCP's copy of the schemas (mcp/McpSchema.h): a property's words given once unless they hold a number (the
@@ -3576,9 +3831,9 @@ namespace playground
                "their DAW (or its Standalone app) and sees what you do in its editor; its chat's card notes each tool you "
                "use. The plugin does not send you its state with each message, as it does its own chat (its "
                "<plugin_state>): call get_status for the files, the dials and the last run, and read_file before editing a file. "
-               "With more than one instance of the plugin open, every tool takes `instance`: the one meant, by its "
-               "name (\"" + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the "
-               "user's words (list_instances names them). "
+               "A call without `instance` goes to the target, the instance the user chose in the plugin, else the only "
+               "one open (list_instances says which); for another, pass `instance`: the one meant, by its name (\""
+             + std::string(kInstrument ? "Synth" : "Effect") + " 2\"), its track or its project, in the user's words. "
                "This guide comes in parts (playground_guide's part): \"start\" is what every piece of work needs, and its end "
                "names the others and when to read them; a section it calls \"below\" that is not in the part you read is in "
                "another part. The tools' descriptions here are short: what they leave out is in " + mcp::guide::kNotes
@@ -3687,17 +3942,22 @@ namespace playground
             }
             activity_ = "Claude Desktop is at work";
             touch();
+            turnThread_.store(std::this_thread::get_id());
         }
         const juce::var use = claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } });
         const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
         if (!live)
         {
-            const std::lock_guard<std::mutex> lock(mutex_);
-            busy_ = false;
-            mcpWorking_.store(false);
-            mcpRunning_ = 0;
-            activity_.clear();
-            touch();
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                busy_ = false;
+                mcpWorking_.store(false);
+                mcpRunning_ = 0;
+                activity_.clear();
+                touch();
+            }
+            turnThread_.store(std::thread::id{});
+            applyPendingOwner();
         }
         const juce::var content = block.getProperty("content", juce::var());
         juce::Array<juce::var> out;
@@ -3787,7 +4047,8 @@ namespace playground
         const double seconds = isNumber(sec) ? static_cast<double>(sec) : -1.0;
         if (!(seconds > 0.0) || seconds > kMaxAt)
             return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
-        const Sources files = host_.chatRunning();
+        Assets samples;                           // what it compiled with, not the plugin's samples as they are now
+        const Sources files = host_.chatPlaying(samples);
         if (files.empty())
             return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
         measure::ViewRequest vr;
@@ -3800,9 +4061,10 @@ namespace playground
             scenario::resolve(vr.render, host_, why);
         if (!why.empty())
             return "at: " + why;
+        vr.render.assets = samples;
         defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
-        measure::Session session(files, vr.render.rate);
+        measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
         if (!session.compiled())
             return "the program that plays did not compile for the render:\n" + capped(session.errors());
         // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
@@ -4019,6 +4281,8 @@ namespace playground
 
         if (name == "read_file")
             return readFileText(input, isError);           // ChatFiles.cpp
+        if (name == "projects")
+            return projectsText(input, isError);           // ChatProjects.cpp
         if (name == "run_function")
             return runFunction(input, isError);            // ChatFunction.cpp
         if (name == "write_file")
@@ -4140,6 +4404,14 @@ namespace playground
                 return fail("rename_file needs name and new_name");
             Draft d = host_.chatDraft();
             const int i = findFile(d, file);
+            if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
+            {
+                std::string why;
+                if (!host_.chatRenameAsset(file, to, why))
+                    return fail(why);
+                note("renamed the sample " + file + " to " + to);
+                return "Renamed the sample " + file + " to " + to + ". #pragma sample lines naming " + file + " still name it.";
+            }
             if (i < 0)
                 return fail("There is no file " + file + ". The files: " + names(d));
             if (!validFileName(to))
@@ -4167,6 +4439,14 @@ namespace playground
                 return fail("delete_file needs a name");
             Draft d = host_.chatDraft();
             const int i = findFile(d, file);
+            if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
+            {
+                std::string why;
+                if (!host_.chatRemoveAsset(file, why))
+                    return fail(why);
+                note("deleted the sample " + file);
+                return "Deleted the sample " + file + ".";
+            }
             if (i < 0)
                 return fail("There is no file " + file);
             if (i == 0)
@@ -4675,7 +4955,7 @@ namespace playground
             std::string builder;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                if (planner_.empty())
+                if (planner_.empty() || turnProvider_.kind != "anthropic")   // the planner is Anthropic's
                     return fail("No planning model is chosen (the model menu's Plan with): decide yourself.");
                 if (plannerAsks_ >= kMaxPlannerAsks)
                     return fail("The planner was asked " + std::to_string(kMaxPlannerAsks)
@@ -4714,7 +4994,8 @@ namespace playground
             if (!ab.empty())
                 out += ab + "\n";
             out += "Last compile: " + compileLine(host_.chatLastStatus());
-            out += "Dials:\n" + dialLines(host_.chatDials(), host_);
+            const Controls controls = host_.chatDials();
+            out += "Dials:\n" + dialLines(controls, host_) + midiLines(controls, host_) + samplesLine(host_);
             out += "CPU: " + number(std::round(host_.chatLoad() * 1000.0f) / 10.0) + "% of the audio thread's time "
                    "(the busiest recent block)\n";
             const uint32_t a = host_.chatAlerts();

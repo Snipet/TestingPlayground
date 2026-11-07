@@ -18,7 +18,10 @@
 //             when the editor has changes no preset holds; the header's + opens PRESETS); its
 //             sections fold, and the whole card folds away (its chevron; the button at the left of the program's card's
 //             header opens it; EditorPort::explorerOpen); in the PANEL view, or a window too narrow for it, it is away
-//   header    the product name, its kind and version, and the THEME cells (GRAPHITE, PAPER)
+//   header    the product name, its kind and version, the project's pill and, while a project is open, its presets
+//             (the arrows either side of the preset's name and place, "Bright 2/7", a dot when its dials moved; the
+//             name opens their list, PresetPicker.h; [ and ] step them while no text field has the caret), and the
+//             THEME cells (GRAPHITE, PAPER)
 //   toolbar   RUN (Cmd-Return in the editor too), EXAMPLES (a menu: the example starts afresh, as a new instance,
 //             its files the only tabs and the dials at their defaults, asking first when changes would be lost; it
 //             runs), LIBRARY (a menu of ready-made building blocks, Library.h: one becomes a tab and the program
@@ -60,9 +63,13 @@
 //             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
 //             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
 //             else the last reply's tokens)
-//   key       a dialog over the panel for the Anthropic API key: a masked field (Cmd-V pastes), Save, Cancel and, when a
-//             key is stored, Remove key. It opens from the header's key, the empty chat's button, and when a message
-//             is sent before any key is stored (the message goes once a key is saved)
+//   key       a dialog over the panel for the model provider and its API key: the Provider pill at its title's right (a
+//             menu: Anthropic, the default, OpenAI, OpenRouter, Google Gemini, Ollama or LM Studio on this Mac, another
+//             OpenAI-compatible server), a masked key field (Cmd-V pastes), and for another provider its server's
+//             address (an OpenAI-compatible one's) and its model, Tab moving between them; Save, Cancel and, when a key
+//             is stored for that provider, Remove key. Anthropic's is as it always was. It opens from the header's
+//             key, the empty chat's button, and when a message is sent before the chat can send (the message goes
+//             once it is saved)
 //   settings  the Standalone's only (EditorPort::devices): SETTINGS, the audio and MIDI devices in a card over the panel
 //             (SettingsCard.h), opened by the app's Settings... (Cmd-,: EditorPort::settingsAsked, polled each frame)
 //             and by the muted notice's button; while an effect's input is muted (JUCE's guard against a feedback loop)
@@ -117,6 +124,8 @@
 #include "editor/Explorer.h"
 #include "editor/AbCard.h"
 #include "editor/ExportCard.h"
+#include "editor/NameCard.h"
+#include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
 
@@ -211,6 +220,8 @@ namespace playground::ui
     inline constexpr funkgui::Tag kMutedTag = funkgui::tags::firstProduct + 13;       // the muted input's notice
     inline constexpr funkgui::Tag kLogoTag = funkgui::tags::firstProduct + 14;        // the top bar's mark (LogoMark.h)
     inline constexpr funkgui::Tag kAbTag = funkgui::tags::firstProduct + 15;          // A/B's card
+    inline constexpr funkgui::Tag kNameTag = funkgui::tags::firstProduct + 16;        // the name card
+    inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -291,6 +302,9 @@ namespace playground::ui
         funkgui::Point centreOfNewTab() const;
         funkgui::Point centreOfCloseTab(int i) const;
         std::optional<funkgui::Point> centreOfDial(int slot) const;    // nullopt for an unused slot
+        std::string dialSpecLine(int slot) const;                      // its footer line (the dials', not a .gui's)
+        bool dialMidiMarked(int slot) const;                           // its MIDI mark: a control moves it ...
+        bool dialMidiLearning(int slot) const;                         // ... it learns one
         int dialRows() const noexcept { return dials_.rows; }             // the rows of dials, or of sections
         const DialsLayout& dialsLayout() const noexcept { return dials_; }
         const DisplayItem& displayItem(int d) const;                      // display d of the program's (shown or not)
@@ -341,10 +355,27 @@ namespace playground::ui
         // panel), each a project of its own, PROJECTS then open on it.
         void openExport(const std::string& project);
         ExportCard& exportCard() noexcept { return export_; }
+        NameCard& nameCard() noexcept { return name_; }
+        // Claude Desktop as this Panel shows it (probes): the chat header's subtitle and badge ("" for none), and where
+        // the badge is while it shows (the chat open), and its mark on the rail (the chat folded).
+        const std::string& desktopLine() const noexcept { return desktop_; }
+        const std::string& desktopBadge() const noexcept { return desktopBadge_; }
+        std::optional<funkgui::Point> centreOfDesktopBadge() const;
+        std::optional<funkgui::Point> centreOfDesktopMark() const;
         void chooseImport();
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
         AbCard& abCard() noexcept { return ab_; }
+        // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
+        // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
+        void stepPresets(int step);
+        void openPresets();
+        PresetPicker& presetPicker() noexcept { return picker_; }
+        const PresetCycle& presetCycle() const noexcept { return cycle_; }
+        funkgui::Point centreOfPresetStep(int step) const;   // the arrow: -1 the previous, +1 the next
+        funkgui::Point centreOfPresetName() const;
+        std::string presetLabel() const;                 // the name between the arrows: "Bright", "(no preset)"
+        std::string presetDetail() const;                // and its place: "3/7", "-/7"
         // "PROJECT  NAME  V3  EDITED  PRESET  BRIGHT  EDITED" (what the top bar's pill says, in words), "" for none.
         const std::string& projectText() const noexcept { return projectText_; }
         // Cmd-S: a new version of the project open (its name in the status), or, with none open, PROJECTS.
@@ -475,12 +506,23 @@ namespace playground::ui
         funkgui::Point centreOfExplorerEdge() const;
         funkgui::Point centreOfChatEdge() const;
         // The key dialog.
-        bool keyDialogOpen() const noexcept { return keyOpen_; }
+        bool keyDialogOpen() const noexcept { return keyOpen_ && !renaming_; }
+        bool renameDialogOpen() const noexcept { return keyOpen_ && renaming_; }
+        funkgui::Point centreOfChats() const;            // the chats' pill (the chat shown: its menu)
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
         funkgui::Point centreOfKeyField() const;
         funkgui::Point centreOfKeySave() const;
         funkgui::Point centreOfKeyCancel() const;
         std::optional<funkgui::Point> centreOfKeyRemove() const;      // nullopt while no key is stored
+        // The provider's settings in it: the Provider pill, the server's address and the model fields (nullopt while the
+        // provider shown has none), the preset shown (an index of kChatPresets) and the field the keys go to (0 the
+        // key, 1 the address, 2 the model), and a preset chosen as the pill's menu would.
+        funkgui::Point centreOfKeyProvider() const;
+        std::optional<funkgui::Point> centreOfKeyBase() const;
+        std::optional<funkgui::Point> centreOfKeyModel() const;
+        int keyDialogPreset() const noexcept { return dialogPreset_; }
+        int keyDialogField() const noexcept { return dialogField_; }
+        void chooseKeyPreset(int preset);
         // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
         bool openSettings();
@@ -556,6 +598,7 @@ namespace playground::ui
         bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
+        bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
                                                          // items, under the code editor's overlays)
@@ -594,6 +637,14 @@ namespace playground::ui
         void openModels();
         void openThinking();
         void newChat();
+        // The chats (ChatPort::chatList): the pill's label (the chat shown's name), its menu, Delete's question, and the
+        // rename, in the key dialog's box (renaming_).
+        std::string chatsLabel() const;
+        std::string chatTitle() const;                   // the card's title: Claude, or another provider's name
+        void openChats();
+        void askDeleteChat();
+        void openRenameDialog();
+        void renameFromDialog();
         void layoutChat();                               // the chat card's insides
         void placeChatBar();                             // the message box's bar: the pills, send
         std::string modelLabel() const;
@@ -601,6 +652,7 @@ namespace playground::ui
         std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
         bool chatTakesFast() const;                      // the chosen model takes fast mode
         bool chatTakesWeb() const;                       // ... and web search
+        bool chatTakesThinking() const;                  // ... and thinking levels (Anthropic's)
         std::string barLabels() const;                   // what the bar's layout depends on
         InputItem& inputItem();
         const InputItem& inputItem() const;
@@ -610,6 +662,7 @@ namespace playground::ui
         struct KeyDialog
         {
             funkgui::Rect box, field, save, cancel, remove;
+            funkgui::Rect provider, base, model;         // the pill; another provider's fields (empty: none)
         };
         KeyDialog keyDialog() const;                     // its places, for the panel's size
         void openKeyDialog();
@@ -620,6 +673,17 @@ namespace playground::ui
         void keyDialogPointerDown(funkgui::Point);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
         std::string maskedKey() const;
+        // The provider in the dialog (ChatPort::setProvider): its preset, whether it is Anthropic's and the chat's now
+        // (the dialog then works as it always did), the provider as its fields say it, whether a key is stored for it,
+        // the Provider pill's menu, the field the keys go to (Tab: the next shown).
+        const ChatPreset& dialogPresetRef() const;
+        bool dialogAnthropic() const;
+        bool dialogAsBefore() const;
+        ChatProvider dialogProvider() const;
+        bool dialogHasKey() const;
+        void openProviders();
+        funkgui::text::LineEdit& dialogEdit();
+        int dialogFields() const;                        // the fields shown, as a mask of 1 << field
 
         EditorPort& port_;
         class HostProxy;                                 // the host as host_ and the items reach it (Panel.cpp, above:
@@ -634,6 +698,9 @@ namespace playground::ui
         std::size_t shownAt_ = 0;                        // the frame shown
         int editorItem_ = -1, problemsItem_ = -1, runItem_ = -1, examplesItem_ = -1, libraryItem_ = -1, randomItem_ = -1,
             projectsItem_ = -1;
+        int presetPrevItem_ = -1, presetItem_ = -1, presetNextItem_ = -1;   // the top bar's presets, right of the pill
+        PresetCycle cycle_;                              // the project open's presets, as the last refresh read them
+        bool presetsShown() const noexcept { return !cycle_.project.empty(); }
         int themeItem_ = -1, zoomItem_ = -1;
         int panelViewItem_ = -1;                         // the Code / Panel switch's Panel half (viewItem_ the Code one)
         float actionsX_ = 0.0f;                          // the program's card's actions start here (at its right)
@@ -643,6 +710,8 @@ namespace playground::ui
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
         float statusX() const;                           // where it starts (it ends before the actions, actionsX_)
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int chatsItem_ = -1;                             // the chats' pill (the chat shown, its menu)
+        std::string chatsLabel_;                         // its label when layoutChat placed it
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
@@ -671,6 +740,9 @@ namespace playground::ui
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<ProjectEntry> projectList_;
+        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects): read once
+        ProjectsView projectsView_;                      // PROJECTS' stars and folded groups, as the poll last read them
+        bool factoryRead_ = false;
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;
@@ -690,6 +762,12 @@ namespace playground::ui
         uint64_t folderSeen_ = 0;
         bool folderKnown_ = false;                       // folderState_ read once (the notices start from it)
         void syncFolder();
+        // MIDI learn (EditorPort::midi; plugin/MidiLearn.h): each dial's mark and footer line, read again when its
+        // revision moves (refresh()); a dial's menu (right-click, ctrl-click, a screen reader's menu action: Learn MIDI
+        // CC, Forget, Forget all, the host's own menu), or in an effect, which learns no MIDI, the host's menu as before.
+        uint64_t midiSeen_ = 0;
+        void syncMidi();
+        void dialMenu(int slot, funkgui::Point at);
         void folderRow(const ExplorerItem::Row& row);
         void chooseConflict(const std::string& file);
         // The IR view: this Panel is an IR viewer while its IR tab is open (EditorPort::addIrViewer), and the view shown
@@ -705,7 +783,8 @@ namespace playground::ui
         void importFiles(const std::vector<std::string>& paths);
         bool dialogOpen() const noexcept
         {
-            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen();
+            return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
+                || picker_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -717,6 +796,8 @@ namespace playground::ui
         void syncPictures();                             // the registry follows chat_ (the attached and the sent)
         void releasePictures();
         void openPictures();                             // the attach button's file chooser
+        void openSamples();                              // the ASSETS header's: audio files as samples
+        void addSamples(const std::vector<std::string>& paths);
         std::size_t entriesAtFold_ = 0;
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, webItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
@@ -734,9 +815,13 @@ namespace playground::ui
         void placeMeter();                               // the snowflake's place, left of the load's text
         std::string projectText_;                        // the project open, its version, the preset applied, in words
         ProjectBrowser projects_{ port_ };
+        PresetPicker picker_{ port_ };
+        int focusBeforePicker_ = -2;                     // the focus to give back when the list closes (-2: none)
+        void afterPicker(bool wasOpen);                  // its notice to the status, the focus back once it closed
         ExportCard export_{ port_ };
         AbCard ab_{ port_ };
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
+        uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
         int focusBeforeProjects_ = -1;
         // SETTINGS: the card; the app's requests seen (EditorPort::settingsAsked); the muted notice and its button.
         SettingsCard settings_{ port_ };
@@ -782,15 +867,40 @@ namespace playground::ui
         double busySince_ = -1.0;                        // when the turn under way began
         ChatState chat_;
         std::string activity_;                           // the line under the message box
-        std::string desktop_;                            // Claude Desktop's name for this instance, while connected
+        // Claude Desktop (EditorPort::desktop): what this Panel last read of it (syncDesktop, each refresh: a copy); the
+        // chat header's subtitle (what a call does here now, else the name Claude Desktop calls it by while it is the
+        // target) and its badge, while Claude Desktop is connected and its calls go to another or to none (a click makes
+        // this one the target; folded, the badge is a mark on the rail, under its button, which does the same); the
+        // explorer's CLAUDE DESKTOP rows (desktopRow: what a row does); the name card.
+        DesktopState desktopState_;
+        std::string desktop_;                            // the subtitle ("" for none)
+        std::string desktopBadge_;                       // the badge's label ("" for none)
+        std::string desktopAgo_;                         // when the last call was, in words ("now", "just now", "4 min ago")
+        std::string desktopSeen_;                        // what the explorer's rows show of it, as text
+        uint64_t desktopRevision_ = 0;                   // bumps when that changes
+        int desktopItem_ = -1;                           // the badge
+        int desktopMarkItem_ = -1;                       // ... its mark on the folded chat's rail
+        void syncDesktop();
+        void placeDesktopBadge();                        // and the chats' pill, which ends at the badge while it shows
+        float chatsPillX() const;                        // the chats' pill's left: after the title and its light
+        static constexpr float kChatsPillLeast = 48.0f;  // the room the pill keeps before the badge takes any
+        void desktopRow(const ExplorerItem::Row& row);
+        NameCard name_{ port_ };
+        int focusBeforeName_ = -1;
+        void afterName(bool wasOpen);                    // its notice to the status, the focus back once it closed
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change
         std::string pendingSend_;                        // a message waiting for a key
 
         // The key dialog.
         bool keyOpen_ = false;
+        bool renaming_ = false;                          // the dialog renames the chat shown (keyOpen_ too)
         funkgui::text::LineEdit keyEdit_;
         std::string keyWhy_;                             // why the key typed was refused
         int focusBeforeKey_ = -1;
+        int dialogPreset_ = 0;                           // the provider shown (kChatPresets), the server's address and
+        funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
+        int dialogField_ = 0;
+        ChatProviderInfo dialogInfo_;
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

@@ -1,0 +1,55 @@
+// Placeholder Delay: a simple stereo delay whose repeats darken through a low-pass. A placeholder among the factory
+// projects, made up to show how they work: the factory import (scripts/import-factory.py) replaces it with the chosen
+// ones. Its lines are arrays in the module, a second and a little at up to 192 kHz, so every index is checked.
+#pragma panel section "DELAY" time feedback tone
+#pragma panel section "OUTPUT" mix
+
+module Effect
+{
+    param float time [[fminus::range(20, 1000)]] [[fminus::default(300)]];      // ms
+    param float feedback [[fminus::range(0, 0.9)]] [[fminus::default(0.35)]];
+    param float tone [[fminus::range(500, 12000)]] [[fminus::default(4000)]];   // Hz: the repeats' low-pass
+    param float mix [[fminus::range(0, 1)]] [[fminus::default(0.3)]];
+    float lineL[192004];
+    float lineR[192004];
+    int length;      // samples a line uses at the rate
+    int at;          // where the next sample goes
+    float rate;
+    float lowL;      // the repeats' low-pass
+    float lowR;
+
+    void init(float sampleRate)
+    {
+        rate = sampleRate;
+        length = (int)sampleRate + 4;
+        if (length > 192004)
+            length = 192004;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            const float d = fminf(fmaxf(time[i] * 0.001f * rate, 1), (float)(length - 2));
+            float pos = (float)at - d;
+            if (pos < 0)
+                pos += (float)length;
+            int i0 = (int)pos;
+            const float frac = pos - (float)i0;
+            if (i0 == length)
+                i0 = 0;
+            const int i1 = i0 + 1 == length ? 0 : i0 + 1;
+            const float a = 1 - expf(-6.28318531f * tone[i] / rate);
+            lowL += a * (lineL[i0] + frac * (lineL[i1] - lineL[i0]) - lowL);
+            lowR += a * (lineR[i0] + frac * (lineR[i1] - lineR[i0]) - lowR);
+            const float xl = left[i];
+            const float xr = right[i];
+            lineL[at] = xl + feedback[i] * lowL;
+            lineR[at] = xr + feedback[i] * lowR;
+            left[i] = xl + mix[i] * lowL;
+            right[i] = xr + mix[i] * lowR;
+            if (++at == length)
+                at = 0;
+        }
+    }
+};

@@ -117,7 +117,7 @@ namespace playground::ui
             {
                 if (h.part == Part::row)
                     if (const Row& row = groups_[static_cast<std::size_t>(h.group)].rows[static_cast<std::size_t>(h.row)];
-                        row.heading && row.spec.empty())
+                        row.heading && row.spec.empty() && row.fold == 0)
                         return nullptr;                  // a caption: nothing (one with a spec line says it, no more)
                 return &h;
             }
@@ -139,8 +139,14 @@ namespace playground::ui
             case Part::row:
             {
                 const Row row = g.rows[static_cast<std::size_t>(h.row)];   // a copy: the hook may change the content
-                if (row.heading)
+                if (row.heading && row.fold == 0)
                     return;
+                if (row.heading)                         // a group's caption: folds it or opens it, once
+                {
+                    if (!twice && hooks_.open)
+                        hooks_.open(g.section, row);
+                    return;
+                }
                 if (twice && hooks_.rename)
                     hooks_.rename(g.section, row);
                 else if (!twice && hooks_.open)
@@ -163,8 +169,11 @@ namespace playground::ui
     funkgui::Cursor ExplorerItem::cursorAt(Point p) const
     {
         const Hit* h = hitAt(p);
-        if (h == nullptr || (h->part == Part::row && groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)].heading))
+        if (h == nullptr)
             return funkgui::Cursor::normal;
+        if (h->part == Part::row)
+            if (const Row& row = groups_[static_cast<std::size_t>(h->group)].rows[static_cast<std::size_t>(h->row)]; row.heading && row.fold == 0)
+                return funkgui::Cursor::normal;
         return funkgui::Cursor::pointingHand;
     }
 
@@ -215,7 +224,9 @@ namespace playground::ui
                     chat::drawIcon(c, open ? chat::Icon::chevronDown : chat::Icon::chevronRight, r.x + 10.0f, r.centreY(), 8.0f,
                                    hovered ? p.text : p.dim);
                     std::string title = g.title;
-                    if (!g.rows.empty() && g.counted)
+                    if (g.total >= 0 && g.counted)
+                        title += "  " + std::to_string(g.total);
+                    else if (!g.rows.empty() && g.counted)
                     {
                         int n = 0;
                         for (const Row& row : g.rows)
@@ -238,8 +249,24 @@ namespace playground::ui
                     const Row& row = g.rows[static_cast<std::size_t>(h.row)];
                     if (row.heading)
                     {
-                        c.text(fitText(c, asciiText(row.label), funkgui::type::kMicro, r.w - 30.0f).c_str(), r.x + kTextX - 6.0f,
-                               c.capCentreTop(r.centreY() + 2.0f, funkgui::type::kMicro), funkgui::type::kMicro, p.faint);
+                        float right = r.w - 30.0f;
+                        if (row.fold != 0)
+                        {
+                            // A group's caption: its chevron, and how many it holds at the right.
+                            if (hovered)
+                                c.rrect(r.x, r.y + 1.0f, r.w, r.h - 2.0f, 5.0f, p.hover);
+                            chat::drawIcon(c, row.fold == 2 ? chat::Icon::chevronRight : chat::Icon::chevronDown, r.x + kTextX - 13.0f,
+                                           r.centreY() + 1.0f, 6.0f, hovered ? p.text : p.faint);
+                            if (!row.detail.empty())
+                            {
+                                c.text(asciiText(row.detail).c_str(), r.right() - 8.0f, c.capCentreTop(r.centreY() + 2.0f, funkgui::type::kMicro),
+                                       funkgui::type::kMicro, p.faint, funkgui::Align::right);
+                                right -= c.textWidth(row.detail.c_str(), funkgui::type::kMicro) + 8.0f;
+                            }
+                        }
+                        c.text(fitText(c, asciiText(row.label), funkgui::type::kMicro, right).c_str(), r.x + kTextX - 6.0f,
+                               c.capCentreTop(r.centreY() + 2.0f, funkgui::type::kMicro), funkgui::type::kMicro,
+                               row.fold != 0 && hovered ? p.text : p.faint);
                         break;
                     }
                     if (row.active)
@@ -425,17 +452,22 @@ namespace playground::ui
                 {
                     const Row& row = g.rows[static_cast<std::size_t>(h.row)];
                     it.id = gid + 2 + 2 * static_cast<uint32_t>(h.row);
-                    it.role = row.heading ? funkgui::A11yRole::staticText : funkgui::A11yRole::button;
+                    it.role = row.fold != 0 ? funkgui::A11yRole::toggleButton
+                            : row.heading   ? funkgui::A11yRole::staticText
+                                            : funkgui::A11yRole::button;
                     it.title = asciiText(row.label);
                     it.value = asciiText(row.detail);
-                    it.checkable = row.active || row.marked;
-                    it.checked = row.active || row.marked;
+                    it.checkable = row.active || row.marked || row.fold != 0;
+                    it.checked = row.active || row.marked || row.fold == 1;
                     it.help = !row.help.empty()                ? row.help
+                            : row.fold != 0                    ? "Shows or hides this group's projects"
                             : g.section == Section::files      ? "Shows this file; a double click renames it"
                             : g.section == Section::ir         ? "Shows the program's LLVM IR, as FMinus compiled it, in a read-only tab"
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
                             : g.section == Section::presets    ? "Applies this preset's dials"
+                            : g.section == Section::assets     ? "A sample: #pragma sample reads it"
+                            : g.section == Section::factory    ? "Opens this factory project (read-only: saving it makes a project of your own)"
                                                                : "Opens this project's newest version";
                     if (row.error)
                         it.description = "Has errors";
@@ -467,8 +499,9 @@ namespace playground::ui
                             || (j >= 3 && (j - 3) % 2 == 0 && h.part == Part::close && h.row == static_cast<int>((j - 3) / 2));
             if (match)
             {
-                if (h.part == Part::row && groups_[static_cast<std::size_t>(g)].rows[static_cast<std::size_t>(h.row)].heading)
-                    return false;
+                if (h.part == Part::row)
+                    if (const Row& row = groups_[static_cast<std::size_t>(g)].rows[static_cast<std::size_t>(h.row)]; row.heading && row.fold == 0)
+                        return false;
                 act(h, false);
                 return true;
             }
@@ -481,7 +514,7 @@ namespace playground::ui
         const Hit* h = hitAt(pointer_);
         if (h == nullptr)
         {
-            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, ITS FOLDER AND ITS IR, THE PRESETS, THE PROJECTS, THE LIBRARY, THE EXAMPLES");
+            std::snprintf(out, n, "%s", "EXPLORER   THE PROGRAM'S FILES, ITS FOLDER AND ITS IR, THE PRESETS, THE PROJECTS, THE FACTORY'S, THE LIBRARY, THE EXAMPLES");
             return;
         }
         const Section s = groups_[static_cast<std::size_t>(h->group)].section;
@@ -500,15 +533,18 @@ namespace playground::ui
             return;
         }
         const char* line = h->part == Part::header ? "SECTION   SHOW OR HIDE IT"
-                         : h->part == Part::close  ? "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)"
+                         : h->part == Part::close  ? (s == Section::assets ? "REMOVE   THE SAMPLE GOES (A PROGRAM THAT READS IT HEARS SILENCE FROM ITS NEXT RUN)"
+                                                                           : "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)")
                          : h->part == Part::action ? (s == Section::files     ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"
                                                       : s == Section::folder  ? "STOP   THE FOLDER STAYS AS IT IS; NOTHING SYNCS UNTIL IT IS ON AGAIN"
                                                       : s == Section::presets ? "NEW PRESET   THE DIALS AS THEY ARE, UNDER A NAME, IN THE PROJECT OPEN"
+                                                      : s == Section::assets  ? "ADD A SAMPLE   A WAV, AIFF OR FLAC FILE (OR DROP ONE ON THE PANEL)"
                                                                               : "PROJECTS   SAVE A VERSION, OPEN AN OLDER ONE, DELETE")
                          : s == Section::files     ? "FILE   SHOW IT   DOUBLE-CLICK RENAMES IT"
                          : s == Section::library   ? "LIBRARY   ADD IT AS A TAB (THE PROGRAM INCLUDES IT), OR SHOW IT"
                          : s == Section::examples  ? "EXAMPLE   START AFRESH FROM IT, THE DIALS AT THEIR DEFAULTS"
                          : s == Section::presets   ? "PRESET   ITS DIALS, AT ONCE (NO CODE CHANGES)"
+                         : s == Section::factory   ? "FACTORY PROJECT   OPEN IT: ITS FILES AND ITS DIALS   READ-ONLY: SAVING MAKES A PROJECT OF YOUR OWN"
                                                    : "PROJECT   OPEN ITS NEWEST VERSION: ITS FILES AND ITS DIALS";
         std::snprintf(out, n, "%s", line);
     }

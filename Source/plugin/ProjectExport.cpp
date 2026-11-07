@@ -21,7 +21,7 @@ namespace playground::projectexport
         constexpr const char* kProjectFormat = "funk-playground-project";
         constexpr int kSourceVersion = 1;
         constexpr std::size_t kMaxRaw = 256u * 1024u * 1024u;   // a package that says it holds more is no package
-        constexpr juce::int64 kMaxFile = 64 * 1024 * 1024;
+        constexpr juce::int64 kMaxFile = 128 * 1024 * 1024;   // its samples' files (ProjectStore.h) as they are
 
         constexpr std::array<uint32_t, 256> crcTable()
         {
@@ -114,6 +114,12 @@ namespace playground::projectexport
             s += "## Files\n\nFMinus source, the program first (the folder's own copies are the newest version's):\n\n";
             for (const SourceFile& f : v.files)
                 s += "- `" + f.name + "`\n";
+            if (!v.samples.empty())
+            {
+                s += "\n## Samples\n\nThe audio files the program reads (`#pragma sample`), in `samples/`:\n\n";
+                for (const projectstore::SampleRef& r : v.samples)
+                    s += "- `" + r.name + "`\n";
+            }
             if (!p.presets.empty())
             {
                 s += "\n## Presets\n\nDial settings for the program:\n\n";
@@ -133,6 +139,7 @@ namespace playground::projectexport
             }
             s += "\n## Open it again\n\nIn " + std::string(product::kName) + ": PROJECTS, Import..., and choose this .zip. `project.json` "
                  "keeps the dials, the presets and every version's place.\n";
+            s += "\nThe project's chats with Claude are not in this zip: they stay on the computer they were had on.\n";
             return s;
         }
     }
@@ -221,8 +228,17 @@ namespace playground::projectexport
     bool writePackage(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why)
     {
         projectstore::Project q = p;
+        q.id.clear();                                    // this Mac's: its chats stay here (ProjectExport.h)
         if (!allVersions)
+        {
             q.versions = { p.latest() };
+            std::vector<projectstore::SampleFile> going;   // only the sample files the version that goes names
+            for (const projectstore::SampleRef& r : p.latest().samples)
+                if (const projectstore::SampleFile* f = p.sample(r.hash);
+                    f != nullptr && std::none_of(going.begin(), going.end(), [&](const auto& g) { return g.hash == r.hash; }))
+                    going.push_back(*f);
+            q.samples = std::move(going);
+        }
         const std::string json = projectstore::toJson(q);
         Method method = Method::stored;
         const std::vector<uint8_t> body = compress(json, method);
@@ -248,15 +264,35 @@ namespace playground::projectexport
         const std::string root = p.name;
         juce::ZipFile::Builder zip;
         int64_t raw = 0;
-        const auto add = [&](const std::string& path, const std::string& text, int64_t ms) {
+        const auto add = [&](const std::string& path, const std::string& text, int64_t ms, int level = 9) {
             raw += static_cast<int64_t>(text.size());
-            zip.addEntry(new juce::MemoryInputStream(text.data(), text.size(), true), 9, str(root + "/" + path),
+            zip.addEntry(new juce::MemoryInputStream(text.data(), text.size(), true), level, str(root + "/" + path),
                          juce::Time(static_cast<juce::int64>(ms)));
         };
-        // The manifest: the project's JSON, each version's files by name only, and where they are.
+        // The manifest: the project's JSON, each version's files by name only, and where they are; never its id.
         projectstore::Project q = p;
+        q.id.clear();
         if (!allVersions)
             q.versions = { p.latest() };
+        // Its sample files (ProjectStore.h), each once in samples/ under the name its newest version naming it gives it
+        // (a name two files would have: the older's hash before it), and only those the versions that go name.
+        std::vector<std::pair<std::string, std::string>> sampleFiles;   // hash, path
+        for (auto v = q.versions.rbegin(); v != q.versions.rend(); ++v)
+            for (const projectstore::SampleRef& r : v->samples)
+                if (q.sample(r.hash) != nullptr
+                    && std::none_of(sampleFiles.begin(), sampleFiles.end(), [&](const auto& e) { return e.first == r.hash; }))
+                {
+                    std::string path = "samples/" + r.name;
+                    if (std::any_of(sampleFiles.begin(), sampleFiles.end(), [&](const auto& e) { return e.second == path; }))
+                        path = "samples/" + r.hash + "-" + r.name;
+                    sampleFiles.emplace_back(r.hash, path);
+                }
+        {
+            std::vector<projectstore::SampleFile> going;
+            for (const auto& [hash, path] : sampleFiles)
+                going.push_back(*q.sample(hash));
+            q.samples = std::move(going);
+        }
         juce::var manifest = juce::JSON::parse(str(projectstore::toJson(q)));
         juce::DynamicObject* m = manifest.getDynamicObject();
         if (m == nullptr)
@@ -278,6 +314,14 @@ namespace playground::projectexport
                     for (juce::var& f : *files)
                         f.getDynamicObject()->removeProperty("text");
             }
+        if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
+            for (juce::var& f : *files)
+            {
+                f.getDynamicObject()->removeProperty("data");
+                for (const auto& [hash, path] : sampleFiles)
+                    if (f["hash"].toString().toStdString() == hash)
+                        f.getDynamicObject()->setProperty("file", str(path));
+            }
         add("README.md", readme(q, static_cast<int>(q.versions.size())), juce::Time::currentTimeMillis());
         add("project.json", (juce::JSON::toString(manifest, false) + "\n").toStdString(), juce::Time::currentTimeMillis());
         for (const projectstore::Version& v : q.versions)
@@ -286,6 +330,8 @@ namespace playground::projectexport
             for (const SourceFile& f : v.files)
                 add(folder + f.name, f.text, v.savedMs);
         }
+        for (const auto& [hash, path] : sampleFiles)
+            add(path, q.sample(hash)->bytes, p.latest().savedMs, 0);   // audio: stored, as deflate gains it little
         juce::MemoryOutputStream mem;
         if (!zip.writeToStream(mem, nullptr))
         {
@@ -423,6 +469,19 @@ namespace playground::projectexport
                         }
                         f.getDynamicObject()->setProperty("text", str(*t));
                     }
+            }
+        // Its sample files, each from the file the manifest names (one it lacks, or damaged, is left out: the versions
+        // naming it then say so when opened).
+        if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
+            for (juce::var& f : *files)
+            {
+                const int i = zip.getIndexOfFileName(folder + f["file"].toString());
+                const std::unique_ptr<juce::InputStream> in(i >= 0 ? zip.createStreamForEntry(i) : nullptr);
+                juce::MemoryBlock data;
+                if (in != nullptr)
+                    in->readIntoMemoryBlock(data);
+                f.getDynamicObject()->setProperty("data", juce::Base64::toBase64(data.getData(), data.getSize()));
+                f.getDynamicObject()->removeProperty("file");
             }
         manifest.getDynamicObject()->setProperty("format", kProjectFormat);
         manifest.getDynamicObject()->setProperty("version", 1);
