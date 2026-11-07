@@ -55,14 +55,19 @@ namespace playground::mcp::target
     // Its number's name: "Synth 2", "Effect 1".
     inline std::string numberName(const std::string& id) { return std::string(product::kIsInstrument ? "Synth " : "Effect ") + id; }
 
-    // Written beside, then renamed over: another instance or the server may be reading it. The temporary file is the
-    // process's and the thread's own (two links of one process may write at once).
+    // Written beside, then renamed over in one step (replacePath; never JUCE's moveFileTo, which deletes the old file
+    // first): another instance or the server reading it finds the old text or the new, never no file. The temporary
+    // file is the process's and the thread's own (two links of one process may write at once).
     inline bool writeAtomically(const juce::File& f, const juce::String& text)
     {
         const auto thread = static_cast<juce::int64>(reinterpret_cast<juce::pointer_sized_int>(juce::Thread::getCurrentThreadId()));
         const juce::File temp = f.getSiblingFile("." + f.getFileName() + "." + juce::String(processId()) + "."
                                                  + juce::String::toHexString(thread) + ".writing");
-        return temp.replaceWithText(text, false, false, "\n") && temp.moveFileTo(f);
+        if (temp.replaceWithText(text, false, false, "\n")
+            && replacePath(temp.getFullPathName().toStdString(), f.getFullPathName().toStdString()))
+            return true;
+        temp.deleteFile();
+        return false;
     }
 
     inline std::string text(const juce::var& v, const char* key) { return v[key].toString().toStdString(); }
@@ -137,11 +142,10 @@ namespace playground::mcp::target
         return writeAtomically(in(dir, kTargetFile), juce::JSON::toString(v, true));
     }
 
-    // The choice cleared, when it names `token` ("": whichever it names).
-    inline void clearTarget(const std::string& dir, const std::string& token = {})
+    // The choice cleared, when it names `token` ("": whichever it names); false when it names it still.
+    inline bool clearTarget(const std::string& dir, const std::string& token = {})
     {
-        if (token.empty() || readTarget(dir).token == token)
-            in(dir, kTargetFile).deleteFile();
+        return !(token.empty() || readTarget(dir).token == token) || in(dir, kTargetFile).deleteFile();
     }
 
     // The instance the user chose, when it is open: its card names it with the same token. "" for none.

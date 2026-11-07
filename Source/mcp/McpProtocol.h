@@ -34,6 +34,7 @@
 #include "Product.h"
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -46,6 +47,7 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #undef near                                          // windows.h's 16-bit leftovers: plain names to every includer
@@ -109,6 +111,23 @@ namespace playground::mcp
 
     inline void closeFd(int fd) { closesocket(asSocket(fd)); }
     inline void removePath(const std::string& path) { DeleteFileW(wide(path).c_str()); }
+    // `from` renamed over `to` in one step: a reader finds the old file or the new one, never none. One holding `to` open
+    // without FILE_SHARE_DELETE (JUCE's readers share it; a scanner may not) refuses it for that moment: tried again for
+    // up to half a second.
+    inline bool replacePath(const std::string& from, const std::string& to)
+    {
+        const std::wstring f = wide(from), t = wide(to);
+        for (int tries = 0; tries < 100; ++tries)
+        {
+            if (MoveFileExW(f.c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
+                return true;
+            const DWORD e = GetLastError();
+            if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    }
     inline bool pathExists(const std::string& path) { return GetFileAttributesW(wide(path).c_str()) != INVALID_FILE_ATTRIBUTES; }
     inline long long recvSome(int fd, char* data, std::size_t n) { return recv(asSocket(fd), data, static_cast<int>(n), 0); }
     inline long long sendSome(int fd, const char* data, std::size_t n) { return send(asSocket(fd), data, static_cast<int>(n), 0); }
@@ -289,6 +308,8 @@ namespace playground::mcp
     inline bool netStarted() { return true; }
     inline void closeFd(int fd) { close(fd); }
     inline void removePath(const std::string& path) { unlink(path.c_str()); }
+    // `from` renamed over `to` in one step (rename(2)): a reader finds the old file or the new one, never none.
+    inline bool replacePath(const std::string& from, const std::string& to) { return std::rename(from.c_str(), to.c_str()) == 0; }
     inline bool pathExists(const std::string& path)
     {
         struct stat st{};

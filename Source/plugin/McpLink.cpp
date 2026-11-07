@@ -150,6 +150,12 @@ namespace playground
         return !name_.empty();
     }
 
+    std::string McpLink::userName() const
+    {
+        const std::lock_guard<std::mutex> lock(nameMutex_);
+        return name_;
+    }
+
     bool McpLink::setName(const std::string& name, std::string& why)
     {
         const std::string trimmed = juce::String::fromUTF8(name.c_str()).trim().toStdString();
@@ -188,16 +194,17 @@ namespace playground
                     token = t;
             if (token.empty())
                 return;                                  // not open (any more)
+        }
+        // Shown at once only once it is so for the server too: a write that failed leaves the view as it was.
+        if (on ? mcp::target::writeTarget(dir_, { id, token }) : mcp::target::clearTarget(dir_, token))
+        {
+            const std::lock_guard<std::mutex> lock(viewMutex_);
             if (on)
                 view_.chosen = id;
             else if (view_.chosen == id)
                 view_.chosen.clear();
             ++view_.revision;
         }
-        if (on)
-            mcp::target::writeTarget(dir_, { id, token });
-        else
-            mcp::target::clearTarget(dir_, token);
         rescan();
     }
 

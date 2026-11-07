@@ -76,6 +76,8 @@ namespace playground
         // (mcp::target::nameRefusal). Its card says it within a poll.
         bool setName(const std::string& name, std::string& why);
         bool named() const;                              // the user gave it a name
+        // The user's name for it ("" none), listening or not: what the session keeps (name() is "" without a socket).
+        std::string userName() const;
         const std::string& socketPath() const noexcept { return path_; }
         bool listening() const noexcept { return listen_ >= 0; }
         // A client has spoken to it and is still there: Claude Desktop knows this instance (any thread).
@@ -100,7 +102,8 @@ namespace playground
         };
         View view() const;
         // The user's choice (any instance's Use with Claude Desktop): `id` (this one's, or another open's) made the
-        // target, or, `on` false, the choice cleared when it is that one. The message thread.
+        // target, or, `on` false, the choice cleared when it is that one; view() says so at once only when target.json
+        // was written (or cleared). The message thread.
         void choose(const std::string& id, bool on);
         void rescan();                                   // read the folder again soon (probes)
 

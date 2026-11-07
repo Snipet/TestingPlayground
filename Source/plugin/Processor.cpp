@@ -403,7 +403,14 @@ namespace playground
             why = "Claude Desktop cannot reach this instance";
             return false;
         }
-        return mcp_->setName(name, why);
+        const std::string before = mcp_->userName();
+        if (!mcp_->setName(name, why))
+            return false;
+        // No parameter moved, but the session did (it keeps the name): a host that saves on change (VST3's dirty flag)
+        // is told. The user's rename alone: a session's restore names it straight (setStateInformation).
+        if (mcp_->userName() != before)
+            updateHostDisplay(juce::AudioProcessor::ChangeDetails().withNonParameterStateChanged(true));
+        return true;
     }
 
     void Processor::chooseDesktop(const std::string& id, bool on)
@@ -1471,12 +1478,15 @@ namespace playground
         juce::ValueTree chat{ kChatTag };
         chat.setProperty(kJson, juce::String::fromUTF8(chat_.saveState().c_str()), nullptr);
         state.appendChild(chat, nullptr);
-        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty() || (mcp_ != nullptr && mcp_->named()))
+        // The user's name, kept even while the link has no socket (its name() is "" then, and a name restored into such
+        // an instance must survive its next save).
+        const std::string desktopName = mcp_ != nullptr ? mcp_->userName() : std::string();
+        if (const std::vector<KeptMark> marks = chat_.mcpMarksToKeep(); !marks.empty() || !desktopName.empty())
         {
             const auto hex = [](uint64_t h) { return juce::String::toHexString(h).paddedLeft('0', 16); };
             juce::ValueTree mcp{ kMcpTag };
-            if (mcp_ != nullptr && mcp_->named())
-                mcp.setProperty(kDesktopName, juce::String::fromUTF8(mcp_->name().c_str()), nullptr);
+            if (!desktopName.empty())
+                mcp.setProperty(kDesktopName, juce::String::fromUTF8(desktopName.c_str()), nullptr);
             for (const KeptMark& m : marks)
             {
                 juce::ValueTree mark{ kMarkTag };
