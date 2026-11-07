@@ -35,7 +35,8 @@
 //            lists it; run again with another name: the old folder gone, the new one there, a hand-made folder
 //            untouched; the map's fourth column (a
 //            category) over the project's own, one the plugin would change refused; a project holding an email
-//            address, a path in /Users and a key is refused, nothing written; a map naming a hand-made folder refused;
+//            address, a path in /Users and a key is refused, nothing written, and so is one whose latest version plays
+//            samples; a map naming a hand-made folder refused;
 //            each project's largest text said (a dry run of one over 64 KB says so, and writes nothing)
 #include "Probe.h"
 
@@ -699,6 +700,22 @@ PROBE(plugin, factory)
                                           && out.find("dry run: nothing written") != std::string::npos ? 1 : 0, 1);
             P.eq("import.dry_run_writes_nothing", !product.getChildFile("Large One").exists() && product.getChildFile("Second Name").exists()
                                                       && product.getChildFile("imported.txt").loadFileAsString().contains("Second Name") ? 1 : 0, 1);
+        }
+
+        // A latest version that plays samples: refused (a factory project carries text alone), nothing written.
+        {
+            juce::var sampled = madeUp("");
+            juce::Array<juce::var>* versions = sampled["versions"].getArray();
+            auto* ref = new juce::DynamicObject();
+            ref->setProperty("name", "kick.wav");
+            ref->setProperty("hash", "0123456789abcdef");
+            versions->getReference(versions->size() - 1).getDynamicObject()->setProperty("samples", juce::Array<juce::var>{ juce::var(ref) });
+            folder.getChildFile("sampled.fmproject").replaceWithText(juce::JSON::toString(sampled));
+            map.replaceWithText(juce::String(keyWord) + "\tsampled\tSampled\n");
+            code = runImport(src, map, fac, out);
+            std::printf("samples: %d\n%s", code, out.c_str());
+            P.eq("import.samples_refused", code == 1 && !product.getChildFile("Sampled").exists() && out.find("kick.wav") != std::string::npos
+                                               ? 1 : 0, 1);
         }
 
         // Something private: refused, nothing written.

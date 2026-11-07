@@ -25,7 +25,8 @@ and each of that version's files beside it, by its name, as its text. Of a proje
 (numbered 1, its note "factory version"): its files, the tab shown, its dials (with their values' names) and its
 netlists' self-test answers; its presets (each one's "from" 1 when it was saved with that version, else 0, and its
 category, when it has one); and its info (description, author, category, tags, genres; the map's category over its
-own). Nothing else of the file comes: its older versions, and any field this script does not know.
+own). Nothing else of the file comes: its older versions, its MIDI learn mappings (the user's controller's), and any
+field this script does not know.
 
 Re-runnable: factory/<key>/imported.txt lists what its last run wrote there, and a run removes those folders before
 it writes the map's, so it replaces what it wrote and nothing else. A folder of a name the map gives that no import
@@ -33,7 +34,8 @@ wrote (one made by hand) stops it.
 
 What it refuses, writing nothing: a row it cannot read (a product it does not know, a project it cannot find or read,
 one of the other kind or from a newer plugin, a name the plugin would change, a file name a tab may not have, a name
-twice); and anything private in what it would write: a path on someone's machine (/Users/<name>, /home/<name>,
+twice, a latest version that plays samples: a factory project carries text alone); and anything private in what it
+would write: a path on someone's machine (/Users/<name>, /home/<name>,
 /Volumes/..., C:\\..., file://...), an email address, or a key or token (an API key's shapes, a private key's block, a
 password or secret assigned, or a long run of mixed letters and digits). It says where (the project, the field, the
 line) with the text masked: fix the project, or the map, and run it again.
@@ -257,6 +259,10 @@ def convert(src: Path, product: dict[str, str], to: str, author: str | None) -> 
         raise Refusal(f"{label}: no program")
     latest = max(versions, key=lambda v: int(v["number"]))
     number = int(latest["number"])
+    samples = [r.get("name", "?") for r in latest.get("samples", []) or [] if isinstance(r, dict)]
+    if samples:
+        raise Refusal(f"{label}: version {number} plays samples ({', '.join(map(str, samples))}), which a factory project "
+                      f"cannot carry: save a version without them first")
 
     files: list[tuple[str, str]] = []
     for f in latest["files"]:
