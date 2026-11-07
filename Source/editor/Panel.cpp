@@ -1002,6 +1002,9 @@ namespace playground::ui
         {
             recount();                                   // what was typed before it takes those tabs out of the groups
             UndoGroup changed;
+            // a name being typed (a new tab's) goes on when its tab stays under that name (the Panel's merge keeps a tab
+            // added since the editor last gave its files)
+            const std::string naming = renaming_ >= 0 && renaming_ < count() && !fresh ? name(renaming_) : std::string();
             renaming_ = -1;
             why_.clear();
             editor().setFocused(false);
@@ -1069,6 +1072,8 @@ namespace playground::ui
             for (auto v = views_.begin(); v != views_.end();)   // a file gone takes its view (and its pins) with it
                 v = find(v->first) < 0 ? forgetView(v) : std::next(v);
             active_ = std::clamp(d.active, 0, count() - 1);
+            if (!naming.empty())
+                renaming_ = find(naming);                // -1 when it went: the edit ends
             show();
             structure_ += kStructureStep;
             syncSchematic();
@@ -1823,7 +1828,7 @@ namespace playground::ui
             editor().accessibility(text);
             out.push_back(std::move(text));
         }
-        bool a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&) override
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double value, funkgui::GestureController& g) override
         {
             const uint32_t files = static_cast<uint32_t>(kMaxFiles);
             if (id == editor().a11yId() || id == id_ + 1)
@@ -1840,8 +1845,12 @@ namespace playground::ui
                 assist_.togglePanelSwitch();
                 return true;
             }
-            if (schematicShown() && schematic_.a11yAction(id, a))
-                return true;
+            if (schematicShown())
+            {
+                schematic_.setGestures(&g);              // a circuit dial's item writes through it
+                if (schematic_.a11yAction(id, a, value))
+                    return true;
+            }
             if (id >= id_ + 2 && id < id_ + 2 + files)
             {
                 select(static_cast<int>(id - id_ - 2));
@@ -5293,6 +5302,22 @@ namespace playground::ui
                         return &f;
                 return nullptr;
             };
+            // A tab renamed since (a new name at the place of one gone, as FilesItem::merge reads it): the draft's file
+            // of the old name takes the new one (and the typing in it, where the draft left its text).
+            for (std::size_t i = 0; i < given_.files.size() && i < now.files.size(); ++i)
+            {
+                const SourceFile &g = given_.files[i], &t = now.files[i];
+                if (g.name == t.name || named(now, g.name) != nullptr || named(given_, t.name) != nullptr || named(d, t.name) != nullptr)
+                    continue;
+                for (SourceFile& f : d.files)
+                    if (f.name == g.name)
+                    {
+                        f.name = t.name;
+                        if (f.text == g.text)
+                            f.text = t.text;
+                        kept = true;
+                    }
+            }
             for (SourceFile& f : d.files)
                 if (const SourceFile *g = named(given_, f.name), *t = named(now, f.name);
                     g != nullptr && t != nullptr && f.text == g->text && t->text != g->text)
@@ -5300,6 +5325,36 @@ namespace playground::ui
                     f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
                     kept = true;
                 }
+            // A tab closed since that the draft carries as it was given: it stays closed. One the draft changed stays
+            // (neither side's change is lost). The tab the draft shows stays shown, by name.
+            const std::string drafted = d.files.empty() ? std::string()
+                                                        : d.files[static_cast<std::size_t>(std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1))].name;
+            const std::size_t before = d.files.size();
+            std::erase_if(d.files, [&](const SourceFile& f) {
+                const SourceFile* g = named(given_, f.name);
+                return g != nullptr && named(now, f.name) == nullptr && f.text == g->text;
+            });
+            if (d.files.size() != before)
+            {
+                kept = true;
+                d.active = 0;
+                for (std::size_t i = 0; i < d.files.size(); ++i)
+                    if (d.files[i].name == drafted)
+                        d.active = static_cast<int>(i);
+            }
+            // A tab added since that the draft lacks: it stays, after the draft's files, and stays shown when it was.
+            const std::string shown = now.active >= 0 && now.active < static_cast<int>(now.files.size())
+                                          ? now.files[static_cast<std::size_t>(now.active)].name
+                                          : std::string();
+            for (const SourceFile& t : now.files)
+                if (named(given_, t.name) == nullptr && named(d, t.name) == nullptr && d.files.size() < kMaxFiles)
+                {
+                    d.files.push_back(t);
+                    if (t.name == shown)
+                        d.active = static_cast<int>(d.files.size()) - 1;
+                    kept = true;
+                }
+            d.active = std::clamp(d.active, 0, std::max(0, static_cast<int>(d.files.size()) - 1));
         }
         seenDraft_ = r;
         files().merge(d);

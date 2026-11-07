@@ -45,7 +45,9 @@
 //                      lines of its module's usage header that name it, `filter.lp` or `host->bpm`). An enumeration
 //                      constant's value is folded as C's integer constant expressions are (its list's earlier
 //                      constants and the other files' enumeration constants by name; one before it plus 1 when it has
-//                      no `=`), its signature `SQUARE = 4`
+//                      no `=`), its signature `SQUARE = 4`. Another module's enumerations and their constants are the
+//                      file's from their place on, in the order the compile reads the files (a C struct's, FMinus's):
+//                      a place before it neither folds, hovers, goes to nor is offered one
 //     complete()       what may be typed at a place: after `.` or `->` the members of what is before it (a module's
 //                      fields, params and methods, a vector's lanes); after `[[` the attributes; in `#include "` the
 //                      files; after `#pragma ` its words; else the locals and arguments in scope, the module's own
@@ -58,7 +60,8 @@
 //                      order; nearer scopes first
 //     signature()      in a call's parentheses: the function's, the method's or the builtin's signature, its
 //                      parameters' places in it and the one the caret is in (a vector literal's lanes too)
-//     hover()          what a word is: its declaration as code and its documentation; a keyword's meaning
+//     hover()          what a word is: its declaration as code (in lines the editor's card holds: kHoverWidth) and
+//                      its documentation; a keyword's meaning
 //     definition()     where the word under a place is declared (another file's too); an #include line: that file
 //     occurrences()    the places of the word under a place that name the same declaration, in its file
 //   circuitDials()     the dials a program's circuits get (Patch.h's "Circuits"), over the files FMinus compiles (the
@@ -140,6 +143,9 @@ namespace playground::lang
     void lexLine(std::string_view line, int lineNo, bool& inComment, std::vector<Token>& out);
     std::vector<Token> lex(std::string_view text);           // every line's, in order
     std::vector<std::string_view> splitLines(std::string_view text);   // at '\n' (one more than the line breaks)
+    // `text`'s first `bytes` bytes, or fewer: a cut never splits a UTF-8 character (a string literal's, an attribute's
+    // "µs"); headOf(s, s.size() - 1) is `s` less its last character.
+    std::string_view headOf(std::string_view text, std::size_t bytes) noexcept;
 
     bool isKeyword(std::string_view word) noexcept;
     bool isTypeWord(std::string_view word) noexcept;
@@ -246,6 +252,11 @@ namespace playground::lang
         friend bool operator==(const Attribute&, const Attribute&) = default;
     };
 
+    // The passes that fold the enumeration constants' values at most (Symbol::value): they go in the order the compile
+    // reads the files, so the first folds every constant FMinus folds; the others what FMinus refuses but Lang reads on
+    // (a name of a list after it, of a file no #include reaches), a link of such a chain a pass.
+    inline constexpr int kFoldPasses = 8;
+
     struct Symbol
     {
         Kind kind = Kind::local;
@@ -296,11 +307,22 @@ namespace playground::lang
         std::string doc;
     };
 
+    // A hover's code is lines of at most kHoverWidth columns (what the editor's card holds at its code size), at most
+    // kHoverLines of them: a longer declaration is broken after a comma inside its brackets (a function's parameters,
+    // an attribute's or an initialiser's list) or before an attribute's `[[`, its outermost first, the lines after the
+    // first under the bracket the first break is in (four columns in when that is past half the width); a piece no
+    // line holds, and the lines past the last, are cut with " ...".
+    inline constexpr int kHoverWidth = 72;
+    inline constexpr int kHoverLines = 6;
+
     struct Hover
     {
         Range range{};                           // the word
-        std::string code;                        // its declaration, as code
+        std::string code;                        // its declaration, as code (kHoverWidth, kHoverLines)
         std::string doc;
+        std::vector<std::string> plain;          // the names `code` declares that are no constant (a local's, an
+                                                 // argument's, a field's, a function's and its parameters'): the card
+                                                 // draws them plain where a constant has the name too, as the editor does
     };
 
     struct Location
@@ -407,12 +429,21 @@ namespace playground::lang
         const std::vector<Symbol>& symbols() const noexcept;
         const std::vector<std::string>& typeNames() const noexcept;
         const std::vector<std::string>& constantNames() const noexcept;
+        // The constants' names a local, an argument, a field or a param has too (sorted): where that one is in scope
+        // the name is it, not the constant (as hover() says), so the highlighter looks each use of these up.
+        const std::vector<std::string>& shadowNames() const noexcept;
+        // One entry for each identifier of a file's code named in shadowNames(), in order (a group a conditional skips
+        // and a directive's line have none): 1 where the name is no constant there (a local's, an argument's, a
+        // field's or a param's), 0 where it is one or names nothing. Empty for a file with none.
+        std::vector<uint8_t> shadowed(int file) const;
         // The word (identifier) at a place: its range, empty when none touches it.
         Range wordAt(int file, Pos at) const;
         // The program's circuits as dials (circuitDials() below).
         CircuitDials circuitDials(bool instrument) const;
 
     private:
+        std::optional<Hover> hoverOf(int file, Pos at) const;   // hover(), its code not yet fitted to the card
+
         struct Impl;
         Impl* impl_;
     };

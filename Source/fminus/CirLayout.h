@@ -36,6 +36,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace playground::cir
 {
@@ -152,16 +153,21 @@ namespace playground::cir
     // The router's grid is the drawing's box (bodies and stored wires) and 18 units around it, at most kRouteCells
     // points (a 200-part drawing spans about 50,000), so that its memory and each search's setup stay bounded as the
     // pops bound the searches. Past that, the parts' box alone is the grid (a stored wire outside it is dropped and its
-    // net routed again); a drawing whose parts alone span more (one moved thousands of units away) routes nothing:
-    // every wired net is drawn as name tags, with one note, and an op that would make a drawing so is refused.
+    // net routed again). A drawing whose parts alone span more (one moved thousands of units away by hand) is wired in
+    // groups: its parts split at the widest empty gap between their bodies, across x or y, until each group's grid
+    // fits, each group then routed on its own grid (another group's wires in it crossed only, as another net's are);
+    // a net whose pins lie in two groups is drawn as name tags (Budget::far, one note), and so is every net of a group
+    // with no gap left to split at. An op that would make a drawing so is still refused.
     inline constexpr long kRouteCells = 1L << 18;
 
     struct Budget
     {
         long pops = 0;                            // spent in this reconcile
         long most = 0;                            // the most one connection took
-        long cells = 0;                           // the router's grid, in points (the last pass's)
-        bool wide = false;                        // the parts span more than kRouteCells: nothing routed
+        long cells = 0;                           // the router's grid, in points (the last pass's; wide: its largest
+                                                  // group's)
+        bool wide = false;                        // the parts span more than kRouteCells: wired in groups
+        std::vector<int> far;                     // wide: the nets drawn as name tags for their pins' groups (net order)
     };
 
     // Every part of the drawing laid out from nothing (spec 7.2-7.7), every route cleared.

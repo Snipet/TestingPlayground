@@ -94,11 +94,18 @@ namespace playground::ui
     };
 
     // The module names the highlighter shows as types, and the constants' (enumeration constants, the top level's
-    // consts) it shows as constants, shared with it (the language service's, kept up to date).
+    // consts) it shows as constants, shared with it (the language service's, kept up to date). A constant's name a
+    // local, an argument, a field or a param has too (lang::Service::shadowNames) is a constant only where the service
+    // says so: each use of one in a tab, in order, has its flag there (lang::Service::shadowed: 1, not a constant), which
+    // the highlighter counts its way to as it does a file's conditionals (CodeHighlighter's state). A tab with no flags,
+    // or a use past them, shows the name as a constant; while the index is due after an edit (until the check's sync,
+    // CodeAssist::sync), a use after a use typed or deleted may show its neighbour's flag.
     struct TypeNames
     {
         std::vector<std::string> names;          // sorted
         std::vector<std::string> constants;      // sorted
+        std::vector<std::string> shadows;        // sorted: the constants' names something else has too
+        std::map<std::string, std::vector<uint8_t>, std::less<>> shadowed;   // by the tab's name
     };
 
     // The conditionals the highlighter dims by: each FMinus tab's conditional directives (#if ... #endif), in order, as
@@ -114,9 +121,10 @@ namespace playground::ui
         static Conditionals of(const Sources& files);
     };
 
-    // FMinus by lang::lexLine, a line at a time. The state: bit 0, inside a block comment; the bits above it, the
+    // FMinus by lang::lexLine, a line at a time. The state: bit 0, inside a block comment; bits 1 to 16, the
     // conditional directives met so far in the file, which index `file`'s flags in `conditionals` (a directive met
-    // past them, as while a snapshot is due after an edit, chooses nothing). A group a conditional skips is one span
+    // past them, as while a snapshot is due after an edit, chooses nothing); bits 17 to 31, the uses of the names in
+    // `types`' shadows met so far, which index `file`'s flags there (TypeNames). A group a conditional skips is one span
     // of csInactive; a conditional's, a #define's and an #undef's line its parts (the macros as constants). Its output
     // depends on `types` too: when they change, every editor it highlights is rehighlighted (CodeAssist::sync; FunkGui's
     // TextEditor keeps each line's spans). One editor's: its token buffer is scratch, kept with its capacity.
@@ -127,10 +135,21 @@ namespace playground::ui
                                  std::string_view file = {});
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
 
+        // The tab's name it was made for: its flags are found by it, so a tab renamed gets a highlighter of its new name
+        // (CodeAssist::sync).
+        const std::string& file() const noexcept { return file_; }
+        // Names never drawn as constants (a card's code: the names its declaration declares, lang::Hover::plain).
+        void setPlain(std::vector<std::string> names) { plain_ = std::move(names); }
+
+        static constexpr uint32_t kMetMax = 0xFFFFu;     // the state's counts, each held at its most
+        static constexpr uint32_t kSeenMax = 0x7FFFu;
+
     private:
         std::shared_ptr<const TypeNames> types_;
         std::shared_ptr<const Conditionals> conditionals_;
         const std::vector<uint8_t>* flags_ = nullptr;    // this file's, in conditionals_
+        std::string file_;                               // its name: its flags in types_->shadowed
+        std::vector<std::string> plain_;
         mutable std::vector<lang::Token> toks_;
     };
 

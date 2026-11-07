@@ -10,8 +10,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <locale>
+#include <map>
 #include <memory>
 #include <set>
 #include <sstream>
@@ -992,7 +994,7 @@ namespace playground::lang
                         t.scope = { t.at, *scopeEnd };
                     t.signature = joinTokens(t_, keyword, end);
                     if (t.signature.size() > 160)
-                        t.signature = t.signature.substr(0, 156) + " ...";
+                        t.signature = std::string(headOf(t.signature, 156)) + " ...";
                     t.doc = docFor(tok(i).line);
                     t.body = list;
                     add(t);
@@ -1033,6 +1035,8 @@ namespace playground::lang
                     if (scopeEnd)
                         c.scope = { c.at, *scopeEnd };
                     c.signature = from >= 0 ? c.name + " = " + joinTokens(t_, from, to) : c.name;
+                    if (c.signature.size() > 160)   // an expression as written (when it folds: its value, foldValues)
+                        c.signature = std::string(headOf(c.signature, 156)) + " ...";
                     c.doc = docFor(name.line);
                     const int index = add(c);
                     f_.pending.push_back({ index, from, to, before });
@@ -1104,7 +1108,7 @@ namespace playground::lang
                     c.at = startOf(name);
                     std::string init = from >= 0 ? joinTokens(t_, from, e) : std::string();
                     if (init.size() > 64)
-                        init = init.substr(0, 60) + " ...";
+                        init = std::string(headOf(init, 60)) + " ...";
                     c.signature = ty + (ty.back() == '*' ? "" : " ") + c.name + extent + (init.empty() ? "" : " = " + init);
                     c.doc = docFor(name.line);
                     add(c);
@@ -1725,19 +1729,93 @@ namespace playground::lang
         bool isEnumerator(const Symbol& s) { return s.kind == Kind::constant && s.type == "int"; }
         bool isScoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
 
+        // ---- the order a compile reads the files' lines in --------------------------------------------------------------
+        // Where each line of the files stands in the text a compile reads (C's translation unit): the first file from its
+        // top (when it is the program's), an #include of another of them (in a group read) followed where it stands,
+        // once; then each file the walk never reached, alone, in turn (a tab no #include reaches; each of the library's
+        // files, a compile of its own). C's file scope holds a name from its declaration on, and FMinus's holds a module's
+        // enumerations and their constants so (a C struct's): a use before them is FMinus's error, and Lang's nothing.
+        class ReadOrder
+        {
+        public:
+            ReadOrder() = default;
+            explicit ReadOrder(const std::vector<FileData*>& files);
+
+            // A line's place in the order (-1 for a file it never had); then the column orders a line's places.
+            int line(int file, int ln) const
+            {
+                if (file < 0 || file >= static_cast<int>(lines_.size()) || lines_[static_cast<std::size_t>(file)].empty())
+                    return -1;
+                const std::vector<int>& at = lines_[static_cast<std::size_t>(file)];
+                return at[static_cast<std::size_t>(std::clamp(ln, 0, static_cast<int>(at.size()) - 1))];
+            }
+            // Whether `a` of file fa stands before `b` of file fb (a place it never had: yes, as Lang was before it).
+            bool before(int fa, Pos a, int fb, Pos b) const
+            {
+                const int ka = line(fa, a.line), kb = line(fb, b.line);
+                if (ka < 0 || kb < 0)
+                    return true;
+                return ka < kb || (ka == kb && a.col < b.col);
+            }
+
+        private:
+            std::vector<std::vector<int>> lines_;            // per file, per line
+        };
+
+        ReadOrder::ReadOrder(const std::vector<FileData*>& files)
+        {
+            lines_.resize(files.size());
+            std::vector<bool> entered(files.size(), false);
+            int next = 0;
+            const auto indexOf = [&files](std::string_view name) {
+                for (std::size_t i = 0; i < files.size(); ++i)
+                    if (files[i]->name == name)
+                        return static_cast<int>(i);
+                return -1;
+            };
+            // A file's lines in turn, an #include's file (not entered yet) after its line: at most as deep as the files.
+            const auto enter = [&](const auto& self, std::size_t f) -> void {
+                entered[f] = true;
+                std::vector<int>& at = lines_[f];
+                at.assign(std::max<std::size_t>(files[f]->lines.size(), 1), 0);
+                const auto& includes = files[f]->includes;
+                std::size_t k = 0;
+                for (std::size_t ln = 0; ln < at.size(); ++ln)
+                {
+                    at[ln] = next++;
+                    for (; k < includes.size() && includes[k].second <= static_cast<int>(ln); ++k)
+                        if (const int g = indexOf(includes[k].first); g >= 0 && !entered[static_cast<std::size_t>(g)])
+                            self(self, static_cast<std::size_t>(g));
+                }
+            };
+            if (!files.empty() && files[0]->program)
+                enter(enter, 0);
+            for (std::size_t f = 0; f < files.size(); ++f)
+                if (!entered[f])
+                    enter(enter, f);
+        }
+
+        // Every enumeration constant by name, with its file's index: in file order, then in declaration order.
+        using Named = std::map<std::string_view, std::vector<std::pair<std::size_t, const Symbol*>>, std::less<>>;
+
         // The enumeration constant a name at `at` in files[file] means, as C's scopes choose it: the innermost block's
-        // seen there (declared before it), else `module`'s own, else the top level's, else another module's (C's file
-        // scope holds a struct's enumeration constants, as FMinus does a module's; FMinus refuses two of one name); a
-        // module's and the top level's first in the files files[file] reads (`reads`), then in any. Never `self`, the
-        // constant whose expression the name is in; nothing when no constant has that name.
-        const Symbol* constantAt(const std::vector<FileData*>& files, std::size_t file, Pos at, const std::string& module,
+        // seen there (declared before it), else `module`'s own, else the top level's, else another module's declared
+        // before `at` in the order the compile reads (C's file scope holds a struct's enumeration constants from there
+        // on, as FMinus does a module's; FMinus refuses two of one name); a module's and the top level's first in the
+        // files files[file] reads (`reads`), then in any. Never `self`, the constant whose expression the name is in;
+        // nothing when no constant has that name.
+        const Symbol* constantAt(const Named& named, const ReadOrder& order, std::size_t file, Pos at, const std::string& module,
                                  const std::vector<bool>& reads, const Symbol* self, std::string_view name)
         {
+            const auto found = named.find(name);
+            if (found == named.end())
+                return nullptr;
+            const std::vector<std::pair<std::size_t, const Symbol*>>& all = found->second;
             const Symbol* best = nullptr;
-            for (const Symbol& s : files[file]->decls)
-                if (&s != self && isEnumerator(s) && isScoped(s) && s.name == name && s.scope.from <= at && at <= s.scope.to
-                    && (best == nullptr || best->at < s.at))
-                    best = &s;
+            for (const auto& [fi, s] : all)
+                if (fi == file && s != self && isScoped(*s) && s->scope.from <= at && at <= s->scope.to
+                    && (best == nullptr || best->at < s->at))
+                    best = s;
             if (best != nullptr)
                 return best;
             enum class Where { own, top, other };
@@ -1751,23 +1829,26 @@ namespace playground::lang
                                                : !container.empty() && container != module;
                 };
                 for (const bool read : { true, false })
-                    for (std::size_t fi = 0; fi < files.size(); ++fi)
-                        if (reads[fi] == read)
-                            for (const Symbol& s : files[fi]->decls)
-                                if (&s != self && isEnumerator(s) && !isScoped(s) && s.name == name && in(s.container))
-                                    return &s;
+                    for (const auto& [fi, s] : all)
+                        if (reads[fi] == read && s != self && !isScoped(*s) && in(s->container)
+                            && (where != Where::other
+                                || order.before(static_cast<int>(fi), s->at, static_cast<int>(file), at)))
+                            return s;
             }
             return nullptr;
         }
 
-        // The enumeration constants' values (FileData::pending), folded over every file once all are indexed: a pass
-        // folds what it can (an expression whose names have values, the constant before one plus 1), and passes go on
-        // while one adds a value, so a constant may name one of another file, or of a list after it. A name is the
-        // constant its place sees (constantAt): a block's, its module's (its own, or that of the method it is in), the
-        // top level's, from the files its file reads (as Impl::visible: its #includes, in turn theirs, and for a
-        // program's file what the program's first file reads). Each signature then says its value, `SQUARE = 4`, or
-        // keeps its expression as written when it does not fold.
-        void foldValues(const std::vector<FileData*>& files)
+        // The enumeration constants' values (FileData::pending), folded over every file once all are indexed, in the
+        // order the compile reads them (`order`): a pass folds what it can (an expression whose names have values, the
+        // constant before one plus 1), so the first folds every constant FMinus folds (a name is declared before its
+        // use). Passes go on while one adds a value, kFoldPasses at most, for what FMinus refuses but Lang reads on (a
+        // name of a list after it, of a file no #include reaches): each such link costs a pass, so a long chain of them
+        // stays unfolded, never a pass for each. A name is the constant its place sees (constantAt): a block's, its
+        // module's (its own, or that of the method it is in), the top level's, from the files its file reads (as
+        // Impl::visible: its #includes, in turn theirs, and for a program's file what the program's first file reads),
+        // another module's before it. Each signature then says its value, `SQUARE = 4`, or keeps its expression as
+        // written when it does not fold.
+        void foldValues(const std::vector<FileData*>& files, const ReadOrder& order)
         {
             const auto indexOf = [&files](std::string_view name) {
                 for (std::size_t i = 0; i < files.size(); ++i)
@@ -1792,48 +1873,202 @@ namespace playground::lang
                         todo.push_back(indexOf(inc.first));
                 }
             }
-            for (bool more = true; more;)
+            Named named;
+            for (std::size_t fi = 0; fi < files.size(); ++fi)
+                for (const Symbol& s : files[fi]->decls)
+                    if (isEnumerator(s))
+                        named[s.name].emplace_back(fi, &s);
+            // The pending constants in the order the compile reads them (a file's own in its order: the sort is stable).
+            struct Item
             {
-                more = false;
-                for (std::size_t fi = 0; fi < files.size(); ++fi)
-                    for (const FileData::Pending& p : files[fi]->pending)
+                std::size_t file = 0;
+                const FileData::Pending* p = nullptr;
+                int line = 0, col = 0;
+            };
+            std::vector<Item> items;
+            for (std::size_t fi = 0; fi < files.size(); ++fi)
+                for (const FileData::Pending& p : files[fi]->pending)
+                {
+                    const Pos at = files[fi]->decls[static_cast<std::size_t>(p.decl)].at;
+                    items.push_back({ fi, &p, order.line(static_cast<int>(fi), at.line), at.col });
+                }
+            std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) {
+                return a.line != b.line ? a.line < b.line : a.col < b.col;
+            });
+            for (int pass = 0; pass < kFoldPasses; ++pass)
+            {
+                bool more = false;
+                for (const Item& item : items)
+                {
+                    const std::size_t fi = item.file;
+                    const FileData::Pending& p = *item.p;
+                    FileData* f = files[fi];
+                    Symbol& c = f->decls[static_cast<std::size_t>(p.decl)];
+                    if (c.value)
+                        continue;
+                    std::optional<int64_t> v;
+                    if (p.from >= 0)
                     {
-                        FileData* f = files[fi];
-                        Symbol& c = f->decls[static_cast<std::size_t>(p.decl)];
-                        if (c.value)
-                            continue;
-                        std::optional<int64_t> v;
-                        if (p.from >= 0)
-                        {
-                            const Pos at = startOf(f->code[static_cast<std::size_t>(p.from)]);
-                            std::string module = c.container;
-                            if (module.empty() && isScoped(c))
-                                for (const Body& b : f->bodies)
-                                    if (startOf(f->code[static_cast<std::size_t>(b.open)]) < at
-                                        && at <= startOf(f->code[static_cast<std::size_t>(b.close)]))
-                                        module = b.module;     // a block's in a method sees its module's
-                            const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
-                                const Symbol* s = constantAt(files, fi, at, module, reads[fi], &c, name);
-                                return s != nullptr ? s->value : std::nullopt;
-                            };
-                            v = Folder(f->code, p.from, p.to, lookup).run();
-                        }
-                        else if (p.before < 0)
-                            v = 0;
-                        else if (const std::optional<int64_t> b = f->decls[static_cast<std::size_t>(p.before)].value;
-                                 b && *b < std::numeric_limits<int32_t>::max())
-                            v = *b + 1;
-                        if (v)
-                        {
-                            c.value = v;
-                            more = true;
-                        }
+                        const Pos at = startOf(f->code[static_cast<std::size_t>(p.from)]);
+                        std::string module = c.container;
+                        if (module.empty() && isScoped(c))
+                            for (const Body& b : f->bodies)
+                                if (startOf(f->code[static_cast<std::size_t>(b.open)]) < at
+                                    && at <= startOf(f->code[static_cast<std::size_t>(b.close)]))
+                                    module = b.module;     // a block's in a method sees its module's
+                        const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
+                            const Symbol* s = constantAt(named, order, fi, at, module, reads[fi], &c, name);
+                            return s != nullptr ? s->value : std::nullopt;
+                        };
+                        v = Folder(f->code, p.from, p.to, lookup).run();
                     }
+                    else if (p.before < 0)
+                        v = 0;
+                    else if (const std::optional<int64_t> b = f->decls[static_cast<std::size_t>(p.before)].value;
+                             b && *b < std::numeric_limits<int32_t>::max())
+                        v = *b + 1;
+                    if (v)
+                    {
+                        c.value = v;
+                        more = true;
+                    }
+                }
+                if (!more)
+                    break;
             }
             for (FileData* f : files)
                 for (const FileData::Pending& p : f->pending)
                     if (Symbol& c = f->decls[static_cast<std::size_t>(p.decl)]; c.value)
                         c.signature = c.name + " = " + std::to_string(*c.value);
+        }
+
+        // ---- a declaration fitted to the hover card (Lang.h's kHoverWidth, kHoverLines) ---------------------------------
+        // Each line of `code` in lines of at most `width` columns, at most `most` lines in all. A longer line is broken at
+        // its cuts: after a comma inside a bracket (", "), before an attribute's `[[` outside them; never in a string.
+        // The outermost cuts are tried first (an attribute before its list's commas, a function's parameters before a
+        // parameter's own brackets), deeper ones only when those leave a line too long; the lines after the first start
+        // under the bracket the first cut is in (an attribute's: under the first `[[`; four columns in when that is past
+        // half the width), each filled with what fits. A piece no line holds is cut with " ...", and so is the last
+        // line when more would follow it.
+        std::string fitCode(std::string_view code, std::size_t width, std::size_t most)
+        {
+            struct Cut
+            {
+                std::size_t at = 0;                      // the piece after it starts here
+                int depth = 0;                           // the brackets open there
+                std::size_t under = 0;                   // the column the lines after the first start at
+            };
+            const auto rtrim = [](std::string x) {
+                while (!x.empty() && x.back() == ' ')
+                    x.pop_back();
+                return x;
+            };
+            const auto cutShort = [&](std::string x) {
+                x = rtrim(std::move(x));
+                if (x.size() + 4 > width)
+                    x = rtrim(std::string(headOf(x, width > 4 ? width - 4 : 0)));
+                return x + " ...";
+            };
+            std::vector<std::string> out;
+            bool cutOff = false;
+            for (const std::string_view line : splitLines(code))
+            {
+                if (cutOff)
+                    break;
+                if (line.size() <= width)
+                {
+                    out.emplace_back(line);
+                    continue;
+                }
+                std::vector<Cut> cuts;
+                std::vector<std::size_t> open;
+                const std::size_t attribute = line.find("[[");
+                bool quoted = false;
+                for (std::size_t i = 0; i < line.size(); ++i)
+                {
+                    const char c = line[i];
+                    if (quoted)
+                    {
+                        if (c == '\\')
+                            ++i;
+                        else if (c == '"')
+                            quoted = false;
+                        continue;
+                    }
+                    if (c == '"')
+                        quoted = true;
+                    else if (c == '(' || c == '[' || c == '{')
+                        open.push_back(i);
+                    else if ((c == ')' || c == ']' || c == '}') && !open.empty())
+                        open.pop_back();
+                    else if (c == ',' && !open.empty() && i + 1 < line.size() && line[i + 1] == ' ')
+                        cuts.push_back({ i + 2, static_cast<int>(open.size()), open.back() + 1 });
+                    else if (c == ' ' && open.empty() && line.substr(i + 1, 2) == "[[")
+                        cuts.push_back({ i + 1, 0, attribute });
+                }
+                // The lines the cuts of at most `depth` give, each filled with what fits.
+                const auto fill = [&](int depth) {
+                    std::vector<std::string> lines;
+                    std::size_t under = std::string::npos, from = 0;
+                    std::string cur;
+                    for (std::size_t k = 0; k <= cuts.size(); ++k)
+                    {
+                        if (k < cuts.size() && cuts[k].depth > depth)
+                            continue;
+                        const std::size_t to = k < cuts.size() ? cuts[k].at : line.size();
+                        const std::string piece(line.substr(from, to - from));
+                        if (from == 0)
+                            cur = piece;
+                        else if (rtrim(cur + piece).size() <= width)
+                            cur += piece;
+                        else
+                        {
+                            lines.push_back(rtrim(cur));
+                            cur = std::string(under, ' ') + piece;
+                        }
+                        if (under == std::string::npos && k < cuts.size())
+                            under = cuts[k].under > width / 2 ? 4 : cuts[k].under;
+                        from = to;
+                    }
+                    lines.push_back(rtrim(cur));
+                    return lines;
+                };
+                int lo = std::numeric_limits<int>::max(), hi = -1;
+                for (const Cut& k : cuts)
+                {
+                    lo = std::min(lo, k.depth);
+                    hi = std::max(hi, k.depth);
+                }
+                std::vector<std::string> lines;
+                for (int depth = lo; depth <= hi && lines.empty(); ++depth)
+                {
+                    std::vector<std::string> tried = fill(depth);
+                    if (std::all_of(tried.begin(), tried.end(), [&](const std::string& l) { return l.size() <= width; }))
+                        lines = std::move(tried);
+                }
+                if (lines.empty())
+                    lines = hi >= 0 ? fill(hi) : std::vector<std::string>{ std::string(line) };
+                for (std::string& l : lines)
+                {
+                    if (l.size() > width)
+                    {
+                        out.push_back(cutShort(std::move(l)));
+                        cutOff = true;
+                        break;
+                    }
+                    out.push_back(std::move(l));
+                }
+            }
+            if (out.size() > most)
+            {
+                out.resize(most);
+                if (!out.empty())
+                    out.back() = cutShort(std::move(out.back()));
+            }
+            std::string joined;
+            for (std::size_t k = 0; k < out.size(); ++k)
+                joined += (k == 0 ? "" : "\n") + out[k];
+            return joined;
         }
 
         // The lines of a module's documentation that name `member` (`filter.lp`, `host->bpm`, `y = filter.tick(x);`)
@@ -2025,6 +2260,16 @@ namespace playground::lang
             out.push_back(text.substr(from, nl - from));
             from = nl + 1;
         }
+    }
+
+    std::string_view headOf(std::string_view text, std::size_t bytes) noexcept
+    {
+        if (text.size() <= bytes)
+            return text;
+        // Back to a character's first byte: the bytes kept end where one ends (a continuation byte is 10xxxxxx).
+        while (bytes > 0 && (static_cast<unsigned char>(text[bytes]) & 0xC0u) == 0x80u)
+            --bytes;
+        return text.substr(0, bytes);
     }
 
     void lexLine(std::string_view s, int ln, bool& inComment, std::vector<Token>& out)
@@ -2443,13 +2688,14 @@ namespace playground::lang
         std::vector<std::unique_ptr<FileData>> library;
         std::vector<File> view;                           // files(), as the API gives them
         std::vector<Symbol> symbols;
-        std::vector<std::string> typeNames, constantNames;
+        std::vector<std::string> typeNames, constantNames, shadowNames;
+        ReadOrder order;                                  // the files' lines as the compile reads them
 
         void rebuild()
         {
             view.clear();
             symbols.clear();
-            std::set<std::string> types, constants;
+            std::set<std::string> types, constants, others;
             for (const auto& f : files)
             {
                 view.push_back({ f->name, f->text, f->program });
@@ -2460,10 +2706,14 @@ namespace playground::lang
                         types.insert(s.name);
                     else if (s.kind == Kind::constant)
                         constants.insert(s.name);
+                    else if (s.kind == Kind::local || s.kind == Kind::argument || s.kind == Kind::field || s.kind == Kind::param)
+                        others.insert(s.name);
                 }
             }
             typeNames.assign(types.begin(), types.end());
             constantNames.assign(constants.begin(), constants.end());
+            shadowNames.clear();
+            std::set_intersection(constants.begin(), constants.end(), others.begin(), others.end(), std::back_inserter(shadowNames));
         }
 
         static bool scoped(const Symbol& s) { return !(s.scope.from == s.scope.to); }
@@ -2489,7 +2739,8 @@ namespace playground::lang
                 indexFile(*files[i], static_cast<int>(i));
                 all.push_back(files[i].get());
             }
-            foldValues(all);
+            order = ReadOrder(all);
+            foldValues(all, order);
             rebuild();
         }
 
@@ -2661,7 +2912,8 @@ namespace playground::lang
         }
 
         // A local, an argument or a block's constant named `name` seen at p (the innermost: declared last before p);
-        // with `tag`, a block's enumeration of that tag (C's tags are a name space of their own).
+        // with `tag`, a block's enumeration of that tag (C's tags are a name space of their own). An argument's own
+        // name in its function's parentheses (its scope is the body) is that argument.
         const Symbol* localNamed(const FileData& f, std::string_view name, Pos p, bool tag = false) const
         {
             const Symbol* best = nullptr;
@@ -2669,7 +2921,8 @@ namespace playground::lang
             {
                 const bool kind = tag ? s.kind == Kind::enumeration && scoped(s)
                                       : s.kind == Kind::local || s.kind == Kind::argument || (s.kind == Kind::constant && scoped(s));
-                if (kind && s.name == name && s.scope.from <= p && p <= s.scope.to && (best == nullptr || best->at < s.at))
+                if (kind && s.name == name && ((s.scope.from <= p && p <= s.scope.to) || s.at == p)
+                    && (best == nullptr || best->at < s.at))
                     best = &s;
             }
             return best;
@@ -2692,28 +2945,30 @@ namespace playground::lang
         // What the file's scope holds, in the files a file sees: a function or a module named `name` (a definition
         // before a prototype), a constant (an enumeration's, a const of the top level), or with `tag` an enumeration
         // (its list's before a tag declared ahead of it); else a module's enumeration or its constant, which C's file
-        // scope holds too (a struct's are the file's).
-        const Symbol* globalNamed(int file, std::string_view name, bool tag = false) const
+        // scope holds too (a struct's are the file's), from its place on: with `at`, only one before that place of
+        // `file` in the order the compile reads (ReadOrder).
+        const Symbol* globalNamed(int file, std::string_view name, bool tag = false, const Pos* at = nullptr) const
         {
-            const auto top = [tag](const Symbol& s) {
+            const auto top = [tag](const Symbol& s, std::size_t) {
                 if (tag)
                     return s.kind == Kind::enumeration && s.container.empty() && !scoped(s);
                 return s.kind == Kind::function || s.kind == Kind::module
                     || (s.kind == Kind::constant && s.container.empty() && !scoped(s));
             };
-            const auto ofModule = [tag](const Symbol& s) {
-                return s.kind == (tag ? Kind::enumeration : Kind::constant) && !s.container.empty() && !scoped(s);
+            const auto ofModule = [&](const Symbol& s, std::size_t fi) {
+                return s.kind == (tag ? Kind::enumeration : Kind::constant) && !s.container.empty() && !scoped(s)
+                    && (at == nullptr || order.before(static_cast<int>(fi), s.at, file, *at));
             };
             const auto find = [&](const auto& wanted) {
                 const Symbol* best = nullptr;
                 for (const int fi : visible(file))
                     for (const Symbol& s : files[static_cast<std::size_t>(fi)]->decls)
-                        if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
+                        if (s.name == name && wanted(s, static_cast<std::size_t>(fi)) && (best == nullptr || (!best->body && s.body)))
                             best = &s;
                 if (best == nullptr)
-                    for (const auto& f : files)
-                        for (const Symbol& s : f->decls)
-                            if (wanted(s) && s.name == name && (best == nullptr || (!best->body && s.body)))
+                    for (std::size_t fi = 0; fi < files.size(); ++fi)
+                        for (const Symbol& s : files[fi]->decls)
+                            if (s.name == name && wanted(s, fi) && (best == nullptr || (!best->body && s.body)))
                                 best = &s;
                 return best;
             };
@@ -2825,7 +3080,7 @@ namespace playground::lang
                 if (const Symbol* s = moduleConstant(m, t.text, tag))
                     return s;
             }
-            return globalNamed(file, t.text, tag);
+            return globalNamed(file, t.text, tag, &p);       // another module's: before p
         }
     };
 
@@ -2898,7 +3153,7 @@ namespace playground::lang
         std::vector<FileData*> all;
         for (const auto& f : impl_->library)
             all.push_back(f.get());
-        foldValues(all);
+        foldValues(all, ReadOrder(all));
     }
 
     const std::vector<Service::File>& Service::files() const noexcept { return impl_->view; }
@@ -2912,6 +3167,26 @@ namespace playground::lang
     const std::vector<Symbol>& Service::symbols() const noexcept { return impl_->symbols; }
     const std::vector<std::string>& Service::typeNames() const noexcept { return impl_->typeNames; }
     const std::vector<std::string>& Service::constantNames() const noexcept { return impl_->constantNames; }
+    const std::vector<std::string>& Service::shadowNames() const noexcept { return impl_->shadowNames; }
+
+    std::vector<uint8_t> Service::shadowed(int file) const
+    {
+        const Impl& m = *impl_;
+        std::vector<uint8_t> out;
+        const FileData* f = m.fileAt(file);
+        if (f == nullptr || m.shadowNames.empty())
+            return out;
+        for (std::size_t i = 0; i < f->code.size(); ++i)
+        {
+            const Token& t = f->code[i];
+            if (t.kind != Tok::identifier
+                || !std::binary_search(m.shadowNames.begin(), m.shadowNames.end(), t.text, std::less<>{}))
+                continue;
+            const Symbol* s = m.resolve(file, static_cast<int>(i));
+            out.push_back(s != nullptr && s->kind != Kind::constant ? 1 : 0);
+        }
+        return out;
+    }
 
     Range Service::wordAt(int file, Pos at) const
     {
@@ -3192,8 +3467,8 @@ namespace playground::lang
         const Pos p = out.replace.from;
         const std::string module = m.moduleAt(*f, p);
         // After `enum`: the enumerations' tags (C's tags are a name space of their own): a block's in scope, the
-        // module's, the top level's and another module's (the file's, in C) of the files the program reads; a tag's
-        // list before C23's declaration of it ahead of the list.
+        // module's, the top level's and another module's before the place (the file's from there on, in C) of the files
+        // the program reads; a tag's list before C23's declaration of it ahead of the list.
         if (const int b = Impl::lastBefore(*f, p); b >= 0 && Impl::isText(*f, b, "enum"))
         {
             for (const Symbol& s : f->decls)
@@ -3201,7 +3476,8 @@ namespace playground::lang
                     offer(s.name, s.kind, s.signature, s.doc, {}, s.body ? 0 : 1);
             for (const int fi : m.visible(file))
                 for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
-                    if (s.kind == Kind::enumeration && !Impl::scoped(s))
+                    if (s.kind == Kind::enumeration && !Impl::scoped(s)
+                        && (s.container.empty() || s.container == module || m.order.before(fi, s.at, file, p)))
                         offer(s.name, s.kind, s.signature, s.doc, {},
                               (s.container == module && !module.empty() ? 1 : 2) + (s.body ? 0 : 2));
             return finish();
@@ -3238,11 +3514,13 @@ namespace playground::lang
                     }
         }
         std::set<std::string> modulesSeen;
-        // The file's scope: functions, modules, the top level's constants and other modules' enumerations' constants.
+        // The file's scope: functions, modules, the top level's constants and other modules' enumerations' constants
+        // (the file's from their place on: those before this one).
         for (const int fi : m.visible(file))
             for (const Symbol& s : m.files[static_cast<std::size_t>(fi)]->decls)
                 if ((s.kind == Kind::function || s.kind == Kind::module
-                     || (s.kind == Kind::constant && (s.container.empty() || s.container != module) && !Impl::scoped(s)))
+                     || (s.kind == Kind::constant && (s.container.empty() || s.container != module) && !Impl::scoped(s)
+                         && (s.container.empty() || m.order.before(fi, s.at, file, p))))
                     && !(fi == file && s.at == p))
                 {
                     if (s.kind == Kind::module)
@@ -3431,6 +3709,14 @@ namespace playground::lang
 
     // ---- hover ------------------------------------------------------------------------------------------------------
     std::optional<Hover> Service::hover(int file, Pos at) const
+    {
+        std::optional<Hover> h = hoverOf(file, at);
+        if (h)
+            h->code = fitCode(h->code, static_cast<std::size_t>(kHoverWidth), static_cast<std::size_t>(kHoverLines));
+        return h;
+    }
+
+    std::optional<Hover> Service::hoverOf(int file, Pos at) const
     {
         const Impl& m = *impl_;
         const FileData* f = m.fileAt(file);
@@ -3630,6 +3916,30 @@ namespace playground::lang
                     h.code = s->signature;
                     break;
             }
+            // The names its code declares, a local's or a function's and its parameters': none is a constant there,
+            // whatever constant has its name too (the card draws them plain, as the editor draws the uses).
+            if (s->kind == Kind::local || s->kind == Kind::argument || s->kind == Kind::field || s->kind == Kind::param
+                || s->kind == Kind::method || s->kind == Kind::function)
+            {
+                h.plain.push_back(s->name);
+                std::vector<Token> parts;
+                for (const std::string& p : s->params)
+                {
+                    parts.clear();
+                    bool inner = false;
+                    lexLine(p, 0, inner, parts);
+                    std::string_view last;
+                    for (const Token& x : parts)
+                    {
+                        if (x.text == "[")               // its extent's names are uses
+                            break;
+                        if (x.kind == Tok::identifier)
+                            last = x.text;
+                    }
+                    if (!last.empty() && std::find(h.plain.begin(), h.plain.end(), last) == h.plain.end())
+                        h.plain.emplace_back(last);
+                }
+            }
             if (s->file >= 0 && s->file != file && s->file < static_cast<int>(m.files.size()))
                 h.doc += (h.doc.empty() ? "" : "\n\n") + std::string("(in ") + m.files[static_cast<std::size_t>(s->file)]->name + ")";
             return h;
@@ -3790,9 +4100,9 @@ namespace playground::lang
                     if (x->type[k] != ' ')
                         extent += x->type[k];
                 // A number, or an expression of enumeration constants as FMinus folds it (`amp[CHANNELS]`): a name is the
-                // main module's own constant, else the top level's, else another module's (the file's in C, as FMinus
-                // has it), of a file the program compiles. What does not fold to 1 to 2^30 is 0 (unknown), and Patch
-                // then gives the binding no dials.
+                // main module's own constant, else the top level's, else another module's before the field (the file's
+                // from there on in C, as FMinus has it), of a file the program compiles. What does not fold to 1 to 2^30
+                // is 0 (unknown), and Patch then gives the binding no dials.
                 const std::vector<Token> toks = lex(extent);
                 const Folder::Lookup lookup = [&](std::string_view name) -> std::optional<int64_t> {
                     for (int where = 0; where < 3; ++where)   // the main module's, the top level's, another module's
@@ -3800,7 +4110,8 @@ namespace playground::lang
                             if (isEnumerator(c) && c.name == name && !isScoped(c) && compiled(c.file)
                                 && (where == 0 ? c.container == main
                                     : where == 1 ? c.container.empty()
-                                                 : !c.container.empty() && c.container != main))
+                                                 : !c.container.empty() && c.container != main
+                                                       && m.order.before(c.file, c.at, x->file, x->at)))
                                 return c.value;
                     return std::nullopt;
                 };

@@ -931,7 +931,9 @@ namespace playground::cir
                         for (std::size_t k = 0; k < rit->second.size(); ++k)
                         {
                             const Chain& c = chains_[static_cast<std::size_t>(rit->second[k])];
-                            const int y = body.y0 - 3 * static_cast<int>(k + 1);
+                            // the first row 3 units over the amplifier's body, the next 4 apart: two units between their
+                            // bodies, where a row's name and value fit on one line (a stack of diodes and caps)
+                            const int y = body.y0 - 3 - 4 * static_cast<int>(k);
                             const int left = o.x - (3 * static_cast<int>(c.parts.size()) - 1);
                             for (std::size_t i = 0; i < c.parts.size(); ++i)
                                 v.local.emplace_back(c.parts[i], Pt{ left + 6 * static_cast<int>(i) + 2, y },
@@ -1330,50 +1332,177 @@ namespace playground::cir
 
             void run()
             {
+                plan();
                 // A net that cannot be routed is drawn as name tags, and their flags are walls: the pass runs again
                 // from what it reached (each time one net more is tags, so it ends), so that no wire accepted runs
-                // where a flag came later, and a drawing read back routes the same.
+                // where a flag came later, and a drawing read back routes the same. A wide drawing's groups are passed
+                // one after the other, each time round.
                 for (bool again = true; again;)
                 {
-                    order_.clear();
-                    order();
-                    grid();
-                    if (wide_)
-                    {
-                        // the parts span more than the grid holds: no net is routed, every wired one is name tags
-                        budget_.wide = true;
-                        for (Net& net : d_.nets)
-                            if (net.style == Style::wired && !net.unroutable)
-                            {
-                                net.edges.clear();
-                                net.unroutable = net.pins.size() >= 2;
-                            }
-                        return;
-                    }
-                    // 1. drop what is no longer valid, each net against those before it
-                    for (const int n : order_)
-                        validate(n);
-                    // 2. prune dangling ends and pieces without a pin
-                    for (const int n : order_)
-                        prune(n);
-                    // 3. connect
                     again = false;
-                    for (const int n : order_)
+                    long cells = 0;
+                    for (int g = budget_.wide ? 0 : -1; g < (budget_.wide ? groups_ : 0); ++g)
                     {
-                        const bool was = d_.nets[static_cast<std::size_t>(n)].unroutable;
-                        connect(n);
-                        again = again || (!was && d_.nets[static_cast<std::size_t>(n)].unroutable);
+                        scope_ = g;
+                        order_.clear();
+                        order();
+                        grid();
+                        cells = std::max(cells, budget_.cells);
+                        if (wide_)
+                            continue;                     // (plan() passes no group whose grid would not fit)
+                        // 1. drop what is no longer valid, each net against those before it
+                        for (const int n : order_)
+                            validate(n);
+                        // 2. prune dangling ends and pieces without a pin
+                        for (const int n : order_)
+                            prune(n);
+                        // 3. connect
+                        for (const int n : order_)
+                        {
+                            const bool was = d_.nets[static_cast<std::size_t>(n)].unroutable;
+                            connect(n);
+                            again = again || (!was && d_.nets[static_cast<std::size_t>(n)].unroutable);
+                        }
+                        for (const int n : order_)
+                        {
+                            Net& net = d_.nets[static_cast<std::size_t>(n)];
+                            net.edges.assign(edges_[static_cast<std::size_t>(n)].begin(), edges_[static_cast<std::size_t>(n)].end());
+                        }
                     }
-                    for (const int n : order_)
-                    {
-                        Net& net = d_.nets[static_cast<std::size_t>(n)];
-                        net.edges.assign(edges_[static_cast<std::size_t>(n)].begin(), edges_[static_cast<std::size_t>(n)].end());
-                    }
+                    budget_.cells = cells;
                 }
             }
 
         private:
             static constexpr int kNone = 4;           // no heading
+
+            // ---- the groups (a wide drawing's) ---------------------------------------------------------------------
+            static Box areaOf(Box b) noexcept
+            {
+                if (b.empty())
+                    b = { 0, 0, 0, 0 };
+                const Box g = b.grown(18);
+                return Box{ std::max(g.x0, -kCoordLimit), std::max(g.y0, -kCoordLimit), std::min(g.x1, kCoordLimit),
+                            std::min(g.y1, kCoordLimit) };
+            }
+            static long pointsOf(const Box& b) noexcept { return static_cast<long>(b.x1 - b.x0 + 1) * static_cast<long>(b.y1 - b.y0 + 1); }
+
+            // Whether the parts' grid fits (one pass over the whole drawing, as ever), else its groups: the placed parts
+            // split at the widest empty gap between their bodies, across x or y, again and again until each group's
+            // grid fits (a group with no gap to split at and still too wide routes nothing). A net whose pins lie in
+            // two groups, or in such a group, is name tags (Budget::far).
+            void plan()
+            {
+                budget_.far.clear();
+                Box parts;
+                for (const Part& p : d_.parts)
+                    if (p.placed)
+                        parts = parts.joined(p.body);
+                budget_.wide = pointsOf(areaOf(parts)) > kRouteCells;
+                if (!budget_.wide)
+                    return;
+                groupOf_.assign(d_.parts.size(), -1);
+                groups_ = 0;
+                std::vector<int> all;
+                for (std::size_t i = 0; i < d_.parts.size(); ++i)
+                    if (d_.parts[i].placed)
+                        all.push_back(static_cast<int>(i));
+                std::vector<bool> tooWide;
+                split(all, tooWide);
+                netGroup_.assign(d_.nets.size(), -1);
+                for (std::size_t n = 0; n < d_.nets.size(); ++n)
+                {
+                    Net& net = d_.nets[n];
+                    if (net.style != Style::wired || net.unroutable)
+                        continue;
+                    if (net.pins.empty())
+                    {
+                        net.edges.clear();                // a wire with no pin (pruned, as a pass would)
+                        continue;
+                    }
+                    int g = -1;
+                    bool apart = false;
+                    for (const PinRef& r : net.pins)
+                    {
+                        const int pg = groupOf_[static_cast<std::size_t>(r.part)];
+                        apart = apart || pg < 0 || (g >= 0 && pg != g) || tooWide[static_cast<std::size_t>(std::max(pg, 0))];
+                        g = g < 0 ? pg : g;
+                    }
+                    if (apart && net.pins.size() >= 2)
+                    {
+                        net.edges.clear();
+                        net.unroutable = true;
+                        budget_.far.push_back(static_cast<int>(n));
+                    }
+                    else if (apart)
+                        net.edges.clear();               // a lone pin of a group that routes nothing: no wire
+                    else
+                        netGroup_[n] = g;
+                }
+            }
+
+            void split(std::vector<int> parts, std::vector<bool>& tooWide)
+            {
+                Box box;
+                for (const int i : parts)
+                    box = box.joined(d_.parts[static_cast<std::size_t>(i)].body);
+                const auto emit = [&](bool wide) {
+                    for (const int i : parts)
+                        groupOf_[static_cast<std::size_t>(i)] = groups_;
+                    tooWide.push_back(wide);
+                    ++groups_;
+                };
+                if (parts.empty())
+                    return;
+                if (pointsOf(areaOf(box)) <= kRouteCells)
+                {
+                    emit(false);
+                    return;
+                }
+                // the widest gap between the bodies' extents along x, then along y (ties: x, then the lower cut)
+                int bestGap = 0, bestAxis = -1;
+                long bestCut = 0;
+                for (int axis = 0; axis < 2; ++axis)
+                {
+                    std::vector<std::pair<int, int>> spans;   // (low, high) of each body along the axis
+                    for (const int i : parts)
+                    {
+                        const Box& b = d_.parts[static_cast<std::size_t>(i)].body;
+                        spans.push_back(axis == 0 ? std::pair{ b.x0, b.x1 } : std::pair{ b.y0, b.y1 });
+                    }
+                    std::sort(spans.begin(), spans.end());
+                    int reach = spans.front().second;
+                    for (std::size_t k = 1; k < spans.size(); ++k)
+                    {
+                        const int gap = spans[k].first - reach;
+                        if (gap > bestGap)
+                        {
+                            bestGap = gap;
+                            bestAxis = axis;
+                            bestCut = reach;
+                        }
+                        reach = std::max(reach, spans[k].second);
+                    }
+                }
+                if (bestAxis < 0)
+                {
+                    emit(true);                           // no gap: its parts reach past the grid together
+                    return;
+                }
+                std::vector<int> low, high;
+                for (const int i : parts)
+                {
+                    const Box& b = d_.parts[static_cast<std::size_t>(i)].body;
+                    ((bestAxis == 0 ? b.x1 : b.y1) <= bestCut ? low : high).push_back(i);
+                }
+                split(std::move(low), tooWide);
+                split(std::move(high), tooWide);
+            }
+
+            bool inScope(int n) const noexcept
+            {
+                return scope_ < 0 || netGroup_[static_cast<std::size_t>(n)] == scope_;
+            }
 
             // ---- the grid ------------------------------------------------------------------------------------------
             bool inside(Pt p) const noexcept { return p.x >= area_.x0 && p.x <= area_.x1 && p.y >= area_.y0 && p.y <= area_.y1; }
@@ -1399,6 +1528,8 @@ namespace playground::cir
                         net.edges.clear();
                         continue;
                     }
+                    if (!inScope(static_cast<int>(n)))
+                        continue;                         // another group's
                     Box b;
                     for (const PinRef& r : net.pins)
                         b = b.joined(Box::of(pinOf(r).at, pinOf(r).at));
@@ -1425,22 +1556,16 @@ namespace playground::cir
             // validation); past them still, no grid at all (wide_: nothing is routed).
             void grid()
             {
-                const auto areaOf = [](Box b) {
-                    if (b.empty())
-                        b = { 0, 0, 0, 0 };
-                    const Box g = b.grown(18);
-                    return Box{ std::max(g.x0, -kCoordLimit), std::max(g.y0, -kCoordLimit), std::min(g.x1, kCoordLimit),
-                                std::min(g.y1, kCoordLimit) };
-                };
-                const auto pointsOf = [](const Box& b) { return static_cast<long>(b.x1 - b.x0 + 1) * static_cast<long>(b.y1 - b.y0 + 1); };
+                // (a group's: its parts, its nets' stored wires)
                 Box parts;
-                for (const Part& p : d_.parts)
-                    if (p.placed)
-                        parts = parts.joined(p.body);
+                for (std::size_t i = 0; i < d_.parts.size(); ++i)
+                    if (d_.parts[i].placed && (scope_ < 0 || groupOf_[i] == scope_))
+                        parts = parts.joined(d_.parts[i].body);
                 Box b = parts;
-                for (const Net& n : d_.nets)
-                    for (const UnitEdge& e : n.edges)
-                        b = b.joined(Box::of(e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })));
+                for (std::size_t n = 0; n < d_.nets.size(); ++n)
+                    if (inScope(static_cast<int>(n)))
+                        for (const UnitEdge& e : d_.nets[n].edges)
+                            b = b.joined(Box::of(e.a, e.a + (e.h ? Pt{ 1, 0 } : Pt{ 0, 1 })));
                 if (pointsOf(areaOf(b)) > kRouteCells)
                     b = parts;
                 if (b.empty())
@@ -1483,7 +1608,13 @@ namespace playground::cir
                 edges_.assign(d_.nets.size(), {});
                 for (std::size_t n = 0; n < d_.nets.size(); ++n)
                     if (d_.nets[n].style == Style::wired && !d_.nets[n].unroutable)
-                        edges_[n].insert(d_.nets[n].edges.begin(), d_.nets[n].edges.end());
+                    {
+                        if (inScope(static_cast<int>(n)))
+                            edges_[n].insert(d_.nets[n].edges.begin(), d_.nets[n].edges.end());
+                        else
+                            for (const UnitEdge& e : d_.nets[n].edges)
+                                setEdge(e, static_cast<int>(n));   // another group's wire in this grid: crossed only
+                    }
             }
 
             // the net owning edge (p, p + d)
@@ -1952,6 +2083,9 @@ namespace playground::cir
 
             Drawing& d_;
             Budget& budget_;
+            std::vector<int> groupOf_, netGroup_;     // a wide drawing's: each part's group, each net's (-1: none)
+            int groups_ = 0;
+            int scope_ = -1;                          // the group passed now (-1: the whole drawing)
             std::vector<int> order_;
             Box bounds_{}, area_{};
             int w_ = 0, h_ = 0;

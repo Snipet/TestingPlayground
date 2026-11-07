@@ -24,6 +24,9 @@
 //   RENDER  trace's render with notes, a velocity, the times and a dial asked for: measure_output's (the synth's) or
 //           view_sound's (the effect's) to the bit, and not the render without the dial
 //   BUFFER  a delay line fed back at 1.1: the runaway's and the NaN's verdicts name the buffer trace does not read
+//   BITS    CLICK's bug on a phase kept as an int of 30 bits: its writers (detail: six) the lines that write it by
+//           ^=, &=, |=, >>=, <<= and +=, and not the lines that read it (one by >=, before them all: a reader taken
+//           for a writer would push the last writer past the six)
 //   TIE     two fields bad in the same sample named together; ATTACK (the synth) a note-on's click is the note-on's
 //   LOWSAW  a saw at note 24, whose wrap comes every third window: no click
 //   SHARED  a module Shared's field listed, and watched as shared->gain
@@ -277,6 +280,96 @@ module Effect
             phase += 3 / rate;
             if (phase >= 1)
                 phase -= 1;
+            left[i] *= gain;
+            right[i] *= gain;
+        }
+    }
+};
+)";
+
+    // CLICK's bug on a phase kept as an int of 30 bits (2^30 a cycle), written by the bitwise compound assignments:
+    // every 10007 samples its top bit flipped (half a cycle: the click), and each sample wrapped, its low bits dropped
+    // and its quantum's middle set. The flip's condition reads it first, by `>=` (never false: it is never negative),
+    // so a reader the writers' scan took for one would come before the six writers and push the last past detail's six.
+    const char* const kBitsVoice = R"(module Voice
+{
+    float rate;
+    float level;
+    int acc;
+    int inc;
+    int count;
+    bool held;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void start(float note, float vel)
+    {
+        inc = (int)(1073741824.0f * 440 * expf(0.0577622650f * (note - 69)) / rate);
+        level = 0.3f;
+        held = true;
+    }
+
+    void stop()
+    {
+        held = false;
+    }
+
+    bool process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            if (count >= 10007 && acc >= 0)     // (acc is never negative: a read before its writers)
+            {
+                count = 0;
+                acc ^= 0x20000000;
+            }
+            acc += inc;
+            acc &= 0x3FFFFFFF;
+            acc >>= 4;
+            acc <<= 4;
+            acc |= 8;
+            if (!held)
+                level *= 0.999f;
+            const float y = level * sinf(5.85167151e-9f * (float)acc);
+            left[i] += y;
+            right[i] += y;
+        }
+        return held || level > 0.0001f;
+    }
+};
+)";
+
+    const char* const kBitsEffect = R"(module Effect
+{
+    float rate;
+    int acc;
+    int count;
+
+    void init(float r)
+    {
+        rate = r;
+    }
+
+    void process(float* restrict left, float* restrict right, int n)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            count += 1;
+            if (count >= 10007 && acc >= 0)     // (acc is never negative: a read before its writers)
+            {
+                count = 0;
+                acc ^= 0x20000000;
+            }
+            acc += (int)(1073741824.0f * 3 / rate);
+            acc &= 0x3FFFFFFF;
+            acc >>= 4;
+            acc <<= 4;
+            acc |= 8;
+            const float gain = 0.5f + 0.5f * sinf(5.85167151e-9f * (float)acc);
             left[i] *= gain;
             right[i] *= gain;
         }
@@ -1228,6 +1321,30 @@ PROBE(dsp, debug)
                                  && has(c0->culprits[0].writes, lineOf(clickProgram, kInstrument ? "phase = 0.75f;" : "phase = 0.25f;")) ? 1 : 0, 1);
     P.ge("click.step_vs_usual", c0 != nullptr && !c0->culprits.empty() ? c0->culprits[0].step / std::max(c0->culprits[0].usual, 1e-12) : 0.0, 10.0);
     P.eq("click.self_check_same", !click.splitDiffers && anyHas(click.lines, "gave the same bits") ? 1 : 0, 1);
+
+    // ---- BITS: a field's writers by the bitwise compound assignments ---------------------------------------------------
+    {
+        const std::string program = kInstrument ? kBitsVoice : kBitsEffect;
+        ms::TraceRequest q = clickReq;
+        q.detail = true;                                   // six writers a culprit
+        const ms::TraceResult r = ms::trace(pg::singleFile(program), q);
+        print("BITS", r);
+        const ms::TraceProblem* c = firstOf(r, ms::TraceFind::click);
+        const ms::TraceCulprit* acc = nullptr;
+        if (c != nullptr)
+            for (const ms::TraceCulprit& k : c->culprits)
+                acc = acc == nullptr && k.path.rfind("acc", 0) == 0 ? &k : acc;
+        const auto writes = [&](const char* text) { return acc != nullptr && has(acc->writes, lineOf(program, text)); };
+        P.eq("bits.found", c != nullptr ? 1 : 0, 1);
+        P.near("bits.at_sample", c != nullptr ? static_cast<double>(c->at) : -1.0, 10006.0, 1.0);
+        P.eq("bits.culprit_acc", acc != nullptr ? 1 : 0, 1);
+        P.eq("bits.writer_xor", writes("acc ^= 0x20000000;") ? 1 : 0, 1);
+        P.eq("bits.writer_and", writes("acc &= 0x3FFFFFFF;") ? 1 : 0, 1);
+        P.eq("bits.writer_or", writes("acc |= 8;") ? 1 : 0, 1);
+        P.eq("bits.writer_shifts", writes("acc >>= 4;") && writes("acc <<= 4;") ? 1 : 0, 1);
+        P.eq("bits.writer_add", writes("acc += ") ? 1 : 0, 1);
+        P.eq("bits.reader_not_writer", acc != nullptr && !writes("(float)acc") && !writes("acc >= 0") && acc->writes.size() == 6 ? 1 : 0, 1);
+    }
 
     // ---- LOCAL ---------------------------------------------------------------------------------------------------------
     const std::string localProgram = kInstrument ? kLocalVoice : kLocalEffect;
