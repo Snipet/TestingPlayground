@@ -7,18 +7,23 @@
 //           voice sounding
 //   ORDER   in blocks of 100: noteOn before its voice's start and noteOff before its voice's stop; a note-on at a tick's
 //           sample comes before that tick; the sustain pedal's notes end as it goes up (their noteOff, then their
-//           stops); a key pressed again while its note is on gets its noteOff and noteOn, then its voice's stop and
-//           start; All Notes Off ends each note (its noteOff, in key order) before the voices' stops; prepare() ends
-//           the note that sounds (its noteOff, then its stop). noteOn's velocity is the voice's; each noteOn gets one
-//           noteOff
+//           stops), not at their key-up (the ticks Shared had counted at each noteOff); a key pressed again while its
+//           note is on gets its noteOff and noteOn, then its voice's stop and start; All Notes Off ends each note (its
+//           noteOff, in key order) before the voices' stops; prepare() ends the note that sounds (its noteOff, then its
+//           stop). noteOn's velocity is the voice's, a velocity past 1 clamped to 1; each noteOn gets one noteOff
 //   DIALS   a param of Shared named as a dial: Shared's init reads the dial's default (not the param's own), its first
 //           tick the value set before the first block (a float's, an int's, a bool's); a dial moved glides in Shared as
 //           its stream does, tick by tick, from the block it moves in to exactly its value 20 ms later, never back; a
-//           param of Shared that no dial is named as keeps its own default, with a note
+//           param of Shared that no dial is named as keeps its own default, with a note; one named as a circuit's pot
+//           (a netlist's module whose set() the program never calls) reads that pot's dial, its default in init
 //   SWAP    a new program's Shared hears the held key start again (its noteOn, then the voice's start), and that key's
-//           release (its noteOff, then the stop)
+//           release (its noteOff, then the stop); its noteOn there reads the dials its first glides snap to (the host's
+//           value, not the old program's glide under way) and, carried (Controls.h's DialCarry), the carry's value
 //   REVERT  a program that stops in its first block, offered revertible while a key is held: the Engine goes back, and
-//           the old program's Shared takes up its note again (noteOff, noteOn, as the key starts again on it)
+//           the old program's Shared takes up its note again (noteOff, noteOn, as the key starts again on it); one that
+//           stops at a later note-on: a key let go since gets its noteOff at the revert, or, the pedal down, when the
+//           pedal comes up; a key let go under the pedal before the swap whose pedal comes up while the old program
+//           goes gets its noteOff then, before its voice's stop, and nothing at the revert
 //   OTHER   a Shared method named tick, noteOn or noteOff declared otherwise is the program's own: never called, a note
 //           at its place says so, and the program plays bit for bit as the same program with those methods renamed;
 //           one that could allocate is refused with the audio thread's words
@@ -33,6 +38,7 @@
 //           dial keeps its default: the effect's Shared has its init and end only
 #include "Probe.h"
 
+#include "AutoClipper.h"
 #include "Rig.h"
 
 #include "Product.h"
@@ -41,7 +47,9 @@
 #include "dsp/Measure.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -65,15 +73,26 @@ namespace
         return std::nan("");
     }
 
-    // The log an ORDER program keeps in its Shared: shared->log[0 .. count).
-    std::vector<int> logOf(const pg::Patch* p)
+    // Arrays of the program's Shared as far as a count of its says: shared->array[0 .. count), then `then`'s, `kept` at
+    // most (the field map lists an array of 16 elements at most).
+    std::vector<int> entries(const pg::Patch* p, const std::string& count, int kept, const std::string& array, int size,
+                             const std::string& then = {})
     {
         std::vector<int> out;
-        const int n = static_cast<int>(field(p, "shared->count"));
-        for (int k = 0; k < std::min(n, 16); ++k)
-            out.push_back(static_cast<int>(field(p, "shared->log[" + std::to_string(k) + "]")));
+        const double n = field(p, "shared->" + count);
+        for (int k = 0; std::isfinite(n) && k < std::min(static_cast<int>(n), kept); ++k)
+        {
+            const std::string at = k < size ? array + "[" + std::to_string(k) + "]" : then + "[" + std::to_string(k - size) + "]";
+            const double v = field(p, "shared->" + at);
+            out.push_back(std::isfinite(v) ? static_cast<int>(v) : -1);
+        }
         return out;
     }
+
+    // The log an ORDER program keeps in its Shared (shared->log, then more, as far as count), and the ticks it counted
+    // at each noteOff.
+    std::vector<int> logOf(const pg::Patch* p) { return entries(p, "count", 24, "log", 16, "more"); }
+    std::vector<int> offTicksOf(const pg::Patch* p) { return entries(p, "offs", 8, "offTicks", 8); }
 
     std::string text(const std::vector<int>& v)
     {
@@ -111,12 +130,14 @@ module Voice
 };
 )";
 
-    // ORDER (and SWAP, FROZEN): the hooks and the voices' calls logged in Shared, a code each: 1000 + note a noteOn,
-    // 2000 + key a start, 3000 + key a stop, 4000 + note a noteOff (16 kept, all counted); the tick a noteOn is followed
-    // by, as Shared's tick count then.
+    // ORDER (and SWAP, REVERT, FROZEN): the hooks and the voices' calls logged in Shared, a code each: 1000 + note a
+    // noteOn, 2000 + key a start, 3000 + key a stop, 4000 + note a noteOff (24 kept, in two arrays of at most 16, as the
+    // field map lists them, and all counted); the tick a noteOn is
+    // followed by, as Shared's tick count then; and the ticks counted at each noteOff (8 kept).
     const char* const kOrder = R"(module Shared
 {
-    int log[16];
+    int log[16], more[8];
+    int offTicks[8];
     int count, ons, offs, ticks, watched;
     bool watch;
     float velocity;
@@ -124,6 +145,8 @@ module Voice
     {
         if (count < 16)
             log[count] = code;
+        else if (count < 24)
+            more[count - 16] = code;
         count += 1;
     }
     void tick(int n)
@@ -144,6 +167,8 @@ module Voice
     void noteOff(float note)
     {
         put(4000 + (int)note);
+        if (offs < 8)
+            offTicks[offs] = ticks;
         offs += 1;
     }
 };
@@ -224,6 +249,30 @@ module Voice
     param bool on [[fminus::default(0)]];
     Shared* shared;
     bool held;
+    void start(float note, float velocity) { held = true; }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n) { return held; }
+};
+)";
+
+    // DIALS: a param of Shared named as a circuit's pot, AutoClipper.h's potclip.cir (its pot drive, 0.5 by default), whose
+    // set() the voice never calls: the pot is a dial.
+    const char* const kPotShared = R"(#include "potclip.cir"
+
+module Shared
+{
+    param float drive [[fminus::default(0.9)]];
+    float atInit, atTick;
+    void init(float rate) { atInit = drive[0]; }
+    void tick(int n) { atTick = drive[0]; }
+};
+
+module Voice
+{
+    PotClip clip;
+    Shared* shared;
+    bool held;
+    void init(float rate) { clip.init(rate); }
     void start(float note, float velocity) { held = true; }
     void stop() { held = false; }
     bool process(float* restrict left, float* restrict right, int n) { return held; }
@@ -376,6 +425,23 @@ module Voice
 };
 )";
 
+    // REVERT: a program whose start never ends for a note above 70, so that it stops at a later note-on.
+    const char* const kSpinHigh = R"(module Voice
+{
+    int spins;
+    bool held;
+    void start(float note, float velocity)
+    {
+        held = true;
+        if (note > 70)
+            while (1)
+                spins = spins + 1;
+    }
+    void stop() { held = false; }
+    bool process(float* restrict left, float* restrict right, int n) { return held; }
+};
+)";
+
     // The effect's: Shared's methods of the hooks' names and a param named as the dial, none of which the plugin uses.
     [[maybe_unused]] const char* const kEffectShared = R"(module Shared
 {
@@ -405,6 +471,17 @@ module Effect
 )";
 
     probe::Stereo silence(std::size_t n) { return probe::Stereo(n); }
+
+    // One block of 256 samples of silence through the Engine, the dials `norm` in program `meaning`'s controls (0: the
+    // one that plays; Engine::setControls), with `events`.
+    void block(pg::Engine& e, const std::array<float, pg::kMaxControls>& norm, uint64_t meaning = 0,
+               const std::vector<pg::Event>& events = {})
+    {
+        std::vector<float> l(256), r(256);
+        float* channels[2] = { l.data(), r.data() };
+        e.setControls(norm, meaning);
+        e.process(channels, 2, 256, events);
+    }
 
     // A Rig with a program loaded; false (the errors printed) when it does not compile.
     bool loaded(probe::Rig& rig, const std::string& source, std::string* notes = nullptr)
@@ -484,6 +561,9 @@ PROBE(dsp, shared)
         // The noteOn at 4096 came before that sample's tick: the 257th (ticks at 0, 16, ...).
         exactly(P, "order.event_before_tick", field(p, "shared->watched"), 257.0);
         exactly(P, "order.velocity", field(p, "shared->velocity"), 0.8f);
+        // The ticks Shared had counted at each noteOff (those at 0, 16, ... before it): 60's at its key-up (5000: 313),
+        // 62's at the pedal's going up (7000: 438), not at its key-up under the pedal (6500: 407).
+        sameText(P, "order.pedal_note_off_at_pedal_up", text(offTicksOf(p)), "313 438");
     }
     {
         probe::Rig rig(kFs, 512);
@@ -501,13 +581,13 @@ PROBE(dsp, shared)
         if (log.size() == 8)
             std::sort(log.begin() + 6, log.end());           // the voices' stops: in their table's order
         sameText(P, "order.all_notes_off", text(log), "1065 2065 1067 2067 4065 4067 3065 3067");
-        rig.run(silence(500), 100, { on(0, 69, 0.5f) });
+        rig.run(silence(500), 100, { on(0, 69, 1.5f) });   // a velocity past 1
         rig.engine().prepare(kFs, 512);
         const std::vector<int> all = logOf(p);
         sameText(P, "order.prepare", text(std::vector<int>(all.begin() + std::min<std::ptrdiff_t>(8, std::ssize(all)), all.end())),
                  "1069 2069 4069 3069");
         P.eq("order.balanced", field(p, "shared->ons") == field(p, "shared->offs") ? 1 : 0, 1);
-        exactly(P, "order.velocity_clamped", field(p, "shared->velocity"), 0.5);
+        exactly(P, "order.velocity_clamped", field(p, "shared->velocity"), 1.0);
     }
 
     // ---- DIALS ---------------------------------------------------------------------------------------------------------
@@ -538,6 +618,26 @@ PROBE(dsp, shared)
         rig.run(silence(256), 256, { on(10, 60) });
         exactly(P, "dials.at_note", field(p, "shared->atNote"), 3.0);
     }
+    {
+        // A param of Shared named as a circuit's pot reads that pot's dial.
+        probe::Rig rig(kFs, 512);
+        std::string notes;
+        const bool ok = rig.load(pg::Sources{ { pg::kProgramName, kPotShared }, { "potclip.cir", probe::kPotClipper } }, &notes);
+        if (!ok)
+            std::printf("%s", notes.c_str());
+        P.eq("dials.circuit_compiles", ok ? 1 : 0, 1);
+        int pot = -1;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (rig.controls()[static_cast<std::size_t>(c)].used && std::string(rig.controls()[static_cast<std::size_t>(c)].name) == "drive")
+                pot = c;
+        const pg::Patch* p = rig.engine().playingPatch();
+        P.eq("dials.circuit_pot", pot >= 0 && p != nullptr && p->sharedDials() == (1u << pot) && !has(notes, "Shared::drive") ? 1 : 0, 1);
+        exactly(P, "dials.circuit_init_default", field(p, "shared->atInit"), 0.5);
+        if (pot >= 0)
+            rig.norm()[static_cast<std::size_t>(pot)] = dialNorm(rig, pot, 0.25f);
+        rig.run(silence(512), 256);
+        exactly(P, "dials.circuit_first_tick", field(p, "shared->atTick"), 0.25);
+    }
 
     // ---- SWAP ----------------------------------------------------------------------------------------------------------
     {
@@ -553,6 +653,57 @@ PROBE(dsp, shared)
         const pg::Patch* p = e.playingPatch();
         P.eq("swap.new_program", p != nullptr && p->program() == 99 ? 1 : 0, 1);
         sameText(P, "swap.new_shared_hears_held_key", text(logOf(p)), "1060 2060 4060 3060");
+        e.collect();
+    }
+    {
+        // Its noteOn as the held key starts again on it reads what its first glides snap to: the host's value (3), not
+        // the old program's glide there from 7, under way.
+        probe::Rig rig(kFs, 512);
+        loaded(rig, kDials);
+        pg::Engine& e = rig.engine();
+        std::array<float, pg::kMaxControls> n = rig.norm();
+        n[0] = dialNorm(rig, 0, 7.0f);
+        block(e, n, 0, { pg::Event{ 10, pg::EventKind::noteOn, 60, 0.8f } });
+        block(e, n);
+        n[0] = dialNorm(rig, 0, 3.0f);                   // gliding for 20 ms (960 samples) from here
+        block(e, n);
+        const double gliding = field(e.playingPatch(), "shared->prev");   // where the old program's last tick had it
+        pg::Patch::Result next = pg::Patch::compile(kDials, e.rate());
+        P.eq("swap.dials_compiles", next.patch ? 1 : 0, 1);
+        next.patch->setProgram(99);
+        e.offer(std::move(next.patch));
+        block(e, n);                                     // taken at the block's start
+        const pg::Patch* p = e.playingPatch();
+        P.eq("swap.dials_old_gliding", p != nullptr && p->program() == 99 && gliding > 3.0 && gliding < 7.0 ? 1 : 0, 1);
+        exactly(P, "swap.dials_snap_at_note", field(p, "shared->atNote"), 3.0);
+        exactly(P, "swap.dials_snap_first_tick", field(p, "shared->atTick"), 3.0);
+        e.collect();
+    }
+    {
+        // A dial carried (Controls.h's DialCarry, as the processor's carrier makes it): the carry's value while the host's
+        // is the one it was made from, in its noteOn there and its first tick.
+        probe::Rig rig(kFs, 512);
+        loaded(rig, kDials);
+        pg::Engine& e = rig.engine();
+        const uint64_t from = rig.program();
+        std::array<float, pg::kMaxControls> n = rig.norm();
+        n[0] = dialNorm(rig, 0, 7.0f);
+        block(e, n, 0, { pg::Event{ 10, pg::EventKind::noteOn, 60, 0.8f } });
+        block(e, n);
+        pg::Patch::Result next = pg::Patch::compile(kDials, e.rate());
+        pg::DialCarry carry;
+        carry.from = from;
+        carry.slots = 1u;                                // drive's
+        carry.fromNorm = n;
+        carry.plain[0] = 4.5f;
+        next.patch->setCarry(carry);
+        next.patch->setProgram(99);
+        e.offer(std::move(next.patch));
+        block(e, n, from);                               // the host's values still in the old program's controls
+        const pg::Patch* p = e.playingPatch();
+        P.eq("swap.dials_carried_new", p != nullptr && p->program() == 99 ? 1 : 0, 1);
+        exactly(P, "swap.dials_carried_at_note", field(p, "shared->atNote"), 4.5);
+        exactly(P, "swap.dials_carried_first_tick", field(p, "shared->atTick"), 4.5);
         e.collect();
     }
 
@@ -572,6 +723,43 @@ PROBE(dsp, shared)
         sameText(P, "revert.shared_takes_it_up", text(logOf(old)), "1060 2060 4060 1060 2060 3060 4060 3060");
         P.eq("revert.balanced", field(old, "shared->ons") == field(old, "shared->offs") ? 1 : 0, 1);
         e.collect();
+    }
+    {
+        // A program that stops at a later note-on (72's, 300 samples after the swap), in blocks of 100: `before` played
+        // on the old program, `after` from the swap on. The old program's log, and whether its noteOns and noteOffs
+        // balance.
+        const auto revertLater = [&](const char* key, const std::vector<probe::Note>& before, const std::vector<probe::Note>& after,
+                                     const std::string& want) {
+            probe::Rig rig(kFs, 512);
+            loaded(rig, kOrder);
+            pg::Engine& e = rig.engine();
+            rig.run(silence(2000), 100, before);
+            const pg::Patch* old = e.playingPatch();
+            pg::Patch::Result next = pg::Patch::compile(kSpinHigh, e.rate());
+            next.patch->setProgram(77);
+            e.offer(std::move(next.patch), true);
+            rig.run(silence(2000), 100, after);
+            const bool back = e.playingPatch() == old && e.stops() == 1;
+            const bool balanced = field(old, "shared->ons") == field(old, "shared->offs");
+            if (!back || !balanced)
+                std::printf("%s: went back %d, balanced %d\n", key, back ? 1 : 0, balanced ? 1 : 0);
+            sameText(P, key, back && balanced ? text(logOf(old)) : std::string("-"), want);
+            e.collect();
+        };
+        // 60 let go before the revert: its noteOff at the revert; the held 62 ends and starts again; 72 starts. The old
+        // program's voices fading since the swap are its again (Engine.h, "A program that stops"): 62's stops with the
+        // new one at its key-up (3062 twice), 60's as its fade ends (the last 3060), each after its note's noteOff.
+        revertLater("revert.later_released", { on(100, 60), on(200, 62) }, { off(100, 60), on(300, 72), off(600, 62), off(700, 72) },
+                    "1060 2060 1062 2062 4060 4062 1062 2062 1072 2072 4062 3062 3062 4072 3072 3060");
+        // The same under the pedal, down after the swap: 60's noteOff when the pedal comes up, after the revert.
+        revertLater("revert.later_pedal", { on(100, 60), on(200, 62) },
+                    { pedal(50, true), off(100, 60), on(300, 72), pedal(500, false), off(600, 62), off(700, 72) },
+                    "1060 2060 1062 2062 4062 1062 2062 1072 2072 4060 4062 3062 3062 4072 3072 3060");
+        // 60 let go under the pedal before the swap, the pedal up while the old program goes: its noteOff then, before
+        // the stop the pedal's going up gives its voice, and nothing of it at the revert.
+        revertLater("revert.pedal_up_while_going", { on(100, 60), on(200, 62), pedal(300, true), off(400, 60) },
+                    { pedal(100, false), on(300, 72), off(600, 62), off(700, 72) },
+                    "1060 2060 1062 2062 4060 3060 4062 1062 2062 1072 2072 4062 3062 3062 4072 3072");
     }
 
     // ---- OTHER ---------------------------------------------------------------------------------------------------------
