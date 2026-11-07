@@ -4,6 +4,9 @@
 //   FILES     the program's files, the editor's tabs (the one shown marked, one with errors a red dot): a click shows
 //             it, a double click renames it, the cross on a row closes it (not the program, the first); the header's
 //             + makes a new file
+//   ASSETS    the program's samples (dsp/Assets.h: WAV, AIFF and FLAC files a program reads with #pragma sample),
+//             each with its length, channels, rate and size, a tick on those the program that plays reads: the
+//             header's + adds files (a chooser), a file dropped on the panel is added too, the cross on a row removes it
 //   FOLDER    the program's files in a folder on disk, synced both ways (plugin/FolderSync.h): off, a row that turns
 //             it on; on, Open in VS Code, Show in Finder (the folder's name), Run on save (ticked when on), a row a
 //             conflict (a red dot: a click asks which side to keep), and its notes as captions; the header's cross
@@ -40,8 +43,8 @@ namespace playground::ui
     class ExplorerItem final : public Item
     {
     public:
-        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder };
-        static constexpr int kSections = 7;
+        enum class Section : uint8_t { files, presets, projects, library, examples, ir, folder, assets };
+        static constexpr int kSections = 8;
 
         struct Row
         {
@@ -145,7 +148,7 @@ namespace playground::ui
         Hooks hooks_;
         funkgui::Rect bounds_;
         std::vector<Group> groups_;
-        std::array<bool, kSections> open_{ true, true, true, true, true, true, true };
+        std::array<bool, kSections> open_{ true, true, true, true, true, true, true, true };
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;

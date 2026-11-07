@@ -3053,6 +3053,13 @@ namespace playground::ui
             hooks.close = [this](ExplorerItem::Section s, const ExplorerItem::Row& r) {
                 if (s == ExplorerItem::Section::files)
                     closeFile(r.index);
+                else if (s == ExplorerItem::Section::assets)
+                {
+                    std::string why;
+                    notice(port_.removeAsset(r.key, why) ? "SAMPLE REMOVED: " + upper(r.key) : "NOT REMOVED: " + upper(why));
+                    explorerStale_ = true;
+                    dirty_ = true;
+                }
             };
             hooks.action = [this](ExplorerItem::Section s) {
                 if (s == ExplorerItem::Section::files)
@@ -3063,6 +3070,8 @@ namespace playground::ui
                 }
                 else if (s == ExplorerItem::Section::presets)
                     openProjects(true);
+                else if (s == ExplorerItem::Section::assets)
+                    openSamples();
                 else if (s == ExplorerItem::Section::projects)
                     openProjects(false);
                 else if (s == ExplorerItem::Section::folder)
@@ -4023,8 +4032,35 @@ namespace playground::ui
     {
         if (dialogOpen())
             return false;
-        return std::any_of(paths.begin(), paths.end(),
-                           [this](const std::string& p) { return (chatOpen_ && hasChat() && isPictureName(p)) || isProjectFile(p); });
+        return std::any_of(paths.begin(), paths.end(), [this](const std::string& p) {
+            return (chatOpen_ && hasChat() && isPictureName(p)) || isProjectFile(p) || isAudioPath(p);
+        });
+    }
+
+    // The ASSETS header's +: audio files to add as samples (EditorPort::addAssets), decoded on this thread.
+    void Panel::openSamples()
+    {
+        if (host_ == nullptr)
+            return;
+        funkgui::FileRequest request;
+        request.mode = funkgui::FileRequest::Mode::openMany;
+        request.title = "Add samples";
+        request.pattern = "*.wav;*.wave;*.aif;*.aiff;*.flac";
+        host_->chooseFiles(request, [this](const std::vector<std::string>& paths) { addSamples(paths); });
+    }
+
+    void Panel::addSamples(const std::vector<std::string>& paths)
+    {
+        if (paths.empty())
+            return;
+        std::string why;
+        const int added = port_.addAssets(paths, why);
+        if (!why.empty())
+            notice((added > 0 ? "ADDED " + std::to_string(added) + "; NOT ADDED: " : std::string("NOT ADDED: ")) + upper(why));
+        else
+            notice(added == 1 ? std::string("SAMPLE ADDED: #PRAGMA SAMPLE READS IT") : "SAMPLES ADDED: " + std::to_string(added));
+        explorerStale_ = true;
+        dirty_ = true;
     }
 
     void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
@@ -4059,12 +4095,15 @@ namespace playground::ui
         const bool onChat = dropHover_;
         dropActive_ = dropHover_ = false;
         dirty_ = true;
-        std::vector<std::string> projects;
+        std::vector<std::string> projects, samples;
         for (const std::string& p : paths)
             if (isProjectFile(p))
                 projects.push_back(p);
+            else if (isAudioPath(p))
+                samples.push_back(p);
         if (!projects.empty())
             importFiles(projects);                       // anywhere on the panel
+        addSamples(samples);                             // anywhere too: the explorer's ASSETS
         if (!onChat)
             return;
         std::vector<std::string> pictures;
@@ -4338,7 +4377,8 @@ namespace playground::ui
             key.mix(files().name(i)).mix(i == files().active()).mix(erred(files().name(i)));
         const bool frozenPlays = port_.frozen();
         key.mix(files().count()).mix(files().irOpen()).mix(files().irShown()).mix(files().irView()).mix(frozenPlays)
-            .mix(st.name).mix(st.preset).mix(listsRevision_).mix(folderSeen_);
+            .mix(st.name).mix(st.preset).mix(listsRevision_).mix(folderSeen_).mix(port_.assetsRevision())
+            .mix(port_.statusRevision());
         if (!explorerStale_ && key.h == explorerKey_)
             return;
         explorerKey_ = key.h;
@@ -4370,6 +4410,29 @@ namespace playground::ui
             {
                 g.action = chat::Icon::plus;
                 g.actionTitle = "New file";
+            }
+            groups.push_back(std::move(g));
+        }
+        {
+            // The samples (dsp/Assets.h): a row each, ticked when the program that plays reads it; + adds files.
+            ExplorerItem::Group g;
+            g.section = S::assets;
+            g.title = "ASSETS";
+            g.action = chat::Icon::plus;
+            g.actionTitle = "Add a sample";
+            g.empty = "Samples: + or drop a WAV, AIFF or FLAC";
+            for (const AssetEntry& e : port_.assets())
+            {
+                ExplorerItem::Row r;
+                r.label = e.name;
+                r.detail = e.detail.substr(0, e.detail.find(','));   // its length; the rest under the pointer
+                r.icon = chat::Icon::wave;
+                r.marked = e.used;
+                r.closable = true;
+                r.key = e.name;
+                r.help = "A sample, " + e.detail + (e.used ? "; the program reads it" : "; #pragma sample reads it");
+                r.spec = upper(e.name) + "   " + upper(e.detail) + (e.used ? "   THE PROGRAM READS IT" : "   #PRAGMA SAMPLE READS IT");
+                g.rows.push_back(std::move(r));
             }
             groups.push_back(std::move(g));
         }
@@ -4585,6 +4648,9 @@ namespace playground::ui
                 break;
             case S::folder:
                 folderRow(row);
+                break;
+            case S::assets:
+                notice(upper(row.key) + ": #PRAGMA SAMPLE <FIELD> \"" + upper(row.key) + "\" READS IT (SAMPLE.FM)");
                 break;
         }
         explorerStale_ = true;                           // what it shows may have changed (a tab, a tick)

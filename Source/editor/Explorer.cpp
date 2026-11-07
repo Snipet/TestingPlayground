@@ -436,6 +436,7 @@ namespace playground::ui
                             : g.section == Section::library    ? (row.marked ? "Shows this library file" : "Adds this library file to the program")
                             : g.section == Section::examples   ? "Puts this example in the program and runs it"
                             : g.section == Section::presets    ? "Applies this preset's dials"
+                            : g.section == Section::assets     ? "A sample: #pragma sample reads it"
                                                                : "Opens this project's newest version";
                     if (row.error)
                         it.description = "Has errors";
@@ -500,10 +501,12 @@ namespace playground::ui
             return;
         }
         const char* line = h->part == Part::header ? "SECTION   SHOW OR HIDE IT"
-                         : h->part == Part::close  ? "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)"
+                         : h->part == Part::close  ? (s == Section::assets ? "REMOVE   THE SAMPLE GOES (A PROGRAM THAT READS IT HEARS SILENCE FROM ITS NEXT RUN)"
+                                                                           : "CLOSE   THE FILE'S TAB GOES (IT ASKS FIRST WHEN THE FILE HAS TEXT)")
                          : h->part == Part::action ? (s == Section::files     ? "NEW FILE   A TAB OF ITS OWN, ITS NAME TO TYPE"
                                                       : s == Section::folder  ? "STOP   THE FOLDER STAYS AS IT IS; NOTHING SYNCS UNTIL IT IS ON AGAIN"
                                                       : s == Section::presets ? "NEW PRESET   THE DIALS AS THEY ARE, UNDER A NAME, IN THE PROJECT OPEN"
+                                                      : s == Section::assets  ? "ADD A SAMPLE   A WAV, AIFF OR FLAC FILE (OR DROP ONE ON THE PANEL)"
                                                                               : "PROJECTS   SAVE A VERSION, OPEN AN OLDER ONE, DELETE")
                          : s == Section::files     ? "FILE   SHOW IT   DOUBLE-CLICK RENAMES IT"
                          : s == Section::library   ? "LIBRARY   ADD IT AS A TAB (THE PROGRAM INCLUDES IT), OR SHOW IT"

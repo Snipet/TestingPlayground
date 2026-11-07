@@ -726,6 +726,8 @@ namespace playground::ui
         void syncPictures();                             // the registry follows chat_ (the attached and the sent)
         void releasePictures();
         void openPictures();                             // the attach button's file chooser
+        void openSamples();                              // the ASSETS header's: audio files as samples
+        void addSamples(const std::vector<std::string>& paths);
         std::size_t entriesAtFold_ = 0;
         int modelItem_ = -1, thinkingItem_ = -1, fastItem_ = -1, webItem_ = -1, sendItem_ = -1;
         funkgui::CellModel* zoom_ = nullptr;             // the zoom's steps (zoomModel_)
