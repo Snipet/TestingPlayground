@@ -11,16 +11,20 @@
 // the program's files (a folder, or the files), and the render's settings as JSON (measure_output's: notes, velocity,
 // hold_seconds, tail_seconds, bpm, modwheel, pitchbend, dials, dials_from, window, base_hz, spectrum, scenario,
 // try_edits; and trace's fields, voice and export's wav and every), with a few options over it (--dial, --field,
-// --every, --pcm24) and an effect's own input as a WAV (--input). There is no plugin here: the dials not named are at
-// the program's defaults, a scenario's "host" rate and block are the tools' defaults (48 kHz, 256), and a "capture" (the
-// user's recording, which never leaves the plugin) is refused. A library file the program #includes and the files lack
-// is added as LIBRARY adds it (fminus/LibraryIncludes.h), saying so. There is no time limit.
+// --every, --pcm24) and an effect's own input as a WAV (--input: up to what a render plays of it, 310 s up to 96 kHz,
+// never cut short). There is no plugin here: the dials not named are at the program's defaults, a scenario's "host" rate
+// and block are the tools' defaults (48 kHz, or an input's own rate; 256), and a "capture" (the user's recording, which
+// never leaves the plugin) is refused. A folder's FOLDER sync copies (host.fm, a library file) are left out, as the plugin
+// leaves them, and a library file the program #includes and the files lack is added as LIBRARY adds it
+// (fminus/LibraryIncludes.h), saying so. There is no time limit.
 //
 // Exit codes: 0 rendered; 1 a usage, input or output error (a request the tools would refuse too, a file that could not
 // be read or written); 2 the program did not compile (the compiler's messages on stderr); 3 the program stopped (a call
 // past its loop budget or a failed bounds check, Patch.h: the report and the files are still written, the program faded
 // out from there, as the plugin plays it; an init's stop renders nothing). The report goes to stdout (or --report's
-// file), every other line to stderr.
+// file), every other line to stderr: among them a note for what the request names and the program lacks (a dial, a
+// field; the report says the dials too, the metrics list both), which a script that keeps no report would miss. A file
+// is written whole or not at all, Ctrl-C included.
 //
 // juce_core (juce::var, JSON) and the DSP library: no processor, no editor, no FunkGui (cmake/LintLayers.cmake).
 #include "plugin/ChatScenario.h"
@@ -30,14 +34,17 @@
 #include "dsp/Measure.h"
 #include "dsp/Sources.h"
 #include "fminus/LibraryIncludes.h"
+#include "fminus/Patch.h"
 
 #include "Product.h"
 
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -48,7 +55,14 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
+
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace ms = playground::measure;
@@ -129,47 +143,102 @@ namespace
         return pg::validFileName(name) && (lower == ".fm" || lower == ".cir" || lower == ".gui" || lower == ".sc");
     }
 
+    // A text of kMaxFileBytes at most: a file's, or what is no file's (a pipe: <(...), /dev/stdin), read as it comes, to
+    // a byte past the limit.
     bool readText(const fs::path& p, std::string& out, std::string& why)
     {
         std::error_code ec;
-        const std::uintmax_t size = fs::file_size(p, ec);
-        if (ec)
+        const fs::file_status st = fs::status(p, ec);
+        if (!fs::exists(st))
         {
-            why = "cannot read " + p.string() + " (" + ec.message() + ")";
+            why = "cannot read " + p.string() + " ("
+                + (ec ? ec.message() : std::make_error_code(std::errc::no_such_file_or_directory).message()) + ")";
             return false;
         }
-        if (size > kMaxFileBytes)
+        if (fs::is_directory(st))
         {
-            why = p.string() + " is " + sizeText(static_cast<std::size_t>(size)) + ", past the " + sizeText(kMaxFileBytes)
-                + " a program's file takes";
+            why = p.string() + " is a folder, not a file";
             return false;
         }
+        const std::string past = ", past the " + sizeText(kMaxFileBytes) + " the renderer reads of a file";
+        if (fs::is_regular_file(st))
+            if (const std::uintmax_t size = fs::file_size(p, ec); !ec && size > kMaxFileBytes)
+            {
+                why = p.string() + " is " + sizeText(static_cast<std::size_t>(size)) + past;
+                return false;
+            }
         std::ifstream in(p, std::ios::binary);
-        std::ostringstream text;
-        text << in.rdbuf();
-        if (!in.good() && !in.eof())
+        std::string text;
+        char chunk[1 << 14];
+        while (in && (in.read(chunk, sizeof chunk), in.gcount() > 0))
+        {
+            text.append(chunk, static_cast<std::size_t>(in.gcount()));
+            if (text.size() > kMaxFileBytes)
+            {
+                why = p.string() + " holds more than " + sizeText(kMaxFileBytes) + past;
+                return false;
+            }
+        }
+        if (in.bad() || (!in.eof() && in.fail()))
         {
             why = "cannot read " + p.string();
             return false;
         }
         out.clear();
-        for (const char c : text.str())                  // the editor's line ends (TextEditor::sanitise): LF alone
+        for (const char c : text)                        // the editor's line ends (TextEditor::sanitise): LF alone
             if (c != '\r')
                 out += c;
         return true;
     }
 
-    // The files named on the command line: one folder, or files (the first the program).
+    // The read-only copies the editor's FOLDER sync (plugin/FolderSync.h) writes into a folder beside the program's
+    // files: host.fm, which the plugin provides, and the library files the #includes read that the program has not
+    // added. Its manifest names them (.fmsync: the line "fmsync 1", then "copy <16 hex digits> <name>" a copy).
+    std::vector<std::string> syncCopies(const fs::path& dir)
+    {
+        std::vector<std::string> out;
+        std::ifstream in(dir / ".fmsync", std::ios::binary);
+        std::string line;
+        if (!in || !std::getline(in, line) || line.rfind("fmsync 1", 0) != 0)
+            return out;
+        while (std::getline(in, line))
+            if (line.size() > 22 && line.rfind("copy ", 0) == 0 && line[21] == ' ')
+                out.push_back(line.substr(22));
+        return out;
+    }
+
+    // The files named on the command line: one folder, or files (the first the program). A folder's sync copies are
+    // left out, as the plugin leaves them (a library file the program #includes is added again below, saying so), and
+    // so is a host.fm that is the plugin's own text: neither counts against kMaxFiles.
     bool readProgram(const std::vector<std::string>& args, pg::Sources& files, std::string& why)
     {
         std::vector<fs::path> paths;
         if (args.size() == 1 && fs::is_directory(fs::path(args[0])))
         {
             const fs::path dir(args[0]);
+            const std::vector<std::string> copies = syncCopies(dir);
             std::error_code ec;
             for (const fs::directory_entry& e : fs::directory_iterator(dir, ec))
-                if (e.is_regular_file() && programFile(e.path()))
-                    paths.push_back(e.path());
+            {
+                if (!e.is_regular_file() || !programFile(e.path()))
+                    continue;
+                const std::string name = e.path().filename().string();
+                const pg::LibraryFile* lib = pg::findLibraryFile(name);
+                const std::string_view own = name == "host.fm" ? pg::Patch::hostSource()
+                                           : lib != nullptr     ? std::string_view(lib->source)
+                                                                : std::string_view();
+                const bool copy = std::find(copies.begin(), copies.end(), name) != copies.end();
+                std::string text, ignored;
+                if ((copy || name == "host.fm") && readText(e.path(), text, ignored) && text == own)
+                    continue;                            // the plugin's own text (this build's)
+                if (copy)
+                {
+                    say("note: " + name + " is the folder sync's read-only copy, as another build of the plugin wrote it: left out "
+                        + (name == "host.fm" ? "(this build's own is used)" : "(this build's library is used)"));
+                    continue;
+                }
+                paths.push_back(e.path());
+            }
             if (ec)
             {
                 why = "cannot read the folder " + dir.string() + " (" + ec.message() + ")";
@@ -266,18 +335,67 @@ namespace
     }
 
     // ---- output ----------------------------------------------------------------------------------------------------
-    // A file written whole through a temporary beside it, then renamed over it (a failed write leaves none).
+    // The temporary being written (writeFile), removed when a signal ends the run (Ctrl-C, a kill): the handler calls
+    // only what a signal handler may (unlink), then the signal's default action.
+    fs::path::value_type gPart[4096];             // wchar_t on Windows
+    volatile std::sig_atomic_t gPartSet = 0;
+
+    void partWritten(const fs::path* temp)
+    {
+        gPartSet = 0;
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        if (temp == nullptr || temp->native().size() >= std::size(gPart))
+            return;                                  // none, or too long to keep (an interrupt then leaves it)
+        const fs::path::string_type& s = temp->native();
+        std::copy(s.begin(), s.end(), gPart);
+        gPart[s.size()] = 0;
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+        gPartSet = 1;
+    }
+
+    void onSignal(int sig)
+    {
+        if (gPartSet != 0)
+        {
+#if defined(_WIN32)
+            _wunlink(gPart);
+#else
+            ::unlink(gPart);
+#endif
+        }
+        std::signal(sig, SIG_DFL);
+        std::raise(sig);
+    }
+
+    void catchSignals()
+    {
+        for (const int sig : { SIGINT, SIGTERM
+#if defined(SIGHUP)
+                               , SIGHUP
+#endif
+             })
+            if (std::signal(sig, onSignal) == SIG_IGN)   // one the shell ignores (nohup, a background job) stays so
+                std::signal(sig, SIG_IGN);
+    }
+
+    // A file written whole through a temporary beside it, then renamed over it (a failed or interrupted write leaves
+    // none).
     bool writeFile(const fs::path& target, const std::function<bool(const ms::Sink&)>& body, std::string& why)
     {
         fs::path temp = target;
         temp += ".part";
+        partWritten(&temp);
+        const auto failed = [&](const std::string& words) {
+            std::error_code ignored;
+            fs::remove(temp, ignored);
+            partWritten(nullptr);
+            why = words;
+            return false;
+        };
         {
             std::ofstream out(temp, std::ios::binary | std::ios::trunc);
             if (!out)
-            {
-                why = "cannot write " + target.string();
-                return false;
-            }
+                return failed("cannot write " + target.string());
             const ms::Sink sink = [&out](const void* data, std::size_t bytes) {
                 out.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
                 return static_cast<bool>(out);
@@ -285,20 +403,14 @@ namespace
             if (!body(sink) || !out.flush())
             {
                 out.close();
-                std::error_code ignored;
-                fs::remove(temp, ignored);
-                why = "writing " + target.string() + " failed (is the disk full?)";
-                return false;
+                return failed("writing " + target.string() + " failed (is the disk full?)");
             }
         }
         std::error_code ec;
         fs::rename(temp, target, ec);
         if (ec)
-        {
-            fs::remove(temp, ec);
-            why = "cannot move " + target.string() + " into place";
-            return false;
-        }
+            return failed("cannot move " + target.string() + " into place");
+        partWritten(nullptr);
         return true;
     }
 
@@ -346,19 +458,31 @@ namespace
         return number(v, "%.17g");
     }
 
+    std::string jsonList(const std::vector<std::string>& items)
+    {
+        std::string out;
+        for (const std::string& s : items)
+            out += (out.empty() ? "" : ", ") + jsonString(s);
+        return "[" + out + "]";
+    }
+
     struct Written
     {
         std::string wav, wavHash, csv;
         std::size_t frames = 0, rows = 0;
         std::vector<std::string> columns;
+        std::vector<std::string> unmatched;       // the fields asked for that matched no field
+        std::size_t more = 0;                     // the fields matched past the CSV's columns (kMaxTraceWatched)
     };
 
-    std::string metricsJson(const pg::Sources& files, double rate, const ms::Result* res, const Written& w, double seconds)
+    std::string metricsJson(const pg::Sources& files, double rate, const ms::Result* res, const std::vector<std::string>& unknown,
+                            const Written& w, double seconds)
     {
         std::string out = "{\n  \"renderer\": " + jsonString(self() + " " + pg::product::kVersion) + ",\n  \"program\": [";
         for (std::size_t i = 0; i < files.size(); ++i)
             out += (i == 0 ? "" : ", ") + jsonString(files[i].name);
         out += "],\n  \"rate\": " + jsonNumber(rate);
+        out += ",\n  \"unknown_dials\": " + jsonList(unknown);   // named, but the program has no dial of that name
         if (res != nullptr)
         {
             out += ",\n  \"dials\": " + jsonString(res->dials);
@@ -383,14 +507,24 @@ namespace
             out += ",\n  \"wav\": {\"file\": " + jsonString(w.wav) + ", \"frames\": " + std::to_string(w.frames) + ", \"hash\": "
                  + jsonString(w.wavHash) + "}";
         if (!w.csv.empty())
-        {
-            std::string cols;
-            for (const std::string& c : w.columns)
-                cols += (cols.empty() ? "" : ", ") + jsonString(c);
-            out += ",\n  \"csv\": {\"file\": " + jsonString(w.csv) + ", \"rows\": " + std::to_string(w.rows) + ", \"columns\": ["
-                 + cols + "]}";
-        }
+            out += ",\n  \"csv\": {\"file\": " + jsonString(w.csv) + ", \"rows\": " + std::to_string(w.rows) + ", \"columns\": "
+                 + jsonList(w.columns) + ", \"unmatched\": " + jsonList(w.unmatched) + ", \"more_matched\": " + std::to_string(w.more) + "}";
         out += ",\n  \"seconds\": " + number(seconds, "%.3f") + "\n}\n";
+        return out;
+    }
+
+    // The dials a request names (its own, its scenario's moves) that the program has not, as measure_output's report names
+    // them ("No dial is named ...": Result::unknown), for a run that measures nothing.
+    std::vector<std::string> unknownDials(const ms::Session& session, const ms::Request& req)
+    {
+        std::vector<std::string> out;
+        const pg::Controls& controls = session.controls();
+        for (const auto& [name, value] : req.dials)
+            if (std::none_of(controls.begin(), controls.end(), [&](const pg::Control& c) { return c.used && name == c.name; }))
+                out.push_back(name);
+        for (const std::string& u : session.timeline(req).unknown)
+            if (std::find(out.begin(), out.end(), u) == out.end())
+                out.push_back(u);
         return out;
     }
 
@@ -514,6 +648,7 @@ namespace
         int code = kOk;
         if (!parse(argc, argv, o, code))
             return code;
+        catchSignals();
         std::string why;
 
         // The program's files (the library's it #includes and they lack are added below, once the request is read).
@@ -588,10 +723,6 @@ namespace
         if (req.fromCapture)
             return fail(kInputError, "the scenario names \"capture\", the user's recording, which stays in the plugin: give a "
                                      "phrase (or an input) of your own");
-        if (req.hostRate || req.hostBlock)
-            say(std::string("note: there is no host here: the scenario's \"host\" ") + (req.hostRate ? "rate is 48000 Hz" : "")
-                + (req.hostRate && req.hostBlock ? " and its " : "") + (req.hostBlock ? "block 256 samples" : "")
-                + ", the tools' defaults");
         if (ask.on && o.wav.empty() && o.csv.empty())
             say("note: the request's export writes nothing here: --wav and --csv name the files");
         if (trials > 0)
@@ -615,10 +746,28 @@ namespace
                 return fail(kInputError, o.input + " is at " + std::to_string(wav.rate)
                                              + " Hz: a render's rate is 8000 to 192000 Hz");
             req.rate = wav.rate;
+            // A render plays its own input to its end at most (Request::endSeconds, held to what a render holds at its
+            // rate: longestAt and the tail), where the tools' render would cut it: a longer one is refused, never cut.
+            const double lasts = static_cast<double>(wav.l.size()) / req.rate, longest = ms::longestAt(req.longest, req.rate);
+            if (const double most = longest + ms::kMaxTailSeconds; lasts > most + 1e-9)
+                return fail(kInputError, o.input + " lasts " + number(lasts, "%.2f") + " s, past the " + number(std::floor(most * 100.0) / 100.0)
+                                             + " s a render plays of its own input at " + number(req.rate) + " Hz (the tools' longest render, "
+                                             + number(std::floor(longest * 100.0) / 100.0) + " s, and a " + number(ms::kMaxTailSeconds)
+                                             + " s tail): cut it shorter");
             auto own = std::make_shared<ms::Input>();
             own->l = std::move(wav.l);
             own->r = wav.channels > 1 ? std::move(wav.r) : std::vector<float>{};
             req.input = std::move(own);
+        }
+        if (req.hostRate || req.hostBlock)                // said once the rate is known: an input's is its own
+        {
+            const bool inputs = req.hostRate && req.input != nullptr;
+            const int toolsOwn = (req.hostRate && !inputs ? 1 : 0) + (req.hostBlock ? 1 : 0);
+            say(std::string("note: there is no host here: the scenario's \"host\" ")
+                + (req.hostRate ? "rate is " + number(req.rate) + " Hz" + (inputs ? " (the input's)" : "") : "")
+                + (req.hostRate && req.hostBlock ? " and its " : "")
+                + (req.hostBlock ? "block " + std::to_string(ms::kDefaultBlock) + " samples" : "")
+                + (toolsOwn == 2 ? ", the tools' defaults" : toolsOwn == 1 ? ", the tools' default" : ""));
         }
         if (!pg::scenario::fits(req, why))
             return fail(kInputError, why);
@@ -662,6 +811,11 @@ namespace
             if (stopped)
                 std::fputs(res->stopWords.c_str(), stderr);
         }
+        // A dial named that the program has not: measure_output's report says so, and so does stderr, for a run whose
+        // report goes nowhere to be read (-q, -m -, --no-measure); the metrics list them too.
+        const std::vector<std::string> unknown = res != nullptr ? res->unknown : unknownDials(session, req);
+        for (const std::string& u : unknown)
+            say("note: no dial is named '" + u + "' (ignored)");
 
         // The WAV and the field log: trace's export.
         Written w;
@@ -690,6 +844,14 @@ namespace
             }
             if (!r.lines.empty())
                 say(r.lines.front());                    // "Rendered: the note held (C3) ...; in calls of 16 samples."
+            if (!o.csv.empty())                          // trace's lines say so too, after its first
+            {
+                for (const std::string& u : r.unmatched)
+                    say("note: no field matches " + u + " (--list-fields names them): no column for it");
+                if (r.more > 0)
+                    say("note: " + std::to_string(r.more) + (r.more == 1 ? " more field matched" : " more fields matched") + ", past the "
+                        + std::to_string(ms::kMaxTraceWatched) + " columns a CSV takes: left out (name them more narrowly)");
+            }
             if (!o.csv.empty() && r.log.columns.empty())
                 return fail(kInputError, "no field matched the fields asked for (--list-fields names them); nothing written");
             const double rate = req.rate;
@@ -716,6 +878,8 @@ namespace
                 w.csv = o.csv;
                 w.rows = r.log.rows();
                 w.columns = r.log.columns;
+                w.unmatched = r.unmatched;
+                w.more = r.more;
                 std::string cols;
                 for (const std::string& c : r.log.columns)
                     cols += (cols.empty() ? "" : ", ") + c;
@@ -735,7 +899,7 @@ namespace
         }
         if (!o.metrics.empty())
         {
-            if (!writeText(o.metrics, metricsJson(files, req.rate, res.get(), w, seconds), why))
+            if (!writeText(o.metrics, metricsJson(files, req.rate, res.get(), unknown, w, seconds), why))
                 return fail(kInputError, why);
             if (o.metrics != "-")
                 say("Wrote " + o.metrics + ": the metrics as JSON");

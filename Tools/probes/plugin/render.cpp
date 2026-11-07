@@ -18,6 +18,15 @@
 //   MORE     a library file the program #includes and the folder lacks: added, saying so; --list-fields names the
 //            fields; the effect's own input (--input, a WAV at 44.1 kHz): rendered at its rate, the same bits as trace's
 //            export of it in this process; the extension (<Name>.mcpb) carries the renderer beside the server
+//   NOTES    a dial the program has not, by --dial and by a scenario's move: said on stderr and listed in the metrics
+//            (unknown_dials), measured (-q) or not (--no-measure); fields: a pattern that matches none and the fields
+//            matched past the CSV's 12 columns (each counted once, however many patterns match it) said on stderr and
+//            listed (csv.unmatched, more_matched); the request through a pipe (a FIFO: not on Windows); a folder the
+//            editor's FOLDER syncs, with a program of 16 files (the most): its read-only copies (host.fm, a library
+//            file the program #includes) left out (the library's added again, saying so), and a copy of another
+//            build's host.fm left out, saying so; the effect's own input as WAVE_FORMAT_EXTENSIBLE (24-bit at 96 kHz)
+//            rendered at its rate, one past what a render plays of it (311 s at 8 kHz) refused with nothing written, and
+//            a scenario's "host" rate said as the input's
 // Its files go to the probe's sandbox (<prefix>PREFS_DIR, under CTest), trace's export to its renders folder there.
 #include "Probe.h"
 
@@ -28,6 +37,7 @@
 #include "plugin/ChatScenario.h"
 #include "plugin/ChatStore.h"
 #include "plugin/ClaudeApi.h"
+#include "plugin/FolderSync.h"
 #include "plugin/Processor.h"
 
 #include "Examples.h"
@@ -37,6 +47,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -44,7 +55,14 @@
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace ms = playground::measure;
@@ -52,6 +70,11 @@ namespace ms = playground::measure;
 namespace
 {
     constexpr bool kInstrument = pg::product::kIsInstrument;
+#if defined(_WIN32)
+    constexpr const char* kExe = ".exe";          // the renderer as the build and the extension name it
+#else
+    constexpr const char* kExe = "";
+#endif
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
 
@@ -76,7 +99,7 @@ namespace
         if (const char* v = std::getenv((std::string(pg::product::kEnvPrefix) + "RENDER").c_str()); v != nullptr && *v != '\0')
             return v;
         return juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-            .getSiblingFile(juce::String(pg::product::kName) + "Render")
+            .getSiblingFile(juce::String(pg::product::kName) + "Render" + kExe)
             .getFullPathName()
             .toStdString();
     }
@@ -183,6 +206,65 @@ namespace
         dir.deleteRecursively();
         dir.createDirectory();
         dir.getChildFile(pg::kProgramName).replaceWithText(juce::String::fromUTF8(text.c_str()), false, false, "\n");
+    }
+
+    juce::var jsonFile(const juce::File& f) { return juce::JSON::parse(juce::String::fromUTF8(readText(f).c_str())); }
+
+    std::vector<std::string> strings(const juce::var& list)
+    {
+        std::vector<std::string> out;
+        if (const auto* a = list.getArray())
+            for (const juce::var& v : *a)
+                out.push_back(v.toString().toStdString());
+        return out;
+    }
+
+    // A WAV as WAVE_FORMAT_EXTENSIBLE (a fmt chunk of 40 bytes, the PCM sub-format), integer samples of `bits` (16 or
+    // 24), mono with `r` null: what ffmpeg and many other tools write past 16 bits, two channels or 48 kHz. Its data's
+    // size kept even (a stereo frame, or a 16-bit one).
+    [[maybe_unused]] std::vector<uint8_t> extensibleWav(const std::vector<float>& l, const std::vector<float>* r, uint32_t rate, uint32_t bits)
+    {
+        const uint32_t channels = r != nullptr ? 2u : 1u, width = bits / 8u;
+        const uint32_t data = static_cast<uint32_t>(l.size()) * channels * width;
+        std::vector<uint8_t> b;
+        b.reserve(68 + data);
+        const auto u16 = [&](uint32_t v) {
+            b.push_back(static_cast<uint8_t>(v & 0xFFu));
+            b.push_back(static_cast<uint8_t>((v >> 8) & 0xFFu));
+        };
+        const auto u32 = [&](uint32_t v) {
+            u16(v & 0xFFFFu);
+            u16(v >> 16);
+        };
+        const auto tag = [&](const char* t) { b.insert(b.end(), t, t + 4); };
+        tag("RIFF");
+        u32(4 + 8 + 40 + 8 + data);
+        tag("WAVE");
+        tag("fmt ");
+        u32(40);
+        u16(0xFFFEu);
+        u16(channels);
+        u32(rate);
+        u32(rate * channels * width);
+        u16(channels * width);
+        u16(bits);
+        u16(22);                                 // cbSize
+        u16(bits);                               // the valid bits
+        u32(channels == 2 ? 3u : 4u);            // the speakers: front left and right, or centre
+        constexpr uint8_t kPcm[16] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71 };
+        b.insert(b.end(), kPcm, kPcm + 16);
+        tag("data");
+        u32(data);
+        const double full = bits == 16 ? 32767.0 : 8388607.0;
+        for (std::size_t i = 0; i < l.size(); ++i)
+            for (uint32_t c = 0; c < channels; ++c)
+            {
+                const double x = std::clamp(static_cast<double>(c == 0 ? l[i] : (*r)[i]), -1.0, 1.0) * full;
+                const auto v = static_cast<uint32_t>(static_cast<int32_t>(std::lround(x)));
+                for (uint32_t k = 0; k < width; ++k)
+                    b.push_back(static_cast<uint8_t>((v >> (8 * k)) & 0xFFu));
+            }
+        return b;
     }
 
     // A program whose `process` does `before` first: the effect halves its input, the voice plays a sine at 0.3.
@@ -455,12 +537,157 @@ PROBE(plugin, render)
         const juce::var m = juce::JSON::parse(juce::String(readText(work.getChildFile("own.json"))));
         P.eq("more.input_measured", has(m.getProperty("hashed", "").toString().toStdString(), "own input") ? 1 : 0, 1);
     }
+    // ---- NOTES --------------------------------------------------------------------------------------------------------
+    {
+        // A dial the program has not, by --dial and by a scenario's move: on stderr, and in the metrics, measured or not.
+        const std::string at = work.getChildFile("plain").getFullPathName().toStdString();
+        const Ran measured = render({ at, "-d", "nosuch=3", "-r", "{\"hold_seconds\": 0.3, \"tail_seconds\": 0.1}", "-q", "-m",
+                                      w + "unknown.json" });
+        std::printf("a dial it has not (exit %d): %s", measured.code, measured.out.c_str());
+        P.eq("notes.unknown_dial", measured.code == 0 && has(measured.out, "note: no dial is named 'nosuch' (ignored)")
+                                       && strings(jsonFile(work.getChildFile("unknown.json")).getProperty("unknown_dials", {}))
+                                              == std::vector<std::string>{ "nosuch" } ? 1 : 0, 1);
+        const Ran unmeasured = render({ at, "-d", "nosuch=3", "--no-measure", "-w", w + "unknown.wav", "-m", w + "unknown2.json", "-r",
+                                        "{\"hold_seconds\": 0.3, \"tail_seconds\": 0.1, \"scenario\": {\"automate\": [{\"dial\": \"zzz\", "
+                                        "\"at\": 0.1, \"to\": 0.5, \"over\": 0.1}]}}" });
+        std::printf("--no-measure (exit %d): %s", unmeasured.code, unmeasured.out.c_str());
+        P.eq("notes.unknown_dial_unmeasured", unmeasured.code == 0 && has(unmeasured.out, "note: no dial is named 'nosuch' (ignored)")
+                                                  && has(unmeasured.out, "note: no dial is named 'zzz' (ignored)")
+                                                  && strings(jsonFile(work.getChildFile("unknown2.json")).getProperty("unknown_dials", {}))
+                                                         == std::vector<std::string>{ "nosuch", "zzz" } ? 1 : 0, 1);
+
+        // Fields: 14 matched by f*, 2 past the CSV's 12 columns (f1* matches those two again: counted once), one pattern none.
+        const juce::File many = work.getChildFile("many");
+        writeProgram(many, program("    float f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13;\n\n", ""));
+        const Ran fields = render({ many.getFullPathName().toStdString(), "-f", "f*", "-f", "f1*", "-f", "nosuch", "-c", w + "many.csv",
+                                    "--no-measure", "-m", w + "many.json", "-r", "{\"hold_seconds\": 0.3, \"tail_seconds\": 0.1}" });
+        std::printf("fields (exit %d): %s", fields.code, fields.out.c_str());
+        const juce::var csv = jsonFile(work.getChildFile("many.json")).getProperty("csv", {});
+        P.eq("notes.field_unmatched", fields.code == 0 && has(fields.out, "note: no field matches nosuch")
+                                          && strings(csv.getProperty("unmatched", {})) == std::vector<std::string>{ "nosuch" } ? 1 : 0, 1);
+        P.eq("notes.fields_past_columns", has(fields.out, "note: 2 more fields matched, past the 12 columns")
+                                              && strings(csv.getProperty("columns", {})).size() == ms::kMaxTraceWatched
+                                              && static_cast<int>(csv.getProperty("more_matched", -1)) == 2 ? 1 : 0, 1);
+    }
+#if !defined(_WIN32)
+    {
+        // The request through a pipe (as <(...) gives it): a FIFO, written once the renderer opens it.
+        const juce::File fifo = work.getChildFile("request.fifo");
+        fifo.deleteFile();
+        const std::string path = fifo.getFullPathName().toStdString();
+        int code = -1;
+        bool wrote = false;
+        std::string out;
+        juce::ChildProcess p;
+        if (::mkfifo(path.c_str(), 0600) == 0
+            && p.start(juce::StringArray{ juce::String::fromUTF8(rendererPath().c_str()), work.getChildFile("plain").getFullPathName(), "-r",
+                                          juce::String::fromUTF8(path.c_str()), "--no-measure", "-m",
+                                          juce::String::fromUTF8((w + "fifo.json").c_str()) },
+                       juce::ChildProcess::wantStdOut | juce::ChildProcess::wantStdErr))
+        {
+            int fd = -1;                             // no reader yet: ENXIO, so try again while it runs
+            for (int k = 0; k < 2000 && fd < 0 && p.isRunning(); ++k)
+                if ((fd = ::open(path.c_str(), O_WRONLY | O_NONBLOCK)) < 0)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            if (fd >= 0)
+            {
+                const std::string json = "{\"hold_seconds\": 0.3, \"dials\": {\"piped\": 1}}";
+                wrote = ::write(fd, json.data(), json.size()) == static_cast<ssize_t>(json.size());
+                ::close(fd);
+            }
+            out = p.readAllProcessOutput().toStdString();
+            if (p.waitForProcessToFinish(60000))
+                code = static_cast<int>(p.getExitCode());
+        }
+        std::printf("the request through a pipe (exit %d): %s", code, out.c_str());
+        P.eq("notes.request_pipe", wrote && code == 0
+                                       && strings(jsonFile(work.getChildFile("fifo.json")).getProperty("unknown_dials", {}))
+                                              == std::vector<std::string>{ "piped" } ? 1 : 0, 1);
+        fifo.deleteFile();
+    }
+#endif
+    {
+        // A folder the editor's FOLDER syncs, of a program of kMaxFiles files: the sync adds its read-only copies,
+        // host.fm and the library's noise.fm, which the renderer leaves out as the plugin does (noise.fm added again).
+        pg::Draft draft;
+        draft.files.push_back({ pg::kProgramName, "#include \"noise.fm\"\n" + program("", "") });
+        for (std::size_t k = 1; k < pg::kMaxFiles; ++k)
+            draft.files.push_back({ "part" + std::to_string(k) + ".fm", "// part " + std::to_string(k) + "\n" });
+        pg::FolderSync sync({ [&draft] { return draft; },
+                              [&draft](const pg::Draft&, const pg::Draft& next) {
+                                  draft = next;
+                                  return true;
+                              },
+                              [](const pg::Sources&) {} });
+        const std::filesystem::path syncRoot(work.getChildFile("synced").getFullPathName().toStdString());
+        std::string why;
+        double t = 1000.0;
+        const bool on = sync.start(syncRoot, "Program", t, why);
+        for (const double end = t + 0.6; t < end; t += 0.05)
+            sync.pass(t, true);
+        const std::filesystem::path dir = sync.folder();
+        std::size_t fm = 0;
+        std::error_code ec;
+        for (const std::filesystem::directory_entry& e : std::filesystem::directory_iterator(dir, ec))
+            fm += e.path().extension() == ".fm" ? 1 : 0;
+        std::printf("FOLDER: %s, %zu .fm files%s\n", dir.string().c_str(), fm, why.c_str());
+        P.eq("notes.folder_sync_copies", on && fm == pg::kMaxFiles + 2 && std::filesystem::exists(dir / "host.fm")
+                                             && std::filesystem::exists(dir / "noise.fm") ? 1 : 0, 1);
+        const Ran synced = render({ dir.string(), "-q", "-m", w + "synced.json" });
+        const std::vector<std::string> names = strings(jsonFile(work.getChildFile("synced.json")).getProperty("program", {}));
+        std::printf("a synced folder (exit %d): %s", synced.code, synced.out.c_str());
+        const auto lists = [](const std::vector<std::string>& v, const char* n) { return std::find(v.begin(), v.end(), n) != v.end(); };
+        P.eq("notes.folder_sync", synced.code == 0 && names.size() == pg::kMaxFiles + 1 && !names.empty() && names.front() == pg::kProgramName
+                                      && names.back() == "noise.fm" && !lists(names, "host.fm") && has(synced.out, "noise.fm is the library's")
+                                      ? 1 : 0, 1);
+        // A copy as another build wrote it (host.fm, not this build's text): left out, saying so.
+        std::filesystem::permissions(dir / "host.fm", std::filesystem::perms::owner_write, std::filesystem::perm_options::add, ec);
+        juce::File(juce::String::fromUTF8((dir / "host.fm").string().c_str())).appendText("// an older build's\n", false, false, "\n");
+        const Ran stale = render({ dir.string(), "-q", "-m", w + "stale.json" });
+        std::printf("a copy from another build (exit %d): %s", stale.code, stale.out.c_str());
+        P.eq("notes.folder_sync_stale", stale.code == 0 && has(stale.out, "host.fm is the folder sync's read-only copy, as another build")
+                                            && !lists(strings(jsonFile(work.getChildFile("stale.json")).getProperty("program", {})), "host.fm")
+                                            ? 1 : 0, 1);
+        sync.stop(false);
+    }
+    if constexpr (!kInstrument)
+    {
+        // The effect's own input as WAVE_FORMAT_EXTENSIBLE: 24-bit stereo at 96 kHz, rendered at its rate.
+        std::vector<float> l(9600), r(9600);
+        for (std::size_t i = 0; i < l.size(); ++i)
+        {
+            l[i] = 0.5f * std::sin(6.2831853f * 440.0f * static_cast<float>(i) / 96000.0f);
+            r[i] = -l[i];
+        }
+        const std::vector<uint8_t> ext = extensibleWav(l, &r, 96000, 24);
+        const juce::File in = work.getChildFile("ext24.wav");
+        in.replaceWithData(ext.data(), ext.size());
+        const std::string at = work.getChildFile("plain").getFullPathName().toStdString();
+        const Ran ran = render({ at, "-i", in.getFullPathName().toStdString(), "-w", w + "ext-out.wav", "--no-measure", "-r",
+                                 "{\"scenario\": {\"rate\": \"host\"}}" });
+        std::printf("an extensible WAV in (exit %d): %s", ran.code, ran.out.c_str());
+        ms::Wav wav;
+        std::string bad;
+        P.eq("notes.input_extensible", ran.code == 0 && ms::readWav(readBytes(work.getChildFile("ext-out.wav")), wav, bad) && wav.rate == 96000
+                                           ? 1 : 0, 1);
+        P.eq("notes.input_host_rate", has(ran.out, "\"host\" rate is 96000 Hz (the input's)") ? 1 : 0, 1);
+
+        // One past what a render plays of its own input (310 s up to 96 kHz): 311 s at 8 kHz, refused, nothing written.
+        const std::vector<uint8_t> along = extensibleWav(std::vector<float>(311 * 8000), nullptr, 8000, 16);
+        const juce::File longIn = work.getChildFile("long.wav");
+        longIn.replaceWithData(along.data(), along.size());
+        const Ran tooLong = render({ at, "-i", longIn.getFullPathName().toStdString(), "-w", w + "long-out.wav", "--no-measure" });
+        std::printf("an input past the render (exit %d): %s", tooLong.code, tooLong.out.c_str());
+        P.eq("notes.input_too_long", tooLong.code == 1 && has(tooLong.out, "lasts 311.00 s, past the 310 s a render plays of its own input")
+                                         && !work.getChildFile("long-out.wav").exists() ? 1 : 0, 1);
+        longIn.deleteFile();
+    }
     {
         const juce::File mcpb = juce::File(juce::String::fromUTF8(rendererPath().c_str())).getSiblingFile(juce::String(pg::product::kName) + ".mcpb");
         juce::ZipFile zip(mcpb);
         bool carried = false;
         for (int k = 0; k < zip.getNumEntries(); ++k)
-            carried = carried || zip.getEntry(k)->filename == "server/" + juce::String(pg::product::kName) + "Render";
+            carried = carried || zip.getEntry(k)->filename == "server/" + juce::String(pg::product::kName) + "Render" + kExe;
         P.eq("more.in_extension", carried ? 1 : 0, 1);
     }
     work.getChildFile("chat-keys").deleteRecursively();

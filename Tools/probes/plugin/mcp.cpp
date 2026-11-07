@@ -1134,7 +1134,12 @@ PROBE(plugin, mcp)
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "playground_guide" }, { "arguments", object({ { "part", "debugging" } }) } }));
         {
             const std::string said = firstText(rep["result"]);
-            const std::string renderer = juce::File(juce::String::fromUTF8(serverPath)).getSiblingFile(juce::String(pg::product::kName) + "Render")
+#if defined(_WIN32)
+            const juce::String exe = ".exe";     // as Main.cpp's rendererNote names it
+#else
+            const juce::String exe;
+#endif
+            const std::string renderer = juce::File(juce::String::fromUTF8(serverPath)).getSiblingFile(juce::String(pg::product::kName) + "Render" + exe)
                                              .getFullPathName().toStdString();
             P.eq("server.guide_renderer", said.rfind(debuggingPart, 0) == 0 && has(said, "\n\nTHE RENDERER\n")
                                               && has(said, "(" + renderer + "), renders and measures") ? 1 : 0, 1);
