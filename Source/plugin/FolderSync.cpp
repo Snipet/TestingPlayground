@@ -3,6 +3,7 @@
 
 #include "plugin/FolderWatch.h"
 
+#include "dsp/Sources.h"
 #include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
 
@@ -44,30 +45,16 @@ namespace playground
             return std::string(s.begin(), s.end());
         }
 
-        std::string lowerExtension(const std::string& name)
-        {
-            const std::size_t dot = name.rfind('.');
-            if (dot == std::string::npos || dot == 0)
-                return {};
-            std::string ext = name.substr(dot + 1);
-            for (char& c : ext)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            return ext;
-        }
-
-        // The extensions the editor knows (editor/Items.h's kinds): a new file of one in the folder is the program's.
-        bool knownExtension(const std::string& name)
-        {
-            const std::string ext = lowerExtension(name);
-            return ext == "fm" || ext == "gui" || ext == "cir" || ext == "sc" || ext == "sh";
-        }
-
         std::string lower(std::string s)
         {
             for (char& c : s)
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             return s;
         }
+
+        // The kinds the editor knows (dsp/Sources.h's isProgramFile, any case): a new file of one in the folder is the
+        // program's.
+        bool knownExtension(const std::string& name) { return isProgramFile(lower(name)); }
 
         // A text as the editor holds it (TextEditor::sanitise), only when it is not so already.
         bool plain(std::string_view text) noexcept

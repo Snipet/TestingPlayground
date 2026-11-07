@@ -1152,7 +1152,7 @@ are in `Source/plugin/ChatPrompt.cpp`).
 
 **Files in and out.** Claude brings files into the program when you ask: files you attach in Claude Desktop, or a
 file or a folder you name on your Mac (`~/Music/my-synth`). It reads only the program's kinds there (`.fm`, `.cir`,
-`.gui`, `.sc`), each as text (a file with a NUL byte, or bytes that are not UTF-8, is refused) of 256 KB at most and
+`.gui`, `.sc`, `.sh`), each as text (a file with a NUL byte, or bytes that are not UTF-8, is refused) of 256 KB at most and
 with a name the editor takes; a folder's other files are left out and named, and so are the read-only copies a folder
 sync wrote there (FOLDER, below). It is all or none, one change Cmd-Z undoes: a file of a name the editor has replaces
 it, the others come as new tabs (at most 16), the program stays the first, CR LF become LF and a character outside
@@ -1558,7 +1558,7 @@ build-dev/TestingPlaygroundSynthRender my-patch/ -r settings.json -d cutoff=1200
 build-dev/TestingPlaygroundRender my-effect/ -i vocal.wav -w vocal-out.wav --no-measure
 ```
 
-- **In**: the program, as a folder (its `program.fm` first, then its `.fm`, `.cir`, `.gui` and `.sc` files by name; a
+- **In**: the program, as a folder (its `program.fm` first, then its `.fm`, `.cir`, `.gui`, `.sc` and `.sh` files by name; a
   folder the editor's FOLDER syncs is one, its read-only copies of host.fm and of the library's files left out as the
   plugin leaves them) or as its files (the first the program); and the render's settings as the tools take them, in JSON
   (`-r`: a file, `-` for stdin, a pipe such as `<(...)`, or the JSON itself): measure_output's (notes, velocity,

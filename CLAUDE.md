@@ -1347,8 +1347,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   it; its notes are the debugging part's (read-only to MCP: `kFaces`).
 - **write_file's files in and out** (`plugin/ChatImport.cpp`): `files` writes several as one change of the draft
   (`chatSetDraft`; a netlist without `*@` lines keeps its drawing, as one written alone), all or none; `from` brings in
-  a file or a folder the user named, whole (`~/` the home folder): only the editor's kinds (.fm, .cir, .gui, .sc), each
-  text (no NUL, UTF-8), `kMaxImportBytes` (256 KB) at most and a name `validFileName` takes, else nothing comes in; a
+  a file or a folder the user named, whole (`~/` the home folder): only the editor's kinds (`isProgramFile`: .fm, .cir,
+  .gui, .sc, .sh), each text (no NUL, UTF-8), `kMaxImportBytes` (256 KB) at most and a name `validFileName` takes,
+  else nothing comes in; a
   folder's hidden files, its other files and FolderSync's read-only copies (`.fmsync`'s copy lines, and a host.fm or a
   library file of this build's text) are left out and named; CR LF and what the editor does not hold become what
   `TextEditor::sanitise` makes them, each said (CR LF read as LF; the characters made '?' counted); added, or replacing

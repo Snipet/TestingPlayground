@@ -96,8 +96,9 @@ namespace
         return "usage: " + self() + " [options] <program folder | file...>\n"
                "Renders " + std::string(pg::product::kName) + "'s program offline, as its tools do, with its own compiler.\n"
                "\n"
-               "The program: a folder (its program.fm first, then its .fm, .cir, .gui and .sc files by name) or its files\n"
-               "(the first the program). The render's settings: measure_output's JSON, and trace's fields, voice and export.\n"
+               "The program: a folder (its program.fm first, then its " + std::string(pg::kProgramFileKinds) + " files by name) or\n"
+               "its files (the first the program). The render's settings: measure_output's JSON, and trace's fields, voice\n"
+               "and export.\n"
                "\n"
                "  -r, --request <json>    the settings: a JSON file, - for stdin, or the JSON itself ({...})\n"
                "  -d, --dial <name=value> a dial's value, over the request's (repeatable)\n"
@@ -136,11 +137,11 @@ namespace
     // ---- the program's files ---------------------------------------------------------------------------------------
     bool programFile(const fs::path& p)
     {
-        const std::string name = p.filename().string(), ext = p.extension().string();
+        const std::string name = p.filename().string();
         std::string lower;
-        for (const char c : ext)
+        for (const char c : name)
             lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-        return pg::validFileName(name) && (lower == ".fm" || lower == ".cir" || lower == ".gui" || lower == ".sc");
+        return pg::validFileName(name) && pg::isProgramFile(lower);   // the editor's kinds (dsp/Sources.h)
     }
 
     // A text of kMaxFileBytes at most: a file's, or what is no file's (a pipe: <(...), /dev/stdin), read as it comes, to

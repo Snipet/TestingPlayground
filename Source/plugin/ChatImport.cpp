@@ -76,14 +76,9 @@ namespace playground
             return s;
         }
 
-        // A program file's name: one of the editor's kinds (editor/Items.h: .fm, .cir, .gui, .sc), as FolderSync and the
-        // headless renderer take them.
-        bool programExtension(const std::string& name)
-        {
-            const std::size_t dot = name.rfind('.');
-            const std::string ext = dot == std::string::npos ? std::string() : lowered(name.substr(dot));
-            return ext == ".fm" || ext == ".cir" || ext == ".gui" || ext == ".sc";
-        }
+        // A program file's name: one of the editor's kinds (dsp/Sources.h's isProgramFile: .fm, .cir, .gui, .sc, .sh),
+        // as FolderSync and the headless renderer take them.
+        bool programExtension(const std::string& name) { return isProgramFile(lowered(name)); }
 
         std::string nameRule()
         {
@@ -180,7 +175,7 @@ namespace playground
             {
                 const std::string n = named.getFileName().toStdString();
                 if (!programExtension(n))
-                    return n + " is not a program file (.fm, .cir, .gui or .sc)";
+                    return n + " is not a program file (" + std::string(kProgramFileKinds) + ")";
                 files.push_back(named);
             }
             else if (named.isDirectory())
@@ -202,7 +197,7 @@ namespace playground
                 });
                 std::sort(left.begin(), left.end());
                 if (files.empty())
-                    return "the folder " + where + " holds no program file (.fm, .cir, .gui or .sc)";
+                    return "the folder " + where + " holds no program file (" + std::string(kProgramFileKinds) + ")";
             }
             else
                 return "there is no file or folder " + where;
@@ -456,7 +451,7 @@ namespace playground
                     for (const std::string& l : left)
                         out += " " + l + ",";
                     out.back() = '.';
-                    out += " (Only program files come in: .fm, .cir, .gui, .sc.)";
+                    out += " (Only program files come in: " + std::string(kProgramFileKinds) + ".)";
                 }
                 out += "\nRead them before you edit them (read_file); call run_program to hear them.";
             }

@@ -66,6 +66,16 @@ namespace playground
         return ends(".gui") || ends(".sc") || ends(".sh");
     }
 
+    // Whether `name` is one of the editor's kinds of file (editor/Items.h's FileKind): an FMinus .fm, a netlist
+    // (isCircuitFile) or a file of the panel's (isPanelFile: .gui, .sc, .sh). The one list of them: what FolderSync
+    // mirrors, write_file's `from` brings in and the headless renderer reads from a folder (each lowers the name's case
+    // first). kProgramFileKinds says them in a message.
+    inline bool isProgramFile(std::string_view name)
+    {
+        return (name.size() > 3 && name.substr(name.size() - 3) == ".fm") || isCircuitFile(name) || isPanelFile(name);
+    }
+    inline constexpr const char* kProgramFileKinds = ".fm, .cir, .gui, .sc or .sh";
+
     // The configuration a netlist was generated with in a compile, when the netlist leaves it to the self-test
     // (fminus/Circuits.h): its self-test key, and the answer it read (fminus::circuit::Choice::text()), or "" for the
     // provisional configuration. A compile given a program's pins generates its netlists so again, whatever the

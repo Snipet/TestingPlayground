@@ -11,7 +11,8 @@
 //           file as the library's, another's copy); one file by its path; ~ for the home folder; nothing brought in,
 //           all or none, when one file is not text (a NUL byte, bytes that are not UTF-8), is past 256 KB, or has a
 //           name the editor cannot take; a relative path, a file that is no program file, a path that is nowhere, and
-//           a folder of no program file refused; the folder's files never changed
+//           a folder of no program file refused; the folder's files never changed; a folder with a panel's shader and
+//           the .sh file it includes: all four of its files brought in (the editor's kinds, Sources.h's isProgramFile)
 //   TO      the editor's files written to a new folder of the name given in the plugin's Programs folder (the probe's
 //           sandbox under CTest), byte for byte, the path in the result; the same name again: "<name> 2", the first
 //           untouched; a name that is a path, or starts with '.', refused; two files whose names differ only in case
@@ -174,6 +175,23 @@ PROBE(plugin, import)
             reset();
             t = call(object({ { "from", "~/" + src.getChildFile("filters.fm").getRelativePathFrom(home) } }), &error);
             P.eq("from.home", !error && fileOf(p.editorPort().draft(), "filters.fm") != nullptr ? 1 : 0, 1);
+        }
+
+        // A panel's shader and the .sh file it includes come in with the program.
+        {
+            const juce::File glow = tmp.getChildFile("glow-synth");
+            glow.createDirectory();
+            write(glow.getChildFile("program.fm"), program("glowing"));
+            write(glow.getChildFile("panel.gui"), "shader \"glow.sc\"\n");
+            write(glow.getChildFile("glow.sc"), "#include \"glow.sh\"\nvoid main() { gl_FragColor = vec4(glow(), 1.0); }\n");
+            write(glow.getChildFile("glow.sh"), "vec3 glow() { return vec3(1.0, 0.5, 0.1); }\n");
+            reset();
+            t = call(object({ { "from", glow.getFullPathName() } }), &error);
+            d = p.editorPort().draft();
+            std::printf("from a shader's folder: %s\n", t.c_str());
+            P.eq("from.shader_include", !error && fileOf(d, "glow.sh") != nullptr && fileOf(d, "glow.sc") != nullptr
+                                            && fileOf(d, "panel.gui") != nullptr && d.files.size() == 5 && has(t, "Brought 4 files")
+                                            && !has(t, "Only program files") ? 1 : 0, 1);
         }
 
         const auto refused = [&](const char* row, const juce::String& from, const std::string& words) {
