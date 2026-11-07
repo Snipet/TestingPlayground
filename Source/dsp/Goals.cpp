@@ -146,7 +146,7 @@ namespace playground::measure
         const auto sessionFor = [&](double rate) -> Session& {
             std::unique_ptr<Session>& s = sessions[rate];
             if (!s)
-                s = std::make_unique<Session>(files, rate);
+                s = std::make_unique<Session>(files, rate, nullptr, checks.front().request.assets);
             return *s;
         };
         if (Session& first = sessionFor(checks.front().request.rate); !first.compiled())
