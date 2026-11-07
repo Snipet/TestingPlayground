@@ -24,7 +24,8 @@
 //            notes of the tools it uses and the other parts named; none of the lines only the plugin's chat needs;
 //            host.fm in short, every field of its module named; its size printed, in bytes and about tokens),
 //            large-program (with THREADS), interface, library (a line a file), debugging (the notes of listen, capture,
-//            trace and compare, not in start), examples, projects, circuits (CIRCUITS: .cir NETLISTS, which ends
+//            trace and compare, not in start), examples, projects (with the projects tool's notes alone), circuits
+//            (CIRCUITS: .cir NETLISTS, which ends
 //            projects, with THE SCHEMATIC and edit_circuit's notes; start names it), all (the system prompt whole, the
 //            lines only the plugin's chat needs at its end); library:host.fm (and :code) host.fm whole; a
 //            guide from before the circuits (an older
@@ -846,8 +847,8 @@ PROBE(plugin, mcp)
                                     && has(debugging, "<tool name=\"trace\"") && has(debugging, "<tool name=\"compare\"")
                                     && !has(debugging, "<tool name=\"get_status\"") && !has(debugging, "<library_file") ? 1 : 0, 1);
         P.eq("guide.examples", examples.rfind("THIS PLUGIN'S EXAMPLES", 0) == 0 && has(examples, "<example title=") ? 1 : 0, 1);
-        P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && !has(projects, "<tool name=")
-                                   && !has(projects, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
+        P.eq("guide.projects", projects.rfind("RANDOM AND PROJECTS\n", 0) == 0 && has(projects, "<tool name=\"projects\" part=\"projects\">")
+                                   && !has(projects, "<tool name=\"get_status\"") && !has(projects, pg::mcp::guide::kCircuits) ? 1 : 0, 1);
         P.eq("guide.circuits", circuits.rfind(std::string(pg::mcp::guide::kCircuits) + "\n", 0) == 0 && has(circuits, "pedal.tick(x)")
                                    && has(circuits, "screamer.cir") && !has(circuits, "<library_file") ? 1 : 0, 1);
         // the schematic: THE SCHEMATIC in the part, and edit_circuit's notes (kFaces puts them there), nowhere else

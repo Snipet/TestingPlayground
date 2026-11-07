@@ -98,6 +98,8 @@
 //   stepPreset()      the next preset (step +1) or the one before (-1) of the project open applied, wrapping at the
 //                     ends; from none, the first or the last. Its dials glide there as any dial change does; changes
 //                     to the one applied are not kept (save it first), as when the browser applies another
+//   claudeNotice()    what Claude did last to the projects (ClaudeNotice below: its projects tool saved, opened or
+//                     applied one), which the editor's status says once, and the explorer and PROJECTS read again
 //   projectInfo()     a project's description, author, category, tags and genres; setProjectInfo() keeps them (tidied)
 //   setProjectCategory() its category alone ("" for none: Uncategorised), as PROJECTS sets it (a menu, a drag, typed)
 //   projectsView()    how PROJECTS shows them (ProjectsView): the projects starred, the groups folded, the search, the
@@ -353,6 +355,15 @@ namespace playground
         bool dialsEdited = false;                // a dial moved from the preset's (or the version's) value
     };
 
+    // What Claude did last to the projects (the projects tool, ChatAgent.h: a version or a preset saved, a project
+    // opened, a preset applied), in the words the editor's status says ("CLAUDE SAVED VERSION 5 OF ENGINE"); `count`
+    // moves with each, so an editor says each once (none: 0).
+    struct ClaudeNotice
+    {
+        uint64_t count = 0;
+        std::string text;
+    };
+
     struct ProjectInfo
     {
         std::string description;
@@ -545,6 +556,7 @@ namespace playground
                                        std::string& why) = 0;
         virtual PresetCycle presetCycle() const = 0;
         virtual bool stepPreset(int step, std::string& why) = 0;
+        virtual ClaudeNotice claudeNotice() const = 0;
         virtual ProjectInfo projectInfo(const std::string& project) const = 0;
         virtual bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) = 0;
         virtual bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) = 0;

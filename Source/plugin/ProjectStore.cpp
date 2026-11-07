@@ -931,8 +931,40 @@ namespace playground::projectstore
         return readAndKeep(f, why);                      // its entry kept too: what PROJECTS opens, the poll then has
     }
 
+    std::string noteLead(std::string_view words)
+    {
+        std::string out;
+        for (const char ch : words)
+        {
+            const auto u = static_cast<unsigned char>(ch);
+            const bool space = u <= ' ' || u == 0x7f;
+            if (space)
+            {
+                if (!out.empty() && out.back() != ' ')
+                    out += ' ';
+            }
+            else
+                out += ch;                               // UTF-8 kept as it is
+        }
+        while (!out.empty() && out.back() == ' ')
+            out.pop_back();
+        if (out.size() > kMaxLead)
+        {
+            std::size_t cut = out.rfind(' ', kMaxLead - 3);
+            if (cut == std::string::npos || cut < kMaxLead / 2)
+                cut = kMaxLead - 3;
+            while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xc0) == 0x80)
+                --cut;                                   // never inside a UTF-8 character
+            out = out.substr(0, cut);
+            while (!out.empty() && out.back() == ' ')
+                out.pop_back();
+            out += "...";
+        }
+        return out;
+    }
+
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits, std::string* why)
+                                     const std::vector<Answer>& circuits, std::string* why, std::string_view lead)
     {
         if (readOnly(name, why))
             return std::nullopt;
@@ -982,6 +1014,8 @@ namespace playground::projectstore
         v.number = p.versions.empty() ? 1 : p.latest().number + 1;
         v.savedMs = juce::Time::currentTimeMillis();
         v.note = describeChange(p.versions.empty() ? nullptr : &p.latest(), files, dials);
+        if (const std::string l = noteLead(lead); !l.empty())
+            v.note = l + " (" + v.note + ")";
         v.files = files;
         v.active = active;
         v.dials = dials;

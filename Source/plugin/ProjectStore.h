@@ -246,9 +246,15 @@ namespace playground::projectstore
     // A new version of the project `name` (tidied; a new project when there is none), its note what changed since the
     // latest, with the self-test's answers for its netlists (`circuits`: at most kMaxAnswers kept; when the files, the
     // tab and the dials are the latest's, answers it lacks are added to it and no version is). Nothing, with why, when
-    // it cannot be written.
+    // it cannot be written. `lead` goes before the note's words, the change after it in brackets ("Claude: brighter
+    // (program.fm +12 -3)"): who saved it and why, as noteLead tidies it.
     std::optional<Saved> saveVersion(std::string_view name, const Sources& files, int active, const std::vector<Dial>& dials,
-                                     const std::vector<Answer>& circuits = {}, std::string* why = nullptr);
+                                     const std::vector<Answer>& circuits = {}, std::string* why = nullptr,
+                                     std::string_view lead = {});
+    // A version note's words as a project keeps them: printable, one line, its spaces collapsed, at most kMaxLead
+    // characters (cut at a word, with "..."); "" when nothing is left.
+    inline constexpr std::size_t kMaxLead = 160;
+    std::string noteLead(std::string_view words);
     // A preset of the project (over one of that name, case aside, which takes the new name's case and keeps its
     // category).
     bool savePreset(std::string_view project, std::string_view preset, const std::vector<Dial>& dials, int from,

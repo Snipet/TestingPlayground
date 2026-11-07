@@ -1315,6 +1315,7 @@ namespace playground
             ownDials_.fetch_or(slotBit(slot));                   // journalled when Claude set it (chatSetDial)
             (void)writeDial(slot, normOf(c, plain));
         }
+        runClaudeJob();                                          // Claude's projects tool: after its dials, as it set them
         capture_.housekeep();                                    // frees what the audio thread handed back
         const double now = juce::Time::getMillisecondCounterHiRes();
         if (const uint32_t a = engine_.takeAlerts(); a != 0)
@@ -2132,6 +2133,11 @@ namespace playground
 
     bool Processor::openProject(const std::string& name, int version, std::string& why)
     {
+        return openProjectAs(name, version, Journal::Who::user, why);
+    }
+
+    bool Processor::openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why)
+    {
         const std::optional<projectstore::Project> p = projectstore::load(name, &why);
         if (!p)
             return false;
@@ -2143,7 +2149,8 @@ namespace playground
         }
         if (!openVersion(*p, *v, why))
             return false;
-        journal_.dialsNote(Journal::Who::user, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
+        if (who)
+            journal_.dialsNote(*who, "opened project \"" + p->name + "\", version " + std::to_string(v->number));
         refreshPresets(true);
         return true;
     }
@@ -2210,6 +2217,12 @@ namespace playground
 
     bool Processor::saveVersion(const std::string& name, SavedVersion& saved, std::string& why)
     {
+        return saveVersionAs(name, {}, Journal::Who::user, saved, why);
+    }
+
+    bool Processor::saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
+                                  SavedVersion& saved, std::string& why)
+    {
         Sources files;
         int active = 0;
         std::string open;
@@ -2227,13 +2240,13 @@ namespace playground
         // A factory project is never written: its name, or a new project's while one is open, saves the user's own copy.
         if (isFactoryName(name) || (isFactoryName(open) && !projectstore::exists(name)))
             return saveCopy(isFactoryName(name) ? name : open, isFactoryName(name) ? std::string() : name, files, active, dials,
-                            answers, saved, why);
-        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why);
+                            answers, lead, who, saved, why);
+        const std::optional<projectstore::Saved> r = projectstore::saveVersion(name, files, active, dials, answers, &why, lead);
         if (!r)
             return false;
         saved = { r->number, r->unchanged, r->created, projectstore::tidyName(name), false };
-        if (!r->unchanged)
-            journal_.note(Journal::Who::user, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
+        if (!r->unchanged && who)
+            journal_.note(*who, "saved version " + std::to_string(r->number) + " of \"" + projectstore::tidyName(name) + "\"");
         const std::lock_guard<std::mutex> lock(programMutex_);
         const std::string tidy = projectstore::tidyName(name);
         // The preset applied stays named while the dials are still its.
@@ -2258,7 +2271,7 @@ namespace playground
     // its note saying whose copy it is, with the factory project's presets and info. It is then the project open.
     bool Processor::saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
                              const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
-                             SavedVersion& saved, std::string& why)
+                             const std::string& lead, std::optional<Journal::Who> who, SavedVersion& saved, std::string& why)
     {
         if (files.empty())
         {
@@ -2280,6 +2293,8 @@ namespace playground
         v.savedMs = juce::Time::currentTimeMillis();
         const std::string changed = projectstore::describeChange(&origin->latest(), files, dials);
         v.note = "a copy of the factory's \"" + ownName(origin->name) + "\"" + (changed == "the tab shown" ? "" : ", " + changed);
+        if (const std::string l = projectstore::noteLead(lead); !l.empty())
+            v.note = l + " (" + v.note + ")";
         v.files = files;
         v.active = active;
         v.dials = dials;
@@ -2293,8 +2308,9 @@ namespace playground
         if (!added)
             return false;
         saved = { 1, false, true, *added, true };
-        journal_.note(Journal::Who::user, "saved \"" + *added + "\", a copy of the factory project \"" + ownName(origin->name)
-                                              + "\" (its presets with it)");
+        if (who)
+            journal_.note(*who, "saved \"" + *added + "\", a copy of the factory project \"" + ownName(origin->name)
+                                    + "\" (its presets with it)");
         const std::lock_guard<std::mutex> lock(programMutex_);
         projectName_ = *added;
         projectVersion_ = projectLatest_ = 1;
@@ -2337,6 +2353,11 @@ namespace playground
 
     bool Processor::savePreset(const std::string& preset, std::string& why)
     {
+        return savePresetAs(preset, Journal::Who::user, why);
+    }
+
+    bool Processor::savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why)
+    {
         std::string project;
         int version = 0;
         {
@@ -2363,7 +2384,8 @@ namespace playground
         const std::vector<projectstore::Dial> dials = dialsNow();
         if (!projectstore::savePreset(project, preset, dials, version, &why))
             return false;
-        journal_.note(Journal::Who::user, "saved preset \"" + projectstore::tidyName(preset) + "\"");
+        if (who)
+            journal_.note(*who, "saved preset \"" + projectstore::tidyName(preset) + "\"");
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             projectPreset_ = projectstore::tidyName(preset);
@@ -2378,7 +2400,8 @@ namespace playground
         return applyPresetAs(project, preset, Journal::Who::user, why);
     }
 
-    bool Processor::applyPresetAs(const std::string& project, const std::string& preset, Journal::Who who, std::string& why)
+    bool Processor::applyPresetAs(const std::string& project, const std::string& preset, std::optional<Journal::Who> who,
+                                  std::string& why)
     {
         const std::optional<projectstore::Project> p = projectstore::load(project, &why);
         if (!p)
@@ -2410,7 +2433,8 @@ namespace playground
         else
             setDialsByName(cs, options, pr->dials);
         syncOwnDials();                                          // the preset's dials: its line says so
-        journal_.dialsNote(who, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
+        if (who)
+            journal_.dialsNote(*who, "applied preset \"" + pr->name + "\" of \"" + p->name + "\"");
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
             projectPreset_ = pr->name;

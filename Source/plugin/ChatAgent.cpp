@@ -46,9 +46,11 @@ namespace playground
         constexpr int kMaxCheckNudges = 2;         // times a turn goes on because its checks fail (ChatAgent.h)
         constexpr int kMaxPlannerAsks = 4;         // ask_planner's calls a turn
         // The tools that change the program, the dials or the checks: a turn that used none is never sent on by them
-        // (set_checks without checks only lists them, and tune_dials with a sweep only measures).
+        // (set_checks without checks only lists them, tune_dials with a sweep only measures, and projects changes what
+        // plays only when it opens a project or applies a preset).
         constexpr const char* kChangingTools[] = { "write_file", "edit_file", "edit_circuit", "rename_file", "delete_file",
-                                                   "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks" };
+                                                   "add_library_file", "run_program", "set_dial", "tune_dials", "set_checks",
+                                                   "projects" };
         constexpr int kMaxCircuitOps = 64;         // edit_circuit's commands a call
         constexpr std::size_t kCircuitTextBytes = 4000;   // edit_circuit gives a netlist this size or less back whole
         constexpr bool kInstrument = product::kIsInstrument;
@@ -2136,9 +2138,8 @@ namespace playground
             juce::var name = prop("string", "The library file's name, as THE LIBRARY lists it");
             name.getDynamicObject()->setProperty("enum", names);
             tools.add(tool("add_library_file",
-                           "Add a ready-made building block (THE LIBRARY in your instructions: FMinus files, and .cir "
-                           "netlists that become modules) to the editor as a tab, and get its whole text back; #include "
-                           "it in the program to use it. A file of that name "
+                           "Add a building block of THE LIBRARY (FMinus files, and .cir netlists that become modules) to "
+                           "the editor as a tab, and get its whole text back; #include it to use it. A file of that name "
                            "in the editor already is left as it is.",
                            claude::object({ { "name", name } }), { "name" }));
         }
@@ -2182,9 +2183,9 @@ namespace playground
                            props, {}));
         }
         tools.add(tool("view_panel",
-                       "See the plugin's interface: a picture of the program's panel as the user sees it in the PANEL "
-                       "view (its panel.gui, or its dials), drawn from the program that plays, or of a .cir file's "
-                       "schematic. Use it after "
+                       "See the plugin's interface: a picture of the program's panel as the user sees it (its panel.gui, "
+                       "or its dials), drawn from the program that plays, or of a .cir file's schematic. The panel is "
+                       "the PANEL view's. Use it after "
                        "you write or change panel.gui and run it, to check the layout as a designer would: crowding, "
                        "overlaps, text cut off, ragged rows, sizes and colours that do not read, a page left empty; "
                        "then fix what you see. view \"window\" shows the whole editor instead (the code and the "
@@ -2321,7 +2322,7 @@ namespace playground
                                                                              "170), then the best so far"));
             tools.add(tool("tune_dials",
                            "Find values of up to eight float dials that bring measurements to goals by rendering "
-                           "offline (as measure_output does) and searching, instead of guessing; or sweep one dial "
+                           "offline and searching, instead of guessing; or sweep one dial "
                            "over values: the goals' metrics at each, side by side. Goals are "
                            "metrics (CHECKING YOUR WORK) with min, max "
                            "or a target (a sweep's may be a metric alone). The best values go on the dials, as set_dial "
@@ -2387,6 +2388,7 @@ namespace playground
         tools.add(statusDefinition());               // get_status (Live.cpp)
         tools.add(listenDefinition());               // listen (Live.cpp)
         tools.add(captureToolDefinition());          // capture (ChatCapture.cpp)
+        tools.add(projectsDefinition());             // projects (ChatProjects.cpp)
         return juce::var(tools);
     }
 
@@ -3001,8 +3003,11 @@ namespace playground
                 const bool listing = str(use, "name") == "set_checks" && (asked.isVoid() || asked.isUndefined());
                 const juce::var swept = use.getProperty("input", juce::var()).getProperty("sweep", juce::var());
                 const bool sweep = str(use, "name") == "tune_dials" && !swept.isVoid() && !swept.isUndefined();
-                // set_checks' list and tune_dials' sweep change nothing (the handlers' own tests)
-                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep)
+                const juce::String act = use.getProperty("input", juce::var()).getProperty("action", juce::var()).toString();
+                const bool keeps = str(use, "name") == "projects" && act != "open" && act != "apply_preset";
+                // set_checks' list, tune_dials' sweep and a list or a save of projects change nothing (the handlers' own
+                // tests)
+                if (!static_cast<bool>(result.getProperty("is_error", false)) && !listing && !sweep && !keeps)
                     for (const char* c : kChangingTools)
                         worked = worked || str(use, "name") == c;
                 results.add(result);
@@ -3394,6 +3399,7 @@ namespace playground
             { "compare", "Compare two sounds", true, false, "debugging" },
             { "trace", "Trace a problem", true, false, "debugging" },
             { "capture", "Record what you play", true, false, "debugging" },
+            { "projects", "Projects and presets", false, true, "projects" },
         };
 
         const Face* faceOf(const juce::String& name)
@@ -3984,6 +3990,8 @@ namespace playground
 
         if (name == "read_file")
             return readFileText(input, isError);           // ChatFiles.cpp
+        if (name == "projects")
+            return projectsText(input, isError);           // ChatProjects.cpp
         if (name == "write_file")
         {
             std::string file, content;

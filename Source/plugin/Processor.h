@@ -20,7 +20,7 @@
 //     notes as Events;
 //   - the chat with Claude (ChatAgent.h): its conversation is kept in the session (<CHAT json="..."/>), and its tools
 //     act on the draft, RUN and the dials through ChatHost, from the agent's thread (the draft under programMutex_,
-//     a dial queued for poll()).
+//     a dial queued for poll(); its projects tool's saves, opens and presets a job poll() runs: ProcessorSaves.cpp).
 //   - the editor's size, as the user left it (the editor is resizable), its view, its folds, the widths its user set
 //     for the explorer and the chat, and its interface's pages, kept in the session (<EDITOR w=".." h=".."
 //     view="panel" chat="closed" explorerW=".." chatW=".."> with a <PAGE title=".."/> a tabs element);
@@ -268,6 +268,7 @@ namespace playground
                                std::string& why) override;
         PresetCycle presetCycle() const override;
         bool stepPreset(int step, std::string& why) override;
+        ClaudeNotice claudeNotice() const override;
         ProjectInfo projectInfo(const std::string& project) const override;
         bool setProjectInfo(const std::string& project, const ProjectInfo& info, std::string& why) override;
         bool setProjectCategory(const std::string& project, const std::string& category, std::string& why) override;
@@ -353,6 +354,7 @@ namespace playground
         std::string chatProject() const override;
         std::string chatAb() const override;
         std::string chatPanelFit(const PanelSpec& panel, const Controls& controls) override;
+        ProjectAnswer chatProjects(const ProjectCall& call) override;   // ProcessorSaves.cpp
 
         // The program: what plays, the editor's draft, the dials. Message thread, and a host's state calls. Declared
         // before the parameters, whose names and texts read controls_ (control()).
@@ -411,7 +413,14 @@ namespace playground
         // has, and whether every one of those is where it is (within a ten-thousandth of its range).
         std::pair<int, bool> dialsAgainst(const Controls& cs, const std::array<std::vector<std::string>, kMaxControls>& options,
                                           const std::vector<projectstore::Dial>& dials) const;
-        bool applyPresetAs(const std::string& project, const std::string& preset, Journal::Who who, std::string& why);
+        // The project calls as the editor's (the user's) and Claude's projects tool make them: `who` the journal's (none:
+        // Claude Desktop's, which it knows), `lead` a version's note's words ("Claude: brighter").
+        bool applyPresetAs(const std::string& project, const std::string& preset, std::optional<Journal::Who> who,
+                           std::string& why);
+        bool saveVersionAs(const std::string& name, const std::string& lead, std::optional<Journal::Who> who,
+                           SavedVersion& saved, std::string& why);
+        bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
+        bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;
         // A version's or a preset's dials, by name, for when its program's compile lands (poll; message thread).
         std::vector<projectstore::Dial> projectDials_;
@@ -503,7 +512,27 @@ namespace playground
         void restoreProjectBase();
         bool saveCopy(const std::string& from, const std::string& as, const Sources& files, int active,
                       const std::vector<projectstore::Dial>& dials, const std::vector<projectstore::Answer>& answers,
-                      SavedVersion& saved, std::string& why);   // a factory project's: the user's own copy
+                      const std::string& lead, std::optional<Journal::Who> who, SavedVersion& saved,
+                      std::string& why);                         // a factory project's: the user's own copy
+        // Claude's projects tool (ProcessorSaves.cpp; ChatHost::chatProjects). Its saves, opens and presets run on the
+        // message thread, as the editor's PROJECTS runs them: the caller's worker hands a job to poll() (after the dials
+        // Claude set, so a save keeps them) and waits for it (onMessageThread: at once on the message thread itself; a
+        // job poll() has not taken in kClaudeJobSeconds is withdrawn, nothing done). A list reads the store on the
+        // caller's thread (never a file read whole on the message thread), the project open's state from a job. What
+        // it did goes to the editor's status (claudeNotice_, which EditorPort::claudeNotice gives).
+        static constexpr int kClaudeJobSeconds = 10;
+        std::mutex claudeJobMutex_;
+        std::condition_variable claudeJobDone_;
+        std::function<void()> claudeJob_;                        // asked, not taken yet
+        bool claudeJobRunning_ = false;
+        uint64_t claudeJobsDone_ = 0;
+        bool onMessageThread(std::function<void()> job);         // false: not taken in time
+        void runClaudeJob();                                     // poll()
+        mutable std::mutex claudeNoticeMutex_;
+        ClaudeNotice claudeNotice_;
+        void noticeClaude(const std::string& text);              // the editor's status says it
+        ProjectAnswer claudeProjectAction(const ProjectCall& call, uint64_t& compile);   // the message thread's part
+        std::string claudeProjectList(const ProjectCall& call);                          // the caller's
 
         juce::AudioProcessorValueTreeState apvts_;
         // The panel's own dials' normalised values (Controls.h's isPanelDial: slot kHostControls + k's is k's), as a
