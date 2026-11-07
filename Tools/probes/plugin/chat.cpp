@@ -195,6 +195,14 @@
 //            its gain a NaN finds it at the first sample, in a local, the editor untouched; the recording, which there is
 //            none of yet, and a find it does not know are errors that say so; with notes, the times and a dial asked for
 //            it renders them, the dials as measure_output's
+//   EXPORT   the render hash and trace's export through MCP (dsp/Export.h): measure_output's Render hash line the same
+//            twice and another with the level (gain) moved, an instrument's trace's the same as measure_output's; view_sound's
+//            and compare's (A's and B's alike for the same files); an export with fields writes a WAV, a CSV (and the
+//            effect's input) into the probe's renders folder, named in the result, read back: the WAV's frames, rate
+//            and data hashing to the render hash, the CSV's header, its rows (the effect's count the row's sample, the
+//            synth's held 1 then 0) and their count as the result says; the CSV inline 32 rows (the first and the last)
+//            within its bytes, and `rows` fewer; the same name again replaces its files, 24-bit reads as 24 bits; a bad
+//            wav word, a list with it and a render of the recording refused, and nothing written for them
 //   PLANNER  a planning model (setPlanner): none at first, one the models do not list refused; chosen, a message's
 //            first request goes to it (its model, tool_choice none, the tools defined, no thinking block in its
 //            history, the brief after the user's words), its plan streams into a plan entry, and the builder's first
@@ -260,6 +268,7 @@
 #include "plugin/ClaudeApi.h"
 #include "plugin/Processor.h"
 
+#include "dsp/Export.h"
 #include "dsp/Measure.h"
 #include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
@@ -3855,6 +3864,151 @@ PROBE(plugin, chat)
             P.eq("trace.render_as_measured", !dials.empty() && has(dials, std::string(levelDial) + (pg::product::kIsInstrument ? " -30" : " -6"))
                                                  && has(traced, "; dials " + dials + "; in calls of 16 samples.")
                                                  && has(traced, pg::product::kIsInstrument ? "Notes 57 (A3) 64 (E4)" : "for 0.30 s") ? 1 : 0, 1);
+        }
+
+        // ---- EXPORT --------------------------------------------------------------------------------------------------------
+        {
+            namespace ms = pg::measure;
+            // The render hash a report shows ("Render hash: <16 hex> (...)"), "" with none.
+            const auto hashIn = [](const std::string& text, std::size_t from = 0) {
+                const std::size_t at = text.find("Render hash: ", from);
+                return at == std::string::npos ? std::string() : text.substr(at + 13, ms::kHashShown);
+            };
+            juce::var plain = input({ { "hold_seconds", 0.3 }, { "tail_seconds", 0.2 }, { "dials_from", "defaults" } });
+            if constexpr (pg::product::kIsInstrument)
+                plain.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+            const std::string m1 = toolText(sa.mcpCall("measure_output", plain));
+            const std::string m2 = toolText(sa.mcpCall("measure_output", plain));
+            juce::var moved = juce::JSON::parse(juce::JSON::toString(plain));
+            moved.getDynamicObject()->setProperty("dials", input({ { levelDial, pg::product::kIsInstrument ? -30.0 : -6.0 } }));
+            const std::string m3 = toolText(sa.mcpCall("measure_output", moved));
+            std::printf("export: measure_output's hashes %s, %s, %s (the dial moved)\n", hashIn(m1).c_str(), hashIn(m2).c_str(),
+                        hashIn(m3).c_str());
+            P.eq("export.measure_hash_line", hashIn(m1).size() == ms::kHashShown
+                                                 && has(m1, pg::product::kIsInstrument ? "(SHA-256 of the float32 samples, L R interleaved, of "
+                                                                                         "the render of the note held).\nMetrics: "
+                                                                                       : "(SHA-256 of the float32 samples, L R interleaved, of "
+                                                                                         "the sine's, the noise's, the impulse's and silence's "
+                                                                                         "renders, in turn).\nMetrics: ") ? 1 : 0, 1);
+            P.eq("export.measure_hash_stable", !hashIn(m1).empty() && hashIn(m1) == hashIn(m2) ? 1 : 0, 1);
+            P.eq("export.measure_hash_differs", !hashIn(m3).empty() && hashIn(m3) != hashIn(m1) ? 1 : 0, 1);
+            const std::string viewed = toolText(sa.mcpCall("view_sound", plain));
+            const std::string cmp = toolText(sa.mcpCall("compare", input({ { "a", "editor" }, { "b", "editor" } })));
+            const std::size_t hA = cmp.find("Render hashes: A ");
+            const std::string ha = hA == std::string::npos ? std::string() : cmp.substr(hA + 17, ms::kHashShown);
+            const std::string hb = hA == std::string::npos ? std::string() : cmp.substr(hA + 17 + ms::kHashShown + 4, ms::kHashShown);
+            std::printf("export: view_sound's hash %s; compare's A %s, B %s\n", hashIn(viewed).c_str(), ha.c_str(), hb.c_str());
+            P.eq("export.view_sound_hash", hashIn(viewed).size() == ms::kHashShown ? 1 : 0, 1);
+            P.eq("export.compare_hashes", ha.size() == ms::kHashShown && ha == hb && has(cmp, ", B " + ha + " (SHA-256 of each side's") ? 1 : 0, 1);
+
+            // The export: the effect's program with a counter (a trial edit), the synth's own fields.
+            juce::var ask = input({ { "hold_seconds", 0.5 }, { "tail_seconds", 0.2 }, { "dials_from", "defaults" },
+                                    { "export", input({ { "every", 480 }, { "name", "probe export" } }) } });
+            if constexpr (pg::product::kIsInstrument)
+            {
+                ask.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                ask.getDynamicObject()->setProperty("fields", juce::Array<juce::var>{ "env", "held" });
+            }
+            else
+            {
+                juce::Array<juce::var> counter;
+                counter.add(input({ { "name", "program.fm" },
+                                    { "content", "module Effect\n{\n    param float gain [[fminus::range(-24, 24)]] [[fminus::default(0)]];\n"
+                                                 "    int count;\n    void process(float* restrict left, float* restrict right, int n)\n"
+                                                 "    {\n        const float g = expf(0.115129255f * gain[0]);\n"
+                                                 "        for (int i = 0; i < n; ++i)\n        {\n            count += 1;\n"
+                                                 "            left[i] *= g;\n            right[i] *= g;\n        }\n    }\n};\n" } }));
+                ask.getDynamicObject()->setProperty("try_edits", counter);
+                ask.getDynamicObject()->setProperty("fields", juce::Array<juce::var>{ "count" });
+            }
+            const pg::ChatAgent::McpResult ex = sa.mcpCall("trace", ask);
+            const std::string exported = toolText(ex);
+            std::printf("trace with export:\n%s\n", exported.c_str());
+            const std::string lead = "Exported on this Mac (the user can open these) to ";
+            const std::size_t d0 = exported.find(lead);
+            const std::string dir = d0 == std::string::npos ? std::string() : exported.substr(d0 + lead.size(), exported.find(":\n", d0) - d0 - lead.size());
+            const juce::File folder(juce::String::fromUTF8(dir.c_str()));
+            const juce::File wavFile = folder.getChildFile("probe export.wav"), csvFile = folder.getChildFile("probe export.csv"),
+                             inFile = folder.getChildFile("probe export input.wav");
+            P.eq("export.written", !ex.isError && !dir.empty() && folder.getFileName() == "renders" && wavFile.existsAsFile()
+                                       && csvFile.existsAsFile() && inFile.existsAsFile() == !pg::product::kIsInstrument ? 1 : 0, 1);
+            juce::MemoryBlock wavBytes;
+            wavFile.loadFileAsData(wavBytes);
+            ms::Wav wav;
+            std::string wavWhy;
+            const bool read = ms::readWav(std::span<const uint8_t>(static_cast<const uint8_t*>(wavBytes.getData()), wavBytes.getSize()), wav, wavWhy);
+            const std::size_t frames = static_cast<std::size_t>(0.7 * 48000.0);
+            P.eq("export.wav_read", read && wav.isFloat && wav.bits == 32 && wav.rate == 48000 && wav.channels == 2 && wav.l.size() == frames ? 1 : 0, 1);
+            {
+                ms::Sha256 h;
+                const std::size_t data = wavBytes.getSize() - frames * 8;
+                h.add(static_cast<const char*>(wavBytes.getData()) + data, frames * 8);
+                const std::string hex = h.hex();
+                std::printf("export: the WAV's data hashes to %s; the result's render hash %s\n", hex.c_str(), hashIn(exported).c_str());
+                P.eq("export.wav_is_the_render_hash", read && !hashIn(exported).empty() && hex.rfind(hashIn(exported), 0) == 0
+                                                          && ms::renderHash(wav.l, wav.r) == hex ? 1 : 0, 1);
+                if constexpr (pg::product::kIsInstrument)   // the same render as measure_output's
+                {
+                    juce::var same = juce::JSON::parse(juce::JSON::toString(ask));
+                    same.getDynamicObject()->removeProperty("export");
+                    same.getDynamicObject()->removeProperty("fields");
+                    P.eq("export.trace_hash_is_measure_outputs", hashIn(toolText(sa.mcpCall("measure_output", same))) == hashIn(exported) ? 1 : 0, 1);
+                }
+            }
+            const juce::StringArray rows = juce::StringArray::fromLines(csvFile.loadFileAsString().trimEnd());
+            const std::size_t want = frames / 480;
+            int right = 0;
+            for (int k = 1; k < rows.size(); ++k)
+            {
+                const juce::StringArray cells = juce::StringArray::fromTokens(rows[k], ",", "");
+                if constexpr (pg::product::kIsInstrument)
+                    right += cells.size() == 4 && cells[3] == (cells[1].getIntValue() <= 24000 ? "1" : "0") ? 1 : 0;
+                else
+                    right += cells.size() == 3 && cells[2] == cells[1] && cells[1].getIntValue() == 480 * k ? 1 : 0;
+            }
+            std::printf("export: the CSV's %d lines, %d rows as they should be; its header %s\n", rows.size(), right, rows[0].toRawUTF8());
+            P.eq("export.csv_header", rows[0] == (pg::product::kIsInstrument ? "time_s,sample,env,held" : "time_s,sample,count") ? 1 : 0, 1);
+            P.eq("export.csv_rows", static_cast<int64_t>(rows.size() - 1), static_cast<int64_t>(want));
+            P.eq("export.csv_values", static_cast<int64_t>(right), static_cast<int64_t>(want));
+            P.eq("export.csv_rows_said", has(exported, "a row every 480 samples (0.01 s), " + std::to_string(want) + " rows, ") ? 1 : 0, 1);
+            const std::string inlineLead = "The CSV inline (32 of its " + std::to_string(want) + " rows, evenly, to 6 digits):\n";
+            const std::size_t i0 = exported.find(inlineLead);
+            const std::string inlined = i0 == std::string::npos ? std::string() : exported.substr(i0 + inlineLead.size());
+            const juce::StringArray inlineRows = juce::StringArray::fromLines(juce::String(inlined).trimEnd());
+            std::printf("export: the CSV inline, %zu bytes, %d lines\n", inlined.size(), inlineRows.size());
+            P.eq("export.inline_rows", inlineRows.size() == 33 && inlineRows[0] == rows[0]
+                                           && inlineRows[1].startsWith("0.010000,480,") && inlineRows[32].fromFirstOccurrenceOf(",", false, false).startsWith(juce::String(480 * static_cast<int>(want)) + ",")
+                                           ? 1 : 0, 1);
+            P.le("export.inline_bytes", static_cast<double>(inlined.size()), 6000.0);
+            {
+                juce::var fewer = juce::JSON::parse(juce::JSON::toString(ask));
+                fewer.getDynamicObject()->setProperty("export", input({ { "every", 480 }, { "name", "probe export" }, { "rows", 4 } }));
+                const std::string again = toolText(sa.mcpCall("trace", fewer));
+                P.eq("export.inline_rows_asked", has(again, "The CSV inline (4 of its ") ? 1 : 0, 1);
+                P.eq("export.same_name_replaces", has(again, ", replacing that name's files:\n") ? 1 : 0, 1);
+            }
+            {
+                juce::var deep = juce::JSON::parse(juce::JSON::toString(ask));
+                deep.getDynamicObject()->setProperty("export", input({ { "wav", "24" }, { "name", "probe export 24" } }));
+                const std::string said = toolText(sa.mcpCall("trace", deep));
+                juce::MemoryBlock b24;
+                folder.getChildFile("probe export 24.wav").loadFileAsData(b24);
+                ms::Wav w24;
+                P.eq("export.wav_24", ms::readWav(std::span<const uint8_t>(static_cast<const uint8_t*>(b24.getData()), b24.getSize()), w24, wavWhy)
+                                          && w24.bits == 24 && !w24.isFloat && w24.l.size() == frames && has(said, "stereo 24-bit PCM") ? 1 : 0, 1);
+            }
+            {
+                // Refused: a wav word it does not take, a list, a render of the recording; nothing written.
+                const juce::Array<juce::File> filesBefore = folder.findChildFiles(juce::File::findFiles, false);
+                const pg::ChatAgent::McpResult badWav = sa.mcpCall("trace", input({ { "export", input({ { "wav", "mp3" } }) } }));
+                const pg::ChatAgent::McpResult listed = sa.mcpCall("trace", input({ { "export", true }, { "list", true } }));
+                const pg::ChatAgent::McpResult captured = sa.mcpCall("trace", input({ { "export", true }, { "source", "capture" } }));
+                std::printf("export refused: %s | %s | %s\n", toolText(badWav).c_str(), toolText(listed).c_str(), toolText(captured).c_str());
+                P.eq("export.bad_wav_refused", badWav.isError && has(toolText(badWav), "export's wav is float32 (the default) or 24") ? 1 : 0, 1);
+                P.eq("export.list_refused", listed.isError && has(toolText(listed), "list names the fields") ? 1 : 0, 1);
+                P.eq("export.capture_refused", captured.isError && has(toolText(captured), "export writes no render of the user's recording") ? 1 : 0, 1);
+                P.eq("export.refused_write_nothing", folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
+            }
         }
     }
 

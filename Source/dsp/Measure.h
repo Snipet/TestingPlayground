@@ -82,8 +82,9 @@
 // the stop's message and when it came (Session::stopWords, the first render's), and a render says so (Render::stopCall,
 // stopAt), as view_sound and trace do.
 //
-// The report ends with the values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."),
-// in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
+// The report ends with the render hash (Result::hash: "Render hash: 9f86d081884c7d65 (SHA-256 of the float32 samples, L R
+// interleaved, of the render of the note held).", Export.h; two reports with the same hash rendered the same bits) and the
+// values measured, name=value in the metrics' order ("Metrics: peak_db=-9.5 rms_db=-17.2 ..."), in the names checks use. A request's `spectrum` adds band levels as data (bandsOf: an octave's ten, a third's
 // thirty-one or a semitone's 120, the averaged spectrum's points), of both channels' power over the held part (or the
 // window) in Hann frames (bandSpectrum: kBandSeconds, a semitone's kNoteBandSeconds, each at most the part's length):
 // an instrument's levels (dBFS), an effect's noise's (and its own input's) gain in each, out against in. The line names
@@ -459,6 +460,12 @@ namespace playground::measure
                                                       // checks"): the report begins so
         bool cancelled = false;                   // a render was cancelled (Session::setCancel): the report says how far
                                                   // it got, and nothing is measured (`values` empty)
+        // The render hash of a whole report (`want` empty; a partial one, a check's or tune_dials', has none: Export.h:
+        // SHA-256 of the float32 samples, L R interleaved, 64 hex digits; the report's line shows its first 16): an
+        // instrument's render of the notes held (or the scenario), not the pitch's, the chord's or the sixteen voices';
+        // an effect's test signals' renders in turn (the sine's, the noise's, the impulse's and silence's; the steady
+        // tone's aside), its own input's after them. `hashed`: those renders, in words.
+        std::string hash, hashed;
     };
 
     // One compile, measured as often as asked. `pins`: its netlists generated with these configurations (Sources.h's

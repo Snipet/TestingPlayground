@@ -1,6 +1,8 @@
 // Source/dsp/SoundView.cpp: see SoundView.h.
 #include "dsp/SoundView.h"
 
+#include "dsp/Export.h"
+
 #include "Product.h"
 
 #include <algorithm>
@@ -369,6 +371,15 @@ namespace playground::measure
             if (!scenario.empty() && request.render.input == nullptr)
                 out.title += "; " + scenario;
             played = session.render(request.render, &in, &in, total, hooks);
+            if (request.keepInput)                     // as Session::render played it: its own input, else `in`
+            {
+                out.inL = request.render.input != nullptr ? request.render.input->l : std::move(in);
+                if (request.render.input != nullptr && !request.render.input->r.empty())
+                    out.inR = request.render.input->r;
+                out.inL.resize(played.l.size(), 0.0f);
+                if (!out.inR.empty())
+                    out.inR.resize(played.l.size(), 0.0f);
+            }
         }
         out.dials = played.dials;
         out.values = played.values;
@@ -393,6 +404,7 @@ namespace playground::measure
             return v;
         }
         View v = analyse(s.l, s.r, s.rate, s.heldUntil, request, s.cycleHz, s.harmonics, s.fromStart);
+        v.hash = renderHash(s.l, s.r);
         v.title = std::move(s.title);
         v.dials = std::move(s.dials);
         v.alerts = s.alerts;

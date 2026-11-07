@@ -50,6 +50,7 @@ namespace playground::measure
         int rows = 300;                           // the spectrogram's
         int spectrumColumns = 520;                // the average spectrum's
         std::size_t length = 0;                   // samples rendered (0: as the request plays; compare: a recording's)
+        bool keepInput = false;                   // an effect's Sound keeps its input (trace's export)
     };
 
     struct View
@@ -65,6 +66,7 @@ namespace playground::measure
         uint32_t alerts = 0;
         std::string stopped;                      // a render that stopped (Patch.h, "The loop budget", "Bounds
                                                   // checks"), in words; "" none
+        std::string hash;                         // view(): the render's hash (Export.h, 64 hex digits; "" from analyse())
         double peakDb = -240.0, rmsDb = -240.0;   // the whole render's peak, and the held part's RMS (the window's)
 
         std::vector<float> minL, maxL, minR, maxR;   // the waveform: per column
@@ -108,6 +110,8 @@ namespace playground::measure
         bool harmonics = false;                   // mark cycleHz's harmonics on the spectrum
         bool fromStart = false;                   // the close-up at the start (an impulse's response)
         bool cancelled = false;                   // its render was cancelled (Session::setCancel: Session::cancelWords)
+        std::vector<float> inL, inR;              // an effect's input as it went in, as long as l (ViewRequest::keepInput;
+                                                  // inR empty: inL on both)
     };
     Sound renderSound(const Sources& files, const ViewRequest& request);
     Sound renderSound(Session& session, const ViewRequest& request);   // one compile, rendered again (at its rate)

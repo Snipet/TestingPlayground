@@ -1,6 +1,8 @@
 // Source/dsp/Compare.cpp: see Compare.h.
 #include "dsp/Compare.h"
 
+#include "dsp/Export.h"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -327,6 +329,8 @@ namespace playground::measure
                     + (!rb.errors.empty() ? "B does not compile:\n" + rb.errors : std::string());
             return c;
         }
+        c.hashA = renderHash(ra.sound.l, ra.sound.r);
+        c.hashB = renderHash(rb.sound.l, rb.sound.r);
         if (c.twoRates())
         {
             acrossRates(c, ra, rb, sa, sb, options);

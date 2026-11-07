@@ -78,6 +78,7 @@ namespace playground::measure
         std::vector<float> envelopeDb;            // detail: the difference's level in 32 parts, against A's (dB); at two
                                                   // rates B's level against A's in each part (dB)
         Sound a, b;                               // what was rendered (a recording's samples for its side), for a picture
+        std::string hashA, hashB;                 // each side's render hash (Export.h, 64 hex digits; a recording's too)
         std::vector<std::string> lines;           // the result in words: at most seven lines
 
         bool twoRates() const { return rateB != rate; }

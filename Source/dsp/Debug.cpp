@@ -318,8 +318,8 @@ namespace playground::measure
             // such a field's later moments are not looked at.
             std::vector<Transition> startBad;
             std::vector<char> moved;                       // per scanned field: not 0 in a voice that sounded
-            // The watch, a call each: the value (the mean of every voice's, with all), its range, how many voices
-            // had one, and whether one was non-finite.
+            // The watch, a call each: the value (the mean of every voice's, with all; with none finite, the last
+            // non-finite one), its range, how many voices had one, and whether one was non-finite.
             struct Watch
             {
                 double v = 0.0, lo = 0.0, hi = 0.0;
@@ -394,12 +394,13 @@ namespace playground::measure
                 {
                     const Field& f = map_[watch_[w]];
                     Watch out;
-                    double sum = 0.0;
+                    double sum = 0.0, badValue = 0.0;
                     const auto take = [&](int slot) {
                         const double v = patch_.read(f, slot);
                         if (!finite(v))
                         {
                             out.bad = true;
+                            badValue = v;
                             return;
                         }
                         out.lo = out.count == 0 ? v : std::min(out.lo, v);
@@ -420,7 +421,7 @@ namespace playground::measure
                     else
                         for (const int slot : picked_)
                             take(slot);
-                    out.v = out.count > 0 ? sum / out.count : 0.0;
+                    out.v = out.count > 0 ? sum / out.count : out.bad ? badValue : 0.0;
                     watched.push_back(out);
                 }
             }
@@ -1799,7 +1800,7 @@ namespace playground::measure
             if (!any)
                 unmatched.push_back(q.fields[i]);
         }
-        const TraceFind find = q.find == TraceFind::none && q.fields.empty() ? TraceFind::any : q.find;
+        const TraceFind find = q.find == TraceFind::none && q.fields.empty() && !q.exporting ? TraceFind::any : q.find;
         for (const std::size_t k : watch)
             out.watched.push_back(map[k].path);
 
@@ -1809,6 +1810,7 @@ namespace playground::measure
         ViewRequest vr;
         vr.render = q.render;
         vr.input = static_cast<ViewInput>(std::clamp(q.input, 0, static_cast<int>(ViewInput::silence)));
+        vr.keepInput = q.exporting && !kInstrument;
         const int watchVoice = q.voiceGiven ? q.voice : kTraceNewest;
         Pass1 p1(*patch, scan, watch, watchVoice, static_cast<std::size_t>(kFirstSeconds * rate), clock);
         Sound sound = renderSound(session, vr, &p1);
@@ -1820,7 +1822,10 @@ namespace playground::measure
             const std::size_t done = p1.calls.empty() ? 0 : p1.calls.back().at + static_cast<std::size_t>(p1.calls.back().length);
             sound.l.resize(std::min(done, sound.l.size()));
             sound.r.resize(std::min(done, sound.r.size()));
+            sound.inL.resize(std::min(done, sound.inL.size()));
+            sound.inR.resize(std::min(done, sound.inR.size()));
         }
+        out.hash = renderHash(sound.l, sound.r);
         std::size_t readable = 0;
         for (const Field& f : map)
             readable += f.home != Field::Home::host ? 1 : 0;
@@ -1830,6 +1835,7 @@ namespace playground::measure
         if (stoppedFirst)
             out.lines.push_back("(Stopped after " + seconds(static_cast<double>(sound.l.size()) / rate) + " of it: " + clock.why()
                                 + "; what follows is about that part.)");
+        out.lines.push_back(hashLine(out.hash, stoppedFirst ? "the part rendered" : "the render"));
         if (sound.stopCall != Patch::Method::none)
         {
             // A call that ran past its loop budget, or failed a bounds check (Patch.h): the program played no more from
@@ -2083,8 +2089,40 @@ namespace playground::measure
         out.stopped = clock.stopped;
         if (clock.stopped && !stoppedFirst)
             out.lines.push_back(std::string("(Stopped in the calls of 1 sample: ") + clock.why() + "; what they did not reach says so.)");
+        // The export's field log: a row after the call that reaches each multiple of `every` (its own end the row's
+        // sample), the voice chosen's value as the watch has it.
+        if (q.every > 0 && !watch.empty())
+        {
+            FieldLog& log = out.log;
+            const std::size_t W = watch.size();
+            for (const std::size_t k : watch)
+            {
+                log.columns.push_back(map[k].path);
+                log.kinds.push_back(map[k].type == Field::Type::real     ? FieldLog::Kind::real
+                                    : map[k].type == Field::Type::real64 ? FieldLog::Kind::real64
+                                                                         : FieldLog::Kind::whole);
+            }
+            std::size_t next = q.every;
+            for (std::size_t c = 0; c < p1.calls.size(); ++c)
+            {
+                const std::size_t end = p1.calls[c].at + static_cast<std::size_t>(p1.calls[c].length);
+                if (end < next)
+                    continue;
+                log.at.push_back(end);
+                for (std::size_t w = 0; w < W; ++w)
+                {
+                    const Pass1::Watch& v = p1.watched[c * W + w];
+                    log.values.push_back(!v.bad ? v.v : v.count == 0 ? v.v : std::numeric_limits<double>::quiet_NaN());
+                    log.none.push_back(v.count == 0 && !v.bad ? 1 : 0);
+                }
+                while (next <= end)
+                    next += q.every;
+            }
+        }
         out.l = std::move(sound.l);                       // nothing reads `sound` after this
         out.r = std::move(sound.r);
+        out.inL = std::move(sound.inL);
+        out.inR = std::move(sound.inR);
         return out;
     }
 }

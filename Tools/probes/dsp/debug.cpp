@@ -39,18 +39,33 @@
 //           culprit
 //   LONG    CLICK's counter watched over a render of 300 s held (a call that returns numbers: Measure.h, "How long a
 //           render may be"): not stopped, its range whole (0 to 10006), in a time printed and bounded
+//   EXPORT  trace's export (Export.h): SHA-256's own test vectors (FIPS 180-4's, a million a's in odd pieces); CLICK's
+//           counter logged every 160 samples (a row each, the count the samples played: the voice's while it sounds,
+//           empty after), no find unless asked, the effect's input kept (the sine as it went in); the render hash the
+//           samples' and in the lines, the same twice and another for another note (the effect's noise), an
+//           instrument's measure_output's (Result::hash) and an effect's view_sound's; the WAV float32 read back to the
+//           bit, its data chunk hashing to the render hash, 24-bit within half a step and past full scale clipped and
+//           counted; the CSV's header and rows, a float to 9 digits and a double to 17 reading back to their bits, 6
+//           for the inline form; evenRows
 #include "Probe.h"
 
 #include "Examples.h"
 #include "Product.h"
 
 #include "dsp/Debug.h"
+#include "dsp/Export.h"
 #include "dsp/SoundView.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace pg = playground;
 namespace ms = playground::measure;
@@ -1307,6 +1322,179 @@ PROBE(dsp, debug)
         P.eq("long.watched_300s", r.error.empty() && !r.stopped && anyHas(r.lines, "count: min 0, max 10006")
                                       && static_cast<double>(r.l.size()) >= 300.0 * 48000.0 ? 1 : 0, 1);
         P.le("long.trace_seconds", took, 90.0);
+    }
+
+    // ---- EXPORT: the hash, the field log, the files' formats (Export.h) -------------------------------------------------
+    {
+        const auto sha = [](const std::string& text) {
+            ms::Sha256 h;
+            h.add(text.data(), text.size());
+            return h.hex();
+        };
+        P.eq("export.sha256_abc", sha("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" ? 1 : 0, 1);
+        P.eq("export.sha256_empty", sha("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ? 1 : 0, 1);
+        P.eq("export.sha256_two_blocks", sha("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+                                             == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1" ? 1 : 0, 1);
+        {
+            ms::Sha256 h;                                     // a million a's, in pieces of 1 to 97 bytes
+            const std::string a(97, 'a');
+            std::size_t fed = 0;
+            for (std::size_t k = 1; fed < 1000000; k = k % 97 + 1)
+            {
+                const std::size_t n = std::min(k, 1000000 - fed);
+                h.add(a.data(), n);
+                fed += n;
+            }
+            P.eq("export.sha256_million_pieces", h.hex() == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0" ? 1 : 0, 1);
+        }
+
+        // CLICK's counter (one a sample, from 0, back to 0 at 10007) logged every 160 samples over 0.6 s.
+        ms::TraceRequest q = clickReq;
+        q.find = ms::TraceFind::none;
+        q.fields = { "count" };
+        q.exporting = true;
+        q.every = 160;
+        q.render.phrase.clear();
+        q.render.holdSeconds = 0.5f;
+        q.render.tailSeconds = 0.1f;
+        if constexpr (kInstrument)
+            q.render.notes = { 48 };
+        const pg::Sources files = pg::singleFile(clickProgram);
+        const ms::TraceResult r = ms::trace(files, q);
+        print("EXPORT", r);
+        std::size_t valued = 0, right = 0;
+        for (std::size_t k = 0; k < r.log.rows(); ++k)
+            if (r.log.none[k] == 0)
+            {
+                ++valued;
+                right += r.log.values[k] == static_cast<double>(r.log.at[k] % 10007) ? 1 : 0;
+            }
+        std::printf("EXPORT: %zu samples, %zu rows (the first at %zu), %zu with a value, %zu of them the count played\n", r.l.size(),
+                    r.log.rows(), r.log.rows() > 0 ? r.log.at.front() : 0, valued, right);
+        P.eq("export.log_rows", static_cast<int64_t>(r.log.rows()), static_cast<int64_t>(r.l.size() / 160));
+        P.eq("export.log_first_row", r.log.rows() > 0 ? static_cast<int64_t>(r.log.at.front()) : -1, 160);
+        P.eq("export.log_columns", r.log.columns == std::vector<std::string>{ "count" } && r.log.kinds.size() == 1
+                                       && r.log.kinds[0] == ms::FieldLog::Kind::whole ? 1 : 0, 1);
+        P.eq("export.log_values", valued > 0 && right == valued ? 1 : 0, 1);
+        // The voice sounds while held (0.5 s: 150 rows); the effect's instance throughout.
+        P.ge("export.log_valued_rows", static_cast<double>(valued), kInstrument ? 149.0 : static_cast<double>(r.log.rows()));
+        P.eq("export.no_find", r.problems.empty() && !anyHas(r.lines, "Nothing found") ? 1 : 0, 1);
+        if constexpr (!kInstrument)
+        {
+            double inPeak = 0.0;
+            for (const float x : r.inL)
+                inPeak = std::max(inPeak, std::fabs(static_cast<double>(x)));
+            P.eq("export.input_kept", r.inL.size() == r.l.size() && r.inR.empty() ? 1 : 0, 1);
+            P.near("export.input_sine_peak", inPeak, std::pow(10.0, -12.0 / 20.0), 1e-3);
+        }
+        // The render hash: the samples', in the lines; the same twice, another with the level halved (a dial moved).
+        P.eq("export.hash_of_samples", r.hash.size() == 64 && r.hash == ms::renderHash(r.l, r.r) ? 1 : 0, 1);
+        P.eq("export.hash_line", anyHas(r.lines, "Render hash: " + r.hash.substr(0, ms::kHashShown) + " (SHA-256 of the float32 "
+                                                 "samples, L R interleaved, of the render).") ? 1 : 0, 1);
+        const ms::TraceResult again2 = ms::trace(files, q);
+        P.eq("export.hash_stable", again2.hash == r.hash && again2.l == r.l ? 1 : 0, 1);
+        {
+            ms::TraceRequest other = q;                      // another note; the effect's noise in place of its sine
+            if constexpr (kInstrument)
+                other.render.notes = { 52 };
+            else
+                other.render.signal = static_cast<int>(ms::ViewInput::noise);
+            const ms::TraceResult o = ms::trace(files, other);
+            P.eq("export.hash_differs", !o.hash.empty() && o.hash != r.hash ? 1 : 0, 1);
+        }
+        {
+            // An instrument's render hash is measure_output's (the same render, Result::hash); an effect's view_sound's.
+            ms::Session session(files);
+            const ms::Result m = session.measure(q.render);
+            ms::ViewRequest vr;
+            vr.render = q.render;
+            const ms::View v = ms::view(files, vr);
+            std::printf("EXPORT: trace's hash %s, measure_output's %s (of %s), view_sound's %s\n", r.hash.substr(0, 16).c_str(),
+                        m.hash.substr(0, 16).c_str(), m.hashed.c_str(), v.hash.substr(0, 16).c_str());
+            if constexpr (kInstrument)
+                P.eq("export.hash_is_measure_outputs", m.hash == r.hash && m.report.find("Render hash: " + r.hash.substr(0, 16)) != std::string::npos
+                                                           ? 1 : 0, 1);
+            else
+                P.eq("export.hash_is_measure_outputs", m.hashed == "the sine's, the noise's, the impulse's and silence's renders, in turn"
+                                                           && m.report.find("Render hash: " + m.hash.substr(0, 16)) != std::string::npos ? 1 : 0, 1);
+            P.eq("export.hash_is_view_sounds", v.hash == r.hash ? 1 : 0, 1);
+        }
+
+        // The WAV: float32 back to the bit, its data chunk the render hash's bytes; 24-bit within half a step, clipped.
+        std::string bytes;
+        const ms::Sink sink = [&bytes](const void* d, std::size_t n) {
+            bytes.append(static_cast<const char*>(d), n);
+            return true;
+        };
+        const auto span = [](const std::string& b) { return std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(b.data()), b.size()); };
+        const ms::WavWritten w = ms::writeWav(sink, r.l, r.r, rate, ms::WavFormat::float32);
+        ms::Wav back;
+        std::string why;
+        const bool read = ms::readWav(span(bytes), back, why);
+        P.eq("export.wav_float_back", read && w.ok && back.isFloat && back.bits == 32 && back.rate == 48000 && back.channels == 2
+                                          && back.l == r.l && back.r == r.r ? 1 : 0, 1);
+        P.eq("export.wav_float_size", w.bytes == bytes.size() && bytes.size() == ms::wavBytes(r.l.size(), ms::WavFormat::float32) ? 1 : 0, 1);
+        {
+            ms::Sha256 h;
+            const std::size_t data = bytes.size() - r.l.size() * 8;
+            h.add(bytes.data() + data, bytes.size() - data);
+            P.eq("export.wav_data_is_the_hash", data >= 8 && std::memcmp(bytes.data() + data - 8, "data", 4) == 0 && h.hex() == r.hash ? 1 : 0, 1);
+        }
+        {
+            std::vector<float> ramp(4801);
+            for (std::size_t i = 0; i < ramp.size(); ++i)
+                ramp[i] = static_cast<float>(-1.5 + 3.0 * static_cast<double>(i) / 4800.0);
+            std::size_t past = 0;
+            for (const float x : ramp)
+                past += std::nearbyint(static_cast<double>(x) * 8388608.0) > 8388607.0 || x < -1.0f ? 1 : 0;
+            bytes.clear();
+            const ms::WavWritten w24 = ms::writeWav(sink, ramp, {}, rate, ms::WavFormat::pcm24);
+            ms::Wav b24;
+            const bool read24 = ms::readWav(span(bytes), b24, why);
+            double worst = 0.0;
+            for (std::size_t i = 0; read24 && i < ramp.size(); ++i)
+                if (std::fabs(ramp[i]) < 1.0f)
+                    worst = std::max(worst, std::fabs(static_cast<double>(b24.l[i]) - ramp[i]) * 8388608.0);
+            std::printf("EXPORT: 24-bit, %zu of %zu samples clipped (%zu past full scale on each channel), the worst error %.3f steps\n",
+                        w24.clipped, 2 * ramp.size(), past, worst);
+            P.eq("export.wav_24_read", read24 && !b24.isFloat && b24.bits == 24 && b24.channels == 2 && b24.l.size() == ramp.size()
+                                           && b24.r == b24.l && bytes.size() == ms::wavBytes(ramp.size(), ms::WavFormat::pcm24) ? 1 : 0, 1);
+            P.le("export.wav_24_within_half_a_step", worst, 0.5);
+            P.eq("export.wav_24_clipped", static_cast<int64_t>(w24.clipped), 2 * static_cast<int64_t>(past));
+            P.eq("export.wav_24_full_scale", read24 && b24.l.front() == -1.0f && b24.l.back() == static_cast<float>(8388607.0 / 8388608.0) ? 1 : 0, 1);
+        }
+
+        // The CSV: the header and a row a log row; a float to 9 digits and a double to 17 read back to their bits.
+        bytes.clear();
+        const std::size_t csvBytes = ms::writeCsv(sink, r.log, rate);
+        P.eq("export.csv_rows", csvBytes == bytes.size() && bytes.rfind("time_s,sample,count\n0.003333,160,", 0) == 0
+                                    && static_cast<std::size_t>(std::count(bytes.begin(), bytes.end(), '\n')) == r.log.rows() + 1 ? 1 : 0, 1);
+        {
+            ms::FieldLog log;
+            log.columns = { "f", "d", "i" };
+            log.kinds = { ms::FieldLog::Kind::real, ms::FieldLog::Kind::real64, ms::FieldLog::Kind::whole };
+            const float f = 0.1f + 1e-7f;
+            const double d = 90.0 + 1.0e-6 / 3.0;
+            log.at = { 16, 32 };
+            log.values = { f, d, 7.0, 0.0, std::numeric_limits<double>::infinity(), 0.0 };
+            log.none = { 0, 0, 0, 1, 0, 0 };
+            bytes.clear();
+            ms::writeCsv(sink, log, rate);
+            const std::size_t row1 = bytes.find('\n') + 1;
+            const std::string first = bytes.substr(row1, bytes.find('\n', row1) - row1);
+            const std::size_t c2 = first.find(',', first.find(',') + 1), c3 = first.find(',', c2 + 1), c4 = first.find(',', c3 + 1);
+            const float fBack = std::strtof(first.c_str() + c2 + 1, nullptr);
+            const double dBack = std::strtod(first.c_str() + c3 + 1, nullptr);
+            std::printf("EXPORT: the CSV of a float, a double and an int:\n%s", bytes.c_str());
+            P.eq("export.csv_float_back", fBack == f ? 1 : 0, 1);
+            P.eq("export.csv_double_back", dBack == d ? 1 : 0, 1);
+            P.eq("export.csv_whole_and_empty", first.substr(c4 + 1) == "7" && bytes.find("\n0.000667,32,,inf,0\n") != std::string::npos ? 1 : 0, 1);
+            bytes.clear();
+            ms::writeCsv(sink, log, rate, {}, 6);
+            P.eq("export.csv_six_digits", bytes.find(",0.1,90,7\n") != std::string::npos ? 1 : 0, 1);
+        }
+        const std::vector<std::size_t> even = ms::evenRows(180, 32);
+        P.eq("export.even_rows", even.size() == 32 && even.front() == 0 && even.back() == 179 && ms::evenRows(5, 32).size() == 5 ? 1 : 0, 1);
     }
 
     // ---- VOICE, SAME ---------------------------------------------------------------------------------------------------

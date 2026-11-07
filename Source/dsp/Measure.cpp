@@ -4,6 +4,7 @@
 #include "dsp/Controls.h"
 #include "dsp/Engine.h"
 #include "dsp/Events.h"
+#include "dsp/Export.h"
 #include "fminus/Patch.h"
 
 #include "Product.h"
@@ -2978,6 +2979,11 @@ namespace playground::measure
             const Rendered r = impl_->render(dials, nullptr, tl, heldEnd, win.first, win.second);
             if (r.cancelled)
                 return halted();
+            if (all)                                              // this render's alone (Result::hash), a whole report's
+            {
+                res.hash = renderHash(r.out.l, r.out.r);
+                res.hashed = impl_->what;
+            }
             impl_->what = "a short render after it";                    // the pitch's, the chord's, sixteen voices'
             voiceMarks(tl, r);
             // The whole render's metrics (the steps, the clicks, the decay, the release, the voices' end, the alerts) over
@@ -3502,6 +3508,9 @@ namespace playground::measure
             std::vector<Found> found;
             // A move or an edit at or after a signal's end: the signal, then silence until it and the tail.
             const std::size_t late = lastChange(plan);
+            // The render hash (Result::hash): the counted renders in turn, one stream.
+            Sha256 hash;
+            std::vector<std::string> hashed;
             // `counted`: its steps, alerts and CPU time count in step, alerts and cpu_percent (all but wobble_db's tone).
             const auto through = [&](const Stereo& signalIn, const char* name, std::size_t ends = 0, bool starts = false,
                                      bool counted = true) {
@@ -3523,6 +3532,11 @@ namespace playground::measure
                 Rendered r = impl_->render(dials, &in, tl, 0);
                 if (!counted)
                     return std::move(r.out);
+                if (all)                                         // a whole report's (Result::hash)
+                {
+                    hash.addStereo(r.out.l, r.out.r);
+                    hashed.push_back(std::string(name) + "'s");
+                }
                 cpu += r.cpuMs;
                 audio += static_cast<double>(r.cpuSamples) / rate;
                 alerts |= r.alerts;
@@ -3803,6 +3817,15 @@ namespace playground::measure
                                      bandSpectrum(request.spectrum, o.l, o.r, rate, { part }), &bandsIn);
                 }
             }
+            if (!hashed.empty())
+            {
+                res.hash = hash.hex();
+                res.hashed = hashed.size() == 1 ? hashed.front() + " render" : "";
+                for (std::size_t k = 0; hashed.size() > 1 && k < hashed.size(); ++k)
+                    res.hashed += (k == 0 ? "" : k + 1 == hashed.size() ? " and " : ", ") + hashed[k];
+                if (hashed.size() > 1)
+                    res.hashed += " renders, in turn";
+            }
             if (everything)
             {
                 std::stable_sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return a.step.size > b.step.size; });
@@ -3830,6 +3853,8 @@ namespace playground::measure
         if (impl_->stopCall != Patch::Method::none)            // what the numbers above measured, first
             out = stopWords(impl_->stopCall, impl_->stopSeconds, &impl_->stopBounds) + out;
         res.stopped = impl_->stopCall;
+        if (!res.hash.empty())                               // what rendered, as bits (Export.h)
+            out += hashLine(res.hash, res.hashed) + "\n";
         out += metricsLine(v);                               // the numbers, by the names checks use
         res.report = std::move(out);
         return res;

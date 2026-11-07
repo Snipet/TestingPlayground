@@ -6,7 +6,8 @@
 // "current" (the plugin's; a preset's and a {dials} side's still apply) or "defaults" (its own over the program's
 // defaults, the plugin's aside). `b_rate` renders B at another rate than A (a rate check, both rates 40 kHz or more:
 // Compare.h compares the levels, bands and metrics then, not samples; never a recording, whose events are at its own
-// rate). Its result is at most twelve lines, and a picture when asked (SoundPicture.h's drawPair).
+// rate). Its result is at most thirteen lines (each side's render hash one of them), and a picture when asked
+// (SoundPicture.h's drawPair).
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
@@ -14,6 +15,7 @@
 #include "plugin/SoundPicture.h"
 
 #include "dsp/Compare.h"
+#include "dsp/Export.h"
 #include "dsp/SoundView.h"
 #include "fminus/CirDoc.h"
 
@@ -372,6 +374,9 @@ namespace playground
             out += "(The recording: " + recording.about + ")\n";
         for (const std::string& line : c.lines)
             out += line + "\n";
+        // What each rendered, as bits (Export.h): a render elsewhere with either hash is the same.
+        out += "Render hashes: A " + c.hashA.substr(0, measure::kHashShown) + ", B " + c.hashB.substr(0, measure::kHashShown)
+             + " (SHA-256 of each side's float32 samples, L R interleaved).\n";
         if (!a.capture && !b.capture)
         {
             std::string dials;
