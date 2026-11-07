@@ -5942,7 +5942,9 @@ namespace playground::ui
             if (d.model.w > 0.0f)
             {
                 box(d.model, dialogField_ == 2);
-                plain(d.model, modelEdit_, "Empty: the first it lists (then the model menu)", dialogField_ == 2);
+                plain(d.model, modelEdit_, dialogInfo_.picksFirst ? "Empty: the first it lists (then the model menu)"
+                                                                  : "Empty: choose it in the model menu after Save",
+                      dialogField_ == 2);
                 label(d.model, "Model");
             }
         }

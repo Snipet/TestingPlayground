@@ -57,6 +57,8 @@ namespace playground
         }
 
         std::string originOf(const ChatProvider& p) { return providers::originOf(providers::baseOf(p)); }
+
+        bool sameServer(const ChatProvider& a, const ChatProvider& b) { return a.kind == b.kind && a.base == b.base; }
     }
 
     // ---- the provider (ChatPort) -------------------------------------------------------------------------------------------
@@ -123,6 +125,7 @@ namespace playground
                 otherKeyFor_.clear();
                 otherKeyProblem_.clear();
                 otherFetched_ = false;
+                otherListError_.clear();
             }
             if (!model.empty())
                 otherModel_ = model;
@@ -139,14 +142,20 @@ namespace playground
             if (changed)
                 addEntry(ChatEntry::Kind::note,
                          "The chat talks to " + name + " now: your messages, the plugin's files and what the tools find go "
-                             "to " + host + (otherModel_.empty() ? ", to the first model it lists" : ", to " + otherModel_)
+                             "to " + host
+                             + (!otherModel_.empty()           ? ", to " + otherModel_
+                                : providers::picksFirst(p)     ? std::string(", to the first model it lists")
+                                                               : std::string(", to the model you choose in the model menu"))
                              + ". Anthropic's own options (the thinking levels, fast mode, web search, the planner) are off "
                                "with it.");
             else if (otherModel_ != before)
                 addEntry(ChatEntry::Kind::note, "The chat uses " + otherModel_ + " on " + name + " now.");
             touch();
         }
-        queueJob([this] { fetchModels(); });      // its list, for the picker, off the message thread
+        // Its list, for the picker, off the message thread: a flag of its own ends it (a Stop, the agent's end), never a
+        // turn's stop left over from before.
+        listCancel_.store(false);
+        queueJob([this] { fetchOtherModels(listCancel_); });
         return true;
     }
 
@@ -156,6 +165,7 @@ namespace playground
         ChatProviderInfo info;
         info.name = providers::nameOf(p);
         info.keyless = providers::keyless(p);
+        info.picksFirst = providers::picksFirst(p);
         info.hasKey = p.kind == "anthropic" ? chatstore::hasKey() : chatstore::hasProviderKey(p.kind, originOf(p));
         const std::lock_guard<std::mutex> lock(mutex_);
         if (p.kind == "anthropic")
@@ -175,11 +185,12 @@ namespace playground
         }
         chatstore::forgetProviderKey(p.kind, originOf(p));
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (provider_.kind == p.kind && provider_.base == p.base)
+        if (sameServer(provider_, p))
         {
             otherKey_.clear();
             otherKeyFor_.clear();
             otherKeyProblem_.clear();
+            otherListError_.clear();
         }
         addEntry(ChatEntry::Kind::note, "API key for " + providers::nameOf(p) + " removed from " + kThisMachine + ".");
     }
@@ -190,7 +201,9 @@ namespace playground
         s.hasKey = !otherKey_.empty() || chatstore::hasProviderKey(provider_.kind, originOf(provider_));
         s.keyless = providers::keyless(provider_);
         s.keyProblem = otherKeyProblem_;
-        s.model = otherModel_.empty() && !otherModels_.empty() ? otherModels_.front().id : otherModel_;
+        // The model chosen; with none, the list's first where a turn takes it (picksFirst), else none (the user chooses).
+        s.model = otherModel_.empty() && !otherModels_.empty() && providers::picksFirst(provider_) ? otherModels_.front().id
+                                                                                                    : otherModel_;
         s.models.clear();
         for (const ChatModel& m : otherModels_)
             if (s.models.size() < kListed || m.id == s.model)
@@ -241,7 +254,7 @@ namespace playground
     }
 
     // ---- its models -------------------------------------------------------------------------------------------------------
-    void ChatAgent::fetchOtherModels()
+    void ChatAgent::fetchOtherModels(const std::atomic<bool>& cancel)
     {
         ChatProvider p;
         std::string key;
@@ -259,21 +272,34 @@ namespace playground
             otherFetched_ = true;
         }
         const providers::Endpoint e = providers::modelsEndpoint(p);
-        const claude::HttpResult r = transport->get(e.host, e.path, providers::headers(p, key), cancel_);
+        const claude::HttpResult r = transport->get(e.host, e.path, providers::headers(p, key), cancel);
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (provider_.kind != p.kind || provider_.base != p.base)
+        if (!sameServer(provider_, p))
             return;                                // another provider since
         if (r.status != 200)
         {
-            if (r.status != 0 && providers::keyRefused(p, r.status, r.body) && key == otherKey_)
-            {
-                otherKeyProblem_ = providers::errorText(p, r.status, r.body);
-                touch();
-            }
+            // Why, kept for the turn that finds no model (startTurn), and asked again next turn; a key the server
+            // refused is said as the key's problem and not asked again until another is saved. A stop says nothing.
+            otherFetched_ = false;
+            if (cancel.load())
+                return;
             if (r.status == 0)
-                otherFetched_ = false;             // no server yet (a local one not started): asked again next turn
+                otherListError_ = providers::connectionText(p, r.error);
+            else if (r.status >= 300 && r.status < 400)
+                otherListError_ = providers::redirectText(p, r.status, r.location);
+            else
+            {
+                otherListError_ = providers::errorText(p, r.status, r.body);
+                if (providers::keyRefused(p, r.status, r.body) && key == otherKey_)
+                {
+                    otherKeyProblem_ = otherListError_;
+                    otherFetched_ = true;
+                }
+            }
+            touch();
             return;                                // the model chosen stays the list
         }
+        otherListError_.clear();
         std::vector<ChatModel> found = providers::modelsOf(p, r.body);
         if (found.empty())
             return;
@@ -281,6 +307,82 @@ namespace playground
         if (!otherModel_.empty() && otherModel(otherModel_) == nullptr)
             otherModels_.insert(otherModels_.begin(), providers::plainModel(otherModel_));   // one typed the list lacks
         touch();
+    }
+
+    // ---- a turn's start ---------------------------------------------------------------------------------------------------
+    ChatAgent::Start ChatAgent::startTurn(int& maxTokens)
+    {
+        for (int look = 0; look < 3; ++look)
+        {
+            std::string missing;
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                turnProvider_ = provider_;
+                if (provider_.kind == "anthropic")
+                    return Start::anthropic;
+                loadOtherKey();
+                if (otherKey_.empty() && !providers::keyless(turnProvider_))
+                    missing = otherKeyProblem_.empty()
+                                  ? "Add your " + providers::nameOf(turnProvider_) + " API key (KEY, above) to chat."
+                                  : "The saved " + providers::nameOf(turnProvider_) + " key cannot be used: " + otherKeyProblem_;
+            }
+            if (missing.empty())
+            {
+                fetchModels();                     // the turn's own (a Stop ends it), unless the list is in or on its way
+                waitJobs();                        // a list asked for when the provider was chosen, still on its way
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (!sameServer(provider_, turnProvider_))
+                    continue;                      // chosen meanwhile, before anything was sent: the turn's now
+                if (cancel_.load())
+                {
+                    addEntry(ChatEntry::Kind::note, "Stopped.");
+                    return Start::ended;
+                }
+                if (otherModel_.empty() && !otherModels_.empty() && providers::picksFirst(turnProvider_))
+                {
+                    otherModel_ = otherModels_.front().id;   // the server's first, until another is chosen
+                    otherChosen_[chatstore::modelKey(turnProvider_.kind, turnProvider_.base)] = otherModel_;
+                    saveProviderChoice();
+                }
+                if (!otherModel_.empty())
+                {
+                    // The model for the whole turn, from this same moment: none of Anthropic's options, its pictures if
+                    // it takes them, the prompt's short form for a small context (or one a server on this Mac or the
+                    // local network does not say).
+                    turnModel_ = otherModel_;
+                    turnProvider_.model = turnModel_;
+                    turnEffort_.clear();
+                    turnFast_ = false;
+                    turnWeb_ = false;
+                    const ChatModel* m = otherModel(turnModel_);
+                    turnImages_ = m == nullptr || m->images;
+                    turnJsonSchema_ = !schemaRefused_;
+                    const int context = m != nullptr ? m->context : 0;
+                    turnShort_ = context > 0 ? context < kShortPromptBelow : providers::isLocal(providers::baseOf(turnProvider_));
+                    maxTokens = (m != nullptr ? *m : providers::plainModel(turnModel_)).maxTokens;
+                    plannerAsks_ = 0;
+                    turnPlanUsage_.clear();
+                    return Start::other;
+                }
+                // No model: the user chooses one (a long list, of many prices), or the list could not be read (why).
+                const std::string name = providers::nameOf(turnProvider_);
+                if (!otherModels_.empty())
+                    missing = "Choose a model in the model menu first: " + name + " lists "
+                            + std::to_string(otherModels_.size()) + ", and their prices and skills differ.";
+                else if (!otherKeyProblem_.empty())
+                    missing = "The saved " + name + " key cannot be used: " + otherKeyProblem_;
+                else if (!otherListError_.empty())
+                    missing = "Could not read " + name + "'s models: " + otherListError_;
+                else
+                    missing = "Choose a model: " + name + " listed none (KEY, above, takes one by its name).";
+            }
+            const std::lock_guard<std::mutex> lock(mutex_);
+            addEntry(ChatEntry::Kind::error, missing);
+            return Start::ended;
+        }
+        const std::lock_guard<std::mutex> lock(mutex_);
+        addEntry(ChatEntry::Kind::error, "The provider changed again and again as this message started: nothing was sent.");
+        return Start::ended;
     }
 
     // ---- its requests -----------------------------------------------------------------------------------------------------
@@ -301,6 +403,14 @@ namespace playground
                 options.jsonSchema = turnJsonSchema_;
                 pictures = pictureBytes(messages_);
                 turnHadPictures_ = pictures > 0;
+                if (!turnImages_ && turnHadPictures_ && !picturesNoted_)
+                {
+                    // A model known to take none (its list, or a refusal before): said once a chat.
+                    picturesNoted_ = true;
+                    addEntry(ChatEntry::Kind::note, "The model (" + turnModel_ + ") takes no pictures: it gets a line of text "
+                                                    "in each one's place, and cannot see them. Choose a model that takes "
+                                                    "pictures for it to see one.");
+                }
             }
         }
         if (p.kind.empty())
@@ -322,7 +432,7 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             p = turnProvider_;
             // The key of the turn's own server, never another's (the provider may have changed since the turn began).
-            if (provider_.kind == p.kind && provider_.base == p.base)
+            if (sameServer(provider_, p))
             {
                 loadOtherKey();
                 key = otherKey_;
@@ -359,13 +469,35 @@ namespace playground
         retryAfter = r.retryAfterSeconds;
         if (r.status != 200)
         {
-            error = r.status == 0 ? providers::connectionText(p, r.error) : providers::errorText(p, r.status, r.body);
-            if (r.status != 0 && providers::keyRefused(p, r.status, r.body))
+            error = r.status == 0                       ? providers::connectionText(p, r.error)
+                  : r.status >= 300 && r.status < 400   ? providers::redirectText(p, r.status, r.location)
+                                                        : providers::errorText(p, r.status, r.body);
+            if (r.status >= 400 && providers::keyRefused(p, r.status, r.body))
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                if (provider_.kind == p.kind && provider_.base == p.base && key == otherKey_)
+                if (sameServer(provider_, p) && key == otherKey_)
                     otherKeyProblem_ = error;
                 touch();
+            }
+            else if (providers::aboutModel(r.status, error))
+            {
+                // A model that cannot serve this chat (the Responses API's alone, or one that calls no tools): off the
+                // menu, and no longer chosen, so the next turn takes another or asks for one (never one switched to
+                // here: a model is the user's choice).
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (sameServer(provider_, p))
+                {
+                    otherModels_.erase(std::remove_if(otherModels_.begin(), otherModels_.end(),
+                                                      [&](const ChatModel& m) { return m.id == p.model; }),
+                                       otherModels_.end());
+                    if (otherModel_ == p.model)
+                    {
+                        otherModel_.clear();
+                        otherChosen_.erase(chatstore::modelKey(p.kind, p.base));
+                        saveProviderChoice();
+                    }
+                    touch();
+                }
             }
             return false;
         }
@@ -377,21 +509,26 @@ namespace playground
     bool ChatAgent::workAround(int status, const std::string& error)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
-        if (turnImages_ && turnHadPictures_ && providers::aboutImages(status, error))
+        if (turnImages_ && turnHadPictures_ && !providers::aboutModel(status, error) && providers::aboutImages(status, error))
         {
             turnImages_ = false;
-            bool listed = false;
-            for (ChatModel& m : otherModels_)
-                if (m.id == turnModel_)
-                {
-                    m.images = false;
-                    listed = true;
-                }
-            if (!listed)
+            picturesNoted_ = true;
+            // The model marked in its provider's list: the turn's provider's, never another chosen since.
+            if (sameServer(provider_, turnProvider_))
             {
-                ChatModel m = providers::plainModel(turnModel_);
-                m.images = false;
-                otherModels_.push_back(std::move(m));
+                bool listed = false;
+                for (ChatModel& m : otherModels_)
+                    if (m.id == turnModel_)
+                    {
+                        m.images = false;
+                        listed = true;
+                    }
+                if (!listed)
+                {
+                    ChatModel m = providers::plainModel(turnModel_);
+                    m.images = false;
+                    otherModels_.push_back(std::move(m));
+                }
             }
             addEntry(ChatEntry::Kind::note, "The model (" + turnModel_ + ") takes no pictures (" + error
                                                 + "): from now on it gets a line of text in each one's place, and cannot "

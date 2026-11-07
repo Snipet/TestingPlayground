@@ -64,6 +64,10 @@ namespace playground::providers
     const ChatPreset* presetOf(const ChatProvider& p);   // the preset it is, nullptr for none (a custom server)
     std::string nameOf(const ChatProvider& p);           // the preset's name, else the server's host
     bool keyless(const ChatProvider& p);                 // an OpenAI-compatible server on this Mac or the local network
+    // Whether a turn with no model chosen takes the list's first: Gemini's (ordered here: the newest version, pro before
+    // flash) and a server's on this Mac or the local network (the models its user loaded). OpenAI's, OpenRouter's and
+    // another remote server's lists are long and their newest is anyone's guess, of any price: the user chooses.
+    bool picksFirst(const ChatProvider& p);
 
     // Whether `key` may be `p`'s: printable ASCII with no space, 8 to 400 characters, and never an Anthropic key
     // (sk-ant-) for another provider (it would go to another company). False with why.
@@ -110,9 +114,12 @@ namespace playground::providers
     };
     std::unique_ptr<Stream> streamFor(const ChatProvider& p, Sink sink);
 
-    // An error response in words, naming the provider; a request that reached no server ("is Ollama running?").
+    // An error response in words, naming the provider (and p.model when the model cannot serve this chat: aboutModel);
+    // a request that reached no server ("is Ollama running?"); a redirect, never followed (ClaudeApi.h), and where it
+    // pointed.
     std::string errorText(const ChatProvider& p, int status, const std::string& body);
     std::string connectionText(const ChatProvider& p, const std::string& error);
+    std::string redirectText(const ChatProvider& p, int status, const std::string& location);
     // The response says the key is not valid (a 401; Gemini's 400 "API key not valid").
     bool keyRefused(const ChatProvider& p, int status, const std::string& body);
     // A 400 that says the model takes no pictures; one that says the conversation is longer than its context; Gemini's
@@ -120,6 +127,9 @@ namespace playground::providers
     bool aboutImages(int status, const std::string& error);
     bool aboutContext(const std::string& error);
     bool aboutSchema(int status, const std::string& error);
+    // A 400, 404 or 422 that says the model cannot serve this chat: served by OpenAI's Responses API alone, not a chat
+    // model, or one that calls no tools (OpenAI's, OpenRouter's and Ollama's words).
+    bool aboutModel(int status, const std::string& error);
 
     // The history as the Messages API takes it: without what another provider's answers carry of their own (a Gemini
     // call's thought_signature), which it refuses. `messages` as it is when nothing is (an Anthropic chat: unchanged).

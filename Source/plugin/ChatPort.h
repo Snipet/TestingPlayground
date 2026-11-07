@@ -161,6 +161,7 @@ namespace playground
     {
         bool hasKey = false;
         bool keyless = false;
+        bool picksFirst = false;              // with no model chosen a turn takes its list's first (else the user chooses)
         std::string model;
         std::string name;                     // "OpenRouter", "Ollama (this Mac)", a server's host
     };

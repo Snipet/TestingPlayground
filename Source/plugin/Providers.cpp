@@ -24,6 +24,14 @@ namespace playground::providers
 
         bool startsWith(std::string_view s, std::string_view p) { return s.substr(0, p.size()) == p; }
         bool contains(std::string_view s, std::string_view p) { return s.find(p) != std::string_view::npos; }
+        // `word` as one of the id's dash-separated parts ("pro" in "o3-pro" and "gpt-5-pro-2025-10-06").
+        bool part(std::string_view id, std::string_view word)
+        {
+            for (std::size_t at = id.find(word); at != std::string_view::npos; at = id.find(word, at + 1))
+                if ((at == 0 || id[at - 1] == '-') && (at + word.size() == id.size() || id[at + word.size()] == '-'))
+                    return true;
+            return false;
+        }
 
         // A deep copy of a JSON value (juce::var shares its objects and arrays).
         juce::var copyOf(const juce::var& v) { return claude::parseJson(claude::toJson(v)); }
@@ -206,6 +214,8 @@ namespace playground::providers
     }
 
     bool keyless(const ChatProvider& p) { return kindOf(p.kind) == Kind::openai && isLocal(baseOf(p)); }
+
+    bool picksFirst(const ChatProvider& p) { return kindOf(p.kind) == Kind::gemini || keyless(p); }
 
     bool plausibleKey(const ChatProvider& p, std::string_view key, std::string& why)
     {
@@ -719,12 +729,15 @@ namespace playground::providers
                 const std::string id = str(m, "id");
                 if (!plausibleModel(id) || contains(lower(id), "embed"))
                     continue;
-                // OpenAI's own list holds its speech, image, search and embedding models too: its chat models alone.
-                if (openAi && (!(startsWith(id, "gpt-") || startsWith(id, "o1") || startsWith(id, "o3") || startsWith(id, "o4")
-                                 || startsWith(id, "chatgpt-"))
+                // OpenAI's own list holds its speech, image, search and embedding models too, and models this chat
+                // cannot use: those served by the Responses API alone (the -pro ones, codex, deep research) and those
+                // that call no tools (chatgpt-*, *-chat-latest, o1-mini, o1-preview). Its chat models with tools alone.
+                if (openAi && (!(startsWith(id, "gpt-") || startsWith(id, "o1") || startsWith(id, "o3") || startsWith(id, "o4"))
                                || contains(id, "audio") || contains(id, "realtime") || contains(id, "tts")
                                || contains(id, "transcribe") || contains(id, "image") || contains(id, "search")
-                               || contains(id, "instruct")))
+                               || contains(id, "instruct") || contains(id, "vision") || part(id, "pro") || contains(id, "codex")
+                               || contains(id, "deep-research") || contains(id, "chat-latest") || startsWith(id, "o1-mini")
+                               || startsWith(id, "o1-preview")))
                     continue;
                 // OpenRouter's says which take tools: a model that does not cannot work here.
                 const juce::var params = m.getProperty("supported_parameters", juce::var());
@@ -1084,6 +1097,9 @@ namespace playground::providers
         const std::string message = messageOf(body);
         if (keyRefused(p, status, body))
             return name + " refused the API key (" + message + "): add it again";
+        if (aboutModel(status, message))
+            return name + " cannot run " + (p.model.empty() ? std::string("this model") : p.model) + " for this chat ("
+                 + message + "): it needs a model that chats and calls tools. Choose another in the model menu";
         switch (status)
         {
             case 403: return name + " does not let this key do that (" + message + ")";
@@ -1105,6 +1121,24 @@ namespace playground::providers
             return error;
         const std::string host = hostOf(baseOf(p));
         return "no connection to " + host + (keyless(p) ? ": is the server (" + nameOf(p) + ") running?" : std::string());
+    }
+
+    std::string redirectText(const ChatProvider& p, int status, const std::string& location)
+    {
+        return nameOf(p) + " answered with a redirect (HTTP " + std::to_string(status)
+             + (location.empty() ? std::string() : ", to " + location.substr(0, 200))
+             + "): the chat follows none, so nothing went there. If you trust that address, make it the server's";
+    }
+
+    bool aboutModel(int status, const std::string& error)
+    {
+        if (status != 400 && status != 404 && status != 422)
+            return false;
+        const std::string e = lower(error);
+        return contains(e, "v1/responses") || contains(e, "not a chat model") || contains(e, "does not support tools")
+            || contains(e, "support tool use") || contains(e, "tools is not supported") || contains(e, "'tools' is not supported")
+            || contains(e, "tool use is not supported") || contains(e, "function calling is not supported")
+            || contains(e, "does not support function calling");
     }
 
     bool aboutImages(int status, const std::string& error)

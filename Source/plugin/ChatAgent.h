@@ -31,7 +31,8 @@
 // A planner (setPlanner, chat.json "planner"): a second model plans each of the user's requests before the chosen one
 // builds it (Claude Fable 5.1 planning the DSP and the architecture, Claude Sonnet 5.5 writing, running and testing).
 // planTurn sends the conversation to the planner as another model sees it (forAnotherModel: no thinking, which is bound
-// to the builder's model; no compaction or web blocks, which go back only to their own requests; the tools defined
+// to the builder's model; no compaction or web blocks, which go back only to their own requests; no field another
+// provider's answers left on a call, which the API refuses (providers::forAnthropic); the tools defined
 // and tool_choice "none", so the history's calls stay valid and it calls none) with a brief after the user's message;
 // its plan streams into a plan entry (ChatEntry::Kind::plan) and joins the user's message, which the builder has not
 // seen yet, so the history stays append-only. The builder's ask_planner asks it again mid-turn (kMaxPlannerAsks a
@@ -107,14 +108,17 @@
 //
 // Other providers (Providers.h; setProvider): an OpenAI-compatible server by its base URL (OpenAI, OpenRouter, Ollama
 // or LM Studio on this Mac) or Google Gemini, each with its own key, encrypted and bound to its server (none for a server
-// on this Mac or the local network), and its models (the server's list, or one typed). Anthropic stays the default
-// and its requests are as they were. Another's turn runs the same loop over the same history: the request is the
+// on this Mac or the local network), and its models (the server's list, or one typed; with none chosen, Gemini's and a
+// local server's first, else the user chooses: Providers.h, picksFirst). Anthropic stays the default and its requests
+// are as they were. Another's turn (startTurn: its provider, key and model from one moment) runs the same loop over
+// the same history: the request is the
 // Messages API's translated, the answer translated back, so the tools, the checks and their nudges, the retries, a
 // reply cut off and ask_user work alike. What only Anthropic has is off for it (thinking kept, caching, compaction,
 // fallbacks, fast mode, web search, the planner and the thinking levels: their pills are hidden); its own reasoning
-// shows and is never kept; a model that refuses a picture gets them as lines of text from then on, with a note; a
-// small context window gets the prompt's short form (shortPrompt); a server that cut the conversation to fit its
-// context is noted once (its prompt's tokens far under the request's).
+// shows and is never kept; a model that takes no pictures (its list says so, or it refuses one) gets them as lines of
+// text, with a note; a model the server says cannot serve this chat leaves the menu; a small context window gets the
+// prompt's short form (shortPrompt); a server that cut the conversation to fit its context is noted once (its
+// prompt's tokens far under the request's).
 //
 // The chats, on this Mac only (ChatStore.h; CLAUDE.md, "The chats: on this Mac only"). The conversation shown is one of
 // its owner's chats: the project open's (by the project's id), or, while none is, this instance's own. The processor
@@ -393,14 +397,21 @@ namespace playground
         std::string requestBody(std::string& beta);
         bool streamOther(const std::string& body, claude::MessageBuilder& builder, int& status, std::string& error,
                          int& retryAfter);
-        // Another provider: its key (mutex held; "" for none), its models fetched (the worker or the job thread, once
-        // a provider), whether this turn is another provider's, and a request refused for a reason the turn can work
-        // around (a model that takes no pictures, Gemini refusing the tools' JSON Schema): the request made again
-        // without it, said in the chat; true when the turn should ask again.
+        // Another provider: its key (mutex held; "" for none), its models fetched (the worker's, `cancel_` ending it, or
+        // the job thread's, `listCancel_`: once a provider; a failure kept in otherListError_), whether this turn is
+        // another provider's, and a request refused for a reason the turn can work around (a model that takes no
+        // pictures, Gemini refusing the tools' JSON Schema): the request made again without it, said in the chat; true
+        // when the turn should ask again.
         void loadOtherKey();
-        void fetchOtherModels();
+        void fetchOtherModels(const std::atomic<bool>& cancel);
         bool otherTurn() const;
         bool workAround(int status, const std::string& error);
+        // The start of a turn (the worker's, first): the provider, and for another one its key, its models and the
+        // turn's model and options, all from one moment (a provider chosen while the list was on its way, nothing
+        // sent yet, is the turn's: it looks again). anthropic: the turn is Anthropic's (turnProvider_ set);
+        // other: another provider's, ready (`maxTokens` its model's); ended: it cannot start, said in the chat.
+        enum class Start : uint8_t { anthropic, other, ended };
+        Start startTurn(int& maxTokens);
         // The provider's state in chatState (mutex held), the settings kept (chat.json), a model's entry of the list.
         void otherState(ChatState& s) const;
         void saveProviderChoice() const;
@@ -520,12 +531,15 @@ namespace playground
         std::string otherKey_, otherKeyFor_, otherKeyProblem_;     // the key, the server it was read for
         std::map<std::string, std::string> otherChosen_;
         bool otherFetched_ = false;
+        std::string otherListError_;                                // why its list was not read, in words ("" when it was)
+        std::atomic<bool> listCancel_{ false };                     // the job's list fetch: set by stop() and the end
         ChatProvider turnProvider_;
         bool turnImages_ = true, turnJsonSchema_ = true, turnShort_ = false;
         bool turnHadPictures_ = false;                              // the request holds pictures
         bool schemaRefused_ = false;                                // Gemini refused JSON Schema: its subset from then on
         std::size_t turnTextBytes_ = 0;                             // the request's text (its pictures aside), bytes
         bool cutNoted_ = false;                                     // the chat said a server cut the conversation
+        bool picturesNoted_ = false;                                // the chat said the model gets no pictures
         std::map<std::string, uint64_t> seen_;                      // file name -> the text the chat's Claude saw
                                                                     // (hashText; Claude Desktop's: mcpMarks_)
         struct FileVersion

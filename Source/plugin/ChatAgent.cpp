@@ -868,12 +868,18 @@ namespace playground
 
         // The history as another model may read it (the planner's view, ChatAgent.h): no thinking (bound to the model,
         // the prompt and the conversation that made it), a compaction block as its summary in words, no server tools'
-        // blocks (their results go back only to their own requests), text without citations (which point at them). A
-        // message left empty says so, and a history that starts at a summary gets a user message before it.
-        juce::Array<juce::var> forAnotherModel(const juce::Array<juce::var>& messages)
+        // blocks (their results go back only to their own requests), text without citations (which point at them), and
+        // none of what another provider's answers carry of their own (a Gemini call's thought_signature, which the
+        // Messages API refuses: providers::forAnthropic). A message left empty says so, and a history that starts at a
+        // summary gets a user message before it.
+        juce::Array<juce::var> forAnotherModel(const juce::Array<juce::var>& history)
         {
+            const juce::var clean = providers::forAnthropic(history);   // held: its array is read below
             juce::Array<juce::var> out;
-            for (const juce::var& m : messages)
+            const juce::Array<juce::var>* messages = clean.getArray();
+            if (messages == nullptr)
+                return out;
+            for (const juce::var& m : *messages)
             {
                 const std::string role = str(m, "role");
                 const juce::var content = m.getProperty("content", juce::var());
@@ -1125,6 +1131,7 @@ namespace playground
     ChatAgent::~ChatAgent()
     {
         cancel_.store(true);
+        listCancel_.store(true);
         {
             const std::lock_guard<std::mutex> lock(jobMutex_);
             jobStop_ = true;                       // a job still queued is dropped
@@ -1562,6 +1569,7 @@ namespace playground
     void ChatAgent::stop()
     {
         cancel_.store(true);
+        listCancel_.store(true);                   // a models list the turn waits for (setProvider's job)
         const std::lock_guard<std::mutex> lock(mutex_);
         if (busy_)
         {
@@ -1602,6 +1610,7 @@ namespace playground
         checks_.clear();
         checksFailing_ = false;
         cutNoted_ = false;
+        picturesNoted_ = false;
         touch();
     }
 
@@ -1780,6 +1789,7 @@ namespace playground
         activity_.clear();
         historyWeb_ = static_cast<bool>(v.getProperty("web", false));
         cutNoted_ = false;
+        picturesNoted_ = false;
         checks_.clear();
         checksFailing_ = false;
         if (const auto* cs = v.getProperty("checks", juce::var()).getArray())
@@ -2599,7 +2609,7 @@ namespace playground
         }
         if (other)
         {
-            fetchOtherModels();                    // another provider's list, once a provider (ChatProviderTurn.cpp)
+            fetchOtherModels(cancel_);             // another provider's list, once a provider (ChatProviderTurn.cpp)
             return;
         }
         std::string key;
@@ -2670,51 +2680,21 @@ namespace playground
     void ChatAgent::runTurn()
     {
         turnThread_.store(std::this_thread::get_id());
-        // The provider for the whole turn (Providers.h): a change while it runs applies to the next one.
-        bool other = false;
+        // The provider for the whole turn (startTurn, ChatProviderTurn.cpp): a change while it runs applies to the next
+        // one. Another provider's turn has its key, its model and its options from there.
+        int maxTokens = 0;                         // what one reply of this turn's model holds
+        const Start start = startTurn(maxTokens);
+        if (start == Start::ended)
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            turnProvider_ = provider_;
-            other = provider_.kind != "anthropic";
-            if (other)
-                loadOtherKey();
+            busy_ = false;
+            activity_.clear();
+            turnThread_.store(std::thread::id{});
+            touch();
+            return;
         }
-        if (other)
-        {
-            std::string missing;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                if (otherKey_.empty() && !providers::keyless(turnProvider_))
-                    missing = otherKeyProblem_.empty()
-                                  ? "Add your " + providers::nameOf(turnProvider_) + " API key (KEY, above) to chat."
-                                  : "The saved " + providers::nameOf(turnProvider_) + " key cannot be used: " + otherKeyProblem_;
-            }
-            if (missing.empty())
-            {
-                fetchModels();
-                waitJobs();                        // a list asked for when the provider was chosen, still on its way
-                const std::lock_guard<std::mutex> lock(mutex_);
-                if (otherModel_.empty() && !otherModels_.empty())
-                {
-                    otherModel_ = otherModels_.front().id;   // the server's first, until another is chosen
-                    otherChosen_[chatstore::modelKey(provider_.kind, provider_.base)] = otherModel_;
-                    saveProviderChoice();
-                }
-                if (otherModel_.empty())
-                    missing = "Choose a model: " + providers::nameOf(turnProvider_)
-                            + " listed none (KEY, above, takes one by its name).";
-            }
-            if (!missing.empty())
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                addEntry(ChatEntry::Kind::error, missing);
-                busy_ = false;
-                activity_.clear();
-                turnThread_.store(std::thread::id{});
-                return;
-            }
-        }
-        else
+        const bool other = start == Start::other;
+        if (!other)
             ensureKey();
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -2730,29 +2710,8 @@ namespace playground
             }
         }
         if (!other)
+        {
             fetchModels();
-        int maxTokens = 0;                         // what one reply of this turn's model holds
-        if (other)
-        {
-            // Another provider's model for the whole turn: none of Anthropic's options, its pictures if it takes them,
-            // the prompt's short form for a small context (one a server on this Mac or the local network does not say).
-            const std::lock_guard<std::mutex> lock(mutex_);
-            turnModel_ = otherModel_;
-            turnProvider_.model = turnModel_;
-            turnEffort_.clear();
-            turnFast_ = false;
-            turnWeb_ = false;
-            const ChatModel* m = otherModel(turnModel_);
-            turnImages_ = m == nullptr || m->images;
-            turnJsonSchema_ = !schemaRefused_;
-            const int context = m != nullptr ? m->context : 0;
-            turnShort_ = context > 0 ? context < kShortPromptBelow : providers::isLocal(providers::baseOf(turnProvider_));
-            maxTokens = m != nullptr ? m->maxTokens : kDefaultMaxTokens;
-            plannerAsks_ = 0;
-            turnPlanUsage_.clear();
-        }
-        else
-        {
             // The model and the thinking level for the whole turn: a change while it runs applies to the next one.
             const std::lock_guard<std::mutex> lock(mutex_);
             turnShort_ = false;
