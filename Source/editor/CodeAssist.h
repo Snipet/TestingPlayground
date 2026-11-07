@@ -135,6 +135,12 @@ namespace playground::ui
                                  std::string_view file = {});
         uint32_t line(std::string_view line, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const override;
 
+        // The tab's name it was made for: its flags are found by it, so a tab renamed gets a highlighter of its new name
+        // (CodeAssist::sync).
+        const std::string& file() const noexcept { return file_; }
+        // Names never drawn as constants (a card's code: the names its declaration declares, lang::Hover::plain).
+        void setPlain(std::vector<std::string> names) { plain_ = std::move(names); }
+
         static constexpr uint32_t kMetMax = 0xFFFFu;     // the state's counts, each held at its most
         static constexpr uint32_t kSeenMax = 0x7FFFu;
 
@@ -143,6 +149,7 @@ namespace playground::ui
         std::shared_ptr<const Conditionals> conditionals_;
         const std::vector<uint8_t>* flags_ = nullptr;    // this file's, in conditionals_
         std::string file_;                               // its name: its flags in types_->shadowed
+        std::vector<std::string> plain_;
         mutable std::vector<lang::Token> toks_;
     };
 

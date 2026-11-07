@@ -360,7 +360,8 @@ namespace playground::ui
     // highlighter allocates nothing once its buffer has grown to a line's tokens (a conditional's or a #define's line
     // aside). FunkGui's TextEditor calls it only for the lines an edit reached (it keeps every line's spans, v0.25.0),
     // and for every line on rehighlight() (CodeAssist::sync, when the type names or the constants change) and on a new
-    // highlighter (CodeAssist::updateConditionals, when a tab's conditionals read otherwise).
+    // highlighter (CodeAssist::updateConditionals, when a tab's conditionals read otherwise; CodeAssist::sync, when a tab
+    // is renamed).
     uint32_t CodeHighlighter::line(std::string_view l, uint32_t stateIn, std::vector<funkgui::text::Span>& out) const
     {
         bool inComment = (stateIn & 1u) != 0;
@@ -437,6 +438,7 @@ namespace playground::ui
                     else if (types_ != nullptr && std::binary_search(types_->names.begin(), types_->names.end(), t.text, std::less<>{}))
                         st = csType;
                     else if (types_ != nullptr && !other
+                             && std::find(plain_.begin(), plain_.end(), t.text) == plain_.end()
                              && std::binary_search(types_->constants.begin(), types_->constants.end(), t.text, std::less<>{}))
                         st = csConstant;                     // a local's, an argument's, ... of its name: plain
                     break;
@@ -716,22 +718,37 @@ namespace playground::ui
                 if (fmFile(i))
                     if (std::vector<uint8_t> flags = service_.shadowed(i); !flags.empty())
                         shadowed[tabs_.name(i)] = std::move(flags);
-        if (names == types_->names && constants == types_->constants && shadows == types_->shadows && shadowed == types_->shadowed)
-            return;
-        types_->names = std::move(names);
-        types_->constants = std::move(constants);
-        types_->shadows = std::move(shadows);
-        types_->shadowed = std::move(shadowed);
+        const bool changed = !(names == types_->names && constants == types_->constants && shadows == types_->shadows
+                               && shadowed == types_->shadowed);
+        if (changed)
+        {
+            types_->names = std::move(names);
+            types_->constants = std::move(constants);
+            types_->shadows = std::move(shadows);
+            types_->shadowed = std::move(shadowed);
+        }
         // The editors keep each line's spans (FunkGui's TextEditor, v0.25.0) and highlight again only the lines an edit
         // reaches: a module's name or a constant that came or went recolours lines nobody edited (another tab's too), and
-        // so does a local that came or went with a constant's name (what a use of it is).
+        // so does a local that came or went with a constant's name (what a use of it is). A tab renamed (the same kind:
+        // Panel keeps its editor and highlighter) gets a highlighter of its new name, which finds its flags by it (a
+        // highlighter of the old would find none, or another tab's of that name); the editor highlights every line with it.
+        bool drawn = false;
         for (int i = 0; i < tabs_.count(); ++i)
         {
             funkgui::TextEditor& e = tabs_.editor(i);
-            if (dynamic_cast<const CodeHighlighter*>(e.highlighter()) != nullptr)
+            const auto* hl = dynamic_cast<const CodeHighlighter*>(e.highlighter());
+            if (hl == nullptr)
+                continue;
+            if (hl->file() != tabs_.name(i))
+                e.setHighlighter(std::make_unique<CodeHighlighter>(types_, conditionals_, tabs_.name(i)));
+            else if (changed)
                 e.rehighlight();
+            else
+                continue;
+            drawn = true;
         }
-        ++highlights_;                                   // the Panel draws again (its revision did not move)
+        if (drawn || changed)
+            ++highlights_;                               // the Panel draws again (its revision did not move)
     }
 
     lang::Service& CodeAssist::service()
@@ -2627,15 +2644,17 @@ namespace playground::ui
         const std::vector<funkgui::text::HighlightStyle>& pal = palette_.empty() ? codePalette(th) : palette_;
         // A line of code, highlighted as the editor does; one wider than maxW cut with "..." where it still fits (a
         // hover's lines fit already: lang::kHoverWidth), never a piece of it left out further on.
-        const auto codeLine = [&](const std::string& whole, float x, float top, float maxW, const funkgui::TextStyle& style) {
+        const auto codeLine = [&](const std::string& whole, float x, float top, float maxW, const funkgui::TextStyle& style,
+                                  const std::vector<std::string>& plain) {
             std::string text = whole;
             if (widthOf(text, style) > maxW)
             {
                 while (!text.empty() && widthOf(text + "...", style) > maxW)
-                    text.pop_back();
+                    text.resize(lang::headOf(text, text.size() - 1).size());   // a character off, never a byte of one
                 text += "...";
             }
             CodeHighlighter hl(types_);
+            hl.setPlain(plain);
             std::vector<funkgui::text::Span> spans;
             hl.line(text, 0, spans);
             float pen = x;
@@ -2767,7 +2786,10 @@ namespace playground::ui
                 float y = d.y + 9.0f;
                 if (!it.detail.empty())
                 {
-                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, kCardCode);
+                    // (the item's own name plain unless it is a constant's: a local's of a constant's name)
+                    const bool constant = it.kind == lang::Kind::constant || it.kind == lang::Kind::enumeration;
+                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, kCardCode,
+                             constant ? std::vector<std::string>{} : std::vector<std::string>{ it.label });
                     y += 18.0f;
                 }
                 for (const std::string& l : wrap(reflow(it.doc), chat::kSmall, d.w - 16.0f, it.detail.empty() ? 4 : 3))
@@ -2829,7 +2851,7 @@ namespace playground::ui
             }
             for (const std::string& l : code)
             {
-                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, kCardCode);
+                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, kCardCode, h.plain);
                 dy += 18.0f;
             }
             if (!code.empty() && !doc.empty())
