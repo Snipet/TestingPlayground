@@ -34,8 +34,9 @@
 //            part refused, naming the parts and library:host.fm (a library file that is none too)
 //   CALL     write_file through the socket writes the processor's draft (the chat's card notes Claude Desktop once);
 //            run_program compiles and plays it; a dial set reads back at once (before the message thread applies it);
-//            read_file gives it back (after its line count and version); view_panel answers with a PNG (drawn by the GPU, its text says); an unknown
-//            tool, and ask_user, are errors; tune_dials refuses a metric that is none, naming the plugin's
+//            read_file gives it back (after its line count and version); view_panel answers with a PNG (drawn by the
+//            GPU, its text says; on Linux by SoftRaster, saying why); an unknown tool, and ask_user, are errors;
+//            tune_dials refuses a metric that is none, naming the plugin's
 //   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
 //            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
 //            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
@@ -92,6 +93,7 @@
 //            processor no longer counts as connected; with none open, a call says to open the plugin, the tools
 //            still list (from tools.json) and the guide's parts come from guide.md, as the plugin gave them (host.fm
 //            among them)
+#include "Pictures.h"
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -960,7 +962,10 @@ PROBE(plugin, mcp)
             png = png || (b["type"].toString() == "image" && b["mimeType"].toString() == "image/png" && b["data"].toString().startsWith("iVBOR"));
     P.eq("call.picture", png ? 1 : 0, 1);
     std::printf("view_panel: %s\n", firstText(res).c_str());
-    P.eq("call.picture_gpu", has(firstText(res), "Drawn by the GPU as the user's screen draws it") ? 1 : 0, 1);
+    if (const std::string noGpu = probe::noGpuPictures(); noGpu.empty())
+        P.eq("call.picture_gpu", has(firstText(res), "Drawn by the GPU as the user's screen draws it") ? 1 : 0, 1);
+    else   // Linux: SoftRaster's picture, saying why
+        P.eq("call.picture_gpu", has(firstText(res), "Drawn without the GPU (" + noGpu + ")") ? 1 : 0, 1);
     res = ask(*a, r, 8, "call", object({ { "name", "no_such_tool" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];
     P.eq("call.unknown", static_cast<bool>(res["isError"]) ? 1 : 0, 1);
     res = ask(*a, r, 9, "call", object({ { "name", "ask_user" }, { "arguments", juce::var(new juce::DynamicObject()) } }))["result"];

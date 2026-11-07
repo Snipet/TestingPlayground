@@ -53,7 +53,8 @@
 //   MEASURE  measure_output through the agent: its result is the render's report, with the dials asked for, its CPU
 //            line the numbers alone
 //   VIEW     view_panel through the agent: its result a PNG of the panel (and one of the whole editor) and a line of
-//            what it shows, drawn on the message thread by the GPU on this Mac (the text says so); the user's view
+//            what it shows, drawn on the message thread by the GPU on this Mac (the text says so; on Linux by
+//            SoftRaster, the text saying why: common/Pictures.h); the user's view
 //            stays; with the GPU forced off (editor/Picture.h's test hook), a picture still, the text saying each
 //            shader shows as a striped placeholder and why; the saved session keeps no picture
 //   PANELSTATE view_panel's values and at, over MCP on a processor of its own playing a program whose fields tell
@@ -262,6 +263,7 @@
 //            with the key and no other credential (the models too), the history valid; the key removed, a message
 //            asks for the key (and for nothing else) and sends nothing
 //   NEW      newChat forgets the conversation
+#include "Pictures.h"
 #include "Probe.h"
 
 #include "FakeClaude.h"
@@ -1275,14 +1277,14 @@ PROBE(plugin, chat)
         P.eq("view.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "It looks tidy." ? 1 : 0, 1);
         P.eq("view.entry", lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "Looked at the editor" ? 1 : 0, 1);
         P.eq("view.user_view_kept", processor.editorPort().panelView() == viewBefore ? 1 : 0, 1);
-#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
-        P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
-                             && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
-#else
-        // A build without FunkGui's GPU layer (FP_WITH_GPU off) draws with SoftRaster, and says so.
-        P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (this build has no GPU)")
-                             && has(windowAbout, "Drawn without the GPU (this build has no GPU)") ? 1 : 0, 1);
-#endif
+        // Drawn by the GPU; where there is no GPU picture, SoftRaster's, saying why: a build without FunkGui's GPU
+        // layer (FP_WITH_GPU off: "this build has no GPU"), Linux ("no GPU pictures on this platform").
+        if (const std::string noGpu = probe::noGpuPictures(); noGpu.empty())
+            P.eq("view.gpu", has(panelAbout, "Drawn by the GPU as the user's screen draws it, shaders included")
+                                 && has(windowAbout, "Drawn by the GPU") ? 1 : 0, 1);
+        else
+            P.eq("view.gpu", has(panelAbout, "Drawn without the GPU (" + noGpu + ")")
+                                 && has(windowAbout, "Drawn without the GPU (" + noGpu + ")") ? 1 : 0, 1);
 
         // The fallback (SoftRaster), forced: a picture still, and the note.
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_v3", "view_panel", input({})).end("tool_use")));

@@ -31,7 +31,9 @@
 //             within FunkGui's bounds (gpu/GpuPicture.h); the headless GPU context the picture started is held, kept
 //             by picturesIdle within kPictureHoldSeconds and let go after; view_panel's picture (picturePanel) drawn
 //             by the GPU, its text saying so; with the GPU forced off (picture::forceSoftRasterForTests), a picture
-//             still, its text saying each shader shows as a striped placeholder, and why
+//             still, its text saying each shader shows as a striped placeholder, and why. On Linux, where FunkGui draws
+//             no GPU picture (common/Pictures.h), the pictures are SoftRaster's, their text saying why, and no GPU
+//             context is held; the rows on the GPU's pixels are skipped, saying so (probe::skip), and so are TEXT's
 //   DRAW      a panel whose one shader is still asks for no frame while nothing changes, and for one when the parameter
 //             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's knob
 //             being on a page not shown (a hidden item's key is not watched) and its dial hidden in the PANEL view; the
@@ -70,12 +72,13 @@
 //             their centre lines, a sweep either way round; the cache's key: a .sh no shader includes changed builds
 //             nothing, ink.sh changed builds text.sc alone again; a .sh that does not compile a note on its own line,
 //             which the shader that includes it shows as why (its placeholder, its screen reader's value, view_panel's
-//             line), an #include of no file a note and no build; the shaders built for Vulkan (SPIR-V) too (Direct3D
-//             11's compiler is Windows' alone); PROMPT's gauge example (text.sh and shapes.sh) builds, the renderer
-//             takes it, and it is still
+//             line), an #include of no file a note and no build; the shaders built for another renderer too, Vulkan's
+//             SPIR-V (Metal's on Linux, whose own is SPIR-V: text.metal; Direct3D 11's compiler is Windows' alone);
+//             PROMPT's gauge example (text.sh and shapes.sh) builds, the renderer takes it, and it is still
 //   TIME      printed, never checked: a RUN's compile (a small program, and one of 100 ms or more) alone and with four
 //             new shaders, the same four again, on a second instance and after a restart; and four shaders built and
 //             checked one after another (as RUN built them before) and at once
+#include "Pictures.h"
 #include "Probe.h"
 
 #include "dsp/Compiler.h"
@@ -109,6 +112,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <mutex>
 #include <set>
@@ -692,9 +696,26 @@ PROBE(gui, shaders)
         const funkgui::Image soft = funkgui::rasterise(frame, funkgui::FontService::get().atlas(), 1);
         std::printf("picture: %s%s, %d x %d (SoftRaster's %d x %d); the first %.1f ms (bgfx started headless), the next %.1f ms\n",
                     g.gpu ? "the GPU" : "SoftRaster: ", g.why.c_str(), g.image.w, g.image.h, soft.w, soft.h, firstMs, againMs);
-        P.eq("picture.gpu", g.gpu && again.gpu ? 1 : 0, 1);
+        // Where no GPU picture is drawn (Linux), SoftRaster's, saying why, bgfx never started for it; the rows that look at
+        // the GPU's pixels skipped, saying so.
+        const std::string noGpu = probe::noGpuPictures(), skipWhy = probe::noGpuPicturesSkip();
+        const auto skipAll = [&](std::initializer_list<const char*> keys) {
+            for (const char* k : keys)
+                probe::skip(P, k, skipWhy);
+        };
+        if (noGpu.empty())
+        {
+            P.eq("picture.gpu", g.gpu && again.gpu ? 1 : 0, 1);
+            P.eq("picture.held", !heldBefore && funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
+        }
+        else
+        {
+            P.eq("picture.soft_said", !g.gpu && !again.gpu && g.why == noGpu ? 1 : 0, 1);
+            P.eq("picture.not_held", funkgui::gpuPictureContextHeld() ? 0 : 1, 1);
+            skipAll({ "picture.gpu", "picture.held", "picture.soft_placeholder", "picture.gpu_not_placeholder", "picture.gpu_differs",
+                      "picture.gpu_shader_colours", "picture.rest_over_2_share", "picture.rest_over_4" });
+        }
         P.eq("picture.size", g.image.w == soft.w && g.image.h == soft.h && soft.w > 0 ? 1 : 0, 1);
-        P.eq("picture.held", !heldBefore && funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
         if (still != nullptr && moving != nullptr && g.gpu && g.image.w == soft.w && g.image.h == soft.h)
         {
             const Px cell = pixelsOf(soft, still->cell(), kDpi, 2.0f);
@@ -753,19 +774,29 @@ PROBE(gui, shaders)
             P.le("picture.rest_over_2_share", static_cast<double>(over2) / std::max(rest, 1), 0.01);
             P.eq("picture.rest_over_4", over4, 0);
         }
-        P.eq("picture.gpu_png", g.image.w > 0 && funkgui::writePng(g.image, probe::outPath("gui.shaders.gpu.png").c_str()) ? 1 : 0, 1);
+        if (noGpu.empty())
+            P.eq("picture.gpu_png", g.image.w > 0 && funkgui::writePng(g.image, probe::outPath("gui.shaders.gpu.png").c_str()) ? 1 : 0, 1);
+        else
+            skipAll({ "picture.gpu_png" });           // no gui.shaders.gpu.png: it would be SoftRaster's
 
         // The hold: kept while pictures come, let go once they stop (the processor's timer calls picturesIdle).
         pg::picturesIdle();
-        P.eq("picture.hold_kept", funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
+        if (noGpu.empty())
+            P.eq("picture.hold_kept", funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
+        else
+            skipAll({ "picture.hold_kept" });
         pg::picturesIdle(0.0);
         P.eq("picture.hold_released", funkgui::gpuPictureContextHeld() ? 0 : 1, 1);
 
         // view_panel's picture: on the GPU (bgfx started again), and through the fallback.
         const pg::PanelPicture onGpu = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
         std::printf("view_panel: %s\n", onGpu.about.c_str());
-        P.eq("picture.panel_gpu", !onGpu.png.empty() && onGpu.gpu && has(onGpu.about, "Drawn by the GPU as the user's screen draws it, shaders included")
-                                      && funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
+        if (noGpu.empty())
+            P.eq("picture.panel_gpu", !onGpu.png.empty() && onGpu.gpu && has(onGpu.about, "Drawn by the GPU as the user's screen draws it, shaders included")
+                                          && funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
+        else
+            P.eq("picture.panel_soft_said", !onGpu.png.empty() && !onGpu.gpu && has(onGpu.about, "Drawn without the GPU (" + noGpu + "): each shader shows as a striped placeholder")
+                                                && !funkgui::gpuPictureContextHeld() ? 1 : 0, 1);
         P.eq("picture.panel_png", writeBytes(probe::outPath("gui.shaders.picture.png"), onGpu.png) ? 1 : 0, 1);
         pg::picture::forceSoftRasterForTests(true);
         const pg::PanelPicture onSoft = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
@@ -773,7 +804,10 @@ PROBE(gui, shaders)
         std::printf("view_panel, the GPU forced off: %s\n", onSoft.about.c_str());
         P.eq("picture.fallback_png", !onSoft.png.empty() && !onSoft.gpu && onSoft.width == onGpu.width && onSoft.height == onGpu.height ? 1 : 0, 1);
         P.eq("picture.fallback_note", has(onSoft.about, "Drawn without the GPU (forced by a test): each shader shows as a striped placeholder") ? 1 : 0, 1);
-        P.eq("picture.fallback_differs", onSoft.png != onGpu.png ? 1 : 0, 1);
+        if (noGpu.empty())
+            P.eq("picture.fallback_differs", onSoft.png != onGpu.png ? 1 : 0, 1);
+        else
+            skipAll({ "picture.fallback_differs" });   // both SoftRaster's here
         writeBytes(probe::outPath("gui.shaders.picture-soft.png"), onSoft.png);
         pg::picturesIdle(0.0);
     }
@@ -1135,6 +1169,9 @@ PROBE(gui, shaders)
             std::filesystem::last_write_time(copy, time, ec);
             const pg::ShaderBuild working = c.build("still.sc", body, { "cutoff" }, x);
             const pg::ShaderCache::Counts n = c.counts();
+            std::printf("passing: without its permission to execute: %s; with it: %s (built %d, from memory %d, from disk %d)\n",
+                        failed.ok() ? "built" : failed.error.c_str(), working.ok() ? "built" : working.error.c_str(),
+                        static_cast<int>(n.built), static_cast<int>(n.memory), static_cast<int>(n.disk));
             P.eq("cache.passing_failure_said", !failed.ok() && has(failed.error, "shaderc did not run") ? 1 : 0, 1);
             P.eq("cache.passing_failure_not_on_disk", onDisk, 0);
             P.eq("cache.passing_failure_not_kept", working.ok() && n.built == 2 && n.memory == 0 && n.disk == 0 ? 1 : 0, 1);
@@ -1456,6 +1493,12 @@ PROBE(gui, shaders)
             const pg::picture::Drawn g = pg::picture::draw(frame);
             if (png != nullptr && g.image.w > 0)
                 funkgui::writePng(g.image, probe::outPath(png).c_str());
+            if (!g.gpu && !probe::noGpuPictures().empty())
+            {
+                for (const char* row : { ".gpu", ".inked", ".inked_as_reference", ".mean_difference", ".over_16_share" })
+                    probe::skip(P, std::string(name) + row, probe::noGpuPicturesSkip());
+                return;
+            }
             if (textItem == nullptr || !g.gpu)
             {
                 P.eq((std::string(name) + ".gpu").c_str(), 0, 1);
@@ -1511,6 +1554,12 @@ PROBE(gui, shaders)
             const pg::picture::Drawn g = pg::picture::draw(frame);
             const pg::ui::GuiShaderItem* odoItem = shaderShowing(panel, "odo.sc");
             const auto sameAsBelow = [&](const std::string& name, float top, float height, float below) {
+                if (!g.gpu && !probe::noGpuPictures().empty())
+                {
+                    probe::skip(P, name, probe::noGpuPicturesSkip());
+                    probe::skip(P, name + "_inked", probe::noGpuPicturesSkip());
+                    return;
+                }
                 if (odoItem == nullptr || !g.gpu)
                 {
                     P.eq(name.c_str(), 0, 1);
@@ -1540,6 +1589,11 @@ PROBE(gui, shaders)
 
             // A mark's ink (its red over the background's, near it) on each side of its centre line: the less over the more.
             const auto evenness = [&](const char* name, float angle, float r0, float r1) {
+                if (!g.gpu && !probe::noGpuPictures().empty())
+                {
+                    probe::skip(P, name, probe::noGpuPicturesSkip());
+                    return;
+                }
                 if (dashItem == nullptr || !g.gpu)
                 {
                     P.eq(name, 0, 1);
@@ -1649,19 +1703,27 @@ PROBE(gui, shaders)
                                               && m.panel.shaders.size() == 3 && m.panel.shaders[0].binary.empty() ? 1 : 0, 1);
         }
 
-        // Every renderer's profile: the library and both shaders compile for Vulkan (SPIR-V) here too; Direct3D 11's
-        // needs Windows' compiler, which this Mac has not.
+        // Every renderer's profile: the library and both shaders compile for another renderer than this platform's too,
+        // Vulkan's SPIR-V on macOS and Windows, Metal's on Linux (where SPIR-V is the panel's own); Direct3D 11's needs
+        // Windows' compiler.
         {
-            pg::ShaderTools spirv = tools();
-            spirv.platform = "linux";
-            spirv.profile = "spirv";
+            pg::ShaderTools other = tools();
+#if defined(__linux__)
+            other.platform = "osx";
+            other.profile = "metal";
+            const char* const key = "text.metal";
+#else
+            other.platform = "linux";
+            other.profile = "spirv";
+            const char* const key = "text.spirv";
+#endif
             const pg::Sources heads = pg::shaderHeaders(textFiles);
-            const pg::ShaderBuild a = pg::buildShader("text.sc", kTextSc, { "cutoff", "level" }, spirv, heads);
-            const pg::ShaderBuild b = pg::buildShader("dash.sc", kDashSc, { "cutoff", "level" }, spirv, heads);
-            const pg::ShaderBuild o = pg::buildShader("odo.sc", kOdoSc, { "level" }, spirv, heads);
+            const pg::ShaderBuild a = pg::buildShader("text.sc", kTextSc, { "cutoff", "level" }, other, heads);
+            const pg::ShaderBuild b = pg::buildShader("dash.sc", kDashSc, { "cutoff", "level" }, other, heads);
+            const pg::ShaderBuild o = pg::buildShader("odo.sc", kOdoSc, { "level" }, other, heads);
             if (!a.ok() || !b.ok() || !o.ok())
-                std::printf("SPIR-V:\n%s%s%s", a.error.c_str(), b.error.c_str(), o.error.c_str());
-            P.eq("text.spirv", a.ok() && b.ok() && o.ok() && a.binary != ts.panel.shaders[0].binary ? 1 : 0, 1);
+                std::printf("%s:\n%s%s%s", other.profile.c_str(), a.error.c_str(), b.error.c_str(), o.error.c_str());
+            P.eq(key, a.ok() && b.ok() && o.ok() && a.binary != ts.panel.shaders[0].binary ? 1 : 0, 1);
         }
         load(processor, textFiles);
         processor.settle();
