@@ -787,8 +787,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
     other probe is headless (HeadlessHost, SoftRaster) and needs no display. On an X display, a window manager too:
     JUCE 8.0.4 sets `WM_PROTOCOLS` on each window with an atom it only looks up, which on a bare X server nothing has
     made, and the X error ends the process (`xvfb-run` alone is not enough; Xvfb with openbox is);
-  - **a premise the machine did not give**: `plugin.reload`'s `wait.table_read_first` wants the audio thread's blocks
-    closer than `Compiler::audioIdle`'s 20 ms, and says how far apart they came when they were not.
+  - **a premise the machine did not give**: `plugin.reload`'s `wait.table_read_first` (and LISTEN's
+    `listen.other_table_no_field`, which needs that read) wants the audio thread's blocks closer than
+    `Compiler::audioIdle`'s 20 ms: a try whose blocks came 15 ms apart or more is made again, eight at most, each saying
+    how far apart they came, and the rows are skipped only when every try stalled.
 
   What differs there and is checked as it is: `gui.shaders` builds the other renderer's profile as Metal's
   (`text.metal`: SPIR-V is the panel's own); `gui.folder` finds Show in File Manager; `gui.explorer` scrolls a row into
