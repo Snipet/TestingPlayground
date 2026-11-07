@@ -295,7 +295,7 @@ namespace playground
                     if (d.label.size() > kMaxDialLabel)
                     {
                         noteAt(l, "the label \"" + d.label + "\" is cut to " + std::to_string(kMaxDialLabel) + " characters");
-                        d.label.resize(kMaxDialLabel);
+                        d.label = cutText(d.label, kMaxDialLabel);
                     }
                 }
                 else if (!extra)
@@ -339,19 +339,29 @@ namespace playground
                     continue;
                 }
                 d.integer = src.type == "int" || src.type == "bool";
-                // What the panel line leaves out, its field's attributes give (FieldLook): a range, a label.
+                // What the panel line leaves out, its field's attributes give (FieldLook): a range, a label, a number's
+                // unit and places; what the line gives itself beats them. A text too long for the display is cut, as
+                // the line's own is, with a note (the field keeps it whole: trace shows it so).
                 const FieldLook& look = src.field->look;
+                const auto fit = [&](const std::string& said, std::size_t most, const char* which) {
+                    if (said.size() > most)
+                        noteAt(l, std::string("the ") + which + " \"" + said + "\" (" + d.source + "'s ui::" + which + ") is cut to "
+                                      + std::to_string(most) + " characters");
+                    return cutText(said, most);
+                };
                 if (!ranged && look.ranged)
                 {
                     d.lo = look.lo;
                     d.hi = look.hi;
                 }
-                if (!labelled && !named && !look.label.empty())
-                    d.label = look.label;
+                if (!labelled && !look.label.empty())
+                    d.label = fit(look.label, kMaxDialLabel, "label");
                 if (d.kind == DisplayKind::number)
                 {
-                    d.unit = look.unit;
-                    d.decimals = look.decimals;
+                    if (d.unit.empty() && !look.unit.empty())
+                        d.unit = fit(look.unit, sizeof(Control::unit) - 1, "unit");
+                    if (d.decimals < 0)
+                        d.decimals = look.decimals;
                 }
             }
             if (displayOf(d.name) >= 0)
@@ -653,6 +663,16 @@ namespace playground
         return source.substr(arrow == std::string::npos ? 0 : arrow + 2, kMaxDialLabel);
     }
 
+    std::string cutText(const std::string& text, std::size_t max)
+    {
+        if (text.size() <= max)
+            return text;
+        std::size_t cut = max;
+        while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80)   // never inside a UTF-8 sequence
+            --cut;
+        return text.substr(0, cut);
+    }
+
     void readFieldAttribute(FieldLook& look, std::string_view name, const std::vector<std::string>& args)
     {
         const auto number = [&](std::size_t k, double& out) {
@@ -671,9 +691,9 @@ namespace playground
             return true;
         };
         if (name == "ui::unit" && args.size() == 1)
-            look.unit = args[0].substr(0, sizeof(Control::unit) - 1);
+            look.unit = args[0];                         // whole: a display cuts it (cutText), trace shows it all
         else if (name == "ui::label" && args.size() == 1)
-            look.label = args[0].substr(0, kMaxDialLabel);
+            look.label = args[0];
         else if (name == "ui::decimals" && args.size() == 1)
         {
             double v = 0.0;

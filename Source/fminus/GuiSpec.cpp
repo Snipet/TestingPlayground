@@ -695,7 +695,7 @@ namespace playground
                 if (s.size() > max)
                 {
                     note(v, std::string("the ") + what + " \"" + s + "\" is cut to " + std::to_string(max) + " characters");
-                    s.resize(max);
+                    s = cutText(s, max);
                 }
                 return s;
             }
@@ -1685,19 +1685,27 @@ namespace playground
                     return;
                 if (!d.audio())
                 {
-                    // What the display leaves out, its field's attributes give (FieldLook): a label, a range, a number's unit and places.
+                    // What the display leaves out, its field's attributes give (FieldLook): a label, a range, a number's unit
+                    // and places. A text too long for the display is cut, as its own is, with a note (the field keeps it
+                    // whole: trace shows it so).
                     const DisplaySource src = displaySource(fields_, d.source);
                     d.integer = src.type == "int" || src.type == "bool";
                     const FieldLook& look = src.field->look;
+                    const auto fit = [&](const std::string& said, std::size_t most, const char* which) {
+                        if (said.size() > most)
+                            note(e.args[0], std::string("the ") + which + " \"" + said + "\" (" + d.source + "'s ui::" + which
+                                                + ") is cut to " + std::to_string(most) + " characters");
+                        return cutText(said, most);
+                    };
                     if (!labelled && !look.label.empty())
-                        d.label = look.label;
+                        d.label = fit(look.label, kMaxDialLabel, "label");
                     if (!lo && !hi && look.ranged)
                     {
                         d.lo = look.lo;
                         d.hi = look.hi;
                     }
-                    if (readout && d.unit.empty() && !unitGiven)
-                        d.unit = look.unit;
+                    if (readout && d.unit.empty() && !unitGiven && !look.unit.empty())
+                        d.unit = fit(look.unit, sizeof(Control::unit) - 1, "unit");
                     if (readout && d.decimals < 0)
                         d.decimals = look.decimals;
                 }

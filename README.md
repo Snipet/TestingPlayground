@@ -233,11 +233,12 @@ module Voice
   meant, bit for bit. A 2-D array is C's array of arrays (`float bank[4][256];`, `bank[t][i]`, its row `bank[t]` a
   `float*`), a field, a local or a table; no parameter is one (pass a row, or the module). A field may carry attributes
   after its name, C23's way (`float level [[ui::unit("dB")]] [[fminus::range(-60, 0)]];`): FMinus passes them on, and
-  the plugin reads four, `ui::unit`, `ui::label`, `ui::decimals` and `fminus::range` (a display's unit, label, places and
-  range when its line gives none; trace's lines say them); another in a namespace of its own is the program's, and one
-  without a namespace that is none of C's is ignored with a warning (`-Wunknown-attributes`). trace reads a double as
-  one (its values to 12 digits), a 2-D array of 16 elements at most whole (`gain[1][2]`), and leaves a larger one out
-  saying its shape; a display shows a double, or one element of an array (`bands[2]`, `grid[1][3]`).
+  the plugin reads four, `ui::unit`, `ui::label`, `ui::decimals` and `fminus::range` (a display's unit, label, places
+  and range when its line gives none, a label past 14 bytes or a unit past 7 cut with a note; trace's lines say them
+  whole); another in a namespace of its own is the program's, and one without a namespace that is none of C's is ignored
+  with a warning (`-Wunknown-attributes`). trace reads a double as one (its values to 12 digits), a 2-D array of 16
+  elements at most whole (`gain[1][2]`), and leaves a larger one out saying its shape; a display shows a double, or one
+  element of an array (`bands[2]`, `grid[1][3]`).
 - **Modules inside modules.** The main module may hold others (`Svf l;`, `Osc osc[3];`): their methods are its
   helpers, and their parameters start at their defaults (they have no dials).
 - **Shared data.** A module named `Shared`, when the program has one, is made once for it, not once a voice: its init

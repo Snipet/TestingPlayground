@@ -26,8 +26,10 @@
 //   ONLY      displays without a section line: one section, untitled, of every dial and display, with no note
 //   ELEMENTS  a double field, an array's element (bands[2]) and a 2-D array's (grid[1][2]) as displays, each a tap that
 //             reads what the program wrote there (the double rounded to a float); a field's attributes as what the line
-//             leaves out (ui::label, fminus::range; a number's ui::unit and ui::decimals), the line's own beating them;
-//             notes for an array named without its indexes, an index outside its extent and one index too many
+//             leaves out (ui::label, fminus::range; a number's ui::unit and ui::decimals), the line's own beating them
+//             (an `as` name is no label); a label and a unit too long for a display cut where a character starts, with
+//             a note, the field keeping them whole; notes for an array named without its indexes, an index outside its
+//             extent and one index too many
 #include "Probe.h"
 
 #include "Rig.h"
@@ -328,6 +330,8 @@ PROBE(fminus, panel)
 
     // ELEMENTS: a double, an array's element, a 2-D array's, a field's attributes
     {
+        // 15 bytes, an A and seven two-byte characters: cut to 14 bytes it would split the last, so it loses it whole.
+        const std::string kLongLabel = "A\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89";
         const std::string before =
             "#pragma panel meter temp\n"                                      // 1: a double, tap 0
             "#pragma panel meter bands[2]\n"                                  // 2: tap 1
@@ -337,12 +341,14 @@ PROBE(fminus, panel)
             "#pragma panel meter gr 0 12 \"MINE\" as grown\n"                 // 6: tap 5, the line's own
             "#pragma panel meter grid\n"                                      // 7: no indexes
             "#pragma panel meter grid[2][0]\n"                                // 8: outside
-            "#pragma panel meter bands[1][1]\n";                              // 9: one too many
+            "#pragma panel meter bands[1][1]\n"                               // 9: one too many
+            "#pragma panel number bend\n";                                   // 10: tap 6, a look too long
         const std::string fields = "    double temp;\n    float bands[4];\n    float grid[2][3];\n"
-                                   "    float gr [[ui::label(\"GR\")]] [[fminus::range(0, 24)]] [[ui::unit(\"dB\")]] [[ui::decimals(1)]];\n";
+                                   "    float gr [[ui::label(\"GR\")]] [[fminus::range(0, 24)]] [[ui::unit(\"dB\")]] [[ui::decimals(1)]];\n"
+                                   "    float bend [[ui::unit(\"semitones\")]] [[ui::label(\"" + kLongLabel + "\")]];\n";
         const std::string writes = "        temp = 90.5;\n        for (int k = 0; k < 4; ++k)\n            bands[k] = k + 0.5f;\n"
                                    "        for (int r = 0; r < 2; ++r)\n            for (int c = 0; c < 3; ++c)\n"
-                                   "                grid[r][c] = 10 * r + c;\n        gr = 6;\n";
+                                   "                grid[r][c] = 10 * r + c;\n        gr = 6;\n        bend = 2;\n";
         const std::string source = kInstrument
             ? before + "module Voice\n{\n" + fields + "    void start(float n, float v) {}\n"
                        "    bool process(float* restrict left, float* restrict right, int n)\n    {\n" + writes + "        return true;\n    }\n};\n"
@@ -368,21 +374,32 @@ PROBE(fminus, panel)
             const pg::PanelDisplay* gr = find("gr");
             const pg::PanelDisplay* grnum = find("grnum");
             const pg::PanelDisplay* grown = find("grown");
-            P.eq("elements.count", static_cast<int64_t>(d.size()), 6);
-            P.eq("elements.taps", r.patch->taps(), 6);
+            const pg::PanelDisplay* bend = find("bend");
+            P.eq("elements.count", static_cast<int64_t>(d.size()), 7);
+            P.eq("elements.taps", r.patch->taps(), 7);
             P.eq("elements.double", temp != nullptr && temp->tap == 0 && !temp->integer ? 1 : 0, 1);
             P.eq("elements.element", band != nullptr && band->tap == 1 && band->source == "bands[2]" ? 1 : 0, 1);
             P.eq("elements.element_2d", cell != nullptr && cell->tap == 2 && cell->kind == pg::DisplayKind::number ? 1 : 0, 1);
             P.eq("elements.look", gr != nullptr && gr->label == "GR" && gr->lo == 0.0f && gr->hi == 24.0f ? 1 : 0, 1);
             P.eq("elements.number_look", grnum != nullptr && grnum->unit == "dB" && grnum->decimals == 1 && grnum->hi == 24.0f ? 1 : 0, 1);
+            P.eq("elements.as_keeps_look_label", grnum != nullptr && grnum->label == "GR" ? 1 : 0, 1);   // `as` names it, no more
             P.eq("elements.line_beats_look", grown != nullptr && grown->label == "MINE" && grown->lo == 0.0f && grown->hi == 12.0f
                                                  && grown->unit.empty() ? 1 : 0, 1);
-            const auto noteOn = [&](int line, const char* what) {
+            const auto noteOn = [&](int line, const std::string& what) {
                 return has(r.notes, "program.fm:" + std::to_string(line) + ":1: note: #pragma panel: ") && has(r.notes, what);
             };
             P.eq("elements.note_no_index", noteOn(7, "grid is a float[2][3]: an element shows, an index a dimension (grid[1][3])") ? 1 : 0, 1);
             P.eq("elements.note_outside", noteOn(8, "grid[2][0] is outside grid, a float[2][3]") ? 1 : 0, 1);
             P.eq("elements.note_too_many", noteOn(9, "bands is a float[4]: an element shows") ? 1 : 0, 1);
+            // A look too long for the display: cut where a character starts, with a note; the field keeps it whole.
+            P.eq("elements.long_label_cut", bend != nullptr && bend->label == kLongLabel.substr(0, 13) ? 1 : 0, 1);
+            P.eq("elements.long_unit_cut", bend != nullptr && bend->unit == "semiton" ? 1 : 0, 1);
+            P.eq("elements.long_look_notes", noteOn(10, "the label \"" + kLongLabel + "\" (bend's ui::label) is cut to 14 characters")
+                                                  && noteOn(10, "the unit \"semitones\" (bend's ui::unit) is cut to 7 characters") ? 1 : 0, 1);
+            bool whole = false;
+            for (const pg::Patch::Field& f : r.patch->fieldMap())
+                whole = whole || (f.path == "bend" && f.look.label == kLongLabel && f.look.unit == "semitones");
+            P.eq("elements.field_keeps_look_whole", whole ? 1 : 0, 1);
             // What the taps read once the program ran: its values, where FMinus put them.
             std::vector<float> l(16, 0.0f), rr(16, 0.0f);
             if constexpr (kInstrument)

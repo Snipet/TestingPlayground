@@ -28,9 +28,10 @@
 // (`shared->level`: its one Shared, whether a voice sounds or not), or one element of an array field of either, an
 // index a dimension (`bands[2]`, `grid[1][3]`: displaySource below). A field's scope is its trace over the last
 // seconds; an int's or a bool's readout a whole number. A field's attributes give its displays what the panel line
-// leaves out (FieldLook below: a label, a range). A section names a display by its name, the source's unless
-// `as` gives another, which a second display of one source needs: #pragma panel scope out as wave "SCOPE". Without a
-// "label" it shows that name (a display of Shared's without `as`: its field's own, LEVEL).
+// leaves out (FieldLook below: a label, a range; a number's unit and places). A section names a display by its name,
+// the source's unless `as` gives another, which a second display of one source needs: #pragma panel scope out as wave
+// "SCOPE". Without a "label", the line's or its field's ui::label, it shows that name (a display of Shared's without
+// `as`: its field's own, LEVEL).
 //
 // The sections go left to right in the order of their lines, and to another row when one is full. Dials and
 // displays no section names come last, in a section of their own without a title. A line, or a part of one, the
@@ -213,11 +214,14 @@ namespace playground
     // What a field's attributes say about showing it. FMinus passes a field's attributes on to the plugin (written after
     // its name, C23's way: `float level [[ui::unit("dB")]] [[ui::label("LEVEL")]] [[fminus::range(-60, 0)]];`), and
     // the plugin reads four, the last of a name counting; the others are the program's own, and left alone:
-    //   ui::unit("dB")          its unit: a number display's readout ("-12.0 dB"), and trace's lines
+    //   ui::unit("dB")          its unit: a number display's readout ("-12.0 dB") when the panel gives none, and
+    //                           trace's lines
     //   ui::label("LEVEL")      a display's label when the panel gives none (a #pragma panel line's "label", a .gui
-    //                           file's label=), kMaxDialLabel characters at most
+    //                           file's label=), and trace's lines
     //   ui::decimals(1)         a number display's places, 0 to 4, when its decimals= gives none
     //   fminus::range(lo, hi)   what a display spans when the panel gives no range (else 0 to 1), and trace's lines
+    // The text is kept whole (trace shows it so); a display that takes a label or a unit cuts it as it cuts its own
+    // (kMaxDialLabel, and a unit's 7 bytes: cutText), with a note on the display's line.
     // Patch reads them from FMinus's Program::Module::Field::attributes, the GUI sandbox from Lang's (Symbol::attributes).
     struct FieldLook
     {
@@ -275,6 +279,9 @@ namespace playground
     // The label a display of `source` takes when it is given none: the source ("out", "env"), or Shared's field's own
     // name ("shared->level": "level"), kMaxDialLabel characters at most.
     std::string sourceLabel(const std::string& source);
+
+    // `text` cut to at most `max` bytes, never inside a UTF-8 sequence (a character that does not fit is left out whole).
+    std::string cutText(const std::string& text, std::size_t max);
 
     // The colours a panel line may name.
     inline constexpr const char* kPanelColors[] = { "red",  "orange", "yellow", "green", "teal",

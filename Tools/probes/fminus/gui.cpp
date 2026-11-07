@@ -31,7 +31,8 @@
 //             once for every control that names it; a mistake in them is a note on its line and column
 //   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
 //             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
-//             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note
+//             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
+//             unit too long for a display cut where a character starts, with a note on its line
 #include "Probe.h"
 
 #include "fminus/GuiSpec.h"
@@ -532,6 +533,22 @@ panel background=#1d1b19 accent=orange {
             P.eq("elements.live_element", d[4].hidden && d[4].source == "bands[2]" ? 1 : 0, 1);
         }
         P.eq("elements.no_note", !has(c.notes, "panel.gui:") ? 1 : 0, 1);
+
+        // A field's label and unit too long for a display: cut where a character starts (the last two-byte one left
+        // out whole), with a note on the display's line.
+        const std::string longLabel = "A\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89\xc3\x89";   // 15 bytes
+        const std::string longBody = "    param float cutoff [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                     "    float bend [[ui::label(\"" + longLabel + "\")]] [[ui::unit(\"semitones\")]];\n";
+        const std::string longProgram = kInstrument
+            ? "module Voice\n{\n" + longBody + "    void start(float n, float v) {}\n"
+              "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + longBody + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const Compiled cut = compile({ { pg::kProgramName, longProgram }, { "panel.gui", "knob cutoff\nnumber bend\n" } });
+        std::printf("elements cut: %s", cut.notes.c_str());
+        P.eq("elements.long_look_cut", cut.panel.displays.size() == 1 && cut.panel.displays[0].label == longLabel.substr(0, 13)
+                                           && cut.panel.displays[0].unit == "semiton" ? 1 : 0, 1);
+        P.eq("elements.long_look_notes", has(cut.notes, "panel.gui:2:") && has(cut.notes, "(bend's ui::label) is cut to 14 characters")
+                                             && has(cut.notes, "the unit \"semitones\" (bend's ui::unit) is cut to 7 characters") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------
