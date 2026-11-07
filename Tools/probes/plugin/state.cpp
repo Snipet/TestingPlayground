@@ -46,9 +46,12 @@
 //           of 100), the 33rd and the 40th on the left and the right; the host sees 32 parameters, the panel 64 ports,
 //           a panel dial's with no host parameter behind it (native: none); run_program lists them, "panel only"; both
 //           play their defaults; the 33rd turned through its port (the editor's way) plays at once and writes no host
-//           parameter; set_dial sets the 40th; a session keeps both (<PANEL><DIAL slot value/>, no <PARAM> of them)
-//           and a fresh processor loads them; a session from before them (no <PANEL>) plays their defaults; a run
-//           that widens the 33rd's range keeps its value in its units (the carry, as a host dial's)
+//           parameter; set_dial sets the 40th; a session keeps all 32 (<PANEL><DIAL slot value/>, the unused too,
+//           as the APVTS keeps every <PARAM>; no <PARAM> of them) and a fresh processor loads them; a session from
+//           before them (no <PANEL>) plays their defaults; a run that widens the 33rd's range keeps its value in its
+//           units (the carry, as a host dial's). An A/B, its sides without their own dials, B a version of 34 dials
+//           playing and A the editor's 40 (the 40th at 12): a session saved then plays A in a fresh processor with
+//           the 40th at 12, not at its default
 //   FILEVIEWS the netlists' views (EditorPort::fileViews: the view, the zoom, the centre, the pinned probes' nodes) kept in
 //           the editor's tree (<FILE> children) and read back the same; a file that is no netlist is not kept, nor more
 //           than four probes; a state from before them (no <FILE>) loads as it did, with none
@@ -63,6 +66,7 @@
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
+#include "plugin/ProjectStore.h"
 
 #include "Examples.h"
 #include "Library.h"
@@ -71,11 +75,14 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace pg = playground;
 
@@ -879,17 +886,22 @@ PROBE(plugin, state)
         std::unique_ptr<juce::XmlElement> xml = juce::AudioProcessor::getXmlFromBinary(saved.getData(), static_cast<int>(saved.getSize()));
         const juce::XmlElement* panel = xml != nullptr ? xml->getChildByName("PANEL") : nullptr;
         int kept = 0;
+        uint64_t slots = 0;
         bool firstKept = false;
         for (const juce::XmlElement* d = panel != nullptr ? panel->getFirstChildElement() : nullptr; d != nullptr; d = d->getNextElement())
         {
             ++kept;
+            if (const int slot = d->getIntAttribute("slot", -1); pg::isPanelDial(slot))
+                slots |= pg::slotBit(slot);
             firstKept = firstKept || (d->getIntAttribute("slot") == first && std::fabs(d->getDoubleAttribute("value")
                                                                                        - pg::normOf(h.p.control(first), 70.0f)) < 1e-6);
         }
         bool paramOf = false;
         for (const juce::XmlElement* c = xml != nullptr ? xml->getFirstChildElement() : nullptr; c != nullptr; c = c->getNextElement())
             paramOf = paramOf || (c->hasTagName("PARAM") && c->getStringAttribute("id") == "p" + juce::String(first + 1));
-        P.eq("panel.state_kept", panel != nullptr && kept == 8 && firstKept && !paramOf ? 1 : 0, 1);
+        // Every one of the 32, as the APVTS keeps every <PARAM>: the 8 the program uses and the 24 it does not.
+        P.eq("panel.state_kept", panel != nullptr && kept == pg::kPanelControls && slots == ~(pg::slotBit(pg::kHostControls) - 1u)
+                                     && firstKept && !paramOf ? 1 : 0, 1);
         {
             HostRig b;
             b.p.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
@@ -921,6 +933,53 @@ PROBE(plugin, state)
         out = h.render(0.02);
         P.near("panel.carry_keeps_units", static_cast<double>(out.l.back()), 0.70, 1e-5);
         P.near("panel.carry_new_turn", static_cast<double>(h.p.ports()[first]->value01()), 0.35, 1e-6);
+    }
+    {
+        // An A/B whose sides have no dials of their own, its B a version of 34 dials (d35 to d40 unused while it
+        // plays), A the editor's 40 with d40 at 12: a session saved while B plays keeps A's files and every panel dial,
+        // so a fresh processor plays A with d40 at 12, as a host dial in that case keeps its value, not at its default.
+        const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                   .getChildFile(juce::String(pg::product::kEnvPrefix) + "state-probe-" + juce::String(juce::Time::currentTimeMillis()));
+        dir.deleteRecursively();
+        pg::projectstore::setDirectoryForTests(dir);
+        {
+            HostRig a;
+            pg::EditorPort& port = a.p.editorPort();
+            (void)a.run(panelDials(34));
+            a.p.poll();
+            pg::SavedVersion version;
+            std::string why;
+            P.eq("panel.ab_version", port.saveVersion("Panel AB", version, why) && version.number == 1 ? 1 : 0, 1);
+            (void)a.run(panelDials(40));
+            a.p.poll();
+            (void)textOf(a.p.chatAgent().mcpCall("set_dial", object({ { "name", "d40" }, { "value", 12.0 } })));
+            a.p.poll();
+            a.render(0.05);
+            const bool begun = port.startAb("Panel AB", 0, 1, why);
+            port.playAb(1);
+            a.p.settle();
+            for (int k = 0; k < 3000 && (port.ab().playing != 1 || port.ab().measuring); ++k)
+            {
+                a.p.poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            a.render(0.05);
+            P.eq("panel.ab_b_plays", begun && port.ab().on && port.ab().playing == 1 && !port.ab().ownDials
+                                         && a.p.control(33).used && !a.p.control(39).used ? 1 : 0, 1);
+            juce::MemoryBlock during;
+            a.p.getStateInformation(during);
+            HostRig b;
+            b.p.setStateInformation(during.getData(), static_cast<int>(during.getSize()));
+            b.p.poll();
+            b.render(0.05);
+            const probe::Stereo loaded = b.render(0.02);
+            P.eq("panel.ab_session_a", b.p.control(39).used ? 1 : 0, 1);
+            P.near("panel.ab_session_keeps_unused", static_cast<double>(loaded.r.back()), 0.12, 1e-5);
+            port.endAb();
+            a.p.settle();
+        }
+        pg::projectstore::setDirectoryForTests({});
+        dir.deleteRecursively();
     }
 
     // FILEVIEWS

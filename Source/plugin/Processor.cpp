@@ -58,9 +58,9 @@ namespace playground
         const juce::Identifier kFileViewTag{ "FILE" }, kZoom{ "zoom" }, kX{ "x" }, kY{ "y" }, kProbeTag{ "PROBE" }, kNode{ "node" };
         // The folder while it is on (FolderSync.h): <FOLDER name=".." run="1"/> (a state from before it has none)
         const juce::Identifier kFolderTag{ "FOLDER" }, kRunOnSave{ "run" };
-        // The panel's own dials (Controls.h's isPanelDial), the used ones: <PANEL><DIAL slot="32" value="0.5"/></PANEL>,
-        // normalised in the program's controls as the host's <PARAM>s are (a state from before them has none: their
-        // defaults).
+        // The panel's own dials (Controls.h's isPanelDial), all 32 as the host's <PARAM>s are:
+        // <PANEL><DIAL slot="32" value="0.5"/>...</PANEL>, normalised in the program's controls as those are (a state
+        // from before them has none: their defaults).
         const juce::Identifier kPanelTag{ "PANEL" }, kDialTag{ "DIAL" }, kSlot{ "slot" };
         constexpr int kMaxEditorSide = 16384;
 
@@ -1337,15 +1337,15 @@ namespace playground
                     if (p.isValid() && std::isfinite(norm))
                         p.setProperty(kParamValue, static_cast<double>(std::clamp(norm, 0.0f, 1.0f)), nullptr);
                 }
-            // The panel's own dials the program uses, beside the host's; while an A/B keeps what played before it, each
-            // one's value then (its program's controls may be other than a side's).
+            // The panel's own dials, every one beside the host's as the APVTS keeps every <PARAM>: a slot the program
+            // that plays leaves unused may be one of the program the session keeps (an A/B's side with fewer dials
+            // plays, its sides without their own dials); while an A/B keeps what played before it with its own dials,
+            // each one's value then (its program's controls may be other than a side's).
             const bool abDials = abKept_.on && abKept_.dials;
             juce::ValueTree panel{ kPanelTag };
             for (int c = kHostControls; c < kMaxControls; ++c)
             {
                 const auto i = static_cast<std::size_t>(c);
-                if (!controls_[i].used && !abDials)
-                    continue;
                 const float kept = abDials ? abKept_.norms[i] : raw_[i]->load();
                 const float norm = std::isfinite(kept) ? std::clamp(kept, 0.0f, 1.0f) : raw_[i]->load();
                 juce::ValueTree dial{ kDialTag };
@@ -1353,8 +1353,7 @@ namespace playground
                 dial.setProperty(kParamValue, static_cast<double>(norm), nullptr);
                 panel.appendChild(dial, nullptr);
             }
-            if (panel.getNumChildren() > 0)
-                state.appendChild(panel, nullptr);
+            state.appendChild(panel, nullptr);
         }
         // The self-test's answers for the netlists of the program that plays and of the draft (Answers::of: each once).
         if (const std::vector<std::pair<std::string, std::string>> answers = circuits::answers().of(keys); !answers.empty())
