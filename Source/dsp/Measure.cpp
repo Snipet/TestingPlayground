@@ -2715,6 +2715,7 @@ namespace playground::measure
         if (!r.patch)
         {
             errors_ = r.errors + r.notes;
+            initStopped_ = r.stopped;
             return;
         }
         impl_->controls = r.patch->controls();
@@ -3854,7 +3855,7 @@ namespace playground::measure
         for (const std::string& w : warnings)
             out += "Note: " + w + "\n";
         if (impl_->stopCall != Patch::Method::none)            // what the numbers above measured, first
-            out = stopWords(impl_->stopCall, impl_->stopSeconds, &impl_->stopBounds) + out;
+            out = (res.stopWords = stopWords(impl_->stopCall, impl_->stopSeconds, &impl_->stopBounds)) + out;
         res.stopped = impl_->stopCall;
         if (!res.hash.empty())                               // what rendered, as bits (Export.h)
             out += hashLine(res.hash, res.hashed) + "\n";

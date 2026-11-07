@@ -20,6 +20,8 @@
 #   Source/mcp/                  the MCP server; icon-<key>.png its extension's    -> <Name>MCP and <Name>.mcpb
 #   Source/sandbox/              the GUI sandbox's helper, with the editor's .gui  -> <Name>GuiSandbox (in the .mcpb)
 #                                code and no plugin code (FP_SANDBOX_SHARED)
+#   Source/render/               the headless renderer: the DSP library and the    -> <Name>Render (in the .mcpb)
+#                                tools' request reading (FP_RENDER_SHARED)
 #   Assets/logo/<kind>/          the app icon (Tools/logo/logo.swift writes it)   -> each bundle's Icon.icns
 #   Source/installer/            the installer, one for every product (its payload: their bundles and extensions)
 #                                                                                  -> "<Project> Installer.app" (.exe)
@@ -208,6 +210,11 @@ foreach(_f editor/GuiView editor/GuiItems editor/GuiLayout editor/Looks editor/D
            fminus/GuiSpec fminus/PanelSpec fminus/Lang fminus/LangConditionals fminus/HostFile fminus/Shaders)
   list(APPEND FP_SANDBOX_SHARED ${FP_SOURCE_ROOT}/${_f}.cpp)
 endforeach()
+# The headless renderer (Source/render/): its own sources, the DSP library and, by name, the plugin's reading of the
+# tools' JSON (plugin/ChatScenario.cpp: juce_core and the DSP library alone; ChatCaptured.cpp holds what reaches the
+# plugin). A file added to this list must keep that so: no processor, no editor, no FunkGui.
+file(GLOB FP_RENDER_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/render/*.cpp)
+set(FP_RENDER_SHARED ${FP_SOURCE_ROOT}/plugin/ChatScenario.cpp)
 # The Standalone app (Source/plugin/standalone/, its Standalone target only): our sources' warnings, and ARC for its
 # Objective-C++.
 file(GLOB FP_STANDALONE_SOURCES CONFIGURE_DEPENDS ${FP_SOURCE_ROOT}/plugin/standalone/*.cpp
@@ -280,8 +287,8 @@ add_custom_target(probes)
 # ---- one product -----------------------------------------------------------------------------------------------------
 # fp_add_product(<key>): products/<key>.cmake's identity, checked, and everything built from it: the generated headers
 # in <build>/generated/<key>/, the static libraries <Name>_fminus and <Name>_dsp, the plugin <Name> (AU, VST3,
-# Standalone), the MCP server <Name>MCP and its extension <Name>.mcpb, the probes <Name>_probes and their tests, and
-# the target <key>, which builds all of them. The PRODUCT_* values live in this function's scope only.
+# Standalone), the MCP server <Name>MCP, the headless renderer <Name>Render and the extension <Name>.mcpb, the probes
+# <Name>_probes and their tests, and the target <key>, which builds all of them. The PRODUCT_* values live in this function's scope only.
 function(fp_add_product key)
   set(_def products/${key}.cmake)
   foreach(_k NAME KIND VERSION COMPANY MFR_CODE CODE BUNDLE_ID ENV_PREFIX OBJC_PREFIX)
@@ -622,6 +629,29 @@ namespace @FP_NAMESPACE@
   endif()
   set_target_properties(${FP_MCP} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
+  # ---- the headless renderer (Source/render): <Name>Render, beside the server in the extension -----------------------
+  # A program rendered and measured from the command line with the plugin's compiler and offline render (the DSP
+  # library, FMinus's JIT inside it) and the tools' JSON (FP_RENDER_SHARED): juce_core, no plugin, no editor. The
+  # extension carries it (server/<Name>Render), so an installed extension has it beside its server.
+  set(FP_RENDER ${PRODUCT_NAME}Render)
+  juce_add_console_app(${FP_RENDER} PRODUCT_NAME "${FP_RENDER}" VERSION ${PRODUCT_VERSION})
+  set(_fp_render_own ${FP_RENDER_SOURCES} ${FP_RENDER_SHARED})
+  target_sources(${FP_RENDER} PRIVATE ${_fp_render_own})
+  fp_warn_sources(${_fp_render_own})
+  target_include_directories(${FP_RENDER} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
+  target_compile_definitions(${FP_RENDER} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_link_libraries(${FP_RENDER} PRIVATE ${PRODUCT_NAME}_dsp fp_flags juce::juce_core
+                                             juce::juce_recommended_config_flags)
+  if(FP_LTO)
+    target_link_libraries(${FP_RENDER} PRIVATE juce::juce_recommended_lto_flags)
+  endif()
+  if(APPLE)
+    target_link_options(${FP_RENDER} PRIVATE "LINKER:-dead_strip")
+  else()
+    target_link_libraries(${FP_RENDER} PRIVATE ${FP_WINDOWS_LIBS})
+  endif()
+  set_target_properties(${FP_RENDER} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
   # ---- the GUI sandbox's helper (Source/sandbox): <Name>GuiSandbox, beside the server, which starts it ---------------
   # The editor's .gui code and FunkGui, headless on JUCE's message thread; no FMinus, no LLVM, no audio, no plugin
   # code (FP_SANDBOX_SHARED above). The .mcpb carries it beside the server.
@@ -666,9 +696,11 @@ namespace @FP_NAMESPACE@
     set(FP_MCP_TRACK "an audio track")
     set(FP_MCP_EXAMPLES "“Make a tape delay with a little wow.” “Make the reverb darker and longer.” “Explain what this effect does to my sound.”")
   endif()
-  # The server and the helper as the extension holds them (server/<name>, .exe on Windows), and the platform.
+  # The server, the helper and the renderer as the extension holds them (server/<name>, .exe on Windows), and the
+  # platform.
   set(FP_MCP_EXE ${FP_MCP}${CMAKE_EXECUTABLE_SUFFIX})
   set(FP_SANDBOX_EXE ${FP_SANDBOX}${CMAKE_EXECUTABLE_SUFFIX})
+  set(FP_RENDER_EXE ${FP_RENDER}${CMAKE_EXECUTABLE_SUFFIX})
   if(FP_WINDOWS)
     set(FP_MCP_PLATFORM "win32")
     set(FP_MCP_MACHINE "computer")
@@ -683,7 +715,7 @@ namespace @FP_NAMESPACE@
   "display_name": "@PRODUCT_NAME@",
   "version": "@FP_MCP_VERSION@",
   "description": "Ask Claude for @FP_MCP_ASK@ in words: it builds it in @PRODUCT_NAME@, listens to it and sets its dials.",
-  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nClaude can also design the plugin's panel with you, even with the plugin closed: it sketches the interface in a sandbox, sees it drawn exactly as the plugin draws it, and puts it into the plugin only when you ask. The extension carries a second program for that, @FP_SANDBOX@ (beside the server), which draws panels and nothing else.\n\nNothing leaves your @FP_MCP_MACHINE@ except your conversation with Claude: the extension talks to the plugin through a private local connection.",
+  "long_description": "Open @PRODUCT_NAME@ in your DAW (on @FP_MCP_TRACK@) or as its own app, then talk to Claude about the sound you want. Claude writes the @FP_MCP_WHAT@'s program, runs it, measures and looks at the result, fixes what is off and leaves the dials at good settings; you hear it right away, and the plugin's window shows what Claude did. Try: @FP_MCP_EXAMPLES@\n\nWith more than one open, say which you mean by its track or project (each also shows its name, such as \"@FP_MCP_NAME@ 2\", while Claude is connected). Claude Desktop's + menu also has ready-made requests: Make a sound, Improve the sound, Explain the sound, Fix what I hear.\n\nClaude can also design the plugin's panel with you, even with the plugin closed: it sketches the interface in a sandbox, sees it drawn exactly as the plugin draws it, and puts it into the plugin only when you ask. The extension carries a second program for that, @FP_SANDBOX@ (beside the server), which draws panels and nothing else.\n\nA third, @FP_RENDER@ (beside the server too), renders and measures a program from the command line, as Claude's tools do, for whoever writes programs in a terminal or an editor; Claude Desktop never runs it.\n\nNothing leaves your @FP_MCP_MACHINE@ except your conversation with Claude: the extension talks to the plugin through a private local connection.",
   "author": { "name": "@PRODUCT_COMPANY@" },
   "icon": "icon.png",
   "server": {
@@ -714,18 +746,20 @@ namespace @FP_NAMESPACE@
     get_filename_component(_n "${_l}" NAME)
     list(APPEND _fp_licences licences/${_n})
   endforeach()
-  # The extension, packed again whenever the server, the sandbox's helper, its manifest, its icon or a licence changes:
-  # the server finds the helper beside itself (server/<Name>GuiSandbox).
+  # The extension, packed again whenever the server, the sandbox's helper, the renderer, its manifest, its icon or a
+  # licence changes: the server finds the helper beside itself (server/<Name>GuiSandbox), and the renderer is there too.
   add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E make_directory ${_mcpb}/server ${_mcpb}/licences
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_MCP}> ${_mcpb}/server/${FP_MCP_EXE}
       COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_SANDBOX}> ${_mcpb}/server/${FP_SANDBOX_EXE}
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:${FP_RENDER}> ${_mcpb}/server/${FP_RENDER_EXE}
       COMMAND ${CMAKE_COMMAND} -E copy ${_fp_licence_files} ${_mcpb}/licences/
       COMMAND ${CMAKE_COMMAND} -E copy ${_icon} ${_mcpb}/icon.png
       COMMAND ${CMAKE_COMMAND} -E rm -f ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
       COMMAND ${CMAKE_COMMAND} -E chdir ${_mcpb} ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb
-              --format=zip manifest.json icon.png server/${FP_MCP_EXE} server/${FP_SANDBOX_EXE} ${_fp_licences}
-      DEPENDS ${FP_MCP} ${FP_SANDBOX} ${_mcpb}/manifest.json ${_icon} ${_fp_licence_files}
+              --format=zip manifest.json icon.png server/${FP_MCP_EXE} server/${FP_SANDBOX_EXE} server/${FP_RENDER_EXE}
+              ${_fp_licences}
+      DEPENDS ${FP_MCP} ${FP_SANDBOX} ${FP_RENDER} ${_mcpb}/manifest.json ${_icon} ${_fp_licence_files}
       VERBATIM)
   add_custom_target(${FP_MCP}_mcpb ALL DEPENDS ${CMAKE_BINARY_DIR}/${PRODUCT_NAME}.mcpb)
 

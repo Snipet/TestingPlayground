@@ -158,4 +158,8 @@ for i in "${WANT[@]}"; do
   if [[ -f "$BUILD/$NAME.mcpb" ]]; then
     echo "Claude Desktop: open $BUILD/$NAME.mcpb to add $NAME's MCP server (once; its tools then reach any open instance)"
   fi
+  # The headless renderer comes with the extension (its server/ folder); the build's own copy runs as it is.
+  if [[ -x "$BUILD/${NAME}Render" ]]; then
+    echo "the headless renderer: $BUILD/${NAME}Render (README, \"The headless renderer\"; the extension carries it too)"
+  fi
 done

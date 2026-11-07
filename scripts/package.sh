@@ -7,6 +7,8 @@
 #   VST3            <Name>.vst3        ->  /Library/Audio/Plug-Ins/VST3
 #   App             <Name>.app         ->  /Applications                         (the Standalone)
 #   Claude Desktop  <Name>.mcpb        ->  /Library/Application Support/<Company>/<Name>/
+#                                          (the extension: the MCP server, the GUI sandbox's helper and the headless
+#                                          renderer, <Name>Render, in its server/ folder)
 #
 # The installer opens nothing: its last page says to double-click each extension in the Finder, and Claude Desktop then
 # offers to add it (an installer runs as root and must never open Claude Desktop).
@@ -131,15 +133,20 @@ sign_bundle() {   # sign_bundle <bundle> [entitlements]: its nested binaries (sh
   sign "$bundle" "${2:-}"
   codesign --verify --strict --deep "$bundle" || die "$bundle: the signature does not verify"
 }
-sign_mcpb() {   # sign_mcpb <file.mcpb>: its programs (the server and the GUI sandbox's helper beside it, server/*), each
-                #   signed as the bundles' binaries are, inside a copy of the archive, packed again as the build packs it
-                #   (with its licences/)
+sign_mcpb() {   # sign_mcpb <file.mcpb>: its programs (the server, the GUI sandbox's helper and the headless renderer
+                #   beside it, server/*), each signed as the bundles' binaries are (the renderer, which compiles programs
+                #   with FMinus's JIT, with scripts/entitlements/render.plist), inside a copy of the archive, packed again
+                #   as the build packs it (with its licences/)
   local mcpb="$1" dir f
   local files=()
   dir="$(mktemp -d "$STAGE/mcpb.XXXXXX")"
   ditto -x -k "$mcpb" "$dir"
   for f in "$dir"/server/*; do
-    sign "$f"
+    if [[ "$f" == *Render ]]; then
+      sign "$f" "$ROOT/scripts/entitlements/render.plist"
+    else
+      sign "$f"
+    fi
     files+=("server/$(basename "$f")")
   done
   for f in "$dir"/licences/*; do

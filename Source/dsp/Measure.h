@@ -457,7 +457,8 @@ namespace playground::measure
         std::string dials;                        // the dials rendered with, "cutoff 1200, resonance 0.3"
         std::vector<std::string> unknown;         // dials asked for by a name the program has not
         Patch::Method stopped = Patch::Method::none;  // a render stopped (Patch.h, "The loop budget", "Bounds
-                                                      // checks"): the report begins so
+                                                      // checks"): the report begins so,
+        std::string stopWords;                        // with these words (Session::stopWords)
         bool cancelled = false;                   // a render was cancelled (Session::setCancel): the report says how far
                                                   // it got, and nothing is measured (`values` empty)
         // The render hash of a whole report (`want` empty; a partial one, a check's or tune_dials', has none: Export.h:
@@ -482,6 +483,9 @@ namespace playground::measure
 
         bool compiled() const noexcept;
         const std::string& errors() const noexcept { return errors_; }   // the compiler's messages when it did not
+        // An init (an instance's or Shared's) that ran past its budget or failed a bounds check (Patch.h): the program
+        // did not compile, and errors() says why; none when it compiled or its text did not.
+        Patch::Method initStopped() const noexcept { return initStopped_; }
         const Controls& controls() const noexcept;
         double rate() const noexcept { return rate_; }
         // The program as its Engine plays it (its fields, between a render's calls: dsp/Debug.h); null when it did not
@@ -534,6 +538,7 @@ namespace playground::measure
         struct Impl;
         std::unique_ptr<Impl> impl_;
         std::string errors_;
+        Patch::Method initStopped_ = Patch::Method::none;
         double rate_;
     };
 
