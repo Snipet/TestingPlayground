@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -67,6 +68,39 @@ namespace probe
     std::string outPath(const std::string& name)
     {
         return (outDir() / name).string();
+    }
+
+    void skip(funkgui::test::Probe& P, std::string_view key, std::string_view why)
+    {
+        std::printf("SKIP       %.*s  %.*s\n", static_cast<int>(key.size()), key.data(), static_cast<int>(why.size()), why.data());
+        std::string note = "skip_";
+        for (const char c : key)
+            note += (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ? c : '_';
+        note.resize(std::min<std::size_t>(note.size(), 64));
+        P.note(note, funkgui::test::detail::jsonString(why));
+    }
+
+    std::string emulated()
+    {
+#if defined(__linux__)
+        std::ifstream in("/proc/cpuinfo");
+        std::string line;
+        while (std::getline(in, line))
+        {
+            if (line.find("VirtualApple") != std::string::npos)
+                return "an x86-64 build run by Rosetta on Apple silicon, whose timings are not a machine's";
+        }
+#endif
+        return {};
+    }
+
+    std::string noDisplay()
+    {
+#if defined(__linux__)
+        if (const char* d = std::getenv("DISPLAY"); d == nullptr || *d == '\0')
+            return "no X display ($DISPLAY unset): a JUCE window needs one (a desktop session, or Xvfb with a window manager)";
+#endif
+        return {};
     }
 }
 
