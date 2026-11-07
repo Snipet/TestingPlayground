@@ -596,19 +596,26 @@ place (its `products/<key>.cmake`, and its names in the docs).
   reads it through `EditorPort::folder` and `folderRevision`. Probes never launch an app: `openFolder` goes to
   `Processor::setFolderLauncher`'s hook, and the default refuses under a probe's sandbox.
 - **A dropdown is one trigger and FunkGui's menu** (`editor/Dropdown.h`): every control that opens a menu of choices
-  (Examples, Library, the project's pill, the zoom, the chat's model and thinking pills, the Settings card's selects,
-  a `.gui` file's `menu`) draws through `dropdown::drawTrigger`: a pill in one of three bases, the chevron at
-  `kChevronInset` from its right edge, hover, open (the accent's edge and tint, the chevron up) and the focus ring
-  `kRingGap` outside it; a new one does the same and is a combo box to a screen reader. Open is the Panel's
-  `menuOpenAt(anchor)`: HostProxy keeps the shown request's anchor until its answer, `dismissMenus` or the next request
-  (a serial each), so a trigger asks with the rect it anchors its menu to (`ButtonItem::setOpen`,
-  `SettingsCard::setMenuOpen`, `GuiView::Hooks::menuOpen`; none in the GUI sandbox), and its drawKey mixes it. The
-  rows are FunkGui's (0.25.0): a set of choices is `dropdown::choice` (radio, the current one checked) with
-  `dropdownMenu` (anchor, `minWidth` the trigger's, `selectedId` the current one); a long list's sections are
-  `header` rows, never disabled items; a command's key is `command`'s shortcut column, never part of its label (the
-  probes choose items by label). The menus are native windows in MenuLook's style, which keeps no search field, so a
-  label starts with what a user would type (the type-ahead). No canvas popover: a native menu may reach past a small
-  plugin window, scrolls, takes the keys and speaks to a screen reader on every platform. `gui.menus` checks.
+  (Examples, Library, the project's pill, the zoom, the chat's model and thinking pills, the Settings card's selects, a
+  `.gui` file's `menu`, the Schematic view's More and probe chip) draws through `dropdown::drawTrigger`: a pill in one
+  of three bases, the chevron at `kChevronInset` from its right edge, hover, open (the accent's edge and tint, the
+  chevron up) and the focus ring `kRingGap` outside it; a click, Return and Space open its menu, and so do a screen
+  reader's press and showMenu (a `.gui` menu through `GuiView::Hooks::menuHost`; the GUI sandbox has no host, so there
+  they step its value); a new one does the same and is a combo box to a screen reader. The schematic's two are neither
+  Tab stops nor screen-reader items, as nothing in its toolbar or probe card is (the Netlist view is its keyboard's way;
+  `A` opens More). A `.gui` menu is `kGuiMenuRoom` wider than its widest value (GuiLayout.h), so that value shows whole.
+  Open is the Panel's `menuOpenAt(anchor)`: HostProxy keeps the shown request's anchor until its answer, `dismissMenus`
+  or the next request (a serial each), so a trigger asks with the rect it anchors its menu to (`ButtonItem::setOpen`,
+  `SettingsCard::setMenuOpen`, `GuiView::Hooks::menuOpen`, `SchematicView::setMenuOpen` through `FilesItem`; none in the
+  GUI sandbox), and its drawKey mixes it. The rows are FunkGui's (0.25.0): a set of choices is `dropdown::choice`
+  (radio, the current one checked) with `dropdownMenu` (anchor, `minWidth` the trigger's, `selectedId` the current one);
+  a long list's sections are `header` rows, never disabled items; a command's key is `command`'s shortcut column, never
+  part of its label (the probes choose items by label). Every host shows every field of a request: FunkGui's
+  (HostServicesJuce, HeadlessHost) and `nogpu/SoftEditorHost`, which keeps HostServicesJuce's way (`validMenu`,
+  `MenuLook::popupMenuFor`, its Options); the probes run on HeadlessHost only, so a change to one is made to the other
+  by hand. The menus are native windows in MenuLook's style, which keeps no search field, so a label starts with what a
+  user would type (the type-ahead). No canvas popover: a native menu may reach past a small plugin window, scrolls,
+  takes the keys and speaks to a screen reader on every platform. `gui.menus` checks.
 - **`fminus/Lang.h` is the language, as an editor sees it**: plain C++ over the files' text, no FMinus call. Its
   tables (keywords, type words, the builtins with their signatures, the attributes, `#pragma panel`'s words) follow
   FMinus at its pin and PanelSpec: a pin move that adds a keyword or a builtin adds it there, with `fminus.lang` rows.
