@@ -352,8 +352,8 @@ namespace playground::ui
         const std::string facts = "v" + std::to_string(latest_) + "   " + std::to_string(versions_) + (versions_ == 1 ? " version   " : " versions   ")
                                 + std::to_string(presets_) + (presets_ == 1 ? " preset" : " presets");
         c.text(facts.c_str(), box.right() - kPad, c.capCentreTop(box.y + 37.0f, chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
-        c.text(fitText(c, "What it is goes with it: a description, tags and genres. Done keeps them with the project.", chat::kSmall,
-                       box.w - 2.0f * kPad).c_str(),
+        c.text(fitText(c, std::string("What it is goes with it; its chats with Claude never do (they stay on ") + kThisMachine + ").",
+                       chat::kSmall, box.w - 2.0f * kPad).c_str(),
                x, c.capCentreTop(box.y + 62.0f, chat::kSmall), chat::kSmall, p.soft);
 
         const auto caption = [&](const funkgui::Rect& r, const char* text) {
@@ -472,6 +472,7 @@ namespace playground::ui
         box.bounds = at.box;
         box.title = "Export " + project_;
         box.description = why_;
+        box.help = std::string("A description, tags and genres go with it; its chats with Claude never do: they stay on ") + kThisMachine;
         out.push_back(box);
         const auto text = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
             funkgui::A11yItem it;

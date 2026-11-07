@@ -475,7 +475,9 @@ namespace playground::ui
         funkgui::Point centreOfExplorerEdge() const;
         funkgui::Point centreOfChatEdge() const;
         // The key dialog.
-        bool keyDialogOpen() const noexcept { return keyOpen_; }
+        bool keyDialogOpen() const noexcept { return keyOpen_ && !renaming_; }
+        bool renameDialogOpen() const noexcept { return keyOpen_ && renaming_; }
+        funkgui::Point centreOfChats() const;            // the chats' pill (the chat shown: its menu)
         const std::string& keyDialogWhy() const noexcept { return keyWhy_; }
         funkgui::Point centreOfKeyField() const;
         funkgui::Point centreOfKeySave() const;
@@ -594,6 +596,13 @@ namespace playground::ui
         void openModels();
         void openThinking();
         void newChat();
+        // The chats (ChatPort::chatList): the pill's label (the chat shown's name), its menu, Delete's question, and the
+        // rename, in the key dialog's box (renaming_).
+        std::string chatsLabel() const;
+        void openChats();
+        void askDeleteChat();
+        void openRenameDialog();
+        void renameFromDialog();
         void layoutChat();                               // the chat card's insides
         void placeChatBar();                             // the message box's bar: the pills, send
         std::string modelLabel() const;
@@ -643,6 +652,8 @@ namespace playground::ui
         std::string statusShown() const;                 // the status as the card's header shows it (sentence case)
         float statusX() const;                           // where it starts (it ends before the actions, actionsX_)
         int newChatItem_ = -1, keyItem_ = -1, chatViewItem_ = -1, inputItem_ = -1;
+        int chatsItem_ = -1;                             // the chats' pill (the chat shown, its menu)
+        std::string chatsLabel_;                         // its label when layoutChat placed it
         int chatToggleItem_ = -1;                        // fold or open the chat
         bool chatOpen_ = true;
         // The explorer (Explorer.h): its item, its fold button, its card; the projects and the open one's presets it
@@ -788,6 +799,7 @@ namespace playground::ui
 
         // The key dialog.
         bool keyOpen_ = false;
+        bool renaming_ = false;                          // the dialog renames the chat shown (keyOpen_ too)
         funkgui::text::LineEdit keyEdit_;
         std::string keyWhy_;                             // why the key typed was refused
         int focusBeforeKey_ = -1;
