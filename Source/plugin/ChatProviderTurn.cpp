@@ -7,6 +7,7 @@
 #include "plugin/Providers.h"
 
 #include <algorithm>
+#include <cctype>
 
 namespace playground
 {
@@ -57,6 +58,19 @@ namespace playground
         }
 
         std::string originOf(const ChatProvider& p) { return providers::originOf(providers::baseOf(p)); }
+
+        // A thinking level as the Thinking menu names it ("none" Off, "xhigh" Extra high, else its word capitalised).
+        std::string levelName(const std::string& e)
+        {
+            if (e == "none")
+                return "Off";
+            if (e == "xhigh")
+                return "Extra high";
+            std::string n = e;
+            if (!n.empty())
+                n[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(n[0])));
+            return n;
+        }
 
         bool sameServer(const ChatProvider& a, const ChatProvider& b) { return a.kind == b.kind && a.base == b.base; }
     }
@@ -134,7 +148,7 @@ namespace playground
             {
                 otherChosen_[mk] = otherModel_;
                 if (otherModel(otherModel_) == nullptr)
-                    otherModels_.insert(otherModels_.begin(), providers::plainModel(otherModel_));
+                    otherModels_.insert(otherModels_.begin(), otherPlain(otherModel_));
             }
             saveProviderChoice();
             if (!key.empty())
@@ -147,8 +161,12 @@ namespace playground
                              + (!otherModel_.empty()           ? ", to " + otherModel_
                                 : providers::picksFirst(p)     ? std::string(", to the first model it lists")
                                                                : std::string(", to the model you choose in the model menu"))
-                             + ". Anthropic's own options (the thinking levels, fast mode, web search, the planner) are off "
-                               "with it.");
+                             + (providers::reasoningOf(p) != providers::Reasoning::none
+                                    ? ". The thinking level carries over where its model takes one (each model's own levels, "
+                                      "in the Thinking menu); fast mode, web search and the planner stay Anthropic's, off with "
+                                      "it."
+                                    : ". Anthropic's own options (the thinking levels, fast mode, web search, the planner) are "
+                                      "off with it."));
             else if (otherModel_ != before)
                 addEntry(ChatEntry::Kind::note, "The chat uses " + otherModel_ + " on " + name + " now.");
             touch();
@@ -208,14 +226,17 @@ namespace playground
         s.keyless = providers::keyless(provider_);
         s.keyProblem = otherKeyProblem_;
         // The model chosen; with none, the list's first where a turn takes it (picksFirst), else none (the user chooses).
-        s.model = otherModel_.empty() && !otherModels_.empty() && providers::picksFirst(provider_) ? otherModels_.front().id
-                                                                                                    : otherModel_;
+        s.model = otherModelNow();
         s.models.clear();
         for (const ChatModel& m : otherModels_)
             if (s.models.size() < kListed || m.id == s.model)
                 s.models.push_back(m);
         s.provider.model = s.model;
-        s.effort.clear();                          // none of Anthropic's options: no pills for them
+        // The thinking level: the one chosen for this model, else the level it uses by default (shown, never sent), on
+        // a model that takes levels; none of Anthropic's other options: no pills for them.
+        const ChatModel* m = otherModel(s.model);
+        const std::string chosen = otherEffort(provider_, s.model);
+        s.effort = m == nullptr || m->efforts.empty() ? std::string() : !chosen.empty() ? chosen : m->defaultEffort;
         s.planner.clear();
         s.fast = false;
         s.web = false;
@@ -223,13 +244,46 @@ namespace playground
 
     void ChatAgent::saveProviderChoice() const
     {
-        chatstore::saveProvider({ provider_.kind, provider_.base, otherChosen_ });
+        chatstore::saveProvider({ provider_.kind, provider_.base, otherChosen_, otherEfforts_ });
     }
 
     const ChatModel* ChatAgent::otherModel(const std::string& id) const
     {
         const auto it = std::find_if(otherModels_.begin(), otherModels_.end(), [&](const ChatModel& m) { return m.id == id; });
         return it != otherModels_.end() ? &*it : nullptr;
+    }
+
+    std::string ChatAgent::otherModelNow() const
+    {
+        return otherModel_.empty() && !otherModels_.empty() && providers::picksFirst(provider_) ? otherModels_.front().id
+                                                                                                : otherModel_;
+    }
+
+    ChatModel ChatAgent::otherPlain(const std::string& id) const
+    {
+        ChatModel m = providers::plainModel(provider_, id);
+        if (effortRefused_.count(effortKey(provider_, id)) > 0)
+        {
+            m.efforts.clear();
+            m.defaultEffort.clear();
+        }
+        return m;
+    }
+
+    std::pair<std::string, std::string> ChatAgent::effortKey(const ChatProvider& p, const std::string& model)
+    {
+        return { chatstore::modelKey(p.kind, p.base), model };
+    }
+
+    // The level chosen for `model` of `p`'s, while it is one the model takes now ("" for none: its own default).
+    std::string ChatAgent::otherEffort(const ChatProvider& p, const std::string& model) const
+    {
+        const auto it = otherEfforts_.find(effortKey(p, model));
+        if (it == otherEfforts_.end())
+            return {};
+        const ChatModel* m = sameServer(provider_, p) ? otherModel(model) : nullptr;
+        return m != nullptr && std::find(m->efforts.begin(), m->efforts.end(), it->second) != m->efforts.end() ? it->second
+                                                                                                                : std::string();
     }
 
     bool ChatAgent::otherTurn() const
@@ -328,9 +382,16 @@ namespace playground
         std::vector<ChatModel> found = providers::modelsOf(p, r.body);
         if (found.empty())
             return;
+        // A model that refused a thinking level this session keeps none, whatever its list says.
+        for (ChatModel& m : found)
+            if (effortRefused_.count(effortKey(p, m.id)) > 0)
+            {
+                m.efforts.clear();
+                m.defaultEffort.clear();
+            }
         otherModels_ = std::move(found);
         if (!otherModel_.empty() && otherModel(otherModel_) == nullptr)
-            otherModels_.insert(otherModels_.begin(), providers::plainModel(otherModel_));   // one typed the list lacks
+            otherModels_.insert(otherModels_.begin(), otherPlain(otherModel_));   // one typed the list lacks
         touch();
     }
 
@@ -378,12 +439,13 @@ namespace playground
                 }
                 if (!otherModel_.empty())
                 {
-                    // The model for the whole turn, from this same moment: none of Anthropic's options, its pictures if
-                    // it takes them, the prompt's short form for a small context (or one a server on this Mac or the
+                    // The model for the whole turn, from this same moment: its thinking level when one was chosen for it
+                    // (none chosen, none sent: the model's own default), none of Anthropic's other options, its pictures
+                    // if it takes them, the prompt's short form for a small context (or one a server on this Mac or the
                     // local network does not say).
                     turnModel_ = otherModel_;
                     turnProvider_.model = turnModel_;
-                    turnEffort_.clear();
+                    turnEffort_ = otherEffort(turnProvider_, turnModel_);
                     turnFast_ = false;
                     turnWeb_ = false;
                     const ChatModel* m = otherModel(turnModel_);
@@ -433,6 +495,7 @@ namespace playground
                 p = turnProvider_;
                 options.images = turnImages_;
                 options.jsonSchema = turnJsonSchema_;
+                options.effort = turnEffort_;
                 pictures = pictureBytes(messages_);
                 turnHadPictures_ = pictures > 0;
                 if (!turnImages_ && turnHadPictures_ && !picturesNoted_)
@@ -538,6 +601,29 @@ namespace playground
     bool ChatAgent::workAround(int status, const std::string& error)
     {
         const std::lock_guard<std::mutex> lock(mutex_);
+        if (!turnEffort_.empty() && providers::aboutEffort(turnProvider_, status, error))
+        {
+            // A thinking level the model refuses: asked again at once without one, and no levels for that model for the
+            // rest of the session (its pills gone), the choice kept for it forgotten; never a failed turn.
+            const std::string level = levelName(turnEffort_);
+            turnEffort_.clear();
+            const auto key = effortKey(turnProvider_, turnModel_);
+            effortRefused_.insert(key);
+            if (otherEfforts_.erase(key) > 0)
+                saveProviderChoice();
+            if (sameServer(provider_, turnProvider_))
+                for (ChatModel& m : otherModels_)
+                    if (m.id == turnModel_)
+                    {
+                        m.efforts.clear();
+                        m.defaultEffort.clear();
+                    }
+            addEntry(ChatEntry::Kind::note, "The model (" + turnModel_ + ") refused the thinking level " + level
+                                                + ": asked again without one (its own default), and the Thinking menu is off "
+                                                  "for it until the plugin is opened again.");
+            touch();
+            return true;
+        }
         if (turnImages_ && turnHadPictures_ && !providers::aboutModel(status, error) && providers::aboutImages(status, error))
         {
             turnImages_ = false;
@@ -554,7 +640,7 @@ namespace playground
                     }
                 if (!listed)
                 {
-                    ChatModel m = providers::plainModel(turnModel_);
+                    ChatModel m = otherPlain(turnModel_);
                     m.images = false;
                     otherModels_.push_back(std::move(m));
                 }
