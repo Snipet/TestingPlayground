@@ -1181,10 +1181,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
     flash minimal to high) or `thinkingBudget` on 2.5 (1024, 8192, 24576; 0 for Off on flash and flash-lite only),
     never both, `includeThoughts` unless Off; its list's `"thinking": false` takes the levels away. Any other server:
     none. Kept per provider and model in chat.json's `"efforts"` (`ChatAgent::otherEfforts_`,
-    `chatstore::ProviderChoice::efforts`). A 400 that refuses the level (`aboutEffort`) is `workAround`'s first case:
-    asked again at once without it, the model's levels gone for the agent's life (`effortRefused_`, applied to every
-    list read after) and its kept level forgotten, a note; never a failed turn. The provider's note says the level
-    carries over where the model takes one. What the docs say and no probe could check live is in the README.
+    `chatstore::ProviderChoice::efforts`). A 400 that refuses the level (`aboutEffort`: the parameter named,
+    OpenAI's words for one the model does not take, or Anthropic's through OpenRouter for thinking on with no
+    thinking block in the history, a tool call's next request, as the reasoning is never kept; OpenRouter's
+    "Provider returned error" read with the provider's own words from its `metadata.raw`, `errorOf`) is
+    `workAround`'s first case: asked again at once without it, the model's levels gone for the agent's life
+    (`effortRefused_`, applied to every list read after) and its kept level forgotten, a note; never a failed turn.
+    The provider's note says the Thinking menu stays where the model takes a level (its own levels, its default
+    until one is chosen: no level of Anthropic's carried over). What the docs say and no probe could check live is
+    in the README.
   - **Degrading**: a 400 that says the model takes no pictures (`aboutImages`, while the request holds one) makes the
     request again with a line of text in each picture's place and marks the model so (`workAround`, a note); a model
     its list already marks so gets the same lines, said once a chat (`picturesNoted_`); a 4xx that says the model
