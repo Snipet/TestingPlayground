@@ -1,0 +1,138 @@
+# Builds both products and runs every test on macOS (Apple silicon), Windows (x64, clang-cl) and Linux (x86-64, in an
+# Arch Linux container), on every pull request, every push to main, and by hand.
+#
+# FMinus's LLVM, Bison and Flex come prebuilt: the archive for this platform from FMinus's release
+# deps-llvm-<FP_FMINUS_LLVM> (FMinus's .github/workflows/deps.yml makes them), checked against its SHA-256 and unpacked
+# as FMinus's deps cache (FP_FMINUS_DEPS_DIR). Everything else is fetched at its pin (cmake/Deps.cmake), as on a
+# machine with no ~/audio: JUCE, bgfx (whose shader compiler is built here), FunkGui and FMinus's sources.
+#
+# The probes' timeouts are tripled (FP_PROBE_TIMEOUT_SCALE=3): hosted runners are slower and noisier than a desk. On
+# Linux the build and the tests run as a user, not root (some probes check what a user cannot read), and the GUI probes
+# on a headless desktop (Xvfb and openbox) with Mesa's software Vulkan. A failed run keeps its test log and the probes'
+# pictures as an artifact for 7 days.
+#
+# Each action is pinned to its release's full commit SHA, with the tag in a comment: a tag can be moved, a SHA cannot.
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# nothing by default; each job asks for what it needs
+permissions: {}
+
+# a newer push to a pull request replaces its run in flight; main's runs all finish
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 300
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos-arm64, os: macos-latest, preset: dev, jobs: 3 }
+          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4 }
+          - { platform: linux-x64, os: ubuntu-latest, preset: linux-dev, jobs: 4, container: "archlinux:base-devel" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Packages and a user (Arch Linux)
+        if: runner.os == 'Linux'
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git clang lld cmake ninja python pkgconf which \
+            alsa-lib jack2 ladspa curl \
+            freetype2 fontconfig ttf-dejavu \
+            libx11 libxext libxrandr libxinerama libxcursor libxrender libxcomposite libxkbcommon \
+            libglvnd mesa glu glib2 sqlite libsecret \
+            vulkan-icd-loader vulkan-headers vulkan-swrast \
+            xorg-server-xvfb xorg-xauth openbox
+          useradd -m -s /bin/bash ci
+          git config --system --add safe.directory '*'
+          echo "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json" >> "$GITHUB_ENV"
+
+      - name: Visual Studio's environment and its clang-cl (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $clang = 'Microsoft.VisualStudio.Component.VC.Llvm.Clang'
+          $vs = & $vswhere -latest -products * -requires $clang -property installationPath
+          if (-not $vs) { throw "no Visual Studio with its C++ Clang tools" }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          "$vs\VC\Tools\Llvm\x64\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8   # its clang-cl first
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: FMinus's LLVM, Bison and Flex (prebuilt)
+        run: |
+          llvm=$(sed -nE 's/^set\(FP_FMINUS_LLVM +([0-9.]+)\).*/\1/p' cmake/Deps.cmake)
+          [ -n "$llvm" ] || { echo "no FP_FMINUS_LLVM in cmake/Deps.cmake"; exit 1; }
+          name="fminus-deps-llvm-${llvm}-${{ matrix.platform }}.tar.gz"
+          url="https://github.com/Snipet/FMinus/releases/download/deps-llvm-${llvm}/${name}"
+          cd "$RUNNER_TEMP"   # relative names below: Git Bash's tar takes D:\... for a remote host
+          curl -fsSL --retry 3 -o "$name" "$url"
+          curl -fsSL --retry 3 -o "$name.sha256" "$url.sha256"
+          if command -v sha256sum >/dev/null; then sha256sum -c "$name.sha256"; else shasum -a 256 -c "$name.sha256"; fi
+          mkdir -p fminus-deps/install
+          tar -xzf "$name" -C fminus-deps/install
+          ls fminus-deps/install
+          dir="$RUNNER_TEMP/fminus-deps"
+          if [ "$RUNNER_OS" = Windows ]; then dir=$(cygpath -m "$dir"); fi
+          if [ "$RUNNER_OS" = Linux ]; then chown -R ci "$dir" "$GITHUB_WORKSPACE"; fi
+          echo "FP_FMINUS_DEPS_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          cmd=(cmake --preset ${{ matrix.preset }}
+               -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR" -DFP_PROBE_TIMEOUT_SCALE=3)
+          if [ "$RUNNER_OS" = Linux ]; then runuser -u ci -- "${cmd[@]}"; else "${cmd[@]}"; fi
+
+      - name: Build
+        run: |
+          cmd=(cmake --build --preset ${{ matrix.preset }} --parallel ${{ matrix.jobs }})
+          if [ "$RUNNER_OS" = Linux ]; then runuser -u ci -- "${cmd[@]}"; else "${cmd[@]}"; fi
+
+      - name: Test
+        run: |
+          cmd=(ctest --preset ${{ matrix.preset }} --parallel ${{ matrix.jobs }})
+          if [ "$RUNNER_OS" = Linux ]; then
+            # a headless desktop: Xvfb and openbox, stopped when the tests end
+            Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 & xvfb=$!
+            for i in $(seq 100); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.1; done
+            export DISPLAY=:99
+            runuser -u ci -- openbox > "$RUNNER_TEMP/openbox.log" 2>&1 & wm=$!
+            sleep 1
+            rc=0; runuser -u ci -- "${cmd[@]}" || rc=$?
+            kill "$wm" "$xvfb" 2>/dev/null || true
+            exit $rc
+          fi
+          "${cmd[@]}"
+
+      - name: Keep the test log and the probes' pictures
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tests-${{ matrix.platform }}
+          path: |
+            build-${{ matrix.preset }}/Testing/Temporary/LastTest*.log
+            build-${{ matrix.preset }}/probe-out/
+          retention-days: 7
+          if-no-files-found: ignore
