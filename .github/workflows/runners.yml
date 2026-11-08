@@ -1,0 +1,61 @@
+# What GitHub's hosted runners offer for this project's builds: cores, memory, disk, the compilers and tools, and a
+# GPU where there is one. Run by hand (Actions -> Runners -> Run workflow), and on a pull request that changes this file.
+name: Runners
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/runners.yml
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    steps:
+      - name: Machine
+        shell: bash
+        run: |
+          echo "runner: $RUNNER_OS $RUNNER_ARCH, image ${ImageOS:-?} ${ImageVersion:-?}"
+          case "$RUNNER_OS" in
+            macOS)
+              sw_vers
+              echo "cores: $(sysctl -n hw.ncpu), memory: $(( $(sysctl -n hw.memsize) / 1073741824 )) GiB"
+              df -h / | tail -1
+              system_profiler SPDisplaysDataType 2>/dev/null | grep -E "Chipset|Metal|Vendor" || echo "no display information"
+              ;;
+            Linux)
+              grep PRETTY_NAME /etc/os-release
+              echo "cores: $(nproc), memory: $(free -g | awk '/Mem:/{print $2}') GiB"
+              grep -m1 -o -w -E 'avx2|fma' /proc/cpuinfo | sort -u | tr '\n' ' '; echo
+              df -h / | tail -1
+              docker --version || echo "no docker"
+              ;;
+            Windows)
+              echo "cores: $NUMBER_OF_PROCESSORS"
+              powershell -NoProfile -Command "'memory: ' + [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB) + ' GiB'; Get-PSDrive C | Select-Object Used,Free | Format-List"
+              ;;
+          esac
+      - name: Tools
+        shell: bash
+        run: |
+          for t in cmake ninja git python3 clang clang-cl ccache sccache; do
+            if command -v "$t" >/dev/null 2>&1; then echo "$t: $("$t" --version 2>&1 | head -1)"; else echo "$t: not on PATH"; fi
+          done
+          case "$RUNNER_OS" in
+            macOS) xcodebuild -version | head -1; xcode-select -p ;;
+            Windows)
+              vswhere="/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe"
+              "$vswhere" -latest -property displayName; "$vswhere" -latest -property installationVersion
+              "$vswhere" -latest -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath \
+                || echo "no VS Clang component"
+              ;;
+          esac
