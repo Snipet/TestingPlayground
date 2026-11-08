@@ -7,6 +7,7 @@
 //   gui.providers.menu.png        the Provider pill's menu: the providers, Anthropic dotted
 //   gui.providers.openrouter.png  OpenRouter's: its server's address, the key pasted (masked), a model typed
 //   gui.providers.bar.png         the chat on OpenRouter: the model's pill named by its list, no thinking pill
+//   gui.providers.effort.png      the chat on OpenRouter with a model that reasons: its Thinking pill, High chosen
 //   gui.providers.chat.png        a turn on OpenRouter: its reasoning, its answer
 //   gui.providers.ollama.png      Ollama's on this Mac: no key needed
 //   gui.providers.gemini.png      Google Gemini's: a key and a model, no address
@@ -22,6 +23,10 @@
 //              alone, the dialog closed
 //   BAR        the model pill names the model as its list does; the thinking pill is gone; the model's menu is
 //              BUILD WITH (OpenRouter) and has no PLAN WITH
+//   EFFORT     a model OpenRouter's list says reasons: the Thinking pill back (a combo box to a screen reader), its
+//              default shown; its menu the model's levels in order (Off, Minimal, Low, Medium (the default), High,
+//              Extra high), a radio set, the default dotted; High chosen: the pill says it, the chat keeps it; the model
+//              without levels again: the pill gone
 //   TURN       a message goes to openrouter.ai, its answer shown
 //   LOCAL      Ollama: no key asked for (its field says none is needed), saved without one, the chat ready
 //   GEMINI     Gemini: its key and model alone; saved with a key
@@ -52,6 +57,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pg = playground;
 
@@ -141,7 +147,9 @@ PROBE(gui, providers)
     auto script = std::make_shared<fake::Script>();
     script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } } });
     script->gets["/api/v1/models"] = { 200, fake::openAiModels({ { "anthropic/claude-probe", "Claude via OpenRouter", 1762000000, 200000 },
-                                                                 { "meta/llama-probe", "Llama via OpenRouter", 1761000000, 131072, true, false } },
+                                                                 { "meta/llama-probe", "Llama via OpenRouter", 1761000000, 131072, true, false },
+                                                                 { "openai/gpt-probe-5", "GPT-5 via OpenRouter", 1760000000, 400000, true, true,
+                                                                   { "xhigh", "high", "medium", "low", "minimal", "none" }, "medium" } },
                                                                true) };
     script->gets["/v1/models"] = { 200, fake::openAiModels({ { "qwen-probe:32b", "", 1762400000 } }) };
     script->gets["/v1beta/models?pageSize=1000"] = { 200, fake::geminiModels({ { "gemini-3-pro-preview", "Gemini 3 Pro Preview", 0, 1048576 } }) };
@@ -248,6 +256,47 @@ PROBE(gui, providers)
         P.eq("bar.menu", menu != nullptr && build && !plan && named ? 1 : 0, 1);
         host.cancelMenu();
         host.settle();
+    }
+
+    // ---- EFFORT ------------------------------------------------------------------------------------------------------------
+    {
+        clickAt(host, panel.centreOfModel());
+        host.settle();
+        P.eq("effort.model_chosen", host.pendingMenu() != nullptr && host.chooseMenuItem("GPT-5 via OpenRouter") ? 1 : 0, 1);
+        settleChat(processor, host);
+        const auto pill = a11yTitled(host, "Thinking level");
+        P.eq("effort.pill_shown", pill && pill->role == funkgui::A11yRole::comboBox && pill->value == "Thinking: Medium" ? 1 : 0, 1);
+        clickAt(host, panel.centreOfThinking());
+        host.settle();
+        const funkgui::MenuRequest* menu = host.pendingMenu();
+        std::vector<std::string> labels;
+        int radios = 0;
+        std::string dotted;
+        if (menu != nullptr)
+            for (const funkgui::MenuItem& item : menu->items)
+            {
+                labels.push_back(item.label);
+                radios += item.radio ? 1 : 0;
+                if (item.checked)
+                    dotted += item.label;
+            }
+        std::string said;
+        for (const std::string& l : labels)
+            said += l + "; ";
+        std::printf("thinking menu: %s\n", said.c_str());
+        P.eq("effort.menu_rows", labels == std::vector<std::string>{ "Off", "Minimal", "Low", "Medium (the default)", "High", "Extra high" }
+                                     && radios == 6 ? 1 : 0, 1);
+        P.eq("effort.menu_default_dotted", dotted == "Medium (the default)" ? 1 : 0, 1);
+        P.eq("effort.choose", host.chooseMenuItem("High") ? 1 : 0, 1);
+        settleChat(processor, host);
+        const auto chosen = a11yTitled(host, "Thinking level");
+        P.eq("effort.chosen", chosen && chosen->value == "Thinking: High" && chat(processor).effort == "high" ? 1 : 0, 1);
+        writePng(P, host, "gui.providers.effort.png");
+        clickAt(host, panel.centreOfModel());
+        host.settle();
+        P.eq("effort.model_back", host.pendingMenu() != nullptr && host.chooseMenuItem("Claude via OpenRouter") ? 1 : 0, 1);
+        settleChat(processor, host);
+        P.eq("effort.pill_gone_again", a11yTitled(host, "Thinking level") ? 1 : 0, 0);
     }
 
     // ---- TURN --------------------------------------------------------------------------------------------------------------

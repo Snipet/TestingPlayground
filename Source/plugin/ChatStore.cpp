@@ -824,6 +824,16 @@ namespace playground::chatstore
                 for (const juce::var& m : *list)
                     if (const juce::String k = m.getProperty("for", "").toString(); k.isNotEmpty())
                         c.models[k.toStdString()] = m.getProperty("model", "").toString().toStdString();
+            // [{ "for": modelKey, "model": id, "effort": level }]
+            const juce::var efforts = o->getProperty("efforts");
+            if (const juce::Array<juce::var>* list = efforts.getArray())
+                for (const juce::var& e : *list)
+                {
+                    const juce::String k = e.getProperty("for", "").toString(), model = e.getProperty("model", "").toString(),
+                                       level = e.getProperty("effort", "").toString();
+                    if (k.isNotEmpty() && model.isNotEmpty() && level.isNotEmpty())
+                        c.efforts[{ k.toStdString(), model.toStdString() }] = level.toStdString();
+                }
         }
         return c;
     }
@@ -842,6 +852,16 @@ namespace playground::chatstore
                 models.add(juce::var(entry));
             }
             o.setProperty("models", models);
+            juce::Array<juce::var> efforts;
+            for (const auto& [km, level] : choice.efforts)
+            {
+                auto* entry = new juce::DynamicObject();
+                entry->setProperty("for", juce::String(km.first));
+                entry->setProperty("model", juce::String(km.second));
+                entry->setProperty("effort", juce::String(level));
+                efforts.add(juce::var(entry));
+            }
+            o.setProperty("efforts", efforts);
         });
     }
 

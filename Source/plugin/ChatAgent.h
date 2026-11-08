@@ -121,7 +121,11 @@
 // the same history: the request is the
 // Messages API's translated, the answer translated back, so the tools, the checks and their nudges, the retries, a
 // reply cut off and ask_user work alike. What only Anthropic has is off for it (thinking kept, caching, compaction,
-// fallbacks, fast mode, web search, the planner and the thinking levels: their pills are hidden); its own reasoning
+// fallbacks, fast mode, web search and the planner: their pills are hidden). The thinking level is its model's own where
+// the model takes one (OpenRouter's, OpenAI's and Gemini's: Providers.h, Reasoning), chosen in the same menu and kept
+// for each of its models (chat.json "efforts"); none chosen, none is sent (the model's own default, shown as the level
+// when its server says it). A model that refuses the level sent is asked again at once without it, and has no levels
+// for the rest of the session (effortRefused_), with a note. Its own reasoning
 // shows and is never kept; a model that takes no pictures (its list says so, or it refuses one) gets them as lines of
 // text, with a note; a model the server says cannot serve this chat leaves the menu; a small context window gets the
 // prompt's short form (shortPrompt); a server that cut the conversation to fit its context is noted once (its
@@ -168,6 +172,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace playground::projectstore
@@ -517,9 +522,9 @@ namespace playground
         // `p` is the provider chosen and no key was saved or removed meanwhile (keyGeneration_); whether one is kept for
         // `p` (no prompt: chatState's, before it takes the lock); its models fetched (the worker's, `cancel_` ending it,
         // or the job thread's, `listCancel_`: once a provider; a failure kept in otherListError_), whether this turn is
-        // another provider's, and a request refused for a reason the turn can work around (a model that takes no
-        // pictures, Gemini refusing the tools' JSON Schema): the request made again without it, said in the chat; true
-        // when the turn should ask again.
+        // another provider's, and a request refused for a reason the turn can work around (a thinking level the model
+        // does not take, a model that takes no pictures, Gemini refusing the tools' JSON Schema): the request made again
+        // without it, said in the chat; true when the turn should ask again.
         std::string otherKeyOf(const ChatProvider& p);
         bool keyKept(const ChatProvider& p) const;
         void fetchOtherModels(const std::atomic<bool>& cancel);
@@ -532,10 +537,16 @@ namespace playground
         enum class Start : uint8_t { anthropic, other, ended };
         Start startTurn(int& maxTokens);
         // The provider's state in chatState (mutex held; `kept`: keyKept's, asked before), the settings kept
-        // (chat.json), a model's entry of the list.
+        // (chat.json), a model's entry of the list; the model in effect (the one chosen, else the list's first where a
+        // turn takes it: picksFirst); a model no list described, as the provider's (its levels by its name, none after
+        // a refusal); the thinking level chosen for the provider's model ("" for none), and its key in otherEfforts_.
         void otherState(ChatState& s, bool kept) const;
         void saveProviderChoice() const;
         const ChatModel* otherModel(const std::string& id) const;
+        std::string otherModelNow() const;
+        ChatModel otherPlain(const std::string& id) const;
+        std::string otherEffort(const ChatProvider& p, const std::string& model) const;
+        static std::pair<std::string, std::string> effortKey(const ChatProvider& p, const std::string& model);
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
@@ -665,6 +676,10 @@ namespace playground
         std::string otherModel_;
         std::string otherKey_, otherKeyFor_, otherKeyProblem_;     // the key, the server it was read for
         std::map<std::string, std::string> otherChosen_;
+        // The thinking level chosen for each provider's model ((modelKey, model) -> level; chat.json "efforts"), and the
+        // models that refused one this session: no levels for them until the agent starts again.
+        std::map<std::pair<std::string, std::string>, std::string> otherEfforts_;
+        std::set<std::pair<std::string, std::string>> effortRefused_;
         bool otherFetched_ = false;
         std::string otherListError_;                                // why its list was not read, in words ("" when it was)
         std::atomic<bool> listCancel_{ false };                     // the job's list fetch: set by stop() and the end

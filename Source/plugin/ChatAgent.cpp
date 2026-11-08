@@ -1165,9 +1165,11 @@ namespace playground
         fast_ = choice.fast;
         web_ = choice.web;
         planner_ = choice.planner;
-        // The provider chosen last (none: Anthropic, as before), and the model chosen with each other one.
+        // The provider chosen last (none: Anthropic, as before), and the model and thinking levels chosen with each other
+        // one.
         const chatstore::ProviderChoice provider = chatstore::loadProvider();
         otherChosen_ = provider.models;
+        otherEfforts_ = provider.efforts;
         if (const providers::Kind k = providers::kindOf(provider.kind); k != providers::Kind::anthropic)
         {
             ChatProvider p;
@@ -1178,7 +1180,7 @@ namespace playground
                 provider_ = p;
                 otherModel_ = otherChosen_[chatstore::modelKey(p.kind, p.base)];
                 if (!otherModel_.empty())
-                    otherModels_.push_back(providers::plainModel(otherModel_));
+                    otherModels_.push_back(providers::plainModel(p, otherModel_));
             }
         }
         chatstore::forgetOldSignIn();              // what an earlier version kept of a sign-in (ChatStore.h)
@@ -1390,7 +1392,21 @@ namespace playground
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         if (provider_.kind != "anthropic")
-            return;                                // Anthropic's alone: another provider's models show no levels
+        {
+            // Another provider's: a level its model in effect takes, kept for that model ("": none, its own default).
+            const std::string model = otherModelNow();
+            const ChatModel* m = otherModel(model);
+            if (m == nullptr || m->efforts.empty()
+                || (!effort.empty() && std::find(m->efforts.begin(), m->efforts.end(), effort) == m->efforts.end()))
+                return;
+            if (effort.empty())
+                otherEfforts_.erase(effortKey(provider_, model));
+            else
+                otherEfforts_[effortKey(provider_, model)] = effort;
+            saveProviderChoice();
+            touch();
+            return;
+        }
         const auto it = std::find_if(models_.begin(), models_.end(), [&](const ChatModel& m) { return m.id == model_; });
         if (it != models_.end() && std::find(it->efforts.begin(), it->efforts.end(), effort) == it->efforts.end())
             return;                                // a level this model does not take

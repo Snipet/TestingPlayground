@@ -8,7 +8,9 @@
 //
 // What another provider does not have is left out, never broken: thinking blocks (bound to Anthropic's models and the
 // prompt; a model's own reasoning is shown, never kept), prompt caching's marks (OpenAI and Gemini cache on their own),
-// compaction, fallbacks, fast mode, web search and its blocks (their text stays), and the planner. A model that takes no
+// compaction, fallbacks, fast mode, web search and its blocks (their text stays), and the planner. The thinking level
+// is the provider's own where its model takes one (Reasoning, below: OpenRouter's, OpenAI's and Gemini's), sent only
+// when the user chose one. A model that takes no
 // pictures gets a line of text for each. Tool calls keep their ids in the history as this file makes them (call_ and 24
 // hex digits: unique, and in the Messages API's alphabet), so a chat can go on with another provider; a Gemini call's
 // thought signature rides on its tool_use block as "thought_signature", which forAnthropic takes off again.
@@ -19,12 +21,16 @@
 //                      first message, the tools as {type: function, function: {name, description, parameters}}, a
 //                      tool's result as a {role: tool, tool_call_id} message (its pictures in a user message after),
 //                      pictures as image_url data URLs; Authorization: Bearer <key> when there is a key.
-//                      GET <base>/models lists the models (OpenRouter's says which take tools, pictures, and their
-//                      context).
+//                      GET <base>/models lists the models (OpenRouter's says which take tools, pictures, their
+//                      context and their thinking levels). A thinking level: OpenRouter's "reasoning": {"effort"} (its
+//                      reasoning comes back as delta.reasoning, or reasoning_details' text), OpenAI's own
+//                      "reasoning_effort"; another server's none.
 //   Gemini             POST /v1beta/models/<model>:streamGenerateContent?alt=sse with x-goog-api-key, systemInstruction,
 //                      contents (user and model; a call a functionCall part, its result a functionResponse part),
 //                      tools' functionDeclarations with their schemas as JSON Schema (parametersJsonSchema; on a 400
-//                      that refuses it, Gemini's own subset, parameters); GET /v1beta/models lists them.
+//                      that refuses it, Gemini's own subset, parameters); GET /v1beta/models lists them. A thinking
+//                      level: generationConfig.thinkingConfig, thinkingLevel (Gemini 3 and later) or thinkingBudget
+//                      (2.5), never both, with includeThoughts (its thoughts, parts marked "thought", shown).
 //
 // Base URLs: https, or http only to a server on this Mac or the local network (localhost, 127.x, ::1, 10.x,
 // 172.16-31.x, 192.168.x, 169.254.x, *.local), so a conversation never crosses the internet in clear. A key is
@@ -80,6 +86,8 @@ namespace playground::providers
     {
         bool images = true;                              // the model takes pictures (else a line of text each)
         bool jsonSchema = true;                          // Gemini: the tools' schemas as JSON Schema, else its subset
+        std::string effort = {};                         // the thinking level chosen, one the model takes (levelsOf);
+                                                         // "": none sent, the model's own default
     };
     // A tool call made against Gemini's own subset (Options::jsonSchema false), as the tool takes it: the subset asks
     // for an array whose items the tool's schema leaves open (run_function's args, write_file's files, edit_file's edits
@@ -101,6 +109,36 @@ namespace playground::providers
     std::vector<ChatModel> modelsOf(const ChatProvider& p, const std::string& body);
     // A model no list described (one typed, or chosen before the list came): its id and nothing known of it.
     ChatModel plainModel(const std::string& id);
+    // The same for `p`'s server: its thinking levels where its name tells them (levelsOf: OpenAI's, Gemini's).
+    ChatModel plainModel(const ChatProvider& p, const std::string& id);
+
+    // ---- thinking levels ----------------------------------------------------------------------------------------------
+    // How `p`'s server takes a thinking level (the chat's Thinking menu: ChatModel::efforts, in the words Anthropic's
+    // use: "none" (Off), "minimal", "low", "medium", "high", "xhigh", "max"):
+    //   openRouter  openrouter.ai: "reasoning": {"effort": <level>}; its models list says each model's levels, its
+    //               default and whether reasoning can be turned off (modelsOf)
+    //   openAi      api.openai.com: "reasoning_effort": <level>; its list says nothing of them: by the model's family
+    //               (levelsOf)
+    //   gemini      generationConfig.thinkingConfig: thinkingLevel or thinkingBudget, by the model's family
+    //               (levelsOf)
+    //   none        any other server (a custom one, Ollama, LM Studio): no levels, nothing sent
+    enum class Reasoning : uint8_t { none, openRouter, openAi, gemini };
+    Reasoning reasoningOf(const ChatProvider& p);
+    // The levels a model takes by its id, where its server's list does not say them, into m.efforts (in the menu's
+    // order) and m.defaultEffort (the level it uses when none is sent, "" when not known); none for a model that takes
+    // none, or one this file cannot place in a family. OpenAI's: o1, o3 and o4 low, medium, high (medium by default);
+    // gpt-5 minimal, low, medium, high (medium); gpt-5.1 none, low, medium, high (none); gpt-5.2 none, low, medium,
+    // high, xhigh (its default unsaid); a later gpt-5.x or gpt-6 and on low, medium, high (unsaid); none for an id with
+    // "-chat" (gpt-5-chat-latest), o1-mini, o1-preview and gpt-4 and before. Gemini's: Gemini 3 and later by
+    // thinkingLevel, pro low and high, flash minimal, low, medium and high (high by default; neither can turn thinking
+    // off); Gemini 2.5 by thinkingBudget, low, medium and high, and none (Off) on flash and flash-lite alone (flash-lite
+    // off by default, the others' default dynamic: unsaid); none for Gemini 2.0 and before, and for an alias that names
+    // no version (gemini-flash-latest).
+    void levelsOf(const ChatProvider& p, ChatModel& m);
+    // A 400 (or 422) that refuses the thinking level sent (OpenAI's "Unsupported parameter: 'reasoning_effort'",
+    // Anthropic's through OpenRouter wanting a thinking block the history does not keep, Gemini's naming thinking_level,
+    // thinkingBudget or thinking_config): asked again without it.
+    bool aboutEffort(const ChatProvider& p, int status, const std::string& error);
 
     // ---- answers ------------------------------------------------------------------------------------------------------
     // A provider's streamed answer (its server-sent events, as claude::SseParser cuts them) in, the Messages API's events
@@ -119,7 +157,8 @@ namespace playground::providers
     };
     std::unique_ptr<Stream> streamFor(const ChatProvider& p, Sink sink);
 
-    // An error response in words, naming the provider (and p.model when the model cannot serve this chat: aboutModel);
+    // An error response in words, naming the provider (and p.model when the model cannot serve this chat: aboutModel;
+    // OpenRouter's "Provider returned error" with that provider's own words from its metadata.raw);
     // a request that reached no server ("is Ollama running?"); a redirect, never followed (ClaudeApi.h), and where it
     // pointed.
     std::string errorText(const ChatProvider& p, int status, const std::string& body);

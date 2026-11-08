@@ -10,7 +10,8 @@
 //                    shared with the probe while the agent owns the transport
 //   fake::OpenAiSse  another provider's answer as an OpenAI-compatible server streams Chat Completions (OpenAI's API
 //                    reference, "Streaming"; OpenRouter, Ollama and LM Studio send the same chunks): data: lines of
-//                    chat.completion.chunk (a delta's role, content, reasoning or reasoning_content, tool_calls by
+//                    chat.completion.chunk (a delta's role, content, reasoning or reasoning_content or OpenRouter's
+//                    reasoning_details, tool_calls by
 //                    index, their arguments in pieces; a finish_reason; a last chunk of usage alone), then [DONE]
 //   fake::GeminiSse  Gemini's streamGenerateContent?alt=sse (the Gemini API reference): data: lines of
 //                    GenerateContentResponse (candidates[0].content.parts: text, a functionCall whole with its
@@ -472,6 +473,23 @@ namespace fake
                 chunk(claude::object({ { key, juce::String::fromUTF8(t.substr(p, 8).c_str()) } }));
             return *this;
         }
+        // OpenRouter's reasoning_details, a piece a chunk: { type, text (a summary's: summary), format, index }, of type
+        // "reasoning.text" or "reasoning.summary"; `alsoReasoning`: the same piece as "reasoning" in the same chunk, as
+        // OpenRouter sends both for most models.
+        OpenAiSse& reasoningDetails(const std::string& t, const std::string& type = "reasoning.text", bool alsoReasoning = false)
+        {
+            for (std::size_t p = 0; p < t.size(); p += 8)
+            {
+                const juce::String piece = juce::String::fromUTF8(t.substr(p, 8).c_str());
+                juce::var detail = claude::object({ { "type", juce::String(type) }, { "format", "unknown" }, { "index", 0 } });
+                detail.getDynamicObject()->setProperty(type == "reasoning.summary" ? "summary" : "text", piece);
+                juce::var delta = claude::object({ { "reasoning_details", juce::Array<juce::var>{ detail } } });
+                if (alsoReasoning)
+                    delta.getDynamicObject()->setProperty("reasoning", piece);
+                chunk(delta);
+            }
+            return *this;
+        }
         // A tool call by its index: the first chunk its id and name, then its arguments in pieces (OpenAI's way);
         // `whole`: the call in one chunk, without an index (some local servers' way).
         OpenAiSse& call(int index, const std::string& id, const std::string& name, const std::string& args, bool whole = false)
@@ -589,15 +607,22 @@ namespace fake
     };
 
     // The models lists. OpenAI's: { object: list, data: [{ id, object: model, created, owned_by }] }; OpenRouter's adds
-    // name, context_length, architecture.input_modalities and supported_parameters; Ollama's and LM Studio's are
-    // OpenAI's. Gemini's: { models: [{ name: models/<id>, displayName, inputTokenLimit, outputTokenLimit,
-    // supportedGenerationMethods }] }.
+    // name, context_length, architecture.input_modalities, supported_parameters and, for a model that reasons, a
+    // reasoning object (supported_efforts, default_effort, default_enabled, supports_max_tokens, mandatory); Ollama's and
+    // LM Studio's are OpenAI's. Gemini's: { models: [{ name: models/<id>, displayName, inputTokenLimit,
+    // outputTokenLimit, supportedGenerationMethods, thinking }] }.
     struct ListedModel
     {
         std::string id, name;
         int64_t created = 0;
         int context = 0;
         bool tools = true, images = true;
+        // OpenRouter's reasoning object (none while `efforts` is empty): its levels, its default, whether it reasons by
+        // default and whether reasoning is mandatory. Gemini's "thinking": -1 not said, 0 false, 1 true.
+        std::vector<std::string> efforts = {};
+        std::string defaultEffort = {};
+        bool defaultEnabled = true, mandatory = false;
+        int thinking = -1;
     };
     inline std::string openAiModels(const std::vector<ListedModel>& models, bool openRouter = false)
     {
@@ -618,6 +643,19 @@ namespace fake
                 juce::Array<juce::var> params{ "max_tokens", "temperature" };
                 if (m.tools)
                     params.add("tools");
+                if (!m.efforts.empty())
+                {
+                    params.add("reasoning");
+                    params.add("include_reasoning");
+                    juce::Array<juce::var> efforts;
+                    for (const std::string& e : m.efforts)
+                        efforts.add(juce::String(e));
+                    o->setProperty("reasoning", claude::object({ { "supported_efforts", efforts },
+                                                                 { "default_effort", juce::String(m.defaultEffort) },
+                                                                 { "default_enabled", m.defaultEnabled },
+                                                                 { "supports_max_tokens", true },
+                                                                 { "mandatory", m.mandatory } }));
+                }
                 o->setProperty("supported_parameters", params);
             }
             data.add(v);
@@ -632,10 +670,13 @@ namespace fake
             juce::Array<juce::var> ms;
             for (const std::string& x : methods)
                 ms.add(juce::String(x));
-            list.add(claude::object({ { "name", juce::String("models/" + m.id) }, { "displayName", juce::String(m.name) },
-                                      { "inputTokenLimit", m.context }, { "outputTokenLimit", 65536 },
-                                      { "supportedGenerationMethods", m.id.find("embedding") != std::string::npos
-                                                                          ? juce::var(juce::Array<juce::var>{ "embedContent" }) : juce::var(ms) } }));
+            juce::var v = claude::object({ { "name", juce::String("models/" + m.id) }, { "displayName", juce::String(m.name) },
+                                           { "inputTokenLimit", m.context }, { "outputTokenLimit", 65536 },
+                                           { "supportedGenerationMethods", m.id.find("embedding") != std::string::npos
+                                                                               ? juce::var(juce::Array<juce::var>{ "embedContent" }) : juce::var(ms) } });
+            if (m.thinking >= 0)
+                v.getDynamicObject()->setProperty("thinking", m.thinking > 0);
+            list.add(v);
         }
         return claude::toJson(claude::object({ { "models", list } }));
     }

@@ -13,10 +13,11 @@
 //                    its key. Anthropic's stays as it was: saveKey and forgetKey are its key's
 //   setPlanner()     the model that plans each request before the chosen model builds it ("" for none): it writes a
 //                    plan, which the chat shows and the builder follows, and answers the builder's ask_planner
-//   setModel()       a model of chatState().models; setEffort() a thinking level that model has; setFast() fast mode,
-//                    on the models that take it; setWeb() web search (Claude searches the web and reads pages and
-//                    PDFs, the API's server tools), with the user's own key on the models that take it. All four
-//                    machine-wide
+//   setModel()       a model of chatState().models; setEffort() a thinking level that model has (with another provider:
+//                    kept for that provider's model, "" for none chosen: the model's own default, nothing sent);
+//                    setFast() fast mode, on the models that take it; setWeb() web search (Claude searches the web and
+//                    reads pages and PDFs, the API's server tools), with the user's own key on the models that take
+//                    it. All four machine-wide
 //   attach()         pictures (files) for the next message: read in the background (ChatImages.h), then in
 //                    chatState().attached; one that cannot be read gets a note. detach() takes one back
 //   send()           a message from the user (and the pictures attached, which it takes; a message of pictures alone
@@ -142,6 +143,9 @@ namespace playground
         // small one gets the prompt's short form.
         bool images = true;
         int context = 0;
+        // Another provider's model: the thinking level it uses when none is sent (one of `efforts`; "" when its server
+        // does not say), shown as the level until one is chosen, which alone is ever sent.
+        std::string defaultEffort = {};
     };
 
     // The model provider the chat talks to (plugin/Providers.h): Anthropic (the default), any server that speaks
@@ -219,7 +223,8 @@ namespace playground
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id (the builder's)
         std::string planner;                  // the planning model's id ("" for none)
-        std::string effort;                   // the chosen thinking level
+        std::string effort;                   // the chosen thinking level (another provider's: its model's default
+                                              // while none is chosen; "" for none known)
         bool fast = false;                    // fast mode chosen (it applies on a model that takes it)
         bool web = false;                     // web search chosen
         std::string usage;                    // the last reply's tokens, for the footer

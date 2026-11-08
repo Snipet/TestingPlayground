@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <initializer_list>
+#include <iterator>
 #include <map>
 #include <set>
 #include <utility>
@@ -407,6 +409,159 @@ namespace playground::providers
             return result;
         }
 
+        // A model's id as Gemini's path names it: its own characters ("models/" taken off).
+        std::string geminiModel(std::string m)
+        {
+            if (startsWith(m, "models/"))
+                m.erase(0, 7);
+            m.erase(std::remove_if(m.begin(), m.end(),
+                                   [](unsigned char c) { return !(std::isalnum(c) != 0 || c == '.' || c == '-' || c == '_'); }),
+                    m.end());
+            return m;
+        }
+
+        // ---- thinking levels (Providers.h, levelsOf) ----
+        // The words every provider here takes, in the menu's order (Anthropic's own run low to max the same way).
+        constexpr const char* kLevels[] = { "none", "minimal", "low", "medium", "high", "xhigh", "max" };
+
+        bool isLevel(std::string_view e)
+        {
+            return std::any_of(std::begin(kLevels), std::end(kLevels), [e](const char* l) { return e == l; });
+        }
+
+        void setLevels(ChatModel& m, std::vector<std::string> levels, const char* byDefault)
+        {
+            m.efforts = std::move(levels);
+            m.defaultEffort = byDefault;
+        }
+
+        // OpenAI's own models by their family (its /models says nothing of reasoning). A level set only where its API
+        // reference ties it to the family: minimal came with gpt-5, none with gpt-5.1 (its default there), xhigh with
+        // the models after gpt-5.1-codex-max; any other gpt-5 or later gets the three every reasoning model takes.
+        void openAiLevels(const std::string& id, ChatModel& m)
+        {
+            const std::string s = lower(id);
+            if (contains(s, "-chat") || startsWith(s, "o1-mini") || startsWith(s, "o1-preview"))
+                return;                                   // no reasoning_effort there
+            if (s.size() >= 2 && s[0] == 'o' && (s[1] == '1' || s[1] == '3' || s[1] == '4') && (s.size() == 2 || s[2] == '-'))
+            {
+                setLevels(m, { "low", "medium", "high" }, "medium");
+                return;
+            }
+            if (!startsWith(s, "gpt-"))
+                return;
+            // gpt-<major>[.<minor>], then the id's end or a dash: gpt-4o, gpt-4.1 and the like are no reasoning models.
+            std::size_t at = 4;
+            const auto number = [&s, &at](int& n) {
+                const std::size_t from = at;
+                while (at < s.size() && at - from < 4 && std::isdigit(static_cast<unsigned char>(s[at])) != 0)
+                    n = n * 10 + (s[at++] - '0');
+                return at > from;
+            };
+            int major = 0, minor = 0;
+            if (!number(major))
+                return;
+            if (at < s.size() && s[at] == '.')
+            {
+                ++at;
+                if (!number(minor))
+                    return;
+            }
+            if ((at < s.size() && s[at] != '-') || major < 5)
+                return;
+            if (major == 5 && minor == 0)
+                setLevels(m, { "minimal", "low", "medium", "high" }, "medium");
+            else if (major == 5 && minor == 1)
+                setLevels(m, { "none", "low", "medium", "high" }, "none");
+            else if (major == 5 && minor == 2)
+                setLevels(m, { "none", "low", "medium", "high", "xhigh" }, "");
+            else
+                setLevels(m, { "low", "medium", "high" }, "");
+        }
+
+        // OpenRouter's word on a model's thinking, its list's "reasoning" object (none: the model does not reason, no
+        // levels): supported_efforts, in the menu's order, Off ("none") left out when reasoning is mandatory (it cannot
+        // be turned off); default_effort, or Off when default_enabled is false (it does not reason unless asked) and Off
+        // is offered.
+        void openRouterLevels(const juce::var& r, ChatModel& m)
+        {
+            if (!r.isObject())
+                return;
+            const bool mandatory = static_cast<bool>(r.getProperty("mandatory", false));
+            std::set<std::string> said;
+            for (const juce::var& e : arrayOf(r.getProperty("supported_efforts", juce::var())))
+                if (const std::string level = e.toString().toStdString(); isLevel(level) && !(mandatory && level == "none"))
+                    said.insert(level);
+            std::vector<std::string> levels;
+            for (const char* l : kLevels)
+                if (said.count(l) > 0)
+                    levels.emplace_back(l);
+            if (levels.empty())
+                return;
+            std::string byDefault = str(r, "default_effort");
+            const juce::var enabled = r.getProperty("default_enabled", juce::var());
+            if (enabled.isBool() && !static_cast<bool>(enabled) && said.count("none") > 0)
+                byDefault = "none";
+            if (said.count(byDefault) == 0)
+                byDefault.clear();
+            m.efforts = std::move(levels);
+            m.defaultEffort = byDefault;
+        }
+
+        // Gemini's version by its id ("gemini-2.5-flash" 2.5, "gemini-3-pro-preview" 3): 0 for an alias that names none.
+        double geminiVersion(const std::string& id)
+        {
+            const std::string s = lower(geminiModel(id));
+            if (!startsWith(s, "gemini-") || s.size() < 8 || std::isdigit(static_cast<unsigned char>(s[7])) == 0)
+                return 0.0;
+            return std::atof(s.c_str() + 7);
+        }
+
+        // Gemini's models by their family: Gemini 3 and later take thinkingLevel (pro low and high, flash minimal to
+        // high, high by default; neither turns thinking off); 2.5 takes thinkingBudget (Off, a budget of 0, on flash and
+        // flash-lite alone; flash-lite off by default, the others thinking as much as they decide: no level).
+        void geminiLevels(const std::string& id, ChatModel& m)
+        {
+            const std::string s = lower(geminiModel(id));
+            const double version = geminiVersion(s);
+            const bool lite = contains(s, "-lite"), flash = contains(s, "flash");
+            if (version >= 3.0)
+                setLevels(m, flash && !lite ? std::vector<std::string>{ "minimal", "low", "medium", "high" }
+                                            : std::vector<std::string>{ "low", "high" },
+                          "high");
+            else if (version >= 2.5 && flash)
+                setLevels(m, { "none", "low", "medium", "high" }, lite ? "none" : "");
+            else if (version >= 2.5 && part(s, "pro"))
+                setLevels(m, { "low", "medium", "high" }, "");
+        }
+
+        // Gemini 2.5's budgets for the levels: Google's own mapping of reasoning_effort on its OpenAI-compatible
+        // endpoint (low 1,024 tokens, medium 8,192, high 24,576), and none 0.
+        int geminiBudget(const std::string& effort)
+        {
+            return effort == "none" ? 0 : effort == "low" ? 1024 : effort == "medium" ? 8192 : 24576;
+        }
+
+        // Gemini's thinkingConfig for `effort` on `model`: thinkingLevel (Gemini 3 and later) or thinkingBudget (2.5),
+        // never both, and its thoughts asked for (includeThoughts) unless thinking is off. Void for none, or a level the
+        // model does not take.
+        juce::var geminiThinking(const std::string& model, const std::string& effort)
+        {
+            ChatModel m;
+            geminiLevels(model, m);
+            if (effort.empty() || std::find(m.efforts.begin(), m.efforts.end(), effort) == m.efforts.end())
+                return {};
+            auto* o = new juce::DynamicObject();
+            juce::var config(o);
+            if (geminiVersion(model) >= 3.0)
+                o->setProperty("thinkingLevel", juce::String(effort));
+            else
+                o->setProperty("thinkingBudget", geminiBudget(effort));
+            if (effort != "none")
+                o->setProperty("includeThoughts", true);
+            return config;
+        }
+
         // ---- OpenAI's Chat Completions ----
         juce::var openAiImage(const juce::var& image)
         {
@@ -510,7 +665,7 @@ namespace playground::providers
             return out;
         }
 
-        std::string openAiBody(const juce::var& body, const Options& options)
+        std::string openAiBody(const juce::var& body, const Options& options, Reasoning reasoning)
         {
             juce::Array<juce::var> tools;
             for (const juce::var& t : functionTools(body))
@@ -528,6 +683,11 @@ namespace playground::providers
                                              { "messages", openAiMessages(body, options) } });
             if (!tools.isEmpty())
                 out.getDynamicObject()->setProperty("tools", tools);
+            // The thinking level, chosen: OpenRouter's effort alone (never a max_tokens beside it), OpenAI's own field.
+            if (isLevel(options.effort) && reasoning == Reasoning::openRouter)
+                out.getDynamicObject()->setProperty("reasoning", claude::object({ { "effort", juce::String(options.effort) } }));
+            else if (isLevel(options.effort) && reasoning == Reasoning::openAi)
+                out.getDynamicObject()->setProperty("reasoning_effort", juce::String(options.effort));
             return claude::toJson(out);
         }
 
@@ -645,18 +805,9 @@ namespace playground::providers
                   { "contents", geminiContents(body, options) } });
             if (!declarations.isEmpty())
                 out.getDynamicObject()->setProperty("tools", juce::Array<juce::var>{ claude::object({ { "functionDeclarations", declarations } }) });
+            if (const juce::var thinking = geminiThinking(str(body, "model"), options.effort); !thinking.isVoid())
+                out.getDynamicObject()->setProperty("generationConfig", claude::object({ { "thinkingConfig", thinking } }));
             return claude::toJson(out);
-        }
-
-        // A model's id as Gemini's path names it: its own characters ("models/" taken off).
-        std::string geminiModel(std::string m)
-        {
-            if (startsWith(m, "models/"))
-                m.erase(0, 7);
-            m.erase(std::remove_if(m.begin(), m.end(),
-                                   [](unsigned char c) { return !(std::isalnum(c) != 0 || c == '.' || c == '-' || c == '_'); }),
-                    m.end());
-            return m;
         }
     }
 
@@ -692,7 +843,7 @@ namespace playground::providers
     {
         switch (kindOf(p.kind))
         {
-            case Kind::openai: return openAiBody(messagesApi, options);
+            case Kind::openai: return openAiBody(messagesApi, options, reasoningOf(p));
             case Kind::gemini: return geminiBody(messagesApi, options);
             case Kind::anthropic: break;
         }
@@ -744,6 +895,65 @@ namespace playground::providers
         return m;
     }
 
+    ChatModel plainModel(const ChatProvider& p, const std::string& id)
+    {
+        ChatModel m = plainModel(id);
+        levelsOf(p, m);
+        return m;
+    }
+
+    Reasoning reasoningOf(const ChatProvider& p)
+    {
+        switch (kindOf(p.kind))
+        {
+            case Kind::gemini: return Reasoning::gemini;
+            case Kind::anthropic: return Reasoning::none;
+            case Kind::openai: break;
+        }
+        const std::string host = hostOf(baseOf(p));
+        return host == "openrouter.ai" ? Reasoning::openRouter : host == "api.openai.com" ? Reasoning::openAi : Reasoning::none;
+    }
+
+    void levelsOf(const ChatProvider& p, ChatModel& m)
+    {
+        m.efforts.clear();
+        m.defaultEffort.clear();
+        switch (reasoningOf(p))
+        {
+            case Reasoning::openAi: openAiLevels(m.id, m); break;
+            case Reasoning::gemini: geminiLevels(m.id, m); break;
+            case Reasoning::openRouter:                   // its list says (modelsOf)
+            case Reasoning::none: break;
+        }
+    }
+
+    bool aboutEffort(const ChatProvider& p, int status, const std::string& error)
+    {
+        if ((status != 400 && status != 422) || aboutModel(status, error))
+            return false;
+        const std::string e = lower(error);
+        const auto any = [&e](std::initializer_list<const char*> words) {
+            return std::any_of(words.begin(), words.end(), [&e](const char* w) { return contains(e, w); });
+        };
+        switch (reasoningOf(p))
+        {
+            case Reasoning::openAi:
+            case Reasoning::openRouter:
+                // Its own name; Anthropic's words, through OpenRouter, for thinking turned on with a history that keeps
+                // none of it (the reasoning is never kept: a tool call's next request); or OpenAI's words for a parameter
+                // the model does not take (never a picture's refusal).
+                return any({ "reasoning_effort", "reasoning.effort", "'reasoning'", "\"reasoning\"", "reasoning is not",
+                             "thinking block", "redacted_thinking", "when `thinking` is enabled" })
+                    || (any({ "unsupported parameter", "not supported with this model" }) && !any({ "image", "vision" }));
+            case Reasoning::gemini:
+                return any({ "thinking_level", "thinkinglevel", "thinking level", "thinking_budget", "thinkingbudget",
+                             "thinking budget", "thinking_config", "thinkingconfig", "include_thoughts", "includethoughts",
+                             "thinking is not", "thinking isn't" });
+            case Reasoning::none: break;
+        }
+        return false;
+    }
+
     std::vector<ChatModel> modelsOf(const ChatProvider& p, const std::string& body)
     {
         const juce::var v = claude::parseJson(body);
@@ -766,6 +976,9 @@ namespace playground::providers
                 cm.context = static_cast<int>(m.getProperty("inputTokenLimit", 0));
                 if (const int out = static_cast<int>(m.getProperty("outputTokenLimit", 0)); out > 0)
                     cm.maxTokens = out;
+                // Its thinking levels by its family, unless the list says it does not think ("thinking": false).
+                if (const juce::var thinks = m.getProperty("thinking", juce::var()); !thinks.isBool() || static_cast<bool>(thinks))
+                    geminiLevels(id, cm);
                 // The newest version first ("gemini-3-pro" before "gemini-2.5-flash"), then pro, flash, lite, a stable
                 // one before its preview.
                 const double version = std::atof(id.c_str() + 7);
@@ -776,7 +989,8 @@ namespace playground::providers
         }
         else
         {
-            const bool openAi = hostOf(baseOf(p)) == "api.openai.com";
+            const Reasoning reasoning = reasoningOf(p);
+            const bool openAi = reasoning == Reasoning::openAi;
             for (const juce::var& m : arrayOf(v.getProperty("data", juce::var())))
             {
                 const std::string id = str(m, "id");
@@ -809,6 +1023,10 @@ namespace playground::providers
                 const juce::var modalities = m.getProperty("architecture", juce::var()).getProperty("input_modalities", juce::var());
                 if (const juce::Array<juce::var>* list = modalities.getArray())
                     cm.images = std::any_of(list->begin(), list->end(), [](const juce::var& x) { return x.toString() == "image"; });
+                if (openAi)
+                    openAiLevels(id, cm);
+                else if (reasoning == Reasoning::openRouter)
+                    openRouterLevels(m.getProperty("reasoning", juce::var()), cm);
                 found.emplace_back(static_cast<juce::int64>(m.getProperty("created", 0)), std::move(cm));
             }
         }
@@ -912,12 +1130,46 @@ namespace playground::providers
             cur = {};
         }
 
+        // The words of a model's own provider in OpenRouter's `metadata.raw` (its error body, as a string or an object):
+        // its message, else the text itself, cut short.
+        std::string rawWords(const juce::var& raw)
+        {
+            juce::var v = raw;
+            if (raw.isString())
+            {
+                const std::string text = raw.toString().toStdString();
+                v = claude::parseJson(text);
+                if (!v.isObject())
+                    return text.substr(0, 500);
+            }
+            if (!v.isObject())
+                return {};
+            const juce::var inner = v.getProperty("error", juce::var());
+            if (inner.isString())
+                return inner.toString().toStdString();
+            if (std::string m = str(inner, "message"); !m.empty())
+                return m;
+            if (std::string m = str(v, "message"); !m.empty())
+                return m;
+            return claude::toJson(v).substr(0, 500);
+        }
+
         std::string errorOf(const juce::var& e)
         {
             if (e.isString())
                 return e.toString().toStdString();
             std::string m = str(e, "message");
-            return m.empty() ? claude::toJson(e) : m;
+            if (m.empty())
+                return claude::toJson(e);
+            // OpenRouter passing on a refusal from the model's provider ("Provider returned error"): that provider's own
+            // words beside it, so the error says what was refused and the turn's workarounds can read it.
+            if (const juce::var meta = e.getProperty("metadata", juce::var()); meta.isObject())
+                if (const std::string words = rawWords(meta.getProperty("raw", juce::var())); !words.empty() && words != m)
+                {
+                    const std::string who = str(meta, "provider_name");
+                    m += " (" + (who.empty() ? std::string() : who + ": ") + words + ")";
+                }
+            return m;
         }
 
         class OpenAiStream final : public Stream
@@ -957,13 +1209,26 @@ namespace playground::providers
                     return;
                 const juce::var& choice = choices.getReference(0);
                 const juce::var d = choice.getProperty("delta", juce::var());
-                // Reasoning, as the servers that show it send it: shown as thinking, never kept.
+                // Reasoning, as the servers that show it send it: shown as thinking, never kept. OpenRouter's comes as
+                // "reasoning" and again as reasoning_details' text (and only there from some models): the details are
+                // read when no reasoning came as text, so it shows once.
+                std::string reasoning;
                 for (const char* key : { "reasoning_content", "reasoning" })
-                    if (const juce::var r = d.getProperty(key, juce::var()); r.isString())
+                    if (const juce::var r = d.getProperty(key, juce::var()); r.isString() && r.toString().isNotEmpty())
                     {
-                        writeTo(out_, cur_, Current::Kind::thinking, r.toString().toStdString());
+                        reasoning = r.toString().toStdString();
                         break;
                     }
+                if (reasoning.empty())
+                    for (const juce::var& detail : arrayOf(d.getProperty("reasoning_details", juce::var())))
+                    {
+                        const std::string type = str(detail, "type");
+                        if (type == "reasoning.text")
+                            reasoning += str(detail, "text");
+                        else if (type == "reasoning.summary")
+                            reasoning += detail.hasProperty("summary") ? str(detail, "summary") : str(detail, "text");
+                    }
+                writeTo(out_, cur_, Current::Kind::thinking, reasoning);
                 if (const juce::var c = d.getProperty("content", juce::var()); c.isString())
                     writeTo(out_, cur_, Current::Kind::text, c.toString().toStdString());
                 for (const juce::var& tc : arrayOf(d.getProperty("tool_calls", juce::var())))

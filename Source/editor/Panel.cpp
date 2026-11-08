@@ -3196,8 +3196,8 @@ namespace playground::ui
         {
             B::Spec thinking = spec(B::Shape::pill, {}, [this] { return thinkingLabel(); }, true, [] { return B::Look::ghost; },
                                     [this] { return !chatEfforts().empty(); }, [this] { openThinking(); }, "Thinking level",
-                                    "THINKING   HOW MUCH CLAUDE THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS");
-            thinking.shown = [this] { return chatTakesThinking(); };   // Anthropic's: another provider's models have none
+                                    "THINKING   HOW MUCH THE MODEL THINKS BEFORE IT ANSWERS, AND HOW HARD IT WORKS");
+            thinking.shown = [this] { return chatTakesThinking(); };   // another provider's: where its model has levels
             thinkingItem_ = add(std::make_unique<B>(idFor(), std::move(thinking)));
         }
         {
@@ -5777,8 +5777,11 @@ namespace playground::ui
             return asciiText(s.usage);
         }
 
+        // A thinking level's name: Anthropic's words, and another provider's "none" (thinking off) and "minimal".
         std::string effortName(const std::string& e)
         {
+            if (e == "none")
+                return "Off";
             if (e == "xhigh")
                 return "Extra high";
             std::string n = e;
@@ -5825,7 +5828,8 @@ namespace playground::ui
         return false;
     }
 
-    // The thinking levels' pill: Anthropic's (its models have levels); another provider's models have none.
+    // The thinking levels' pill: Anthropic's (its models have levels), and another provider's where its model has some
+    // (OpenRouter's, OpenAI's, Gemini's: ChatModel::efforts); none for a server whose models have none.
     bool Panel::chatTakesThinking() const { return chat_.provider.kind == "anthropic" || !chatEfforts().empty(); }
 
     // What the bar's layout depends on: the pills' labels, and whether fast mode's is there.
@@ -6059,17 +6063,28 @@ namespace playground::ui
 
     void Panel::openThinking()
     {
-        const std::vector<std::string> efforts = chatEfforts();
+        std::vector<std::string> efforts = chatEfforts();
         if (host_ == nullptr || efforts.empty())
             return;
+        // The default marked: Anthropic's medium, another provider's model's own as its server says it. Where that is
+        // not said, the first row is the model's own default ("": none chosen, nothing sent).
+        const bool anthropic = chat_.provider.kind == "anthropic";
+        std::string byDefault = anthropic ? std::string("medium") : std::string();
+        if (!anthropic)
+            for (const ChatModel& m : chat_.models)
+                if (m.id == chat_.model)
+                    byDefault = m.defaultEffort;
+        if (!anthropic && byDefault.empty())
+            efforts.insert(efforts.begin(), std::string());
         funkgui::MenuRequest request;
         int id = 1, current = 0;
         for (const std::string& e : efforts)
         {
             if (e == chat_.effort)
                 current = id;
-            request.items.push_back(
-                dropdown::choice(id++, effortName(e) + (e == "medium" ? " (the default)" : ""), e == chat_.effort));
+            const std::string label = e.empty() ? std::string("The model's default")
+                                                : effortName(e) + (e == byDefault ? " (the default)" : "");
+            request.items.push_back(dropdown::choice(id++, label, e == chat_.effort));
         }
         dropdown::dropdownMenu(request, triggerRect(thinkingItem_), current);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));

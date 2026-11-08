@@ -663,7 +663,7 @@ namespace playground::ui
         std::vector<std::string> chatEfforts() const;    // the chosen model's thinking levels
         bool chatTakesFast() const;                      // the chosen model takes fast mode
         bool chatTakesWeb() const;                       // ... and web search
-        bool chatTakesThinking() const;                  // ... and thinking levels (Anthropic's)
+        bool chatTakesThinking() const;                  // ... and thinking levels (Anthropic's, another's own)
         std::string barLabels() const;                   // what the bar's layout depends on
         InputItem& inputItem();
         const InputItem& inputItem() const;

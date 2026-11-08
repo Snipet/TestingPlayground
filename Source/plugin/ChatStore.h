@@ -1,7 +1,8 @@
 // Source/plugin/ChatStore.h: what the chat keeps on this Mac, shared by both playground plugins (the effect and the
 // synth, in any host and in their Standalones): the Anthropic API key, encrypted, the other providers' keys, encrypted
 // and each bound to its server (below), the choices (the provider, the model, thinking level, fast mode, web search and
-// planner chosen last) and the chats themselves, encrypted. They live in ~/Library/Application Support/Funk/Playground/
+// planner chosen last; another provider's model and each of its models' thinking level) and the chats themselves,
+// encrypted. They live in ~/Library/Application Support/Funk/Playground/
 // (0700): anthropic-key.bin (0600), key-<kind>-<origin>.bin (0600), chat.json and chats/ (below). On
 // Windows: %APPDATA%\Funk\Playground\, the user's profile's own, and the same files through Windows' CNG (bcrypt) in
 // place of CommonCrypto. On Linux: $XDG_DATA_HOME (else ~/.local/share)/Funk/Playground/, through OpenSSL's libcrypto,
@@ -38,6 +39,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace juce
@@ -101,14 +103,17 @@ namespace playground::chatstore
     bool saveProviderKey(std::string_view kind, std::string_view origin, std::string_view key, std::string* why = nullptr);
     bool forgetProviderKey(std::string_view kind, std::string_view origin, std::string* why = nullptr);
 
-    // The provider chosen last (chat.json "provider", "base": none is Anthropic, as before the providers) and the model
+    // The provider chosen last (chat.json "provider", "base": none is Anthropic, as before the providers), the model
     // chosen last with each other provider (chat.json "models", by modelKey: the kind, and an OpenAI-compatible
-    // server's base URL). Anthropic's model stays Choice's "model".
+    // server's base URL) and the thinking level chosen for each of its models (chat.json "efforts": [{ "for": modelKey,
+    // "model": id, "effort": level }]; none for a model whose own default stands). Anthropic's model and level stay
+    // Choice's.
     struct ProviderChoice
     {
         std::string kind = "anthropic";
         std::string base;
         std::map<std::string, std::string> models;
+        std::map<std::pair<std::string, std::string>, std::string> efforts = {};   // (modelKey, model) -> level
     };
     std::string modelKey(std::string_view kind, std::string_view base);
     ProviderChoice loadProvider();
