@@ -13,6 +13,15 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 Claude Desktop extension: **0.17.0** (was 0.13.0).
 
+### FunkGui v0.26.0 ([#28](https://github.com/Snipet/TestingPlayground/pull/28))
+
+**Changed**
+- The editor draws with less work: each shape goes to the GPU as one small record instead of six corners, about a
+  fifth of the data each frame and less CPU, with the same pixels.
+
+**Fixed**
+- A test of the headless renderer could wait for ever on macOS when it fed the renderer its request through a pipe.
+
 ### Thinking levels for OpenRouter, OpenAI and Gemini ([#26](https://github.com/Snipet/TestingPlayground/pull/26))
 
 **Added**
