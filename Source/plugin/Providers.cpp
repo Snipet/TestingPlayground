@@ -939,8 +939,11 @@ namespace playground::providers
         {
             case Reasoning::openAi:
             case Reasoning::openRouter:
-                // Its own name, or OpenAI's words for a parameter the model does not take (never a picture's refusal).
-                return any({ "reasoning_effort", "reasoning.effort", "'reasoning'", "\"reasoning\"", "reasoning is not" })
+                // Its own name; Anthropic's words, through OpenRouter, for thinking turned on with a history that keeps
+                // none of it (the reasoning is never kept: a tool call's next request); or OpenAI's words for a parameter
+                // the model does not take (never a picture's refusal).
+                return any({ "reasoning_effort", "reasoning.effort", "'reasoning'", "\"reasoning\"", "reasoning is not",
+                             "thinking block", "redacted_thinking", "when `thinking` is enabled" })
                     || (any({ "unsupported parameter", "not supported with this model" }) && !any({ "image", "vision" }));
             case Reasoning::gemini:
                 return any({ "thinking_level", "thinkinglevel", "thinking level", "thinking_budget", "thinkingbudget",
@@ -1127,12 +1130,46 @@ namespace playground::providers
             cur = {};
         }
 
+        // The words of a model's own provider in OpenRouter's `metadata.raw` (its error body, as a string or an object):
+        // its message, else the text itself, cut short.
+        std::string rawWords(const juce::var& raw)
+        {
+            juce::var v = raw;
+            if (raw.isString())
+            {
+                const std::string text = raw.toString().toStdString();
+                v = claude::parseJson(text);
+                if (!v.isObject())
+                    return text.substr(0, 500);
+            }
+            if (!v.isObject())
+                return {};
+            const juce::var inner = v.getProperty("error", juce::var());
+            if (inner.isString())
+                return inner.toString().toStdString();
+            if (std::string m = str(inner, "message"); !m.empty())
+                return m;
+            if (std::string m = str(v, "message"); !m.empty())
+                return m;
+            return claude::toJson(v).substr(0, 500);
+        }
+
         std::string errorOf(const juce::var& e)
         {
             if (e.isString())
                 return e.toString().toStdString();
             std::string m = str(e, "message");
-            return m.empty() ? claude::toJson(e) : m;
+            if (m.empty())
+                return claude::toJson(e);
+            // OpenRouter passing on a refusal from the model's provider ("Provider returned error"): that provider's own
+            // words beside it, so the error says what was refused and the turn's workarounds can read it.
+            if (const juce::var meta = e.getProperty("metadata", juce::var()); meta.isObject())
+                if (const std::string words = rawWords(meta.getProperty("raw", juce::var())); !words.empty() && words != m)
+                {
+                    const std::string who = str(meta, "provider_name");
+                    m += " (" + (who.empty() ? std::string() : who + ": ") + words + ")";
+                }
+            return m;
         }
 
         class OpenAiStream final : public Stream

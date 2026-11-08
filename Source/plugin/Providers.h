@@ -136,7 +136,8 @@ namespace playground::providers
     // no version (gemini-flash-latest).
     void levelsOf(const ChatProvider& p, ChatModel& m);
     // A 400 (or 422) that refuses the thinking level sent (OpenAI's "Unsupported parameter: 'reasoning_effort'",
-    // Gemini's naming thinking_level, thinkingBudget or thinking_config): asked again without it.
+    // Anthropic's through OpenRouter wanting a thinking block the history does not keep, Gemini's naming thinking_level,
+    // thinkingBudget or thinking_config): asked again without it.
     bool aboutEffort(const ChatProvider& p, int status, const std::string& error);
 
     // ---- answers ------------------------------------------------------------------------------------------------------
@@ -156,7 +157,8 @@ namespace playground::providers
     };
     std::unique_ptr<Stream> streamFor(const ChatProvider& p, Sink sink);
 
-    // An error response in words, naming the provider (and p.model when the model cannot serve this chat: aboutModel);
+    // An error response in words, naming the provider (and p.model when the model cannot serve this chat: aboutModel;
+    // OpenRouter's "Provider returned error" with that provider's own words from its metadata.raw);
     // a request that reached no server ("is Ollama running?"); a redirect, never followed (ClaudeApi.h), and where it
     // pointed.
     std::string errorText(const ChatProvider& p, int status, const std::string& body);

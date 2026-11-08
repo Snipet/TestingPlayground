@@ -162,9 +162,9 @@ namespace playground
                                 : providers::picksFirst(p)     ? std::string(", to the first model it lists")
                                                                : std::string(", to the model you choose in the model menu"))
                              + (providers::reasoningOf(p) != providers::Reasoning::none
-                                    ? ". The thinking level carries over where its model takes one (each model's own levels, "
-                                      "in the Thinking menu); fast mode, web search and the planner stay Anthropic's, off with "
-                                      "it."
+                                    ? ". The Thinking menu stays where its model takes a level (that model's own levels; "
+                                      "until you choose one, the model's own default); fast mode, web search and the planner "
+                                      "stay Anthropic's, off with it."
                                     : ". Anthropic's own options (the thinking levels, fast mode, web search, the planner) are "
                                       "off with it."));
             else if (otherModel_ != before)
