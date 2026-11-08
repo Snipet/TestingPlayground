@@ -66,15 +66,6 @@ namespace
     constexpr int kBlock = 256;
     constexpr double kCostRatio = 1.6;            // the examples' CPU time with the checks over without, at most
 
-    // The calling thread's CPU time, ms: what the cost rows time, so that time the thread waits for a core (the
-    // machine busy with other work) is not counted.
-    double threadMs()
-    {
-        timespec ts{};
-        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-        return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
-    }
-
     // ---- the programs ----------------------------------------------------------------------------------------------
     // The main module's head and its plain body (an effect: half its input; an instrument: a sine at 0.3 while held),
     // with `extra` declarations and `before` at the top of process, and `hooks` (init, end) as given; the instrument's
@@ -545,9 +536,9 @@ module Voice
             for (probe::Rig* r : { &on, &off })
             {
                 r->engine().restart();
-                const double t0 = threadMs();
+                const double t0 = probe::threadMs();
                 r->run(in, kBlock, notes);
-                (r == &on ? c.on : c.off) = std::min(r == &on ? c.on : c.off, threadMs() - t0);
+                (r == &on ? c.on : c.off) = std::min(r == &on ? c.on : c.off, probe::threadMs() - t0);
             }
         c.compileOn = c.compileOff = 1e9;
         for (int k = 0; k < 3; ++k)

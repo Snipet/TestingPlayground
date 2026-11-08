@@ -79,15 +79,6 @@ namespace
     using Clock = std::chrono::steady_clock;
     double msSince(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-    // The calling thread's CPU time, ms: what the cost rows time, so that time the thread waits for a core (the
-    // machine busy with other work) is not counted.
-    double threadMs()
-    {
-        timespec ts{};
-        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-        return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
-    }
-
     // ---- the programs ----------------------------------------------------------------------------------------------
     // The main module's head and its plain body (an effect: half its input; an instrument: a sine at 0.3 while held),
     // with `extra` declarations and `before` at the top of process, and `hooks` (start, stop, init, end) as given.
@@ -267,9 +258,9 @@ namespace
         for (int k = 0; k < tries; ++k)
             for (std::size_t r = 0; r < rigs.size(); ++r)
             {
-                const double t0 = threadMs();
+                const double t0 = probe::threadMs();
                 rigs[r]->run(in, kBlock, notes);
-                best[r] = std::min(best[r], threadMs() - t0);
+                best[r] = std::min(best[r], probe::threadMs() - t0);
             }
         return best;
     }
@@ -550,9 +541,9 @@ PROBE(dsp, budget)
             P.eq("stopped.reset_makes_it_new", r.patch->stopped() == pg::Patch::Method::none ? 1 : 0, 1);
             stopIt();
             P.eq("stopped.stops_again", static_cast<int>(r.patch->stopped()), static_cast<int>(call));
-            const double t0 = threadMs();
+            const double t0 = probe::threadMs();
             r.patch.reset();
-            const double ms = threadMs() - t0;
+            const double ms = probe::threadMs() - t0;
             P.le("stopped.destroyed_without_end_ms", ms, 250.0);
             std::printf("stopped: destroyed in %.1f ms of the thread's time (an end would take its budget)\n", ms);
         }

@@ -43,6 +43,8 @@
 #include <dbghelp.h>
 #undef near                                          // windows.h's 16-bit leftovers
 #undef far
+
+#include "dsp/Profile.h"                             // profile::tscPerMs (threadMs)
 #endif
 
 namespace probe
@@ -110,12 +112,11 @@ namespace probe
     double threadMs()
     {
 #if defined(_WIN32)
-        FILETIME created{}, ended{}, kernel{}, user{};
-        GetThreadTimes(GetCurrentThread(), &created, &ended, &kernel, &user);
-        const auto ticks = [](const FILETIME& f) {
-            return static_cast<double>((static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime);
-        };
-        return (ticks(kernel) + ticks(user)) * 1e-4;   // 100 ns ticks
+        // The thread's cycles over the time-stamp counter's rate, as Measure's CPU clock reads them (Measure.cpp):
+        // GetThreadTimes counts whole scheduler ticks of about 15.6 ms, too coarse for a cost row's few milliseconds.
+        ULONG64 cycles = 0;
+        QueryThreadCycleTime(GetCurrentThread(), &cycles);
+        return static_cast<double>(cycles) / playground::profile::tscPerMs();
 #else
         timespec ts{};
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
