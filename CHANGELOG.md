@@ -13,6 +13,26 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 Claude Desktop extension: **0.17.0** (was 0.13.0).
 
+### Thinking levels for OpenRouter, OpenAI and Gemini ([#26](https://github.com/Snipet/TestingPlayground/pull/26))
+
+**Added**
+- The chat's **Thinking** menu now works with other providers. Each model offers its own levels (Off, Minimal, Low,
+  Medium, High, Extra high, Max), with its default marked. OpenRouter's levels come from its model list; OpenAI's are
+  for its reasoning models (o-series, GPT-5 and later); Gemini 3 takes levels and Gemini 2.5 a thinking budget. Models
+  that don't reason, and servers on your machine (Ollama, LM Studio), show no menu.
+- Until you choose a level, the model thinks as it does by default. Your choice is remembered for each provider and
+  model.
+
+**Changed**
+- A model that refuses the level is asked again at once without it, and a note says so: the turn goes on. OpenRouter's
+  errors now include the words of the model's own provider.
+
+### A changelog, and a README that starts short ([#25](https://github.com/Snipet/TestingPlayground/pull/25))
+
+**Added**
+- This changelog. The README now opens with what the plugins do, building from a clone on macOS, Windows and Linux,
+  and how to start; the full guide follows.
+
 ### Linux, capture marks, a target sound ([#24](https://github.com/Snipet/TestingPlayground/pull/24))
 
 **Added**
