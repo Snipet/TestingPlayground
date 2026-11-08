@@ -48,6 +48,16 @@
 //             with tools (OpenAI's Responses-only) goes off the menu and is no longer chosen
 //   SWITCH    another provider chosen while a turn waits for the models list (nothing sent yet): the turn is the new
 //             provider's, its request and its model both (never one's request with the other's model)
+//   EFFORT    the thinking levels of another provider's models: OpenRouter's from its list's reasoning object (in the
+//             menu's order; Off left out where reasoning is mandatory; its default, Off where it reasons only when
+//             asked; none without the object, none from another server whatever its list holds), OpenAI's and Gemini's
+//             by the model's family (o3 and gpt-5 yes, gpt-4o and gpt-5-chat-latest no; Gemini 3 by level, 2.5 by
+//             budget, Off on 2.5 flash alone), a local server none; the bodies (OpenRouter's reasoning.effort alone and
+//             no max_tokens, OpenAI's reasoning_effort, Gemini's thinkingLevel or thinkingBudget never both, with
+//             includeThoughts, nothing when none is chosen); through the agent: the provider's note, the default shown
+//             and nothing sent, a level chosen sent and kept per provider and model (chat.json, and a new processor's
+//             turn), OpenRouter's reasoning_details shown once and never kept, a model's refusal (a canned 400: OpenAI's,
+//             Gemini's) asked again at once without the level, its pills gone for the session, a note, no failed turn
 //   REDIRECT  the real transport (ClaudeApi.cpp) against two servers of the probe's own on 127.0.0.1: a 307 from
 //             the first is returned as it came, its location said, and the second is never reached
 //   TRANSPORT the real transport against the probe's own server: an https:// address is spoken to in TLS (its first
@@ -488,6 +498,9 @@ PROBE(plugin, providers)
         const pg::ChatState s = agent.chatState();
         P.eq("local.ready", s.ready() && s.keyless && !s.hasKey && s.providerName == "Ollama (this Mac)" ? 1 : 0, 1);
         P.eq("local.models", s.models.size() == 2 && s.model == "qwen-probe:32b" ? 1 : 0, 1);
+        P.eq("local.no_levels", s.effort.empty()
+                                    && std::none_of(s.models.begin(), s.models.end(), [](const pg::ChatModel& m) { return !m.efforts.empty(); })
+                                    ? 1 : 0, 1);
         P.eq("local.models_no_auth", script->lastHost("GET /v1/models") == "http://localhost:11434"
                                          && !script->lastHas("GET /v1/models", "Authorization") ? 1 : 0, 1);
 
@@ -869,6 +882,271 @@ PROBE(plugin, providers)
         P.eq("switch.turn_followed", script->postCount() - before == 1 && script->count("POST /v1/chat/completions") == toOther
                                          && script->count(gemPath) == toGemini + 1
                                          && has(lastText(agent.chatState(), pg::ChatEntry::Kind::assistant), "From Gemini.") ? 1 : 0, 1);
+    }
+
+    // ---- EFFORT ------------------------------------------------------------------------------------------------------------
+    {
+        const pg::ChatProvider orP{ "openai", "https://openrouter.ai/api/v1", "" }, oaP{ "openai", "https://api.openai.com/v1", "" },
+            gemP{ "gemini", "", "" }, localP{ "openai", "http://localhost:11434/v1", "" }, customP{ "openai", "https://llm.example.org/v1", "" };
+        using Levels = std::vector<std::string>;
+        const auto is = [](const pg::ChatModel& m, const Levels& levels, const std::string& byDefault) {
+            return m.efforts == levels && m.defaultEffort == byDefault;
+        };
+        const auto named = [](const pg::ChatProvider& p, const char* id) { return pr::plainModel(p, id); };
+        const auto byId = [](const std::vector<pg::ChatModel>& models, const std::string& id) {
+            for (const pg::ChatModel& m : models)
+                if (m.id == id)
+                    return m;
+            return pg::ChatModel{};
+        };
+        const auto count = [](const pg::ChatState& s, pg::ChatEntry::Kind kind) {
+            return std::count_if(s.entries.begin(), s.entries.end(), [kind](const pg::ChatEntry& e) { return e.kind == kind; });
+        };
+        P.eq("effort.wires", pr::reasoningOf(orP) == pr::Reasoning::openRouter && pr::reasoningOf(oaP) == pr::Reasoning::openAi
+                                 && pr::reasoningOf(gemP) == pr::Reasoning::gemini && pr::reasoningOf(localP) == pr::Reasoning::none
+                                 && pr::reasoningOf(customP) == pr::Reasoning::none && pr::reasoningOf({}) == pr::Reasoning::none ? 1 : 0, 1);
+
+        // OpenRouter's list: its reasoning objects.
+        const std::vector<fake::ListedModel> orModels{
+            { "openai/gpt-probe-5", "GPT-5 via OpenRouter", 1764000000, 400000, true, true, { "xhigh", "high", "medium", "low", "minimal", "none" }, "medium" },
+            { "deepseek/r-probe", "R via OpenRouter", 1763900000, 128000, true, false, { "high", "medium", "low", "none" }, "high", true, true },
+            { "acme/think-probe", "Think via OpenRouter", 1763800000, 128000, true, false, { "high", "low", "none" }, "low", false },
+            { "meta/llama-probe", "Llama (text)", 1761000000, 131072, true, false } };
+        const std::string orList = fake::openAiModels(orModels, true);
+        const std::vector<pg::ChatModel> listed = pr::modelsOf(orP, orList);
+        P.eq("effort.openrouter_levels", is(byId(listed, "openai/gpt-probe-5"), { "none", "minimal", "low", "medium", "high", "xhigh" }, "medium") ? 1 : 0, 1);
+        P.eq("effort.openrouter_mandatory_no_off", is(byId(listed, "deepseek/r-probe"), { "low", "medium", "high" }, "high") ? 1 : 0, 1);
+        P.eq("effort.openrouter_off_by_default", is(byId(listed, "acme/think-probe"), { "none", "low", "high" }, "none") ? 1 : 0, 1);
+        P.eq("effort.openrouter_none_without", byId(listed, "meta/llama-probe").id == "meta/llama-probe"
+                                                   && is(byId(listed, "meta/llama-probe"), {}, "") ? 1 : 0, 1);
+        bool othersNone = true;
+        for (const pg::ChatProvider& p : { customP, localP })
+            for (const pg::ChatModel& m : pr::modelsOf(p, orList))
+                othersNone = othersNone && m.efforts.empty() && m.defaultEffort.empty();
+        P.eq("effort.other_servers_none", othersNone ? 1 : 0, 1);
+
+        // OpenAI's and Gemini's by the model's family.
+        P.eq("effort.openai_o_series", is(named(oaP, "o3"), { "low", "medium", "high" }, "medium")
+                                           && is(named(oaP, "o4-mini-2025-04-16"), { "low", "medium", "high" }, "medium")
+                                           && is(named(oaP, "o1"), { "low", "medium", "high" }, "medium") ? 1 : 0, 1);
+        P.eq("effort.openai_gpt5", is(named(oaP, "gpt-5"), { "minimal", "low", "medium", "high" }, "medium")
+                                       && is(named(oaP, "gpt-5-mini-2025-08-07"), { "minimal", "low", "medium", "high" }, "medium")
+                                       && is(named(oaP, "gpt-5.1"), { "none", "low", "medium", "high" }, "none")
+                                       && is(named(oaP, "gpt-5.2-2025-12-11"), { "none", "low", "medium", "high", "xhigh" }, "")
+                                       && is(named(oaP, "gpt-5.4"), { "low", "medium", "high" }, "")
+                                       && is(named(oaP, "gpt-6"), { "low", "medium", "high" }, "") ? 1 : 0, 1);
+        P.eq("effort.openai_none", named(oaP, "gpt-4o").efforts.empty() && named(oaP, "gpt-4o-mini").efforts.empty()
+                                       && named(oaP, "gpt-4.1-mini").efforts.empty() && named(oaP, "gpt-5-chat-latest").efforts.empty()
+                                       && named(oaP, "gpt-5.1-chat-latest").efforts.empty() && named(oaP, "o1-mini").efforts.empty()
+                                       && named(localP, "o3").efforts.empty() && named(orP, "o3").efforts.empty() ? 1 : 0, 1);
+        P.eq("effort.gemini3", is(named(gemP, "gemini-3-pro-preview"), { "low", "high" }, "high")
+                                   && is(named(gemP, "models/gemini-3-flash-preview"), { "minimal", "low", "medium", "high" }, "high") ? 1 : 0, 1);
+        P.eq("effort.gemini25", is(named(gemP, "gemini-2.5-pro"), { "low", "medium", "high" }, "")
+                                    && is(named(gemP, "gemini-2.5-flash"), { "none", "low", "medium", "high" }, "")
+                                    && is(named(gemP, "gemini-2.5-flash-lite"), { "none", "low", "medium", "high" }, "none") ? 1 : 0, 1);
+        P.eq("effort.gemini_none", named(gemP, "gemini-2.0-flash").efforts.empty() && named(gemP, "gemini-flash-latest").efforts.empty() ? 1 : 0, 1);
+        const std::vector<pg::ChatModel> gl = pr::modelsOf(gemP, fake::geminiModels({ { "gemini-2.5-flash", "Flash", 0, 1048576, true, true, {}, "", true, false, 0 },
+                                                                                     { "gemini-2.5-pro", "Pro", 0, 1048576, true, true, {}, "", true, false, 1 } }));
+        P.eq("effort.gemini_list_says", gl.size() == 2 && byId(gl, "gemini-2.5-flash").efforts.empty() && byId(gl, "gemini-2.5-pro").efforts.size() == 3 ? 1 : 0, 1);
+
+        // The bodies.
+        juce::var request = claude::object({ { "model", "openai/gpt-probe-5" }, { "max_tokens", 64000 }, { "system", "Be brief." },
+                                             { "messages", juce::Array<juce::var>{ claude::object({ { "role", "user" }, { "content", "hi" } }) } } });
+        const auto bodyOf = [&request](const pg::ChatProvider& p, const char* model, const std::string& effort) {
+            request.getDynamicObject()->setProperty("model", model);
+            pr::Options o;
+            o.effort = effort;
+            return claude::parseJson(pr::body(p, request, o));
+        };
+        const juce::var orHigh = bodyOf(orP, "openai/gpt-probe-5", "high"), orNone = bodyOf(orP, "openai/gpt-probe-5", "");
+        P.eq("effort.openrouter_body", str(orHigh.getProperty("reasoning", {}), "effort") == "high" && !orHigh.hasProperty("max_tokens")
+                                           && !orHigh.hasProperty("reasoning_effort") && !anyHas(orHigh.getProperty("reasoning", {}), "max_tokens") ? 1 : 0, 1);
+        P.eq("effort.openrouter_none_sent", !orNone.hasProperty("reasoning") && !orNone.hasProperty("reasoning_effort") ? 1 : 0, 1);
+        const juce::var oaHigh = bodyOf(oaP, "o3", "high");
+        P.eq("effort.openai_body", str(oaHigh, "reasoning_effort") == "high" && !oaHigh.hasProperty("reasoning") ? 1 : 0, 1);
+        const juce::var localHigh = bodyOf(localP, "qwen-probe:32b", "high"), customHigh = bodyOf(customP, "acme-probe", "high");
+        P.eq("effort.other_servers_none_sent", !localHigh.hasProperty("reasoning") && !localHigh.hasProperty("reasoning_effort")
+                                                   && !customHigh.hasProperty("reasoning") && !customHigh.hasProperty("reasoning_effort") ? 1 : 0, 1);
+        const auto thinking = [](const juce::var& b) { return b.getProperty("generationConfig", {}).getProperty("thinkingConfig", {}); };
+        const juce::var g3 = bodyOf(gemP, "gemini-3-pro-preview", "low"), g25 = bodyOf(gemP, "gemini-2.5-flash", "medium"),
+                        g25off = bodyOf(gemP, "gemini-2.5-flash", "none"), g25proOff = bodyOf(gemP, "gemini-2.5-pro", "none"),
+                        g3off = bodyOf(gemP, "gemini-3-pro-preview", "none"), g3none = bodyOf(gemP, "gemini-3-pro-preview", "");
+        P.eq("effort.gemini3_level", str(thinking(g3), "thinkingLevel") == "low" && !thinking(g3).hasProperty("thinkingBudget")
+                                         && static_cast<bool>(thinking(g3).getProperty("includeThoughts", false)) ? 1 : 0, 1);
+        P.eq("effort.gemini25_budget", static_cast<int>(thinking(g25).getProperty("thinkingBudget", -1)) == 8192
+                                           && !thinking(g25).hasProperty("thinkingLevel")
+                                           && static_cast<bool>(thinking(g25).getProperty("includeThoughts", false)) ? 1 : 0, 1);
+        P.eq("effort.gemini25_off", static_cast<int>(thinking(g25off).getProperty("thinkingBudget", -1)) == 0
+                                        && !thinking(g25off).hasProperty("includeThoughts") && !thinking(g25off).hasProperty("thinkingLevel") ? 1 : 0, 1);
+        P.eq("effort.gemini_off_only_where_allowed", !g25proOff.hasProperty("generationConfig") && !g3off.hasProperty("generationConfig") ? 1 : 0, 1);
+        P.eq("effort.gemini_none_sent", !g3none.hasProperty("generationConfig") ? 1 : 0, 1);
+        P.eq("effort.refusal_said", pr::aboutEffort(oaP, 400, "OpenAI: HTTP 400: Unsupported parameter: 'reasoning_effort' is not supported with this model.")
+                                        && pr::aboutEffort(gemP, 400, "Google Gemini: HTTP 400: Thinking level is not supported for this model.")
+                                        && pr::aboutEffort(gemP, 400, "Invalid JSON payload received. Unknown name \"thinkingBudget\" at 'generation_config.thinking_config'")
+                                        && !pr::aboutEffort(oaP, 400, "model o3 does not support image input")
+                                        && !pr::aboutEffort(oaP, 429, "reasoning_effort")
+                                        && !pr::aboutEffort(localP, 400, "Unsupported parameter: 'reasoning_effort'") ? 1 : 0, 1);
+
+        // OpenRouter through the agent: the note, the default shown and nothing sent, a level chosen sent and kept.
+        script->gets["/api/v1/models"] = { 200, orList };
+        why.clear();
+        P.eq("effort.openrouter_set", agent.setProvider({ "openai", "https://openrouter.ai/api/v1", "openai/gpt-probe-5" }, "", why) ? 1 : 0, 1);
+        agent.waitIdle();
+        pg::ChatState s = agent.chatState();
+        P.eq("effort.openrouter_note", has(allOf(s, pg::ChatEntry::Kind::note), "The thinking level carries over where its model takes one")
+                                           && has(allOf(s, pg::ChatEntry::Kind::note), "fast mode, web search and the planner stay Anthropic's") ? 1 : 0, 1);
+        P.eq("effort.openrouter_default_shown", s.model == "openai/gpt-probe-5" && s.effort == "medium"
+                                                    && byId(s.models, "openai/gpt-probe-5").efforts.size() == 6 ? 1 : 0, 1);
+        int before = script->postCount();
+        script->add(stream(fake::OpenAiSse("openai/gpt-probe-5").reasoningDetails("Weighing the filter.", "reasoning.text", true)
+                               .text("A one-pole.").finish("stop").usage(9000, 20).done().str()));
+        agent.send("which filter?");
+        agent.waitIdle();
+        s = agent.chatState();
+        const juce::var t1 = claude::parseJson(script->body(before));
+        P.eq("effort.nothing_chosen_nothing_sent", script->postCount() - before == 1 && !t1.hasProperty("reasoning")
+                                                       && !t1.hasProperty("reasoning_effort") ? 1 : 0, 1);
+        P.eq("effort.reasoning_once", lastText(s, pg::ChatEntry::Kind::thinking) == "Weighing the filter." ? 1 : 0, 1);
+        agent.setEffort("max");                   // a level the model does not take: nothing changes
+        P.eq("effort.unknown_level_refused", agent.chatState().effort == "medium" ? 1 : 0, 1);
+        agent.setEffort("high");
+        s = agent.chatState();
+        const auto keptLevel = [&keys](const std::string& forKey, const std::string& model) {
+            for (const juce::var& e : arr(claude::parseJson(fileText(keys.getChildFile("chat.json"))).getProperty("efforts", {})))
+                if (str(e, "for") == forKey && str(e, "model") == model)
+                    return str(e, "effort");
+            return std::string();
+        };
+        const std::string orFor = "openai https://openrouter.ai/api/v1";
+        P.eq("effort.chosen_kept", s.effort == "high" && keptLevel(orFor, "openai/gpt-probe-5") == "high" ? 1 : 0, 1);
+        before = script->postCount();
+        script->add(stream(fake::OpenAiSse("openai/gpt-probe-5").reasoningDetails("Summed up.", "reasoning.summary")
+                               .text("Done.").finish("stop").usage(9000, 20).done().str()));
+        agent.send("go on");
+        agent.waitIdle();
+        s = agent.chatState();
+        const juce::var t2 = claude::parseJson(script->body(before));
+        P.eq("effort.openrouter_sent", str(t2.getProperty("reasoning", {}), "effort") == "high" && !t2.hasProperty("max_tokens")
+                                           && !t2.hasProperty("reasoning_effort") ? 1 : 0, 1);
+        P.eq("effort.details_shown", lastText(s, pg::ChatEntry::Kind::thinking) == "Summed up." ? 1 : 0, 1);
+        bool reasoningKept = false;
+        for (const juce::var& m : arr(claude::parseJson(agent.saveState()).getProperty("messages", {})))
+            for (const juce::var& blk : arr(m.getProperty("content", {})))
+                reasoningKept = reasoningKept || str(blk, "type") == "thinking" || has(claude::toJson(blk), "Summed up.")
+                             || has(claude::toJson(blk), "Weighing the filter.");
+        P.eq("effort.reasoning_not_kept", reasoningKept ? 1 : 0, 0);
+        // Per model: one without levels shows none and takes none; another's own; the first's again.
+        agent.setModel("meta/llama-probe");
+        agent.setEffort("high");
+        s = agent.chatState();
+        P.eq("effort.no_levels_none", s.effort.empty() && keptLevel(orFor, "meta/llama-probe").empty() ? 1 : 0, 1);
+        agent.setModel("deepseek/r-probe");
+        P.eq("effort.mandatory_default", agent.chatState().effort == "high" ? 1 : 0, 1);
+        agent.setEffort("none");                  // reasoning mandatory: no Off
+        agent.setEffort("low");
+        P.eq("effort.other_model_own", agent.chatState().effort == "low" && keptLevel(orFor, "deepseek/r-probe") == "low" ? 1 : 0, 1);
+        agent.setModel("openai/gpt-probe-5");
+        P.eq("effort.per_model", agent.chatState().effort == "high" ? 1 : 0, 1);
+        // A new processor: the provider, the model and its level kept (chat.json); its turn sends it once the list is in.
+        {
+            pg::Processor second;
+            pg::ChatAgent& again = second.chatAgent();
+            again.setTransport(std::make_unique<fake::Transport>(script));
+            const int b = script->postCount();
+            script->add(stream(fake::OpenAiSse("openai/gpt-probe-5").text("Still high.").finish("stop").usage(9000, 8).done().str()));
+            again.send("still there?");
+            again.waitIdle();
+            const juce::var t3 = claude::parseJson(script->body(b));
+            P.eq("effort.reload_kept", script->postCount() - b == 1 && str(t3.getProperty("reasoning", {}), "effort") == "high"
+                                           && again.chatState().effort == "high" && again.chatState().model == "openai/gpt-probe-5" ? 1 : 0, 1);
+        }
+
+        // OpenAI: its levels by family; a model that refuses the level is asked again at once without it.
+        script->gets["/v1/models"] = { 200, fake::openAiModels({ { "o3-probe", "", 1762000000 }, { "gpt-4o-probe", "", 1761000000 },
+                                                                 { "gpt-5-probe", "", 1763000000 } }) };
+        P.eq("effort.openai_set", agent.setProvider({ "openai", "https://api.openai.com/v1", "o3-probe" }, fake::fakeOpenAiKey(), why) ? 1 : 0, 1);
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("effort.openai_levels", s.effort == "medium" && byId(s.models, "o3-probe").efforts.size() == 3
+                                         && byId(s.models, "gpt-4o-probe").efforts.empty() && byId(s.models, "gpt-5-probe").efforts.size() == 4 ? 1 : 0, 1);
+        agent.setEffort("high");
+        before = script->postCount();
+        const auto errors = count(agent.chatState(), pg::ChatEntry::Kind::error);
+        script->add(fake::Response::failure(400, "invalid_request_error", "Unsupported parameter: 'reasoning_effort' is not supported with this model."));
+        script->add(stream(fake::OpenAiSse("o3-probe").text("Without it.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("think hard");
+        agent.waitIdle();
+        s = agent.chatState();
+        print("effort refused", s);
+        const juce::var r0 = claude::parseJson(script->body(before)), r1 = claude::parseJson(script->body(before + 1));
+        P.eq("effort.openai_sent", str(r0, "reasoning_effort") == "high" && !r0.hasProperty("reasoning") ? 1 : 0, 1);
+        P.eq("effort.refused_asked_again", script->postCount() - before == 2 && !r1.hasProperty("reasoning_effort") ? 1 : 0, 1);
+        P.eq("effort.refused_no_failed_turn", lastText(s, pg::ChatEntry::Kind::assistant) == "Without it."
+                                                  && count(s, pg::ChatEntry::Kind::error) == errors && !s.busy ? 1 : 0, 1);
+        P.eq("effort.refused_noted", has(allOf(s, pg::ChatEntry::Kind::note), "The model (o3-probe) refused the thinking level High") ? 1 : 0, 1);
+        P.eq("effort.refused_pills_gone", s.effort.empty() && byId(s.models, "o3-probe").efforts.empty()
+                                              && keptLevel("openai https://api.openai.com/v1", "o3-probe").empty() ? 1 : 0, 1);
+        agent.setEffort("low");
+        before = script->postCount();
+        script->add(stream(fake::OpenAiSse("o3-probe").text("Still without.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("again");
+        agent.waitIdle();
+        P.eq("effort.refused_for_the_session", agent.chatState().effort.empty()
+                                                   && !claude::parseJson(script->body(before)).hasProperty("reasoning_effort") ? 1 : 0, 1);
+        agent.setModel("gpt-4o-probe");
+        before = script->postCount();
+        script->add(stream(fake::OpenAiSse("gpt-4o-probe").text("No levels here.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("and you?");
+        agent.waitIdle();
+        P.eq("effort.openai_gpt4o_none", agent.chatState().effort.empty()
+                                             && !claude::parseJson(script->body(before)).hasProperty("reasoning_effort") ? 1 : 0, 1);
+
+        // Gemini: Gemini 3 by thinkingLevel (no Off), 2.5 by thinkingBudget (Off on flash), its thoughts shown and never
+        // kept, a refusal asked again without.
+        P.eq("effort.gemini_set", agent.setProvider({ "gemini", "", "gemini-3-pro-preview" }, "", why) ? 1 : 0, 1);
+        agent.waitIdle();
+        P.eq("effort.gemini3_default", agent.chatState().effort == "high" ? 1 : 0, 1);
+        agent.setEffort("none");                  // Gemini 3 cannot turn thinking off
+        P.eq("effort.gemini3_no_off", agent.chatState().effort == "high" ? 1 : 0, 1);
+        agent.setEffort("low");
+        before = script->postCount();
+        script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("Weighing it.", true).text("Low it is.").finish("STOP").str()));
+        agent.send("think a little");
+        agent.waitIdle();
+        s = agent.chatState();
+        const juce::var gs = claude::parseJson(script->body(before));
+        P.eq("effort.gemini3_sent", str(thinking(gs), "thinkingLevel") == "low" && !thinking(gs).hasProperty("thinkingBudget")
+                                        && static_cast<bool>(thinking(gs).getProperty("includeThoughts", false)) ? 1 : 0, 1);
+        P.eq("effort.gemini_thoughts_shown", lastText(s, pg::ChatEntry::Kind::thinking) == "Weighing it."
+                                                 && lastText(s, pg::ChatEntry::Kind::assistant) == "Low it is." ? 1 : 0, 1);
+        bool thoughtKept = false;
+        for (const juce::var& m : arr(claude::parseJson(agent.saveState()).getProperty("messages", {})))
+            thoughtKept = thoughtKept || has(claude::toJson(m), "Weighing it.");
+        P.eq("effort.gemini_thoughts_not_kept", thoughtKept ? 1 : 0, 0);
+        agent.setModel("gemini-2.5-flash");
+        s = agent.chatState();
+        P.eq("effort.gemini25_levels", s.effort.empty() && byId(s.models, "gemini-2.5-flash").efforts.size() == 4 ? 1 : 0, 1);
+        agent.setEffort("none");
+        before = script->postCount();
+        script->add(stream(fake::GeminiSse("gemini-2.5-flash").text("Off.").finish("STOP").str()));
+        agent.send("no thinking");
+        agent.waitIdle();
+        const juce::var go = claude::parseJson(script->body(before));
+        P.eq("effort.gemini25_off_sent", thinking(go).hasProperty("thinkingBudget") && static_cast<int>(thinking(go).getProperty("thinkingBudget", -1)) == 0
+                                             && !thinking(go).hasProperty("thinkingLevel") && !thinking(go).hasProperty("includeThoughts") ? 1 : 0, 1);
+        agent.setEffort("medium");
+        before = script->postCount();
+        script->add(fake::Response::failure(400, "INVALID_ARGUMENT", "Unable to submit request because thinking_budget is not supported by this model."));
+        script->add(stream(fake::GeminiSse("gemini-2.5-flash").text("Fine without.").finish("STOP").str()));
+        agent.send("medium then");
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("effort.gemini_refused", script->postCount() - before == 2
+                                          && static_cast<int>(thinking(claude::parseJson(script->body(before))).getProperty("thinkingBudget", -1)) == 8192
+                                          && !claude::parseJson(script->body(before + 1)).hasProperty("generationConfig")
+                                          && has(allOf(s, pg::ChatEntry::Kind::note), "The model (gemini-2.5-flash) refused the thinking level Medium")
+                                          && s.effort.empty() && byId(s.models, "gemini-2.5-flash").efforts.empty()
+                                          && lastText(s, pg::ChatEntry::Kind::assistant) == "Fine without." ? 1 : 0, 1);
     }
 
     // ---- REDIRECT ----------------------------------------------------------------------------------------------------------

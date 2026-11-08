@@ -5,7 +5,8 @@
 // pressed and, over it, the menu FunkGui's MenuLook draws for the Panel's request (JUCE's popup menu, shown in a
 // component as fg.menulook shows its own), cut to the two, at 2x, to <build>/probe-out/:
 //   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, projects (a project's context menu in
-//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, zoom, chats (the chat card's list of the project's
+//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, thinking_openrouter (the thinking level of a model
+//   OpenRouter's list says reasons, against a scripted server), zoom, chats (the chat card's list of the project's
 //   chats), provider (the key dialog's Provider pill), settings (the output's select), panel (a .gui file's menu
 //   control) and schematic (a netlist's canvas menu); on Linux with no X display, skipped, saying so (noDisplay)
 // and checks:
@@ -21,11 +22,14 @@
 //            its label starting with its file name (the menu's type-ahead), the files the program has ticked, no
 //            disabled row standing for a header; MODEL its two headers, a radio set under each, the current one dotted
 //            and highlighted when it opens (selectedId); THINKING, ZOOM, the output's select and the .gui menu a radio
-//            set, the current one dotted and highlighted; CHATS its header (the project's name), its chats a radio set,
+//            set, the current one dotted and highlighted; THINKING on OpenRouter the model's six levels, its default
+//            dotted; CHATS its header (the project's name), its chats a radio set,
 //            the newest first, the one shown dotted and highlighted, each one's time in the shortcut column, then New
 //            chat, Rename and Delete; PROVIDER its header, every provider a radio set, the one shown dotted; the schematic's canvas menu every key in the shortcut column, none left in a label;
 //            a choice made from each doing what it did
 #include "Probe.h"
+
+#include "../plugin/FakeClaude.h"
 
 #include "editor/ChatStyle.h"
 #include "editor/Dropdown.h"
@@ -824,6 +828,41 @@ PROBE(gui, menus)
                 P.eq("trigger.one_open_fill", fills >= 6 && one ? 1 : 0, 1);
             }
         }
+    }
+
+    // ---- the thinking level on OpenRouter: another provider's model's own levels (a scripted server: no network) --------
+    {
+        pg::Processor processor;
+        processor.settle();
+        auto script = std::make_shared<fake::Script>();
+        script->gets["/api/v1/models"] = { 200, fake::openAiModels({ { "openai/gpt-probe-5", "GPT-5 via OpenRouter", 1760000000, 400000, true, true,
+                                                                       { "xhigh", "high", "medium", "low", "minimal", "none" }, "medium" } },
+                                                                     true) };
+        pg::ChatAgent& agent = processor.chatAgent();
+        agent.setTransport(std::make_unique<fake::Transport>(script));
+        std::string why;
+        const bool set = pg::chatstore::saveProviderKey("openai", "https://openrouter.ai", fake::fakeOpenRouterKey(), &why)
+                      && agent.setProvider({ "openai", "https://openrouter.ai/api/v1", "openai/gpt-probe-5" }, "", why);
+        agent.waitIdle();
+        P.eq("setup.openrouter_thinking", set && agent.chatState().effort == "medium" ? 1 : 0, 1);
+        for (int t = 0; t < 2; ++t)
+        {
+            Rows R{ P, t == 0 };
+            Seen seen;
+            pg::ui::Panel panel(processor.ports(), processor.editorPort());
+            funkgui::HeadlessHost host(panel, t, 2.0f);
+            host.settle();
+            if (const funkgui::MenuRequest* m = openTrigger(R, host, "thinking_openrouter", panel.centreOfThinking(), true, seen))
+            {
+                R.eq("rows.thinking_openrouter.levels", static_cast<int64_t>(choicesOf(*m).size()), 6);
+                radioSet(R, "rows.thinking_openrouter", *m, choicesOf(*m), "Medium (the default)");
+                picture(P, pics, host, panel, *m, "thinking_openrouter", t);
+                host.cancelMenu();
+                closedTrigger(R, host, "thinking_openrouter", seen);
+            }
+        }
+        agent.setProvider({}, "", why);           // Anthropic again, for the Processors that follow (chat.json)
+        agent.waitIdle();
     }
 
     // ---- the Settings card's selects --------------------------------------------------------------------------------
