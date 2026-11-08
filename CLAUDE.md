@@ -101,8 +101,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   #includes with a note (the note at the info strip's left, Not played at its right);
   `gui.chat*.png`: the empty chat, a conversation, the key dialog with a key pasted and with one stored, PAPER, the
   least size and a large one; `gui.providers*.png`: the key dialog as the provider's settings (Anthropic's with its
-  Provider pill, OpenRouter's rows and PAPER, Ollama's, Gemini's, another server's refusal), the chat's bar and a turn on
-  OpenRouter; `gui.columns*.png`: the explorer's and the chat's widths dragged, an edge lit (and in PAPER) and
+  Provider pill, OpenRouter's rows and PAPER, Ollama's, Gemini's, another server's refusal), the chat's bar, its
+  Thinking pill on an OpenRouter model that reasons (`.effort`) and a turn on OpenRouter; `gui.columns*.png`: the explorer's and the chat's widths dragged, an edge lit (and in PAPER) and
   one focused in PAPER, a wide, a narrowed and the least window (the give-way order), the PANEL view and a Schematic view;
   `gui.codepanel*.png`: the panel under the code hidden (and in PAPER), the status line's Panel switch under the
   pointer, the program's card at its least (the switch's icon alone), the least and a wide window (and in PAPER), a
@@ -117,7 +117,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `gui.ab*.png`: PROJECTS with A/B..., A/B's card with B playing and matched (and in PAPER), a file only A has
   scrolled, the least and a wide window;
   `gui.settings*.png`: the Standalone's Settings card, PAPER, the least size, an error, the effect's muted notice;
-  `gui.menus*.png`: each dropdown's menu over its pressed trigger (and PROJECTS' context and tag menus), both themes;
+  `gui.menus*.png`: each dropdown's menu over its pressed trigger (and PROJECTS' context and tag menus, the thinking
+  levels of an OpenRouter model: `thinking_openrouter`), both themes;
   `gui.projects*.png`: PROJECTS' groups (favourites, the factory's, categories, uncategorised; one folded, two chosen),
   a category typed, two projects dragged over a group, a search with a tag, the explorer's PROJECTS grouped, each in
   both themes;
@@ -1164,9 +1165,26 @@ place (its `products/<key>.cmake`, and its names in the docs).
     cut off, the retries and the chats work unchanged. A call's id is made here (`call_` and 24 hex digits), so a
     chat goes on with another provider. Another model's reasoning shows as thinking and is never kept (a thinking block
     without Anthropic's signature is refused there).
-  - **What is Anthropic's alone** is off for another provider, never broken: the thinking levels, fast mode, web
-    search, the planner (`ask_planner` refuses), the cache marks, compaction, fallbacks; their pills are hidden and
-    their setters refuse. `limitNote` is Anthropic's.
+  - **What is Anthropic's alone** is off for another provider, never broken: fast mode, web search, the planner
+    (`ask_planner` refuses), the cache marks, compaction, fallbacks; their pills are hidden and their setters refuse.
+    `limitNote` is Anthropic's.
+  - **Thinking levels** (`providers::Reasoning`, `levelsOf`; `ChatModel::efforts`, `defaultEffort`): the same Thinking
+    pill and `setEffort` drive another provider's own setting where its model takes one, and only when the user chose
+    a level (none chosen: nothing sent, the model's own default, shown as the level when its server says it; the menu's
+    "The model's default" row clears a choice where it does not). OpenRouter (host openrouter.ai): `"reasoning":
+    {"effort"}` alone (never `max_tokens`), the levels from its list's `reasoning` object (`supported_efforts` put in
+    the menu's order, Off dropped when `mandatory`, `default_effort`, Off by default when `default_enabled` is false;
+    no object: no pill); its `reasoning_details` text shows as thinking when no `reasoning` text came, so once. OpenAI
+    (host api.openai.com): `reasoning_effort`, the levels by the model's family (`openAiLevels`: o1/o3/o4, gpt-5
+    with minimal, gpt-5.1 with none as its default, gpt-5.2 with xhigh, later ones low to high; none for `-chat`,
+    gpt-4 and before). Gemini: `generationConfig.thinkingConfig`, `thinkingLevel` from Gemini 3 (pro low and high,
+    flash minimal to high) or `thinkingBudget` on 2.5 (1024, 8192, 24576; 0 for Off on flash and flash-lite only),
+    never both, `includeThoughts` unless Off; its list's `"thinking": false` takes the levels away. Any other server:
+    none. Kept per provider and model in chat.json's `"efforts"` (`ChatAgent::otherEfforts_`,
+    `chatstore::ProviderChoice::efforts`). A 400 that refuses the level (`aboutEffort`) is `workAround`'s first case:
+    asked again at once without it, the model's levels gone for the agent's life (`effortRefused_`, applied to every
+    list read after) and its kept level forgotten, a note; never a failed turn. The provider's note says the level
+    carries over where the model takes one. What the docs say and no probe could check live is in the README.
   - **Degrading**: a 400 that says the model takes no pictures (`aboutImages`, while the request holds one) makes the
     request again with a line of text in each picture's place and marks the model so (`workAround`, a note); a model
     its list already marks so gets the same lines, said once a chat (`picturesNoted_`); a 4xx that says the model
