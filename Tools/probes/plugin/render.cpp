@@ -610,10 +610,17 @@ PROBE(plugin, render)
             {
                 const std::string json = "{\"hold_seconds\": 0.3, \"dials\": {\"piped\": 1}}";
                 wrote = ::write(fd, json.data(), json.size()) == static_cast<ssize_t>(json.size());
+                // Held open a moment: on macOS a reader still asleep in open() when the writer closes stays asleep
+                // (it wakes only while it sees a writer), so a write and close at once can leave the renderer there.
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 ::close(fd);
             }
+            // Waited for with a limit, never read to its end first: a renderer left in open() is ended, not waited on.
+            const bool ended = p.waitForProcessToFinish(60000);
+            if (!ended)
+                p.kill();
             out = p.readAllProcessOutput().toStdString();
-            if (p.waitForProcessToFinish(60000))
+            if (ended)
                 code = static_cast<int>(p.getExitCode());
         }
         std::printf("the request through a pipe (exit %d): %s", code, out.c_str());
