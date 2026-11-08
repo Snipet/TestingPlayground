@@ -986,6 +986,31 @@ PROBE(plugin, providers)
                                         && !pr::aboutEffort(oaP, 400, "model o3 does not support image input")
                                         && !pr::aboutEffort(oaP, 429, "reasoning_effort")
                                         && !pr::aboutEffort(localP, 400, "Unsupported parameter: 'reasoning_effort'") ? 1 : 0, 1);
+        // OpenAI's words for a parameter it does not take are the level's only when they name no picture.
+        P.eq("effort.refusal_not_a_picture", !pr::aboutEffort(oaP, 400, "Unsupported parameter: image_url is not supported with this model.")
+                                                 && !pr::aboutEffort(orP, 400, "Unsupported parameter: 'image_url' is not supported with this model.")
+                                                 && pr::aboutEffort(orP, 400, "Unsupported parameter: 'reasoning' is not supported with this model.") ? 1 : 0, 1);
+        // OpenRouter passing on a refusal from the model's provider: "Provider returned error", the provider's words in its
+        // metadata.raw (Anthropic's, for thinking on with no thinking block before a tool call's result).
+        const std::string thinkingRaw =
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"messages.1.content.0.type: Expected "
+            "`thinking` or `redacted_thinking`, but found `tool_use`. When `thinking` is enabled, a final `assistant` message must "
+            "start with a thinking block. To avoid this requirement, disable `thinking`.\"}}";
+        const auto providerError = [](const juce::var& raw) {
+            return claude::toJson(claude::object(
+                { { "error", claude::object({ { "message", "Provider returned error" }, { "code", 400 },
+                                              { "metadata", claude::object({ { "raw", raw }, { "provider_name", "Anthropic" } }) } }) } }));
+        };
+        const std::string orThinking = providerError(juce::String(thinkingRaw));
+        const std::string orThinkingText = pr::errorText(orP, 400, orThinking);
+        P.eq("effort.provider_words", has(orThinkingText, "Provider returned error (Anthropic: messages.1.content.0.type: Expected `thinking`")
+                                          && has(pr::errorText(orP, 400, providerError(claude::object({ { "error", claude::object({ { "message", "Overloaded." } }) } }))),
+                                                 "Provider returned error (Anthropic: Overloaded.)")
+                                          && has(pr::errorText(orP, 400, providerError("upstream said no")), "Provider returned error (Anthropic: upstream said no)")
+                                          && has(pr::errorText(orP, 400, claude::toJson(claude::object({ { "error", claude::object({ { "message", "Bad input." } }) } }))),
+                                                 "HTTP 400: Bad input.") ? 1 : 0, 1);
+        P.eq("effort.refusal_through_openrouter", pr::aboutEffort(orP, 400, orThinkingText) && !pr::aboutModel(400, orThinkingText)
+                                                      && !pr::aboutEffort(orP, 400, "OpenRouter: HTTP 400: Provider returned error") ? 1 : 0, 1);
 
         // OpenRouter through the agent: the note, the default shown and nothing sent, a level chosen sent and kept.
         script->gets["/api/v1/models"] = { 200, orList };
@@ -993,7 +1018,7 @@ PROBE(plugin, providers)
         P.eq("effort.openrouter_set", agent.setProvider({ "openai", "https://openrouter.ai/api/v1", "openai/gpt-probe-5" }, "", why) ? 1 : 0, 1);
         agent.waitIdle();
         pg::ChatState s = agent.chatState();
-        P.eq("effort.openrouter_note", has(allOf(s, pg::ChatEntry::Kind::note), "The thinking level carries over where its model takes one")
+        P.eq("effort.openrouter_note", has(allOf(s, pg::ChatEntry::Kind::note), "The Thinking menu stays where its model takes a level (that model's own levels; until you choose one, the model's own default)")
                                            && has(allOf(s, pg::ChatEntry::Kind::note), "fast mode, web search and the planner stay Anthropic's") ? 1 : 0, 1);
         P.eq("effort.openrouter_default_shown", s.model == "openai/gpt-probe-5" && s.effort == "medium"
                                                     && byId(s.models, "openai/gpt-probe-5").efforts.size() == 6 ? 1 : 0, 1);
@@ -1060,6 +1085,40 @@ PROBE(plugin, providers)
             P.eq("effort.reload_kept", script->postCount() - b == 1 && str(t3.getProperty("reasoning", {}), "effort") == "high"
                                            && again.chatState().effort == "high" && again.chatState().model == "openai/gpt-probe-5" ? 1 : 0, 1);
         }
+        // A model that thinks only when asked (Claude through OpenRouter: Off by default) with a level chosen, then a tool
+        // call: its next request has no reasoning_details (the reasoning is never kept), which Anthropic refuses while
+        // thinking is on, passed on by OpenRouter as "Provider returned error". Asked again without the level, the tool's
+        // result kept (not run again), the turn goes on.
+        agent.setModel("acme/think-probe");
+        P.eq("effort.asked_off_default", agent.chatState().effort == "none" ? 1 : 0, 1);
+        agent.setEffort("high");
+        before = script->postCount();
+        const auto orErrors = count(agent.chatState(), pg::ChatEntry::Kind::error);
+        script->add(stream(fake::OpenAiSse("acme/think-probe").reasoning("Read it first.")
+                               .call(0, "call_think1", "read_file", "{\"name\":\"program.fm\"}").finish("tool_calls").usage(9000, 30).done().str()));
+        script->add(fake::Response{ 400, {}, orThinking, -1, false, 11, {} });
+        script->add(stream(fake::OpenAiSse("acme/think-probe").text("It reads the input.").finish("stop").usage(9100, 10).done().str()));
+        agent.send("what does the program do?");
+        agent.waitIdle();
+        s = agent.chatState();
+        print("effort refused after a tool call", s);
+        const auto toolResults = [](const juce::var& b) {
+            int n = 0;
+            for (const juce::var& m : arr(b.getProperty("messages", {})))
+                n += str(m, "role") == "tool" ? 1 : 0;
+            return n;
+        };
+        const juce::var k0 = claude::parseJson(script->body(before)), k1 = claude::parseJson(script->body(before + 1)),
+                        k2 = claude::parseJson(script->body(before + 2));
+        P.eq("effort.tool_turn_sent", script->postCount() - before == 3 && str(k0.getProperty("reasoning", {}), "effort") == "high"
+                                          && str(k1.getProperty("reasoning", {}), "effort") == "high" && toolResults(k1) == toolResults(k0) + 1
+                                          && !has(claude::toJson(k1.getProperty("messages", {})), "Read it first.") ? 1 : 0, 1);
+        P.eq("effort.tool_turn_asked_again", !k2.hasProperty("reasoning") && toolResults(k2) == toolResults(k1) ? 1 : 0, 1);
+        P.eq("effort.tool_turn_goes_on", lastText(s, pg::ChatEntry::Kind::assistant) == "It reads the input."
+                                             && count(s, pg::ChatEntry::Kind::error) == orErrors && !s.busy
+                                             && has(allOf(s, pg::ChatEntry::Kind::note), "The model (acme/think-probe) refused the thinking level High")
+                                             && s.effort.empty() && byId(s.models, "acme/think-probe").efforts.empty()
+                                             && keptLevel(orFor, "acme/think-probe").empty() ? 1 : 0, 1);
 
         // OpenAI: its levels by family; a model that refuses the level is asked again at once without it.
         script->gets["/v1/models"] = { 200, fake::openAiModels({ { "o3-probe", "", 1762000000 }, { "gpt-4o-probe", "", 1761000000 },
@@ -1100,6 +1159,15 @@ PROBE(plugin, providers)
         agent.waitIdle();
         P.eq("effort.openai_gpt4o_none", agent.chatState().effort.empty()
                                              && !claude::parseJson(script->body(before)).hasProperty("reasoning_effort") ? 1 : 0, 1);
+        // The refusal holds when the list is read again (another provider and back): the model's levels stay gone.
+        const int lists = script->count("GET /v1/models");
+        P.eq("effort.relist_away", agent.setProvider({}, "", why) ? 1 : 0, 1);
+        P.eq("effort.relist_back", agent.setProvider({ "openai", "https://api.openai.com/v1", "o3-probe" }, "", why) ? 1 : 0, 1);
+        agent.waitIdle();
+        s = agent.chatState();
+        P.eq("effort.refused_relisted", script->count("GET /v1/models") > lists && script->lastHost("GET /v1/models") == "https://api.openai.com"
+                                            && s.model == "o3-probe" && s.effort.empty() && byId(s.models, "o3-probe").efforts.empty()
+                                            && byId(s.models, "gpt-5-probe").efforts.size() == 4 ? 1 : 0, 1);
 
         // Gemini: Gemini 3 by thinkingLevel (no Off), 2.5 by thinkingBudget (Off on flash), its thoughts shown and never
         // kept, a refusal asked again without.
