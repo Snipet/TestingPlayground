@@ -5,8 +5,10 @@ Two playgrounds for writing DSP while the plugin runs, built from one source tre
 Standalone; macOS arm64; and VST3, Standalone on Windows x64 and Linux x86-64: "Windows" and "Linux" below) on JUCE 8.0.4 whose FunkGui editor is a text field holding an FMinus program (the effect's
 main module is `Effect`, one instance; the synth's `Voice`, one instance a note), which the plugin compiles (RUN,
 Cmd-Return) and plays, its parameters becoming the dials. Made from FunkPluginTemplate. Change the panel, the examples
-and the plumbing freely; keep the rules below. README.md is the user's guide (writing a program, the editor, the
-probes); this file is what a session must know (`scripts/plugin.py info` prints the identities).
+and the plumbing freely; keep the rules below. README.md is the user's guide (a short start: what the plugins do,
+building from a clone, using them; then the detail: writing a program, the editor, the probes), CHANGELOG.md what each
+day's merged pull requests changed for users (newest first, an Unreleased section on top); this file is what a session
+must know (`scripts/plugin.py info` prints the identities).
 
 <!-- origin -->
 The effect was an FDN reverb (the legacy `legacy-visage` FDN, ported) with an FMinus script on its output, and the
