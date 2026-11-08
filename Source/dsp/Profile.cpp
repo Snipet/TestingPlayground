@@ -158,8 +158,10 @@ namespace playground::profile
         // its pointer authentication's bits above the address, which the user addresses' mask takes off.
         static std::uintptr_t codeAddress(std::uintptr_t a) noexcept
         {
-#if defined(__arm64__)
+#if defined(__arm64__) && defined(MACH_VM_ADDRESS_MASK)
             return a & static_cast<std::uintptr_t>(MACH_VM_ADDRESS_MASK);
+#elif defined(__arm64__)
+            return a & static_cast<std::uintptr_t>(0x00007FFFFFFFFFFFULL);   // its value in macOS 27's SDK
 #else
             return a;
 #endif

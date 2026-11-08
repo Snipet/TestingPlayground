@@ -192,6 +192,13 @@ foreach(_t bgfx bx bimg bimg_decode bimg_encode)
     endif()
   endif()
 endforeach()
+# shaderc's HLSL compiler (tools/shaderc/shaderc_hlsl.cpp) defines COM_NO_WINDOWS_H before the Direct3D headers and
+# counts on the windows.h included before them to have brought COM's `interface`; the WIN32_LEAN_AND_MEAN every target
+# here is given (CMakeLists.txt) leaves COM out, and the newer Windows SDKs' headers then fail. shaderc is a build tool,
+# not part of a product: it is compiled without it.
+if(WIN32 AND TARGET shaderc)
+  target_compile_options(shaderc PRIVATE /UWIN32_LEAN_AND_MEAN)
+endif()
 # metal-cpp's implementation inside bgfx marks its symbols visibility("default") unless this is defined.
 target_compile_definitions(bgfx PRIVATE METALCPP_SYMBOL_VISIBILITY_HIDDEN)
 file(STRINGS "${bgfx_SOURCE_DIR}/bgfx/include/bgfx/defines.h" _api
