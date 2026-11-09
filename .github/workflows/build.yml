@@ -40,9 +40,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { platform: macos-arm64, os: macos-latest, preset: dev, jobs: 3 }
-          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4 }
-          - { platform: linux-x64, os: ubuntu-latest, preset: linux-dev, jobs: 4, container: "archlinux:base-devel" }
+          # jobs: the build's at once; tests: the tests' (the Mac's 3 cores run two, so a test's own threads have one)
+          - { platform: macos-arm64, os: macos-latest, preset: dev, jobs: 3, tests: 2 }
+          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4, tests: 4 }
+          - { platform: linux-x64, os: ubuntu-latest, preset: linux-dev, jobs: 4, tests: 4, container: "archlinux:base-devel" }
     defaults:
       run:
         shell: bash
@@ -112,7 +113,7 @@ jobs:
 
       - name: Test
         run: |
-          cmd=(ctest --preset ${{ matrix.preset }} --parallel ${{ matrix.jobs }})
+          cmd=(ctest --preset ${{ matrix.preset }} --parallel ${{ matrix.tests }})
           if [ "$RUNNER_OS" = Linux ]; then
             # a headless desktop: Xvfb and openbox, stopped when the tests end
             Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 & xvfb=$!

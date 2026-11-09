@@ -1560,6 +1560,12 @@ PROBE(plugin, chat)
             processor.poll();
             host.tick(1);
             t.after = panel.editor().text();
+            if (!t.merged && t.after != t.before)        // the turn ended between two of the loop's looks: merged now
+            {
+                t.merged = true;
+                (void)v.drawing();
+                t.flash = part.empty() ? 0.0f : v.flashOf(part);
+            }
             const juce::Array<juce::var> m = messagesOf(script->body(from + 1));
             const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
             if (!results.isEmpty())

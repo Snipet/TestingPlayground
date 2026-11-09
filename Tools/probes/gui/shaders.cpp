@@ -1126,22 +1126,27 @@ PROBE(gui, shaders)
             const std::chrono::milliseconds checkTime(150);
             std::mutex seenMutex;
             std::set<std::vector<uint8_t>> seen;
-            x.check = [&seenMutex, &seen, checkTime](const std::vector<uint8_t>& binary, std::string&) {
+            std::chrono::steady_clock::time_point t0{};
+            double firstCheck = -1.0;                    // when the first check began, ms after t0 (under seenMutex)
+            x.check = [&seenMutex, &seen, &t0, &firstCheck, checkTime](const std::vector<uint8_t>& binary, std::string&) {
                 {
                     const std::lock_guard<std::mutex> lock(seenMutex);
                     if (!seen.insert(binary).second)
                         return true;
+                    if (firstCheck < 0.0)
+                        firstCheck = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
                 }
                 std::this_thread::sleep_for(checkTime);
                 return true;
             };
             compiler.setShaderTools(x);
-            const auto t0 = std::chrono::steady_clock::now();
+            t0 = std::chrono::steady_clock::now();
             const pg::CompileStatus h = compiler.compileNow(timedFiles(salt, true, true));
             const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             const double checkMs = static_cast<double>(checkTime.count());
-            std::printf("early: a compile of %.1f ms with four checks of %.0f ms at once took %.1f ms (their sum %.1f)\n", h.ms,
-                        checkMs, total, h.ms + checkMs);
+            std::printf("early: a compile of %.1f ms with four checks of %.0f ms at once took %.1f ms (their sum %.1f; the "
+                        "first check began %.1f ms in)\n",
+                        h.ms, checkMs, total, h.ms + checkMs, firstCheck);
             P.eq("cache.early_heavy_compiles", h.ok && h.panel.shaders.size() == 4 && seen.size() == 4 ? 1 : 0, 1);
             P.le("cache.early_beside_the_compile", total, h.ms + checkMs);
         }

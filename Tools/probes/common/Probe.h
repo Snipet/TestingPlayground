@@ -74,6 +74,10 @@ namespace probe
     // The calling thread's CPU time, ms (Windows: its cycles, QueryThreadCycleTime, over the time-stamp counter's rate):
     // what a cost row times, so that the time a busy machine keeps the thread waiting for a core is not counted.
     double threadMs();
+
+    // A probe's stand-in audio thread kept from a core this long between two blocks (ms) has been starved: under the 20
+    // ms after which the Compiler takes the audio thread for stopped (Compiler.h, "A program that stops"), with room.
+    inline constexpr double kStarvedMs = 15.0;
 }
 
 #define PROBE_FN_(layer, name)  probeFn_##layer##_##name

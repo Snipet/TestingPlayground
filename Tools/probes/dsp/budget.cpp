@@ -723,12 +723,19 @@ PROBE(dsp, budget)
         std::atomic<bool> done{ false };
         std::atomic<float> blow{ 0.0f };
         std::atomic<double> level{ 0.0 };                // the last block's RMS
+        std::atomic<double> worstGap{ 0.0 };             // the longest wait between two blocks' starts, ms
         std::thread audio([&] {
             const probe::Stereo in = sineIn(kBlock);
             probe::Stereo out(kBlock);
             bool struck = false;
+            auto last = std::chrono::steady_clock::now();
             while (!done.load())
             {
+                const auto now = std::chrono::steady_clock::now();
+                const double gap = std::chrono::duration<double, std::milli>(now - last).count();
+                last = now;
+                if (gap > worstGap.load())
+                    worstGap.store(gap);
                 out = in;
                 std::array<float, pg::kMaxControls> norm{};
                 norm[0] = blow.load();
@@ -754,14 +761,30 @@ PROBE(dsp, budget)
         });
         const auto settle = [&] { std::this_thread::sleep_for(std::chrono::milliseconds(120)); };
         const pg::Sources fa = pg::singleFile(program("", ""));
-        const pg::CompileStatus sa = compiler.compileNow(fa);
-        P.eq("run.a_plays", sa.ok ? 1 : 0, 1);
-        settle();
-        // A RUN of a program that stops at once: it fails, A plays on.
+        // A RUN of a program that stops at once: it fails, A plays on. The Compiler waits for the RUN's first blocks
+        // unless the audio thread has called none for 20 ms (Compiler.h, "A program that stops": a host that calls
+        // none); this thread, kept from a core that long (a busy hosted runner), lets it say how the RUN went before B
+        // played, and B's stop is then a later one's (A again, under a new id). So the RUN is tried again, after A is
+        // compiled again, when the thread waited kStarvedMs or more meanwhile: three times at most.
         const std::string bText = kInstrument ? voice(kSpinField, kSpin) : program(kSpinField, kSpin);
-        compiler.request(pg::singleFile(bText));
-        compiler.wait();
-        const pg::CompileStatus sb = compiler.status();
+        pg::CompileStatus sa, sb;
+        for (int attempt = 0; attempt < 3; ++attempt)
+        {
+            sa = compiler.compileNow(fa);
+            settle();
+            worstGap.store(0.0);
+            compiler.request(pg::singleFile(bText));
+            compiler.wait();
+            sb = compiler.status();
+            const double gap = worstGap.load();
+            if (gap < probe::kStarvedMs)
+                break;
+            std::printf("run: the audio thread waited %.1f ms between two blocks during the RUN: A again, the RUN again\n", gap);
+            for (int k = 0; k < 300 && !compiler.status().stopped; ++k)   // B's stop said, A played again
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            settle();
+        }
+        P.eq("run.a_plays", sa.ok ? 1 : 0, 1);
         P.eq("run.at_once_fails", !sb.ok && sb.stopped ? 1 : 0, 1);
         P.eq("run.at_once_a_plays_on", static_cast<int64_t>(sb.program), static_cast<int64_t>(sa.program));
         const std::string where = std::string(pg::kProgramName) + ":"

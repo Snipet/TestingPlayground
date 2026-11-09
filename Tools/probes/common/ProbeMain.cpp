@@ -43,8 +43,9 @@
 #include <dbghelp.h>
 #undef near                                          // windows.h's 16-bit leftovers
 #undef far
-
-#include "dsp/Profile.h"                             // profile::tscPerMs (threadMs)
+#include <intrin.h>                                  // __rdtsc (threadMs)
+#include <chrono>
+#include <thread>
 #endif
 
 namespace probe
@@ -112,11 +113,24 @@ namespace probe
     double threadMs()
     {
 #if defined(_WIN32)
-        // The thread's cycles over the time-stamp counter's rate, as Measure's CPU clock reads them (Measure.cpp):
-        // GetThreadTimes counts whole scheduler ticks of about 15.6 ms, too coarse for a cost row's few milliseconds.
+        // The thread's cycles over the time-stamp counter's rate, measured once against the performance counter, as
+        // Measure's CPU clock reads them (Measure.cpp, Profile.cpp's tscPerMs; here again, as the installer's probes
+        // link none of the plugin's code): GetThreadTimes counts whole scheduler ticks of about 15.6 ms, too coarse for
+        // a cost row's few milliseconds.
+        static const double tscPerMs = [] {
+            LARGE_INTEGER f{}, a{}, b{};
+            QueryPerformanceFrequency(&f);
+            QueryPerformanceCounter(&a);
+            const unsigned long long t0 = __rdtsc();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            QueryPerformanceCounter(&b);
+            const unsigned long long t1 = __rdtsc();
+            const double ms = static_cast<double>(b.QuadPart - a.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+            return ms > 0.0 ? static_cast<double>(t1 - t0) / ms : 1.0e6;
+        }();
         ULONG64 cycles = 0;
         QueryThreadCycleTime(GetCurrentThread(), &cycles);
-        return static_cast<double>(cycles) / playground::profile::tscPerMs();
+        return static_cast<double>(cycles) / tscPerMs;
 #else
         timespec ts{};
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
