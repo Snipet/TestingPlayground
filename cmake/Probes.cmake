@@ -131,6 +131,10 @@ function(fp_add_probes key)
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report
+    # The main thread's stack as macOS and Linux give theirs, 8 MB, not Windows' 1 MB: a probe's function keeps several
+    # Processors (185 KB each) on it at once, up to 960 KB, with the calls below them. (The threads a probe starts take
+    # it too, as their default; in a host the plugin's threads have the host's.)
+    target_link_options(${FP_PROBES} PRIVATE /STACK:8388608)
   elseif(FP_LINUX)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_LINUX_LIBS})
   endif()

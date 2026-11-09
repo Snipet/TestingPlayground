@@ -765,24 +765,34 @@ PROBE(plugin, live)
         P.le("cancel.before_start_quick_s", earlyS, 1.0);
 
         // New chat while a call of Claude Desktop's runs (view_panel, drawn at the next poll): the chat stays busy
-        // until the call ends, so no turn of its own can start beside it.
+        // while the call works, so no turn of its own can start beside it.
+        // Its start waited for by the clock, not by a count of sleeps: a busy machine sleeps longer than it is asked.
         std::atomic<bool> drawn{ false };
+        std::string viewed;
         std::thread desktop([&] {
-            a.mcpCall("view_panel", none, 9003);
+            viewed = resultOf(a.mcpCall("view_panel", none, 9003));
             drawn.store(true);
         });
-        for (int i = 0; i < 400 && !a.mcpWorking() && !drawn.load(); ++i)
+        const auto startBy = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!a.mcpWorking() && !drawn.load() && std::chrono::steady_clock::now() < startBy)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         const bool working = a.mcpWorking();
         a.newChat();
+        // New chat's stop also ends the call's wait for its picture (Processor::chatPicture: the thread that draws it
+        // may be the one waiting for the stop), so the call may end before the chat's state is read, on a busy machine
+        // most of all; the chat is idle then, rightly. What must never be is a call still at work beside a chat that is
+        // not busy: its state read first, then the call's, which can only end.
         const bool busyAfterNew = a.chatState().busy;
+        const bool workingAfter = a.mcpWorking();
         while (!drawn.load())
         {
             q.poll();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         desktop.join();
-        P.eq("newchat.busy_while_desktop_works", working && busyAfterNew ? 1 : 0, 1);
+        std::printf("newchat: the call working %d, the chat busy after New chat %d, the call working then %d; view_panel: "
+                    "%s\n", working ? 1 : 0, busyAfterNew ? 1 : 0, workingAfter ? 1 : 0, viewed.substr(0, 200).c_str());
+        P.eq("newchat.busy_while_desktop_works", working && (busyAfterNew || !workingAfter) ? 1 : 0, 1);
         P.eq("newchat.idle_after", !a.chatState().busy && !a.mcpWorking() ? 1 : 0, 1);
     }
 

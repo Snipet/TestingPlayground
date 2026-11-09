@@ -9,6 +9,23 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
+## 2026-11-09
+
+### Every pull request built and tested on macOS, Linux and Windows ([#30](https://github.com/Snipet/TestingPlayground/pull/30))
+
+**Added**
+- Each pull request, and each change to `main`, builds both plugins and runs every test on GitHub's machines: macOS
+  (Apple silicon), Linux (x86-64) and Windows (x64). A failed run keeps its test log and the tests' pictures for 7
+  days. The tests ran on Windows for the first time here; until the last of them pass, a Windows failure does not
+  block a merge.
+
+**Fixed**
+- Cancelling a long measurement of the effect comes back at once. It used to look through the whole render first: a
+  quarter of a second, or more on a slower machine.
+- On Windows, a shader that does not compile says why, in the compiler's words, and the profile of a program with
+  parallel regions takes its samples while the program's threads keep every core busy.
+- The plugins build with older macOS SDKs and newer Windows SDKs.
+
 ## 2026-11-07
 
 Claude Desktop extension: **0.17.0** (was 0.13.0).

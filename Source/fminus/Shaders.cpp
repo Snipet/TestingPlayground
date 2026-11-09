@@ -518,15 +518,28 @@ namespace playground
                     while (!message.empty() && (message.back() == ' ' || message.back() == '\r'))
                         message.pop_back();
                 }
+                // Direct3D's compiler's (shaderc's HLSL path, on Windows), its log in backquotes, the closing one on a
+                // line of its own: Error: D3DCompile failed 0x80004005 `(12,5-20): error X3014: incorrect number of ...
+                if (const std::size_t e = message.empty() ? line.find(": error X") : std::string::npos; e != std::string::npos)
+                {
+                    const std::size_t colon = line.find(": ", e + 2);
+                    message = colon == std::string::npos ? line.substr(e + 2) : line.substr(colon + 2);
+                    while (!message.empty() && (message.back() == ' ' || message.back() == '\r' || message.back() == '`'))
+                        message.pop_back();
+                }
             }
             if (message.empty())
             {
                 // Not glslang's: shaderc's own line (a missing $input, a file it cannot read), or nothing.
                 std::istringstream again(log);
                 while (std::getline(again, line))
+                {
+                    while (!line.empty() && line.back() == '\r')
+                        line.pop_back();
                     if (!line.empty() && line.find("Failed to build shader") == std::string::npos && line != "Code:"
-                        && line != "---")
+                        && line != "---" && line != "`")             // "`": the end of Direct3D's log (above)
                         message = line;
+                }
                 if (message.empty())
                     message = "shaderc could not run";
             }

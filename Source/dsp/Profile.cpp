@@ -158,8 +158,10 @@ namespace playground::profile
         // its pointer authentication's bits above the address, which the user addresses' mask takes off.
         static std::uintptr_t codeAddress(std::uintptr_t a) noexcept
         {
-#if defined(__arm64__)
+#if defined(__arm64__) && defined(MACH_VM_ADDRESS_MASK)
             return a & static_cast<std::uintptr_t>(MACH_VM_ADDRESS_MASK);
+#elif defined(__arm64__)
+            return a & static_cast<std::uintptr_t>(0x00007FFFFFFFFFFFULL);   // its value in macOS 27's SDK
 #else
             return a;
 #endif
@@ -300,6 +302,10 @@ namespace playground::profile
             pthread_setname_np("measure profile");
 #elif defined(FP_PROFILE_WIN)
             timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            // Above the threads it samples beside: a program's parallel regions keep every core busy with the pool's
+            // threads and the rendering one, and a sampler at their priority waits out a scheduler's quantum for a core
+            // (a server's is long), taking no sample in a render that ends first. It sleeps between samples.
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             struct Close
             {
                 HANDLE& h;

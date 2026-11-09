@@ -71,9 +71,18 @@ namespace probe
     // one are skipped there (skip); the rest of the probe runs.
     std::string noDisplay();
 
-    // The calling thread's CPU time, ms (Windows: GetThreadTimes, in the scheduler's ticks of about 15.6 ms): what a
-    // cost row times, so that the time a busy machine keeps the thread waiting for a core is not counted.
+    // The calling thread's CPU time, ms (Windows: its cycles, QueryThreadCycleTime, over the time-stamp counter's rate):
+    // what a cost row times, so that the time a busy machine keeps the thread waiting for a core is not counted.
     double threadMs();
+
+    // A probe's stand-in audio thread kept from a core this long between two blocks (ms) has been starved: under the 20
+    // ms after which the Compiler takes the audio thread for stopped (Compiler.h, "A program that stops"), with room.
+    inline constexpr double kStarvedMs = 15.0;
+
+    // The calling thread (a probe's stand-in audio thread) above the ones that compile, as a host's audio thread is:
+    // macOS's user-interactive quality of service, Windows' time-critical priority; Linux's as it was (a higher one
+    // there takes a privilege).
+    void asAudioThread();
 }
 
 #define PROBE_FN_(layer, name)  probeFn_##layer##_##name

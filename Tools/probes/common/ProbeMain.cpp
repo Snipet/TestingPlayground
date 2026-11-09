@@ -33,6 +33,10 @@
 #if !defined(_WIN32)
 #include <ctime>
 #endif
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>                             // asAudioThread
+#endif
 
 #if defined(_WIN32)
 #include <atomic>
@@ -43,6 +47,9 @@
 #include <dbghelp.h>
 #undef near                                          // windows.h's 16-bit leftovers
 #undef far
+#include <intrin.h>                                  // __rdtsc (threadMs)
+#include <chrono>
+#include <thread>
 #endif
 
 namespace probe
@@ -110,16 +117,37 @@ namespace probe
     double threadMs()
     {
 #if defined(_WIN32)
-        FILETIME created{}, ended{}, kernel{}, user{};
-        GetThreadTimes(GetCurrentThread(), &created, &ended, &kernel, &user);
-        const auto ticks = [](const FILETIME& f) {
-            return static_cast<double>((static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime);
-        };
-        return (ticks(kernel) + ticks(user)) * 1e-4;   // 100 ns ticks
+        // The thread's cycles over the time-stamp counter's rate, measured once against the performance counter, as
+        // Measure's CPU clock reads them (Measure.cpp, Profile.cpp's tscPerMs; here again, as the installer's probes
+        // link none of the plugin's code): GetThreadTimes counts whole scheduler ticks of about 15.6 ms, too coarse for
+        // a cost row's few milliseconds.
+        static const double tscPerMs = [] {
+            LARGE_INTEGER f{}, a{}, b{};
+            QueryPerformanceFrequency(&f);
+            QueryPerformanceCounter(&a);
+            const unsigned long long t0 = __rdtsc();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            QueryPerformanceCounter(&b);
+            const unsigned long long t1 = __rdtsc();
+            const double ms = static_cast<double>(b.QuadPart - a.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
+            return ms > 0.0 ? static_cast<double>(t1 - t0) / ms : 1.0e6;
+        }();
+        ULONG64 cycles = 0;
+        QueryThreadCycleTime(GetCurrentThread(), &cycles);
+        return static_cast<double>(cycles) / tscPerMs;
 #else
         timespec ts{};
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
         return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
+#endif
+    }
+
+    void asAudioThread()
+    {
+#if defined(__APPLE__)
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#elif defined(_WIN32)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 #endif
     }
 }
@@ -341,6 +369,10 @@ namespace
         std::setvbuf(stdout, nullptr, _IONBF, 0);
         std::setvbuf(stderr, nullptr, _IONBF, 0);
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);   // no window waits for a person to close it
+        // A stack overflow's report runs on what is left of the main thread's stack: kept back for it, DbgHelp's room
+        // to name the frames (without it the raw frames print and the names do not).
+        ULONG kept = 256 * 1024;
+        SetThreadStackGuarantee(&kept);
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         AddVectoredExceptionHandler(1, onVectored);
         SetUnhandledExceptionFilter(onUnhandled);

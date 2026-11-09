@@ -7,8 +7,9 @@
 //            sample, too large a body for the optimiser to inline) and a light one (the main module's half(): a
 //            multiply): the heavy one on top in its own code, its module Heavy's, with at least 80 % of the time, and
 //            the modules' shares said when the main module's is 0.5 % or more; at least kFewSamples samples (an
-//            instrument's note held 2 s, an effect's test signals); the shares (and outside the program's code)
-//            summing to 1
+//            instrument's note held 2 s, an effect's test signals 1 s; where the sampler's sleeps are coarse, as a
+//            virtual machine's are, held longer, up to 8 times and the longest a render may be); the shares (and
+//            outside the program's code) summing to 1
 //   INLINED  what the optimiser folded into what: half() is listed in the code of the main module's process (named
 //            "Voice::process", "Effect::process": the plugin's appended call as the method it calls), and in no other;
 //            every function a range names is the program's (no "playground_" call's name)
@@ -362,40 +363,57 @@ PROBE(dsp, profile)
     P.eq("off.same_metrics", differ, 0);
 
     // ---- HEAVY -------------------------------------------------------------------------------------------------------
-    const std::string line = profileLine(on.report);
+    // Measured again, held longer, where the sampler took fewer than kFewSamples (its sleeps coarse, as a virtual
+    // machine's are: a sample every millisecond or two of the thread's time rather than kIntervalMicros): what is checked
+    // is that a render long enough has them, and then its words.
+    ms::Result longer;
+    const ms::Result* heavyRun = &on;
+    if (pg::profile::available() && on.profileSamples > 0 && on.profileSamples < pg::profile::kFewSamples)
+    {
+        const double times = std::min(8.0, std::ceil(1.5 * static_cast<double>(pg::profile::kFewSamples)
+                                                      / static_cast<double>(on.profileSamples)));
+        ms::Request held = withProfile;
+        held.holdSeconds = static_cast<float>(std::min(static_cast<double>(base.holdSeconds) * times, held.longest));
+        longer = session.measure(held);
+        std::printf("%zu samples held %.1f s (the sampler's sleeps coarse here): held %.1f s, %zu samples\n", on.profileSamples,
+                    static_cast<double>(base.holdSeconds), static_cast<double>(held.holdSeconds), longer.profileSamples);
+        heavyRun = &longer;
+    }
+    const ms::Result& heavyOn = *heavyRun;
+    const std::string line = profileLine(heavyOn.report);
     std::printf("%s\n", line.c_str());
-    for (const auto& s : on.profile)
+    for (const auto& s : heavyOn.profile)
     {
         std::string inl;
         for (const std::string& f : s.inlined)
             inl += (inl.empty() ? "" : ", ") + f;
         std::printf("  %-24s %6.2f %%  module %-8s inlined: %s\n", s.function.c_str(), s.share * 100.0, s.module.c_str(), inl.c_str());
     }
-    std::printf("  outside %.2f %%, %zu samples\n", on.profileOutside * 100.0, on.profileSamples);
+    std::printf("  outside %.2f %%, %zu samples\n", heavyOn.profileOutside * 100.0, heavyOn.profileSamples);
     if (!pg::profile::available())
     {
         P.eq("heavy.unavailable_said", has(line, "Profile: none (this platform cannot sample a thread)") ? 1 : 0, 1);
         return P.finish();
     }
-    P.ge("heavy.samples", static_cast<double>(on.profileSamples), static_cast<double>(pg::profile::kFewSamples));
-    P.eq("heavy.listed", on.profile.empty() ? 0 : 1, 1);
-    if (on.profile.empty())
+    P.ge("heavy.samples", static_cast<double>(heavyOn.profileSamples), static_cast<double>(pg::profile::kFewSamples));
+    P.eq("heavy.listed", heavyOn.profile.empty() ? 0 : 1, 1);
+    if (heavyOn.profile.empty())
         return P.finish();
-    const auto& top = on.profile.front();
+    const auto& top = heavyOn.profile.front();
     const bool ownCode = top.function == "Heavy::run";
     const bool inlinedTop = lists(top.inlined, "Heavy::run");
     std::printf("the heavy function on top: %s\n", ownCode ? "its own code" : inlinedTop ? ("inlined into " + top.function).c_str() : "no");
     P.eq("heavy.on_top", ownCode || inlinedTop ? 1 : 0, 1);
     P.ge("heavy.share", top.share, 0.8);
-    double sum = on.profileOutside;
-    for (const auto& s : on.profile)
+    double sum = heavyOn.profileOutside;
+    for (const auto& s : heavyOn.profile)
         sum += s.share;
     P.near("heavy.shares_sum", sum, 1.0, 1e-9);
     // Its body too large to inline (above): its own code, its module named, and the modules' shares.
     P.eq("heavy.own_code", ownCode ? 1 : 0, 1);
     P.eq("heavy.module", top.module == "Heavy" ? 1 : 0, 1);
     // The modules' shares when more than one has 0.5 % at least: Heavy's and the main module's (process's).
-    const auto* mainShare = shareOf(on.profile, process);
+    const auto* mainShare = shareOf(heavyOn.profile, process);
     const bool twoModules = mainShare != nullptr && mainShare->share >= 0.005;
     P.eq("heavy.by_module", has(line, ". By module: Heavy ") == twoModules ? 1 : 0, 1);
 
@@ -425,7 +443,7 @@ PROBE(dsp, profile)
     P.eq("words.top", has(line, "): " + top.function + " ") ? 1 : 0, 1);
     // Each function sampled is named (up to kListed), with what was inlined into it: process's half() (process takes a
     // sample or two of the effect's renders, or none).
-    const auto* proc = shareOf(on.profile, process);
+    const auto* proc = shareOf(heavyOn.profile, process);
     P.eq("words.inlined", proc == nullptr || (has(line, ", " + process + " ") && has(line, "% (inlined into it: " + half + ")")) ? 1 : 0, 1);
     P.eq("words.outside", has(line, "; outside the program's code ") ? 1 : 0, 1);
     P.eq("words.steady", has(line, "Few samples") ? 0 : 1, 1);
@@ -540,7 +558,15 @@ PROBE(dsp, profile)
             ms::Request held = withProfile;
             held.holdSeconds = 1.0f;
             held.want = { "cpu_percent" };
-            const ms::Result r = par.measure(held);
+            ms::Result r = par.measure(held);
+            // The rendering thread's own share of a parallel program is small: where the sampler took no sample of it
+            // (its sleeps coarse), measured again, held the longest a render may be.
+            if (pg::profile::available() && r.profileSamples == 0)
+            {
+                held.holdSeconds = static_cast<float>(held.longest);
+                r = par.measure(held);
+                std::printf("parallel: no samples held 1 s: held %.1f s, %zu samples\n", held.holdSeconds, r.profileSamples);
+            }
             const std::string pl = profileLine(r.report);
             std::printf("%s\n", pl.c_str());
             P.eq("parallel.said", has(pl, ". Only this thread is sampled: a parallel region's work on the pool's other threads is not in it.") ? 1 : 0, 1);
