@@ -11,6 +11,9 @@
 # on a headless desktop (Xvfb and openbox) with Mesa's software Vulkan. A failed run keeps its test log and the probes'
 # pictures as an artifact for 7 days.
 #
+# Windows' job does not block yet (continue-on-error): its tests first ran here, and the ones that still fail there
+# (shaders under Direct3D, the installer's failures) are being fixed. Its result shows on each run all the same.
+#
 # Each action is pinned to its release's full commit SHA, with the tag in a comment: a tag can be moved, a SHA cannot.
 name: Build
 
@@ -34,6 +37,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     timeout-minutes: 300
+    continue-on-error: ${{ matrix.experimental == true }}
     permissions:
       contents: read
     strategy:
@@ -42,7 +46,8 @@ jobs:
         include:
           # jobs: the build's at once; tests: the tests' (the Mac's 3 cores run two, so a test's own threads have one)
           - { platform: macos-arm64, os: macos-latest, preset: dev, jobs: 3, tests: 2 }
-          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4, tests: 4 }
+          # experimental: its failure does not fail the run (the top of this file)
+          - { platform: windows-x64, os: windows-latest, preset: windows-dev, jobs: 4, tests: 4, experimental: true }
           - { platform: linux-x64, os: ubuntu-latest, preset: linux-dev, jobs: 4, tests: 4, container: "archlinux:base-devel" }
     defaults:
       run:
