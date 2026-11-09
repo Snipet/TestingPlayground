@@ -421,18 +421,27 @@ PROBE(installer, gui)
         P.eq("error.started", panel.page() == Page::installing ? 1 : 0, 1);
         P.eq("error.extension_copying", waitFor([&] { return sys.copiesStarted.load() - base >= 2; }) ? 1 : 0, 1);
         P.eq("error.folder_denied", fixture::denyWrite(appsHome) ? 1 : 0, 1);
+        const std::string passed = fixture::denialPassed(appsHome);
         sys.release();
         panel.waitForRun();
         host.tick(2);
         host.settle();
         fixture::allowWrite(appsHome);
+        // A row that needs the folder to refuse the extension: judged, or skipped where the denial does not bind this
+        // process (Fixture.h).
+        const auto refused = [&](const char* key, bool holds) {
+            if (passed.empty())
+                P.eq(key, holds ? 1 : 0, 1);
+            else
+                probe::skip(P, key, passed);
+        };
         P.eq("error.done_page", panel.page() == Page::done ? 1 : 0, 1);
-        P.eq("error.reported", panel.report().ok() ? 1 : 0, 0);
+        refused("error.reported", !panel.report().ok());
         std::printf("error: %s\n", panel.report().error.c_str());
-        P.eq("error.says_what_was_installed", panel.report().error.find("Installed: ToneSynth's VST3") != std::string::npos ? 1 : 0, 1);
-        P.eq("error.shown", anyLine(panel, "ToneSynth's Claude Desktop extension was not installed") ? 1 : 0, 1);
-        P.eq("error.old_extension_kept", pi::Engine::extensionVersion(appsHome / "ToneSynth.mcpb") == "0.1.0" ? 1 : 0, 1);
-        P.eq("error.a11y_says_error", panel.a11yDump().find("Error: ") != std::string::npos ? 1 : 0, 1);
+        refused("error.says_what_was_installed", panel.report().error.find("Installed: ToneSynth's VST3") != std::string::npos);
+        refused("error.shown", anyLine(panel, "ToneSynth's Claude Desktop extension was not installed"));
+        refused("error.old_extension_kept", pi::Engine::extensionVersion(appsHome / "ToneSynth.mcpb") == "0.1.0");
+        refused("error.a11y_says_error", panel.a11yDump().find("Error: ") != std::string::npos);
         P.eq("error.says_how_to_get_claude", anyLine(panel, "claude.ai/download") ? 1 : 0, 1);
         P.eq("error.names_the_log", anyLine(panel, "The log of what went where") ? 1 : 0, 1);
         shoot(P, panel, host, "gui.installer.error");

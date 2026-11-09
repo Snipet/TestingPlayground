@@ -1380,6 +1380,18 @@ PROBE(gui, shaders)
         P.eq("text.unended", has(err, "t.sc:2:5: note: the shader does not compile: a string has no closing quote on its line") ? 1 : 0, 1);
         pg::shaderText("t.sc", "y = \"\\n\";\n", err);
         P.eq("text.bad_escape", has(err, "t.sc:1:5: note: the shader does not compile: a string's backslash escapes") ? 1 : 0, 1);
+        // A vector of one value a cast (Direct3D's compiler takes no float3(x)), at any depth; one of more values, a
+        // comment, a name that only ends in vec3 and a declaration left; every line kept.
+        const std::string ones = pg::shaderText(
+            "t.sc", "vec3 c = vec3(w * in_out); // vec3(x)\nvec4 d = vec4(vec3(f(a, b)), 1.0); ivec2 i = ivec2 (k);\n"
+                    "myvec3(x); vec3 g(vec3 p) { return vec2(vec4(\"AB\")).xyy; }\n/* vec2(y) */ bvec4 m = bvec4(\n  t);\n",
+            err);
+        std::printf("text.vector_of_one:\n%s", ones.c_str());
+        P.eq("text.vector_of_one",
+             ones == "vec3 c = ((vec3)(w * in_out)); // vec3(x)\nvec4 d = vec4(((vec3)(f(a, b))), 1.0); ivec2 i = ((ivec2) (k));\n"
+                     "myvec3(x); vec3 g(vec3 p) { return ((vec2)(((vec4)(vec4(16961.0, 0.0, 0.0, 0.0))))).xyy; }\n"
+                     "/* vec2(y) */ bvec4 m = ((bvec4)(\n  t));\n"
+                 && err.empty() ? 1 : 0, 1);
 
         // The includes: the library's and the program's .sh files, in turn theirs, each once; one there is none of a note.
         const pg::Sources headers{ { "b.sh", "#include \"funk/text.sh\"\n#include \"c.sh\"\n" }, { "c.sh", "float c1() { return 1.0; }\n" },

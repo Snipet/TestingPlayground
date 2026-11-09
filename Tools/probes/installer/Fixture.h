@@ -101,6 +101,55 @@ namespace fixture
     inline bool denyWrite(const fs::path& dir) { return icacls({ text(dir), "/deny", userSid() + ":(WD,AD)" }) == 0; }
     inline bool allowWrite(const fs::path& dir) { return icacls({ text(dir), "/remove:d", userSid() }) == 0; }
 
+    // This process's token in words: elevated or not, and its backup and restore privileges on or off (with them on, a
+    // folder's denial does not bind what opens it for backup, as CreateDirectoryW does).
+    inline std::string tokenWords()
+    {
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+            return "its token unread";
+        TOKEN_ELEVATION elevation{};
+        DWORD n = 0;
+        const bool elevated =
+            GetTokenInformation(token, TokenElevation, &elevation, static_cast<DWORD>(sizeof elevation), &n) != FALSE
+            && elevation.TokenIsElevated != 0;
+        std::string out = elevated ? "an elevated administrator's process" : "a process not elevated";
+        n = 0;
+        GetTokenInformation(token, TokenPrivileges, nullptr, 0, &n);
+        std::vector<BYTE> buf(n);
+        if (n > 0 && GetTokenInformation(token, TokenPrivileges, buf.data(), n, &n) != FALSE)
+        {
+            const auto* privileges = reinterpret_cast<const TOKEN_PRIVILEGES*>(buf.data());
+            const LUID_AND_ATTRIBUTES* each = privileges->Privileges;
+            for (DWORD i = 0; i < privileges->PrivilegeCount; ++i)
+            {
+                LUID luid = each[i].Luid;
+                wchar_t name[64] = {};
+                DWORD length = 64;
+                if (LookupPrivilegeNameW(nullptr, &luid, name, &length) == FALSE)
+                    continue;
+                const std::wstring w(name, length);
+                if (w == L"SeBackupPrivilege" || w == L"SeRestorePrivilege")
+                    out += std::string(w == L"SeBackupPrivilege" ? ", backup " : ", restore ")
+                         + ((each[i].Attributes & SE_PRIVILEGE_ENABLED) != 0 ? "on" : "off");
+            }
+        }
+        CloseHandle(token);
+        return out;
+    }
+
+    // Why `dir`, denied to this user (denyWrite), takes a new folder here all the same; "" when it refuses it, as for an
+    // installer a user runs. A new folder is what the engine makes there first (its staging folder, CreateDirectoryW).
+    // Where it is not refused (a CI runner's administrator), the rows that need the refusal are skipped, saying so.
+    inline std::string denialPassed(const fs::path& dir)
+    {
+        const fs::path p = dir / ".probe-denied";
+        if (CreateDirectoryW(p.c_str(), nullptr) == FALSE)
+            return {};
+        RemoveDirectoryW(p.c_str());
+        return "a folder denied to this user takes a new folder all the same here (" + tokenWords() + ")";
+    }
+
     // A junction at `link` to `target` (which need not be there).
     inline bool junction(const fs::path& link, const fs::path& target)
     {

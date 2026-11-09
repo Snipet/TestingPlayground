@@ -810,6 +810,132 @@ namespace playground
             return "FP_INCLUDED_" + hex64(fnv64(name));
         }
 
+        // ---- a vector of one value (shaderText) -------------------------------------------------------------------
+        // shaderc reads a shader as HLSL, vec3 being float3 (its own #defines). glslang, which compiles it for Metal
+        // and SPIR-V, takes float3(x) of one value as GLSL takes vec3(x) (x three times, or x's first three); Direct3D's
+        // compiler does not. A cast, ((vec3)(x)), is the same to all three. So a vector type's constructor of one value
+        // (vec2 to vec4, and the ivec, uvec and bvec ones) is written as a cast, at any depth; one of more values,
+        // comments and the rest are left as they are. Characters are only added, within a line: every line keeps its
+        // number.
+        bool identChar(char c)
+        {
+            return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+        }
+
+        bool vectorType(std::string_view w)
+        {
+            if (w.size() == 5 && (w[0] == 'i' || w[0] == 'u' || w[0] == 'b'))
+                w.remove_prefix(1);
+            return w.size() == 4 && w.substr(0, 3) == "vec" && w[3] >= '2' && w[3] <= '4';
+        }
+
+        // Past the comment that starts at i (before `to`), or i when none does there.
+        std::size_t pastComment(const std::string& t, std::size_t i, std::size_t to)
+        {
+            if (i + 1 >= to || t[i] != '/' || (t[i + 1] != '/' && t[i + 1] != '*'))
+                return i;
+            const std::size_t e = t[i + 1] == '/' ? t.find('\n', i) : t.find("*/", i + 2);
+            const std::size_t end = e == std::string::npos ? to : (t[i + 1] == '/' ? e : e + 2);
+            return std::min(end, to);
+        }
+
+        // The ')' that closes the '(' at `open`, before `to`; npos when none does.
+        std::size_t closing(const std::string& t, std::size_t open, std::size_t to)
+        {
+            int depth = 0;
+            for (std::size_t i = open; i < to;)
+            {
+                if (const std::size_t past = pastComment(t, i, to); past != i)
+                {
+                    i = past;
+                    continue;
+                }
+                if (t[i] == '(')
+                    ++depth;
+                else if (t[i] == ')' && --depth == 0)
+                    return i;
+                ++i;
+            }
+            return std::string::npos;
+        }
+
+        // Whether the arguments between the '(' at `open` and its ')' at `close` are one value: something, and no comma
+        // outside a nested ( ), [ ] or { }.
+        bool oneValue(const std::string& t, std::size_t open, std::size_t close)
+        {
+            int depth = 0;
+            bool something = false;
+            for (std::size_t i = open + 1; i < close;)
+            {
+                if (const std::size_t past = pastComment(t, i, close); past != i)
+                {
+                    i = past;
+                    continue;
+                }
+                const char c = t[i++];
+                if (c == '(' || c == '[' || c == '{')
+                    ++depth;
+                else if (c == ')' || c == ']' || c == '}')
+                    --depth;
+                else if (c == ',' && depth == 0)
+                    return false;
+                something = something || (c != ' ' && c != '\t' && c != '\r' && c != '\n');
+            }
+            return something;
+        }
+
+        // t[from, to) with each vector of one value a cast, onto `out`.
+        void castOnes(const std::string& t, std::size_t from, std::size_t to, std::string& out)
+        {
+            std::size_t i = from;
+            while (i < to)
+            {
+                if (const std::size_t past = pastComment(t, i, to); past != i)
+                {
+                    out.append(t, i, past - i);
+                    i = past;
+                    continue;
+                }
+                if (!identChar(t[i]))
+                {
+                    out += t[i++];
+                    continue;
+                }
+                std::size_t e = i;                   // a whole word (a name, or a number)
+                while (e < to && identChar(t[e]))
+                    ++e;
+                const std::string_view word(t.data() + i, e - i);
+                std::size_t open = e;
+                while (open < to && (t[open] == ' ' || t[open] == '\t' || t[open] == '\r' || t[open] == '\n'))
+                    ++open;
+                const std::size_t close =
+                    vectorType(word) && open < to && t[open] == '(' ? closing(t, open, to) : std::string::npos;
+                if (close == std::string::npos)
+                {
+                    out.append(word);
+                    i = e;
+                    continue;
+                }
+                const bool one = oneValue(t, open, close);
+                out += one ? "((" : "";
+                out.append(word);
+                out += one ? ")" : "";
+                out.append(t, e, open - e);          // what lay between the type and its '('
+                out += '(';
+                castOnes(t, open + 1, close, out);
+                out += one ? "))" : ")";
+                i = close + 1;
+            }
+        }
+
+        std::string castOnes(const std::string& t)
+        {
+            std::string out;
+            out.reserve(t.size() + t.size() / 16);
+            castOnes(t, 0, t.size(), out);
+            return out;
+        }
+
         // A shader made ready for shaderc: its text as shaderc reads it, the files it includes as written beside it,
         // and what a note cites (the shader, then the program's .sh files it includes).
         struct Prepared
@@ -831,7 +957,7 @@ namespace playground
             {
                 if (const shaderlib::LibraryFile* lib = shaderlib::libraryFile(name))
                 {
-                    out.files.emplace_back(name, lib->text);
+                    out.files.emplace_back(name, castOnes(lib->text));
                     continue;
                 }
                 const SourceFile* h = findFile(headers, name);
@@ -1218,7 +1344,7 @@ namespace playground
     std::string shaderText(const std::string& file, const std::string& text, std::string& error)
     {
         error.clear();
-        return walk(
+        return castOnes(walk(
             text, [](const std::string&, int, int) {},
             [&](std::string_view inner, int line, int column, bool ended) -> std::string {
                 std::vector<int> codes;
@@ -1234,7 +1360,7 @@ namespace playground
                     return "vec4(0.0, 0.0, 0.0, 0.0)";
                 }
                 return packed(codes);
-            });
+            }));
     }
 
     std::vector<std::string> shaderIncludes(const std::string& file, const std::string& body, const Sources& headers,
