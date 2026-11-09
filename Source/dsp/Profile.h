@@ -28,7 +28,7 @@
 // is one share.
 //
 // Only this thread is sampled: a parallel region's work on the pool's other threads is not, only this thread's part
-// of it (the words say so when a function with a region took a share); cpu_percent counts this thread's alone too.
+// of it (the words say so when the program has a region); cpu_percent counts this thread's alone too.
 //
 // Opt-in: a measure without `profile` makes no Sampler, starts no thread and lists no code (made() counts them, for
 // dsp.profile); a render then checks one null pointer as its timed calls start and end, and its bits are the same with

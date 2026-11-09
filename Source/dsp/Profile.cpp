@@ -10,7 +10,6 @@
 #include <cstring>
 #include <map>
 #include <mutex>
-#include <set>
 #include <thread>
 #include <utility>
 
@@ -576,17 +575,11 @@ namespace playground::profile
                 out += (k == 0 ? "" : ", ") + ranked[k].second + " " + pct(ranked[k].first);
         }
         out += ".";
-        // Only this thread is sampled: a function with a parallel region (its own or one inlined into it) that took a
-        // share ran some of its work on the pool's other threads, which no sample sees.
-        std::set<std::string> regions;
-        for (const Patch::CodeRange& r : m.code)
-            if (r.parallel)
-                regions.insert(r.function);
-        const auto hasRegion = [&](const Share& s) {
-            return regions.count(s.function) != 0
-                || std::any_of(s.inlined.begin(), s.inlined.end(), [&](const std::string& f) { return regions.count(f) != 0; });
-        };
-        if (std::any_of(all.begin(), all.end(), hasRegion))
+        // Only this thread is sampled: a program with a parallel region runs some of its work on the pool's other
+        // threads, which no sample sees. Said of the program, not of the functions sampled: the samples of a region's
+        // work on this thread fall as often in what it calls as in the function that holds it, and with few samples
+        // (a coarse sampler's) that one may take none.
+        if (std::any_of(m.code.begin(), m.code.end(), [](const Patch::CodeRange& r) { return r.parallel; }))
             out += " Only this thread is sampled: a parallel region's work on the pool's other threads is not in it.";
         if (m.samples < kFewSamples)
             out += " Few samples: hold the notes (or the signals) longer for a steadier profile.";

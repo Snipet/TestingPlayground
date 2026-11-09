@@ -1317,8 +1317,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   macOS by its return address and up to `kWalked` frame records up the stack (each checked to lie between its stack
   pointer and its stack's top, aligned, before it is read; `profile::chargesCalls()`), said apart (`Share::calls`: "in
   its calls out of the program's code"); Windows walks no stack, so that time is outside. Only this thread is sampled:
-  a parallel region's work on the pool's other threads is not (`CodeRange::parallel`: the line says so when a function
-  with a region has a share). Off the audio thread only: a Sampler samples the thread that made it, a Session's,
+  a parallel region's work on the pool's other threads is not (`CodeRange::parallel`: the line says so when the
+  program has a region). Off the audio thread only: a Sampler samples the thread that made it, a Session's,
   never the one that plays.
   Opt-in: without it no Sampler is made, no thread started and no code listed (`profile::made`), and the render's
   bits are the same either way; `dsp.profile` checks both, that a deliberately heavy function tops it, that an FFT's
