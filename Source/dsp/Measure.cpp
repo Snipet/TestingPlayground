@@ -3667,8 +3667,8 @@ namespace playground::measure
                 impl_->sampler = counted ? sampler.get() : nullptr;
                 Rendered r = impl_->render(dials, &in, tl, 0);
                 impl_->sampler = nullptr;
-                if (!counted)
-                    return std::move(r.out);
+                if (!counted || impl_->cut.hit)                  // a cut render: nothing of it is measured (its caller
+                    return std::move(r.out);                     // halts), so it is not hashed or looked through: back at once
                 if (all)                                         // a whole report's (Result::hash)
                 {
                     hash.addStereo(r.out.l, r.out.r);

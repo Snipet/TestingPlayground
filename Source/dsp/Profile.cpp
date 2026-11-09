@@ -302,6 +302,10 @@ namespace playground::profile
             pthread_setname_np("measure profile");
 #elif defined(FP_PROFILE_WIN)
             timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+            // Above the threads it samples beside: a program's parallel regions keep every core busy with the pool's
+            // threads and the rendering one, and a sampler at their priority waits out a scheduler's quantum for a core
+            // (a server's is long), taking no sample in a render that ends first. It sleeps between samples.
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             struct Close
             {
                 HANDLE& h;

@@ -356,6 +356,10 @@ namespace
         std::setvbuf(stdout, nullptr, _IONBF, 0);
         std::setvbuf(stderr, nullptr, _IONBF, 0);
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);   // no window waits for a person to close it
+        // A stack overflow's report runs on what is left of the main thread's stack: kept back for it, DbgHelp's room
+        // to name the frames (without it the raw frames print and the names do not).
+        ULONG kept = 256 * 1024;
+        SetThreadStackGuarantee(&kept);
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         AddVectoredExceptionHandler(1, onVectored);
         SetUnhandledExceptionFilter(onUnhandled);

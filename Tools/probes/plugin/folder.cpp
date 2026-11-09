@@ -69,6 +69,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cctype>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -791,9 +792,19 @@ PROBE(plugin, folder)
         P.eq("port.project_name", s.name == "Glass Bloom" ? 1 : 0, 1);
         const fs::path pdir = fs::path(tempDir.getChildFile("projects").getChildFile("Folders").getFullPathName().toStdString())
                             / "Glass Bloom";
+        // Shown as the system writes a path, the home folder as "~": ~/... or /... here, ~\... or C:\... on Windows.
+#if defined(_WIN32)
+        const std::string shownEnd = "\\Folders\\Glass Bloom";
+        const bool rooted = !s.path.empty()
+                         && (s.path[0] == '~' || (s.path.size() > 2 && std::isalpha(static_cast<unsigned char>(s.path[0]))
+                                                  && s.path[1] == ':' && s.path[2] == '\\'));
+#else
         const std::string shownEnd = "/Folders/Glass Bloom";
+        const bool rooted = !s.path.empty() && (s.path[0] == '~' || s.path[0] == '/');
+#endif
+        std::printf("port: shown %s\n", s.path.c_str());
         P.eq("port.path_shown", s.path.size() > shownEnd.size() && s.path.substr(s.path.size() - shownEnd.size()) == shownEnd
-                                    && (s.path[0] == '~' || s.path[0] == '/') ? 1 : 0, 1);
+                                    && rooted ? 1 : 0, 1);
         const auto pollFor = [&a](double seconds) {
             const auto from = std::chrono::steady_clock::now();
             while (std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count() < seconds)

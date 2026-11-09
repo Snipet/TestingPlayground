@@ -558,7 +558,15 @@ PROBE(dsp, profile)
             ms::Request held = withProfile;
             held.holdSeconds = 1.0f;
             held.want = { "cpu_percent" };
-            const ms::Result r = par.measure(held);
+            ms::Result r = par.measure(held);
+            // The rendering thread's own share of a parallel program is small: where the sampler took no sample of it
+            // (its sleeps coarse), measured again, held the longest a render may be.
+            if (pg::profile::available() && r.profileSamples == 0)
+            {
+                held.holdSeconds = static_cast<float>(held.longest);
+                r = par.measure(held);
+                std::printf("parallel: no samples held 1 s: held %.1f s, %zu samples\n", held.holdSeconds, r.profileSamples);
+            }
             const std::string pl = profileLine(r.report);
             std::printf("%s\n", pl.c_str());
             P.eq("parallel.said", has(pl, ". Only this thread is sampled: a parallel region's work on the pool's other threads is not in it.") ? 1 : 0, 1);
