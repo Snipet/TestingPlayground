@@ -33,6 +33,10 @@
 #if !defined(_WIN32)
 #include <ctime>
 #endif
+#if defined(__APPLE__)
+#include <pthread.h>
+#include <pthread/qos.h>                             // asAudioThread
+#endif
 
 #if defined(_WIN32)
 #include <atomic>
@@ -135,6 +139,15 @@ namespace probe
         timespec ts{};
         clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
         return static_cast<double>(ts.tv_sec) * 1000.0 + static_cast<double>(ts.tv_nsec) / 1.0e6;
+#endif
+    }
+
+    void asAudioThread()
+    {
+#if defined(__APPLE__)
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#elif defined(_WIN32)
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 #endif
     }
 }
