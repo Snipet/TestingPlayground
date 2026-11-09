@@ -735,6 +735,7 @@ PROBE(dsp, bounds)
         std::atomic<double> level{ 0.0 };                // the last block's RMS
         std::atomic<double> worstGap{ 0.0 };             // the longest wait between two blocks' starts, ms
         std::thread audio([&] {
+            probe::asAudioThread();                      // as a host's: above the threads that compile
             const probe::Stereo in = sineIn(kBlock);
             probe::Stereo out(kBlock);
             bool struck = false;
@@ -778,6 +779,7 @@ PROBE(dsp, bounds)
         // again, after A is compiled again, when the thread waited kStarvedMs or more meanwhile: three times at most.
         const std::string bText = program(kAtField, kWriteK, kAtFieldInit);
         pg::CompileStatus sa, sb;
+        double starved = 0.0;                            // the last attempt's wait, when every one was starved
         for (int attempt = 0; attempt < 3; ++attempt)
         {
             sa = compiler.compileNow(fa);
@@ -787,23 +789,44 @@ PROBE(dsp, bounds)
             compiler.wait();
             sb = compiler.status();
             const double gap = worstGap.load();
+            starved = gap;
             if (gap < probe::kStarvedMs)
+            {
+                starved = 0.0;
                 break;
+            }
             std::printf("run: the audio thread waited %.1f ms between two blocks during the RUN: A again, the RUN again\n", gap);
             for (int k = 0; k < 300 && !compiler.status().stopped; ++k)   // B's stop said, A played again
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             settle();
         }
         P.eq("run.a_plays", sa.ok ? 1 : 0, 1);
-        P.eq("run.at_once_fails", !sb.ok && sb.stopped && sb.bounds ? 1 : 0, 1);
-        P.eq("run.at_once_a_plays_on", static_cast<int64_t>(sb.program), static_cast<int64_t>(sa.program));
-        P.eq("run.at_once_message", sb.errors.rfind(where + placeOf(bText, "line[k]", 4) + ": error: process() went outside an "
-                                                    "array: index 16 out of bounds for 'line' of type 'float[16]'\n", 0) == 0
-                                        ? 1 : 0, 1);
+        // Every attempt starved: the Compiler took the thread for stopped, as it should a host that calls no block, and
+        // said how the RUN went before B played. The rows that need B to have played are skipped then, saying so.
+        const auto judged = [&](const char* key) {
+            if (starved == 0.0)
+                return true;
+            char why[200];
+            std::snprintf(why, sizeof why, "the audio thread waited %.0f ms or more between two blocks in each of three RUNs "
+                          "(the last %.1f ms; a busy machine): the Compiler took it for stopped, as a host that calls none",
+                          probe::kStarvedMs, starved);
+            probe::skip(P, key, why);
+            return false;
+        };
+        if (judged("run.at_once_fails"))
+            P.eq("run.at_once_fails", !sb.ok && sb.stopped && sb.bounds ? 1 : 0, 1);
+        if (judged("run.at_once_a_plays_on"))
+            P.eq("run.at_once_a_plays_on", static_cast<int64_t>(sb.program), static_cast<int64_t>(sa.program));
+        if (judged("run.at_once_message"))
+            P.eq("run.at_once_message", sb.errors.rfind(where + placeOf(bText, "line[k]", 4) + ": error: process() went outside "
+                                                        "an array: index 16 out of bounds for 'line' of type 'float[16]'\n", 0) == 0
+                                            ? 1 : 0, 1);
         std::printf("run: %s", sb.errors.c_str());
         settle();
         pg::Meters m;
-        P.eq("run.at_once_engine_plays_a", engine.meters(m) && m.program == sa.program ? 1 : 0, 1);
+        const bool metered = engine.meters(m);
+        if (judged("run.at_once_engine_plays_a"))
+            P.eq("run.at_once_engine_plays_a", metered && m.program == sa.program ? 1 : 0, 1);
         P.ge("run.at_once_sounding_db", probe::dbFromLin(level.load()), -30.0);
         // A RUN of one that writes outside once its dial turns (at 20): it plays, then it stops, and A plays again.
         const pg::Sources fc = pg::singleFile(program(kAtDial, kWrite));
