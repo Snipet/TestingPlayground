@@ -1,12 +1,23 @@
-# Builds a release's installers for the Mac when a tag v<version> is pushed (v0.1.0; a pre-release v0.1.0-rc.1), signs
-# and notarizes them, and puts them on a draft GitHub release for a person to read and publish:
+# Builds a release's installers when a tag v<version> is pushed (v0.1.0; a pre-release v0.1.0-rc.1) and attaches them
+# to a draft GitHub release for a person to read and publish:
 #
-#   TestingPlayground-<version>.pkg              every product, for all users (productbuild, Developer ID Installer)
-#   TestingPlayground-Installer-<version>.dmg    the GUI installer on a disk image (Developer ID Application)
+#   TestingPlayground-<version>.pkg                         Mac: every product, for all users (Developer ID Installer)
+#   TestingPlayground-Installer-<version>.dmg               Mac: the GUI installer on a disk image (Developer ID
+#                                                           Application); both signed, notarized and stapled
+#   TestingPlayground-Installer-<version>-windows-x64.zip   Windows: the installer, its exe and payload\ (unsigned)
+#   TestingPlayground-<version>-linux-x86_64.tar.gz         Linux: both products and install.sh (scripts/package-linux.sh;
+#                                                           built on Arch Linux: the glibc and libstdc++ it needs are in
+#                                                           the job's summary)
 #
-# The Release build (LTO) and scripts/package.sh as on a desk: every bundle and binary signed inside out with the
-# hardened runtime and a timestamp, both files notarized and stapled, and Gatekeeper asked about each. The tag's
-# version, without a pre-release's suffix, must be the products' (products/<key>.cmake).
+# The draft is made first; each platform's job then attaches its files, so one that fails can be run again alone. The
+# Mac's runs in the environment `release` (its approval, its secrets): the Release build (LTO) and scripts/package.sh
+# as on a desk, every bundle and binary signed inside out with the hardened runtime and a timestamp, Gatekeeper asked
+# about each file and the installer app inside the image. The tag's version, without a pre-release's suffix, must be
+# the products' (products/<key>.cmake).
+#
+# By hand (workflow_dispatch, with an existing release's tag): Windows and Linux only, from the tag's commit, their
+# files attached to that release (published or not), replacing ones of the same name. A published release's files reach
+# the website when publish-downloads.yml runs again for it (by hand, with the tag).
 #
 # Publishing the draft (by a person: a release GitHub's own token publishes starts no workflow) runs
 # publish-downloads.yml, which puts the files on the website; a pre-release stops after their upload.
@@ -22,50 +33,105 @@ name: Release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing release's tag, like v0.1.0 (Windows and Linux are built and attached to it)
+        required: true
 
-# nothing by default; the job asks for what it needs
+# nothing by default; each job asks for what it needs
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  mac:
-    name: macos-arm64
-    runs-on: macos-latest
-    timeout-minutes: 300
-    environment: release
+  draft:
+    name: draft
+    runs-on: ubuntu-latest
     permissions:
-      contents: write                                  # the draft release and its files
-    defaults:
-      run:
-        shell: bash
-    env:
-      TAG: ${{ github.ref_name }}
-      KEYCHAIN: ${{ github.workspace }}/../release.keychain-db
+      contents: write                                  # the draft release
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
 
       - name: The tag's version
+        id: version
         run: |
           if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::$TAG is no release tag: v<major>.<minor>.<patch>, or with a pre-release's suffix (v0.1.0-rc.1)."
             exit 1
           fi
           version="${BASH_REMATCH[1]}"
-          prerelease=false
-          [ -n "${BASH_REMATCH[2]}" ] && prerelease=true
           products=$(sed -nE 's/^set\(PRODUCT_VERSION +"?([0-9.]+)"?\).*/\1/p' products/*.cmake | sort -u)
           if [ "$products" != "$version" ]; then
             echo "::error::$TAG says $version; the products are at $(echo $products) (products/<key>.cmake)."
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "PRERELEASE=$prerelease" >> "$GITHUB_ENV"
-          echo "$TAG: version $version, pre-release $prerelease"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "$TAG: version $version"
+
+      - name: The draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "The release $TAG is there: the files go to it."
+            exit 0
+          fi
+          if [ "$GITHUB_EVENT_NAME" != push ]; then
+            echo "::error::There is no release $TAG: push the tag to make one (this run only attaches Windows' and Linux's files)."
+            exit 1
+          fi
+          {
+            echo "TestingPlayground $VERSION: the effect and the synth, a standalone app for each, and an extension for"
+            echo "Claude Desktop."
+            echo
+            echo "- **TestingPlayground-Installer-$VERSION.dmg** (Mac, Apple silicon, macOS 14 or later): open it, then open"
+            echo "  TestingPlayground Installer, and choose what to install, for you alone or for every user. Audio Unit and"
+            echo "  VST3. Signed with a Developer ID and notarized by Apple."
+            echo "- **TestingPlayground-$VERSION.pkg** (Mac): a standard package that installs everything for every user."
+            echo "- **TestingPlayground-Installer-$VERSION-windows-x64.zip** (Windows 10 1903 or later, 11; x64): unzip it,"
+            echo "  then run TestingPlayground Installer.exe. VST3. Not signed: Windows may warn before it runs it."
+            echo "- **TestingPlayground-$VERSION-linux-x86_64.tar.gz** (Linux, x86-64 with AVX2 and FMA, a Vulkan driver):"
+            echo "  unpack it and run ./install.sh. VST3. Built on Arch Linux: it needs a recent glibc and libstdc++."
+            echo
+            echo "What changed: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md)."
+          } > "$RUNNER_TEMP/notes.md"
+          flags=(--draft --verify-tag --title "TestingPlayground $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
+          [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}"
+          echo "A draft release $TAG: each platform's job attaches its files."
+
+  mac:
+    name: macos-arm64
+    needs: draft
+    if: github.event_name == 'push'
+    runs-on: macos-latest
+    timeout-minutes: 300
+    environment: release
+    permissions:
+      contents: write                                  # the release's files
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.draft.outputs.version }}
+      KEYCHAIN: ${{ github.workspace }}/../release.keychain-db
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
 
       - name: FMinus's LLVM, Bison and Flex (prebuilt)
         run: |
@@ -163,31 +229,170 @@ jobs:
           echo "PKG=$pkg" >> "$GITHUB_ENV"
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
-      - name: A draft release with both files
+      - name: Attach them to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "TestingPlayground $VERSION for Mac: the effect and the synth as Audio Unit and VST3 plugins, a standalone"
-            echo "app for each, and an extension for Claude Desktop. macOS 14 or later on Apple silicon."
-            echo
-            echo "- **TestingPlayground-Installer-$VERSION.dmg**: open it, then open TestingPlayground Installer, and choose"
-            echo "  what to install, for you alone or for every user."
-            echo "- **TestingPlayground-$VERSION.pkg**: a standard package that installs everything for every user."
-            echo
-            echo "Both are signed with a Developer ID and notarized by Apple. What changed: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md)."
-          } > "$RUNNER_TEMP/notes.md"
-          flags=(--draft --verify-tag --title "TestingPlayground $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
-          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$PKG" "$DMG"   # a run again: the files replaced
-          else
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" "$PKG" "$DMG"
-          fi
-          echo "A draft release $TAG holds both files: read it, then publish it (the website takes it from there)."
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$PKG" "$DMG"
 
       - name: The keychain removed
         if: always()
         run: |
           security delete-keychain "$KEYCHAIN" 2> /dev/null || true
           rm -f "$RUNNER_TEMP/signing.p12" "$RUNNER_TEMP/notary.p8"
+
+  windows:
+    name: windows-x64
+    needs: draft
+    runs-on: windows-latest
+    timeout-minutes: 300
+    permissions:
+      contents: write                                  # the release's files
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.draft.outputs.version }}
+    steps:
+      - name: Visual Studio's environment and its clang-cl
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $clang = 'Microsoft.VisualStudio.Component.VC.Llvm.Clang'
+          $vs = & $vswhere -latest -products * -requires $clang -property installationPath
+          if (-not $vs) { throw "no Visual Studio with its C++ Clang tools" }
+          cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          "$vs\VC\Tools\Llvm\x64\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8   # its clang-cl first
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: FMinus's LLVM, Bison and Flex (prebuilt)
+        run: |
+          llvm=$(sed -nE 's/^set\(FP_FMINUS_LLVM +([0-9.]+)\).*/\1/p' cmake/Deps.cmake)
+          [ -n "$llvm" ] || { echo "no FP_FMINUS_LLVM in cmake/Deps.cmake"; exit 1; }
+          name="fminus-deps-llvm-${llvm}-windows-x64.tar.gz"
+          url="https://github.com/Snipet/FMinus/releases/download/deps-llvm-${llvm}/${name}"
+          cd "$RUNNER_TEMP"   # relative names below: Git Bash's tar takes D:\... for a remote host
+          curl -fsSL --retry 3 -o "$name" "$url"
+          curl -fsSL --retry 3 -o "$name.sha256" "$url.sha256"
+          sha256sum -c "$name.sha256"
+          mkdir -p fminus-deps/install
+          tar -xzf "$name" -C fminus-deps/install
+          echo "FP_FMINUS_DEPS_DIR=$(cygpath -m "$RUNNER_TEMP/fminus-deps")" >> "$GITHUB_ENV"
+
+      - name: Configure (Release)
+        run: cmake --preset windows-release -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR"
+
+      - name: Build
+        run: cmake --build --preset windows-release --parallel 4
+
+      - name: The installer, zipped
+        run: |
+          from="build-windows-release/Installer_artefacts/Release"
+          exe=$(find "$from" -maxdepth 1 -name '*Installer.exe' | head -n 1)
+          [ -n "$exe" ] && [ -d "$from/payload" ] || { echo "::error::$from holds no installer exe and payload."; ls -la "$from" || true; exit 1; }
+          # One folder in the zip, as the README says to take it: the exe and payload\ beside it.
+          stage="$RUNNER_TEMP/zip/TestingPlayground-Installer-$VERSION"
+          mkdir -p "$stage"
+          cp "$exe" "$stage/"
+          cp -R "$from/payload" "$stage/payload"
+          zip="$PWD/build-windows-release/TestingPlayground-Installer-$VERSION-windows-x64.zip"
+          rm -f "$zip"
+          (cd "$RUNNER_TEMP/zip" && 7z a -tzip -mx=9 "$(cygpath -w "$zip")" "TestingPlayground-Installer-$VERSION" > /dev/null)
+          7z l "$(cygpath -w "$zip")" | tail -n 3
+          sha256sum "$zip"
+          echo "ZIP=$zip" >> "$GITHUB_ENV"
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$ZIP"
+
+  linux:
+    name: linux-x64
+    needs: draft
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 300
+    permissions:
+      contents: write                                  # the release's files
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.draft.outputs.version }}
+    steps:
+      - name: Packages
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git clang lld cmake ninja python pkgconf which binutils github-cli \
+            alsa-lib jack2 ladspa curl \
+            freetype2 fontconfig ttf-dejavu \
+            libx11 libxext libxrandr libxinerama libxcursor libxrender libxcomposite libxkbcommon \
+            libglvnd mesa glu glib2 sqlite libsecret \
+            vulkan-icd-loader vulkan-headers
+          git config --system --add safe.directory '*'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - name: FMinus's LLVM, Bison and Flex (prebuilt)
+        run: |
+          llvm=$(sed -nE 's/^set\(FP_FMINUS_LLVM +([0-9.]+)\).*/\1/p' cmake/Deps.cmake)
+          [ -n "$llvm" ] || { echo "no FP_FMINUS_LLVM in cmake/Deps.cmake"; exit 1; }
+          name="fminus-deps-llvm-${llvm}-linux-x64.tar.gz"
+          url="https://github.com/Snipet/FMinus/releases/download/deps-llvm-${llvm}/${name}"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o "$name" "$url"
+          curl -fsSL --retry 3 -o "$name.sha256" "$url.sha256"
+          sha256sum -c "$name.sha256"
+          mkdir -p fminus-deps/install
+          tar -xzf "$name" -C fminus-deps/install
+          echo "FP_FMINUS_DEPS_DIR=$RUNNER_TEMP/fminus-deps" >> "$GITHUB_ENV"
+
+      - name: Configure (Release)
+        run: cmake --preset linux-release -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR"
+
+      - name: Build
+        run: cmake --build --preset linux-release --parallel 4
+
+      - name: The package
+        run: |
+          scripts/package-linux.sh --build-dir build-linux-release
+          tgz="build-linux-release/dist/TestingPlayground-$VERSION-linux-x86_64.tar.gz"
+          [ -f "$tgz" ] || { echo "::error::$tgz was not made."; ls -la build-linux-release/dist || true; exit 1; }
+          sha256sum "$tgz"
+          echo "TGZ=$tgz" >> "$GITHUB_ENV"
+
+      - name: What it needs of the system
+        continue-on-error: true                          # a report: the package is made either way
+        run: |
+          # The newest glibc, libstdc++ and C++ ABI versions its programs and plugins ask for: what a distribution must
+          # have at least (Arch's toolchain, newer than many distributions').
+          dir=$(mktemp -d)
+          tar -xzf "$TGZ" -C "$dir"
+          syms=$(mktemp)
+          find "$dir" -type f | while read -r f; do
+            if head -c 4 "$f" | grep -q $'\x7fELF'; then objdump -T "$f" 2> /dev/null; fi
+          done > "$syms"
+          newest() { grep -oE "$1[0-9.]+" "$syms" | sort -uV | tail -n 1; }
+          {
+            echo "### What the Linux package needs"
+            echo
+            echo "- glibc: $(newest 'GLIBC_') or newer"
+            echo "- libstdc++: $(newest 'GLIBCXX_') or newer ($(newest 'CXXABI_'))"
+            echo "- libraries it links: $(find "$dir" -type f -name '*.so' -o -type f -perm -u+x | while read -r f; do objdump -p "$f" 2> /dev/null | awk '/NEEDED/ { print $2 }'; done | sort -u | tr '\n' ' ')"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$TGZ"
