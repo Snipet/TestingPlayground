@@ -399,16 +399,38 @@ namespace playground
             std::wstring line;
             for (const std::string& a : args)
                 line += (line.empty() ? L"" : L" ") + quoted(std::filesystem::path(a).wstring());
-            STARTUPINFOW si{};
-            si.cb = sizeof si;
-            si.dwFlags = STARTF_USESTDHANDLES;
-            si.hStdInput = in;
-            si.hStdOutput = out;
-            si.hStdError = out;
+            // shaderc inherits these two alone (STARTUPINFOEX's handle list), whatever else the process holds open.
+            // The C runtime opens its files inheritable (an ofstream's too), and a file a shaderc inherited stays open,
+            // with no leave to rename or delete it, until that shaderc exits: another thread's cache entry on its way
+            // (its temporary file could then be neither renamed into place nor removed), another build's files in its
+            // temporary folder, a host's own. With no list, shaderc is not started.
+            HANDLE listed[2] = { out, in };
+            const DWORD listedCount = in != INVALID_HANDLE_VALUE ? 2 : 1;
+            SIZE_T attrBytes = 0;
+            InitializeProcThreadAttributeList(nullptr, 1, 0, &attrBytes);
+            std::vector<unsigned char> attrBuffer(attrBytes);
+            auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuffer.data());
+            BOOL ok = FALSE;
             PROCESS_INFORMATION pi{};
-            const std::wstring exe = std::filesystem::path(args[0]).wstring();
-            const BOOL ok = CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
-                                           nullptr, &si, &pi);
+            if (attrBytes > 0 && InitializeProcThreadAttributeList(attrs, 1, 0, &attrBytes))
+            {
+                if (UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, listed,
+                                              listedCount * sizeof(HANDLE), nullptr, nullptr))
+                {
+                    STARTUPINFOEXW si{};
+                    si.StartupInfo.cb = sizeof si;
+                    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                    si.StartupInfo.hStdInput = in;
+                    si.StartupInfo.hStdOutput = out;
+                    si.StartupInfo.hStdError = out;
+                    si.lpAttributeList = attrs;
+                    const std::wstring exe = std::filesystem::path(args[0]).wstring();
+                    ok = CreateProcessW(exe.c_str(), line.data(), nullptr, nullptr, TRUE,
+                                        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+                                        &si.StartupInfo, &pi);
+                }
+                DeleteProcThreadAttributeList(attrs);
+            }
             CloseHandle(out);
             if (in != INVALID_HANDLE_VALUE)
                 CloseHandle(in);

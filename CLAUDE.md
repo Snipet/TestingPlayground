@@ -663,7 +663,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (a .gui file's) are compiled by a `shaderc.exe` built from bgfx.cmake (unless the deps cache holds a stamped one),
   HLSL through the system's `d3dcompiler_47.dll` (`windows`, `s_5_0`: ShaderTools' defaults there); CMakeLists.txt
   copies it into the VST3's `Contents/Resources` and beside the Standalone's `.exe`, where Processor.cpp's
-  `shaderTools` and the sandbox's helper look. bgfx.cmake comes from the deps cache, else GitHub, as on macOS. With
+  `shaderTools` and the sandbox's helper look. Shaders.cpp starts it with its two handles alone (its log and NUL:
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, as the MCP server starts its helper): the C runtime's files are inheritable,
+  and one a shaderc inherited (another thread's cache entry on its way, a host's file) could be neither renamed nor
+  deleted until it exited (`gui.shaders`' `cache.held_none_stuck`). bgfx.cmake comes from the deps cache, else GitHub,
+  as on macOS. With
   `FP_WITH_GPU` off neither bgfx nor shaderc is fetched or built (FunkGui::core and the harness only), the editor runs
   in `editor/nogpu/SoftEditorHost` (EditorHost's input, zoom, resizing, menus and chooser rules: change them together;
   it draws through SoftRaster only when the frame's primitives change), Picture.cpp's pictures take SoftRaster's path

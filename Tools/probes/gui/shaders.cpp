@@ -44,7 +44,10 @@
 //             moved on) builds again where the same one read the disk; a corrupt entry (a byte flipped, cut in half,
 //             empty, garbage, another shader's entry under its name) is ignored, built again right and written again
 //             whole; four threads asking one cache for one new build run shaderc once, four caches (as four processes)
-//             building one at once leave one whole entry, no temporary file; the cap removes the entries used least
+//             building one at once leave one whole entry, no temporary file; a running shaderc holds none of the
+//             process's other files (on Windows one open as a shaderc started was inherited by it, until its start
+//             listed the handles it takes), so files written and closed while builds start are renamed and removed at
+//             once; the cap removes the entries used least
 //             lately down to three quarters of it, the newest kept; the folder scanned at the process's first write
 //             there, not at each (shaderCacheScans), that scan removing a temporary file left long ago and keeping a
 //             new one; RUN's early builds take a shader's inputs at their word (readGuiShaders), and a wrong guess (an
@@ -106,6 +109,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1015,6 +1019,70 @@ PROBE(gui, shaders)
             }
             P.eq("cache.processes_whole_entry", whole ? 1 : 0, 1);
             P.eq("cache.processes_no_temp_left", folder(root / "together").temps, 0);
+        }
+
+        // A running shaderc holds none of the process's other files: one written and closed while builds start is
+        // renamed and removed at once. On Windows a file open as a shaderc started was inherited by it, and could be
+        // neither until that shaderc exited (the temporary file above was left so); a descriptor holds no name
+        // elsewhere. A try that fails is made again for 10 ms, which a scanner's look at a new file is over in and a
+        // shaderc is not.
+        {
+            const std::filesystem::path heldDir = root / "held";
+            std::filesystem::create_directories(heldDir, ec);
+            const pg::ShaderTools heldTools = fresh(heldDir / "cache");
+            const auto spin = [](int ms) {
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+                while (std::chrono::steady_clock::now() < until)
+                    std::this_thread::yield();
+            };
+            const auto soon = [&](const auto& tryIt) {
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+                for (;;)
+                {
+                    if (tryIt())
+                        return true;
+                    if (std::chrono::steady_clock::now() >= until)
+                        return false;
+                    std::this_thread::yield();
+                }
+            };
+            constexpr int kHeldBuilds = 6;
+            std::atomic<bool> buildsDone{ false };
+            std::atomic<int> buildsOk{ 0 };
+            std::thread builder([&] {
+                for (int k = 0; k < kHeldBuilds; ++k)
+                    if (pg::ShaderCache().build("still.sc", saltedStill(500 + k), { "cutoff" }, heldTools).ok())
+                        buildsOk.fetch_add(1);
+                buildsDone.store(true);
+            });
+            int tried = 0, stuck = 0;
+            while (!buildsDone.load())
+            {
+                const std::filesystem::path from = heldDir / ("f" + std::to_string(tried) + ".txt");
+                const std::filesystem::path to = heldDir / ("f" + std::to_string(tried) + ".moved");
+                {
+                    std::ofstream file(from, std::ios::binary | std::ios::trunc);
+                    file << "held";
+                    spin(2);                             // open while a shaderc may start
+                }
+                const bool moved = soon([&] {
+                    std::error_code e;
+                    std::filesystem::rename(from, to, e);
+                    return !e;
+                });
+                const bool removed = moved && soon([&] {
+                    std::error_code e;
+                    return std::filesystem::remove(to, e) && !e;
+                });
+                stuck += removed ? 0 : 1;
+                ++tried;
+            }
+            builder.join();
+            std::printf("held: %d files written while %d shaders were built; %d not renamed and removed\n", tried,
+                        kHeldBuilds, stuck);
+            P.eq("cache.held_builds", buildsOk.load(), kHeldBuilds);
+            P.ge("cache.held_files_tried", tried, kHeldBuilds);
+            P.eq("cache.held_none_stuck", stuck, 0);
         }
 
         // The cap: the entries used least lately go first, down to three quarters of it; the newest stays.

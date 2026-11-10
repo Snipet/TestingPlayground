@@ -20,6 +20,8 @@ When a day changed the Claude Desktop extension, its section says the extension'
   which Direct3D's takes as Metal's and Vulkan's do. On Windows such a shader did not compile.
 - The profile of a program with parallel regions always says that only the rendering thread is sampled. With few
   samples the note came and went.
+- On Windows the shader compiler no longer holds other open files of the plugin, or of the host, while it runs.
+  A shader built at the same moment as another could lose its place in the cache and leave a temporary file there.
 
 **Changed**
 - A Windows run that fails now blocks a merge, as macOS's and Linux's do.
