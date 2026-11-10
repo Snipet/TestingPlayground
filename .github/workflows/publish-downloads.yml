@@ -1,9 +1,14 @@
 # Publishes a release's installers on the website. When a release is published (or by hand, with its tag), this
-# downloads its .dmg and .pkg, checks each against the SHA-256 GitHub recorded, uploads them to the website's R2 bucket
-# under the tag (the site serves them at /downloads/<tag>/<file>), and asks the website's repository to put the release
-# on its download page. A pre-release stops after the upload: it tests the path without changing the page.
+# downloads its files, checks each against the SHA-256 GitHub recorded, uploads them to the website's R2 bucket under
+# the tag (the site serves them at /downloads/<tag>/<file>), and asks the website's repository to put the release on
+# its download page. A pre-release stops after the upload: it tests the path without changing the page.
 #
-# Publish a release only once both files are attached: `gh release create <tag> --draft ... <files>`, then
+# The files: the Mac's TestingPlayground-Installer-<version>.dmg and TestingPlayground-<version>.pkg, which a release
+# must have, and, when it has them, TestingPlayground-Installer-<version>-windows-x64.zip and
+# TestingPlayground-<version>-linux-x86_64.tar.gz (release.yml makes all four). Files attached to a release after it was
+# published reach the website when this runs again for it, by hand.
+#
+# Publish a release only once its files are attached: release.yml makes a draft with them; publish it with
 # `gh release edit <tag> --draft=false`.
 #
 # Secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (an R2 API token with Object Read & Write on the
@@ -40,11 +45,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir dist \
-            --pattern 'TestingPlayground-Installer-*.dmg' --pattern 'TestingPlayground-*.pkg'
+            --pattern 'TestingPlayground-Installer-*.dmg' --pattern 'TestingPlayground-*.pkg' \
+            --pattern 'TestingPlayground-Installer-*-windows-x64.zip' --pattern 'TestingPlayground-*-linux-x86_64.tar.gz'
           dmgs=$(find dist -name '*.dmg' | wc -l)
           pkgs=$(find dist -name '*.pkg' | wc -l)
+          zips=$(find dist -name '*-windows-x64.zip' | wc -l)
+          tgzs=$(find dist -name '*-linux-x86_64.tar.gz' | wc -l)
           if [ "$dmgs" -ne 1 ] || [ "$pkgs" -ne 1 ]; then
             echo "::error::The release needs exactly one TestingPlayground-Installer-<version>.dmg and one TestingPlayground-<version>.pkg; it has $dmgs and $pkgs."
+            exit 1
+          fi
+          if [ "$zips" -gt 1 ] || [ "$tgzs" -gt 1 ]; then
+            echo "::error::The release has $zips Windows .zip files and $tgzs Linux .tar.gz files; at most one of each."
             exit 1
           fi
           ls -l dist
@@ -80,6 +92,8 @@ jobs:
           for file in dist/*; do
             case "$file" in
               *.dmg) type=application/x-apple-diskimage ;;
+              *.zip) type=application/zip ;;
+              *.tar.gz) type=application/gzip ;;
               *) type=application/octet-stream ;;
             esac
             aws s3 cp "$file" "s3://$BUCKET/$TAG/$(basename "$file")" \

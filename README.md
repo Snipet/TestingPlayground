@@ -2410,13 +2410,18 @@ keeps keys for itself (some do for the space bar or the arrows, or play notes fr
 "keyboard to plugin" option on for typing in the editor.
 
 **Releasing.** A tag makes the release. Push `v<version>` (the products' version, `products/<key>.cmake`), or
-`v<version>-rc.<n>` for a pre-release, and `.github/workflows/release.yml` builds the Release on a Mac runner, signs
-and notarizes `TestingPlayground-<version>.pkg` and `TestingPlayground-Installer-<version>.dmg` as above, asks
-Gatekeeper about each, and attaches both to a draft GitHub release:
+`v<version>-rc.<n>` for a pre-release, and `.github/workflows/release.yml` makes a draft GitHub release and attaches
+each platform's files to it: on a Mac runner the Release build, `TestingPlayground-<version>.pkg` and
+`TestingPlayground-Installer-<version>.dmg` signed and notarized as above, Gatekeeper asked about each; on Windows the
+installer's folder zipped, `TestingPlayground-Installer-<version>-windows-x64.zip` (unsigned); on Linux
+`scripts/package-linux.sh`'s `TestingPlayground-<version>-linux-x86_64.tar.gz`, built on Arch Linux (the job's summary
+says which glibc and libstdc++ it needs). Run by hand with an existing release's tag, it builds Windows and Linux alone
+and attaches their files to that release:
 
 ```sh
 git tag -a v<version> -m "TestingPlayground <version>" && git push origin v<version>
 gh release edit v<version> --draft=false      # once you have read the draft
+gh workflow run release.yml -f tag=v<version>  # Windows and Linux again, for a release that has the tag
 ```
 
 Its secrets are the `release` environment's: `MACOS_SIGNING_P12` (base64 of a .p12 holding both Developer ID
@@ -2428,8 +2433,10 @@ run's own, removed after; the identities' names, which carry the team's ID, are 
 **Publishing.** Publishing the release (by a person: one GitHub's own token publishes starts no workflow) puts both
 files on the website's download page. `.github/workflows/publish-downloads.yml` checks both files against the
 SHA-256 GitHub recorded, uploads them to the website's R2 bucket under the tag, and asks the website's repository
-(Snipet/TestingPlaygroundBackend) to offer the release, which it does with each file's size and checksum. A
-pre-release stops after the upload: it tries the path without changing the page. Its secrets: `R2_ACCOUNT_ID`,
+(Snipet/TestingPlaygroundBackend) to offer the release, which it does with each file's size and checksum: the Mac's
+two always, Windows' and Linux's when the release has them (files attached after it was published reach the site when
+it runs again: `gh workflow run publish-downloads.yml -f tag=v<version>`). A pre-release stops after the upload: it
+tries the path without changing the page. Its secrets: `R2_ACCOUNT_ID`,
 `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `WEBSITE_DISPATCH_TOKEN`; run it by hand, with a tag, to redo a
 release.
 
@@ -2713,7 +2720,7 @@ scripts/                 plugin.py (the products' identities: info, add, rename,
                          app's disk image), entitlements/ (the Standalones' hardened runtime, by kind),
                          package-linux.sh (the Linux package, a .tar.gz) and linux-install.sh (its install.sh)
 .github/workflows/       build.yml (each pull request built and tested on macOS, Windows and Linux), release.yml (a
-                         v* tag's signed, notarized installers, as a draft release), publish-downloads.yml (a
+                         v* tag's installers for macOS, Windows and Linux, as a draft release), publish-downloads.yml (a
                          published release's files to the website), runners.yml (what the hosted runners offer)
 cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in,
                          Installer.cmake (the installer, its payload, its probes) and InstallerPayload.cmake (the
