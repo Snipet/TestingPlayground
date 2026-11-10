@@ -50,7 +50,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | Path | What | Rule |
 | --- | --- | --- |
 | `products/<key>.cmake` | a product's identity: name, kind (`effect.cmake` an effect, `synth.cmake` an instrument), version, company, codes, bundle id, environment and Objective-C prefixes | `scripts/plugin.py` reads and rewrites them; the plugin code stays unique among the user's plugins; nothing else names a product |
-| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.26.0: the TextEditor and its code-editor hooks, resizable Panels, custom shaders, images, several editors in one host, GPU pictures, Windows on Direct3D 11, unchanged frames left undrawn and each editor its own cadence, the TextEditor's kept spans, shader checks off the message thread, custom-shader textures, menus in the canvas's style, each frame shown as soon as it is drawn, primitives drawn as instances), FMinus (a commit) | move a pin's tag, commit and version together |
+| `cmake/Deps.cmake` | the pins: JUCE, bgfx, FunkGui (v0.26.1: the TextEditor and its code-editor hooks, resizable Panels, custom shaders, images, several editors in one host, GPU pictures, Windows on Direct3D 11, unchanged frames left undrawn and each editor its own cadence, the TextEditor's kept spans, shader checks off the message thread, custom-shader textures, menus in the canvas's style, each frame shown as soon as it is drawn, primitives drawn as instances, custom shaders under Direct3D 11), FMinus (a commit) | move a pin's tag, commit and version together |
 | `cmake/Probes.cmake` | each product's probe executable and tests (`fp_add_probes`), the lints once (`fp_add_lints`) | test names `<key>:<layer>.<name>`, labels `probe`, `<layer>`, `<key>` |
 | `cmake/Installer.cmake` | the installer (`fp_add_installer`, after every product): its name (the products' names' common start, else the first's; `FP_PROJECT_NAME`, `FP_INSTALLER_NAME`, in the cache for `scripts/package.sh`), the generated `Installer.h`, the payload's `payload.json`, the app (target `Installer`), its payload (`installer_payload`: `cmake/InstallerPayload.cmake` clones every product's bundles and extension into the app, `ditto --clone`, then signs the app again, ad hoc) and its probes (`Installer_probes`: `Tools/probes/installer/`, tests `installer.<name>`, once); on Windows "<Project> Installer.exe" with `payload\` beside it (`InstallerPayload.cmake` copies each product's VST3 bundle, its Standalone's folder and its .mcpb, the build's .pdb, .ilk, .exp and .lib left out), nothing signed, the app and its probes on UTF-8 as their code page (`Source/installer/Utf8.manifest`) | built by every build (the clones cost nothing on APFS); the installer takes the first product's company, version, bundle id (`.installer` after it) and kind's icon |
 | `factory/<key>/<name>/` | a product's factory projects (`plugin/Factory.h`): a folder a project, named as it is, holding `project.json` (a project file's JSON of one version, its files' texts left out) and that version's files beside it; CMakeLists.txt compiles them into the plugin (`generated/<key>/FactoryProjects.h`, its bytes printed at configure); `factory/<key>/imported.txt` lists what `scripts/import-factory.py` wrote | written by the import (a project folder by hand keeps the same shape); never the user's own projects nor the name map (both stay out of the repository: the user, or the lead when the user says, runs the import); the ones now are made-up placeholders the import's first real run replaces; `plugin.factory` compiles and plays every one |
@@ -663,7 +663,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (a .gui file's) are compiled by a `shaderc.exe` built from bgfx.cmake (unless the deps cache holds a stamped one),
   HLSL through the system's `d3dcompiler_47.dll` (`windows`, `s_5_0`: ShaderTools' defaults there); CMakeLists.txt
   copies it into the VST3's `Contents/Resources` and beside the Standalone's `.exe`, where Processor.cpp's
-  `shaderTools` and the sandbox's helper look. bgfx.cmake comes from the deps cache, else GitHub, as on macOS. With
+  `shaderTools` and the sandbox's helper look. Shaders.cpp starts it with its two handles alone (its log and NUL:
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, as the MCP server starts its helper): the C runtime's files are inheritable,
+  and one a shaderc inherited (another thread's cache entry on its way, a host's file) could be neither renamed nor
+  deleted until it exited (`gui.shaders`' `cache.held_none_stuck`). bgfx.cmake comes from the deps cache, else GitHub,
+  as on macOS. With
   `FP_WITH_GPU` off neither bgfx nor shaderc is fetched or built (FunkGui::core and the harness only), the editor runs
   in `editor/nogpu/SoftEditorHost` (EditorHost's input, zoom, resizing, menus and chooser rules: change them together;
   it draws through SoftRaster only when the frame's primitives change), Picture.cpp's pictures take SoftRaster's path
@@ -1317,8 +1321,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   macOS by its return address and up to `kWalked` frame records up the stack (each checked to lie between its stack
   pointer and its stack's top, aligned, before it is read; `profile::chargesCalls()`), said apart (`Share::calls`: "in
   its calls out of the program's code"); Windows walks no stack, so that time is outside. Only this thread is sampled:
-  a parallel region's work on the pool's other threads is not (`CodeRange::parallel`: the line says so when a function
-  with a region has a share). Off the audio thread only: a Sampler samples the thread that made it, a Session's,
+  a parallel region's work on the pool's other threads is not (`CodeRange::parallel`: the line says so when the
+  program has a region). Off the audio thread only: a Sampler samples the thread that made it, a Session's,
   never the one that plays.
   Opt-in: without it no Sampler is made, no thread started and no code listed (`profile::made`), and the render's
   bits are the same either way; `dsp.profile` checks both, that a deliberately heavy function tops it, that an FFT's

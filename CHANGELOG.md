@@ -11,6 +11,21 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## 2026-11-09
 
+### Shaders on Windows, and Windows' tests counted ([#31](https://github.com/Snipet/TestingPlayground/pull/31))
+
+**Fixed**
+- On Windows the panel's shaders draw. FunkGui v0.26.1 takes the shaders Direct3D compiles: v0.26.0 refused each one
+  that read the panel's size or the time.
+- A shader may make a vector of one value as GLSL does, `vec3(x)`: the plugin hands it to the compiler as a cast,
+  which Direct3D's takes as Metal's and Vulkan's do. On Windows such a shader did not compile.
+- The profile of a program with parallel regions always says that only the rendering thread is sampled. With few
+  samples the note came and went.
+- On Windows the shader compiler no longer holds other open files of the plugin, or of the host, while it runs.
+  A shader built at the same moment as another could lose its place in the cache and leave a temporary file there.
+
+**Changed**
+- A Windows run that fails now blocks a merge, as macOS's and Linux's do.
+
 ### Every pull request built and tested on macOS, Linux and Windows ([#30](https://github.com/Snipet/TestingPlayground/pull/30))
 
 **Added**

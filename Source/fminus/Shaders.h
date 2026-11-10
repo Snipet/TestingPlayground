@@ -117,8 +117,10 @@ namespace playground
 
     // A shader's file (or a .sh file's) as shaderc reads it: every string literal outside comments and #include lines
     // made its glyph codes (fminus/ShaderLib.h: up to 12 characters a vec4, up to 48 a mat4; a backslash before a
-    // backslash, a quote, or a u and four hex digits (a code point) escapes it), the rest as written, line for line.
-    // `error`: the first string that cannot be one, as a note on its line and column ("" when none).
+    // backslash, a quote, or a u and four hex digits (a code point) escapes it), and every vector made of one value
+    // (vec3(x), as GLSL writes x three times or x's first three) a cast, ((vec3)(x)), which Direct3D's compiler takes as
+    // Metal's and SPIR-V's do (it takes float3(x) only of three); the rest as written, line for line. `error`: the
+    // first string that cannot be one, as a note on its line and column ("" when none).
     std::string shaderText(const std::string& file, const std::string& text, std::string& error);
 
     // The files a shader's text #includes (outside comments), and in turn theirs, each once, in the order they are

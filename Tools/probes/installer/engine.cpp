@@ -128,16 +128,48 @@ namespace
         return p.make_preferred().string();
     }
 
-    // The script with every PowerShell-quoted occurrence of `p` taken out: what is left must not name `p`.
+    // The script's code: what is left with its strings in single quotes ('' within one a quote) and its comments (# to
+    // the line's end, outside a string) taken out. A name in a comment ("# 0: Tone.vst3") runs nothing: Windows' file
+    // names hold no line break.
+    std::string psCode(const std::string& script)
+    {
+        std::string code;
+        bool quoted = false, comment = false;
+        for (std::size_t i = 0; i < script.size(); ++i)
+        {
+            const char c = script[i];
+            if (comment)
+            {
+                if (c != '\n')
+                    continue;
+                comment = false;
+            }
+            else if (quoted)
+            {
+                if (c == '\'' && i + 1 < script.size() && script[i + 1] == '\'')
+                    ++i;
+                else if (c == '\'')
+                    quoted = false;
+                continue;
+            }
+            else if (c == '\'' || c == '#')
+            {
+                quoted = c == '\'';
+                comment = c == '#';
+                continue;
+            }
+            code += c;
+        }
+        return code;
+    }
+
+    // `p` is named in the script only within its quoted strings, whole or in a longer path: never in its code
+    // (psCode), and (unless it may be absent) quoted whole at least once.
     bool psQuotedOnly(const std::string& script, const std::string& p, bool mayBeAbsent = false)
     {
-        const std::string q = pi::psQuote(p);
-        if (!contains(script, q))
-            return mayBeAbsent && !contains(script, p);
-        std::string rest = script;
-        for (std::size_t at = rest.find(q); at != std::string::npos; at = rest.find(q))
-            rest.erase(at, q.size());
-        return !contains(rest, p);
+        if (contains(psCode(script), p))
+            return false;
+        return mayBeAbsent || contains(script, pi::psQuote(p));
     }
 
     int countOf(const std::string& s, const std::string& what)
@@ -318,20 +350,28 @@ PROBE(installer, engine)
         const fs::path old = appsHome / "ToneSynth";
         const std::string oldExe = fixture::readText(old / "ToneSynth.exe");
         P.eq("failure.folder_denied", fixture::denyWrite(appsHome) ? 1 : 0, 1);
+        const std::string passed = fixture::denialPassed(appsHome);
         const pi::Report r = engine.install(plan, {});
         fixture::allowWrite(appsHome);
+        // A row that needs the folder to refuse the app: judged, or skipped where the denial does not bind this process.
+        const auto refused = [&](const char* key, bool holds) {
+            if (passed.empty())
+                P.eq(key, holds ? 1 : 0, 1);
+            else
+                probe::skip(P, key, passed);
+        };
         const std::size_t vstAt = static_cast<std::size_t>(stepOf(plan, "synth", pi::Part::vst3) - plan.steps.data());
         const std::size_t appAt = static_cast<std::size_t>(stepOf(plan, "synth", pi::Part::app) - plan.steps.data());
-        P.eq("failure.not_ok", r.ok() ? 1 : 0, 0);
+        refused("failure.not_ok", !r.ok());
         P.eq("failure.vst3_before_it_done", r.states[vstAt] == pi::State::done ? 1 : 0, 1);
-        P.eq("failure.app_failed", r.states[appAt] == pi::State::failed ? 1 : 0, 1);
-        P.eq("failure.says_why", contains(r.lines[appAt], "may not write in %LOCALAPPDATA%\\Programs\\Funk Test") ? 1 : 0, 1);
-        P.eq("failure.old_copy_whole", fixture::readText(old / "ToneSynth.exe") == oldExe && dataOf(old) == "build 1" ? 1 : 0, 1);
-        P.eq("failure.old_version_kept", pi::Engine::bundleVersion(old) == "2.0.0" ? 1 : 0, 1);
+        refused("failure.app_failed", r.states[appAt] == pi::State::failed);
+        refused("failure.says_why", contains(r.lines[appAt], "may not write in %LOCALAPPDATA%\\Programs\\Funk Test"));
+        refused("failure.old_copy_whole", fixture::readText(old / "ToneSynth.exe") == oldExe && dataOf(old) == "build 1");
+        refused("failure.old_version_kept", pi::Engine::bundleVersion(old) == "2.0.0");
         P.eq("failure.folder_holds_only_them",               // the apps and the extensions, no staging folder
              static_cast<int64_t>(std::distance(fs::directory_iterator(appsHome), fs::directory_iterator{})), 4);
-        P.eq("failure.error_names_what_changed", contains(r.error, "ToneSynth's App was not installed")
-                                                 && contains(r.error, "Installed: ToneSynth's VST3") ? 1 : 0, 1);
+        refused("failure.error_names_what_changed", contains(r.error, "ToneSynth's App was not installed")
+                                                    && contains(r.error, "Installed: ToneSynth's VST3"));
         std::printf("failure: %s\n", r.error.c_str());
     }
 
@@ -483,14 +523,21 @@ PROBE(installer, engine)
         fixture::setVersion(appsRoot / "Tone", "1.0.0");
         const pi::Plan again = engine.plan({ { "effect", pi::Part::vst3 }, { "effect", pi::Part::app } }, pi::Scope::system);
         P.eq("admin.failure_folder_denied", fixture::denyWrite(vst3Root) ? 1 : 0, 1);
+        const std::string passed = fixture::denialPassed(vst3Root);   // the script's .NET makes its folder as the engine
         const pi::Report failed = engine.install(again, {});
         fixture::allowWrite(vst3Root);
         std::printf("admin failure: %s\n", failed.error.c_str());
-        P.eq("admin.failure_reported", failed.ok() ? 1 : 0, 0);
-        P.eq("admin.failure_in_words", contains(failed.error, "Tone's VST3 was not installed: it may not write in "
-                                                              "%ProgramFiles%\\Common Files\\VST3") ? 1 : 0, 1);
-        P.eq("admin.failure_next_not_run", failed.states.size() == 2 && failed.states[1] == pi::State::notRun ? 1 : 0, 1);
-        P.eq("admin.failure_old_copy_kept", pi::Engine::bundleVersion(sysVst) == "1.0.0" ? 1 : 0, 1);
+        const auto refused = [&](const char* key, bool holds) {
+            if (passed.empty())
+                P.eq(key, holds ? 1 : 0, 1);
+            else
+                probe::skip(P, key, passed);
+        };
+        refused("admin.failure_reported", !failed.ok());
+        refused("admin.failure_in_words", contains(failed.error, "Tone's VST3 was not installed: it may not write in "
+                                                                 "%ProgramFiles%\\Common Files\\VST3"));
+        refused("admin.failure_next_not_run", failed.states.size() == 2 && failed.states[1] == pi::State::notRun);
+        refused("admin.failure_old_copy_kept", pi::Engine::bundleVersion(sysVst) == "1.0.0");
 
         // The uninstall's script: every path quoted, nothing deleted.
         const std::vector<pi::Copy> copies = engine.installed();

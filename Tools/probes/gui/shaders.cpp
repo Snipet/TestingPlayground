@@ -44,7 +44,10 @@
 //             moved on) builds again where the same one read the disk; a corrupt entry (a byte flipped, cut in half,
 //             empty, garbage, another shader's entry under its name) is ignored, built again right and written again
 //             whole; four threads asking one cache for one new build run shaderc once, four caches (as four processes)
-//             building one at once leave one whole entry, no temporary file; the cap removes the entries used least
+//             building one at once leave one whole entry, no temporary file; a running shaderc holds none of the
+//             process's other files (on Windows one open as a shaderc started was inherited by it, until its start
+//             listed the handles it takes), so files written and closed while builds start are renamed and removed at
+//             once; the cap removes the entries used least
 //             lately down to three quarters of it, the newest kept; the folder scanned at the process's first write
 //             there, not at each (shaderCacheScans), that scan removing a temporary file left long ago and keeping a
 //             new one; RUN's early builds take a shader's inputs at their word (readGuiShaders), and a wrong guess (an
@@ -106,6 +109,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1017,6 +1021,70 @@ PROBE(gui, shaders)
             P.eq("cache.processes_no_temp_left", folder(root / "together").temps, 0);
         }
 
+        // A running shaderc holds none of the process's other files: one written and closed while builds start is
+        // renamed and removed at once. On Windows a file open as a shaderc started was inherited by it, and could be
+        // neither until that shaderc exited (the temporary file above was left so); a descriptor holds no name
+        // elsewhere. A try that fails is made again for 10 ms, which a scanner's look at a new file is over in and a
+        // shaderc is not.
+        {
+            const std::filesystem::path heldDir = root / "held";
+            std::filesystem::create_directories(heldDir, ec);
+            const pg::ShaderTools heldTools = fresh(heldDir / "cache");
+            const auto spin = [](int ms) {
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+                while (std::chrono::steady_clock::now() < until)
+                    std::this_thread::yield();
+            };
+            const auto soon = [&](const auto& tryIt) {
+                const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(10);
+                for (;;)
+                {
+                    if (tryIt())
+                        return true;
+                    if (std::chrono::steady_clock::now() >= until)
+                        return false;
+                    std::this_thread::yield();
+                }
+            };
+            constexpr int kHeldBuilds = 6;
+            std::atomic<bool> buildsDone{ false };
+            std::atomic<int> buildsOk{ 0 };
+            std::thread builder([&] {
+                for (int k = 0; k < kHeldBuilds; ++k)
+                    if (pg::ShaderCache().build("still.sc", saltedStill(500 + k), { "cutoff" }, heldTools).ok())
+                        buildsOk.fetch_add(1);
+                buildsDone.store(true);
+            });
+            int tried = 0, stuck = 0;
+            while (!buildsDone.load())
+            {
+                const std::filesystem::path from = heldDir / ("f" + std::to_string(tried) + ".txt");
+                const std::filesystem::path to = heldDir / ("f" + std::to_string(tried) + ".moved");
+                {
+                    std::ofstream file(from, std::ios::binary | std::ios::trunc);
+                    file << "held";
+                    spin(2);                             // open while a shaderc may start
+                }
+                const bool moved = soon([&] {
+                    std::error_code e;
+                    std::filesystem::rename(from, to, e);
+                    return !e;
+                });
+                const bool removed = moved && soon([&] {
+                    std::error_code e;
+                    return std::filesystem::remove(to, e) && !e;
+                });
+                stuck += removed ? 0 : 1;
+                ++tried;
+            }
+            builder.join();
+            std::printf("held: %d files written while %d shaders were built; %d not renamed and removed\n", tried,
+                        kHeldBuilds, stuck);
+            P.eq("cache.held_builds", buildsOk.load(), kHeldBuilds);
+            P.ge("cache.held_files_tried", tried, kHeldBuilds);
+            P.eq("cache.held_none_stuck", stuck, 0);
+        }
+
         // The cap: the entries used least lately go first, down to three quarters of it; the newest stays.
         {
             const std::filesystem::path dir = root / "cap";
@@ -1380,6 +1448,18 @@ PROBE(gui, shaders)
         P.eq("text.unended", has(err, "t.sc:2:5: note: the shader does not compile: a string has no closing quote on its line") ? 1 : 0, 1);
         pg::shaderText("t.sc", "y = \"\\n\";\n", err);
         P.eq("text.bad_escape", has(err, "t.sc:1:5: note: the shader does not compile: a string's backslash escapes") ? 1 : 0, 1);
+        // A vector of one value a cast (Direct3D's compiler takes no float3(x)), at any depth; one of more values, a
+        // comment, a name that only ends in vec3 and a declaration left; every line kept.
+        const std::string ones = pg::shaderText(
+            "t.sc", "vec3 c = vec3(w * in_out); // vec3(x)\nvec4 d = vec4(vec3(f(a, b)), 1.0); ivec2 i = ivec2 (k);\n"
+                    "myvec3(x); vec3 g(vec3 p) { return vec2(vec4(\"AB\")).xyy; }\n/* vec2(y) */ bvec4 m = bvec4(\n  t);\n",
+            err);
+        std::printf("text.vector_of_one:\n%s", ones.c_str());
+        P.eq("text.vector_of_one",
+             ones == "vec3 c = ((vec3)(w * in_out)); // vec3(x)\nvec4 d = vec4(((vec3)(f(a, b))), 1.0); ivec2 i = ((ivec2) (k));\n"
+                     "myvec3(x); vec3 g(vec3 p) { return ((vec2)(((vec4)(vec4(16961.0, 0.0, 0.0, 0.0))))).xyy; }\n"
+                     "/* vec2(y) */ bvec4 m = ((bvec4)(\n  t));\n"
+                 && err.empty() ? 1 : 0, 1);
 
         // The includes: the library's and the program's .sh files, in turn theirs, each once; one there is none of a note.
         const pg::Sources headers{ { "b.sh", "#include \"funk/text.sh\"\n#include \"c.sh\"\n" }, { "c.sh", "float c1() { return 1.0; }\n" },
