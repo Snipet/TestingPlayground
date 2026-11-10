@@ -1,0 +1,193 @@
+# Builds a release's installers for the Mac when a tag v<version> is pushed (v0.1.0; a pre-release v0.1.0-rc.1), signs
+# and notarizes them, and puts them on a draft GitHub release for a person to read and publish:
+#
+#   TestingPlayground-<version>.pkg              every product, for all users (productbuild, Developer ID Installer)
+#   TestingPlayground-Installer-<version>.dmg    the GUI installer on a disk image (Developer ID Application)
+#
+# The Release build (LTO) and scripts/package.sh as on a desk: every bundle and binary signed inside out with the
+# hardened runtime and a timestamp, both files notarized and stapled, and Gatekeeper asked about each. The tag's
+# version, without a pre-release's suffix, must be the products' (products/<key>.cmake).
+#
+# Publishing the draft (by a person: a release GitHub's own token publishes starts no workflow) runs
+# publish-downloads.yml, which puts the files on the website; a pre-release stops after their upload.
+#
+# Secrets, in the environment `release`: MACOS_SIGNING_P12 (base64 of a .p12 holding both Developer ID identities,
+# Application and Installer, with their keys) and MACOS_SIGNING_P12_PASSWORD; NOTARY_KEY_P8 (an App Store Connect API
+# key's .p8, as text), NOTARY_KEY_ID and NOTARY_ISSUER_ID. They live in a keychain of the run's own, removed after.
+# The identities' names, which carry the team's ID, are masked in the log.
+#
+# Each action is pinned to its release's full commit SHA, with the tag in a comment: a tag can be moved, a SHA cannot.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# nothing by default; the job asks for what it needs
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mac:
+    name: macos-arm64
+    runs-on: macos-latest
+    timeout-minutes: 300
+    environment: release
+    permissions:
+      contents: write                                  # the draft release and its files
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+      KEYCHAIN: ${{ github.workspace }}/../release.keychain-db
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The tag's version
+        run: |
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$TAG is no release tag: v<major>.<minor>.<patch>, or with a pre-release's suffix (v0.1.0-rc.1)."
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          prerelease=false
+          [ -n "${BASH_REMATCH[2]}" ] && prerelease=true
+          products=$(sed -nE 's/^set\(PRODUCT_VERSION +"?([0-9.]+)"?\).*/\1/p' products/*.cmake | sort -u)
+          if [ "$products" != "$version" ]; then
+            echo "::error::$TAG says $version; the products are at $(echo $products) (products/<key>.cmake)."
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "PRERELEASE=$prerelease" >> "$GITHUB_ENV"
+          echo "$TAG: version $version, pre-release $prerelease"
+
+      - name: FMinus's LLVM, Bison and Flex (prebuilt)
+        run: |
+          llvm=$(sed -nE 's/^set\(FP_FMINUS_LLVM +([0-9.]+)\).*/\1/p' cmake/Deps.cmake)
+          [ -n "$llvm" ] || { echo "no FP_FMINUS_LLVM in cmake/Deps.cmake"; exit 1; }
+          name="fminus-deps-llvm-${llvm}-macos-arm64.tar.gz"
+          url="https://github.com/Snipet/FMinus/releases/download/deps-llvm-${llvm}/${name}"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o "$name" "$url"
+          curl -fsSL --retry 3 -o "$name.sha256" "$url.sha256"
+          shasum -a 256 -c "$name.sha256"
+          mkdir -p fminus-deps/install
+          tar -xzf "$name" -C fminus-deps/install
+          echo "FP_FMINUS_DEPS_DIR=$RUNNER_TEMP/fminus-deps" >> "$GITHUB_ENV"
+
+      - name: The signing identities, in a keychain of the run's own
+        env:
+          P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          [ -n "$P12" ] && [ -n "$P12_PASSWORD" ] || { echo "::error::The release environment has no MACOS_SIGNING_P12 or its password."; exit 1; }
+          password=$(openssl rand -hex 24)
+          echo "::add-mask::$password"
+          echo "KEYCHAIN_PASSWORD=$password" >> "$GITHUB_ENV"
+          security create-keychain -p "$password" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$password" "$KEYCHAIN"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -f pkcs12 \
+            -T /usr/bin/codesign -T /usr/bin/productbuild -T /usr/bin/productsign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+          # Each identity by its kind; its name (and the team's ID in it) masked before anything prints it.
+          found=$(security find-identity -v "$KEYCHAIN")
+          app=$(awk -F'"' '$2 ~ /^Developer ID Application: / { print $2; exit }' <<<"$found")
+          installer=$(awk -F'"' '$2 ~ /^Developer ID Installer: / { print $2; exit }' <<<"$found")
+          for name in "$app" "$installer"; do
+            [ -n "$name" ] || continue
+            echo "::add-mask::$name"
+            team=$(sed -nE 's/.*\(([A-Z0-9]{10})\)$/\1/p' <<<"$name")
+            [ -n "$team" ] && echo "::add-mask::$team"
+          done
+          echo "Developer ID Application: $([ -n "$app" ] && echo found || echo missing); Developer ID Installer: $([ -n "$installer" ] && echo found || echo missing)"
+          [ -n "$app" ] || { echo "::error::The .p12 holds no Developer ID Application identity (the bundles' and the disk image's)."; exit 1; }
+          [ -n "$installer" ] || { echo "::error::The .p12 holds no Developer ID Installer identity (the .pkg's): export both certificates, with their keys, into one .p12."; exit 1; }
+          echo "DEVELOPER_ID_APPLICATION=$app" >> "$GITHUB_ENV"
+          echo "DEVELOPER_ID_INSTALLER=$installer" >> "$GITHUB_ENV"
+
+      - name: The notary service's key
+        env:
+          KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          [ -n "$KEY_P8" ] && [ -n "$KEY_ID" ] && [ -n "$ISSUER" ] || { echo "::error::The release environment lacks NOTARY_KEY_P8, NOTARY_KEY_ID or NOTARY_ISSUER_ID."; exit 1; }
+          printf '%s\n' "$KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials release-notary --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" \
+            --issuer "$ISSUER" --keychain "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/notary.p8"
+          echo "NOTARY_PROFILE=release-notary" >> "$GITHUB_ENV"
+
+      - name: Configure (Release, LTO)
+        run: cmake --preset release -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR"
+
+      - name: Build
+        run: cmake --build --preset release --parallel 3
+
+      - name: The .pkg, signed and notarized
+        run: scripts/package.sh --sign "$DEVELOPER_ID_APPLICATION" --sign-installer "$DEVELOPER_ID_INSTALLER" --notarize "$NOTARY_PROFILE"
+
+      - name: The installer's disk image, signed and notarized
+        run: scripts/package.sh --installer --sign "$DEVELOPER_ID_APPLICATION" --notarize "$NOTARY_PROFILE"
+
+      - name: Check both files
+        run: |
+          pkg="build-release/dist/TestingPlayground-$VERSION.pkg"
+          dmg="build-release/dist/TestingPlayground-Installer-$VERSION.dmg"
+          for f in "$pkg" "$dmg"; do [ -f "$f" ] || { echo "::error::$f was not made."; exit 1; }; done
+          pkgutil --check-signature "$pkg"
+          spctl --assess --type install -vv "$pkg"
+          xcrun stapler validate "$pkg"
+          xcrun stapler validate "$dmg"
+          spctl --assess --type open --context context:primary-signature -vv "$dmg"
+          # the installer app inside the image, as a user opens it (the image detached whatever Gatekeeper says)
+          mount=$(mktemp -d)
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" "$dmg" > /dev/null
+          app=$(find "$mount" -maxdepth 1 -name '*.app' | head -n 1)
+          accepted=true
+          spctl --assess --type execute -vv "$app" || accepted=false
+          hdiutil detach "$mount" > /dev/null
+          [ "$accepted" = true ] || { echo "::error::Gatekeeper refuses the installer app inside $dmg."; exit 1; }
+          shasum -a 256 "$pkg" "$dmg"
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: A draft release with both files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "TestingPlayground $VERSION for Mac: the effect and the synth as Audio Unit and VST3 plugins, a standalone"
+            echo "app for each, and an extension for Claude Desktop. macOS 14 or later on Apple silicon."
+            echo
+            echo "- **TestingPlayground-Installer-$VERSION.dmg**: open it, then open TestingPlayground Installer, and choose"
+            echo "  what to install, for you alone or for every user."
+            echo "- **TestingPlayground-$VERSION.pkg**: a standard package that installs everything for every user."
+            echo
+            echo "Both are signed with a Developer ID and notarized by Apple. What changed: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md)."
+          } > "$RUNNER_TEMP/notes.md"
+          flags=(--draft --verify-tag --title "TestingPlayground $VERSION" --notes-file "$RUNNER_TEMP/notes.md")
+          [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$PKG" "$DMG"   # a run again: the files replaced
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${flags[@]}" "$PKG" "$DMG"
+          fi
+          echo "A draft release $TAG holds both files: read it, then publish it (the website takes it from there)."
+
+      - name: The keychain removed
+        if: always()
+        run: |
+          security delete-keychain "$KEYCHAIN" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/signing.p12" "$RUNNER_TEMP/notary.p8"

@@ -2409,20 +2409,29 @@ prints both identities) is its own, so the two load in one host beside each othe
 keeps keys for itself (some do for the space bar or the arrows, or play notes from the computer keyboard) may need its
 "keyboard to plugin" option on for typing in the editor.
 
-**Publishing.** A GitHub release puts both files on the website's download page. Create it as a draft with the .dmg
-and the .pkg attached, then publish it (so nothing sees it without its files):
+**Releasing.** A tag makes the release. Push `v<version>` (the products' version, `products/<key>.cmake`), or
+`v<version>-rc.<n>` for a pre-release, and `.github/workflows/release.yml` builds the Release on a Mac runner, signs
+and notarizes `TestingPlayground-<version>.pkg` and `TestingPlayground-Installer-<version>.dmg` as above, asks
+Gatekeeper about each, and attaches both to a draft GitHub release:
 
 ```sh
-gh release create v<version> --draft --title "TestingPlayground <version>" --notes-file <notes.md> \
-  build-release/dist/TestingPlayground-Installer-<version>.dmg build-release/dist/TestingPlayground-<version>.pkg
-gh release edit v<version> --draft=false
+git tag -a v<version> -m "TestingPlayground <version>" && git push origin v<version>
+gh release edit v<version> --draft=false      # once you have read the draft
 ```
 
-`.github/workflows/publish-downloads.yml` then checks both files against the SHA-256 GitHub recorded, uploads them to
-the website's R2 bucket under the tag, and asks the website's repository (Snipet/TestingPlaygroundBackend) to offer the
-release, which it does with each file's size and checksum. A pre-release stops after the upload. Its secrets:
-`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `WEBSITE_DISPATCH_TOKEN`; run it by hand, with a tag,
-to redo a release.
+Its secrets are the `release` environment's: `MACOS_SIGNING_P12` (base64 of a .p12 holding both Developer ID
+identities, Application and Installer, with their keys), `MACOS_SIGNING_P12_PASSWORD`, and an App Store Connect API
+key for the notary service (`NOTARY_KEY_P8`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`). They go into a keychain of the
+run's own, removed after; the identities' names, which carry the team's ID, are masked in the log. By hand instead,
+`gh release create v<version> --draft ...` with the two files from `scripts/package.sh` above.
+
+**Publishing.** Publishing the release (by a person: one GitHub's own token publishes starts no workflow) puts both
+files on the website's download page. `.github/workflows/publish-downloads.yml` checks both files against the
+SHA-256 GitHub recorded, uploads them to the website's R2 bucket under the tag, and asks the website's repository
+(Snipet/TestingPlaygroundBackend) to offer the release, which it does with each file's size and checksum. A
+pre-release stops after the upload: it tries the path without changing the page. Its secrets: `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `WEBSITE_DISPATCH_TOKEN`; run it by hand, with a tag, to redo a
+release.
 
 Each block the plugin reads the host's tempo, position, time signature and transport (and passes them to the program
 through host.fm); the synth also reads from the MIDI the notes, the mod wheel (CC 1), the pitch wheel, channel
