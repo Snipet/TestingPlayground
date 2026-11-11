@@ -7266,7 +7266,7 @@ namespace playground::ui
     void Panel::notice(const std::string& text)
     {
         notice_ = text;
-        noticeUntil_ = (host_ != nullptr ? host_->nowSeconds() : 0.0) + 4.0;
+        noticeUntil_ = (host_ != nullptr ? host_->nowSeconds() : 0.0) + kNoticeFor;
         dirty_ = true;
     }
 
