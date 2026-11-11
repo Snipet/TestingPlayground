@@ -1061,7 +1061,7 @@ namespace playground::projectstore
         // A factory project's presets as the listing has a project's (by name), or nothing, with why.
         std::optional<std::vector<PresetSummary>> factoryPresets(std::string_view name, std::string* why)
         {
-            const Project* p = factory::find(name);
+            const std::shared_ptr<const Project> p = factory::find(name);
             if (p == nullptr)
             {
                 fail(why, "there is no factory project named \"" + ownName(name) + "\"");
@@ -1074,7 +1074,8 @@ namespace playground::projectstore
     std::vector<Entry> factoryList()
     {
         std::vector<Entry> out;
-        for (const Project& p : factory::projects())
+        const factory::Snapshot set = factory::current();   // one set for the whole list, whatever arrives meanwhile
+        for (const Project& p : set->projects)
             out.push_back(cachedOf(p, 0, 0, {}).entry);
         return out;
     }
@@ -1132,7 +1133,7 @@ namespace playground::projectstore
         const auto detailOf = [](const Cached& c) { return Detail{ true, c.versions, c.presets, c.info }; };
         if (isFactoryName(name))
         {
-            const Project* p = factory::find(name);
+            const std::shared_ptr<const Project> p = factory::find(name);
             if (p == nullptr)
             {
                 fail(why, "there is no factory project named \"" + ownName(name) + "\"");
@@ -1176,7 +1177,7 @@ namespace playground::projectstore
     {
         if (isFactoryName(name))
         {
-            if (const Project* p = factory::find(name))
+            if (const std::shared_ptr<const Project> p = factory::find(name))
                 return *p;
             fail(why, "there is no factory project named \"" + ownName(name) + "\"");
             return std::nullopt;

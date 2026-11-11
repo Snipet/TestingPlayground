@@ -347,7 +347,9 @@ PROBE(plugin, factory)
     for (const std::string& problem : fy::problems())
         std::printf("problem: %s\n", problem.c_str());
     P.eq("list.no_problems", static_cast<int64_t>(fy::problems().size()), 0);
-    const std::vector<ps::Project>& all = fy::projects();
+    const fy::Snapshot builtIn = fy::current();         // no set fetched in this probe: the compiled-in one
+    P.eq("list.built_in", builtIn == fy::builtIn() && !builtIn->fetched ? 1 : 0, 1);
+    const std::vector<ps::Project>& all = builtIn->projects;
     P.ge("list.count", static_cast<double>(all.size()), 1.0);
     std::printf("%zu factory projects, %zu bytes compiled in\n", all.size(), fy::bytes());
     P.ge("list.bytes", static_cast<double>(fy::bytes()), 1.0);
@@ -382,7 +384,7 @@ PROBE(plugin, factory)
                 && entries[i].description == all[i].info.description;
         P.eq("list.port_info", info ? 1 : 0, 1);
         P.eq("list.not_mine", port.projects().empty() ? 1 : 0, 1);
-        P.eq("list.find_own_name", !all.empty() && fy::find(pg::ownName(all[0].name)) == &all[0] && fy::find(all[0].name) == &all[0]
+        P.eq("list.find_own_name", !all.empty() && fy::find(pg::ownName(all[0].name)).get() == &all[0] && fy::find(all[0].name).get() == &all[0]
                                        ? 1 : 0, 1);
     }
 

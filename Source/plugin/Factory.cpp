@@ -8,6 +8,8 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <atomic>
+#include <mutex>
 
 namespace playground::factory
 {
@@ -19,15 +21,9 @@ namespace playground::factory
                 *why = what;
         }
 
-        struct Set
+        std::shared_ptr<Set> read()
         {
-            std::vector<projectstore::Project> projects;
-            std::vector<std::string> problems;
-        };
-
-        Set read()
-        {
-            Set out;
+            auto out = std::make_shared<Set>();
             for (std::size_t i = 0; i < kFactoryCount; ++i)
             {
                 const FactoryProject& f = kFactory[i];
@@ -36,35 +32,76 @@ namespace playground::factory
                     files.push_back({ f.files[k].name, f.files[k].text });
                 std::string why;
                 if (std::optional<projectstore::Project> p = fromParts(f.name, f.json, files, &why))
-                    out.projects.push_back(std::move(*p));
+                    out->projects.push_back(std::move(*p));
                 else
-                    out.problems.push_back(std::string(f.name) + ": " + why);
+                    out->problems.push_back(std::string(f.name) + ": " + why);
             }
-            std::sort(out.projects.begin(), out.projects.end(), [](const projectstore::Project& a, const projectstore::Project& b) {
+            std::sort(out->projects.begin(), out->projects.end(), [](const projectstore::Project& a, const projectstore::Project& b) {
                 const int c = juce::String(a.name).compareIgnoreCase(juce::String(b.name));
                 return c != 0 ? c < 0 : a.name < b.name;
             });
             return out;
         }
 
-        const Set& theSet()
-        {
-            static const Set set = read();               // once, on first use (thread-safe)
-            return set;
-        }
+        // The set a FactoryStore published (none: the compiled-in one is current) and whose it is, under one lock that
+        // is held only to copy a pointer, so a reader on any thread never waits on the store's work.
+        std::mutex publishedMutex;
+        Snapshot published;
+        const void* publisher = nullptr;
+        std::atomic<uint64_t> generationNow{ 0 };
     }
 
-    const std::vector<projectstore::Project>& projects() { return theSet().projects; }
-    const std::vector<std::string>& problems() { return theSet().problems; }
-    std::size_t bytes() { return kFactoryBytes; }
-
-    const projectstore::Project* find(std::string_view name)
+    const projectstore::Project* Set::find(std::string_view name) const
     {
         const std::string own = ownName(name);
-        for (const projectstore::Project& p : projects())
+        for (const projectstore::Project& p : projects)
             if (projectstore::sameName(ownName(p.name), own))
                 return &p;
         return nullptr;
+    }
+
+    Snapshot builtIn()
+    {
+        static const Snapshot set = read();              // once, on first use (thread-safe)
+        return set;
+    }
+
+    const std::vector<std::string>& problems() { return builtIn()->problems; }
+    std::size_t bytes() { return kFactoryBytes; }
+
+    Snapshot current()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(publishedMutex);
+            if (published != nullptr)
+                return published;
+        }
+        return builtIn();
+    }
+
+    uint64_t generation() { return generationNow.load(std::memory_order_acquire); }
+
+    std::shared_ptr<const projectstore::Project> find(std::string_view name)
+    {
+        Snapshot set = current();
+        const projectstore::Project* p = set->find(name);
+        if (p == nullptr)
+            return nullptr;
+        return std::shared_ptr<const projectstore::Project>(std::move(set), p);   // the snapshot lives while it does
+    }
+
+    void publish(const void* owner, Snapshot set)
+    {
+        Snapshot old;                                    // released outside the lock
+        {
+            const std::lock_guard<std::mutex> lock(publishedMutex);
+            if (set == nullptr && publisher != owner)
+                return;                                  // another store's set (a later one's): not this one's to take
+            old = std::move(published);
+            published = std::move(set);
+            publisher = published != nullptr ? owner : nullptr;
+            generationNow.fetch_add(1, std::memory_order_acq_rel);
+        }
     }
 
     std::optional<projectstore::Project> fromParts(std::string_view own, const std::string& json, const Sources& files,

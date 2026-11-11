@@ -1,7 +1,9 @@
 // Source/plugin/ClaudeApi.cpp: see ClaudeApi.h.
 #include "plugin/ClaudeApi.h"
 
+#include <algorithm>
 #include <chrono>
+#include <limits>
 #include <thread>
 
 #if defined(__linux__)
@@ -84,6 +86,7 @@ namespace playground::claude
             const std::function<bool(std::string_view)>* onChunk = nullptr;
             HttpResult* result = nullptr;
             long status = 0;                          // the response's, read at its body's first byte
+            std::size_t maxOther = 0;                 // what of another status's body is kept at most
         };
 
         std::size_t curlHeader(char* data, std::size_t size, std::size_t count, void* user)
@@ -122,6 +125,11 @@ namespace playground::claude
                 curl_easy_getinfo(call.easy, CURLINFO_RESPONSE_CODE, &call.status);
             if (call.status == 200 && *call.onChunk)
                 return (*call.onChunk)(std::string_view(data, bytes)) ? bytes : 0;   // 0: false from it ends the read
+            if (call.result->body.size() + bytes > call.maxOther)
+            {
+                call.result->body.append(data, call.maxOther - call.result->body.size());
+                return 0;                             // past the limit: the read ends there
+            }
             call.result->body.append(data, bytes);
             return bytes;
         }
@@ -142,11 +150,20 @@ namespace playground::claude
                 return request(false, host, path, {}, headers, {}, cancel);
             }
 
+            HttpResult getLimited(const std::string& host, const std::string& path, const Headers& headers,
+                                  const std::function<bool(std::string_view)>& onChunk, std::size_t maxOther,
+                                  const std::atomic<bool>& cancel) override
+            {
+                return request(false, host, path, {}, headers, onChunk, cancel, maxOther);
+            }
+
         private:
+            // `maxOther`: what of a status other than 200's body is kept at most (getLimited's; else all of it).
             static HttpResult request(bool post, const std::string& host, const std::string& path,
                                       const std::string& body, const Headers& headers,
                                       const std::function<bool(std::string_view)>& onChunk,
-                                      const std::atomic<bool>& cancel)
+                                      const std::atomic<bool>& cancel,
+                                      std::size_t maxOther = std::numeric_limits<std::size_t>::max())
             {
                 std::call_once(curlStarted, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
                 HttpResult r;
@@ -171,7 +188,7 @@ namespace playground::claude
                     r.error = "no connection to " + hostName(host);
                     return r;
                 }
-                CurlCall call{ easy, &onChunk, &r, 0 };
+                CurlCall call{ easy, &onChunk, &r, 0, maxOther };
                 const std::string url = host + path;
                 curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
                 curl_easy_setopt(easy, CURLOPT_HTTPHEADER, list);
@@ -253,11 +270,20 @@ namespace playground::claude
                 return request(false, host, path, {}, headers, {}, cancel);
             }
 
+            HttpResult getLimited(const std::string& host, const std::string& path, const Headers& headers,
+                                  const std::function<bool(std::string_view)>& onChunk, std::size_t maxOther,
+                                  const std::atomic<bool>& cancel) override
+            {
+                return request(false, host, path, {}, headers, onChunk, cancel, maxOther);
+            }
+
         private:
+            // `maxOther`: what of a status other than 200's body is kept at most (getLimited's; else all of it).
             static HttpResult request(bool post, const std::string& host, const std::string& path,
                                       const std::string& body, const Headers& headers,
                                       const std::function<bool(std::string_view)>& onChunk,
-                                      const std::atomic<bool>& cancel)
+                                      const std::atomic<bool>& cancel,
+                                      std::size_t maxOther = std::numeric_limits<std::size_t>::max())
             {
                 HttpResult r;
                 juce::URL url(juce::String(host) + juce::String(path));
@@ -317,9 +343,22 @@ namespace playground::claude
                             break;
                     }
                 }
-                else
+                else if (maxOther == std::numeric_limits<std::size_t>::max())
                 {
                     r.body = stream.readEntireStreamAsString().toStdString();
+                }
+                else
+                {
+                    // getLimited's: read no more than it keeps.
+                    std::vector<char> buffer(8192);
+                    while (!cancel.load() && r.body.size() < maxOther)
+                    {
+                        const std::size_t want = std::min(buffer.size(), maxOther - r.body.size());
+                        const int n = stream.read(buffer.data(), static_cast<int>(want));
+                        if (n <= 0)
+                            break;
+                        r.body.append(buffer.data(), static_cast<std::size_t>(n));
+                    }
                 }
                 if (cancel.load())
                     r.error = "stopped";

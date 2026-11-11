@@ -20,6 +20,7 @@
 #include <juce_core/juce_core.h>
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -60,6 +61,27 @@ namespace playground::claude
                                 const std::atomic<bool>& cancel) = 0;
         virtual HttpResult get(const std::string& host, const std::string& path, const Headers& headers,
                                const std::atomic<bool>& cancel) = 0;
+
+        // GET with a 200's body given to onChunk as it arrives (false from it stops reading), and any other status's
+        // body returned whole but cut at `maxOther` bytes: so that a caller with a limit (the factory projects,
+        // FactoryStore.h) never holds more than it takes, whatever a server sends. `cancel` as above. The default,
+        // for a scripted transport that overrides get() alone, is get()'s whole body handed on in one piece.
+        virtual HttpResult getLimited(const std::string& host, const std::string& path, const Headers& headers,
+                                      const std::function<bool(std::string_view)>& onChunk, std::size_t maxOther,
+                                      const std::atomic<bool>& cancel)
+        {
+            HttpResult r = get(host, path, headers, cancel);
+            if (r.status == 200 && r.error.empty())
+            {
+                (void)onChunk(r.body);
+                r.body.clear();
+            }
+            else if (r.body.size() > maxOther)
+            {
+                r.body.resize(maxOther);
+            }
+            return r;
+        }
     };
 
     std::unique_ptr<Transport> httpsTransport();
