@@ -129,6 +129,7 @@ function(fp_add_probes key)
     target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${FP_PROBES} PRIVATE "-framework CoreServices")   # FolderWatch.cpp: FSEvents
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
+    target_link_libraries(${FP_PROBES} PRIVATE "-framework Security" "-framework CoreFoundation")   # Verify.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report
     # The main thread's stack as macOS and Linux give theirs, 8 MB, not Windows' 1 MB: a probe's function keeps several

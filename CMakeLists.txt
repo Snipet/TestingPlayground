@@ -192,9 +192,10 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 # Windows' system libraries the plugin, the server and the helper call: Winsock (the MCP sockets), CNG (the chat's key
-# file), the shell's folders.
+# file; the factory index's signature, plugin/Verify.cpp), the shell's folders.
 set(FP_WINDOWS_LIBS ws2_32 bcrypt shell32 ole32)
-# Linux's: OpenSSL's libcrypto (the chat's key file: AES, PBKDF2 and HMAC, as CommonCrypto and CNG give them) and
+# Linux's: OpenSSL's libcrypto (the chat's key file: AES, PBKDF2 and HMAC, as CommonCrypto and CNG give them; the
+# factory index's signature, ECDSA P-256, as Security.framework and CNG give it: plugin/Verify.cpp) and
 # libcurl (the chat's HTTPS: ClaudeApi.cpp's transport; JUCE's own Linux client speaks plain HTTP alone, so JUCE_USE_CURL
 # stays 0 everywhere and no JUCE target links curl).
 set(FP_LINUX_LIBS "")
@@ -632,6 +633,7 @@ namespace @FP_NAMESPACE@
     target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework CoreServices")   # FolderWatch.cpp: FSEvents
     target_link_libraries(${PRODUCT_NAME} PRIVATE compression)  # ProjectExport.cpp: a package's xz (libcompression)
+    target_link_libraries(${PRODUCT_NAME} PRIVATE "-framework Security" "-framework CoreFoundation")   # Verify.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${PRODUCT_NAME} PRIVATE ${FP_WINDOWS_LIBS})
   elseif(FP_LINUX)

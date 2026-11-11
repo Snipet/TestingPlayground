@@ -1,0 +1,245 @@
+[
+	{
+		"case": "good-1",
+		"key": "effect",
+		"expect": "taken",
+		"projects": [
+			"Placeholder Delay",
+			"Fixture Changed",
+			"Fixture Withdrawn"
+		]
+	},
+	{
+		"case": "good-1",
+		"key": "synth",
+		"expect": "taken",
+		"projects": [
+			"Placeholder Bass",
+			"Placeholder Pad",
+			"Fixture Changed",
+			"Fixture Withdrawn"
+		]
+	},
+	{
+		"case": "good-2",
+		"key": "effect",
+		"expect": "taken",
+		"highest": 1,
+		"projects": [
+			"Placeholder Delay",
+			"Fixture Changed",
+			"Fixture Added"
+		]
+	},
+	{
+		"case": "good-2",
+		"key": "synth",
+		"expect": "taken",
+		"highest": 1,
+		"projects": [
+			"Placeholder Bass",
+			"Placeholder Pad",
+			"Fixture Changed",
+			"Fixture Added"
+		]
+	},
+	{
+		"case": "good-1",
+		"key": "synth",
+		"expect": "refused",
+		"highest": 2,
+		"step": "sequence",
+		"reason": "the index is older (1) than one taken before (2)"
+	},
+	{
+		"case": "key-change",
+		"key": "effect",
+		"expect": "taken",
+		"projects": [
+			"Placeholder Delay",
+			"Fixture Changed",
+			"Fixture Withdrawn"
+		]
+	},
+	{
+		"case": "key-change",
+		"key": "synth",
+		"expect": "taken",
+		"projects": [
+			"Placeholder Bass",
+			"Placeholder Pad",
+			"Fixture Changed",
+			"Fixture Withdrawn"
+		]
+	},
+	{
+		"case": "needs-newer",
+		"key": "synth",
+		"expect": "taken",
+		"projects": [
+			"Placeholder Bass",
+			"Placeholder Pad"
+		]
+	},
+	{
+		"case": "changed-body",
+		"key": "synth",
+		"expect": "refused",
+		"step": "signature",
+		"reason": "the signature does not verify"
+	},
+	{
+		"case": "wrong-key",
+		"key": "synth",
+		"expect": "refused",
+		"step": "signature",
+		"reason": "the signature does not verify"
+	},
+	{
+		"case": "unknown-key",
+		"key": "synth",
+		"expect": "refused",
+		"step": "signature",
+		"reason": "the index is signed with a key the plugins do not have (t9)"
+	},
+	{
+		"case": "signature-short",
+		"key": "synth",
+		"expect": "refused",
+		"step": "signature",
+		"reason": "the signature is not 64 bytes"
+	},
+	{
+		"case": "signature-der",
+		"key": "synth",
+		"expect": "refused",
+		"step": "signature",
+		"reason": "the signature is not 64 bytes"
+	},
+	{
+		"case": "other-kind",
+		"key": "synth",
+		"expect": "refused",
+		"step": "index",
+		"reason": "the index is for kind effect, not synth's"
+	},
+	{
+		"case": "other-plugin",
+		"key": "synth",
+		"expect": "refused",
+		"step": "index",
+		"reason": "the index is for TestingPlayground, not TestingPlaygroundSynth"
+	},
+	{
+		"case": "duplicate-name",
+		"key": "synth",
+		"expect": "refused",
+		"step": "index",
+		"reason": "the index lists PLACEHOLDER BASS twice"
+	},
+	{
+		"case": "too-many",
+		"key": "synth",
+		"expect": "refused",
+		"step": "index",
+		"reason": "the index lists no projects, or too many"
+	},
+	{
+		"case": "index-too-large",
+		"key": "synth",
+		"expect": "refused",
+		"step": "size",
+		"reason": "the index is larger than a plugin takes"
+	},
+	{
+		"case": "no-needs",
+		"key": "synth",
+		"expect": "refused",
+		"step": "index",
+		"reason": "Placeholder Bass: it does not say which plugin version it needs"
+	},
+	{
+		"case": "file-hash",
+		"key": "synth",
+		"expect": "refused",
+		"step": "file",
+		"reason": "Placeholder Bass: its file does not match its SHA-256"
+	},
+	{
+		"case": "file-size",
+		"key": "synth",
+		"expect": "refused",
+		"step": "file",
+		"reason": "Placeholder Bass: its file is 1260 bytes, and the index says 1259"
+	},
+	{
+		"case": "file-missing",
+		"key": "synth",
+		"expect": "refused",
+		"step": "file",
+		"reason": "Placeholder Bass: its file is not there"
+	},
+	{
+		"case": "xz",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it is compressed with xz, which the plugins read on macOS alone: use zlib"
+	},
+	{
+		"case": "two-versions",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it is not one version"
+	},
+	{
+		"case": "version-number",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: its version is not numbered 1"
+	},
+	{
+		"case": "project-id",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it holds a project id, which names chats on one machine: a factory project has none"
+	},
+	{
+		"case": "midi",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it holds MIDI mappings (someone's controller's)"
+	},
+	{
+		"case": "samples",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it holds samples: a factory project is text alone"
+	},
+	{
+		"case": "version-samples",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: its version plays samples: a factory project is text alone"
+	},
+	{
+		"case": "name-inside",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: its name inside is \"Fixture Other Name\""
+	},
+	{
+		"case": "project-kind",
+		"key": "synth",
+		"expect": "refused",
+		"step": "project",
+		"reason": "Placeholder Bass: it is a project of kind effect, not instrument"
+	}
+]
