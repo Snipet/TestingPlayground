@@ -734,6 +734,7 @@ PROBE(dsp, bounds)
         std::atomic<float> turn{ 0.0f };
         std::atomic<double> level{ 0.0 };                // the last block's RMS
         std::atomic<double> worstGap{ 0.0 };             // the longest wait between two blocks' starts, ms
+        std::atomic<int64_t> lastStart{ 0 };             // the last block's start, steady_clock ns
         std::thread audio([&] {
             probe::asAudioThread();                      // as a host's: above the threads that compile
             const probe::Stereo in = sineIn(kBlock);
@@ -747,6 +748,8 @@ PROBE(dsp, bounds)
                 last = now;
                 if (gap > worstGap.load())
                     worstGap.store(gap);
+                // After worstGap, so that a reader who sees this start sees the wait that ended at it (waitedMs).
+                lastStart.store(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
                 out = in;
                 std::array<float, pg::kMaxControls> norm{};
                 norm[0] = turn.load();
@@ -770,6 +773,27 @@ PROBE(dsp, bounds)
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
         });
+        // The longest wait between two blocks' starts since worstGap was cleared, the one still under way counted. When
+        // the Compiler takes the thread for stopped, the thread is 20 ms or more into a wait that only its next block's
+        // start puts in worstGap, so worstGap alone misses it while the thread is still kept from a core as this is
+        // read. The start is read first: if it is the newest, the wait that ended at it is in worstGap already.
+        const auto waitedMs = [&] {
+            const int64_t began = lastStart.load();
+            const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            return std::max(worstGap.load(), static_cast<double>(now - began) * 1e-6);
+        };
+        // The newest block's meters. A read fails while the audio thread publishes them (Engine::meters), and a busy
+        // machine can keep the thread from a core halfway through, so the read is tried again, for a second at most.
+        const auto metersNow = [&](pg::Meters& out) {
+            for (int k = 0; k < 1000; ++k)
+            {
+                if (engine.meters(out))
+                    return true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return false;
+        };
         const auto settle = [] { std::this_thread::sleep_for(std::chrono::milliseconds(120)); };
         const pg::Sources fa = pg::singleFile(program("", ""));
         // A RUN of a program that writes outside its array at once: it fails, A plays on. The Compiler waits for the
@@ -788,7 +812,7 @@ PROBE(dsp, bounds)
             compiler.request(pg::singleFile(bText));
             compiler.wait();
             sb = compiler.status();
-            const double gap = worstGap.load();
+            const double gap = waitedMs();
             starved = gap;
             if (gap < probe::kStarvedMs)
             {
@@ -824,7 +848,7 @@ PROBE(dsp, bounds)
         std::printf("run: %s", sb.errors.c_str());
         settle();
         pg::Meters m;
-        const bool metered = engine.meters(m);
+        const bool metered = metersNow(m);
         if (judged("run.at_once_engine_plays_a"))
             P.eq("run.at_once_engine_plays_a", metered && m.program == sa.program ? 1 : 0, 1);
         P.ge("run.at_once_sounding_db", probe::dbFromLin(level.load()), -30.0);
@@ -851,7 +875,7 @@ PROBE(dsp, bounds)
         P.eq("run.later_message", later.errors.find("process() went outside an array: index 20 out of bounds for 'line' of type "
                                                     "'float[16]'") != std::string::npos ? 1 : 0, 1);
         settle();
-        P.eq("run.later_engine_plays_a_again", engine.meters(m) && m.program == later.program ? 1 : 0, 1);
+        P.eq("run.later_engine_plays_a_again", metersNow(m) && m.program == later.program ? 1 : 0, 1);
         P.ge("run.later_sounding_db", probe::dbFromLin(level.load()), -30.0);
         done.store(true);
         audio.join();

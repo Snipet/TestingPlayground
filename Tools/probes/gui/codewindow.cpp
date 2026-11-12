@@ -666,6 +666,13 @@ PROBE(gui, codewindow)
 
     // ---- GUI -----------------------------------------------------------------------------------------------------------
     {
+        // HIDDEN's Cmd-S left its notice (SAVED: ...) in both windows' status lines for kNoticeFor of each host's
+        // clock, in place of the compile's status. How many frames the Run below takes to settle depends on how long
+        // the compile keeps the compiler busy against how fast this thread ticks (a slow machine's settle ends sooner),
+        // so the notice runs out first, and gui.running reads the Run's own status.
+        const int noticeFrames = static_cast<int>(std::ceil(pg::ui::kNoticeFor * 60.0)) + 2;
+        host.tick(noticeFrames);
+        owner.host->tick(noticeFrames);
         pg::Draft d{ { { pg::kProgramName, guiProgram() }, { "panel.gui", kGui } }, 1 };
         port.setDraft(d);
         juce::MemoryBlock state;
@@ -681,6 +688,8 @@ PROBE(gui, codewindow)
         host.tick(2);
         host.settle();
         P.eq("gui.compiles", port.status().ok && panel.hasGui() ? 1 : 0, 1);
+        std::printf("gui: status %s | the code window's %s\n", panel.statusText().c_str(),
+                    owner.code != nullptr ? owner.code->statusText().c_str() : "(none)");
         P.eq("gui.running", panel.statusText().rfind("RUNNING", 0) == 0 ? 1 : 0, 1);
         if (!port.status().ok)
             std::printf("errors:\n%s\n", port.status().errors.c_str());

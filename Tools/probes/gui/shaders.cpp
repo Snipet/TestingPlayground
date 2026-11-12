@@ -53,8 +53,10 @@
 //             new one; RUN's early builds take a shader's inputs at their word (readGuiShaders), and a wrong guess (an
 //             input the program lacks) costs one build more (two shaderc runs for one shader), never the result; a
 //             compile's four new shaders run shaderc four times and the builds after the compile find them made, and
-//             with a renderer's check of 150 ms (a wait) a program of 100 ms or more compiles in less than the two's
-//             sum (the early builds run while FMinus compiles); a shaderc that does not run (no permission to execute)
+//             with a renderer's check of 150 ms (a wait) a program of 100 ms or more has every check begun before its
+//             compile can have ended and is past both in less than the two's sum (the early builds run while FMinus
+//             compiles, not before it or after it: measured up to three times, as a wrong order fails each attempt and a
+//             busy machine one at most now and then); a shaderc that does not run (no permission to execute)
 //             leaves a note and nothing kept, in memory or on disk, so that once it runs the same cache builds it; a
 //             shader that does not compile is kept in memory (no second shaderc) and never written to disk
 //   SIXTEEN   a shader of 16 inputs (kMaxShaderInputs: FunkGui's u_params, 4 vec4s), the program's 17 dials named in
@@ -1165,10 +1167,18 @@ PROBE(gui, shaders)
 
         // RUN's early builds (Compiler::build): started before FMinus compiles, so that the builds after the compile
         // find them made. A compile with four new shaders runs shaderc four times (a right guess costs nothing more),
-        // and the builds after the compile take all four from memory. And they run while FMinus compiles: with a
-        // renderer's check that takes 150 ms for a code it has not seen (as Metal's compile may; here a wait), a
-        // program of 100 ms or more with those four shaders compiles in less than the two's sum, which it would take
-        // were the early builds made before the compile, after it, or not at all.
+        // and the builds after the compile take all four from memory. And they run while FMinus compiles: a program of
+        // 100 ms or more with those four shaders (built by then, so no shaderc runs and its limit on runs at once plays
+        // no part) and a renderer's check that takes 150 ms for a code it has not seen (as Metal's compile may; here a
+        // wait). Two orders of events say so, where a bound on the whole RUN's time would also count each moment a busy
+        // machine keeps one of its threads from a core. Every check begins before the compile can have ended, which it
+        // cannot were the early builds made after the compile or not at all. And the RUN's thread, which compiles, is
+        // past both the compile and the early builds (the builds after the compile find the checks done) in less than
+        // the last check's end and the compile's time together, which it cannot be were the early builds made before
+        // the compile: the compile would begin only once the last check had ended. A busy machine can still keep a
+        // thread from a core for longer than the compile in one of the two windows, so the compile is measured up to
+        // three times and the first attempt in which both orders hold is the one reported: a wrong order fails every
+        // attempt whatever the machine does, so one good attempt proves the right one.
         {
             pg::Engine engine;
             engine.prepare(48000.0, 256);
@@ -1192,31 +1202,74 @@ PROBE(gui, shaders)
                  static_cast<double>(after.memory + after.waited - before.memory - before.waited), 4.0);
 
             const std::chrono::milliseconds checkTime(150);
+            const double checkMs = static_cast<double>(checkTime.count());
             std::mutex seenMutex;
             std::set<std::vector<uint8_t>> seen;
             std::chrono::steady_clock::time_point t0{};
-            double firstCheck = -1.0;                    // when the first check began, ms after t0 (under seenMutex)
-            x.check = [&seenMutex, &seen, &t0, &firstCheck, checkTime](const std::vector<uint8_t>& binary, std::string&) {
+            // Under seenMutex, ms after t0: when the first and the last of the four checks began, when the last ended,
+            // and when the builds after the compile first asked for a check (a code checked already: at once).
+            double firstCheck = -1.0, lastCheck = -1.0, lastEnded = -1.0, afterCompile = -1.0;
+            x.check = [&](const std::vector<uint8_t>& binary, std::string&) {
+                const auto msNow = [&t0] {
+                    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                };
                 {
                     const std::lock_guard<std::mutex> lock(seenMutex);
                     if (!seen.insert(binary).second)
+                    {
+                        if (afterCompile < 0.0)
+                            afterCompile = msNow();
                         return true;
+                    }
+                    lastCheck = msNow();
                     if (firstCheck < 0.0)
-                        firstCheck = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                        firstCheck = lastCheck;
                 }
                 std::this_thread::sleep_for(checkTime);
+                const std::lock_guard<std::mutex> lock(seenMutex);
+                lastEnded = std::max(lastEnded, msNow());
                 return true;
             };
             compiler.setShaderTools(x);
-            t0 = std::chrono::steady_clock::now();
-            const pg::CompileStatus h = compiler.compileNow(timedFiles(salt, true, true));
-            const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            const double checkMs = static_cast<double>(checkTime.count());
-            std::printf("early: a compile of %.1f ms with four checks of %.0f ms at once took %.1f ms (their sum %.1f; the "
-                        "first check began %.1f ms in)\n",
-                        h.ms, checkMs, total, h.ms + checkMs, firstCheck);
-            P.eq("cache.early_heavy_compiles", h.ok && h.panel.shaders.size() == 4 && seen.size() == 4 ? 1 : 0, 1);
-            P.le("cache.early_beside_the_compile", total, h.ms + checkMs);
+            // Each attempt a measurement of its own: the checks see four codes new to them (`seen` and the times
+            // cleared), FMinus compiles the program again (compileNow keeps no compiled program to give back), and the
+            // shaders come from memory (no shaderc run: its limit on runs at once plays no part in any attempt).
+            pg::CompileStatus h;
+            uint64_t shadercRan = 0;
+            for (int attempt = 0; attempt < 3; ++attempt)
+            {
+                {
+                    const std::lock_guard<std::mutex> lock(seenMutex);
+                    seen.clear();
+                    firstCheck = lastCheck = lastEnded = afterCompile = -1.0;
+                    t0 = std::chrono::steady_clock::now();
+                }
+                const uint64_t ranBefore = pg::shadercRuns();
+                h = compiler.compileNow(timedFiles(salt, true, true));
+                shadercRan = pg::shadercRuns() - ranBefore;
+                const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                const std::lock_guard<std::mutex> lock(seenMutex);
+                const bool beside = lastCheck >= 0.0 && lastCheck <= h.ms;
+                const bool done = afterCompile >= 0.0 && lastEnded >= 0.0;
+                const bool notBefore = afterCompile <= lastEnded + h.ms;
+                std::printf("early: a compile of %.1f ms with four checks of %.0f ms at once took %.1f ms (their sum %.1f; "
+                            "shaderc ran %d times); the checks began %.1f to %.1f ms in and ended by %.1f, the builds after "
+                            "the compile asked %.1f ms in\n",
+                            h.ms, checkMs, total, h.ms + checkMs, static_cast<int>(shadercRan), firstCheck, lastCheck,
+                            lastEnded, afterCompile);
+                if (beside && done && notBefore)
+                    break;
+                if (attempt < 2)
+                    std::printf("early: %s: the compile again\n",
+                                !beside ? "a check began after the compile could have ended (a thread kept from a core?)"
+                                : !done ? "the builds after the compile did not find the checks done"
+                                        : "the RUN's thread asked later than the last check's end and the compile's time "
+                                          "together (a thread kept from a core?)");
+            }
+            P.eq("cache.early_heavy_compiles", h.ok && h.panel.shaders.size() == 4 && seen.size() == 4 && shadercRan == 0 ? 1 : 0, 1);
+            P.le("cache.early_beside_the_compile", lastCheck, h.ms);
+            P.eq("cache.early_checks_done", afterCompile >= 0.0 && lastEnded >= 0.0 ? 1 : 0, 1);
+            P.le("cache.early_not_before_the_compile", afterCompile, lastEnded + h.ms);
         }
 
         // A build that failed for a reason of the moment is never kept: a shaderc that does not run (a copy without its

@@ -5,7 +5,8 @@
 // conversation with Claude (about 390 KB of text, 320 blocks), and a projects' folder of about 15 MB (three projects
 // of 18 versions each, about 5 MB apiece). It checks:
 //   RATE     after any input (a pointer's move, press, drag, release and exit, a wheel, a key, a double-click) the
-//            panel keeps the full rate for kInputHold (Panel::wantsFullRate) with nothing moving, and is calm after;
+//            panel keeps the full rate for kInputHold (Panel::wantsFullRate) with nothing moving, and is calm after
+//            (once the editor's first check while typing has landed, a change of its own);
 //            a release and the pointer's exit nudge the host's pump; a hover's moves at 15 a second keep the frames at
 //            60 a second (Tools/probes/common/Cadence.h), where they fell to the calm cadence between moves
 //   SWITCH   the chat as wide in both views (a chat the user widened, which gives way to the explorer in CODE), so a
@@ -22,6 +23,7 @@
 #include "Probe.h"
 
 #include "editor/ChatView.h"
+#include "editor/CodeAssist.h"
 #include "editor/Columns.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
@@ -43,6 +45,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -251,6 +254,18 @@ PROBE(gui, switch)
         calmProcessor.settle();
         h.tick(4);
         h.settle();
+        // The editor's first check while typing (CodeAssist), asked once Init's text has rested (the settle above),
+        // answers on the compiler's thread whenever that thread has a core, and its outcome changes the status line: a
+        // change the Panel marks in the idle call it lands in, so wantsFullRate() is true until the next tick. On a
+        // busy machine it lands during the rows below, on any frame, a row's last too; so they begin once it has landed.
+        pg::EditorPort& calmPort = calmProcessor.editorPort();
+        for (int k = 0; k < 2000 && (calm.codeAssist().checking() || calmPort.compiling()); ++k)
+        {
+            h.tick(1, 1.0f / 12.0f);                     // a calm editor's cadence
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        P.eq("rate.check_landed", calm.codeAssist().checking() || calmPort.compiling() ? 0 : 1, 1);
+        h.settle();
         P.eq("rate.calm_at_first", calm.wantsFullRate() ? 0 : 1, 1);
         const int within = static_cast<int>(std::floor(pg::ui::kInputHold * 60.0)) - 2;   // frames after the input's own
         const int past = static_cast<int>(std::ceil(pg::ui::kInputHold * 60.0)) + 2;
@@ -275,15 +290,27 @@ PROBE(gui, switch)
         {
             h.settle();
             const int nudges = h.log.nudges;
+            const uint64_t checks = calmPort.checkStatus().revision, compiles = calmPort.statusRevision();
+            const double sentAt = h.nowSeconds();
             in.send();
             const int nudged = h.log.nudges - nudges;
             h.tick(1);                                   // the frame that draws it
             h.tick(within);
             const bool held = calm.wantsFullRate() && !calm.moving();
+            const double heldAt = h.nowSeconds() - sentAt;
             h.tick(past - within);
             const bool after = !calm.wantsFullRate();
             P.eq(std::string("rate.") + in.name + "_held", held ? 1 : 0, 1);
             P.eq(std::string("rate.") + in.name + "_calm_after", after ? 1 : 0, 1);
+            // What else holds the full rate (Panel::wantsFullRate) besides the input: something moving, a check or a
+            // compile running, or one that landed during the row (a change marked in an idle call).
+            if (!held || !after)
+                std::printf("rate: %s held %d at %.3f s, calm %d at %.3f s (hold %.2f s); moving %d, checking %d, "
+                            "compiling %d, a check landed %d, a compile landed %d\n",
+                            in.name, held ? 1 : 0, heldAt, after ? 1 : 0, h.nowSeconds() - sentAt, pg::ui::kInputHold,
+                            calm.moving() ? 1 : 0, calm.codeAssist().checking() ? 1 : 0, calmPort.compiling() ? 1 : 0,
+                            calmPort.checkStatus().revision != checks ? 1 : 0,
+                            calmPort.statusRevision() != compiles ? 1 : 0);
             if (std::string(in.name) == "release" || std::string(in.name) == "exit")
                 P.ge(std::string("rate.") + in.name + "_nudges", nudged, 1);
         }
