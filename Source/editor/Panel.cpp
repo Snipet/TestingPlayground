@@ -4508,9 +4508,14 @@ namespace playground::ui
         // it is now is read on its thread, listed as it was until then): a revision when they differ from what the rows
         // show.
         const uint64_t read = port_.projectsRead();
-        if (!factoryRead_)
+        // The factory projects: read again only when the set changes (one fetched, read from disk), a look at a number.
+        if (const uint64_t generation = port_.factoryGeneration(); !factoryRead_ || generation != factorySeen_)
         {
-            factoryList_ = port_.factoryProjects();      // compiled in: the same for the plugin's life
+            std::vector<ProjectEntry> factory = port_.factoryProjects();
+            if (factoryRead_ && factory != factoryList_)
+                ++listsRevision_;
+            factoryList_ = std::move(factory);
+            factorySeen_ = generation;
             factoryRead_ = true;
         }
         if (projectsAt_ < 0.0 || now - projectsAt_ > kProjectsPoll || presetsOf_ != st.name || read != projectsReadSeen_)

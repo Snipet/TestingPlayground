@@ -67,7 +67,8 @@
 // version, at the time the preset was saved, the first time the folder is read; the old files then move into the
 // folder's "Presets before projects" (never deleted).
 //
-// The factory projects (Factory.h), compiled into the plugin, are served here too, by their factory name (EditorPort.h's
+// The factory projects (Factory.h: the set fetched from the website once there is one, else the one compiled into the
+// plugin; each call reads the set current then) are served here too, by their factory name (EditorPort.h's
 // factoryName: "Factory: Warm Pad", which tidyName never leaves, so no file here can have it): load(), exists(),
 // presetsOf() and presetsCached() read them, factoryList() lists them (list() and listCached() are this Mac's alone),
 // and every write (saveVersion, savePreset, removePreset, removeVersion, remove, setInfo) refuses one, with why. add()

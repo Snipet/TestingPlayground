@@ -58,10 +58,13 @@
 //   alerts()          the output guard's alerts of the last two seconds (Engine::Alert bits)
 //   projects()        the projects saved on this Mac (ProjectStore.h), by name: each a program and its dials, kept as
 //                     versions (every save adds one), with presets (dial settings for it)
-//   factoryProjects() the factory projects, compiled into the plugin (plugin/Factory.h), by name: each one version
+//   factoryProjects() the factory projects (plugin/Factory.h: the set fetched from the website once there is one, else
+//                     the one compiled into the plugin), by name: each one version
 //                     with its presets and info, read-only. Every function here that takes a project's name takes one
 //                     of theirs too, as factoryName() spells it ("Factory: Warm Pad"), which no project of this Mac's
 //                     can be named; one that would write it refuses (why), but saveVersion(), which saves a copy
+//   factoryGeneration() moves when the factory set does (plugin/Factory.h's generation()): factoryProjects() is read
+//                     again then; projectsRead() moves with it too
 //   projectFolder()   where they are, "~/..." for the home folder
 //   tidyName()        a typed project's or preset's name as it would be saved ("" when nothing is left of it)
 //   project()         the project open (the one opened or saved last; none at first), its version, the preset applied,
@@ -626,6 +629,7 @@ namespace playground
 
         virtual std::vector<ProjectEntry> projects() const = 0;
         virtual std::vector<ProjectEntry> factoryProjects() const = 0;
+        virtual uint64_t factoryGeneration() const = 0;
         virtual std::string projectFolder() const = 0;
         virtual std::string tidyName(const std::string& typed) const = 0;
         virtual ProjectState project() const = 0;

@@ -751,9 +751,10 @@ namespace playground::ui
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<ProjectEntry> projectList_;
-        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects): read once
+        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects), read again
         ProjectsView projectsView_;                      // PROJECTS' stars and folded groups, as the poll last read them
         bool factoryRead_ = false;
+        uint64_t factorySeen_ = 0;                       // the factory set's generation factoryList_ was read at
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;
