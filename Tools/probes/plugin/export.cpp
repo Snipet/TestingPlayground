@@ -16,6 +16,19 @@
 //   REFUSE   a package of the other kind (the why names it), one with a byte changed (its check), one cut short, a file
 //            that is no export, a zip with no project.json, and (but on macOS) one in xz, the why naming it: refused,
 //            nothing added
+//   BUNDLE   several projects as one bundle (startExport, off the message thread): held before its store's work
+//            (setExportGate), the export says it is in flight and no project's file is read on the message thread
+//            (parses() still across startExport and exporting()); once let go it writes a .zip of stored entries:
+//            bundle.json (its format, kind and each project's name and file) and each project's own .fmpack, a factory
+//            project under its own name, two names that differ by case made unique case aside; each member alone a
+//            package read() takes; read() refuses the bundle, saying so; imported (importProjects), every project
+//            comes in with its versions, presets, info and samples the same; a hand-made bundle with one of the other
+//            kind and one of this kind: that one taken, the other refused, naming the kind; a cancel (held, then let
+//            go) leaves no file and no temporary; a file made at the target meanwhile is never replaced (a bundle, and
+//            one project), the export failing in words; a single export through the job writes the bytes
+//            exportProject wrote; 257 projects and a path not full refused at once, 2 GB of project files in all (a
+//            sparse file) refused on the job's thread, no file written; a processor that goes with an export held
+//            cancels it and waits for it, no file left
 #include "Probe.h"
 
 #include "plugin/EditorPort.h"
@@ -23,13 +36,18 @@
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
 
+#include "dsp/Assets.h"
+
 #include "Product.h"
 
 #include <funkgui/panel/HeadlessGuiScope.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -315,6 +333,239 @@ PROBE(plugin, export)
         P.eq("refuse.xz", refused(fromMac, "xz") ? 1 : 0, 1);
 #endif
         P.eq("refuse.nothing_added", ps::list().size() == before ? 1 : 0, 1);
+    }
+
+    // BUNDLE
+    {
+        const auto waitExport = [&](pg::Processor& proc) {
+            for (int k = 0; k < 6000; ++k)
+            {
+                proc.poll();
+                if (!proc.editorPort().exporting().busy)
+                    return true;
+                juce::Thread::sleep(5);
+            }
+            return false;
+        };
+        // A project with a sample, added as an import would add it.
+        const std::string sampleBytes = "RIFF....WAVEfmt sample bytes for the bundle probe";
+        const std::string sampleHash = pg::assets::hashOf(sampleBytes);
+        {
+            ps::Project s = *original;
+            s.name = "Sampled";
+            s.versions = { original->latest() };
+            s.versions[0].samples = { { "kick.wav", sampleHash } };
+            s.samples = { { sampleHash, sampleBytes } };
+            P.eq("bundle.sampled_added", ps::add(s, &why).value_or("") == "Sampled" ? 1 : 0, 1);
+        }
+        const std::vector<ps::Entry> factory = ps::factoryList();
+        const std::string factoryOne = factory.empty() ? std::string() : factory.front().name;
+        const std::string factoryOwn = pg::ownName(factoryOne);
+        // A project of the user's whose name is the factory one's own but for its case.
+        std::string caseTwin;
+        for (const char c : factoryOwn)
+            caseTwin += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (!factoryOne.empty())
+        {
+            ps::Project t = *original;
+            t.name = caseTwin;
+            t.versions = { original->latest() };
+            t.presets.clear();
+            (void)ps::add(t, &why);
+        }
+        std::vector<std::string> names = { "Glass Bloom", "Sampled" };
+        if (!factoryOne.empty())
+        {
+            names.push_back(factoryOne);
+            names.push_back(caseTwin);
+        }
+        const std::vector<std::string> files = px::bundleNames(names, true);
+        P.eq("bundle.names_unique", px::bundleNames({ "Pad", "pad", "PAD" }, true)
+                                        == std::vector<std::string>{ "Pad.fmpack", "pad 2.fmpack", "PAD 3.fmpack" }
+                                        ? 1 : 0, 1);
+        const juce::File bundle = out.getChildFile("Several.zip");
+        const int parsesBefore = ps::parses();
+        a.setExportGate(true);
+        const bool started = pa.startExport(names, true, true, bundle.getFullPathName().toStdString(), why);
+        const pg::ExportState held = pa.exporting();
+        P.eq("bundle.started", started && held.busy && !held.finished && held.total == static_cast<int>(names.size()) && held.done == 0 ? 1 : 0, 1);
+        P.eq("bundle.no_parse_on_message_thread", ps::parses() - parsesBefore, 0);
+        std::string busyWhy;
+        P.eq("bundle.one_at_a_time", pa.startExport(names, true, true, out.getChildFile("Second.zip").getFullPathName().toStdString(), busyWhy)
+                                         ? 0 : 1, 1);
+        a.setExportGate(false);
+        P.eq("bundle.ended", waitExport(a) ? 1 : 0, 1);
+        const pg::ExportState done = pa.exporting();
+        std::printf("bundle: %s, %d of %d done, %d failed, %lld bytes (%s) %s\n", done.ok ? "written" : "not written", done.done, done.total,
+                    done.failed, static_cast<long long>(done.out.bytes), done.out.method.c_str(), done.why.c_str());
+        P.eq("bundle.written", done.ok && done.finished && done.done == static_cast<int>(names.size()) && done.failed == 0 && bundle.existsAsFile()
+                                   && done.out.method == "bundle" && done.out.bytes == bundle.getSize() ? 1 : 0, 1);
+        P.eq("bundle.parsed_on_its_thread", ps::parses() - parsesBefore >= 2 ? 1 : 0, 1);
+        {
+            juce::ZipFile zip(bundle);
+            const auto entry = [&](const juce::String& path) -> std::string {
+                const int i = zip.getIndexOfFileName(path);
+                if (i < 0)
+                    return {};
+                const std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(i));
+                return in != nullptr ? in->readEntireStreamAsString().toStdString() : std::string();
+            };
+            const juce::var m = juce::JSON::parse(juce::String(entry(px::kBundleManifest)));
+            bool listed = m["projects"].size() == static_cast<int>(names.size());
+            for (int k = 0; listed && k < m["projects"].size(); ++k)
+                listed = m["projects"][k]["file"].toString().toStdString() == files[static_cast<std::size_t>(k)]
+                      && zip.getIndexOfFileName(m["projects"][k]["file"].toString()) >= 0;
+            P.eq("bundle.manifest", m["format"].toString() == px::kBundleFormat && static_cast<int>(m["version"]) == 1
+                                        && m["kind"].toString() == (kInstrument ? "instrument" : "effect")
+                                        && m["plugin"].toString() == pg::product::kName && listed ? 1 : 0, 1);
+            P.eq("bundle.entries", zip.getNumEntries(), static_cast<int>(names.size()) + 1);
+            if (!factoryOne.empty())
+            {
+                P.eq("bundle.factory_own_name", files[2] == factoryOwn + ".fmpack" && m["projects"][2]["name"].toString().toStdString() == factoryOwn
+                                                    ? 1 : 0, 1);
+                P.eq("bundle.case_unique", files[3] == caseTwin + " 2.fmpack" ? 1 : 0, 1);
+            }
+            else
+                probe::skip(P, "bundle.factory_own_name", "this product has no factory project");
+            // Unzipped by hand: a member is an ordinary package.
+            const juce::File member = out.getChildFile("Member.fmpack");
+            juce::MemoryBlock body;
+            if (const int mi = zip.getIndexOfFileName("Glass Bloom.fmpack"); mi >= 0)
+                if (const std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(mi)); in != nullptr)
+                    in->readIntoMemoryBlock(body);
+            member.replaceWithData(body.getData(), body.getSize());
+            const std::optional<ps::Project> alone = px::read(member, &why);
+            P.eq("bundle.member_alone", alone && original && sameVersions(*alone, *original) && body.getSize() > 4
+                                             && std::memcmp(body.getData(), "FMPK", 4) == 0 ? 1 : 0, 1);
+            P.eq("bundle.no_id", alone && alone->id.empty() ? 1 : 0, 1);
+        }
+        why.clear();
+        P.eq("bundle.read_refuses", !px::read(bundle, &why) && why.find("bundle") != std::string::npos ? 1 : 0, 1);
+        // In again: every project, each as it went.
+        {
+            pg::Imported in;
+            const bool imported = pa.importProjects(bundle.getFullPathName().toStdString(), in, why);
+            std::printf("bundle imported: %zu projects, %zu refused\n", in.names.size(), in.refused.size());
+            P.eq("bundle.imported", imported && in.names.size() == names.size() && in.refused.empty() ? 1 : 0, 1);
+            const std::optional<ps::Project> glass = in.names.empty() ? std::nullopt : ps::load(in.names[0]);
+            P.eq("bundle.same_project", glass && original && sameVersions(*glass, *original) && glass->presets.size() == 2
+                                            && glass->info == original->info && glass->createdMs == original->createdMs ? 1 : 0, 1);
+            const std::optional<ps::Project> sampled = in.names.size() < 2 ? std::nullopt : ps::load(in.names[1]);
+            P.eq("bundle.same_samples", sampled && sampled->samples.size() == 1 && sampled->samples[0].bytes == sampleBytes
+                                            && sampled->latest().samples.size() == 1 && sampled->latest().samples[0].name == "kick.wav"
+                                            && sampled->latest().samples[0].hash == sampleHash ? 1 : 0, 1);
+            if (!factoryOne.empty())
+                P.eq("bundle.factory_in_as_own", in.names.size() >= 3 && !pg::isFactoryName(in.names[2])
+                                                     && ps::sameName(in.names[2].substr(0, factoryOwn.size()), factoryOwn) ? 1 : 0, 1);
+            std::string one;
+            P.eq("bundle.import_one_name", pa.importProject(bundle.getFullPathName().toStdString(), one, why) && !one.empty() ? 1 : 0, 1);
+        }
+        // A bundle with one of the other kind: this kind's taken, the other refused by name.
+        {
+            ps::Project mine = *original;
+            mine.name = "Kind Mine";
+            std::string other = ps::toJson(*original);
+            const std::string kind = std::string("\"kind\": \"") + (kInstrument ? "instrument" : "effect") + "\"";
+            if (const std::size_t at = other.find(kind); at != std::string::npos)
+                other.replace(at, kind.size(), std::string("\"kind\": \"") + (kInstrument ? "effect" : "instrument") + "\"");
+            const std::vector<uint8_t> a1 = packageOf(ps::toJson(mine), px::Method::stored);
+            const std::vector<uint8_t> a2 = packageOf(other, px::Method::stored);
+            const std::string manifest = "{\"format\": \"funk-playground-bundle\", \"version\": 1, \"projects\": ["
+                                         "{\"name\": \"Kind Mine\", \"file\": \"Kind Mine.fmpack\"}, "
+                                         "{\"name\": \"Kind Other\", \"file\": \"Kind Other.fmpack\"}]}";
+            juce::ZipFile::Builder zb;
+            zb.addEntry(new juce::MemoryInputStream(manifest.data(), manifest.size(), true), 9, "bundle.json", juce::Time::getCurrentTime());
+            zb.addEntry(new juce::MemoryInputStream(a1.data(), a1.size(), true), 0, "Kind Mine.fmpack", juce::Time::getCurrentTime());
+            zb.addEntry(new juce::MemoryInputStream(a2.data(), a2.size(), true), 0, "Kind Other.fmpack", juce::Time::getCurrentTime());
+            const juce::File mixed = out.getChildFile("Mixed.zip");
+            {
+                juce::FileOutputStream os(mixed);
+                zb.writeToStream(os, nullptr);
+            }
+            pg::Imported in;
+            const bool ok = pa.importProjects(mixed.getFullPathName().toStdString(), in, why);
+            std::printf("mixed: %s\n", in.refused.empty() ? "nothing refused" : in.refused.front().c_str());
+            P.eq("bundle.other_kind_refused", ok && in.names == std::vector<std::string>{ "Kind Mine" } && in.refused.size() == 1
+                                                  && in.refused[0].rfind("Kind Other:", 0) == 0
+                                                  && in.refused[0].find(kInstrument ? "effect" : "instrument") != std::string::npos
+                                                  ? 1 : 0, 1);
+        }
+        const auto temps = [&] {
+            int n = 0;
+            for (const juce::File& f : out.findChildFiles(juce::File::findFiles, false, "*.writing"))
+                n += f.getFileName().startsWithChar('.') ? 1 : 0;
+            return n;
+        };
+        // A cancel: nothing left.
+        {
+            const juce::File cancelled = out.getChildFile("Cancelled.zip");
+            a.setExportGate(true);
+            P.eq("cancel.started", pa.startExport(names, false, true, cancelled.getFullPathName().toStdString(), why) ? 1 : 0, 1);
+            pa.cancelExport();
+            a.setExportGate(false);
+            P.eq("cancel.ended", waitExport(a) ? 1 : 0, 1);
+            const pg::ExportState st = pa.exporting();
+            P.eq("cancel.no_file", !st.ok && st.cancelled && !cancelled.exists() && temps() == 0 ? 1 : 0, 1);
+        }
+        // A file made at the target meanwhile: never replaced (a bundle, then one project).
+        for (const bool single : { false, true })
+        {
+            const juce::File target = out.getChildFile(single ? "Taken.fmpack" : "Taken.zip");
+            target.deleteFile();
+            a.setExportGate(true);
+            const std::vector<std::string> which = single ? std::vector<std::string>{ "Glass Bloom" } : names;
+            const bool go = pa.startExport(which, true, true, target.getFullPathName().toStdString(), why);
+            target.replaceWithText("the user's own file");
+            a.setExportGate(false);
+            (void)waitExport(a);
+            const pg::ExportState st = pa.exporting();
+            std::printf("taken (%s): %s\n", single ? "one" : "bundle", st.why.c_str());
+            P.eq(single ? "replace.single_kept" : "replace.bundle_kept",
+                 go && !st.ok && !st.cancelled && target.loadFileAsString() == "the user's own file" && temps() == 0
+                     && st.why.find("there already") != std::string::npos ? 1 : 0, 1);
+        }
+        // One project through the job: the bytes exportProject wrote.
+        {
+            const juce::File one = out.getChildFile("One.fmpack");
+            P.eq("single.started", pa.startExport({ "Glass Bloom" }, true, true, one.getFullPathName().toStdString(), why) ? 1 : 0, 1);
+            P.eq("single.ended", waitExport(a) ? 1 : 0, 1);
+            const pg::ExportState st = pa.exporting();
+            P.eq("single.same_bytes", st.ok && st.done == 1 && st.out.versions == 30 && bytesOf(one) == pb ? 1 : 0, 1);
+            P.eq("single.replaces_what_was_there", pa.startExport({ "Glass Bloom" }, true, false, one.getFullPathName().toStdString(), why)
+                                                       && waitExport(a) && pa.exporting().ok && pa.exporting().out.versions == 1 ? 1 : 0, 1);
+        }
+        // The limits.
+        {
+            std::vector<std::string> many(static_cast<std::size_t>(px::kMaxBundleProjects) + 1, "Glass Bloom");
+            std::string w;
+            P.eq("limit.count", !pa.startExport(many, true, true, out.getChildFile("Many.zip").getFullPathName().toStdString(), w)
+                                    && w.find("256") != std::string::npos ? 1 : 0, 1);
+            P.eq("limit.full_path", pa.startExport({ "Glass Bloom" }, true, true, "relative.zip", w) ? 0 : 1, 1);
+            const juce::File huge = dir.getChildFile("projects").getChildFile("Huge.fmproject");
+            std::error_code ec;
+            {
+                juce::FileOutputStream h(huge);
+            }
+            std::filesystem::resize_file(std::filesystem::path(huge.getFullPathName().toStdString()),
+                                         static_cast<std::uintmax_t>(px::kMaxBundleBytes) + 1, ec);
+            const juce::File big = out.getChildFile("Big.zip");
+            const bool go = !ec && pa.startExport({ "Huge", "Glass Bloom" }, true, true, big.getFullPathName().toStdString(), w);
+            (void)waitExport(a);
+            const pg::ExportState st = pa.exporting();
+            std::printf("too large: %s\n", st.why.c_str());
+            P.eq("limit.bytes", go && !st.ok && st.why.find("GB") != std::string::npos && st.done == 0 && !big.exists() ? 1 : 0, 1);
+            huge.deleteFile();
+        }
+        // A processor that goes with an export held: cancelled and waited for, no file.
+        {
+            const juce::File gone = out.getChildFile("Gone.zip");
+            {
+                pg::Processor c;
+                c.setExportGate(true);
+                P.eq("goes.started", c.editorPort().startExport(names, true, true, gone.getFullPathName().toStdString(), why) ? 1 : 0, 1);
+            }
+            P.eq("goes.no_file", !gone.exists() && temps() == 0 ? 1 : 0, 1);
+        }
     }
 
     ps::setDirectoryForTests({});

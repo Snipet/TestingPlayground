@@ -189,6 +189,9 @@ namespace playground
         // its store's work (the next poll() lands it), so a probe can time the landing alone.
         void setSaveGate(bool shut);
         bool saveWritten() const noexcept { return saverDone_.load(std::memory_order_acquire); }
+        // For the probes: the export in flight (startExport) waits before its store's work while shut (a cancel lets it
+        // go, to end at once), so that what the message thread does meanwhile can be counted.
+        void setExportGate(bool shut);
         // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
         // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
         bool claudeJobWaiting() const;
@@ -314,6 +317,11 @@ namespace playground
         bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path, Exported& out,
                            std::string& why) override;
         bool importProject(const std::string& path, std::string& name, std::string& why) override;
+        bool importProjects(const std::string& path, Imported& out, std::string& why) override;
+        bool startExport(const std::vector<std::string>& projects, bool package, bool allVersions, const std::string& path,
+                         std::string& why) override;
+        ExportState exporting() const override;
+        void cancelExport() override;
         std::string exportFolder() const override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
@@ -571,6 +579,26 @@ namespace playground
         void pollSave();
         void finishSave();                                       // the destructor's: the gate opened, the saver joined,
                                                                  // it lands, and the one asked for meanwhile saves
+        // The export off the message thread (EditorPort::startExport; ProcessorExport.cpp): its job taken on the message
+        // thread (no file read there), run on exporter_, which writes its progress and outcome into exportState_ under
+        // exportMutex_; poll() joins it once it has ended, and the destructor cancels and joins it.
+        struct ExportJob
+        {
+            std::vector<std::string> names;
+            bool package = false, allVersions = false;
+            bool replace = false;                                // the file was there as it started (the chooser asked)
+            std::string path;
+        };
+        void runExport(const ExportJob& job);
+        void endExport(bool ok, const Exported& out, const std::string& why, bool cancelled);
+        void pollExport();
+        void finishExport();
+        std::thread exporter_;
+        mutable std::mutex exportMutex_;
+        ExportState exportState_;                                // under exportMutex_
+        std::atomic<bool> exportCancel_{ false };
+        bool exportGateShut_ = false;                            // under exportMutex_ (setExportGate)
+        std::condition_variable exportGateOpen_;
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

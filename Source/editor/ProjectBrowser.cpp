@@ -103,7 +103,8 @@ namespace playground::ui
         o.folded = filtering() ? &filterFolded_ : &view_.folded;
         o.search = view_.search;
         o.tag = view_.tag;
-        o.byDate = view_.byDate;
+        o.order = view_.order;
+        o.reversed = view_.reversed;
         groups_ = projectgroups::arrange(projects_, o);
         rows_.clear();
         for (int g = 0; g < static_cast<int>(groups_.size()); ++g)
@@ -150,8 +151,11 @@ namespace playground::ui
             out.search = view_.search;
         if (view_.tag != kept_.tag)
             out.tag = view_.tag;
-        if (view_.byDate != kept_.byDate)
-            out.byDate = view_.byDate;
+        if (view_.order != kept_.order || view_.reversed != kept_.reversed)
+        {
+            out.order = view_.order;
+            out.reversed = view_.reversed;
+        }
         std::string why;
         if (out != now && !port_.setProjectsView(out, why))
         {
@@ -436,9 +440,9 @@ namespace playground::ui
                 break;
             }
             case Menu::sort:
-                request.items.push_back(dropdown::choice(kByName, "By name", !view_.byDate));
-                request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.byDate));
-                dropdown::dropdownMenu(request, spots.sort, view_.byDate ? kByDate : kByName);
+                request.items.push_back(dropdown::choice(kByName, "By name", view_.order != ProjectOrder::saved));
+                request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.order == ProjectOrder::saved));
+                dropdown::dropdownMenu(request, spots.sort, view_.order == ProjectOrder::saved ? kByDate : kByName);
                 break;
         }
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
@@ -515,7 +519,7 @@ namespace playground::ui
                 break;
             }
             case Menu::sort:
-                view_.byDate = id == kByDate;
+                view_.order = id == kByDate ? ProjectOrder::saved : ProjectOrder::name;
                 keepView();
                 arrange();
                 break;
@@ -1686,7 +1690,7 @@ namespace playground::ui
             };
             const bool tags = !view_.tag.empty() || std::any_of(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.tags.empty(); });
             trigger(at.tag, view_.tag.empty() ? "Any tag" : "Tag: " + view_.tag, tags);
-            trigger(at.sort, view_.byDate ? "By last saved" : "By name", true);
+            trigger(at.sort, view_.order == ProjectOrder::saved ? "By last saved" : "By name", true);
         }
         const auto mine = static_cast<std::size_t>(std::count_if(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.factory; }));
         const std::size_t factory = projects_.size() - mine;
@@ -1944,7 +1948,7 @@ namespace playground::ui
                 out.push_back(std::move(b));
             };
             combo(kTagId, at.tag, "Tag", view_.tag.empty() ? "Any tag" : view_.tag);
-            combo(kSortId, at.sort, "Order", view_.byDate ? "By last saved" : "By name");
+            combo(kSortId, at.sort, "Order", view_.order == ProjectOrder::saved ? "By last saved" : "By name");
         }
         const std::string of = chosenName_.empty() ? std::string() : " of " + ownName(chosenName_);
         const auto listItem = [&](List l, const std::string& title) {
