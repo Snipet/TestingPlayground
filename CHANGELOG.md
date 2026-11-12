@@ -9,6 +9,18 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
+### The chat keeps its conversation through a stopped summary and an empty reply ([#40](https://github.com/Snipet/TestingPlayground/pull/40))
+
+**Fixed**
+- Pressing Stop while Claude was summarizing a long conversation (or the connection dropping then) no longer throws
+  the conversation away: it goes on as it was. A chat already left that way opens again and works.
+- A reply with nothing in it (no words, only spaces, or another model's reasoning alone) no longer breaks the chat.
+  Every later message was refused until you started a new chat; now the reply shows as "(no answer)" and the
+  conversation goes on. Spaces alone beside a tool call are left out too. A chat already left that way is mended when
+  it opens.
+- On macOS and Windows a message to Google Gemini went out malformed: the query in its address was moved into the
+  request's body. The address now goes out as the plugin built it, query included.
+
 ## 2026-11-09
 
 ### Shaders on Windows, and Windows' tests counted ([#31](https://github.com/Snipet/TestingPlayground/pull/31))
