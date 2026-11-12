@@ -539,9 +539,6 @@ namespace playground
                 error = "The API key for " + providers::nameOf(p) + " was removed. Add it again.";
                 return false;
             }
-            requests_.push_back(body);
-            if (requests_.size() > 64)
-                requests_.erase(requests_.begin());
         }
         const providers::Endpoint e = providers::endpoint(p, p.model);
         claude::Headers headers = providers::headers(p, key);

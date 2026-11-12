@@ -6106,7 +6106,9 @@ namespace playground::ui
     {
         funkgui::TextEditor& in = inputItem().editor();
         const std::string text = in.text();
-        if ((text.find_first_not_of(" \t\n") == std::string::npos && chat_.attached.empty()) || chat_.busy)
+        // Pictures still being read go with the message (the agent waits for them): pictures alone may be sent so too.
+        const bool blank = text.find_first_not_of(" \t\n") == std::string::npos;
+        if ((blank && chat_.attached.empty() && chat_.attaching == 0) || chat_.busy)
             return;
         if (!chat_.ready())
         {
@@ -6114,7 +6116,8 @@ namespace playground::ui
             openKeyDialog();
             return;
         }
-        port_.chat().send(text);
+        if (!port_.chat().send(text))
+            return;                                      // not taken (Claude Desktop began a call): the box keeps it
         in.setText("");
         chatAt_ = -1.0;                                  // the user's message, shown at once
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);

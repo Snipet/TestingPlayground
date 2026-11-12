@@ -230,7 +230,9 @@
 //            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
 //            elsewhere a TIFF is refused, its note naming the formats read there (PNG, JPEG or GIF);
 //            detach takes one back; the message's pictures go before its words as base64
-//            image blocks, the entry shows them and the box empties; a message of pictures alone goes; a message takes
+//            image blocks, the entry shows them and the box empties; a message sent while its pictures are still read
+//            shows at once and goes with them all once they are in (one that is no picture refused on the way), the box
+//            empty; a Stop while it waits sends nothing; a message of pictures alone goes; a message takes
 //            six; a new chat drops the attached; the session keeps each picture's thumbnail, which loads back
 //   WEB      web search: off at first, no web tools; on (with the key), the request has web_search and web_fetch
 //            (20260209, five uses each, a fetch's text capped, its citations on) and the history's thinking goes (the
@@ -264,6 +266,9 @@
 //            loses its thinking blocks when it loads (a reply of thinking alone keeps a line), one saved with it keeps
 //            them
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
+//   BUSY     a call of Claude Desktop's that takes the chat while send() joins the last turn (between its two looks):
+//            the message is not taken (send says so: the box keeps it; no entry, no request), the chat stays busy with
+//            the call, and idle after it
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
 //   OLD      what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin; chat.json's
@@ -272,6 +277,9 @@
 //            note of the sign-in, a turn through it) loads as any other, and the next turn goes to api.anthropic.com
 //            with the key and no other credential (the models too), the history valid; the key removed, a message
 //            asks for the key (and for nothing else) and sends nothing
+//   MODELS   /v1/models gave no list (a Stop while it was asked, a 529, no connection): the turn goes with the
+//            built-in values and the next turn asks again; once listed, the model's own max_tokens, level and
+//            compaction go and it is not asked again; a turn of several requests asks once
 //   NEW      newChat forgets the conversation
 #include "Pictures.h"
 #include "Probe.h"
@@ -4561,6 +4569,62 @@ PROBE(plugin, chat)
             P.eq("pictures.entry", user != nullptr && user->pictures.size() == 2 && user->text == "a panel like these" ? 1 : 0, 1);
             P.eq("pictures.box_empty", st.attached.empty() ? 1 : 0, 1);
         }
+        // Sent while the pictures are still being read (the reads held on the job thread): the message shows at once,
+        // waits for them, then goes with every one read (a file that is no picture refused on the way), none left in
+        // the box; a Stop while it waits ends the turn with nothing sent.
+        {
+            std::atomic<bool> hold{ true };
+            agent.setPictureReadHookForTests([&] {
+                while (hold.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            });
+            agent.attach({ png, jpeg, broken.getFullPathName().toStdString() });
+            script->add(fake::Response::ok(fake::Sse().start().text("Both, then.").end()));
+            const int sent = script->postCount();
+            agent.send("these too");
+            {
+                const pg::ChatState st = agent.chatState();
+                P.eq("pictures.waits", st.busy && st.attaching == 3 && script->postCount() == sent
+                                           && lastText(st, pg::ChatEntry::Kind::user) == "these too" ? 1 : 0, 1);
+            }
+            hold = false;
+            agent.waitIdle();
+            const juce::Array<juce::var> m = messagesOf(script->body(sent));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            int images = 0, textAt = -1, lastImage = -1;
+            for (int i = 0; i < c.size(); ++i)
+            {
+                if (str(c[i], "type") == "image")
+                {
+                    ++images;
+                    lastImage = i;
+                }
+                if (str(c[i], "type") == "text" && str(c[i], "text") == "these too" && textAt < 0)
+                    textAt = i;
+            }
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* user = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::user)
+                    user = &e;
+            P.eq("pictures.waited_sent_with", script->postCount() == sent + 1 && images == 2 && textAt > lastImage ? 1 : 0, 1);
+            P.eq("pictures.waited_entry", user != nullptr && user->text == "these too" && user->pictures.size() == 2 ? 1 : 0, 1);
+            P.eq("pictures.waited_none_left", st.attached.empty() && st.attaching == 0 && !st.busy ? 1 : 0, 1);
+
+            hold = true;
+            agent.attach({ png });
+            const int stopped = script->postCount();
+            agent.send("never mind");
+            agent.stop();
+            hold = false;
+            agent.waitIdle();
+            const pg::ChatState after = agent.chatState();
+            P.eq("pictures.stop_while_waiting", !after.busy && script->postCount() == stopped
+                                                    && lastText(after, pg::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
+            agent.setPictureReadHookForTests(nullptr);
+            for (const pg::ChatPicturePtr& pic : after.attached)
+                agent.detach(pic->id);
+        }
 #if defined(__APPLE__)
         // What JUCE cannot read (a TIFF), and a photo stored on its side (EXIF orientation 6): ImageIO reads both,
         // the photo upright, and its bytes do not go as they are.
@@ -5205,6 +5269,42 @@ PROBE(plugin, chat)
         P.eq("stop.alternates", alternates(m) ? 1 : 0, 1);
     }
 
+    // ---- BUSY: a call of Claude Desktop's that takes the chat while send() joins the last turn ----------------------
+    {
+        P.eq("busy.file", agent.mcpCall("write_file", input({ { "name", "busy.fm" }, { "content", "// busy\n" } })).isError ? 1 : 0, 0);
+        std::atomic<bool> release{ false }, inCall{ false };
+        std::thread call;
+        agent.setFileWriteHookForTests([&](int) {
+            inCall = true;
+            while (!release.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        });
+        // Between send()'s two looks: the call starts on a thread of its own (as the MCP link's worker) and holds the
+        // chat until it is released.
+        agent.setSendHookForTests([&] {
+            call = std::thread([&] {
+                agent.mcpCall("edit_file", input({ { "name", "busy.fm" }, { "old_text", "// busy" }, { "new_text", "// busy, edited" } }));
+            });
+            while (!inCall.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        });
+        const int posts = script->postCount();
+        const bool taken = agent.send("while Claude Desktop works");
+        agent.setSendHookForTests(nullptr);
+        const pg::ChatState during = agent.chatState();
+        int typed = 0;
+        for (const pg::ChatEntry& e : during.entries)
+            typed += e.kind == pg::ChatEntry::Kind::user && e.text == "while Claude Desktop works" ? 1 : 0;
+        P.eq("busy.desktop_holds", during.busy ? 1 : 0, 1);
+        P.eq("busy.send_refused", !taken && typed == 0 && script->postCount() == posts ? 1 : 0, 1);
+        release = true;
+        call.join();
+        agent.setFileWriteHookForTests(nullptr);
+        agent.waitIdle();
+        P.eq("busy.idle_after", !agent.chatState().busy && script->postCount() == posts ? 1 : 0, 1);
+        agent.mcpCall("delete_file", input({ { "name", "busy.fm" } }));
+    }
+
     // ---- STATE ---------------------------------------------------------------------------------------------------------
     {
         juce::MemoryBlock state;
@@ -5285,6 +5385,68 @@ PROBE(plugin, chat)
         P.eq("old.no_key_asks_for_key", has(error, "API key") && !has(error, "ign in") ? 1 : 0, 1);
         P.eq("old.no_key_nothing_sent", static_cast<int64_t>(oldScript->paths.size() - n), 0);
         P.eq("old.saved_again", a.saveKey(fake::fakeKey(), why) ? 1 : 0, 1);
+    }
+
+    // ---- MODELS: a models list that did not come is asked for again, once a turn ------------------------------------
+    {
+        const pg::chatstore::Choice chosen = pg::chatstore::loadChoice();
+        pg::chatstore::saveChoice({ "claude-fable-5-2", "high", false, false, "" });   // a model the built-in list lacks
+        pg::Processor fresh;
+        pg::ChatAgent& a = fresh.chatAgent();
+        auto s2 = std::make_shared<fake::Script>();
+        s2->models = fake::modelsBody({ { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high" }, 100000, true } });
+        a.setTransport(std::make_unique<fake::Transport>(s2));
+        const std::string gets = "GET /v1/models?limit=100";
+        const auto turnOf = [&](const std::string& words) {
+            s2->add(fake::Response::ok(fake::Sse().start().text("Yes.").end()));
+            a.send(words);
+            a.waitIdle();
+        };
+        const auto lastBody = [&] { return claude::parseJson(s2->body(s2->postCount() - 1)); };
+        const auto ownValues = [&](const juce::var& b) {
+            return static_cast<int>(b.getProperty("max_tokens", 0)) == 100000
+                && str(b.getProperty("output_config", {}), "effort") == "high"
+                && b.getProperty("context_management", {}).isObject();
+        };
+        // A Stop while the list is asked for: no list.
+        s2->holdGets = true;
+        a.send("one");
+        const auto t0 = std::chrono::steady_clock::now();
+        while (s2->heldGets.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        a.stop();
+        s2->holdGets = false;
+        a.waitIdle();
+        P.eq("models.stopped_once", s2->count(gets), 1);
+        // Overloaded (529): the built-in list's values for this turn.
+        s2->modelsStatus = 529;
+        turnOf("two");
+        P.eq("models.overloaded_asked_again", s2->count(gets), 2);
+        P.eq("models.overloaded_builtin", s2->postCount() == 1 && !ownValues(lastBody())
+                                              && static_cast<int>(lastBody().getProperty("max_tokens", 0)) == 64000 ? 1 : 0, 1);
+        // No connection.
+        s2->modelsStatus = 0;
+        turnOf("three");
+        P.eq("models.unreachable_asked_again", s2->count(gets), 3);
+        // The list comes: the model's own max_tokens, level and compaction.
+        s2->modelsStatus = 200;
+        turnOf("four");
+        P.eq("models.listed_at_last", s2->count(gets), 4);
+        P.eq("models.own_values", ownValues(lastBody()) ? 1 : 0, 1);
+        bool listed = false;
+        for (const pg::ChatModel& m : a.chatState().models)
+            listed = listed || m.id == "claude-fable-5-2";
+        P.eq("models.menu", listed ? 1 : 0, 1);
+        // Listed: not asked again.
+        turnOf("five");
+        P.eq("models.not_again", s2->count(gets), 4);
+        // A turn of several requests asks once.
+        s2->modelsStatus = 529;
+        a.setTransport(std::make_unique<fake::Transport>(s2));   // the list forgotten: asked at the next turn
+        s2->add(fake::Response::ok(fake::Sse().start().tool("toolu_m", "get_status", input({})).end("tool_use")));
+        turnOf("six");
+        P.eq("models.once_a_turn", s2->count(gets) == 5 && s2->postCount() == 6 ? 1 : 0, 1);
+        pg::chatstore::saveChoice(chosen);
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

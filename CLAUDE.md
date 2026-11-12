@@ -1814,7 +1814,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   move that changes the language changes the section, within the start part's token bound (`plugin.mcp`).
 - **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the agent's job thread (`ChatAgent::queueJob`), kept as
   sent (the file's own PNG or JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for
-  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. The
+  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. A
+  message sent while some are read shows at once and goes with them: the turn's worker waits for the reads asked
+  before it (`takePending`: Stop ends the wait, `kPictureWaitSeconds` bounds it), never the panel. The
   editor draws thumbnails through FunkGui's image registry (`funkgui::images`, v0.20.0): `Panel::syncPictures`
   registers each picture's id while `chat_` holds it, counted across Panels (Picture.cpp makes one), so the last to
   let go removes it.

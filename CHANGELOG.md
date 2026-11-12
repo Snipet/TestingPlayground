@@ -21,6 +21,22 @@ When a day changed the Claude Desktop extension, its section says the extension'
 - On macOS and Windows a message to Google Gemini went out malformed: the query in its address was moved into the
   request's body. The address now goes out as the plugin built it, query included.
 
+### Your key and chats survive a full disk, and a message waits for its pictures
+
+**Fixed**
+- Saving the API key or a chat on a full disk (or past a quota) no longer replaces the saved one with an empty file
+  while saying it was saved: the save says it failed, and the key or the chat kept before stays as it was.
+- Chats copied from another computer or account (a copied Library, a backup restored elsewhere) no longer fill the chat
+  list with rows titled "Chat" that open nothing. A chat in the list that cannot be read says so when you open it.
+- A message sent while its pictures were still being read went without them, and they waited for the next message.
+  The message now shows at once and goes with every picture once they are in; Stop still stops it.
+- If the list of Claude's models could not be read when a session began (the API busy, the connection down, or Stop
+  pressed at that moment), it was not asked for again until the plugin was opened again, so a model chosen from it
+  went with the wrong length limit and without its thinking level. It is now asked for again at the next message.
+- A message sent just as Claude Desktop began working on the plugin could start a reply beside it, after which the chat
+  showed Send while Claude was still answering. The message now stays in the box until Claude Desktop is done, as it
+  does whenever Claude Desktop works.
+
 ## 2026-11-09
 
 ### Shaders on Windows, and Windows' tests counted ([#31](https://github.com/Snipet/TestingPlayground/pull/31))
