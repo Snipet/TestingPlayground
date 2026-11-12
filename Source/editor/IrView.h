@@ -65,9 +65,10 @@ namespace playground::ui::irview
     // LLVM's text the view shows (null: none).
     const std::shared_ptr<const IrText>& shown(View v, const IrStatus& ir);
 
-    // A view's editor made one (read only, the code's font, line numbers, the bracket pair, the minimap, its
-    // highlighter), in the code's palette for `theme`.
-    void configure(funkgui::TextEditor& editor, const funkgui::Theme& theme);
+    // A view's editor made one (read only, the code's font at the text size (CodeAssist.h's codesize: the Panel's),
+    // line numbers, the bracket pair, the minimap, its highlighter), in the code's palette for `theme`.
+    void configure(funkgui::TextEditor& editor, const funkgui::Theme& theme,
+                   const funkgui::TextStyle& style = funkgui::editorFont(funkgui::EditorFont::code));
 
     // LLVM IR, a line at a time (no state: nothing in it spans lines), in CodeAssist.h's styles: instructions as
     // keywords, types, %locals as members, @globals and labels as functions, comments, numbers and constants (a float

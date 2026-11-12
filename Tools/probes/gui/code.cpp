@@ -18,6 +18,9 @@
 //   gui.code.hover_long.png  the hover card of a function of eight parameters, on two lines; a local named as a
 //                            constant drawn plain, the constant's uses in the constants' colour
 //   gui.code.hover_local.png the hover card of that local: its name plain, as the editor draws it
+//   gui.code.size_9.png, gui.code.size_12.png, gui.code.size_24.png (and .paper.png each)
+//                            the text size (CodeAssist.h's codesize) at 9, 12 and 24 px: the program and, at 24 px,
+//                            the completion list scaled with it; the status line saying the size (not at 12)
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -73,10 +76,19 @@
 //             second under its parenthesis (gui.code.hover_long.png); the local hovered: no glyph of its card in the
 //             constants' colour (gui.code.hover_local.png), the constant hovered: its name's; the tab renamed by its
 //             name's field, and renamed back: the local still plain, the constant still coloured
+//   SIZE      the text size, this machine's preference: Cmd-=, Cmd-+, Cmd-- and Cmd-0 step it through 9, 10, 11, 12, 13,
+//             14, 16, 18, 20, 24 px, stopping at 9 and 24 (the keys still taken there), every file tab drawn in it, the
+//             row height round(px * 1.4); the line at the text's top and the caret where they were; the status line's
+//             size (none at 12 px), a click on it 12 px again; Cmd-wheel a step a notch both ways, a pad's deltas
+//             gathered to a step, a plain wheel scrolling and leaving the size; the completion list's rows, its width,
+//             the hover card's code and the find bar larger at 24 px than at 12; a second Panel follows the preference with
+//             no input of its own (and a Panel made after reads it); the IR view drawn in it and its keys stepping
+//             it; a netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom, the size unchanged
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
+#include "editor/SchematicView.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
 #include "plugin/ChatAgent.h"
@@ -94,7 +106,9 @@
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -1237,6 +1251,264 @@ PROBE(gui, code)
             idle += panel.needsDraw() ? 1 : 0;
         }
         P.eq("types.code_view_idle", idle, 0);
+    }
+    // ---- SIZE -------------------------------------------------------------------------------------------------------
+    {
+        namespace cs = pg::ui::codesize;
+        funkgui::UiPreferences::get().setTheme(0);
+        funkgui::UiPreferences::get().setInt(cs::kKey, cs::kDefault);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        pg::ui::Panel other(processor.ports(), port);    // another editor of the plugin's, open meanwhile
+        funkgui::HeadlessHost otherHost(other, 0, 2.0f);
+        otherHost.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        P.eq("size.default", panel.codeTextSize(), cs::kDefault);
+        P.eq("size.default_no_status", code.sizeRect().w > 0.0f ? 1 : 0, 0);
+
+        // The program with svf.fm and lines enough to scroll.
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        std::string text = withSvf;
+        for (int k = 0; k < 240; ++k)
+            text += "// filler line " + std::to_string(k) + "\n";
+        panel.editor().selectAll();
+        panel.editor().insert(text);
+        (void)panel.addLibraryFile("svf.fm");            // there already, or added
+        host.click(tab0.x, tab0.y);
+        settleChecks(panel, host);
+        focusEditor(panel, host);
+
+        // A key, as the editor's host gives it: Cmd (Ctrl off the Mac) and the character.
+        const auto cmdKey = [&](pg::ui::Panel& pn, char32_t ch, bool shift = false) {
+            funkgui::KeyEvent e;
+            e.key = funkgui::Key::character;
+            e.ch = ch;
+            e.mods.cmd = true;
+            e.mods.shift = shift;
+            pn.key(e);
+        };
+        // Every file tab in `tenths`, the row height FunkGui's.
+        const auto allAt = [&](pg::ui::Panel& pn, int tenths) {
+            bool all = pn.codeTextSize() == tenths;
+            for (int i = 0; i < pn.fileCount(); ++i)
+            {
+                const funkgui::TextEditor& e = pn.fileEditor(i);
+                all = all && std::abs(e.options().style.px - static_cast<float>(tenths) / 10.0f) < 1.0e-4f
+                      && std::abs(e.rowHeight() - std::round(static_cast<float>(tenths) / 10.0f * 1.4f)) < 1.0e-4f;
+            }
+            return all ? 1 : 0;
+        };
+        constexpr int kTop = 100;
+        const funkgui::TextPos kCaret{ 120, 4 };
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setScroll(0.0f, static_cast<float>(ed.rowOf({ kTop, 0 })) * ed.rowHeight());
+            ed.setCaret(kCaret);
+        }
+        P.eq("size.top_set", panel.editor().visibleLineRange().first, kTop);
+        const auto placeKept = [&] {
+            const funkgui::TextEditor& ed = panel.editor();
+            return ed.visibleLineRange().first == kTop && ed.caret().line == kCaret.line && ed.caret().col == kCaret.col ? 1 : 0;
+        };
+
+        // The overlays at 12 px: the completion list, the hover card, the find bar.
+        struct Overlays
+        {
+            funkgui::Rect completion, hover, find;
+            float row = 0.0f;
+        };
+        const auto overlays = [&]() {
+            Overlays o;
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setFocused(true);
+            ed.setCaret(posIn(ed, "filter.set", 7));
+            ed.scrollToCaret();
+            host.keys("ctrl+space");
+            host.tick(1);
+            o.completion = code.completionBox();
+            o.row = code.completionRowHeight();
+            host.keys("escape");
+            const funkgui::Point at = ed.pointOf(posIn(ed, "filter.tick", 9));
+            host.move(at.x + 3.0f, at.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            host.draw();                                 // the card's place is where it was drawn
+            std::printf("hover %s: %s\n", code.hoverOpen() ? "open" : "closed", code.hoverText().substr(0, 40).c_str());
+            o.hover = code.hoverBox();
+            host.move(at.x + 3.0f, at.y + 6.0f * ed.rowHeight());
+            host.tick(2);
+            host.keys("cmd+f");
+            o.find = code.findBox();
+            host.keys("escape");
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            return o;
+        };
+        const Overlays at12 = overlays();
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setScroll(0.0f, static_cast<float>(ed.rowOf({ kTop, 0 })) * ed.rowHeight());
+            ed.setCaret(kCaret);
+        }
+
+        // The keys, and the place kept.
+        cmdKey(panel, U'=');
+        P.eq("size.cmd_equals", allAt(panel, 130), 1);
+        P.eq("size.place_kept", placeKept(), 1);
+        P.eq("size.preference", cs::read(), 130);
+        cmdKey(panel, U'=', true);                       // Cmd-+: Shift-= on most keyboards
+        P.eq("size.cmd_plus", allAt(panel, 140), 1);
+        cmdKey(panel, U'+');                             // a keypad's or a layout's own +
+        P.eq("size.cmd_plus_char", allAt(panel, 160), 1);
+        cmdKey(panel, U'-');
+        P.eq("size.cmd_minus", allAt(panel, 140), 1);
+        cmdKey(panel, U'0');
+        P.eq("size.cmd_zero", allAt(panel, 120), 1);
+        P.eq("size.place_kept_back", placeKept(), 1);
+        std::string up;
+        for (int k = 0; k < 9; ++k)
+        {
+            cmdKey(panel, U'=');
+            up += std::to_string(panel.codeTextSize()) + " ";
+        }
+        std::printf("up from 12 px: %s\n", up.c_str());
+        P.eq("size.steps_up", up == "130 140 160 180 200 240 240 240 240 " ? 1 : 0, 1);
+        P.eq("size.most", allAt(panel, cs::kMost), 1);
+        P.eq("size.place_kept_most", placeKept(), 1);
+        P.eq("size.status_shown", code.sizeRect().w > 0.0f ? 1 : 0, 1);
+        otherHost.tick(2);
+        P.eq("size.other_follows", allAt(other, cs::kMost), 1);
+        {
+            pg::ui::Panel later(processor.ports(), port);
+            P.eq("size.later_reads", allAt(later, cs::kMost), 1);
+        }
+        host.tick(2);
+        const Overlays at24 = overlays();
+        std::printf("at 12 px: completion %.0f x %.0f (rows %.0f), hover %.0f x %.0f, find %.0f x %.0f\n",
+                    static_cast<double>(at12.completion.w), static_cast<double>(at12.completion.h), static_cast<double>(at12.row),
+                    static_cast<double>(at12.hover.w), static_cast<double>(at12.hover.h), static_cast<double>(at12.find.w),
+                    static_cast<double>(at12.find.h));
+        std::printf("at 24 px: completion %.0f x %.0f (rows %.0f), hover %.0f x %.0f, find %.0f x %.0f\n",
+                    static_cast<double>(at24.completion.w), static_cast<double>(at24.completion.h), static_cast<double>(at24.row),
+                    static_cast<double>(at24.hover.w), static_cast<double>(at24.hover.h), static_cast<double>(at24.find.w),
+                    static_cast<double>(at24.find.h));
+        P.near("size.completion_rows", static_cast<double>(at24.row), 2.0 * static_cast<double>(at12.row), 0.5);
+        P.ge("size.completion_wider", static_cast<double>(at24.completion.w), 1.3 * static_cast<double>(at12.completion.w));
+        P.le("size.completion_capped", static_cast<double>(at24.completion.w),
+             std::max(330.0, static_cast<double>(code.editorRect().w)) + 0.5);
+        P.ge("size.completion_taller", static_cast<double>(at24.completion.h), 1.5 * static_cast<double>(at12.completion.h));
+        P.ge("size.hover_opens", at12.hover.h > 0.0f && at24.hover.h > 0.0f ? 1.0 : 0.0, 1.0);
+        // (its code's line grows, 18 px to 36; its documentation is the chat's size, as the card's width follows it)
+        P.ge("size.hover_code_taller", static_cast<double>(at24.hover.h - at12.hover.h), 17.0);
+        P.ge("size.hover_not_narrower", static_cast<double>(at24.hover.w), static_cast<double>(at12.hover.w));
+        P.ge("size.find_taller", static_cast<double>(at24.find.h), 1.5 * static_cast<double>(at12.find.h));
+        P.ge("size.find_wider", static_cast<double>(at24.find.w), static_cast<double>(at12.find.w));
+        // ... and in the picture: the completion list open at 24 px.
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setCaret(posIn(ed, "filter.set", 7));
+            ed.scrollToCaret();
+            host.keys("ctrl+space");
+            host.tick(2);
+            writePng(P, host, "gui.code.size_24.png", "size_24");
+            host.keys("escape");
+        }
+
+        // The status line's size: a click puts 12 px back.
+        {
+            const funkgui::Rect r = code.sizeRect();
+            host.click(r.centreX(), r.centreY());
+            P.eq("size.status_click", allAt(panel, cs::kDefault), 1);
+            P.eq("size.status_gone", code.sizeRect().w > 0.0f ? 1 : 0, 0);
+            otherHost.tick(2);
+            P.eq("size.other_back", allAt(other, cs::kDefault), 1);
+            writePng(P, host, "gui.code.size_12.png", "size_12");
+        }
+
+        // Down to the least, and the wheel.
+        focusEditor(panel, host);
+        std::string down;
+        for (int k = 0; k < 6; ++k)
+        {
+            cmdKey(panel, U'-');
+            down += std::to_string(panel.codeTextSize()) + " ";
+        }
+        std::printf("down from 12 px: %s\n", down.c_str());
+        P.eq("size.steps_down", down == "110 100 90 90 90 90 " ? 1 : 0, 1);
+        P.eq("size.least", allAt(panel, cs::kLeast), 1);
+        {
+            const funkgui::Rect a = panel.editor().textArea();
+            const float x = a.x + a.w * 0.5f, y = a.y + 40.0f;
+            funkgui::Mods cmd;
+            cmd.cmd = true;
+            host.wheel(x, y, 0.25f, false, cmd);         // a notch away from you
+            P.eq("size.wheel_up", allAt(panel, 100), 1);
+            host.wheel(x, y, -0.25f, false, cmd);
+            P.eq("size.wheel_down", allAt(panel, 90), 1);
+            for (int k = 0; k < 3; ++k)
+                host.wheel(x, y, 0.05f, true, cmd);      // a pad: three small deltas make a step
+            P.eq("size.wheel_pad", allAt(panel, 100), 1);
+            funkgui::Mods ctrl;
+            ctrl.ctrl = true;
+            host.wheel(x, y, -0.25f, false, ctrl);       // Ctrl-wheel (off the Mac, Cmd's)
+            P.eq("size.wheel_ctrl", allAt(panel, 90), 1);
+            const float scrolled = panel.editor().scroll().y;
+            host.wheel(x, y, -0.25f, false, {});
+            P.eq("size.wheel_plain_scrolls", allAt(panel, 90) == 1 && panel.editor().scroll().y > scrolled ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.code.size_9.png", "size_9");
+
+        // The IR view: drawn in the size, its keys stepping it.
+        panel.openIrView(0);
+        host.settle();
+        P.eq("size.ir_shown", panel.irShown() ? 1 : 0, 1);
+        P.eq("size.ir_drawn_in_it", std::abs(panel.editor().options().style.px - 9.0f) < 1.0e-4f ? 1 : 0, 1);
+        cmdKey(panel, U'=');
+        P.eq("size.ir_key", allAt(panel, 100) == 1 && std::abs(panel.editor().options().style.px - 10.0f) < 1.0e-4f ? 1 : 0, 1);
+        panel.closeIrView();
+        host.settle();
+
+        // A netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom.
+        P.eq("size.cir_tab", panel.addLibraryFile("screamer.cir") ? 1 : 0, 1);
+        for (int i = 0; i < panel.fileCount(); ++i)
+            if (panel.fileName(i) == "screamer.cir")
+            {
+                const funkgui::Point t = panel.centreOfTab(i);
+                host.click(t.x, t.y);
+            }
+        host.settle();
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        P.eq("size.schematic_shown", panel.schematicShown() ? 1 : 0, 1);
+        const float zoomWas = panel.schematic().zoom();
+        cmdKey(panel, U'=');
+        host.settle();
+        std::printf("schematic zoom %.2f -> %.2f\n", static_cast<double>(zoomWas), static_cast<double>(panel.schematic().zoom()));
+        P.eq("size.schematic_zooms", panel.schematic().zoom() > zoomWas && panel.codeTextSize() == 100 ? 1 : 0, 1);
+        cmdKey(panel, U'-');
+        P.eq("size.schematic_zooms_out", panel.codeTextSize() == 100 ? 1 : 0, 1);
+        panel.setSchematic(false);
+        host.settle();
+
+        // PAPER at each size.
+        for (const int tenths : { 90, 120, 240 })
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            cs::write(tenths);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.settle();
+            const funkgui::Point t0 = paper.centreOfTab(0);
+            paperHost.click(t0.x, t0.y);
+            paperHost.settle();
+            const std::string name = "gui.code.size_" + std::to_string(tenths / 10) + ".paper.png";
+            writePng(P, paperHost, name.c_str(), "size_paper_" + std::to_string(tenths / 10));
+        }
+        funkgui::UiPreferences::get().setTheme(0);
+        cs::write(cs::kDefault);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();
