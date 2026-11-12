@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 
 namespace playground::ui
 {
@@ -37,7 +39,8 @@ namespace playground::ui
                            kStarId = kBoxId + 0x5000;                                   // + the row
         // The menus' ids.
         constexpr int kOpenItem = 1, kStarItem = 2, kExportItem = 3, kDeleteItem = 4, kNewCategory = 10, kNoCategory = 11,
-                      kFoldAll = 20, kUnfoldAll = 21, kRename = 22, kAnyTag = 1, kByName = 1, kByDate = 2, kChoice = 100;
+                      kFoldAll = 20, kUnfoldAll = 21, kRename = 22, kAnyTag = 1, kBySaved = 1, kByCreated = 2, kBySize = 3,
+                      kByName = 4, kReversed = 9, kChoice = 100;
 
         using L = ProjectBrowser::List;
         using projectgroups::Kind;
@@ -48,6 +51,53 @@ namespace playground::ui
 
         std::string v(int n) { return "v" + std::to_string(n); }
         std::string shortWhen(const std::string& when) { return when.size() > 5 ? when.substr(5) : when; }   // "10-27 14:02"
+
+        // A time in ms since 1970 as shortWhen has a save's ("10-27 14:02", local time); "" for none.
+        std::string shortWhenMs(int64_t ms)
+        {
+            if (ms <= 0)
+                return {};
+            const std::time_t t = static_cast<std::time_t>(ms / 1000);
+            std::tm tm{};
+#if defined(_WIN32)
+            if (localtime_s(&tm, &t) != 0)
+                return {};
+#else
+            if (localtime_r(&t, &tm) == nullptr)
+                return {};
+#endif
+            char buf[32];
+            std::strftime(buf, sizeof buf, "%m-%d %H:%M", &tm);
+            return buf;
+        }
+
+        // A file's size as the order by size shows it: "840 bytes", "12 KB", "1.2 MB".
+        std::string sizeText(int64_t b)
+        {
+            char buf[32];
+            if (b < 1024)
+                return std::to_string(b) + " bytes";
+            if (b < 1024 * 1024)
+                std::snprintf(buf, sizeof buf, "%.0f KB", static_cast<double>(b) / 1024.0);
+            else if (b < int64_t{ 1024 } * 1024 * 1024)
+                std::snprintf(buf, sizeof buf, "%.1f MB", static_cast<double>(b) / (1024.0 * 1024.0));
+            else
+                std::snprintf(buf, sizeof buf, "%.1f GB", static_cast<double>(b) / (1024.0 * 1024.0 * 1024.0));
+            return buf;
+        }
+
+        // The order's words: the menu's rows and the trigger's label (an arrow after it when reversed).
+        const char* orderWord(ProjectOrder o)
+        {
+            switch (o)
+            {
+                case ProjectOrder::saved: return "Last modified";
+                case ProjectOrder::created: return "Date created";
+                case ProjectOrder::size: return "Size";
+                case ProjectOrder::name: break;
+            }
+            return "Name";
+        }
 
         bool has(const std::vector<std::string>& names, const std::string& name)
         {
@@ -388,12 +438,10 @@ namespace playground::ui
                 category.submenu.push_back(dropdown::choice(kNoCategory, "None (Uncategorised)", same1 && shared == "\n"));
                 category.submenu.push_back({ kNewCategory, "New category..." });
                 request.items.push_back(std::move(category));
+                request.items.push_back(dropdown::separator());
+                request.items.push_back({ kExportItem, one ? "Export..." : "Export " + std::to_string(names.size()) + " projects..." });
                 if (one)
-                {
-                    request.items.push_back(dropdown::separator());
-                    request.items.push_back({ kExportItem, "Export..." });
                     request.items.push_back({ kDeleteItem, "Delete", !isFactoryName(names[0]) });
-                }
                 request.anchor = { at.x, at.y, 1.0f, 1.0f };
                 break;
             }
@@ -440,10 +488,23 @@ namespace playground::ui
                 break;
             }
             case Menu::sort:
-                request.items.push_back(dropdown::choice(kByName, "By name", view_.order != ProjectOrder::saved));
-                request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.order == ProjectOrder::saved));
-                dropdown::dropdownMenu(request, spots.sort, view_.order == ProjectOrder::saved ? kByDate : kByName);
+            {
+                // The four keys, the current one checked; under a separator, Reversed, checked while it is.
+                const std::pair<int, ProjectOrder> keys[] = { { kBySaved, ProjectOrder::saved }, { kByCreated, ProjectOrder::created },
+                                                              { kBySize, ProjectOrder::size }, { kByName, ProjectOrder::name } };
+                for (const auto& [id, o] : keys)
+                {
+                    request.items.push_back(dropdown::choice(id, orderWord(o), view_.order == o));
+                    if (view_.order == o)
+                        current = id;
+                }
+                request.items.push_back(dropdown::separator());
+                funkgui::MenuItem rev{ kReversed, "Reversed" };
+                rev.checked = view_.reversed;
+                request.items.push_back(std::move(rev));
+                dropdown::dropdownMenu(request, spots.sort, current);
                 break;
+            }
         }
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, m, row, names, choices](int id) {
@@ -476,7 +537,7 @@ namespace playground::ui
                 }
                 else if (id == kExportItem && !names.empty())
                 {
-                    export_ = names[0];
+                    export_ = names;                     // every one chosen: several, a bundle
                     close();
                 }
                 else if (id == kDeleteItem)
@@ -519,7 +580,12 @@ namespace playground::ui
                 break;
             }
             case Menu::sort:
-                view_.order = id == kByDate ? ProjectOrder::saved : ProjectOrder::name;
+                if (id == kReversed)
+                    view_.reversed = !view_.reversed;
+                else
+                    view_.order = id == kBySaved ? ProjectOrder::saved : id == kByCreated ? ProjectOrder::created
+                                : id == kBySize  ? ProjectOrder::size
+                                                 : ProjectOrder::name;
                 keepView();
                 arrange();
                 break;
@@ -713,11 +779,30 @@ namespace playground::ui
         return i;
     }
 
-    std::string ProjectBrowser::takeExport()
+    std::vector<std::string> ProjectBrowser::takeExport()
     {
-        std::string e;
+        std::vector<std::string> e;
         e.swap(export_);
         return e;
+    }
+
+    std::string ProjectBrowser::orderLabel() const
+    {
+        return orderWord(view_.order);
+    }
+
+    std::string ProjectBrowser::rowFacts(const ProjectEntry& e) const
+    {
+        if (e.factory)
+            return e.presets > 0 ? std::to_string(e.presets) + (e.presets == 1 ? " preset" : " presets") : std::string();
+        switch (view_.order)
+        {
+            case ProjectOrder::created: return v(e.latest) + "   " + shortWhenMs(e.createdMs);
+            case ProjectOrder::size: return v(e.latest) + "   " + sizeText(e.bytes);
+            case ProjectOrder::saved:
+            case ProjectOrder::name: break;
+        }
+        return v(e.latest) + "   " + shortWhen(e.when);
     }
 
     std::pair<std::string, int> ProjectBrowser::takeAb()
@@ -1332,6 +1417,11 @@ namespace playground::ui
         pressRow_ = -1;
         chooseOnUp_ = false;
         dragging_ = false;
+        if (!at.box.contains(p))
+        {
+            close();                                     // as Close does; the Panel drops the press
+            return;
+        }
         if (at.search.contains(p))
         {
             if (!search_.buffer.empty() && at.clear.contains(p))
@@ -1477,7 +1567,8 @@ namespace playground::ui
             }
             else
             {
-                export_ = chosenName_;
+                // Every project chosen (Cmd-click, Shift-click): several go out as one bundle.
+                export_ = selected_.size() > 1 ? selected_ : std::vector<std::string>{ chosenName_ };
                 close();
             }
         }
@@ -1767,7 +1858,12 @@ namespace playground::ui
             };
             const bool tags = !view_.tag.empty() || std::any_of(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.tags.empty(); });
             trigger(at.tag, view_.tag.empty() ? "Any tag" : "Tag: " + view_.tag, tags);
-            trigger(at.sort, view_.order == ProjectOrder::saved ? "By last saved" : "By name", true);
+            trigger(at.sort, orderLabel(), true);
+            if (view_.reversed)                          // reversed: an arrow after the label, up as the order turns
+            {
+                const float lx = at.sort.x + 14.0f + c.textWidth(orderLabel().c_str(), chat::kSmall) + 9.0f;
+                chat::drawIcon(c, chat::Icon::arrowUp, lx, at.sort.centreY(), 10.0f, p.soft);
+            }
         }
         const auto mine = static_cast<std::size_t>(std::count_if(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.factory; }));
         const std::size_t factory = projects_.size() - mine;
@@ -1863,9 +1959,7 @@ namespace playground::ui
             const ProjectEntry& e = projects_[static_cast<std::size_t>(rw.project)];
             if (same(e.name, state_.name))
                 mark(rr);
-            const std::string right = !e.factory     ? v(e.latest) + "   " + shortWhen(e.when)
-                                    : e.presets > 0 ? std::to_string(e.presets) + (e.presets == 1 ? " preset" : " presets")
-                                                    : std::string();
+            const std::string right = rowFacts(e);   // what the list is sorted by: the date, or the size
             const float rightW = c.textWidth(right.c_str(), chat::kSmall);
             const funkgui::TextStyle& st = chosen ? chat::kStrong : chat::kBody;
             c.text(fitText(c, asciiText(ownName(e.name)), st, rr.w - rightW - 48.0f - kStarW).c_str(), rr.x + 24.0f, c.capCentreTop(rr.centreY(), st), st,
@@ -2022,7 +2116,7 @@ namespace playground::ui
                 out.push_back(std::move(b));
             };
             combo(kTagId, at.tag, "Tag", view_.tag.empty() ? "Any tag" : view_.tag);
-            combo(kSortId, at.sort, "Order", view_.order == ProjectOrder::saved ? "By last saved" : "By name");
+            combo(kSortId, at.sort, "Order", std::string(orderWord(view_.order)) + (view_.reversed ? ", reversed" : ""));
         }
         const std::string of = chosenName_.empty() ? std::string() : " of " + ownName(chosenName_);
         const auto listItem = [&](List l, const std::string& title) {

@@ -10,12 +10,15 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <utility>
 
 namespace playground::ui
 {
     namespace
     {
         constexpr float kBoxW = 760.0f, kBoxH = 620.0f;
+        constexpr float kBulkH = 330.0f;                 // the bulk card's: no info fields
         constexpr float kPad = 24.0f;
         constexpr float kCaption = 18.0f;                // a caption over its field
         constexpr float kGap = 14.0f;                    // between the parts
@@ -24,7 +27,7 @@ namespace playground::ui
         constexpr float kLineH = 18.0f;                  // the description's lines
         constexpr uint32_t kBoxId = ExportCard::kA11yBase, kDescriptionId = kBoxId + 1, kAuthorId = kBoxId + 2,
                            kTagsId = kBoxId + 3, kVersionsId = kBoxId + 4, kDoneId = kBoxId + 5, kSourceId = kBoxId + 6,
-                           kPackageId = kBoxId + 7, kCategoryId = kBoxId + 0x100, kGenreId = kBoxId + 0x200;
+                           kPackageId = kBoxId + 7, kNamesId = kBoxId + 8, kCategoryId = kBoxId + 0x100, kGenreId = kBoxId + 0x200;
 
         float pillW(const std::string& label) { return std::round(7.2f * static_cast<float>(label.size()) + 26.0f); }
 
@@ -64,6 +67,55 @@ namespace playground::ui
         }
 
         bool has(const std::vector<std::string>& v, const std::string& s) { return std::find(v.begin(), v.end(), s) != v.end(); }
+
+        std::string sizeText(int64_t b)
+        {
+            const auto one = [](double v, const char* unit) {
+                char buf[32];
+                std::snprintf(buf, sizeof buf, v < 10.0 ? "%.1f %s" : "%.0f %s", v, unit);
+                return std::string(buf);
+            };
+            if (b < 1024)
+                return std::to_string(b) + " bytes";
+            if (b < 1024 * 1024)
+                return one(static_cast<double>(b) / 1024.0, "KB");
+            if (b < int64_t{ 1024 } * 1024 * 1024)
+                return one(static_cast<double>(b) / (1024.0 * 1024.0), "MB");
+            return one(static_cast<double>(b) / (1024.0 * 1024.0 * 1024.0), "GB");
+        }
+
+        // The bulk card's names: as many as fit in `lines` lines of `maxW`, then "and 8 more".
+        std::vector<std::string> nameLines(const funkgui::Canvas& c, const std::vector<std::string>& names, const funkgui::TextStyle& st,
+                                           float maxW, int lines)
+        {
+            std::vector<std::string> out(1);
+            for (std::size_t i = 0; i < names.size(); ++i)
+            {
+                const std::string name = asciiText(ownName(names[i])) + (i + 1 < names.size() ? "," : "");
+                const std::size_t left = names.size() - i - 1;
+                const std::string more = left > 0 ? " and " + std::to_string(left) + " more" : std::string();
+                std::string& line = out.back();
+                const std::string tried = line.empty() ? name : line + " " + name;
+                // The last line keeps room for "and N more" after it.
+                const bool last = static_cast<int>(out.size()) == lines;
+                if (c.textWidth((tried + (last ? more : std::string())).c_str(), st) <= maxW || line.empty())
+                {
+                    line = tried;
+                    continue;
+                }
+                if (!last)
+                {
+                    out.push_back(name);
+                    continue;
+                }
+                std::string cut = line;
+                if (!cut.empty() && cut.back() == ',')
+                    cut.pop_back();
+                line = cut + " and " + std::to_string(names.size() - i) + " more";
+                return out;
+            }
+            return out;
+        }
 
         // The description's lines at `maxW`: each line's first byte (words kept whole while they fit).
         std::vector<std::size_t> wrap(const funkgui::Canvas& c, const std::string& s, const funkgui::TextStyle& st, float maxW)
@@ -110,10 +162,36 @@ namespace playground::ui
         return out;
     }
 
+    void ExportCard::open(const std::vector<std::string>& projects)
+    {
+        if (projects.size() <= 1)
+        {
+            if (!projects.empty())
+                open(projects.front());
+            return;
+        }
+        open(projects.front());
+        projects_ = projects;
+        readOnly_ = false;
+        reading_ = false;
+        bytes_ = 0;
+        std::vector<ProjectEntry> all = port_.projectsPolled();
+        const std::vector<ProjectEntry> factory = port_.factoryProjects();
+        all.insert(all.end(), factory.begin(), factory.end());
+        for (const ProjectEntry& e : all)
+            if (has(projects_, e.name))
+                bytes_ += e.bytes;
+        ++revision_;
+    }
+
     void ExportCard::open(const std::string& project)
     {
         open_ = true;
         project_ = project;
+        projects_ = { project };
+        running_ = false;
+        cancel_ = false;
+        done_ = total_ = 0;
         readOnly_ = isFactoryName(project);
         allVersions_ = true;
         focus_ = Field::description;
@@ -158,7 +236,7 @@ namespace playground::ui
 
     bool ExportCard::poll()
     {
-        if (!open_ || port_.projectsRead() == readSeen_)
+        if (!open_ || bulk() || port_.projectsRead() == readSeen_)
             return false;
         if (!reading_ && !(info() == saved_))
         {
@@ -205,6 +283,8 @@ namespace playground::ui
 
     void ExportCard::ask(Want w)
     {
+        if (running_)
+            return;                                      // one at a time: Cancel first
         if (!keepInfo())
             return;
         want_ = w;
@@ -224,8 +304,34 @@ namespace playground::ui
     {
         why_ = line;
         failed_ = !ok;
+        running_ = false;
+        cancel_ = false;
         ++revision_;
     }
+
+    void ExportCard::started(const std::string& line)
+    {
+        why_ = line;
+        failed_ = false;
+        running_ = true;
+        cancel_ = false;
+        done_ = 0;
+        total_ = static_cast<int>(projects_.size());
+        ++revision_;
+    }
+
+    void ExportCard::progress(int done, int total)
+    {
+        if (done == done_ && total == total_)
+            return;
+        done_ = done;
+        total_ = total;
+        if (bulk())
+            why_ = "Exporting " + std::to_string(std::min(done + 1, total)) + " of " + std::to_string(total) + "...";
+        ++revision_;
+    }
+
+    bool ExportCard::takeCancel() { return std::exchange(cancel_, false); }
 
     std::string ExportCard::takeNotice()
     {
@@ -255,7 +361,7 @@ namespace playground::ui
 
     ExportCard::Places ExportCard::places(float width, float height) const
     {
-        const float w = std::min(kBoxW, width - 32.0f), h = std::min(kBoxH, height - 32.0f);
+        const float w = std::min(kBoxW, width - 32.0f), h = std::min(bulk() ? kBulkH : kBoxH, height - 32.0f);
         const funkgui::Rect box{ std::round((width - w) * 0.5f), std::round((height - h) * 0.45f), w, h };
         const float x0 = box.x + kPad, inner = w - 2.0f * kPad;
         const auto flow = [&](const std::vector<std::string>& labels, float y, std::vector<funkgui::Rect>& out) {
@@ -277,6 +383,19 @@ namespace playground::ui
         for (const char* g : kGenres)
             genres.emplace_back(g);
         Places at;
+        if (bulk())
+        {
+            // No info fields: the names, the versions' switch, the buttons.
+            at.box = box;
+            const float by = box.bottom() - kPad - kButtonH;
+            at.names = { x0, box.y + 84.0f + kCaption, inner, 3.0f * kLineH + 16.0f };
+            at.versions = { x0, at.names.bottom() + kGap, 260.0f, kPillH };
+            const float packW = pillW("Export packages (.fmpack)"), sourceW = pillW("Export sources (.zip)");
+            at.package = { box.right() - kPad - packW, by, packW, kButtonH };
+            at.source = { at.package.x - 8.0f - sourceW, by, sourceW, kButtonH };
+            at.done = { x0, by, 84.0f, kButtonH };
+            return at;
+        }
         for (int lines = 4; lines >= 1; --lines)
         {
             at = {};
@@ -306,6 +425,11 @@ namespace playground::ui
     void ExportCard::pointerDown(funkgui::Point p, float width, float height)
     {
         const Places at = places(width, height);
+        if (!at.box.contains(p))
+        {
+            close();                                     // as Done: the Panel drops the press
+            return;
+        }
         if (!locked() && at.description.contains(p))
             focusOn(Field::description);
         else if (!locked() && at.author.contains(p))
@@ -315,7 +439,12 @@ namespace playground::ui
         else if (at.versions.contains(p))
             allVersions_ = !allVersions_;
         else if (at.done.contains(p))
-            close();
+        {
+            if (running_)
+                cancel_ = true;                          // Cancel: the Panel cancels the job, the card stays
+            else
+                close();
+        }
         else if (at.source.contains(p))
             ask(Want::source);
         else if (at.package.contains(p))
@@ -400,15 +529,72 @@ namespace playground::ui
         const float x = box.x + kPad;
         c.rrect(x, box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
         chat::drawIcon(c, chat::Icon::arrowUp, x + 15.0f, box.y + 37.0f, 15.0f, p.accent);
-        const std::string title = "Export " + asciiText(project_);
+        const std::string title = bulk() ? "Export " + countText(static_cast<int>(projects_.size())) : "Export " + asciiText(project_);
         c.text(fitText(c, title, chat::kH2, box.w * 0.6f).c_str(), x + 42.0f, c.capCentreTop(box.y + 37.0f, chat::kH2), chat::kH2, p.text);
-        const std::string facts = "v" + std::to_string(latest_) + "   " + std::to_string(versions_) + (versions_ == 1 ? " version   " : " versions   ")
-                                + std::to_string(presets_) + (presets_ == 1 ? " preset" : " presets");
+        const std::string facts = bulk() ? sizeText(bytes_) + " of project files"
+                                         : "v" + std::to_string(latest_) + "   " + std::to_string(versions_) + (versions_ == 1 ? " version   " : " versions   ")
+                                               + std::to_string(presets_) + (presets_ == 1 ? " preset" : " presets");
         c.text(facts.c_str(), box.right() - kPad, c.capCentreTop(box.y + 37.0f, chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
-        c.text(fitText(c, readOnly_ ? std::string("A factory project, read-only: its info goes with it as it is. Your own copy's is yours to change.")
-                                    : std::string("What it is goes with it; its chats with Claude never do (they stay on ") + kThisMachine + ").",
+        c.text(fitText(c, bulk()      ? std::string("One .zip holding each project's own export; their chats with Claude never go (they stay on ")
+                                              + kThisMachine + ")."
+                          : readOnly_ ? std::string("A factory project, read-only: its info goes with it as it is. Your own copy's is yours to change.")
+                                      : std::string("What it is goes with it; its chats with Claude never do (they stay on ") + kThisMachine + ").",
                        chat::kSmall, box.w - 2.0f * kPad).c_str(),
                x, c.capCentreTop(box.y + 62.0f, chat::kSmall), chat::kSmall, p.soft);
+        // The buttons (Done is Cancel while an export runs; the exports wait for it).
+        const auto button = [&](const funkgui::Rect& r, const char* label, bool primary) {
+            const bool enabled = !running_ || &r == &at.done;
+            const bool hover = enabled && hasPointer && r.contains(pointer);
+            const funkgui::Col fill = primary ? (hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent) : (hover ? p.hover : p.card.withAlpha(0.0f));
+            c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, enabled ? fill : fill.withAlpha(primary ? 0.35f : 0.0f), primary ? 0.0f : 1.0f, p.composerEdge);
+            const funkgui::TextStyle& st = primary ? chat::kSmallStrong : chat::kSmall;
+            c.text(label, r.centreX(), c.capCentreTop(r.centreY(), st), st,
+                   !enabled ? p.faint : primary ? p.onAccent : (hover ? p.text : p.soft), funkgui::Align::centre);
+        };
+        const auto versionsPill = [&](const std::string& label) {
+            const funkgui::Rect& r = at.versions;
+            const bool hover = !running_ && hasPointer && r.contains(pointer);
+            c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? p.hover : p.composer, 1.0f, p.composerEdge);
+            c.rrect(r.x + 8.0f, r.y + 6.0f, 14.0f, 14.0f, 4.0f, allVersions_ ? p.accent : p.card, 1.0f, allVersions_ ? p.accent : p.composerEdge);
+            if (allVersions_)
+                chat::drawIcon(c, chat::Icon::check, r.x + 15.0f, r.centreY(), 10.0f, p.onAccent);
+            c.text(label.c_str(), r.x + 30.0f, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.soft);
+        };
+        // The line over the buttons (what it does, how it went), and, while it runs, how far it has come.
+        const auto sayLine = [&] {
+            const std::string said = why_.empty() && reading_ ? std::string(kReading) : why_;
+            float lineY = at.done.y - 16.0f;
+            if (running_ && total_ > 1)
+            {
+                const funkgui::Rect bar{ x, at.done.y - 14.0f, box.w - 2.0f * kPad, 4.0f };
+                c.rrect(bar.x, bar.y, bar.w, bar.h, 2.0f, p.composer, 1.0f, p.composerEdge);
+                const float f = std::clamp(static_cast<float>(done_) / static_cast<float>(total_), 0.0f, 1.0f);
+                if (f > 0.0f)
+                    c.rrect(bar.x, bar.y, std::max(4.0f, bar.w * f), bar.h, 2.0f, p.accent);
+                lineY = bar.y - 12.0f;
+            }
+            if (!said.empty())
+                c.text(fitText(c, said, chat::kSmall, box.w - 2.0f * kPad).c_str(), x + 2.0f, c.capCentreTop(lineY, chat::kSmall), chat::kSmall,
+                       failed_ ? p.danger : p.soft);
+        };
+        if (bulk())
+        {
+            const funkgui::Rect& r = at.names;
+            c.text("PROJECTS", r.x + 2.0f, c.capCentreTop(r.y - 10.0f, chat::kSmallStrong), chat::kSmallStrong, p.faint);
+            c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, p.composerEdge);
+            const std::vector<std::string> lines = nameLines(c, projects_, chat::kBody, r.w - 28.0f, 3);
+            for (std::size_t i = 0; i < lines.size(); ++i)
+            {
+                const float ly = r.y + 8.0f + static_cast<float>(i) * kLineH;
+                c.text(lines[i].c_str(), r.x + 14.0f, c.capCentreTop(ly + 0.5f * kLineH, chat::kBody), chat::kBody, p.text);
+            }
+            versionsPill(allVersions_ ? "Every version of each" : "The newest version of each");
+            sayLine();
+            button(at.done, running_ ? "Cancel" : "Done", false);
+            button(at.source, "Export sources (.zip)", false);
+            button(at.package, "Export packages (.fmpack)", true);
+            return;
+        }
 
         const auto caption = [&](const funkgui::Rect& r, const char* text) {
             c.text(text, r.x + 2.0f, c.capCentreTop(r.y - 10.0f, chat::kSmallStrong), chat::kSmallStrong, p.faint);
@@ -490,31 +676,9 @@ namespace playground::ui
             caption(at.genres.front(), "GENRES");
         for (std::size_t i = 0; i < at.genres.size(); ++i)
             pill(at.genres[i], kGenres[i], has(genres_, kGenres[i]));
-        {
-            const funkgui::Rect& r = at.versions;
-            const std::string label = allVersions_ ? "Every version (" + std::to_string(versions_) + ")"
-                                                   : "The newest only (v" + std::to_string(latest_) + ")";
-            const bool hover = hasPointer && r.contains(pointer);
-            c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, hover ? p.hover : p.composer, 1.0f, p.composerEdge);
-            c.rrect(r.x + 8.0f, r.y + 6.0f, 14.0f, 14.0f, 4.0f, allVersions_ ? p.accent : p.card, 1.0f, allVersions_ ? p.accent : p.composerEdge);
-            if (allVersions_)
-                chat::drawIcon(c, chat::Icon::check, r.x + 15.0f, r.centreY(), 10.0f, p.onAccent);
-            c.text(label.c_str(), r.x + 30.0f, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.soft);
-        }
-        const std::string said = why_.empty() && reading_ ? std::string(kReading) : why_;
-        if (!said.empty())
-            c.text(fitText(c, said, chat::kSmall, box.w - 2.0f * kPad).c_str(), x + 2.0f, c.capCentreTop(at.done.y - 16.0f, chat::kSmall),
-                   chat::kSmall, failed_ ? p.danger : p.soft);
-
-        // The buttons.
-        const auto button = [&](const funkgui::Rect& r, const char* label, bool primary) {
-            const bool hover = hasPointer && r.contains(pointer);
-            const funkgui::Col fill = primary ? (hover ? funkgui::mix(p.accent, p.text, 0.12f) : p.accent) : (hover ? p.hover : p.card.withAlpha(0.0f));
-            c.rrect(r.x, r.y, r.w, r.h, r.h * 0.5f, fill, primary ? 0.0f : 1.0f, p.composerEdge);
-            const funkgui::TextStyle& st = primary ? chat::kSmallStrong : chat::kSmall;
-            c.text(label, r.centreX(), c.capCentreTop(r.centreY(), st), st, primary ? p.onAccent : (hover ? p.text : p.soft), funkgui::Align::centre);
-        };
-        button(at.done, "Done", false);
+        versionsPill(allVersions_ ? "Every version (" + std::to_string(versions_) + ")" : "The newest only (v" + std::to_string(latest_) + ")");
+        sayLine();
+        button(at.done, running_ ? "Cancel" : "Done", false);
         button(at.source, "Export source (.zip)", false);
         button(at.package, "Export package (.fmpack)", true);
     }
@@ -526,13 +690,50 @@ namespace playground::ui
         box.id = kBoxId;
         box.role = funkgui::a11yrole::group;
         box.bounds = at.box;
-        box.title = "Export " + project_;
+        box.title = bulk() ? "Export " + countText(static_cast<int>(projects_.size())) : "Export " + project_;
         box.description = !why_.empty() ? why_
                         : reading_      ? std::string(kReading)
                         : readOnly_     ? "A factory project, read-only: its info goes with it as it is"
                                         : std::string();
-        box.help = std::string("A description, tags and genres go with it; its chats with Claude never do: they stay on ") + kThisMachine;
+        box.help = bulk() ? std::string("One .zip holding each project's own export; their chats with Claude never go: they stay on ") + kThisMachine
+                          : std::string("A description, tags and genres go with it; its chats with Claude never do: they stay on ") + kThisMachine;
         out.push_back(box);
+        const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
+            funkgui::A11yItem b;
+            b.id = id;
+            b.parent = kBoxId;
+            b.role = funkgui::A11yRole::button;
+            b.bounds = r;
+            b.title = title;
+            b.enabled = !running_ || id == kDoneId;
+            out.push_back(std::move(b));
+        };
+        if (bulk())
+        {
+            funkgui::A11yItem names;
+            names.id = kNamesId;
+            names.parent = kBoxId;
+            names.role = funkgui::A11yRole::staticText;
+            names.bounds = at.names;
+            names.title = "Projects";
+            for (const std::string& n : projects_)
+                names.value += (names.value.empty() ? "" : ", ") + ownName(n);
+            out.push_back(std::move(names));
+            funkgui::A11yItem it;
+            it.id = kVersionsId;
+            it.parent = kBoxId;
+            it.role = funkgui::A11yRole::toggleButton;
+            it.bounds = at.versions;
+            it.title = "Every version of each";
+            it.checkable = true;
+            it.checked = allVersions_;
+            it.help = "Else the newest of each only";
+            out.push_back(std::move(it));
+            button(kDoneId, at.done, running_ ? "Cancel" : "Done");
+            button(kSourceId, at.source, "Export sources (.zip)");
+            button(kPackageId, at.package, "Export packages (.fmpack)");
+            return;
+        }
         const auto text = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
             funkgui::A11yItem it;
             it.id = id;
@@ -567,16 +768,7 @@ namespace playground::ui
         for (std::size_t i = 0; i < at.genres.size(); ++i)
             toggle(kGenreId + static_cast<uint32_t>(i), at.genres[i], kGenres[i], has(genres_, kGenres[i]), "Genre", !readOnly_);
         toggle(kVersionsId, at.versions, "Every version", allVersions_, "Else the newest only", true);
-        const auto button = [&](uint32_t id, const funkgui::Rect& r, const char* title) {
-            funkgui::A11yItem b;
-            b.id = id;
-            b.parent = kBoxId;
-            b.role = funkgui::A11yRole::button;
-            b.bounds = r;
-            b.title = title;
-            out.push_back(std::move(b));
-        };
-        button(kDoneId, at.done, "Done");
+        button(kDoneId, at.done, running_ ? "Cancel" : "Done");
         button(kSourceId, at.source, "Export source (.zip)");
         button(kPackageId, at.package, "Export package (.fmpack)");
     }

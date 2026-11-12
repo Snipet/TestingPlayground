@@ -9,6 +9,10 @@
 //   gui.projects.drag.png      two projects carried over a category's group
 //   gui.projects.search.png    a search typed and a tag filtered on
 //   gui.projects.explorer.png  the explorer's PROJECTS in groups, one folded
+//   gui.projects.size.png      the projects by size, each row's right-hand column its file's size
+//   gui.projects.bulk.png      EXPORT for three projects chosen (.running.png: its export under way; .done.png: what it
+//                              came to); .paper.png each, gui.projects.bulk.done.paper.png the last; .least.png in
+//                              the least window
 // and checks:
 //   GROUPS    FACTORY on top, then a category a group by name (told apart case aside: "Pad" and "pad" one group,
 //             titled by the least spelling), UNCATEGORISED last; each group's projects by name; a click on a group's
@@ -33,7 +37,14 @@
 //             shown, a group of none gone; Escape clears it and the folds are back; the tag filter's menu (Any tag,
 //             each tag with how many have it) keeps those with the tag; the search and the tag remembered when
 //             PROJECTS opens again; the clear (x) and Any tag end them
-//   SORT      By last saved: each group's newest first, its title spelt as before; By name: by name again
+//   SORT      the order's menu: Last modified, Date created, Size, Name as choices (Name checked), Reversed under a
+//             separator; Last modified: each group's newest first, its title spelt as before; Date created: the newest
+//             made first, a project saved again keeping its date; Size: the largest file first, the row's column its
+//             size; Reversed turns it around (checked, kept); ties by name either way; the trigger's label each key's;
+//             Name again
+//   OUTSIDE   a press outside the card closes it as Close does: one on its edge does not, nor a drag that ends outside;
+//             with Delete asked, a double-click outside closes it, deletes nothing and reaches nothing (the pill under
+//             it opens no card), the question withdrawn after; the focus where Close leaves it
 //   A11Y      a group item a group shown (in the projects' list), its header a toggle (checked while open) and its
 //             rows in it, each row's star a toggle in its row; the search a text field, the tag and the order combo
 //             boxes; a header pressed folds its group and a star pressed stars
@@ -43,6 +54,10 @@
 //   EXPORT    a project's category goes out with its export and comes back with its import (.fmpack and .zip); the
 //             factory projects carry theirs (their info's); EXPORT offers a project's own category as a pill, and
 //             lights the kind's for one kept in another case (writing nothing)
+//   BULK      three chosen, Export...: EXPORT for the three (the bulk card), one .zip asked for under a free name, its
+//             progress while the job runs (EXPORTING in the status), then "Exported 3 projects to"; the bundle's path
+//             again refused (an export never replaces a file), the file as it was; Cancel while it runs: no file; the
+//             context menu's Export takes every one chosen; Import... brings the bundle's three back, counted
 //   READS     PROJECTS and EXPORT read the store's cache: a project another process wrote (a version more, then its
 //             author) is read by the store's Reader alone, none on the message thread, and shows once read (its new
 //             version first in PROJECTS; EXPORT's fields filled, then nothing written as it closes)
@@ -66,6 +81,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -610,8 +626,19 @@ PROBE(gui, projects)
         panel.openProjects();
         host.settle();
         drive.clickRect(b.places(W, H).sort);
-        P.eq("sort.menu", host.pendingMenu() != nullptr && host.chooseMenuItem("By last saved") ? 1 : 0, 1);
+        {
+            // Four keys as a set of choices (Name, the default, checked), then, under a separator, Reversed.
+            const funkgui::MenuRequest* m = host.pendingMenu();
+            const std::vector<std::string> want{ "Last modified", "Date created", "Size", "Name" };
+            bool rows = m != nullptr && m->items.size() == 6;
+            for (std::size_t i = 0; rows && i < 4; ++i)
+                rows = m->items[i].label == want[i] && m->items[i].radio && m->items[i].checked == (i == 3);
+            P.eq("sort.rows", rows && m->items[4].separator && m->items[5].label == "Reversed" && !m->items[5].checked
+                                  && !m->items[5].radio && m->selectedId == m->items[3].id ? 1 : 0, 1);
+        }
+        P.eq("sort.menu", host.pendingMenu() != nullptr && host.chooseMenuItem("Last modified") ? 1 : 0, 1);
         host.settle();
+        P.eq("sort.label_saved", b.orderLabel() == "Last modified" ? 1 : 0, 1);
         bool newest = true;
         for (const gr::Group& g : b.groups())
             for (std::size_t i = 1; i < g.members.size(); ++i)
@@ -620,10 +647,94 @@ PROBE(gui, projects)
         P.eq("sort.newest_first", b.view().order == pg::ProjectOrder::saved && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
         // Night Choir, spelt in lower case, first now: the group's title spelt as before (the least spelling).
         P.eq("sort.one_spelling", groupOf(b, k2) != nullptr && groupOf(b, k2)->title == c2 ? 1 : 0, 1);
+        // Each key, each group's members in its order (ties by name), the row's right-hand column saying what it is
+        // sorted by.
+        const auto inOrder = [&](const std::function<int64_t(const pg::ProjectEntry&)>& key, bool reversed) {
+            bool ok = true;
+            for (const gr::Group& g : b.groups())
+                for (std::size_t i = 1; i < g.members.size(); ++i)
+                {
+                    const pg::ProjectEntry& x = b.projectList()[static_cast<std::size_t>(g.members[i - 1])];
+                    const pg::ProjectEntry& y = b.projectList()[static_cast<std::size_t>(g.members[i])];
+                    const int64_t kx = key(x), ky = key(y);
+                    ok = ok && (kx != ky ? (reversed ? kx < ky : kx > ky) : gr::lower(pg::ownName(x.name)) < gr::lower(pg::ownName(y.name)));
+                }
+            return ok;
+        };
+        const auto entry = [&](const std::string& name) {
+            for (const pg::ProjectEntry& e : b.projectList())
+                if (e.name == name)
+                    return e;
+            return pg::ProjectEntry{};
+        };
+        const auto chooseOrder = [&](const char* label) {
+            drive.clickRect(b.places(W, H).sort);
+            const bool ok = host.chooseMenuItem(label);
+            host.settle();
+            return ok;
+        };
+        P.eq("sort.created", chooseOrder("Date created") && b.view().order == pg::ProjectOrder::created
+                                 && inOrder([](const pg::ProjectEntry& e) { return e.createdMs; }, false) ? 1 : 0, 1);
+        // Night Choir saved again: made before its new version, its made date its first save's.
+        P.eq("sort.created_kept", entry("Night Choir").createdMs > 0 && entry("Night Choir").createdMs < entry("Night Choir").savedMs ? 1 : 0, 1);
+        {
+            // The column: its version, then the date it was made, "MM-DD HH:MM" as a save's date shows.
+            const std::string facts = b.rowFacts(entry("Glass Bloom"));
+            const std::string date = facts.size() > 5 ? facts.substr(5) : std::string();
+            const bool shaped = date.size() == 11 && date[2] == '-' && date[5] == ' ' && date[8] == ':'
+                             && std::all_of(date.begin(), date.end(), [](char ch) { return std::isdigit(static_cast<unsigned char>(ch)) || ch == '-' || ch == ' ' || ch == ':'; });
+            std::printf("sort: Glass Bloom made [%s]\n", facts.c_str());
+            P.eq("sort.label_created", b.orderLabel() == "Date created" && facts.rfind("v1   ", 0) == 0 && shaped ? 1 : 0, 1);
+        }
+        P.eq("sort.size", chooseOrder("Size") && b.view().order == pg::ProjectOrder::size
+                              && inOrder([](const pg::ProjectEntry& e) { return e.bytes; }, false) ? 1 : 0, 1);
+        {
+            const pg::ProjectEntry gb = entry("Glass Bloom");
+            const std::string facts = b.rowFacts(gb);
+            std::printf("sort: Glass Bloom %lld bytes: [%s]\n", static_cast<long long>(gb.bytes), facts.c_str());
+            P.eq("sort.size_column", gb.bytes > 0 && facts.rfind("v1   ", 0) == 0
+                                         && (facts.find(" KB") != std::string::npos || facts.find(" bytes") != std::string::npos) ? 1 : 0, 1);
+        }
+        P.eq("sort.label_size", b.orderLabel() == "Size" ? 1 : 0, 1);
+        writePng(P, host, "gui.projects.size.png");
+        paper("gui.projects.size.paper.png", {});
+        // Reversed: the smallest first; checked in the menu; kept (this Mac's view).
+        P.eq("sort.reversed", chooseOrder("Reversed") && b.view().reversed && b.view().order == pg::ProjectOrder::size
+                                  && port.projectsView().reversed && inOrder([](const pg::ProjectEntry& e) { return e.bytes; }, true) ? 1 : 0, 1);
         drive.clickRect(b.places(W, H).sort);
-        host.chooseMenuItem("By name");
-        host.settle();
-        P.eq("sort.by_name", b.view().order == pg::ProjectOrder::name && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
+        {
+            const funkgui::MenuRequest* m = host.pendingMenu();
+            P.eq("sort.reversed_checked", m != nullptr && m->items.size() == 6 && m->items[5].checked && m->items[2].checked ? 1 : 0, 1);
+            host.cancelMenu();
+            host.settle();
+        }
+        // The explorer's PROJECTS stays newest saved first, whatever the card's order.
+        // Ties: equal keys by name, A to Z, either way round (arrange itself, over made-up entries).
+        {
+            std::vector<pg::ProjectEntry> tied(3);
+            tied[0].name = "beta";
+            tied[1].name = "Alpha";
+            tied[2].name = "gamma";
+            for (pg::ProjectEntry& e : tied)
+                e.bytes = 100;
+            tied[2].bytes = 200;
+            bool ties = true;
+            for (const bool rev : { false, true })
+            {
+                gr::Options o;
+                o.order = pg::ProjectOrder::size;
+                o.reversed = rev;
+                const std::vector<gr::Group> g = gr::arrange(tied, o);
+                std::vector<std::string> names;
+                for (const gr::Group& grp : g)
+                    for (const int m : grp.members)
+                        names.push_back(tied[static_cast<std::size_t>(m)].name);
+                ties = ties && names == (rev ? std::vector<std::string>{ "Alpha", "beta", "gamma" } : std::vector<std::string>{ "gamma", "Alpha", "beta" });
+            }
+            P.eq("sort.ties_by_name", ties ? 1 : 0, 1);
+        }
+        P.eq("sort.by_name", chooseOrder("Reversed") && chooseOrder("Name") && b.view().order == pg::ProjectOrder::name && !b.view().reversed
+                                 && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
     }
 
     // ---- A11Y ------------------------------------------------------------------------------------------------------
@@ -758,6 +869,46 @@ PROBE(gui, projects)
         P.eq("explorer.unfold", rowUnder(pg::ui::upper(c2), "Night Choir") >= 0 && port.projectsView().folded.empty() ? 1 : 0, 1);
     }
 
+    // ---- OUTSIDE: a press outside the card closes it as Close does --------------------------------------------------
+    {
+        if (!b.isOpen())
+        {
+            panel.openProjects();
+            host.settle();
+        }
+        const funkgui::Rect box = b.places(W, H).box;
+        // On its edge (inside the box, beside every control): it stays.
+        host.click(box.x + 3.0f, box.y + box.h * 0.5f);
+        host.settle();
+        P.eq("outside.edge_keeps", b.isOpen() ? 1 : 0, 1);
+        // A drag that began inside and ends outside (a project carried off the card): nothing closes.
+        drive.carry(b.rowOf("Sketch 1"), b.rowOf("Sketch 1"));
+        host.moveTo(box.x - 20.0f, box.y + 10.0f, 4);
+        host.release();
+        host.settle();
+        P.eq("outside.drag_out_keeps", b.isOpen() && !b.dragging() ? 1 : 0, 1);
+        // Delete asked, then a press outside: closed, nothing deleted, the question withdrawn.
+        drive.clickName("Sketch 3");
+        drive.clickRect(b.places(W, H).remove);
+        const bool asked = b.removeLabel() != "Delete";
+        const int focusBefore = panel.focusItem();
+        // A double-click outside, over the top bar's PROJECTS pill: the first press closes the card, the second, and the
+        // double-click, reach nothing (the pill would open the card again).
+        const funkgui::Point pill = panel.centreOfProjects();
+        host.doubleClick(pill.x, pill.y);
+        host.settle();
+        std::printf("outside: asked [%s], focus %d -> %d\n", b.removeLabel().c_str(), focusBefore, panel.focusItem());
+        P.eq("outside.closes", asked && !b.isOpen() ? 1 : 0, 1);
+        P.eq("outside.nothing_deleted", port.projectPolled("Sketch 3").exists ? 1 : 0, 1);
+        P.eq("outside.reaches_nothing", !b.isOpen() && !panel.exportCard().isOpen() ? 1 : 0, 1);
+        const int focusOutside = panel.focusItem();
+        panel.openProjects();
+        host.settle();
+        P.eq("outside.question_withdrawn", b.isOpen() && b.removeLabel() == "Delete" ? 1 : 0, 1);
+        drive.clickRect(b.places(W, H).close);           // Close: the focus where an outside press left it
+        P.eq("outside.focus_as_close", !b.isOpen() && focusOutside >= 0 && panel.focusItem() == focusOutside ? 1 : 0, 1);
+    }
+
     // ---- EXPORT ----------------------------------------------------------------------------------------------------
     {
         std::string why;
@@ -795,6 +946,138 @@ PROBE(gui, projects)
         card.close();
         host.settle();
         P.eq("export.case_kept", port.projectInfo("Night Choir").category == gr::lower(c2) ? 1 : 0, 1);
+
+        // Several chosen, Export...: the bulk card (no info fields: the count, the names, the versions, the two
+        // exports), one .zip asked for under a free name, its progress while the job runs (held at its gate), then
+        // its outcome; in GRAPHITE and in PAPER.
+        const std::vector<std::string> three{ "Acid Line", "Bright Lead", "Deep Sub" };
+        const juce::File bundleOut = folder.getChildFile("bulk");
+        bundleOut.createDirectory();
+        const auto waitLanded = [&](pg::ui::Panel& pn, funkgui::HeadlessHost& h) {
+            for (int k = 0; k < 2000 && (pn.exportCard().running() || port.exporting().busy); ++k)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                processor.settle();
+                h.tick(1);
+            }
+            h.settle();
+            return !pn.exportCard().running();
+        };
+        const auto bulk = [&](Driver& dv, const std::string& stem, bool rows) {
+            pg::ui::ExportCard& ec = dv.panel.exportCard();
+            dv.b.close();
+            dv.host.settle();
+            dv.panel.openProjects();
+            dv.host.settle();
+            dv.clickName(three[0]);
+            dv.clickName(three[1], cmd());
+            dv.clickName(three[2], cmd());
+            dv.clickRect(dv.b.places(W, H).exportIt);
+            if (rows)
+                P.eq("bulk.opens", ec.isOpen() && ec.bulk() && ec.projects().size() == 3 && !dv.b.isOpen() ? 1 : 0, 1);
+            writePng(P, dv.host, stem + ".png");
+            // The package: one .zip, its name free where the chooser starts.
+            dv.clickRect(ec.places(W, H).package);
+            const funkgui::FileRequest* asked = dv.host.pendingFiles();
+            const std::string suggested = std::string(pg::product::kName) + " Projects.zip";
+            if (rows)
+                P.eq("bulk.asks_zip", asked != nullptr && asked->suggestedName == suggested && asked->pattern == "*.zip" ? 1 : 0, 1);
+            const juce::File to = bundleOut.getChildFile(juce::String(stem.substr(stem.rfind('/') + 1)) + ".zip");
+            processor.setExportGate(true);               // held before it reads: the card as it runs
+            dv.host.returnFiles({ to.getFullPathName().toStdString() });
+            dv.host.settle();
+            if (rows)
+                P.eq("bulk.running", ec.running() && port.exporting().busy && ec.why().find("Exporting") != std::string::npos
+                                         && dv.panel.statusText().find("EXPORTING") != std::string::npos ? 1 : 0, 1);
+            writePng(P, dv.host, stem + ".running.png");
+            processor.setExportGate(false);
+            const bool landed = waitLanded(dv.panel, dv.host);
+            std::printf("bulk: %s; status %s\n", ec.why().c_str(), dv.panel.statusText().c_str());
+            if (rows)
+            {
+                P.eq("bulk.landed", landed && to.existsAsFile() ? 1 : 0, 1);
+                P.eq("bulk.said", ec.why().find("Exported 3 projects to") != std::string::npos
+                                      && dv.panel.statusText().find("EXPORTED 3 PROJECTS") != std::string::npos ? 1 : 0, 1);
+            }
+            return to;
+        };
+        b.close();
+        host.settle();
+        const juce::File bundled = bulk(drive, "gui.projects.bulk", true);
+        writePng(P, host, "gui.projects.bulk.done.png");
+        paper("gui.projects.bulk.done.paper.png", [&](Driver& dv) { (void)bulk(dv, "gui.projects.bulk.paper", false); });
+        // The least window: the bulk card within it, its buttons apart and inside.
+        {
+            const bool least = host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            host.settle();
+            const float lw = static_cast<float>(pg::ui::kMinWidth), lh = static_cast<float>(pg::ui::kMinHeight);
+            const pg::ui::ExportCard::Places at = card.places(lw, lh);
+            P.eq("bulk.least_fits", least && card.isOpen() && card.bulk() && at.box.x >= 0.0f && at.box.right() <= lw && at.box.bottom() <= lh
+                                        && at.done.right() < at.source.x && at.source.right() < at.package.x && at.package.right() <= at.box.right()
+                                        && at.versions.bottom() < at.done.y - 30.0f ? 1 : 0, 1);
+            writePng(P, host, "gui.projects.bulk.least.png");
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            host.settle();
+        }
+        // An export never replaces a file: the bundle's path again is refused, the file as it was.
+        {
+            const juce::int64 before = bundled.getSize();
+            card.close();
+            host.settle();
+            card.open(three);
+            host.settle();
+            drive.clickRect(card.places(W, H).source);
+            host.returnFiles({ bundled.getFullPathName().toStdString() });
+            host.settle();
+            P.eq("bulk.refused_there_already", !card.running() && card.why().find("is there already: an export never replaces a file") != std::string::npos
+                                                   && bundled.getSize() == before ? 1 : 0, 1);
+            // Cancel while it runs: no file, said so.
+            const juce::File cancelled = bundleOut.getChildFile("cancelled.zip");
+            drive.clickRect(card.places(W, H).source);
+            processor.setExportGate(true);
+            host.returnFiles({ cancelled.getFullPathName().toStdString() });
+            host.settle();
+            const bool running = card.running();
+            drive.clickRect(card.places(W, H).done);    // Done is Cancel while it runs
+            processor.setExportGate(false);
+            (void)waitLanded(panel, host);
+            P.eq("bulk.cancel", running && card.isOpen() && !cancelled.exists() && card.why() == "Cancelled: no file written." ? 1 : 0, 1);
+            card.close();
+            host.settle();
+        }
+        // The context menu's Export takes every project chosen.
+        {
+            panel.openProjects();
+            host.settle();
+            drive.clickName(three[0]);
+            drive.clickName(three[1], cmd());
+            drive.clickName(three[1], ctrl());
+            const funkgui::MenuRequest* m = host.pendingMenu();
+            P.eq("bulk.menu", m != nullptr && itemLabelled(m->items, "Export 2 projects...") != nullptr
+                                  && host.chooseMenuItem("Export 2 projects...") ? 1 : 0, 1);
+            host.settle();
+            P.eq("bulk.menu_opens", card.isOpen() && card.projects() == std::vector<std::string>{ three[0], three[1] } ? 1 : 0, 1);
+            card.close();
+            host.settle();
+        }
+        // Import... takes the bundle: every project of it a project of its own, the status counting them.
+        {
+            panel.openProjects();
+            host.settle();
+            drive.clickRect(b.places(W, H).importIt);
+            host.returnFiles({ bundled.getFullPathName().toStdString() });
+            host.settle();
+            std::printf("bulk import: %s\n", panel.statusText().c_str());
+            bool added = panel.statusText().find("IMPORTED 3 PROJECTS") != std::string::npos;
+            for (const std::string& n : three)
+                added = added && port.projectPolled(n + " 2").exists;
+            P.eq("bulk.imported", added ? 1 : 0, 1);
+            for (const std::string& n : three)
+                (void)port.deleteProject(n + " 2", why);
+            if (b.isOpen())
+                b.close();
+            host.settle();
+        }
     }
 
     // ---- READS: PROJECTS and EXPORT read the store's cache; a file another process wrote, its Reader -------------------
