@@ -32,7 +32,7 @@ namespace playground::ui
 
     GuiView::GuiView(Items& items, std::span<funkgui::ParamPort* const> ports, std::vector<int> displays,
                      const std::function<uint32_t()>& idFor, Hooks hooks)
-        : items_(items), displays_(std::move(displays))
+        : items_(items), displays_(std::move(displays)), dialMenu_(hooks.dialMenu)
     {
         const auto add = [this](std::unique_ptr<Item> item) {
             items_.push_back(std::move(item));
@@ -57,8 +57,17 @@ namespace playground::ui
         for (int k = 0; k < kKeyboards; ++k)
             keyboards_.push_back(add(std::make_unique<GuiKeyboardItem>(idFor(), hooks.playNote, hooks.playWheel)));
         for (int k = 0; k < kShaders; ++k)
-            shaders_.push_back(add(std::make_unique<GuiShaderItem>(idFor())));
+        {
+            const uint32_t own = idFor(), x = idFor(), y = idFor(), down = idFor();
+            shaders_.push_back(add(std::make_unique<GuiShaderItem>(std::array<uint32_t, 4>{ own, x, y, down })));
+        }
         shaderNode_.assign(shaders_.size(), -1);
+        // The pointer's items last: hit after every other item.
+        for (int k = 0; k < kPointers; ++k)
+        {
+            const uint32_t x = idFor(), y = idFor(), down = idFor();
+            pointers_.push_back(add(std::make_unique<GuiPointerItem>(std::array<uint32_t, 3>{ x, y, down })));
+        }
     }
 
     void GuiView::setMidi(int slot, bool mapped, bool learning, std::string spec)
@@ -72,6 +81,16 @@ namespace playground::ui
         return static_cast<GuiControlItem&>(*items_[static_cast<std::size_t>(controls_[static_cast<std::size_t>(slot)])]);
     }
 
+    std::array<GuiValue*, 5> GuiView::pointerValues(const PanelPointer& p)
+    {
+        std::array<GuiValue*, 5> out{};
+        const int slots[] = { p.x, p.y, p.down, p.wheel, p.hover };
+        for (std::size_t k = 0; k < out.size(); ++k)
+            if (slots[k] >= 0 && slots[k] < kMaxControls && controlItem(slots[k]) >= 0)
+                out[k] = &control(slots[k]).value();
+        return out;
+    }
+
     int GuiView::controlItem(int slot) const
     {
         return slot >= 0 && slot < static_cast<int>(controls_.size()) ? controls_[static_cast<std::size_t>(slot)] : -1;
@@ -79,7 +98,15 @@ namespace playground::ui
 
     bool GuiView::isControl(int item) const
     {
-        return item >= 0 && std::find(controls_.begin(), controls_.end(), item) != controls_.end();
+        if (item < 0)
+            return false;
+        if (std::find(controls_.begin(), controls_.end(), item) != controls_.end())
+            return true;
+        if (std::find(pointers_.begin(), pointers_.end(), item) != pointers_.end())
+            return static_cast<const GuiPointerItem&>(*items_[static_cast<std::size_t>(item)]).sink().wheels();
+        if (std::find(shaders_.begin(), shaders_.end(), item) != shaders_.end())
+            return static_cast<const GuiShaderItem&>(*items_[static_cast<std::size_t>(item)]).sink().wheels();
+        return false;
     }
 
     void GuiView::setControls(const Controls& cs, const PanelSpec& spec)
@@ -173,6 +200,10 @@ namespace playground::ui
     {
         for (const int i : keyboards_)
             static_cast<GuiKeyboardItem&>(*items_[static_cast<std::size_t>(i)]).release();
+        for (const int i : pointers_)
+            static_cast<GuiPointerItem&>(*items_[static_cast<std::size_t>(i)]).sink().release();
+        for (const int i : shaders_)
+            static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(i)]).sink().release();
     }
 
     void GuiView::place(const PanelSpec& spec)
@@ -223,8 +254,10 @@ namespace playground::ui
                 const std::size_t k = n.shader >= 0 ? static_cast<std::size_t>(n.shader) : spec.shaders.size();
                 const bool known = k < spec.shaders.size() && k < shaderIds_.size();
                 shaderNode_[shade] = static_cast<int>(i);
-                static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(shaders_[shade++])])
-                    .place(n, gui_.rects[i], area, seen(i), known ? shaderIds_[k] : 0u, n.file,
+                auto& item = static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(shaders_[shade++])]);
+                item.sink().bind(n.pointer, pointerValues(n.pointer), dialMenu_);
+                item.setReadsPointer(std::any_of(n.inputs.begin(), n.inputs.end(), [](const std::string& in) { return pointerInput(in) >= 0; }));
+                item.place(n, gui_.rects[i], area, seen(i), known ? shaderIds_[k] : 0u, n.file,
                            known ? shaderWhy_[k] : std::string("not built"), known && shaderMoves_[k]);
             }
             else if (n.kind == GuiKind::keyboard && keys < keyboards_.size())
@@ -266,9 +299,37 @@ namespace playground::ui
         for (; shade < shaders_.size(); ++shade)
         {
             shaderNode_[shade] = -1;
-            static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(shaders_[shade])]).place(GuiNode{}, {}, area, false, 0u, "", "", false);
+            auto& item = static_cast<GuiShaderItem&>(*items_[static_cast<std::size_t>(shaders_[shade])]);
+            item.place(GuiNode{}, {}, area, false, 0u, "", "", false);
+            item.sink().bind({}, {}, {});
+            item.setReadsPointer(false);
         }
-        for (const std::vector<int>* pool : { &keyboards_, &shaders_, &pads_, &envelopes_, &tabs_ })
+        // The pointer's items: the innermost element's first (a box's inside a box's), so it is hit first; a display
+        // under one passes presses by.
+        std::vector<bool> underPointer(nodes.size(), false);
+        for (std::size_t i = 0; i < nodes.size(); ++i)
+        {
+            const int parent = nodes[i].parent;
+            underPointer[i] = (nodes[i].pointer.any() && nodes[i].kind != GuiKind::shader)
+                           || (parent >= 0 && static_cast<std::size_t>(parent) < i && underPointer[static_cast<std::size_t>(parent)]);
+        }
+        std::size_t point = 0;
+        for (std::size_t i = nodes.size(); i-- > 0 && gui;)
+        {
+            const GuiNode& n = nodes[i];
+            if (!n.pointer.any() || n.kind == GuiKind::shader || point >= pointers_.size())
+                continue;
+            auto& item = static_cast<GuiPointerItem&>(*items_[static_cast<std::size_t>(pointers_[point++])]);
+            item.sink().bind(n.pointer, pointerValues(n.pointer), dialMenu_);
+            item.place(n.kind, gui_.rects[i], area, seen(i));
+        }
+        for (; point < pointers_.size(); ++point)
+        {
+            auto& item = static_cast<GuiPointerItem&>(*items_[static_cast<std::size_t>(pointers_[point])]);
+            item.place(GuiKind::area, {}, area, false);
+            item.sink().bind({}, {}, {});
+        }
+        for (const std::vector<int>* pool : { &keyboards_, &shaders_, &pads_, &envelopes_, &tabs_, &pointers_ })
             for (const int i : *pool)
                 mine_[static_cast<std::size_t>(i)] = true;
         if (!gui)
@@ -281,6 +342,7 @@ namespace playground::ui
             const int i = nodeOfDisplay[static_cast<std::size_t>(d)];
             const bool has = d < static_cast<int>(spec.displays.size()) && i >= 0;
             item.setDisplay(has && seen(static_cast<std::size_t>(i)) ? &spec.displays[static_cast<std::size_t>(d)] : nullptr);
+            item.setPassThrough(has && underPointer[static_cast<std::size_t>(i)]);
             item.setRect(has ? gui_.rects[static_cast<std::size_t>(i)] : funkgui::Rect{});
             item.setArea(area);
             mine_[static_cast<std::size_t>(idx)] = true;
@@ -376,7 +438,13 @@ namespace playground::ui
             for (std::size_t j = 0; j < v.size(); ++j)
             {
                 const std::string& in = n.inputs[j];
-                if (in == "in")
+                if (const int w = pointerInput(in); w >= 0)
+                {
+                    // The pointer over this shader, or a picture's (showPointer).
+                    const float asked = shownPointer_[static_cast<std::size_t>(w)];
+                    v[j] = std::isfinite(asked) ? asked : item.sink().inputs()[static_cast<std::size_t>(w)];
+                }
+                else if (in == "in")
                     v[j] = std::max(shown.inPeak[0], shown.inPeak[1]);
                 else if (in == "out")
                     v[j] = std::max(shown.outPeak[0], shown.outPeak[1]);

@@ -7401,6 +7401,7 @@ namespace playground::ui
     void Panel::showState(ShownState state)
     {
         shown_ = std::move(state);
+        guiView_->showPointer(shown_.pointer);           // a picture's pointer over its shaders
         showing_ = true;
         shownPlaying_ = false;
         shownAt_ = 0;

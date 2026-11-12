@@ -150,9 +150,11 @@
 
 #include <funkgui/text/LineEdit.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -491,6 +493,9 @@ namespace playground::ui
             std::vector<float> scopeIn, scopeOut;
             std::vector<std::pair<int, float>> taps;
             float inLevel = -1.0f, outLevel = -1.0f;
+            // The pointer over the shaders (pointer.x, .y, .down, .hover: GuiView::showPointer), NaN for none.
+            static constexpr float kNone = std::numeric_limits<float>::quiet_NaN();
+            std::array<float, 4> pointer{ kNone, kNone, kNone, kNone };
         };
         void showState(ShownState state);
         void playShown() noexcept { shownPlaying_ = true; }
