@@ -191,8 +191,8 @@ namespace playground::ui
         diffA_.clear();
         diffB_.clear();
         diffs_.clear();
-        file_ = firstTab_ = scroll_ = 0;
-        firstRow_ = 0;
+        file_ = firstTab_ = 0;
+        diff_ = list_ = Scroll{};
         follow();
         // The first file that changed shows first.
         for (std::size_t i = 0; i < diffs_.size(); ++i)
@@ -202,7 +202,7 @@ namespace playground::ui
                 break;
             }
         if (const int row = rowOfVersion(state_.sides[1].version); row >= 0)
-            firstRow_ = std::max(0, row - 3);
+            list_.offset = static_cast<float>(std::max(0, row - 3)) * Places{}.rowH;   // clamped as it is used
         ++revision_;
         return true;
     }
@@ -229,7 +229,7 @@ namespace playground::ui
                 if (diffs_[i].name == was)
                     file_ = static_cast<int>(i);
             firstTab_ = std::min(firstTab_, file_);
-            scroll_ = 0;
+            diff_.offset = 0.0f;
         }
         ++revision_;
     }
@@ -323,7 +323,7 @@ namespace playground::ui
             return;
         file_ = std::clamp(i, 0, static_cast<int>(diffs_.size()) - 1);
         firstTab_ = std::min(firstTab_, file_);
-        scroll_ = 0;
+        diff_.offset = 0.0f;
         ++revision_;
     }
 
@@ -369,9 +369,9 @@ namespace playground::ui
     funkgui::Point AbCard::centreOfRow(int row, int chip, float width, float height) const
     {
         const Places at = places(width, height);
-        if (row < firstRow_ || row >= firstRow_ + at.rows || row >= rowCount())
-            return { -1.0e4f, -1.0e4f };
-        const funkgui::Rect rr{ at.list.x + 4.0f, at.list.y + 4.0f + static_cast<float>(row - firstRow_) * at.rowH, at.list.w - 8.0f, at.rowH };
+        const funkgui::Rect rr = rowRect(at, row);
+        if (row < 0 || row >= rowCount() || rr.y < at.list.y + 4.0f - 0.01f || rr.bottom() > listBar(at).bottom() + 0.01f)
+            return { -1.0e4f, -1.0e4f };                 // not wholly shown
         if (chip == 0 || chip == 1)
             return { chipX(rr, chip) + 0.5f * kChip, rr.centreY() };
         return { rr.x + 0.6f * rr.w, rr.centreY() };
@@ -387,21 +387,75 @@ namespace playground::ui
         return { r.centreX(), r.centreY() };
     }
 
-    int AbCard::maxScroll(const Places& at) const
+    Scroll AbCard::listScroll(const Places& at) const
     {
-        if (file_ < 0 || file_ >= static_cast<int>(diffs_.size()))
-            return 0;
-        return std::max(0, static_cast<int>(diffs_[static_cast<std::size_t>(file_)].lines.size()) - at.lines);
+        Scroll s = list_;
+        s.content = static_cast<float>(rowCount()) * at.rowH;
+        s.view = static_cast<float>(at.rows) * at.rowH;
+        s.row = at.rowH;
+        s.clamp();
+        return s;
+    }
+
+    Scroll AbCard::diffScroll(const Places& at) const
+    {
+        Scroll s = diff_;
+        const int n = file_ >= 0 && file_ < static_cast<int>(diffs_.size()) ? static_cast<int>(diffs_[static_cast<std::size_t>(file_)].lines.size()) : 0;
+        s.content = static_cast<float>(n) * at.lineH;
+        s.view = static_cast<float>(at.lines) * at.lineH;
+        s.row = at.lineH;
+        s.clamp();
+        return s;
+    }
+
+    funkgui::Rect AbCard::listBar(const Places& at) const
+    {
+        return { at.list.x, at.list.y + 4.0f, at.list.w - 3.0f, static_cast<float>(at.rows) * at.rowH };
+    }
+
+    funkgui::Rect AbCard::diffBar(const Places& at) const
+    {
+        return { at.diff.x, at.diff.y + 4.0f, at.diff.w - 3.0f, at.diff.h - 8.0f };
+    }
+
+    int AbCard::scroll() const noexcept { return static_cast<int>(std::ceil(diff_.offset / Places{}.lineH - 1.0e-3f)); }
+
+    funkgui::Rect AbCard::rowRect(const Places& at, int row) const
+    {
+        const bool scrolls = rowCount() > at.rows;
+        return { at.list.x + 4.0f, at.list.y + 4.0f + static_cast<float>(row) * at.rowH - listScroll(at).offset,
+                 at.list.w - 8.0f - (scrolls ? 8.0f : 0.0f), at.rowH };
+    }
+
+    int AbCard::rowAt(funkgui::Point p, const Places& at) const
+    {
+        const funkgui::Rect a = listBar(at);
+        if (!at.list.contains(p) || p.y < a.y || p.y >= a.bottom() || listScroll(at).hits(p, a))
+            return -1;
+        const int row = static_cast<int>(std::floor((p.y - a.y + listScroll(at).offset) / at.rowH));
+        return row >= 0 && row < rowCount() ? row : -1;
     }
 
     // ---- events --------------------------------------------------------------------------------------------------------
     void AbCard::pointerDown(funkgui::Point p, float width, float height)
     {
         const Places at = places(width, height);
+        // A bar's thumb drags (a press on its track jumps first).
+        if (Scroll s = listScroll(at); s.press(p, listBar(at)))
+        {
+            list_ = s;
+            ++revision_;
+            return;
+        }
+        if (Scroll s = diffScroll(at); s.press(p, diffBar(at)))
+        {
+            diff_ = s;
+            ++revision_;
+            return;
+        }
         if (at.list.contains(p))
         {
-            const int row = firstRow_ + static_cast<int>(std::floor((p.y - at.list.y - 4.0f) / at.rowH));
-            if (row >= firstRow_ && row < firstRow_ + at.rows && row < rowCount())
+            if (const int row = rowAt(p, at); row >= 0)
             {
                 const funkgui::Rect rr{ at.list.x + 4.0f, 0.0f, at.list.w - 8.0f, at.rowH };
                 const bool chipA = p.x >= chipX(rr, 0) - 2.0f && p.x < chipX(rr, 0) + kChip + 2.0f;
@@ -439,16 +493,43 @@ namespace playground::ui
 
     void AbCard::wheel(const funkgui::WheelEvent& e, float width, float height)
     {
+        // As the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
         const Places at = places(width, height);
-        const float dy = e.reversed ? -e.dy : e.dy;
-        const int step = dy > 0.0f ? -1 : (dy < 0.0f ? 1 : 0);
-        const int by = step * std::max(1, static_cast<int>(std::round(std::fabs(dy) * 6.0f)));
-        if (at.list.contains({ e.x, e.y }))
-            firstRow_ = std::clamp(firstRow_ + by, 0, std::max(0, rowCount() - at.rows));
-        else if (at.diff.contains({ e.x, e.y }))
-            scroll_ = std::clamp(scroll_ + 3 * by, 0, maxScroll(at));
+        Scroll& kept = at.list.contains({ e.x, e.y }) ? list_ : diff_;
+        if (!at.list.contains({ e.x, e.y }) && !at.diff.contains({ e.x, e.y }))
+            return;
+        Scroll s = &kept == &list_ ? listScroll(at) : diffScroll(at);
+        s.wheel(e.dy, e.smooth);
+        kept = s;
+        ++revision_;
+    }
+
+    void AbCard::pointerDrag(funkgui::Point p, float width, float height)
+    {
+        const Places at = places(width, height);
+        if (list_.dragging())
+        {
+            Scroll s = listScroll(at);
+            s.drag(p, listBar(at));
+            list_ = s;
+        }
+        else if (diff_.dragging())
+        {
+            Scroll s = diffScroll(at);
+            s.drag(p, diffBar(at));
+            diff_ = s;
+        }
         else
             return;
+        ++revision_;
+    }
+
+    void AbCard::pointerUp()
+    {
+        if (!list_.dragging() && !diff_.dragging())
+            return;
+        list_.release();
+        diff_.release();
         ++revision_;
     }
 
@@ -474,10 +555,9 @@ namespace playground::ui
             const int side = e.mods.shift ? 0 : 1;
             const int row = rowOfVersion(state_.sides[static_cast<std::size_t>(side)].version);
             const int next = std::clamp((row < 0 ? 0 : row) + (e.key == Key::up ? -1 : 1), 0, rowCount() - 1);
-            if (next < firstRow_)
-                firstRow_ = next;
-            if (next >= firstRow_ + at.rows)
-                firstRow_ = next - at.rows + 1;
+            Scroll s = listScroll(at);
+            s.reveal(static_cast<float>(next) * at.rowH, static_cast<float>(next + 1) * at.rowH);
+            list_ = s;
             setSide(side, next);
         }
         else if (e.key == Key::tab && !diffs_.empty())
@@ -489,12 +569,16 @@ namespace playground::ui
         }
         else if (e.key == Key::pageUp || e.key == Key::pageDown)
         {
-            scroll_ = std::clamp(scroll_ + (e.key == Key::pageUp ? -1 : 1) * std::max(1, at.lines - 2), 0, maxScroll(at));
+            Scroll s = diffScroll(at);
+            s.moveTo(s.offset + static_cast<float>((e.key == Key::pageUp ? -1 : 1) * std::max(1, at.lines - 2)) * at.lineH);
+            diff_ = s;
             ++revision_;
         }
         else if (e.key == Key::home || e.key == Key::end)
         {
-            scroll_ = e.key == Key::home ? 0 : maxScroll(at);
+            Scroll s = diffScroll(at);
+            s.moveTo(e.key == Key::home ? 0.0f : s.max());
+            diff_ = s;
             ++revision_;
         }
     }
@@ -508,12 +592,8 @@ namespace playground::ui
         for (const funkgui::Rect& r : at.tabs)
             if (r.contains(p))
                 return funkgui::Cursor::pointingHand;
-        if (at.list.contains(p))
-        {
-            const int row = firstRow_ + static_cast<int>(std::floor((p.y - at.list.y - 4.0f) / at.rowH));
-            if (row >= firstRow_ && row < firstRow_ + at.rows && row < rowCount())
-                return funkgui::Cursor::pointingHand;
-        }
+        if (rowAt(p, at) >= 0)
+            return funkgui::Cursor::pointingHand;
         return funkgui::Cursor::normal;
     }
 
@@ -562,14 +642,16 @@ namespace playground::ui
             c.text(fitText(c, state_.project.empty() ? std::string("VERSIONS") : "VERSIONS OF " + upper(asciiText(state_.project)), cap, r.w).c_str(),
                    r.x + 2.0f, c.capCentreTop(r.y - 11.0f, cap), cap, p.faint);
             c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, p.composerEdge);
+            // The rows in view, a row at an edge in part (clipped to the rows' part of the list).
             const int n = rowCount();
-            const bool scrolls = n > at.rows;
-            const float rowW = r.w - 8.0f - (scrolls ? 8.0f : 0.0f);
-            for (int k = 0; k < at.rows && firstRow_ + k < n; ++k)
+            const Scroll scroll = listScroll(at);
+            const int from = std::max(0, static_cast<int>(std::floor(scroll.offset / at.rowH)));
+            const int to = std::min(n, static_cast<int>(std::ceil((scroll.offset + scroll.view) / at.rowH)));
+            c.pushClip({ r.x, r.y + 4.0f, r.w, static_cast<float>(at.rows) * at.rowH });
+            for (int row = from; row < to; ++row)
             {
-                const int row = firstRow_ + k;
                 const int version = versionOfRow(row);
-                const funkgui::Rect rr{ r.x + 4.0f, r.y + 4.0f + static_cast<float>(k) * at.rowH, rowW, at.rowH };
+                const funkgui::Rect rr = rowRect(at, row);
                 const bool isA = state_.sides[0].version == version, isB = state_.sides[1].version == version;
                 if (isB)
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, funkgui::mix(p.composer, p.accent, 0.14f));
@@ -608,13 +690,8 @@ namespace playground::ui
                 c.text(fitText(c, asciiText(v.note), chat::kSmall, std::max(0.0f, rr.right() - 10.0f - noteX)).c_str(), noteX,
                        c.capCentreTop(rr.centreY(), chat::kSmall), chat::kSmall, p.soft);
             }
-            if (scrolls)
-            {
-                const float track = r.h - 12.0f;
-                const float thumb = std::max(18.0f, track * static_cast<float>(at.rows) / static_cast<float>(n));
-                const float y = r.y + 6.0f + (track - thumb) * static_cast<float>(firstRow_) / static_cast<float>(std::max(1, n - at.rows));
-                c.rrect(r.right() - 9.0f, y, 4.0f, thumb, 2.0f, p.dim);
-            }
+            c.popClip();
+            scroll.draw(c, listBar(at), th);
         }
 
         // The changes: a tab a file, the chosen one's diff.
@@ -650,13 +727,14 @@ namespace playground::ui
                 const float cw = std::max(1.0f, c.textWidth("M", chat::kCodeText));
                 const float textX = d.x + 96.0f;
                 const auto maxChars = static_cast<std::size_t>(std::max(0.0f, (d.right() - 12.0f - textX) / cw));
-                for (int k = 0; k < at.lines; ++k)
+                // The lines in view, a line at an edge in part (the clip above).
+                const Scroll scroll = diffScroll(at);
+                const int from = std::max(0, static_cast<int>(std::floor(scroll.offset / at.lineH)));
+                const int to = std::min(static_cast<int>(f.lines.size()), static_cast<int>(std::ceil((scroll.offset + scroll.view) / at.lineH)) + 1);
+                for (int i = from; i < to; ++i)
                 {
-                    const int i = scroll_ + k;
-                    if (i >= static_cast<int>(f.lines.size()))
-                        break;
                     const Line& l = f.lines[static_cast<std::size_t>(i)];
-                    const float y = d.y + 6.0f + static_cast<float>(k) * at.lineH, mid = y + 0.5f * at.lineH;
+                    const float y = d.y + 6.0f + static_cast<float>(i) * at.lineH - scroll.offset, mid = y + 0.5f * at.lineH;
                     if (l.kind == Line::Kind::gap)
                     {
                         c.hairlineH(d.x + 8.0f, mid, d.w - 16.0f, p.codeEdge);
@@ -681,14 +759,7 @@ namespace playground::ui
                     c.text(text.c_str(), textX, c.capCentreTop(mid, chat::kCodeText), chat::kCodeText,
                            l.kind == Line::Kind::removed ? p.soft : p.text);
                 }
-                const int rows = static_cast<int>(f.lines.size());
-                if (rows > at.lines)
-                {
-                    const float track = d.h - 12.0f;
-                    const float thumb = std::max(18.0f, track * static_cast<float>(at.lines) / static_cast<float>(rows));
-                    const float y = d.y + 6.0f + (track - thumb) * static_cast<float>(scroll_) / static_cast<float>(std::max(1, rows - at.lines));
-                    c.rrect(d.right() - 9.0f, y, 4.0f, thumb, 2.0f, p.dim);
-                }
+                scroll.draw(c, diffBar(at), th);
             }
         }
 
@@ -805,11 +876,12 @@ namespace playground::ui
         list.title = "Versions";
         list.value = std::to_string(rowCount());
         out.push_back(list);
-        for (int k = 0; k < at.rows && firstRow_ + k < rowCount(); ++k)
+        for (int row = 0; row < rowCount(); ++row)
         {
-            const int row = firstRow_ + k;
+            const funkgui::Rect rr = rowRect(at, row);
+            if (rr.y < at.list.y + 4.0f - 0.01f || rr.bottom() > listBar(at).bottom() + 0.01f)
+                continue;                                // not wholly shown
             const int version = versionOfRow(row);
-            const funkgui::Rect rr{ at.list.x + 4.0f, at.list.y + 4.0f + static_cast<float>(k) * at.rowH, at.list.w - 8.0f, at.rowH };
             const std::string name = version == 0 ? std::string("Current") : "Version " + std::to_string(version);
             funkgui::A11yItem it;
             it.id = kRowId + static_cast<uint32_t>(row) * 4u + 2u;

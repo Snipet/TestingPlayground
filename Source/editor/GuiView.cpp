@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <initializer_list>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -412,19 +413,57 @@ namespace playground::ui
 
     void GuiView::drawScrollBars(funkgui::Canvas& c, const funkgui::Theme& th) const
     {
+        scroller(false).draw(c, barArea(false), th);
+        scroller(true).draw(c, barArea(true), th);
+    }
+
+    Scroll GuiView::scroller(bool horizontal) const noexcept
+    {
+        Scroll s = horizontal ? barX_ : barY_;
         const funkgui::Rect& a = gui_.area;
-        if (gui_.maxScrollY > 0.0f)
-        {
-            const float h = std::max(24.0f, a.h * a.h / (a.h + gui_.maxScrollY));
-            const float y = a.y + (a.h - h) * scrollY_ / gui_.maxScrollY;
-            c.rrect(a.right() + kScrollGutter - 4.0f, y, 3.0f, h, 1.5f, th.ink32);
-        }
-        if (gui_.maxScrollX > 0.0f)
-        {
-            const float w = std::max(24.0f, a.w * a.w / (a.w + gui_.maxScrollX));
-            const float x = a.x + (a.w - w) * scrollX_ / gui_.maxScrollX;
-            c.rrect(x, a.bottom() - 4.0f, w, 3.0f, 1.5f, th.ink32);
-        }
+        s.horizontal = horizontal;
+        s.offset = horizontal ? scrollX_ : scrollY_;
+        s.view = horizontal ? a.w : a.h;
+        s.content = s.view + (horizontal ? gui_.maxScrollX : gui_.maxScrollY);
+        s.row = kRow;
+        return s;
+    }
+
+    // The vertical bar in the gutter at the area's right, the horizontal one along its bottom.
+    funkgui::Rect GuiView::barArea(bool horizontal) const noexcept
+    {
+        const funkgui::Rect& a = gui_.area;
+        return horizontal ? a : funkgui::Rect{ a.x, a.y, a.w + kScrollGutter, a.h };
+    }
+
+    bool GuiView::pressBar(const PanelSpec& spec, funkgui::Point p)
+    {
+        for (const bool horizontal : { false, true })
+            if (Scroll s = scroller(horizontal); s.press(p, barArea(horizontal)))
+            {
+                (horizontal ? barX_ : barY_) = s;
+                scrollBy(spec, horizontal ? s.offset - scrollX_ : 0.0f, horizontal ? 0.0f : s.offset - scrollY_);
+                return true;
+            }
+        return false;
+    }
+
+    bool GuiView::dragBar(const PanelSpec& spec, funkgui::Point p)
+    {
+        for (const bool horizontal : { false, true })
+            if (Scroll s = scroller(horizontal); s.dragging())
+            {
+                s.drag(p, barArea(horizontal));
+                (horizontal ? barX_ : barY_) = s;
+                return scrollBy(spec, horizontal ? s.offset - scrollX_ : 0.0f, horizontal ? 0.0f : s.offset - scrollY_);
+            }
+        return false;
+    }
+
+    void GuiView::releaseBar() noexcept
+    {
+        barX_.release();
+        barY_.release();
     }
 
     void updateDisplays(GuiView::Items& items, const std::vector<int>& displays, const Meters& shown,

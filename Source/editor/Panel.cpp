@@ -7395,6 +7395,8 @@ namespace playground::ui
 
     // ---- a .gui file's interface ----------------------------------------------------------------------------------------
     const GuiLayout& Panel::guiLayout() const noexcept { return guiView_->places(); }
+    Scroll Panel::guiScroller(bool horizontal) const noexcept { return guiView_->scroller(horizontal); }
+    funkgui::Rect Panel::guiBarArea(bool horizontal) const noexcept { return guiView_->barArea(horizontal); }
 
     void Panel::showState(ShownState state)
     {
@@ -8355,6 +8357,14 @@ namespace playground::ui
             closingPress_ = !dialogOpen();
             return;
         }
+        // A .gui interface's bar (Scroll.h): its thumb drags, a press on its track jumps first.
+        guiBarPress_ = !e.popup && !panelSpec_.gui.empty() && guiView_->pressBar(panelSpec_, pointer_);
+        if (guiBarPress_)
+        {
+            pressed_ = -1;
+            ++layoutRevision_;                           // the interface's accessibility items moved
+            return;
+        }
         pressed_ = itemAt(pointer_);
         if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
             setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
@@ -8400,7 +8410,24 @@ namespace playground::ui
         pointer_ = { e.x, e.y };
         if (projectsPress_ && projects_.isOpen())
         {
-            projects_.pointerDrag(pointer_, width_, height_);   // a project's row carried onto a group
+            projects_.pointerDrag(pointer_, width_, height_);   // a project's row carried onto a group, or a thumb
+            return;
+        }
+        // A card's bar's thumb (Scroll.h: each moves only while its own thumb was pressed).
+        if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen())
+        {
+            if (settings_.isOpen())
+                settings_.pointerDrag(pointer_, width_, height_);
+            else if (ab_.isOpen())
+                ab_.pointerDrag(pointer_, width_, height_);
+            else
+                picker_.pointerDrag(pointer_, width_, height_);
+            return;
+        }
+        if (guiBarPress_)
+        {
+            if (guiView_->dragBar(panelSpec_, pointer_))
+                ++layoutRevision_;                       // the interface's accessibility items moved
             return;
         }
         if (pressed_ >= 0 && gestures_)
@@ -8416,6 +8443,15 @@ namespace playground::ui
         {
             projects_.pointerUp({ e.x, e.y }, width_, height_);
             afterProjects(true);
+            pressed_ = -1;
+            return;
+        }
+        settings_.pointerUp();                           // a card's thumb let go (none held: nothing)
+        ab_.pointerUp();
+        picker_.pointerUp();
+        if (std::exchange(guiBarPress_, false))
+        {
+            guiView_->releaseBar();
             pressed_ = -1;
             return;
         }
@@ -8485,8 +8521,9 @@ namespace playground::ui
         if (!panelSpec_.gui.empty() && gl.area.contains({ e.x, e.y }) && (gl.maxScrollX > 0.0f || gl.maxScrollY > 0.0f)
             && !guiView_->isControl(i))
         {
-            const float k = e.smooth ? 512.0f : 292.0f;     // px a unit of the wheel (the chat's)
-            const float dy = e.reversed ? -e.dy : e.dy, dx = e.reversed ? -e.dx : e.dx;
+            // As the code scrolls (Scroll.h): the deltas as they came, WheelEvent::reversed never read.
+            const float k = GuiView::wheelPx(e.smooth);
+            const float dy = e.dy, dx = e.dx;
             if (e.mods.shift && dx == 0.0f)
                 scrollGui(-dy * k, 0.0f);
             else
