@@ -193,6 +193,9 @@ namespace playground::ui
     // After any input the full rate holds this long (s; Panel.h "Unchanged frames", Panel::wantsFullRate): the next
     // event of a hover, a drag or typing finds the pump at 60 Hz.
     inline constexpr double kInputHold = 0.3;
+    // A notice (a save's outcome, RANDOM's or PROJECTS' word) stands in the status line this long (s, the host's clock)
+    // in place of the compile's status.
+    inline constexpr double kNoticeFor = 4.0;
 
     // Where the PANEL view puts a .gui file's interface in an editor W x H (logical px) whose chat is open (else its
     // rail) and `chatWant` px wide (0: its share), as layout() does: the program's card across the window but the chat's
@@ -751,9 +754,10 @@ namespace playground::ui
         funkgui::Rect explorerCard_;
         float leftX_ = 0.0f;                             // the program's card's left edge (after the explorer)
         std::vector<ProjectEntry> projectList_;
-        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects): read once
+        std::vector<ProjectEntry> factoryList_;          // the factory projects (EditorPort::factoryProjects), read again
         ProjectsView projectsView_;                      // PROJECTS' stars and folded groups, as the poll last read them
         bool factoryRead_ = false;
+        uint64_t factorySeen_ = 0;                       // the factory set's generation factoryList_ was read at
         std::vector<PresetEntry> presetList_;            // the project open's
         std::string presetsOf_;                          // the project presetList_ is of
         double projectsAt_ = -100.0;

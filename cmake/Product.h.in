@@ -7,6 +7,7 @@
 namespace @FP_NAMESPACE@::product
 {
     inline constexpr char kName[]             = "@PRODUCT_NAME@";
+    inline constexpr char kKey[]              = "@key@";                  // products/<key>.cmake's: the site's path
     inline constexpr char kKind[]             = "@PRODUCT_KIND@";         // "effect" | "instrument"
     inline constexpr bool kIsInstrument       = @PRODUCT_IS_INSTRUMENT@;
     inline constexpr char kVersion[]          = "@PRODUCT_VERSION@";

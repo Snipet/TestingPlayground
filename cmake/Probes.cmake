@@ -16,7 +16,8 @@
 # only (P.near, P.le, P.ge, P.in, P.eq), judged at once with their tolerance; there are no golden files, so a golden
 # row (P.num, P.hash, ...) would report golden_missing (exit 3) and fail. A product's outputs (WAVs, PNGs) go to
 # <build>/probe-out/<key>/, its results JSON to <build>/probe-results/<key>/, and the FunkGui preferences of a probe
-# to <build>/sandbox/<key>/<probe>/ (never the user's ~/Library).
+# to <build>/sandbox/<key>/<probe>/ (never the user's ~/Library). <prefix>FACTORY=off: no probe's processor fetches the
+# factory projects from the website (plugin.factorystore makes its own stores, over a scripted transport).
 #
 # fp_add_lints(), once after every product: lint.exports (macOS and Linux) and lint.signature (macOS) over every
 # product's bundles, and lint.layers over the sources, labelled `lint`.
@@ -115,7 +116,9 @@ function(fp_add_probes key)
     target_include_directories(${FP_PROBES} PRIVATE ${FP_PROBE_ROOT}/common/win)
   endif()
   # PROBE_SOURCE_DIR: the source tree, where plugin.factory finds scripts/import-factory.py and products/.
-  target_compile_definitions(${FP_PROBES} PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
+  # FP_PROBES: the plugin's sources as the probes compile them, with their test seams (FactoryStore.h's
+  # useConfigForTests: the fixtures' keys); the plugin itself is compiled without, so it has no such call.
+  target_compile_definitions(${FP_PROBES} PRIVATE FP_PROBES=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
                                                  PROBE_DEFAULT_OUT_DIR="${CMAKE_BINARY_DIR}/probe-out/${key}"
                                                  PROBE_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
   # juce_audio_formats: the samples' readers (plugin/AssetFiles.cpp), as the plugin has them through juce_audio_utils.
@@ -129,6 +132,7 @@ function(fp_add_probes key)
     target_link_libraries(${FP_PROBES} PRIVATE "-framework ImageIO" "-framework CoreGraphics")   # ChatImages.cpp
     target_link_libraries(${FP_PROBES} PRIVATE "-framework CoreServices")   # FolderWatch.cpp: FSEvents
     target_link_libraries(${FP_PROBES} PRIVATE compression)   # ProjectExport.cpp
+    target_link_libraries(${FP_PROBES} PRIVATE "-framework Security" "-framework CoreFoundation")   # Verify.cpp
   elseif(FP_WINDOWS)
     target_link_libraries(${FP_PROBES} PRIVATE ${FP_WINDOWS_LIBS} dbghelp)   # dbghelp: ProbeMain.cpp's crash report
     # The main thread's stack as macOS and Linux give theirs, 8 MB, not Windows' 1 MB: a probe's function keeps several
@@ -166,7 +170,7 @@ function(fp_add_probes key)
     set_tests_properties(${_test} PROPERTIES
         LABELS "probe;${_layer};${key}"
         TIMEOUT ${_timeout}
-        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>")
+        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}FACTORY=off;${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>")
   endforeach()
 endfunction()
 

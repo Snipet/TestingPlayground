@@ -11,11 +11,19 @@
 // which no project on this Mac can have: load(), exists() and the presets read them, and every write refuses them (a
 // save makes the user's own copy instead: Processor::saveVersion). A user project of the same own name stays the
 // user's. The probe plugin.factory compiles and plays every one in both products, its presets too.
+//
+// The set can change while the plugin runs: the website's (the website repository's docs/factory-projects.md, section
+// 6), which plugin/FactoryStore.h fetches, checks and keeps, takes the place of the compiled-in one once the process's
+// store has one. So the set is handed out as an immutable snapshot (current()) with a generation number that moves
+// with it, never as a reference that lives for the process: a caller holds the snapshot while it uses a project of it,
+// and a list made from one (the editor's FACTORY) is made again when generation() moves.
 #pragma once
 
 #include "plugin/ProjectStore.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,14 +36,37 @@ namespace juce
 
 namespace playground::factory
 {
-    // The product's factory projects, by name (case aside), each named factoryName(<its own name>); read from what was
-    // compiled in once, on first use (any thread), and kept for the process. One that does not read (a damaged JSON,
-    // the other kind's, no program) is left out, and problems() says why.
-    const std::vector<projectstore::Project>& projects();
+    // A factory set: its projects, by name (case aside), each named factoryName(<its own name>), and what was left out
+    // of it with why (the compiled-in set's: a project that does not read). Immutable once made: a new set is a new
+    // Set, so a reader holding one never sees it change.
+    struct Set
+    {
+        std::vector<projectstore::Project> projects;
+        std::vector<std::string> problems;
+        bool fetched = false;                            // from the website (FactoryStore.h), else compiled in
+        int64_t sequence = 0;                            // a fetched set's index's
+        // The project of that name (its factory name or its own, case aside) in this set, or null.
+        const projectstore::Project* find(std::string_view name) const;
+    };
+    using Snapshot = std::shared_ptr<const Set>;
+
+    // The factory set the plugin shows now: the set fetched from the website when the process's FactoryStore has one
+    // (FactoryStore.h), else the one compiled in. Any thread; it never waits on the store (a lock held for a pointer's
+    // copy). Hold the snapshot for as long as a project of it is used: a later call may give another one.
+    Snapshot current();
+    // A number that moves whenever current() would give another set (a set fetched, read from disk, or gone with the
+    // last processor), so that a list made from it (the editor's FACTORY, PROJECTS) is made again when it moves.
+    uint64_t generation();
+    // The set compiled in (read once, on first use, and kept for the process) and what it left out.
+    Snapshot builtIn();
     const std::vector<std::string>& problems();
-    // The factory project of that name (its factory name or its own, case aside), or null.
-    const projectstore::Project* find(std::string_view name);
+    // The factory project of that name in current(), or null: the pointer keeps its snapshot alive.
+    std::shared_ptr<const projectstore::Project> find(std::string_view name);
     std::size_t bytes();                                 // the texts compiled in: what each plugin binary grows by
+
+    // The process's FactoryStore (alone) makes `set` the one current() gives, or with null takes back the one it made
+    // (`owner` says whose: one store's set is never taken back by another). Either moves generation().
+    void publish(const void* owner, Snapshot set);
 
     // A factory project from its parts: its own name, its project.json and its version's files (name, text), as the
     // folder holds them. Nothing, with why, when it is not one: not a project of this plugin's kind, not one version,

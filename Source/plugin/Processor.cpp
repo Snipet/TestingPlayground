@@ -1971,11 +1971,12 @@ namespace playground
             // The project open; a session from before projects names a preset, now a project of that name.
             if (program.hasProperty(kProject))
             {
-                // A factory project's name as it is (tidyName would take its colon), while this build has it.
+                // A factory project's name as it is (tidyName would take its colon), while the factory set has it.
                 const std::string named = program.getProperty(kProject).toString().toStdString();
-                projectName_ = !isFactoryName(named)                              ? projectstore::tidyName(named)
-                             : factory::find(named) != nullptr ? factory::find(named)->name
-                                                               : std::string();
+                const std::shared_ptr<const projectstore::Project> factoryOne = isFactoryName(named) ? factory::find(named) : nullptr;
+                projectName_ = !isFactoryName(named) ? projectstore::tidyName(named)
+                             : factoryOne != nullptr ? factoryOne->name
+                                                     : std::string();
                 projectVersion_ = std::max(0, static_cast<int>(program.getProperty(kProjectVersion, 0)));
                 projectPreset_ = projectstore::tidyName(program.getProperty(kProjectPreset).toString().toStdString());
                 projectId_ = program.getProperty(kProjectId).toString().toLowerCase().substring(0, 64).toStdString();
@@ -2376,7 +2377,10 @@ namespace playground
         return out;
     }
 
-    uint64_t Processor::projectsRead() const { return reader_->revision(); }
+    // The factory set's generation is added in, so that what reads the lists again when this moves (PROJECTS, EXPORT)
+    // does so when a set arrives too: both only ever go up, so the sum moves when either does.
+    uint64_t Processor::projectsRead() const { return reader_->revision() + factory::generation(); }
+    uint64_t Processor::factoryGeneration() const { return factory::generation(); }
 
     std::vector<ProjectEntry> Processor::entriesOf(const std::vector<projectstore::Entry>& list) const
     {

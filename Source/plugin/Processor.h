@@ -78,6 +78,7 @@
 #include "plugin/Capture.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
+#include "plugin/FactoryStore.h"
 #include "plugin/FolderSync.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
@@ -280,6 +281,7 @@ namespace playground
         uint32_t alerts() const override;
         std::vector<ProjectEntry> projects() const override;
         std::vector<ProjectEntry> factoryProjects() const override;
+        uint64_t factoryGeneration() const override;
         std::string projectFolder() const override;
         std::string tidyName(const std::string& typed) const override { return projectstore::tidyName(typed); }
         ProjectState project() const override;
@@ -483,6 +485,10 @@ namespace playground
         // The store's Reader (the process's): the files the explorer's poll could not list from the cache, read on its
         // thread (projectsPolled). The listing's entries as the port gives them, projectLatest_ followed.
         std::shared_ptr<projectstore::Reader> reader_ = projectstore::reader();
+        // The factory projects' store (the process's, FactoryStore.h): registered with for this processor's life, so the
+        // first processor starts it (its thread reads the set on disk) and the last one gone stops and joins its thread,
+        // before a host may unload the plugin. Nothing here fetches: that waits for an editor and the user's yes.
+        std::shared_ptr<factorystore::Store> factoryStore_ = factorystore::attach();
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
         // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
         // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
