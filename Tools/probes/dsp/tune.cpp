@@ -416,7 +416,17 @@ PROBE(dsp, tune)
         P.eq("metrics.alerts", static_cast<int64_t>(at(m.values, "alerts")), 0);
         P.ge("metrics.cpu", at(m.values, "cpu_percent"), 0.0);
         // Sixteen voices measured at once cost more than the one note held (about sixteen times; twice is the floor).
-        P.ge("metrics.cpu16_sixteen_voices", at(m.values, "cpu16_percent"), 2.0 * at(m.values, "cpu_percent"));
+        // cpu16_percent is the least of two renders and cpu_percent one reading of the held second: a reading a busy
+        // machine disturbed (a hosted runner's read 14 times its size once) is taken again, the least of them compared.
+        double one = at(m.values, "cpu_percent");
+        ms::Request again = r;
+        again.want = { "cpu_percent" };
+        for (int k = 0; k < 4 && at(m.values, "cpu16_percent") < 2.0 * one; ++k)
+        {
+            one = std::min(one, at(session.measure(again).values, "cpu_percent"));
+            std::printf("metrics.cpu16_sixteen_voices: cpu_percent read again, the least now %.4f\n", one);
+        }
+        P.ge("metrics.cpu16_sixteen_voices", at(m.values, "cpu16_percent"), 2.0 * one);
         // The CPU line gives the numbers; what they time (the dials held still, every call flat) is the metric's line.
         P.eq("metrics.cpu_numbers_only", m.report.find("of one core") != std::string::npos && m.report.find("held still") == std::string::npos
                                              && std::string(ms::metricInfo("cpu_percent")->what).find("dials still") != std::string::npos ? 1 : 0, 1);
