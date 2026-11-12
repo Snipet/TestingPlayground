@@ -124,6 +124,14 @@ namespace playground::ui
         summary_ = s.empty() ? std::string("The same") : s;
         view_.setSides(a, b);
         view_.set(std::move(diffs), true);
+        // The pill kept is the same on these sides: the first that changed instead.
+        if (const auto& fs = view_.files(); !fs.empty() && fs[static_cast<std::size_t>(view_.file())].change == DiffView::Change::same)
+            for (std::size_t i = 0; i < fs.size(); ++i)
+                if (fs[i].change != DiffView::Change::same)
+                {
+                    view_.showFile(static_cast<int>(i));
+                    break;
+                }
         ++revision_;
     }
 

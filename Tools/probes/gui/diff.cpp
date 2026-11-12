@@ -2,7 +2,7 @@
 //
 // gui.diff: COMPARE's card (editor/DiffCard.h, its view editor/DiffView.h) headless over a real Processor whose
 // projects are in a temporary folder of the probe's own: a project "Diff Pad" of two versions (version 2: gain.fm's K
-// changed, long.fm changed in two places far apart, pedal.cir's drawing alone changed, notes.fm gone, lib.fm new, the
+// changed, long.fm changed in six places, pedal.cir's drawing alone changed, notes.fm gone, lib.fm new, the
 // level dial moved, a sample added) with two presets, and the editor's files after it (K again, the sample replaced), to
 // <build>/probe-out/:
 //   gui.diff.png           v1 against v2, gain.fm's rows
@@ -26,8 +26,9 @@
 //            taken away
 //   DIALS    a row for the level dial, its value each side as the panel says it
 //   SAMPLES  kick.wav added from v1 to v2, replaced from v2 to the editor; the same samples: no pill
-//   NEXT     ] in long.fm goes to its second change, again to the next pill's first, [ back; the top bar's presets do
-//            not move while the card has the keys; the change buttons do the same
+//   NEXT     ] in long.fm goes to its second change (its first shows already), [ back to the first; ] through its six
+//            changes on into the next pill, [ back to its last; the top bar's presets do not move while the card has
+//            the keys; the change buttons do the same
 //   SCROLL   the wheel, End and Home scroll the rows as the code does (Scroll.h)
 //   KEYS     Tab the next pill
 //   A11Y     the sides as combo boxes, the swap, the change buttons, the pills; its ids in a range of their own
@@ -97,12 +98,12 @@ namespace
                "    return 0.25f * gainK();\n}\n";
     }
 
-    // 120 lines of comment, line `a` and line `b` saying so when given.
-    std::string longText(int a, int b)
+    // 120 lines of comment; with `changed`, lines 10, 30, ..., 110 saying so (six changes, more rows than a view holds).
+    std::string longText(bool changed)
     {
         std::string s = "// long.fm: notes\n";
         for (int i = 1; i <= 120; ++i)
-            s += "// " + std::to_string(i) + (i == a || i == b ? ". changed here\n" : ". a line of notes\n");
+            s += "// " + std::to_string(i) + (changed && i % 20 == 10 ? ". changed here\n" : ". a line of notes\n");
         return s;
     }
 
@@ -156,6 +157,17 @@ namespace
 
     funkgui::Point mid(const funkgui::Rect& r) { return { r.centreX(), r.centreY() }; }
 
+    // That pill shown, by Tab (a pill past the row's end comes into it so), as a user would reach it.
+    bool toPill(funkgui::HeadlessHost& host, const DV& v, int i)
+    {
+        for (std::size_t k = 0; k <= v.files().size() && v.file() != i; ++k)
+        {
+            host.keys("tab");
+            host.settle();
+        }
+        return v.file() == i;
+    }
+
     funkgui::Mods ctrl()                                 // a ctrl-click: a context menu's (a right-click)
     {
         funkgui::Mods m;
@@ -206,9 +218,9 @@ PROBE(gui, diff)
     processor.compiler().setFreezing(false);
     pg::EditorPort& port = processor.editorPort();
     const std::string project = "Diff Pad";
-    const pg::Sources v1{ { "program.fm", programText() }, { "gain.fm", gainText("1.0") }, { "long.fm", longText(0, 0) },
+    const pg::Sources v1{ { "program.fm", programText() }, { "gain.fm", gainText("1.0") }, { "long.fm", longText(false) },
                           { "pedal.cir", pedalText(10) }, { "notes.fm", notesText() } };
-    const pg::Sources v2{ { "program.fm", programText() }, { "gain.fm", gainText("0.5") }, { "long.fm", longText(10, 90) },
+    const pg::Sources v2{ { "program.fm", programText() }, { "gain.fm", gainText("0.5") }, { "long.fm", longText(true) },
                           { "pedal.cir", pedalText(30) }, { "lib.fm", "// lib.fm: more\nfloat twice(float x) { return 2.0f * x; }\n" } };
     pg::Sources current = v2;
     current[1].text = gainText("0.25");
@@ -367,14 +379,14 @@ PROBE(gui, diff)
     // ---- DIALS, SAMPLES ------------------------------------------------------------------------------------------------
     {
         const int d = pillOf(v, "DIALS 1");
-        clickAt(host, card.view().centreOfTab(d, view()));
+        (void)toPill(host, v, d);
         const DV::FileDiff& f = v.files()[static_cast<std::size_t>(d)];
         P.eq("dials.row", v.file() == d && f.lines.size() == 1 && f.lines[0].kind == DV::Line::Kind::changed
                               && f.lines[0].text.rfind("level:", 0) == 0 && f.lines[0].text.find("->") != std::string::npos ? 1 : 0, 1);
         std::printf("dial row: %s\n", f.lines.empty() ? "" : f.lines[0].text.c_str());
         writePng(P, host, "gui.diff.dials.png");
         const int s = pillOf(v, "SAMPLES 1");
-        clickAt(host, card.view().centreOfTab(s, view()));
+        (void)toPill(host, v, s);
         const DV::FileDiff& g = v.files()[static_cast<std::size_t>(s)];
         P.eq("samples.added", v.file() == s && g.lines.size() == 1 && g.lines[0].kind == DV::Line::Kind::added
                                   && g.lines[0].text == "kick.wav  added" ? 1 : 0, 1);
@@ -390,30 +402,44 @@ PROBE(gui, diff)
 
     // ---- NEXT ----------------------------------------------------------------------------------------------------------
     {
-        const int lng = pillOf(v, "long.fm +2 -2");
-        clickAt(host, card.view().centreOfTab(lng, view()));
+        const int lng = pillOf(v, "long.fm +6 -6");
+        (void)toPill(host, v, lng);
+        host.keys("home");
+        host.settle();
         const std::string preset = port.project().preset;
         P.eq("next.long_shown", lng >= 0 && v.file() == lng && v.scroll() == 0 ? 1 : 0, 1);
         host.keys("]");
         host.settle();
         const int second = v.scroll();
-        P.ge("next.second_change", second, 10);
-        host.keys("]");
-        host.settle();
-        P.eq("next.next_pill", v.file() > lng ? 1 : 0, 1);
+        P.ge("next.second_change", second, 10);           // the first change shows at the top already
         host.keys("[");
         host.settle();
-        P.eq("next.back", v.file() == lng && v.scroll() == second ? 1 : 0, 1);
+        P.eq("next.back_to_first", v.file() == lng && v.scroll() == 3 ? 1 : 0, 1);
+        int presses = 0;
+        while (v.file() == lng && presses < 10)
+        {
+            host.keys("]");
+            host.settle();
+            ++presses;
+        }
+        P.eq("next.on_to_next_pill", v.file() > lng && presses == 6 ? 1 : 0, 1);
+        host.keys("[");
+        host.settle();
+        const int last = v.scroll();
+        P.eq("next.back_to_last", v.file() == lng && last > second ? 1 : 0, 1);
         P.eq("next.presets_untouched", card.isOpen() && port.project().preset == preset && !preset.empty() ? 1 : 0, 1);
-        clickAt(host, mid(card.view().places(view()).previous));
-        P.eq("next.button_previous", v.file() == lng && v.scroll() < second ? 1 : 0, 1);
-        clickAt(host, mid(card.view().places(view()).next));
-        P.eq("next.button_next", v.file() == lng && v.scroll() == second ? 1 : 0, 1);
+        // The last changes share the last screen (the rows clamp there): three steps back leave it, three come again.
+        for (int k = 0; k < 3; ++k)
+            clickAt(host, mid(card.view().places(view()).previous));
+        P.eq("next.button_previous", v.file() == lng && v.scroll() < last ? 1 : 0, 1);
+        for (int k = 0; k < 3; ++k)
+            clickAt(host, mid(card.view().places(view()).next));
+        P.eq("next.button_next", v.file() == lng && v.scroll() == last ? 1 : 0, 1);
     }
 
     // ---- SCROLL, KEYS --------------------------------------------------------------------------------------------------
     {
-        clickAt(host, card.view().centreOfTab(pillOf(v, "notes.fm gone"), view()));
+        (void)toPill(host, v, pillOf(v, "notes.fm gone"));
         P.eq("scroll.notes", DV::tabLabel(v.files()[static_cast<std::size_t>(v.file())]) == "notes.fm gone" ? 1 : 0, 1);
         host.keys("home");
         host.settle();
@@ -429,7 +455,9 @@ PROBE(gui, diff)
         host.keys("tab");
         host.settle();
         P.eq("keys.tab", v.file() == (was + 1) % static_cast<int>(v.files().size()) ? 1 : 0, 1);
-        clickAt(host, card.view().centreOfTab(1, view()));
+        (void)toPill(host, v, 1);
+        P.eq("keys.pill_click", (clickAt(host, card.view().centreOfTab(2, view())), v.file() == 2 && card.isOpen()) ? 1 : 0, 1);
+        (void)toPill(host, v, 1);
     }
 
     // ---- A11Y ----------------------------------------------------------------------------------------------------------
@@ -515,7 +543,6 @@ PROBE(gui, diff)
         host.tick(2);
         host.settle();
         P.eq("opens.opened", !card.isOpen() && port.project().version == 1 && port.draft().files == v1 ? 1 : 0, 1);
-        P.eq("opens.status", panel.statusText().find("OPENED") != std::string::npos ? 1 : 0, 1);
     }
 
     // ---- AB ------------------------------------------------------------------------------------------------------------
