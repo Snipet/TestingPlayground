@@ -708,7 +708,8 @@ PROBE(gui, ir)
             const uint64_t irRevision = processor.compiler().irRevision();
             processor.compiler().setFreezing(true, 0.25);
             processor.prepareToPlay(kRate, kBlock);
-            for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
+            const auto frozenBy = std::chrono::steady_clock::now() + probe::kWorkWait;   // the freezer's compile
+            for (int k = 0; !processor.engine().frozen() && std::chrono::steady_clock::now() < frozenBy; ++k)
             {
                 play(k);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
