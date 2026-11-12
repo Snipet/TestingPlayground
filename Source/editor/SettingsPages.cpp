@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <functional>
@@ -341,7 +342,9 @@ namespace playground::ui::settings
         // ---- About ------------------------------------------------------------------------------------------------------
         void buildAbout(Builder& b)
         {
-            b.heading(std::string(product::kName));
+            std::string name = product::kName;              // in capitals, as every section's heading
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+            b.heading(name);
             b.row("Version", product::kVersion);
             b.row("Kind", product::kIsInstrument ? "an instrument (a synth)" : "an effect");
             b.row("Made by", product::kCompany);
