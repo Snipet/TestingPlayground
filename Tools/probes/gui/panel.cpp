@@ -1887,7 +1887,7 @@ PROBE(gui, panel)
             : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) { env = px; }\n};\n";
         // Nodes: 0 the root, 1 the row, 2 the area, 3 the box, 4 its knob, 5 its meter, 6 the relative area, 7 the area
         // whose hover= names a host parameter, 8 the shader dial.
-        const std::string gui = "row gap=12 {\n"
+        const std::string pointerGui = "row gap=12 {\n"
                                 "    area x=px y=py down=gate wheel=steps hover=lit cursor=cross width=200 height=100\n"
                                 "    box down=gate x=glow pad=14 {\n"
                                 "        knob f5\n"
@@ -1897,10 +1897,10 @@ PROBE(gui, panel)
                                 "    area x=f8 hover=gate width=60 height=60\n"
                                 "    shader \"dial.sc\" inputs=\"f9 pointer.hover pointer.down\" y=f9 drag=relative cursor=updown width=72 height=72\n"
                                 "}\n";
-        const std::string dial = "void main()\n{\n    float r = length(v_uv - vec2(0.5, 0.5));\n"
+        const std::string dialCode = "void main()\n{\n    float r = length(v_uv - vec2(0.5, 0.5));\n"
                                  "    float lit = 0.4 + 0.3 * in_pointer_hover + 0.3 * in_pointer_down;\n"
                                  "    gl_FragColor = vec4(lit * in_f9, lit, lit, r < 0.45 ? 1.0 : 0.0);\n}\n";
-        const int px = 0, py = 1, gate = 2, steps = 3, f5 = 4, f6 = 5, f7 = 6, f8 = 7, f9 = 8;
+        const int px = 0, py = 1, gate = 2, steps = 3, f5 = 4, f6 = 5, f7 = 6, f9 = 8;
         const int lit = pg::kHostControls, glow = pg::kHostControls + 1;
         funkgui::UiPreferences::get().setTheme(0);
         pg::Processor proc;
@@ -1918,18 +1918,18 @@ PROBE(gui, panel)
         pg::ui::Panel pp(proc.ports(), pport);
         funkgui::HeadlessHost ph(pp, 0, 2.0f);
         ph.settle();
-        load(proc, { { pg::kProgramName, source }, { "panel.gui", gui }, { "dial.sc", dial } });
+        load(proc, { { pg::kProgramName, source }, { "panel.gui", pointerGui }, { "dial.sc", dialCode } });
         settleRun(proc, ph);
         P.eq("pointer.compiles", pport.status().ok ? 1 : 0, 1);
         const funkgui::Point toView = pp.centreOfView(true);
         ph.click(toView.x, toView.y);
         ph.settle();
-        const pg::ui::GuiLayout& L = pp.guiLayout();
-        P.eq("pointer.laid_out", L.rects.size() == 10 ? 1 : 0, 1);
-        if (L.rects.size() != 10)
-            std::printf("pointer: %zu nodes laid out\n%s\n", L.rects.size(), pport.status().notes.c_str());
-        const auto port = [&](int slot) -> funkgui::ParamPort& { return *proc.ports()[static_cast<std::size_t>(slot)]; };
-        const auto rectOf = [&](std::size_t node) { return node < L.rects.size() ? L.rects[node] : funkgui::Rect{}; };
+        const pg::ui::GuiLayout& PL = pp.guiLayout();
+        P.eq("pointer.laid_out", PL.rects.size() == 10 ? 1 : 0, 1);
+        if (PL.rects.size() != 10)
+            std::printf("pointer: %zu nodes laid out\n%s\n", PL.rects.size(), pport.status().notes.c_str());
+        const auto dial = [&](int slot) -> funkgui::ParamPort& { return *proc.ports()[static_cast<std::size_t>(slot)]; };
+        const auto rectOf = [&](std::size_t node) { return node < PL.rects.size() ? PL.rects[node] : funkgui::Rect{}; };
         // The pointer items: the innermost element's first (reverse node order), each its element's rect.
         const auto pointerItem = [&](std::size_t node) -> const pg::ui::GuiPointerItem* {
             for (int k = 0; k < pg::kMaxPointers; ++k)
@@ -1950,23 +1950,23 @@ PROBE(gui, panel)
         const auto bits = [&](const std::array<int, 64>& a, int slot) { return a[static_cast<std::size_t>(slot)]; };
         ph.press(area.x + 0.25f * area.w, area.y + 0.75f * area.h);
         ph.tick(1);
-        P.near("pointer.press_x", static_cast<double>(port(px).value01()), 0.25, 0.01);
-        P.near("pointer.press_y", static_cast<double>(port(py).value01()), 0.25, 0.01);
-        P.near("pointer.press_down", static_cast<double>(port(gate).value01()), 1.0, 1e-6);
+        P.near("pointer.press_x", static_cast<double>(dial(px).value01()), 0.25, 0.01);
+        P.near("pointer.press_y", static_cast<double>(dial(py).value01()), 0.25, 0.01);
+        P.near("pointer.press_down", static_cast<double>(dial(gate).value01()), 1.0, 1e-6);
         P.eq("pointer.press_begins", bits(gestures.begins, px) == 1 && bits(gestures.begins, py) == 1 && bits(gestures.begins, gate) == 1
                                          && gestures.all(gestures.ends) == 0 ? 1 : 0, 1);
         P.eq("pointer.cursor", static_cast<int>(pp.cursor()), static_cast<int>(funkgui::Cursor::crosshair));
         ph.moveTo(area.x + 0.75f * area.w, area.y + 0.5f * area.h, 4);
         ph.tick(1);
-        P.near("pointer.drag_x", static_cast<double>(port(px).value01()), 0.75, 0.01);
-        P.near("pointer.drag_y", static_cast<double>(port(py).value01()), 0.5, 0.01);
+        P.near("pointer.drag_x", static_cast<double>(dial(px).value01()), 0.75, 0.01);
+        P.near("pointer.drag_y", static_cast<double>(dial(py).value01()), 0.5, 0.01);
         ph.release();
         ph.tick(1);
-        P.near("pointer.release_down", static_cast<double>(port(gate).value01()), 0.0, 1e-6);
+        P.near("pointer.release_down", static_cast<double>(dial(gate).value01()), 0.0, 1e-6);
         P.eq("pointer.one_gesture", bits(gestures.begins, px) == 1 && bits(gestures.ends, px) == 1 && bits(gestures.begins, py) == 1
                                         && bits(gestures.ends, py) == 1 && bits(gestures.begins, gate) == 1
                                         && bits(gestures.ends, gate) == 1 ? 1 : 0, 1);
-        P.near("pointer.kept_x", static_cast<double>(port(px).value01()), 0.75, 0.01);   // release=keep
+        P.near("pointer.kept_x", static_cast<double>(dial(px).value01()), 0.75, 0.01);   // release=keep
         // The program's param really moves: the Engine's dial.
         {
             proc.prepareToPlay(48000.0, 256);
@@ -2018,9 +2018,9 @@ PROBE(gui, panel)
         ph.press(rel.centreX(), rel.centreY());
         ph.moveTo(rel.centreX() + 50.0f, rel.centreY() - 20.0f, 5);
         ph.tick(1);
-        P.near("pointer.relative_x", static_cast<double>(port(f6).value01()), 0.75, 0.01);
-        P.near("pointer.relative_y", static_cast<double>(port(f7).value01()), 0.6, 0.01);
-        const float beforeShift = port(f6).value01();
+        P.near("pointer.relative_x", static_cast<double>(dial(f6).value01()), 0.75, 0.01);
+        P.near("pointer.relative_y", static_cast<double>(dial(f7).value01()), 0.6, 0.01);
+        const float beforeShift = dial(f6).value01();
         funkgui::Mods shift;
         shift.shift = true;
         for (int k = 1; k <= 5; ++k)
@@ -2031,50 +2031,50 @@ PROBE(gui, panel)
             e.mods = shift;
             pp.pointerDrag(e);
         }
-        P.near("pointer.relative_shift", static_cast<double>(port(f6).value01() - beforeShift), 0.025, 0.002);
+        P.near("pointer.relative_shift", static_cast<double>(dial(f6).value01() - beforeShift), 0.025, 0.002);
         ph.release();
         ph.tick(1);
-        P.near("pointer.spring", static_cast<double>(port(f6).value01()) + static_cast<double>(port(f7).value01()), 1.0, 1e-4);
+        P.near("pointer.spring", static_cast<double>(dial(f6).value01()) + static_cast<double>(dial(f7).value01()), 1.0, 1e-4);
 
         // The wheel nudges steps (an int: a value a notch); a double-click puts x and y back.
-        const float stepsBefore = port(steps).value01();
+        const float stepsBefore = dial(steps).value01();
         ph.wheel(area.centreX(), area.centreY(), 1.0f);
         ph.tick(1);
-        P.near("pointer.wheel", static_cast<double>(port(steps).value01() - stepsBefore), 1.0 / 7.0, 1e-4);
+        P.near("pointer.wheel", static_cast<double>(dial(steps).value01() - stepsBefore), 1.0 / 7.0, 1e-4);
         ph.doubleClick(area.x + 0.9f * area.w, area.y + 0.1f * area.h);
         ph.tick(1);
-        P.near("pointer.double_click_x", static_cast<double>(port(px).value01()), 0.25, 1e-4);
-        P.near("pointer.double_click_y", static_cast<double>(port(py).value01()), 0.5, 1e-4);
+        P.near("pointer.double_click_x", static_cast<double>(dial(px).value01()), 0.25, 1e-4);
+        P.near("pointer.double_click_y", static_cast<double>(dial(py).value01()), 0.5, 1e-4);
 
         // hover=: the panel dial lit high while the pointer is over, low after, no host gesture; one naming a host
         // parameter writes nothing.
         const int beginsBefore = gestures.all(gestures.begins);
         ph.move(area.centreX(), area.centreY());
         ph.tick(2);
-        P.near("pointer.hover_on", static_cast<double>(port(lit).value01()), 1.0, 1e-6);
+        P.near("pointer.hover_on", static_cast<double>(dial(lit).value01()), 1.0, 1e-6);
         const funkgui::Rect hostHover = rectOf(7);
         ph.move(hostHover.centreX(), hostHover.centreY());
         ph.tick(2);
-        P.near("pointer.hover_off", static_cast<double>(port(lit).value01()), 0.0, 1e-6);
-        P.near("pointer.hover_host_none", static_cast<double>(port(gate).value01()), 0.0, 1e-6);
+        P.near("pointer.hover_off", static_cast<double>(dial(lit).value01()), 0.0, 1e-6);
+        P.near("pointer.hover_host_none", static_cast<double>(dial(gate).value01()), 0.0, 1e-6);
         P.eq("pointer.hover_no_gesture", gestures.all(gestures.begins), beginsBefore);
 
         // A knob inside the box still turns; the box takes a press beside it, and over its meter (a display passes it).
         const funkgui::Rect box = rectOf(3), knob = rectOf(4), meter = rectOf(5);
-        const float f5Before = port(f5).value01(), glowBefore = port(glow).value01();
+        const float f5Before = dial(f5).value01(), glowBefore = dial(glow).value01();
         const funkgui::Point k = pp.guiControl(f5).centre();
         ph.drag(k.x, k.y, k.x, k.y - 40.0f, 6);
         ph.tick(1);
-        P.eq("pointer.knob_inside_turns", port(f5).value01() > f5Before + 0.1f && port(glow).value01() == glowBefore ? 1 : 0, 1);
-        P.eq("pointer.knob_inside_no_down", port(gate).value01() == 0.0f ? 1 : 0, 1);
+        P.eq("pointer.knob_inside_turns", dial(f5).value01() > f5Before + 0.1f && dial(glow).value01() == glowBefore ? 1 : 0, 1);
+        P.eq("pointer.knob_inside_no_down", dial(gate).value01() == 0.0f ? 1 : 0, 1);
         ph.press(box.x + 4.0f, box.bottom() - 4.0f);
         ph.tick(1);
-        P.near("pointer.box_down", static_cast<double>(port(gate).value01()), 1.0, 1e-6);
-        P.near("pointer.box_x", static_cast<double>(port(glow).value01()), 4.0 / box.w, 0.01);
+        P.near("pointer.box_down", static_cast<double>(dial(gate).value01()), 1.0, 1e-6);
+        P.near("pointer.box_x", static_cast<double>(dial(glow).value01()), 4.0 / box.w, 0.01);
         ph.release();
         ph.press(meter.centreX(), meter.centreY());
         ph.tick(1);
-        P.near("pointer.through_display", static_cast<double>(port(gate).value01()), 1.0, 1e-6);
+        P.near("pointer.through_display", static_cast<double>(dial(gate).value01()), 1.0, 1e-6);
         ph.release();
         ph.tick(1);
         P.eq("pointer.box_apart", !knob.contains({ box.x + 4.0f, box.bottom() - 4.0f }) ? 1 : 0, 1);
@@ -2083,20 +2083,20 @@ PROBE(gui, panel)
         // presses down for a moment.
         ph.click(area.x + 0.5f * area.w, area.y + 0.5f * area.h);
         ph.tick(1);
-        const float kx = port(px).value01(), ky = port(py).value01();
+        const float kx = dial(px).value01(), ky = dial(py).value01();
         ph.keys("right");
         ph.keys("shift+up");
         ph.tick(1);
-        P.near("pointer.key_right", static_cast<double>(port(px).value01() - kx), 0.01, 1e-4);
-        P.near("pointer.key_shift_up", static_cast<double>(port(py).value01() - ky), 0.1, 1e-4);
+        P.near("pointer.key_right", static_cast<double>(dial(px).value01() - kx), 0.01, 1e-4);
+        P.near("pointer.key_shift_up", static_cast<double>(dial(py).value01() - ky), 0.1, 1e-4);
         ph.keys("home");
         ph.tick(1);
-        P.near("pointer.key_home", static_cast<double>(port(px).value01()) + static_cast<double>(port(py).value01()), 0.75, 1e-4);
+        P.near("pointer.key_home", static_cast<double>(dial(px).value01()) + static_cast<double>(dial(py).value01()), 0.75, 1e-4);
         ph.keys("space");
         ph.tick(1);
-        P.near("pointer.key_space_down", static_cast<double>(port(gate).value01()), 1.0, 1e-6);
+        P.near("pointer.key_space_down", static_cast<double>(dial(gate).value01()), 1.0, 1e-6);
         ph.tick(40);                                     // past PointerSink::kKeyHold
-        P.near("pointer.key_space_up", static_cast<double>(port(gate).value01()), 0.0, 1e-6);
+        P.near("pointer.key_space_up", static_cast<double>(dial(gate).value01()), 0.0, 1e-6);
 
         // A screen reader: a slider for x and for y, a button for down, titled by their params, at the area.
         int sliders = 0, buttons = 0;
@@ -2112,7 +2112,7 @@ PROBE(gui, panel)
 
         // A right-click opens the dial menu of its first param (MIDI learn's in the synth; the host's own in a host),
         // and writes nothing.
-        const float menuBefore = port(px).value01();
+        const float menuBefore = dial(px).value01();
         const int paramMenus = ph.log.menus;
         ph.click(area.centreX(), area.centreY(), funkgui::Mods{ false, false, false, true });
         ph.tick(1);
@@ -2122,8 +2122,29 @@ PROBE(gui, panel)
             for (const funkgui::MenuItem& it : m->items)
                 learn = learn || it.label.rfind("Learn MIDI CC", 0) == 0;
         P.eq("pointer.menu", kInstrument ? (learn ? 1 : 0) : (m != nullptr || ph.log.menus > paramMenus ? 1 : 0), 1);
-        P.eq("pointer.menu_no_write", port(px).value01() == menuBefore ? 1 : 0, 1);
-        if (m != nullptr)
+        P.eq("pointer.menu_no_write", dial(px).value01() == menuBefore ? 1 : 0, 1);
+        if (kInstrument && learn)
+        {
+            // MIDI learn from the area's menu: a control change moves px as it moves any dial.
+            ph.chooseMenuItem("Learn MIDI CC");
+            ph.tick(1);
+            proc.prepareToPlay(48000.0, 256);
+            const auto cc = [&](int value, double ms) {
+                juce::AudioBuffer<float> buffer(2, 256);
+                buffer.clear();
+                juce::MidiBuffer midi;
+                midi.addEvent(juce::MidiMessage::controllerEvent(1, 74, value), 0);
+                proc.processBlock(buffer, midi);
+                proc.pollMidi(ms);
+            };
+            cc(10, 1000.0);
+            ph.tick(1);
+            P.eq("pointer.midi_learned", pport.midi().words[static_cast<std::size_t>(px)] == "CC 74 on channel 1" ? 1 : 0, 1);
+            cc(127, 1010.0);
+            proc.pollMidi(1500.0);                       // the touch ends
+            P.near("pointer.midi_moves", static_cast<double>(dial(px).value01()), 1.0, 1e-6);
+        }
+        else if (m != nullptr)
             ph.cancelMenu();
 
         // The shader dial: its pointer inputs follow the pointer (at rest, hovered, pressed), and its y= drags f9.
@@ -2138,12 +2159,12 @@ PROBE(gui, panel)
         P.eq("pointer.shader_hover", shader.inputs()[1] == 1.0f && shader.inputs()[2] == 0.0f ? 1 : 0, 1);
         P.eq("pointer.shader_cursor", static_cast<int>(pp.cursor()), static_cast<int>(funkgui::Cursor::upDown));
         writePng(P, ph, "gui.panel.pointer.hover.png", "pointer.hover");
-        const float f9Before = port(f9).value01();
+        const float f9Before = dial(f9).value01();
         ph.press(dialRect.centreX(), dialRect.centreY());
         ph.moveTo(dialRect.centreX(), dialRect.centreY() - 40.0f, 4);
         ph.tick(2);
         P.eq("pointer.shader_pressed", shader.inputs()[2] == 1.0f ? 1 : 0, 1);
-        P.near("pointer.shader_drag", static_cast<double>(port(f9).value01() - f9Before), 0.2, 0.01);
+        P.near("pointer.shader_drag", static_cast<double>(dial(f9).value01() - f9Before), 0.2, 0.01);
         writePng(P, ph, "gui.panel.pointer.pressed.png", "pointer.pressed");
         ph.release();
         ph.tick(2);
