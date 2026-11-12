@@ -23,7 +23,9 @@
 //              TextEditor and CodeAssist, its tabs, the tab shown, the text, the caret, the find bar and the caret's
 //              focus; the editor's window shows the panel full size (the dials from the column's top), the explorer
 //              and the editor away, Run alone in its card's header, the button checked, the session's view unchanged
-//   CODE       the code window: no chat card, the explorer, no dials, the editor down to the problems, no Panel switch
+//   CODE       the code window: no chat card, the explorer, no dials, the editor down to the problems, no Panel switch;
+//              idle, it asks for no frame (but the safety net's) and lays nothing out (two seconds at the frame
+//              pump's cadence)
 //              in its status line, Cmd-J nothing; the button checked; its least size; a wide one
 //   UNDO       Cmd-Z there undoes what was typed before the editor went out, Cmd-Shift-Z redoes it
 //   SYNC       what is typed there reaches the processor's draft; Run in the editor's window and Cmd-Return there run
@@ -48,6 +50,7 @@
 //   GUI        a program with a .gui file: its interface across the editor's window's column while the editor is out
 //   PANEL      the PANEL view chosen before the editor goes out is kept when it comes back, the caret then nowhere (the
 //              editor is hidden): a key typed changes no file
+#include "Cadence.h"
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -380,6 +383,28 @@ PROBE(gui, codewindow)
         for (const funkgui::A11yItem& i : items)
             chat = chat || i.title == "Send or stop" || i.title == "Fold or open the chat";
         P.eq("code.no_chat_items", !chat ? 1 : 0, 1);
+        {
+            codeHost.settle();
+            probe::runCadence(codeHost, 120, [](int) {}, [&] {
+                if (code.needsDraw())
+                    codeHost.draw();
+                return code.wantsFullRate();
+            });
+            codeHost.draw();
+            const uint32_t rev = code.a11yRevision();
+            int asked = 0;
+            const probe::Cadence idle = probe::runCadence(codeHost, 120, [](int) {}, [&] {
+                if (code.needsDraw())
+                {
+                    ++asked;
+                    codeHost.draw();
+                }
+                return code.wantsFullRate();
+            });
+            std::printf("the code window idle: %d of %d calm frames asked to draw\n", asked, idle.frames);
+            P.le("code.idle_quiet", asked, 2.0);           // the safety net's, once a second at most
+            P.eq("code.idle_layout_rests", code.a11yRevision() == rev ? 1 : 0, 1);
+        }
         codeHost.move(card.centreX(), card.y + 4.0f);
         codeHost.settle();
         writePng(P, codeHost, "gui.codewindow.code.png");

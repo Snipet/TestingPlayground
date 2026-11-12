@@ -37,6 +37,24 @@ When a day changed the Claude Desktop extension, its section says the extension'
   showed Send while Claude was still answering. The message now stays in the box until Claude Desktop is done, as it
   does whenever Claude Desktop works.
 
+### The chat's buttons do what you meant, and your typing is never overwritten
+
+**Fixed**
+- A double-click on Send sent the message and then stopped Claude's reply at once (the button is Stop by the second
+  click). The second click of a double-click now does nothing; a click of its own on Stop still stops.
+- After a click on Send (or Stop), Space or Return stopped Claude's reply and other keys went to the host. The caret
+  now goes back to the message box, so you can type the next message while Claude works.
+- In a narrow window the Web pill covered the Send/Stop button, so a click on Stop switched web search instead. The
+  bar now always fits: the pills narrow, and Fast and Web show their icons alone, before anything reaches Send.
+- In the provider settings, typing another server's address left the dialog naming the preset's server (where the key
+  is stored and sent, whether one is stored, Remove key). It now names the address you typed, once it is complete.
+- The key field showed up to eleven characters of a key. It now shows only the provider's public prefix (`sk-ant-`,
+  `sk-or-`, `AIza`, ...) and, for a long key, its last four characters; stars for the rest.
+- A plugin window opened while the chat was folded (and the code window) redrew itself constantly while idle. It now
+  draws only when something changes.
+- Typing in a file at the moment Claude edited the same file could lose what you had just typed. Your keys now reach
+  the plugin as you type them, and Claude's edit is made again over them.
+
 ## 2026-11-09
 
 ### Shaders on Windows, and Windows' tests counted ([#31](https://github.com/Snipet/TestingPlayground/pull/31))

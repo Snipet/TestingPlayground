@@ -947,9 +947,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   every writer and viewer draws what the user sees. Each gesture gives the files to the processor at once
   (`EditorPort::setDraftIf`, through the Panel's sync hook), so Claude's conditional write sees it; when a write of
   Claude's came first that the Panel has not merged, the gesture is undone and the strip says to do it again (neither
-  is overwritten). Typing reaches the processor the same way (`Panel::pushFiles`, never over a draft not merged: that
+  is overwritten). Typing reaches the processor the same way, in the key's own event (`Panel::key`: a draft not merged
+  merges first, so the key lands on it, then `giveTyping`; `Panel::pushFiles`, never over a draft not merged: that
   one merges first, each tab keeping what was typed where the draft left its file, and a tab added, renamed or closed
-  since staying so where the draft left that file as given: `Panel::mergeDraft`); a field open when the view goes is
+  since staying so where the draft left that file as given: `Panel::mergeDraft`, which says so when a file both
+  changed shows the draft's, the typing an undo away); a field open when the view goes is
   written, as a press outside it. The view, zoom and pan of each file are the session's alone (`EditorPort::fileViews`; never in the
   Draft, a project, an export or Claude's view), kept on the user's gestures only. Keep its colours the code editor's
   (the marks are the tab's own `DecorationInks`) and its drawing in `SchematicDraw`, which a picture draws with no
@@ -1105,7 +1107,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Anthropic or another provider (it is billed to the user) unless the user asks for one.
 - **The key** lives only in its encrypted file (`ChatStore.h` says the format and what it protects against):
   `anthropic-key.bin`, in the folder both products share. Never log it, print it, put it in the session, a probe's
-  output, a test fixture or a commit; the panel masks it and speaks only its length. A probe's is `fake::fakeKey()`.
+  output, a test fixture or a commit; the panel masks it (`Panel::maskedKey`: the preset's public prefix at its own
+  server, stars, and the last four of a key of 20 characters or more) and speaks only its length. A probe's is
+  `fake::fakeKey()`.
   With no key stored the chat asks for one, and for nothing else. Another provider's key is sealed the same way in
   `key-<kind>-<16 hex of its server's origin>.bin`, the origin inside it (`chatstore::saveProviderKey`): it is read back
   for that server alone, so a key never goes to another server; an Anthropic key is refused for another provider; the

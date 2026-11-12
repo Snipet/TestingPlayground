@@ -32,7 +32,8 @@
 //   KEY      a message sent with no key opens the key dialog and stays in the message box; Escape closes the dialog
 //            (the message stays, unsent); sent again, it waits for the key; while the dialog is open the pointer and
 //            the keys reach nothing else; a key that is not one is refused (the dialog says why; nothing is stored);
-//            Cmd-V pastes a key; nothing the panel speaks holds the key; SAVE stores it, closes the dialog and sends
+//            Cmd-V pastes a key, drawn masked (its public prefix, stars, its last four); nothing the panel speaks
+//            holds the key; SAVE stores it, closes the dialog and sends
 //            the waiting message to api.anthropic.com with the key; the header has no account, the line under the box
 //            no credit; KEY opens the dialog; REMOVE (shown once a key is stored) forgets it; Return in the dialog
 //            saves one
@@ -49,7 +50,10 @@
 //            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
 //            on a model that takes no fast mode
 //   WEB      web search's pill, after fast mode's: a switch (to a screen reader too), on and off
-//   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
+//   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn;
+//            a double-click on send sends once and stops nothing (its second press is the same click's), the turn
+//            running to its answer; a click on send leaves the caret in the message box, so Space and Return typed
+//            while Claude works go there and stop nothing; one press on stop ends the turn at once
 //   ASK      Claude's question (ask_user) as a card: the turn waits and the message box says so; each option a button
 //            (to a screen reader a radio button, or a toggle for several); a click marks it (another of one choice
 //            replaces it, several stay); Send answers waits until each question has a pick, then sends the labels and
@@ -73,12 +77,17 @@
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
 //   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
 //            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
-//            the rail's button opens the chat again, the dot gone, the answer in it, the editor as wide as before
+//            a Panel made while it is folded asks for no frame (but the safety net's) and no layout while idle (two
+//            seconds at the frame pump's cadence); the rail's button opens the chat again, the dot gone, the answer in it, the editor as
+//            wide as before, the message box at its height at once
 //   RESIZE   a size below the least is raised to it; at the least size (with sixteen files, the most, their tabs narrowed) and at
 //            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
-//            processor keeps the editor's size in the session
+//            processor keeps the editor's size in the session; at the least size the message box's bar (Claude Opus
+//            5.5: fast mode's and web search's pills shown) has no item over another or past it, none under send, and
+//            a click on stop's centre stops the turn and leaves web search as it was
 //   DRAW     an answer that lands with no input asks for a frame (Panel.h "Unchanged frames"), and the conversation
 //            settled, the panel asks for none
+#include "Cadence.h"
 #include "Probe.h"
 
 #include "../plugin/FakeClaude.h"
@@ -155,6 +164,48 @@ namespace
     }
 
     pg::ChatState chat(pg::Processor& p) { return p.chatAgent().chatState(); }
+
+    // The script's answers no request took (a row that failed left them): dropped, so the next turns get their own.
+    void dropUnplayed(fake::Script& script)
+    {
+        const std::lock_guard<std::mutex> lock(script.mutex);
+        script.posts.clear();
+    }
+
+    int count(const std::string& s, const std::string& part)
+    {
+        int n = 0;
+        for (std::size_t at = s.find(part); at != std::string::npos; at = s.find(part, at + part.size()))
+            ++n;
+        return n;
+    }
+
+    // The message box's bar: every item shown in it lies inside it, and none over another (so none under send).
+    bool barFits(const funkgui::HeadlessHost& host, const pg::ui::Panel& panel)
+    {
+        const funkgui::Rect bar = panel.chatInputItem().bar();
+        std::vector<funkgui::A11yItem> items;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            for (const char* t : { "Add pictures", "Model", "Thinking level", "Fast mode", "Web search", "Send or stop" })
+                if (a.title == t)
+                    items.push_back(a);
+        bool ok = items.size() >= 3;
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            const funkgui::Rect& a = items[i].bounds;
+            std::printf("bar: %s at %.1f to %.1f (the bar %.1f to %.1f)\n", items[i].title.c_str(), static_cast<double>(a.x),
+                        static_cast<double>(a.x + a.w), static_cast<double>(bar.x), static_cast<double>(bar.x + bar.w));
+            if (a.w <= 0.0f || a.x < bar.x - 0.5f || a.x + a.w > bar.x + bar.w + 0.5f || a.y < bar.y - 0.5f || a.y + a.h > bar.y + bar.h + 0.5f)
+                ok = false;
+            for (std::size_t j = i + 1; j < items.size(); ++j)
+            {
+                const funkgui::Rect& b = items[j].bounds;
+                if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)
+                    ok = false;
+            }
+        }
+        return ok;
+    }
 
     // Nothing the panel speaks holds the key, or any 12 characters of it.
     bool a11yHoldsKey(const funkgui::HeadlessHost& host, const std::string& key)
@@ -352,6 +403,17 @@ PROBE(gui, chat)
         host.settle();
         P.eq("key.pasted_clears_why", panel.keyDialogWhy().empty() ? 1 : 0, 1);
         P.eq("key.a11y_never_the_key", a11yHoldsKey(host, key) ? 1 : 0, 0);
+        {
+            // Drawn masked: Anthropic's public prefix, stars, the last four (of what was pasted: its line break a
+            // space, trimmed when it is saved); nothing else of it.
+            const std::string pasted = key + " ";
+            const std::string shown = panel.keyDialogShown();
+            std::string clear;
+            for (const char c : shown)
+                if (c != '*')
+                    clear += c;
+            P.eq("key.masked", clear == "sk-ant-" + pasted.substr(pasted.size() - 4) && shown.rfind("sk-ant-", 0) == 0 ? 1 : 0, 1);
+        }
         writePng(P, host, "gui.chat.key.png");
 
         script->add(fake::Response::ok(fake::Sse().start().text("Hello! What shall we build?").end()));
@@ -645,6 +707,54 @@ PROBE(gui, chat)
         settleChat(processor, host);
         P.eq("stop.ended", chat(processor).busy ? 1 : 0, 0);
         P.eq("stop.note", has(panel.transcript(), "- Stopped.") ? 1 : 0, 1);
+
+        // A double-click on send: its first press sends (send is stop under the pointer then), its second, the same
+        // double-click's, stops nothing: the turn runs to its answer.
+        {
+            const int posts = script->postCount();
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            script->add(fake::Response::ok(fake::Sse().start().text("Answered after a double-click.").end()));
+            clickInput(host, panel);
+            type(host, "twice");
+            const funkgui::Point s = panel.centreOfSend();
+            host.doubleClick(s.x, s.y);
+            settleChat(processor, host);
+            std::printf("double-click on send: %d requests, stopped %d times\n", script->postCount() - posts,
+                        count(panel.transcript(), "- Stopped.") - stopped);
+            P.eq("stop.double_click_sends_once", script->postCount() > posts && has(panel.transcript(), "Answered after a double-click.")
+                                                     && count(panel.transcript(), "- Stopped.") == stopped ? 1 : 0, 1);
+            dropUnplayed(*script);
+        }
+        // A click on send leaves the caret in the message box: Space, letters and Return typed while Claude works go
+        // there and stop nothing. Then one press on stop ends the turn at once, the caret still in the box.
+        {
+            script->add(stall);
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            clickInput(host, panel);
+            type(host, "click");
+            clickAt(host, panel.centreOfSend());
+            const auto t1 = std::chrono::steady_clock::now();
+            while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t1 < std::chrono::seconds(10))
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            host.tick(4);
+            P.eq("send.click_keeps_caret", panel.chatInput().focused() ? 1 : 0, 1);
+            host.keys("space");
+            type(host, "ok");
+            host.keys("return");
+            host.tick(4);
+            P.eq("send.keys_stop_nothing", chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped ? 1 : 0, 1);
+            P.eq("send.keys_in_the_box", panel.chatInput().text() == " ok" ? 1 : 0, 1);
+            clickAt(host, panel.centreOfSend());
+            const bool caret = panel.chatInput().focused();
+            if (chat(processor).busy)
+                processor.chatAgent().stop();
+            settleChat(processor, host);
+            dropUnplayed(*script);
+            P.eq("stop.one_press_stops", !chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped + 1 ? 1 : 0, 1);
+            P.eq("stop.click_keeps_caret", caret ? 1 : 0, 1);
+            panel.chatInput().setText("");
+            host.settle();
+        }
     }
 
     // ---- MARKDOWN ------------------------------------------------------------------------------------------------------
@@ -1156,6 +1266,38 @@ PROBE(gui, chat)
             second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
             P.eq("collapse.in_session", second.editorPort().chatOpen() ? 0 : 1, 1);
         }
+        {
+            // A Panel made while the chat is folded (an editor opened again): idle, it asks for no frame and lays
+            // nothing out, at the frame pump's cadence; unfolded, its message box has its height at once.
+            pg::ui::Panel again(processor.ports(), processor.editorPort());
+            funkgui::HeadlessHost h2(again, 0, 2.0f);
+            h2.settle();
+            probe::runCadence(h2, 120, [](int) {}, [&] {
+                if (again.needsDraw())
+                    h2.draw();
+                return again.wantsFullRate();
+            });
+            h2.draw();
+            const uint32_t rev = again.a11yRevision();
+            int asked = 0;
+            const probe::Cadence idle = probe::runCadence(h2, 120, [](int) {}, [&] {
+                if (again.needsDraw())
+                {
+                    ++asked;
+                    h2.draw();
+                }
+                return again.wantsFullRate();
+            });
+            std::printf("a Panel made folded: %d of %d calm frames asked to draw\n", asked, idle.frames);
+            P.le("collapse.made_folded_quiet", asked, 2.0);   // the safety net's, once a second at most
+            P.eq("collapse.made_folded_layout_rests", again.a11yRevision() == rev ? 1 : 0, 1);
+            clickAt(h2, again.centreOfChatToggle());
+            const pg::ui::InputItem& box = again.chatInputItem();
+            P.eq("collapse.made_folded_opens", again.chatOpen() ? 1 : 0, 1);
+            P.near("collapse.made_folded_box_height", static_cast<double>(box.box().h),
+                   static_cast<double>(box.desiredHeight(box.box().w, box.bar().h)), 0.5);
+            processor.editorPort().setChatOpen(false);   // the probe's panel folded still, as the session says
+        }
         clickAt(host, panel.centreOfChatToggle());
         host.settle();
         P.eq("collapse.opened", panel.chatOpen() && !panel.chatUnread() && panel.chatCard().w > 300.0f ? 1 : 0, 1);
@@ -1194,6 +1336,36 @@ PROBE(gui, chat)
              static_cast<double>(panel.editor().bounds().right()));
         P.eq("resize.least_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
         writePng(P, host, "gui.chat.small.png");
+        // The message box's bar at the least size, on Claude Opus 5.5 (fast mode's and web search's pills shown): no
+        // item over another or past the bar, so none under send; stop's centre stops, web search as it was.
+        {
+            processor.chatAgent().setModel("claude-opus-5-5");
+            host.tick(4);
+            host.settle();
+            P.eq("resize.least_bar_switches", a11yTitled(host, "Fast mode") && a11yTitled(host, "Web search") ? 1 : 0, 1);
+            P.eq("resize.least_bar_fits", barFits(host, panel) ? 1 : 0, 1);
+            fake::Response stall = fake::Response::ok(fake::Sse().start().thinking("Considering", "sig-r"));
+            stall.stall = true;
+            script->add(stall);
+            const bool web = chat(processor).web;
+            clickInput(host, panel);
+            type(host, "small");
+            host.keys("return");
+            const auto t0 = std::chrono::steady_clock::now();
+            while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            host.tick(4);
+            P.eq("resize.least_bar_fits_busy", barFits(host, panel) ? 1 : 0, 1);
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            clickAt(host, panel.centreOfSend());
+            host.tick(2);
+            const bool webKept = chat(processor).web == web;
+            if (!webKept)
+                processor.chatAgent().stop();            // the click switched web search instead: ended here
+            settleChat(processor, host);
+            dropUnplayed(*script);
+            P.eq("resize.least_stop_stops", webKept && !chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped + 1 ? 1 : 0, 1);
+        }
         host.resize(1900, 1100);
         host.settle();
         P.eq("resize.large", panel.width() == 1900 && panel.height() == 1100 ? 1 : 0, 1);

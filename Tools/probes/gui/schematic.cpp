@@ -38,7 +38,10 @@
 //   OVERTAKEN a drag whose base a merge (Claude's write) moves is cancelled and changes nothing; that write moving a
 //             part's line flashes the part; a gesture made after Claude's write and before a frame merged it is undone
 //             (the write wins, the strip says to do it again); text typed in one file and Claude's write of another in
-//             one frame, before the editor gave its files: both kept, the typing given to the processor
+//             one frame, before the editor gave its files: both kept, the typing given to the processor; keys typed in
+//             a file (program.fm, and the netlist in its Netlist view) after Claude's edit_file (edit_circuit) read it
+//             and before it writes, with no frame between: the keys reach the processor in their own event, the write
+//             runs again on them, and the tab and the processor hold both
 //   POINTER   a row per cell of the pointer's table: idle on a body (at 30 % too, where its pins would cover it), a
 //             pin, a wire, nothing; Alt (a click on a wire pins
 //             its net to a probe, again unpins it; a drag pans); carrying a part (a
@@ -1189,6 +1192,65 @@ PROBE(gui, schematic)
             std::printf("tabs over a write: closed: %s\n", portNames().c_str());
             P.eq("overtaken.closed_tab_stays_closed", w3 && panel.fileCount() == 2 && portNames() == "program.fm g.cir"
                                                           && landed("// a write as it closed\n") ? 1 : 0, 1);
+        }
+        // KEYS over a write of the same file: typed after Claude's edit_file read program.fm and before it writes, with
+        // no frame between (the tool's hook, on this thread): the write sees the keys and runs again on them.
+        {
+            pg::ChatAgent& agent = r.processor.chatAgent();
+            const funkgui::Point tab0 = panel.centreOfTab(0);
+            host.click(tab0.x, tab0.y);
+            host.tick(2);
+            funkgui::TextEditor& prog = panel.editor();
+            int attempts = 0;
+            agent.setFileWriteHookForTests([&](int attempt) {
+                attempts = attempt + 1;
+                if (attempt == 0)
+                {
+                    prog.setCaret(prog.endPos());
+                    host.keys("/,/,k,e,y,s");
+                }
+            });
+            const pg::ChatAgent::McpResult edited = agent.mcpCall(
+                "edit_file", pg::claude::object({ { "name", "program.fm" }, { "old_text", "#include \"g.cir\"\n" },
+                                                  { "new_text", "#include \"g.cir\" // Claude's edit\n" } }));
+            agent.setFileWriteHookForTests({});
+            host.tick(2);
+            const std::string tab = prog.text(), port = r.processor.editorPort().draft().files[0].text;
+            std::printf("keys over edit_file: %d attempts, %s\n", attempts, edited.isError ? "refused" : "written");
+            P.eq("overtaken.keys_over_edit_file", !edited.isError && attempts == 2 && has(tab, "// Claude's edit\n") && tab.size() >= 6
+                                                      && tab.substr(tab.size() - 6) == "//keys" && tab == port ? 1 : 0, 1);
+        }
+        // ... and in the netlist's Netlist view, typed as Claude's edit_circuit of it writes.
+        {
+            pg::ChatAgent& agent = r.processor.chatAgent();
+            const funkgui::Point tab1 = panel.centreOfTab(1);
+            host.click(tab1.x, tab1.y);
+            host.tick(2);
+            if (panel.schematicShown())
+                panel.setSchematic(false);
+            host.tick(2);
+            funkgui::TextEditor& net = panel.editor();
+            const funkgui::Rect area = net.bounds();
+            host.click(area.centreX(), area.centreY());
+            host.tick(1);
+            const std::string first = net.text().substr(0, net.text().find('\n'));
+            int attempts = 0;
+            agent.setCircuitWriteHookForTests([&](int attempt) {
+                attempts = attempt + 1;
+                if (attempt == 0)
+                {
+                    net.setCaret({ 0, 2 });
+                    host.keys("t,y,p,e,d,space");
+                }
+            });
+            const pg::ChatAgent::McpResult drew = agent.mcpCall(
+                "edit_circuit", pg::claude::object({ { "name", "g.cir" }, { "ops", juce::var(juce::Array<juce::var>{ juce::String("set R2 4.7k") }) } }));
+            agent.setCircuitWriteHookForTests({});
+            host.tick(2);
+            const std::string tab = net.text(), port = r.processor.editorPort().draft().files[1].text;
+            std::printf("keys over edit_circuit: %d attempts, %s: %s\n", attempts, drew.isError ? "refused" : "written", tab.substr(0, 40).c_str());
+            P.eq("overtaken.keys_over_edit_circuit", !drew.isError && attempts == 2 && tab.rfind("* typed " + first.substr(2) + "\n", 0) == 0
+                                                         && has(tab, "4.7k") && !has(tab, "2.2k") && tab == port ? 1 : 0, 1);
         }
     }
 
