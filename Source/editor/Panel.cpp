@@ -841,6 +841,8 @@ namespace playground::ui
                   [this](bool redo) { return undoStep(redo); } })
         {
             assist_.setArea(editor);
+            assist_.setCodeSize(size_);
+            assist_.setSizeHook([this](int tenths) { setCodeSize(tenths); });
             assist_.setStatusWords([this] { return schematicShown() ? schematic_.statusWords() : std::string(); });
             assist_.setStatusProblems([this](bool back) { schematic_.stepProblem(back ? -1 : 1); });
             schematic_.setArea(assist_.editorRect());
@@ -1123,6 +1125,32 @@ namespace playground::ui
                     e->setPalette(codePalette(th));
         }
 
+        // The text size (CodeAssist.h's codesize, this machine's preference) on every file tab and IR view, each keeping
+        // its place: the line at its top before stays at its top (setStyle clamps the scroll in px), the caret where it
+        // was. The code window holds this same item, so it follows too.
+        void setCodeSize(int tenths)
+        {
+            tenths = std::clamp(tenths, codesize::kLeast, codesize::kMost);
+            if (tenths == size_)
+                return;
+            const float ratio = static_cast<float>(tenths) / static_cast<float>(size_);
+            size_ = tenths;
+            assist_.setCodeSize(tenths);
+            const funkgui::TextStyle st = codesize::style(tenths);
+            const auto restyle = [&](funkgui::TextEditor& e) {
+                const int top = e.visibleLineRange().first;
+                const float x = e.scroll().x * ratio;
+                e.setStyle(st);
+                e.setScroll(x, static_cast<float>(e.rowOf({ top, 0 })) * e.rowHeight());
+            };
+            for (Tab& t : tabs_)
+                restyle(*t.editor);
+            for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
+                if (e)
+                    restyle(*e);
+        }
+        int codeSize() const noexcept { return size_; }
+
         // File i's tab shown (from the IR tab too).
         void select(int i)
         {
@@ -1159,7 +1187,7 @@ namespace playground::ui
             if (!e)
             {
                 e = std::make_unique<funkgui::TextEditor>(id_);
-                irview::configure(*e, irTheme_);
+                irview::configure(*e, irTheme_, codesize::style(size_));
                 e->setBounds(assist_.editorRect());
                 e->attach(host_);
             }
@@ -1420,7 +1448,7 @@ namespace playground::ui
             DrawKey k;
             k.mix(revision()).mix(active_).mix(tabs_.size()).mix(problems_->size()).mix(pointer_).mix(focused_).mix(hidden_);
             k.mix(ir_.open).mix(ir_.shown).mix(ir_.view).mix(renaming_).mix(edit_.buffer).mix(edit_.caret).mix(edit_.allSelected)
-                .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_);
+                .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_).mix(size_);
             k.mix(editor()).mix(assist_.drawKey());
             if (schematicShown())
                 k.mix(schematic_.drawKey());
@@ -2274,7 +2302,7 @@ namespace playground::ui
         {
             Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_), ++serials_ };
             funkgui::TextEditorOptions o;
-            o.style = funkgui::editorFont(funkgui::EditorFont::code);
+            o.style = codesize::style(size_);
             o.softTabs = true;
             o.tabWidth = 4;
             o.a11yTitle = "File";
@@ -2485,6 +2513,7 @@ namespace playground::ui
             std::array<int, irview::kViews> body{};
         };
         IrTab ir_;
+        int size_ = codesize::read();                    // the text size, tenths of a px (setCodeSize)
         funkgui::Theme irTheme_ = funkgui::Theme::graphite();
         bool irThemed_ = false, irDark_ = true;
         bool pressedSchematic_ = false;
@@ -5216,6 +5245,8 @@ namespace playground::ui
     }
     funkgui::TextEditor& Panel::editor() noexcept { return files().editor(); }
     CodeAssist& Panel::codeAssist() noexcept { return files().assist(); }
+    funkgui::TextEditor& Panel::fileEditor(int i) { return files().editorOf(std::clamp(i, 0, files().count() - 1)); }
+    int Panel::codeTextSize() const { return files().codeSize(); }
     int Panel::fileCount() const { return files().count(); }
     std::string Panel::fileName(int i) const { return i >= 0 && i < files().count() ? files().name(i) : std::string(); }
     int Panel::activeFile() const { return files().active(); }
@@ -5508,6 +5539,16 @@ namespace playground::ui
         }
         syncColumnWidths();
         syncCodePanel();
+        // The text size: this machine's preference, which another editor's keys or wheel may have moved (CodeAssist.h).
+        if (const uint32_t r = funkgui::UiPreferences::get().revision(); r != seenPrefsRev_)
+        {
+            seenPrefsRev_ = r;
+            if (const int size = codesize::read(); size != files().codeSize())
+            {
+                files().setCodeSize(size);
+                dirty_ = true;
+            }
+        }
         keepStepDefaults(nowSec, false);
         syncFolder();
         syncMidi();

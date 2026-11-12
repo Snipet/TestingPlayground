@@ -298,6 +298,8 @@ namespace playground::ui
         // For probes.
         funkgui::TextEditor& editor() noexcept;         // the shown file's
         CodeAssist& codeAssist() noexcept;               // its completion, hover, find bar, problems (CodeAssist.h)
+        funkgui::TextEditor& fileEditor(int i);          // file i's (shown or not)
+        int codeTextSize() const;                        // the text size its editors draw in, tenths of a px
         int fileCount() const;
         std::string fileName(int i) const;
         int activeFile() const;
@@ -846,6 +848,7 @@ namespace playground::ui
         SettingsCard settings_{ port_ };
         uint64_t seenSettingsAsk_ = 0;
         uint32_t seenSettingsRev_ = 0;
+        uint32_t seenPrefsRev_ = ~0u;                    // UiPreferences' revision the text size was read at
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;

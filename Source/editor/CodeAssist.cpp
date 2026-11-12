@@ -6,6 +6,7 @@
 #include "editor/Theme.h"
 
 #include "fminus/CirDoc.h"
+#include "plugin/EditorPort.h"                       // shortcutText
 
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/TypeScale.h>
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -29,9 +31,9 @@ namespace playground::ui
     namespace
     {
         constexpr float kStatusH = 22.0f;                // the status line under the editor
-        constexpr float kRowH = 22.0f;                   // a completion row
+        constexpr float kRowH = 22.0f;                   // a completion row (at 12 px: the size scales it)
         constexpr int   kRows = 10;                      // completion rows shown at once
-        constexpr float kPopupW = 440.0f;
+        constexpr float kPopupW = 440.0f;                // at 12 px, as kFindW, kFindRowH, kCardMaxW and kGoToW
         constexpr float kDetailH = 78.0f;                // the chosen item's signature and documentation
         constexpr float kPad = 8.0f;
         constexpr float kFindW = 420.0f;
@@ -53,8 +55,10 @@ namespace playground::ui
         constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
         constexpr float kGoToW = 330.0f;
         constexpr int kMaxMatches = 10000;
-        constexpr funkgui::TextStyle kCode = funkgui::editorFont(funkgui::EditorFont::code);
-        constexpr funkgui::TextStyle kCardCode{ 11.5f, 0.0f, 0.0f, true };
+        // The overlays' measures at 12 px, the default text size: each scales with the size (CodeAssist::sizeScale).
+        constexpr float kCardCodePx = 11.5f;             // the signature's and the hover card's code
+        constexpr float kCodeLineH = 18.0f;              // ... a line of it
+        constexpr float kWheelSizeStep = 0.12f;          // a smooth wheel's deltas a size step (about 60 px of a pad)
 
         using funkgui::Col;
         using funkgui::Rect;
@@ -595,8 +599,78 @@ namespace playground::ui
         return p;
     }
 
+    // ---- the text size ----------------------------------------------------------------------------------------------
+    namespace codesize
+    {
+        int read() { return funkgui::UiPreferences::get().getInt(kKey, kDefault, kLeast, kMost); }
+
+        void write(int tenths)
+        {
+            const int v = std::clamp(tenths, kLeast, kMost);
+            if (read() != v)
+                funkgui::UiPreferences::get().setInt(kKey, v);
+        }
+
+        int step(int tenths, int dir)
+        {
+            if (dir == 0)
+                return kDefault;
+            if (dir > 0)
+            {
+                for (const int s : kSteps)
+                    if (s > tenths)
+                        return s;
+                return kMost;
+            }
+            for (auto it = std::rbegin(kSteps); it != std::rend(kSteps); ++it)
+                if (*it < tenths)
+                    return *it;
+            return kLeast;
+        }
+
+        funkgui::TextStyle style(int tenths)
+        {
+            funkgui::TextStyle st = funkgui::editorFont(funkgui::EditorFont::code);
+            st.px = static_cast<float>(std::clamp(tenths, kLeast, kMost)) / 10.0f;
+            return st;
+        }
+
+        std::string label(int tenths)
+        {
+            char buf[24];
+            if (tenths % 10 == 0)
+                std::snprintf(buf, sizeof buf, "%d px", tenths / 10);
+            else
+                std::snprintf(buf, sizeof buf, "%d.%d px", tenths / 10, tenths % 10);
+            return buf;
+        }
+    }
+
     // ---- the assistant ----------------------------------------------------------------------------------------------
     CodeAssist::CodeAssist(Tabs tabs) : tabs_(std::move(tabs)) {}
+
+    funkgui::TextStyle CodeAssist::codeStyle() const { return codesize::style(size_); }
+    funkgui::TextStyle CodeAssist::cardCodeStyle() const { return { kCardCodePx * sizeScale(), 0.0f, 0.0f, true }; }
+    float CodeAssist::rowH() const { return std::round(kRowH * sizeScale()); }
+    float CodeAssist::codeLineH() const { return std::round(kCodeLineH * sizeScale()); }
+    // The bars (their rows and widths) never shrink under 12 px's: their buttons and the count keep their room.
+    float CodeAssist::findRowH() const { return std::round(kFindRowH * std::max(1.0f, sizeScale())); }
+    // The widths scale with the size, capped by the editor's (the completion list and the cards go over the Panel).
+    float CodeAssist::popupW() const { return std::min(kPopupW * sizeScale(), std::max(kPopupW * 0.75f, editorRect().w)); }
+    float CodeAssist::cardMaxW() const { return std::min(kCardMaxW * sizeScale(), std::max(kCardMaxW * 0.75f, editorRect().w)); }
+
+    bool CodeAssist::stepSize(int dir)
+    {
+        const int next = codesize::step(size_, dir);
+        if (next == size_)
+            return false;
+        codesize::write(next);
+        size_ = next;
+        closeOverlays();                                 // laid out for the size before
+        if (sizeHook_)
+            sizeHook_(next);
+        return true;
+    }
     CodeAssist::~CodeAssist() = default;
 
     funkgui::TextEditor& CodeAssist::ed() const { return tabs_.editor(tabs_.active()); }
@@ -789,6 +863,14 @@ namespace playground::ui
     // ---- keys -------------------------------------------------------------------------------------------------------
     bool CodeAssist::key(const funkgui::KeyEvent& e)
     {
+        // The text size: Cmd-= or Cmd-+ larger, Cmd-- smaller, Cmd-0 12 px, whatever has the keys here (a bar's field
+        // too); taken at an end as well.
+        if (e.key == funkgui::Key::character && e.mods.cmd && !e.mods.alt
+            && (e.ch == U'=' || e.ch == U'+' || e.ch == U'-' || e.ch == U'_' || e.ch == U'0'))
+        {
+            (void)stepSize(e.ch == U'0' ? 0 : e.ch == U'-' || e.ch == U'_' ? -1 : 1);
+            return true;
+        }
         if (gotoOpen_)
             return goToKey(e);
         if (findFocus_)
@@ -1227,7 +1309,7 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p)
+            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p) || s.size.contains(p)
                            || (s.problems.contains(p) && !viewShown())
                        ? funkgui::Cursor::pointingHand
                        : funkgui::Cursor::normal;
@@ -1250,7 +1332,7 @@ namespace playground::ui
             const Popup g = popupGeometry(panelW_, panelH_);
             if (g.list.contains(p))
             {
-                const int row = scrollRow_ + static_cast<int>((p.y - g.list.y) / kRowH);
+                const int row = scrollRow_ + static_cast<int>((p.y - g.list.y) / rowH());
                 if (row >= 0 && row < static_cast<int>(completion_->items.size()))
                 {
                     choice_ = row;
@@ -1275,6 +1357,8 @@ namespace playground::ui
             const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
                 setFormatOnRun(!formatOnRun());
+            else if (s.size.contains(p))
+                (void)stepSize(0);                       // back to 12 px
             else if (s.panel.contains(p))
             {
                 if (!e.popup)
@@ -1363,6 +1447,29 @@ namespace playground::ui
     {
         hover_.reset();                                  // the text moves under it
         still_ = 0.0f;
+        // Cmd-wheel (Ctrl-wheel off the Mac) over the text: the size, a step a notch, the wheel's own way (as the
+        // Schematic view's zoom: away from you larger); a pad's deltas gathered to a step, its momentum left out.
+        if ((e.mods.cmd || e.mods.ctrl) && editorRect().contains({ e.x, e.y }))
+        {
+            const float dy = e.reversed ? -e.dy : e.dy;
+            if (!e.smooth)
+            {
+                if (dy != 0.0f)
+                    (void)stepSize(dy > 0.0f ? 1 : -1);
+            }
+            else if (!e.inertial && dy != 0.0f)
+            {
+                if ((wheelSize_ > 0.0f) != (dy > 0.0f))
+                    wheelSize_ = 0.0f;
+                wheelSize_ += dy;
+                if (std::abs(wheelSize_) >= kWheelSizeStep)
+                {
+                    (void)stepSize(wheelSize_ > 0.0f ? 1 : -1);
+                    wheelSize_ = 0.0f;
+                }
+            }
+            return true;
+        }
         if (!completion_)
             return false;
         const Popup g = popupGeometry(panelW_, panelH_);
@@ -1491,7 +1598,7 @@ namespace playground::ui
         k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
         // Format on Run is a machine-wide switch (another window may flip it), the Panel switch the session's.
         k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());
-        k.mix(hasPanelSwitch()).mix(panelSwitchOn());
+        k.mix(hasPanelSwitch()).mix(panelSwitchOn()).mix(size_);
         return k.h;
     }
 
@@ -2337,9 +2444,9 @@ namespace playground::ui
     funkgui::Rect CodeAssist::goToBarRect() const
     {
         const Rect e = editorRect();
-        const float w = std::min(kGoToW, e.w - 100.0f);
+        const float w = std::min(kGoToW * std::max(1.0f, sizeScale()), e.w - 100.0f);
         const float minimap = 72.0f + 18.0f;
-        return { e.right() - w - minimap, e.y + 4.0f, w, kFindRowH + 4.0f };
+        return { e.right() - w - minimap, e.y + 4.0f, w, findRowH() + 4.0f };
     }
 
     // ---- geometry ---------------------------------------------------------------------------------------------------
@@ -2352,35 +2459,37 @@ namespace playground::ui
         const funkgui::Point at = E.pointOf({ completion_->replace.from.line, completion_->replace.from.col });
         const int n = static_cast<int>(completion_->items.size());
         g.rows = std::min(n, kRows);
-        const float listH = static_cast<float>(g.rows) * kRowH;
+        const float listH = static_cast<float>(g.rows) * rowH();
+        const float popW = popupW();
         // The chosen item's detail: its signature (a line) and its documentation (up to four lines), or nothing.
         float detailH = 0.0f;
         if (choice_ >= 0 && choice_ < n)
         {
             const lang::Completion& it = completion_->items[static_cast<std::size_t>(choice_)];
-            const std::size_t docLines = wrap(reflow(it.doc), chat::kSmall, kPopupW - 24.0f, it.detail.empty() ? 4 : 3).size();
+            const std::size_t docLines = wrap(reflow(it.doc), chat::kSmall, popW - 24.0f, it.detail.empty() ? 4 : 3).size();
             const bool hasDoc = !it.doc.empty();
             if (!it.detail.empty() || hasDoc)
-                detailH = 12.0f + (it.detail.empty() ? 0.0f : 18.0f) + (hasDoc ? 14.0f * static_cast<float>(docLines) : 0.0f);
+                detailH = 12.0f + (it.detail.empty() ? 0.0f : codeLineH()) + (hasDoc ? 14.0f * static_cast<float>(docLines) : 0.0f);
         }
-        detailH = std::min(detailH, kDetailH);
+        detailH = std::min(detailH, kDetailH - kCodeLineH + codeLineH());
         const float h = listH + detailH + 2.0f * 4.0f;
-        float x = std::min(at.x - 30.0f, panelW - kPopupW - 8.0f);
+        float x = std::min(at.x - 30.0f, panelW - popW - 8.0f);
         x = std::max(8.0f, x);
         float y = at.y + E.rowHeight() + 2.0f;
         if (y + h > panelH - 8.0f)
             y = std::max(8.0f, at.y - h - 2.0f);
-        g.box = { x, y, kPopupW, h };
-        g.list = { x + 4.0f, y + 4.0f, kPopupW - 8.0f, listH };
-        g.detail = { x + 4.0f, y + 4.0f + listH, kPopupW - 8.0f, detailH };
+        g.box = { x, y, popW, h };
+        g.list = { x + 4.0f, y + 4.0f, popW - 8.0f, listH };
+        g.detail = { x + 4.0f, y + 4.0f + listH, popW - 8.0f, detailH };
         return g;
     }
 
     funkgui::Rect CodeAssist::findBarRect() const
     {
         const Rect e = editorRect();
-        const float w = std::min(kFindW, e.w - 100.0f);
-        const float h = replaceOpen_ ? 2.0f * kFindRowH + 6.0f : kFindRowH + 4.0f;
+        const float w = std::min(kFindW * std::max(1.0f, sizeScale()), e.w - 100.0f);
+        const float rh = findRowH();
+        const float h = replaceOpen_ ? 2.0f * rh + 6.0f : rh + 4.0f;
         const float minimap = 72.0f + 18.0f;
         return { e.right() - w - minimap, e.y + 4.0f, w, h };
     }
@@ -2389,8 +2498,9 @@ namespace playground::ui
     {
         FindParts f;
         f.bar = findBarRect();
-        const float y = f.bar.y + 3.0f, h = kFindRowH - 4.0f;
-        f.toggle = { f.bar.x + 3.0f, y, 18.0f, replaceOpen_ ? 2.0f * kFindRowH - 2.0f : h };
+        const float rh = findRowH();
+        const float y = f.bar.y + 3.0f, h = rh - 4.0f;
+        f.toggle = { f.bar.x + 3.0f, y, 18.0f, replaceOpen_ ? 2.0f * rh - 2.0f : h };
         const float right = f.bar.right() - 4.0f;
         f.close = { right - 22.0f, y + 2.0f, 22.0f, h - 4.0f };
         f.next = { f.close.x - 24.0f, y + 2.0f, 22.0f, h - 4.0f };
@@ -2399,7 +2509,7 @@ namespace playground::ui
         f.wordBtn = { f.count.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.caseBtn = { f.wordBtn.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.field = { f.toggle.right() + 4.0f, y, std::max(40.0f, f.caseBtn.x - 4.0f - f.toggle.right() - 4.0f), h };
-        const float y2 = y + kFindRowH;
+        const float y2 = y + rh;
         f.allBtn = { right - 40.0f, y2 + 2.0f, 40.0f, h - 4.0f };
         f.replaceBtn = { f.allBtn.x - 62.0f, y2 + 2.0f, 58.0f, h - 4.0f };
         f.replaceField = { f.field.x, y2, f.field.w, h };
@@ -2420,6 +2530,8 @@ namespace playground::ui
         if (hasPanelSwitch())
             s.panel = panelSwitchLabelled() ? take(kPanelWord, kPanelIconRoom) : take("", kPanelGlyphW - 2.0f);
         s.formatOnRun = take("Format on Run", 14.0f);
+        if (size_ != codesize::kDefault)
+            s.size = take(codesize::label(size_), 0.0f);
         s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
         const funkgui::TextEditor& E = ed();
@@ -2440,7 +2552,8 @@ namespace playground::ui
                           + widthOf("Format on Run", st) + 16.0f + 14.0f              // Format on Run
                           + widthOf("LLVM IR", st) + 16.0f                            // the language
                           + widthOf("Spaces: 4", st) + 16.0f                          // the indent
-                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st)    // the place
+                          + (size_ != codesize::kDefault ? widthOf(codesize::label(size_), st) + 16.0f : 0.0f);   // the size
         return statusRect().w - 16.0f - parts >= kProblemsRoom;
     }
 
@@ -2460,6 +2573,7 @@ namespace playground::ui
         const bool dark = th.ground.r < 128;
         const funkgui::Canvas::Scope s(c, kCodeTag, false);
         const funkgui::TextStyle& st = chat::kSmall;
+        const funkgui::TextStyle code = codeStyle();     // the bars' fields
         // The status line.
         {
             const Rect r = statusRect();
@@ -2525,6 +2639,8 @@ namespace playground::ui
             if (on)
                 chat::drawIcon(c, chat::Icon::check, box.centreX(), box.centreY(), 9.0f, p.onAccent);
             c.text("Format on Run", parts.formatOnRun.right() - 8.0f, top, st, on ? p.text : p.faint, funkgui::Align::right);
+            if (parts.size.w > 0.0f)
+                c.text(codesize::label(size_).c_str(), parts.size.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
             // The Panel switch: a window with its panel at the bottom, filled while the panel shows; its word beside it.
             if (hasPanelSwitch())
             {
@@ -2550,22 +2666,22 @@ namespace playground::ui
             c.rrect(f.bar.x + 1.0f, f.bar.y + 2.0f, f.bar.w, f.bar.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
             c.rrect(f.bar.x, f.bar.y, f.bar.w, f.bar.h, 6.0f, p.raised, 1.0f, p.composerEdge);
             chat::drawIcon(c, replaceOpen_ ? chat::Icon::chevronDown : chat::Icon::chevronRight, f.toggle.centreX(),
-                           f.bar.y + 3.0f + (kFindRowH - 4.0f) * 0.5f, 10.0f, p.soft);
+                           f.bar.y + 3.0f + (findRowH() - 4.0f) * 0.5f, 10.0f, p.soft);
             const auto field = [&](const Rect& r, const funkgui::text::LineEdit& edit, bool active, const char* placeholder) {
                 c.rrect(r.x, r.y + 2.0f, r.w, r.h - 4.0f, 4.0f, p.composer, 1.0f, active && findFocus_ ? p.accent : p.composerEdge);
-                const float t = c.capCentreTop(r.centreY(), kCode);
+                const float t = c.capCentreTop(r.centreY(), code);
                 const funkgui::Canvas::ClipScope clip(c, { r.x + 2.0f, r.y, r.w - 4.0f, r.h });
                 if (edit.buffer.empty())
-                    c.text(placeholder, r.x + 6.0f, t, kCode, p.faint);
+                    c.text(placeholder, r.x + 6.0f, t, code, p.faint);
                 else
                 {
                     if (edit.allSelected)
-                        c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, kCode), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                    c.text(edit.buffer.c_str(), r.x + 6.0f, t, kCode, p.text);
+                        c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, code), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                    c.text(edit.buffer.c_str(), r.x + 6.0f, t, code, p.text);
                 }
                 if (active && findFocus_)
                 {
-                    const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), kCode);
+                    const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), code);
                     c.rrect(cx, r.y + 6.0f, 1.5f, r.h - 12.0f, 0.0f, p.accent);
                 }
             };
@@ -2606,25 +2722,25 @@ namespace playground::ui
             const Rect b = goToBarRect();
             c.rrect(b.x + 1.0f, b.y + 2.0f, b.w, b.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
             c.rrect(b.x, b.y, b.w, b.h, 6.0f, p.raised, 1.0f, p.composerEdge);
-            const Rect r{ b.x + 4.0f, b.y + 3.0f, b.w - 8.0f, kFindRowH - 4.0f };
+            const Rect r{ b.x + 4.0f, b.y + 3.0f, b.w - 8.0f, findRowH() - 4.0f };
             constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF };
             c.rrect(r.x, r.y + 2.0f, r.w, r.h - 4.0f, 4.0f, p.composer, 1.0f, gotoBad_ ? kRed : p.accent);
-            const float t = c.capCentreTop(r.centreY(), kCode);
+            const float t = c.capCentreTop(r.centreY(), code);
             const funkgui::Canvas::ClipScope clip(c, { r.x + 2.0f, r.y, r.w - 4.0f, r.h });
             const funkgui::text::LineEdit& edit = gotoEdit_;
             if (edit.buffer.empty())
             {
                 char hint[96];
                 std::snprintf(hint, sizeof hint, "Go to line 1 to %d (or line:column)", ed().lineCount());
-                c.text(hint, r.x + 6.0f, t, kCode, p.faint);
+                c.text(hint, r.x + 6.0f, t, code, p.faint);
             }
             else
             {
                 if (edit.allSelected)
-                    c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, kCode), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                c.text(edit.buffer.c_str(), r.x + 6.0f, t, kCode, gotoBad_ ? kRed : p.text);
+                    c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, code), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                c.text(edit.buffer.c_str(), r.x + 6.0f, t, code, gotoBad_ ? kRed : p.text);
             }
-            const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), kCode);
+            const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), code);
             c.rrect(cx, r.y + 6.0f, 1.5f, r.h - 12.0f, 0.0f, p.accent);
         }
     }
@@ -2637,6 +2753,8 @@ namespace playground::ui
         const bool dark = th.ground.r < 128;
         const funkgui::Canvas::Scope s(c, kCodePopupTag, false);
         const funkgui::TextEditor& E = ed();
+        const funkgui::TextStyle codeSt = codeStyle(), cardSt = cardCodeStyle();   // at the text size
+        const float lineH = codeLineH(), rowHt = rowH(), maxW = cardMaxW();
         const auto card = [&](const Rect& r) {
             c.rrect(r.x + 1.0f, r.y + 3.0f, r.w, r.h, 7.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 110 : 40) }, 0.0f, Col{}, 6.0f);
             c.rrect(r.x, r.y, r.w, r.h, 7.0f, p.raised, 1.0f, p.composerEdge);
@@ -2681,12 +2799,11 @@ namespace playground::ui
         if (signature_ && E.focused())
         {
             const lang::Signature& sig = *signature_;
-            const float lineH = 18.0f;
-            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, kCardMaxW - 2.0f * kPad, 4);
-            float inner = std::max(widthOf(sig.label, kCardCode), 120.0f);
+            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, maxW - 2.0f * kPad, 4);
+            float inner = std::max(widthOf(sig.label, cardSt), 120.0f);
             for (const std::string& l : doc)
                 inner = std::max(inner, widthOf(l, chat::kSmall));
-            const float w = std::min(kCardMaxW, inner + 2.0f * kPad);
+            const float w = std::min(maxW, inner + 2.0f * kPad);
             const float h = kPad * 2.0f + lineH + (doc.empty() ? 0.0f : 4.0f + 15.0f * static_cast<float>(doc.size()));
             const funkgui::Point at = E.pointOf(E.caret());
             float x = std::clamp(at.x - 20.0f, 8.0f, panelW - w - 8.0f);
@@ -2696,25 +2813,25 @@ namespace playground::ui
             const Rect r{ x, y, w, h };
             card(r);
             // The label, the active parameter in the accent, underlined.
-            const float top = c.capCentreTop(y + kPad + lineH * 0.5f, kCardCode);
+            const float top = c.capCentreTop(y + kPad + lineH * 0.5f, cardSt);
             float pen = x + kPad;
             int from = 0;
             const auto piece = [&](int a, int b, Col ink) {
                 if (b <= a)
                     return;
                 const std::string t = sig.label.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a));
-                c.text(t.c_str(), pen, top, kCardCode, ink);
-                pen += widthOf(t, kCardCode);
+                c.text(t.c_str(), pen, top, cardSt, ink);
+                pen += widthOf(t, cardSt);
             };
             if (sig.active >= 0 && sig.active < static_cast<int>(sig.params.size()))
             {
                 const auto [a, b] = sig.params[static_cast<std::size_t>(sig.active)];
                 piece(from, a, p.soft);
                 const float x0 = pen;
-                const funkgui::TextStyle strong{ kCardCode.px, kCardCode.tracking, 0.06f, true };
+                const funkgui::TextStyle strong{ cardSt.px, cardSt.tracking, 0.06f, true };
                 const std::string t = sig.label.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a));
                 c.text(t.c_str(), pen, top, strong, p.accent);
-                pen += widthOf(t, kCardCode);
+                pen += widthOf(t, cardSt);
                 c.segment(x0, y + kPad + lineH - 1.0f, pen, y + kPad + lineH - 1.0f, 1.0f, p.accent);
                 from = b;
             }
@@ -2743,16 +2860,17 @@ namespace playground::ui
             for (int k = 0; k < g.rows && first + k < n; ++k)
             {
                 const lang::Completion& it = completion_->items[static_cast<std::size_t>(first + k)];
-                const float y = g.list.y + static_cast<float>(k) * kRowH;
+                const float y = g.list.y + static_cast<float>(k) * rowHt;
                 if (first + k == choice_)
-                    c.rrect(g.list.x, y, g.list.w, kRowH, 4.0f, funkgui::mix(p.raised, th.accent, dark ? 0.22f : 0.16f));
+                    c.rrect(g.list.x, y, g.list.w, rowHt, 4.0f, funkgui::mix(p.raised, th.accent, dark ? 0.22f : 0.16f));
                 const KindLook look = kindLook(it.kind);
                 const Col kc = dark ? look.dark : look.light;
-                c.rrect(g.list.x + 6.0f, y + 4.0f, 14.0f, 14.0f, 3.0f, kc.withAlpha(0.16f), 1.0f, kc.withAlpha(0.7f));
+                const float mid = y + rowHt * 0.5f;
+                c.rrect(g.list.x + 6.0f, mid - 7.0f, 14.0f, 14.0f, 3.0f, kc.withAlpha(0.16f), 1.0f, kc.withAlpha(0.7f));
                 const char letter[2] = { look.letter, '\0' };
-                c.text(letter, g.list.x + 13.0f, c.capCentreTop(y + 11.0f, chat::kSmallStrong), chat::kSmallStrong, kc, funkgui::Align::centre);
+                c.text(letter, g.list.x + 13.0f, c.capCentreTop(mid, chat::kSmallStrong), chat::kSmallStrong, kc, funkgui::Align::centre);
                 // The label, the letters typed in the accent.
-                const float top = c.capCentreTop(y + kRowH * 0.5f, kCode);
+                const float top = c.capCentreTop(mid, codeSt);
                 float pen = g.list.x + 28.0f;
                 const std::string& prefix = completion_->prefix;
                 std::size_t k2 = 0;
@@ -2764,15 +2882,15 @@ namespace playground::ui
                     if (hit)
                         ++k2;
                     const char one[2] = { ch, '\0' };
-                    c.text(one, pen, top, kCode, hit ? p.accent : p.text);
-                    pen += widthOf(std::string_view(one, 1), kCode);
+                    c.text(one, pen, top, codeSt, hit ? p.accent : p.text);
+                    pen += widthOf(std::string_view(one, 1), codeSt);
                 }
                 // Its detail, at the right, faint.
                 const float room = g.list.right() - 8.0f - (pen + 16.0f);
                 if (room > 40.0f && !it.detail.empty())
                 {
                     const std::string d = fitText(c, it.detail, chat::kSmall, room);
-                    c.text(d.c_str(), g.list.right() - 8.0f, c.capCentreTop(y + kRowH * 0.5f, chat::kSmall), chat::kSmall,
+                    c.text(d.c_str(), g.list.right() - 8.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall,
                            first + k == choice_ ? p.dim : p.faint, funkgui::Align::right);
                 }
             }
@@ -2788,9 +2906,9 @@ namespace playground::ui
                 {
                     // (the item's own name plain unless it is a constant's: a local's of a constant's name)
                     const bool constant = it.kind == lang::Kind::constant || it.kind == lang::Kind::enumeration;
-                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, kCardCode,
+                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, cardSt,
                              constant ? std::vector<std::string>{} : std::vector<std::string>{ it.label });
-                    y += 18.0f;
+                    y += lineH;
                 }
                 for (const std::string& l : wrap(reflow(it.doc), chat::kSmall, d.w - 16.0f, it.detail.empty() ? 4 : 3))
                 {
@@ -2804,7 +2922,7 @@ namespace playground::ui
         if (hover_)
         {
             const lang::Hover& h = *hover_;
-            const float innerW = kCardMaxW - 2.0f * kPad;
+            const float innerW = maxW - 2.0f * kPad;
             std::vector<std::string> code;
             for (const std::string_view l : lang::splitLines(h.code))
                 if (!l.empty())
@@ -2816,13 +2934,13 @@ namespace playground::ui
                     problems.push_back(l);
             float w = 160.0f;
             for (const std::string& l : code)
-                w = std::max(w, widthOf(l, kCardCode));
+                w = std::max(w, widthOf(l, cardSt));
             for (const std::string& l : doc)
                 w = std::max(w, widthOf(l, chat::kSmall));
             for (const std::string& l : problems)
                 w = std::max(w, widthOf(l, chat::kSmall) + 14.0f);
-            w = std::min(kCardMaxW, w + 2.0f * kPad);
-            const float codeH = 18.0f * static_cast<float>(code.size());
+            w = std::min(maxW, w + 2.0f * kPad);
+            const float codeH = lineH * static_cast<float>(code.size());
             const float docH = 14.0f * static_cast<float>(doc.size());
             const float probH = 14.0f * static_cast<float>(problems.size());
             const float gap = (code.empty() ? 0.0f : 1.0f) + (doc.empty() ? 0.0f : 1.0f) + (problems.empty() ? 0.0f : 1.0f);
@@ -2833,6 +2951,7 @@ namespace playground::ui
             if (y < 8.0f)
                 y = word.y + E.rowHeight() + 4.0f;
             const Rect r{ x, y, w, hgt };
+            hoverDrawn_ = r;
             card(r);
             float dy = y + kPad;
             for (const std::string& l : problems)
@@ -2851,8 +2970,8 @@ namespace playground::ui
             }
             for (const std::string& l : code)
             {
-                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, kCardCode, h.plain);
-                dy += 18.0f;
+                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, cardSt, h.plain);
+                dy += lineH;
             }
             if (!code.empty() && !doc.empty())
             {
@@ -2885,6 +3004,14 @@ namespace playground::ui
             }
             else if (s.position.contains(pointer))
                 std::snprintf(out, n, "LINE AND COLUMN   A CLICK (OR CTRL-G) GOES TO A LINE");
+            else if (s.size.contains(pointer))
+            {
+                std::string words = shortcutText("Text size " + codesize::label(size_) + ", " + kThisMachine
+                                                 + "'s   a click: 12 px   Cmd-= larger   Cmd-- smaller   Cmd-0 12 px");
+                for (char& ch : words)
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                std::snprintf(out, n, "%s", words.c_str());
+            }
             else if (viewShown())
                 std::snprintf(out, n, "LLVM IR   READ ONLY: WHAT FMINUS MADE OF THE PROGRAM   CMD-F FINDS   CTRL-G GOES TO A LINE");
             else if (s.problems.contains(pointer))

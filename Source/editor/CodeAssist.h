@@ -49,6 +49,14 @@
 // definition) and it is read only (TextEditorOptions::readOnly): a key that would edit it (typing, Return, Backspace,
 // Delete, cut, paste, undo, the line commands) changes nothing, is taken (never the host's) and says so in the status;
 // it moves, selects, copies, finds (no replace) and goes to a line. Its status line says it is read only and LLVM IR.
+//
+// The text size (codesize below): one preference of this machine's, never the session's, as the zoom is: every file
+// tab and the IR view draw in it, and the overlays drawn from the text (the completion list's rows, the signature's
+// and the hover card's code, the find and go-to bars' fields) are sized from it, their widths too (capped by the
+// editor's). Cmd-= (or Cmd-+) larger, Cmd-- smaller, Cmd-0 back to 12 px, in a text tab or the IR view (the Schematic
+// view keeps those keys for its zoom); Cmd-wheel (Ctrl-wheel off the Mac) over the text a step a notch; the status
+// line says the size while it is not 12 px, and a click there puts it back. The chat, the status line and the tabs
+// keep their sizes: the zoom is the whole editor's.
 #pragma once
 
 #include "editor/Theme.h"
@@ -79,6 +87,22 @@ namespace funkgui
 
 namespace playground::ui
 {
+    // The code's text size: FunkGui's UiPreferences int under kKey, in tenths of a px (its ints only), kLeast to kMost,
+    // kDefault when unset. The keys and the wheel step through kSteps.
+    namespace codesize
+    {
+        inline constexpr const char* kKey = "codeTextSize";
+        inline constexpr int kDefault = 120, kLeast = 90, kMost = 240;
+        inline constexpr int kSteps[] = { 90, 100, 110, 120, 130, 140, 160, 180, 200, 240 };
+        int read();                                      // the preference, within kLeast..kMost
+        void write(int tenths);                          // stored (every open editor follows its revision)
+        // The step after `tenths` (dir > 0 larger, < 0 smaller; a size between steps goes to the next one that way),
+        // kDefault for dir 0; the ends hold.
+        int step(int tenths, int dir);
+        funkgui::TextStyle style(int tenths);            // the code's font (editorFont(code)) at that size
+        std::string label(int tenths);                   // "14 px", "10.5 px"
+    }
+
     // The code editor's own primitives, for probes: the status line and the find bar; the completion list, the
     // signature and the hover card.
     inline constexpr funkgui::Tag kCodeTag = funkgui::tags::firstProduct + 20;
@@ -207,6 +231,12 @@ namespace playground::ui
         void setLibrary(const Sources& library);         // the library's files (completion offers their modules)
         void setInstrument(bool on);                     // the product's kind (the contract's snippets)
         void attach(funkgui::HostServices* host);        // the find bar's paste
+        // The text size (codesize) the tabs draw in, which the overlays follow; the hook sets it on every editor (the
+        // FilesItem's), called by the keys, the wheel and the status line's click after the preference is written.
+        void setCodeSize(int tenths) noexcept { size_ = tenths; }
+        int codeSize() const noexcept { return size_; }
+        void setSizeHook(std::function<void(int)> hook) { sizeHook_ = std::move(hook); }
+        bool stepSize(int dir);                          // codesize::step's, written and applied; false at an end
 
         // The tabs' editors share `area`: the editor, and the status line under it.
         void setArea(const funkgui::Rect& area);
@@ -335,6 +365,13 @@ namespace playground::ui
         bool replaceOpen() const noexcept { return replaceOpen_; }   // the find bar's replace row
         bool goToOpen() const noexcept { return gotoOpen_; }
         int findCount() const noexcept { return static_cast<int>(matches_.size()); }
+        // Where the overlays are (the completion list's box, the hover card as last drawn, the find bar), a completion
+        // row's height, and the status line's size (empty at 12 px): the text size's rows.
+        funkgui::Rect completionBox() const { return popupGeometry(panelW_, panelH_).box; }
+        funkgui::Rect hoverBox() const noexcept { return hover_ ? hoverDrawn_ : funkgui::Rect{}; }
+        funkgui::Rect findBox() const { return findOpen_ ? findBarRect() : funkgui::Rect{}; }
+        float completionRowHeight() const { return rowH(); }
+        funkgui::Rect sizeRect() const { return statusParts().size; }
         int findCurrent() const noexcept { return current_; }
         const char* language(int tab) const;             // the status line's: FMinus, SPICE, GUI (LLVM IR: a view)
         lang::Service& service();                        // the index, brought up to date
@@ -392,11 +429,24 @@ namespace playground::ui
         FindParts findParts() const;
         struct StatusParts
         {
-            funkgui::Rect problems, position, indent, language, formatOnRun, panel;
+            funkgui::Rect problems, position, indent, language, formatOnRun, panel, size;   // size: empty at 12 px
         };
         StatusParts statusParts() const;
 
+        // The overlays' measures at the text size (size_): 1 at 12 px.
+        float sizeScale() const noexcept { return static_cast<float>(size_) / static_cast<float>(codesize::kDefault); }
+        funkgui::TextStyle codeStyle() const;            // the fields' and the completion list's
+        funkgui::TextStyle cardCodeStyle() const;        // the signature's and the hover card's code
+        float rowH() const;                              // a completion row
+        float codeLineH() const;                         // a card's line of code
+        float findRowH() const;                          // a find or go-to bar's row
+        float popupW() const;                            // the completion list's width
+        float cardMaxW() const;                          // a card's width, at most
+
         Tabs tabs_;
+        int size_ = codesize::kDefault;                  // the text size, tenths of a px
+        std::function<void(int)> sizeHook_;
+        float wheelSize_ = 0.0f;                         // a smooth wheel's deltas toward the next size step
         std::function<std::string()> statusWords_;
         std::function<void(bool back)> statusProblems_;
         std::function<bool()> panelShown_;               // the Panel switch (setPanelSwitch)
@@ -416,6 +466,7 @@ namespace playground::ui
         funkgui::Col note_ = codeSecond(funkgui::Theme::graphite());   // a note's ink, the theme's (setTheme)
         bool focused_ = false;
         mutable float panelW_ = 0.0f, panelH_ = 0.0f;    // the last overlays' bounds (drawOverlays keeps them)
+        mutable funkgui::Rect hoverDrawn_{};             // the hover card as drawOverlays last drew it (probes)
         Sources library_;
 
         // diagnostics, by file name
