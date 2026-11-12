@@ -9,6 +9,8 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
+Claude Desktop extension: **0.18.0** (was 0.17.0).
+
 ### The chat keeps its conversation through a stopped summary and an empty reply ([#40](https://github.com/Snipet/TestingPlayground/pull/40))
 
 **Fixed**
@@ -54,6 +56,28 @@ When a day changed the Claude Desktop extension, its section says the extension'
   draws only when something changes.
 - Typing in a file at the moment Claude edited the same file could lose what you had just typed. Your keys now reach
   the plugin as you type them, and Claude's edit is made again over them.
+
+### Claude's text, large pictures, recordings, long scenarios and the panel sandbox
+
+**Fixed**
+- Text Claude wrote with characters the editor does not show (an arrow, an accent, a degree sign) went into the
+  program as written while its tab showed `?`, and the next key you pressed anywhere changed Claude's file and counted
+  as your edit, so Claude's next edit of it was refused. Claude's text now goes in as the editor holds it (printable
+  ASCII, tabs and line ends), what plays and what you see are the same, and the tool's answer says what became `?`.
+- On Windows and Linux a picture file of a few kilobytes whose header claimed a huge size could make the plugin use
+  gigabytes of memory, or crash the host, when added to a message. A picture of more than 100 megapixels is now
+  refused before it is read, saying its size; a photo or a screenshot is taken as before.
+- A recording of a program that plays a sample said its replay differed from what played, when it matched: the
+  check replayed it without the samples. It now says the replay matches bit for bit.
+- A note or a dial's glide that ended past a render's limit (10 s for a picture, 300 s for numbers) was cut short
+  without a word, and the answer described the times asked. It is now refused, naming the note or the move and the
+  limit, as a start past the limit was; one that ends at the limit is taken as asked.
+- Claude Desktop is told that recording what you play is no read-only look: arming it changes what plays (a restart
+  starts the program again), and a new recording or forget lets the last one go, so Claude Desktop asks before it
+  does it.
+- Claude Desktop's panel sandbox, opened on a program's folder, left its circuit netlists out, so a circuit's knobs
+  were missing; it put a file that sorts before `program.fm` in the program's place, and counted the folder sync's
+  read-only copies against its sixteen files. It now reads a folder as the plugin does.
 
 ## 2026-11-09
 

@@ -1089,12 +1089,13 @@ namespace playground
                 if (!files[k].expected.empty() && versionOf(read[k].text) != files[k].expected)
                     return changedSince(files[k].name, files[k].expected, read[k].text);
             // All or none: every file's edits on a copy first.
-            std::vector<std::string> after;
+            std::vector<std::string> after, held;
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 after.push_back(read[k].text);
                 if (const std::string why = apply(files[k], after.back()); !why.empty())
                     return fail(why);
+                held.push_back(asEditorHolds(after.back()));     // as the editor holds it (ChatAgent.h)
             }
             for (SourceFile& s : d.files)
                 for (std::size_t k = 0; k < files.size(); ++k)
@@ -1140,14 +1141,15 @@ namespace playground
             };
             if (!many)
                 return "Edited " + names[0] + (total > 1 ? ": " + std::to_string(total) + " edits, one step the user can undo" : "") + "; now "
-                     + lines(0) + ", version " + versions[0] + ".";
+                     + lines(0) + ", version " + versions[0] + (held[0].empty() ? "" : "; " + held[0]) + ".";
             std::string out = "Edited " + std::to_string(files.size()) + (files.size() == 1 ? " file" : " files")
                             + ", one step the user can undo:\n";
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 const std::size_t n = files[k].edits.size();
                 const std::string what = files[k].edits.front().hunk ? (n == 1 ? " hunk" : " hunks") : (n == 1 ? " edit" : " edits");
-                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k] + "\n";
+                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k]
+                     + (held[k].empty() ? "" : "; " + held[k]) + "\n";
             }
             return out;
         }

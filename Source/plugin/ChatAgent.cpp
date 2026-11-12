@@ -3921,7 +3921,7 @@ namespace playground
             { "listen", "Listen live", true, false, "debugging" },
             { "compare", "Compare two sounds", true, false, "debugging" },
             { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
-            { "capture", "Record what you play", true, false, "debugging" },
+            { "capture", "Record what you play", false, true, "debugging" },   // an arm changes what plays; a take goes
             { "run_function", "Call a function", true, false, "debugging" },
             { "projects", "Projects and presets", false, true, "projects" },
         };
@@ -3980,7 +3980,8 @@ namespace playground
             "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
             "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
             "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
-            ".gui file or a program's folder the user named, its .fm, .gui, .sc and .sh files, read only, 256 KB a file), or text "
+            ".gui file or a program's folder the user named, its .fm, .cir, .gui, .sc and .sh files, program.fm first, read only, "
+            "256 KB a file), or text "
             "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
             "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
             "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "
@@ -4576,7 +4577,9 @@ namespace playground
                 const cir::Applied a = cir::apply(before, cir::reconcile(before, pins), ops, pins);
                 if (!a.error.empty())
                     return fail(a.error + ". Nothing was changed.");
-                d.files[static_cast<std::size_t>(i)].text = a.text;
+                std::string after = a.text;
+                const std::string held = asEditorHolds(after);   // a value or a name as the editor holds it (ChatAgent.h)
+                d.files[static_cast<std::size_t>(i)].text = after;
                 d.active = i;
                 if (circuitWriteHook_)
                     circuitWriteHook_(attempt);
@@ -4588,13 +4591,13 @@ namespace playground
                 std::string version;
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    version = keepVersion(file, a.text);
+                    version = keepVersion(file, after);
                 }
                 std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
-                                + ", one step the user can undo; version " + version + ".\n";
+                                + ", one step the user can undo" + (held.empty() ? "" : "; " + held) + "; version " + version + ".\n";
                 for (const std::string& said : a.said)
                     out += "- " + said + "\n";
-                const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
+                const std::string was = cir::stripLayout(before), now = cir::stripLayout(after);
                 const std::vector<std::string_view> la = textdiff::lines(was), lb = textdiff::lines(now);
                 std::string changed;
                 int shown = 0, more = 0;
@@ -4614,7 +4617,7 @@ namespace playground
                                        : "The netlist's lines changed (the drawing's *@ lines aside):\n" + changed
                                              + (more > 0 ? "(" + std::to_string(more) + " more)\n" : std::string());
                 {
-                    const Sources one{ { file, a.text } };
+                    const Sources one{ { file, after } };
                     circuits::Generator gen(one);
                     gen.module(file);
                     const std::string said = gen.errors() + gen.warnings();
@@ -4622,21 +4625,21 @@ namespace playground
                                         : "The circuit compiler on the new text:\n" + capped(said)
                                               + (said.back() == '\n' ? "" : "\n");
                 }
-                if (a.text.size() <= kCircuitTextBytes)
+                if (after.size() <= kCircuitTextBytes)
                 {
-                    out += "Its whole text now:\n" + a.text + (a.text.empty() || a.text.back() == '\n' ? "" : "\n");
+                    out += "Its whole text now:\n" + after + (after.empty() || after.back() == '\n' ? "" : "\n");
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    markSeen(file, a.text);
+                    markSeen(file, after);
                 }
                 else
                 {
-                    out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                    out += "(" + std::to_string(after.size()) + " bytes: read_file shows it whole.)\n";
                     // Every line it changed is listed above: seen as an edit_file is, only if the text it edited was
                     // (its drawing's *@ lines aside, which no state sends).
                     if (more == 0)
                     {
                         const std::lock_guard<std::mutex> lock(mutex_);
-                        carrySeen(file, before, a.text);
+                        carrySeen(file, before, after);
                     }
                 }
                 note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));

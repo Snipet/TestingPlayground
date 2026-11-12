@@ -198,15 +198,9 @@ namespace
     // added. Its manifest names them (.fmsync: the line "fmsync 1", then "copy <16 hex digits> <name>" a copy).
     std::vector<std::string> syncCopies(const fs::path& dir)
     {
-        std::vector<std::string> out;
         std::ifstream in(dir / ".fmsync", std::ios::binary);
-        std::string line;
-        if (!in || !std::getline(in, line) || line.rfind("fmsync 1", 0) != 0)
-            return out;
-        while (std::getline(in, line))
-            if (line.size() > 22 && line.rfind("copy ", 0) == 0 && line[21] == ' ')
-                out.push_back(line.substr(22));
-        return out;
+        const std::string manifest((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        return pg::syncCopies(manifest);
     }
 
     // The files named on the command line: one folder, or files (the first the program). A folder's sync copies are
@@ -246,10 +240,12 @@ namespace
                 why = "cannot read the folder " + dir.string() + " (" + ec.message() + ")";
                 return false;
             }
-            std::sort(paths.begin(), paths.end(), [](const fs::path& a, const fs::path& b) {
-                const bool pa = a.filename() == pg::kProgramName, pb = b.filename() == pg::kProgramName;
-                return pa != pb ? pa : a.filename().string() < b.filename().string();
-            });
+            std::vector<std::string> names;
+            for (const fs::path& p : paths)
+                names.push_back(p.filename().string());
+            pg::programFirst(names);
+            for (std::size_t i = 0; i < names.size(); ++i)
+                paths[i] = dir / names[i];
             if (paths.empty() || paths.front().filename() != pg::kProgramName)
             {
                 why = "the folder " + dir.string() + " has no " + std::string(pg::kProgramName)

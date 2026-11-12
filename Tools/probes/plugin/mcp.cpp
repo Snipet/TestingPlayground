@@ -53,7 +53,8 @@
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
 //            few words on the first of the chat's alone: the instructions say how to name one) and a title in words,
 //            the ones that only look marked read-only (trace not: its export writes files, adding and never replacing,
-//            so destructiveHint false), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
+//            so destructiveHint false; capture not: it changes what plays and lets a take go, so destructiveHint
+//            true), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
 //            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, a part, and the debugging part naming the
@@ -1162,7 +1163,7 @@ PROBE(plugin, mcp)
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
-            juce::var measure, write, del, trace;
+            juce::var measure, write, del, trace, capture;
             bool titled = true, lean = true;
             if (const juce::Array<juce::var>* t = list.getArray())
                 for (const juce::var& tool : *t)
@@ -1182,6 +1183,8 @@ PROBE(plugin, mcp)
                         del = tool;
                     if (tool["name"].toString() == "trace")
                         trace = tool;
+                    if (tool["name"].toString() == "capture")
+                        capture = tool;
                 }
             P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
                                       && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
@@ -1192,6 +1195,10 @@ PROBE(plugin, mcp)
             P.eq("server.trace_writes", trace.isObject() && !trace["annotations"].hasProperty("readOnlyHint")
                                             && trace["annotations"].hasProperty("destructiveHint")
                                             && !static_cast<bool>(trace["annotations"]["destructiveHint"]) ? 1 : 0, 1);
+            // capture changes what plays (an arm takes the program's own code, a restart compiles it again and cuts
+            // what sounds) and lets the take kept go (a new arm, forget): not read-only, destructive.
+            P.eq("server.capture_writes", capture.isObject() && !capture["annotations"].hasProperty("readOnlyHint")
+                                              && static_cast<bool>(capture["annotations"]["destructiveHint"]) ? 1 : 0, 1);
         }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());

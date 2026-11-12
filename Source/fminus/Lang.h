@@ -185,6 +185,7 @@ namespace playground::lang
     };
     using Defines = std::vector<std::pair<std::string, std::string>>;
     Defines hostDefines();                                   // kDefines, as Options::defines and FMinus take them
+    std::string_view hostText();                             // host.fm's text (Patch::hostSource), for what has no Patch
 
     // A conditional directive of a file, as the scanner meets it.
     struct Conditional

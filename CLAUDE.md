@@ -1382,7 +1382,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's `at`, compare's picture), `kMaxLongSeconds` (300 s) for a call that returns numbers alone
   (measure_output, a check, tune_dials, compare without its picture, trace: `scenario::forNumbers`, set before the
   rest is read), the tail `kMaxTailSeconds` (10 s) after either, a window both (`Request::endSeconds`); past its cap
-  a value is refused in words that name it (a picture's naming the tools that take 300 s); and `scenario::fits`
+  a value is refused in words that name it (a picture's naming the tools that take 300 s), a note's at + len and a
+  move's at + over too (the Reader's `ends`), never cut there; and `scenario::fits`
   (resolve's last step, and compare's for B at its `b_rate`) refuses, at its rate, times past `measure::longestAt`
   (`kMaxRenderSamples` less a whole tail: 145 s at 192 kHz, `measure::latestTime`) and a render past
   `kMaxRenderSamples` a channel (310 s up to 96 kHz, 155 s at 192 kHz: `measure::renderSeconds`, an effect's test
@@ -1760,7 +1761,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   - **Read only but apply.** open reads an instance's files through get_status (files "all" and `peek`, the server's
     own: live, no write, and nothing kept of the look, no token, no mark, `mcpHint`'s cursor where it was, so what the
     user changed still starts Claude's next result), a file or folder the user named (read only, 256 KB a file, sixteen
-    files); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
+    files; a folder's `isProgramFile` kinds, program.fm first, the folder sync's copies left out as the renderer leaves
+    them: Sources.h's `syncCopies`, `programFirst`); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
     first .gui, else panel.gui), and only when the user asks (the guide says so), its answer starting with write_file's
     line of what the user changed. The plugin's own chat has no sandbox. Its notes are in the guide's interface part
     (`ChatAgent::mcpGuide`'s `kSandboxNotes`); a change to the tool changes them and `FP_MCP_VERSION`.
@@ -1775,13 +1777,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   can match it bit for bit. The user's audio and MIDI stay in memory: never on disk (trace's export refuses a render
   of it), in the session or a project, never returned as samples (the tool reports numbers; a render hash gives none
   back), no picture of it among the chat's kept thumbnails; freed on forget, the next arm, or ten minutes without a
-  call. A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`):
+  call. So capture is no read-only tool to MCP, and a destructive one (`kFaces`: an arm changes what plays, a new arm or
+  forget lets the take go). A take replays (`plugin/CaptureReplay.h`, through `scenario::captured`):
   a `measure::Request` with its blocks (in the processor's parts, `Request::part`), events, transport, its dials as the
   processor sent them (`Request::frames`, by name for another program), the Engine's clock (`Request::clock`,
   `Engine::setClock`: the voices' grid phase) and the wheels at its start (a racing wheel's control changes those off
   rest, `wheelcc::restOf`; without the host's transport, the Engine's own song position: `Engine::setBeat`; a
   Session's `Engine::restart` puts the wheels, the pedal and the position at rest); the first replay null-tests it
-  once (a compile and a render of the program that played, off the live calls) and the recorder keeps the line for stop
+  once (a compile and a render of the program that played, with the samples as they are, set after `replayOf`, which
+  starts from an empty Replay; off the live calls) and the recorder keeps the line for stop
   and status. restart (mode next) recompiles what plays first (after a run on its way) and waits for that program to
   play alone. Each block keeps the Engine's steals and dropped voices in it (`Meters::steals` and `::dropped`, the audio
   thread's own publish, read at the block's start and end). stop and status stay live but for `picture` (drawn on the
@@ -1818,7 +1822,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   move that changes the language changes the section, within the start part's token bound (`plugin.mcp`).
 - **Pictures** (`attach`/`detach`, `ChatImages.h`): read on the agent's job thread (`ChatAgent::queueJob`), kept as
   sent (the file's own PNG or JPEG bytes when they fit, else encoded again) with a thumbnail (RGBA8, and encoded for
-  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. A
+  the session); sent as base64 image blocks before the message's text; six a message, twenty in the history. One
+  past `kMaxPixels` (100 megapixels) is refused by its header's size before any decoder sees it (a PNG's IHDR, a
+  JPEG's first SOFn, a GIF's first image descriptor and its screen, read step for step as JUCE's loaders read them;
+  ImageIO's properties for the rest on macOS), as is one of those three whose header says none (`chatimages::decodes()` counts the decodes). A
   message sent while some are read shows at once and goes with them: the turn's worker waits for the reads asked
   before it (`takePending`: Stop ends the wait, `kPictureWaitSeconds` bounds it), never the panel. The
   editor draws thumbnails through FunkGui's image registry (`funkgui::images`, v0.20.0): `Panel::syncPictures`
@@ -1849,6 +1856,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   view_panel's view "schematic" is `pictureSchematic` (`editor/Picture.cpp`: a `SchematicPicture`, a Panel of its own
   that holds no editor Panel, so it owns no probe and reads or writes no file view; the drawing at 100 %, labels
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
+- **Claude's text is the editor's** (`asEditorHolds`, ChatAgent.h): every tool that puts Claude's text in the draft
+  (write_file's content, files and from, edit_file's new texts, edit_circuit's values and names) puts it there as
+  `TextEditor::sanitise` makes it, saying what changed, so the draft, a version, `seen_` and the tab are one text and the
+  editor's next push changes nothing (`plugin.chat` ASCII).
 - **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
   (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
   (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen;

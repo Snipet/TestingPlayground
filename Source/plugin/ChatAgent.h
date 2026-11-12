@@ -329,6 +329,13 @@ namespace playground
         virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {}, false }; }
     };
 
+    // A file's text as the editor holds it (TextEditor::sanitise: printable ASCII, tabs and LF), the one rule for
+    // every text Claude's tools put in the draft (write_file's content, files and from, edit_file's new texts,
+    // edit_circuit's values and names), so that the draft, a version, seen_, what runs and the tab are one text and
+    // the editor's next push of its tabs changes nothing. What it changed, as a result's clause ("CR LF line ends
+    // read as LF; 2 characters outside ASCII became '?', as the editor holds ASCII"), or "".
+    std::string asEditorHolds(std::string& text);
+
     class ChatAgent final : public ChatPort
     {
     public:
