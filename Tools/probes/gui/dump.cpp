@@ -1577,14 +1577,14 @@ PROBE(gui, dump)
             host.settle();
         };
         const auto clickRow = [&](BL l, int i) {
-            // A project's row scrolled into view first (the list shows so many: its groups make it long).
+            // A project's row scrolled wholly into view first (the list shows so many: its groups make it long), the
+            // wheel a notch's third at a time (the list scrolls by px, as the code does).
             const funkgui::Rect list = browser.places(W, H).projects;
             for (int k = 0; k < 64 && l == BL::projects && i >= 0; ++k)
             {
-                const int first = browser.firstShown(BL::projects), rows = browser.places(W, H).rows[0];
-                if (i >= first && i < first + rows)
+                if (browser.centreOfRow(BL::projects, i, W, H).x > -1.0e3f)
                     break;
-                host.wheel(list.centreX(), list.centreY(), i < first ? 1.0f / 6.0f : -1.0f / 6.0f);
+                host.wheel(list.centreX(), list.centreY(), i < browser.firstShown(BL::projects) ? 1.0f / 6.0f : -1.0f / 6.0f);
                 host.settle();
             }
             const funkgui::Point at = browser.centreOfRow(l, i, W, H);

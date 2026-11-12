@@ -70,7 +70,9 @@
 //            newest first, the one shown dotted, then New chat, Rename and Delete; an older one chosen shows (its words
 //            back); Rename opens the dialog with its name, selected: typed over and Return, the chat has that name (the
 //            pill says it); Escape cancels; Delete asks first, then the chat is gone and the newest other one shows
-//   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end
+//   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end; as
+//            the code scrolls (editor/Scroll.h): a notch three body lines, reversed set (a built WheelEvent: HeadlessHost
+//            cannot set it) the same way, its thumb dragged in proportion
 //   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
 //            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
 //            the rail's button opens the chat again, the dot gone, the answer in it, the editor as wide as before
@@ -1120,6 +1122,29 @@ PROBE(gui, chat)
         host.wheel(vb.centreX(), vb.centreY(), 2.0f);
         host.settle();
         P.eq("scroll.wheel_up", view.atEnd() ? 0 : 1, 1);
+        {
+            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            const pg::ui::Scroll s0 = view.scroller();
+            host.wheel(vb.centreX(), vb.centreY(), 1000.0f);  // the top
+            host.wheel(vb.centreX(), vb.centreY(), -notchDy);
+            const double notch = std::min(3.0 * pg::ui::chat::kBodyLine, static_cast<double>(s0.max()));
+            P.near("scroll.notch_three_lines", view.scroll(), notch, 0.01);
+            host.wheel(vb.centreX(), vb.centreY(), 1000.0f);
+            funkgui::WheelEvent w;
+            w.x = vb.centreX();
+            w.y = vb.centreY();
+            w.dy = -notchDy;
+            w.reversed = true;
+            panel.wheel(w);
+            P.near("scroll.reversed_as_code", view.scroll(), notch, 0.01);
+            host.wheel(vb.centreX(), vb.centreY(), 1000.0f);
+            host.settle();
+            const funkgui::Rect area = view.barArea(), t = view.scroller().thumb(area);
+            host.drag(t.centreX(), t.centreY(), t.centreX(), t.centreY() + 20.0f, 4);
+            host.settle();
+            P.near("scroll.thumb_drags", view.scroll(), 20.0 * static_cast<double>(s0.max()) / static_cast<double>(area.h - t.h), 0.05);
+            P.eq("scroll.thumb_let_go", view.scroller().dragging() ? 1 : 0, 0);
+        }
         const auto jump = view.centreOfJump();
         P.eq("scroll.jump_shown", jump.has_value() ? 1 : 0, 1);
         if (jump)

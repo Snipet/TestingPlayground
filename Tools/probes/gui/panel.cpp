@@ -36,6 +36,8 @@
 //             3 dB)
 //   SCROLL    at the least size the CODE view's interface is taller than its strip: the wheel over its ground
 //             scrolls it (its items move up, none drawn outside its area), and over a knob it turns the knob instead.
+//             As the code scrolls (editor/Scroll.h): a notch 3 * 24 px, reversed set (a built WheelEvent: HeadlessHost
+//             cannot set it) the same way, its bar's thumb dragged in proportion (the items still at whole px).
 //             A trackpad's run of small steps (Panel::scrollGui, which the wheel over the ground calls) lays nothing
 //             out again (Panel::layouts): every node moves together, by the same whole px, each control and display
 //             shown exactly while its node is on a page shown and at least in part in the area, and each where a
@@ -759,6 +761,38 @@ PROBE(gui, panel)
         host.wheel(L->area.right() - 6.0f, L->area.y + 10.0f, -5.0f);
         host.settle();
         writePng(P, host, "gui.panel.small.png", "scroll");
+
+        // As the code scrolls: a notch 3 * 24 px, reversed the same way, the thumb dragged in proportion.
+        {
+            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            const float most = panel.guiScroller(false).max();
+            const double notch = std::min(72.0, static_cast<double>(most));
+            const funkgui::Point over{ L->area.right() - 6.0f, L->area.y + 10.0f };
+            panel.scrollGui(0.0f, -1.0e4f);
+            host.wheel(over.x, over.y, -notchDy);
+            P.near("scroll.notch_72", panel.guiScroller(false).offset, notch, 0.01);
+            panel.scrollGui(0.0f, -1.0e4f);
+            funkgui::WheelEvent w;
+            w.x = over.x;
+            w.y = over.y;
+            w.dy = -notchDy;
+            w.reversed = true;
+            panel.wheel(w);
+            P.near("scroll.reversed_as_code", panel.guiScroller(false).offset, notch, 0.01);
+            panel.scrollGui(0.0f, -1.0e4f);
+            host.settle();
+            const std::vector<funkgui::Rect> atTop = panel.guiLayout().rects;
+            const funkgui::Rect area = panel.guiBarArea(false), t = panel.guiScroller(false).thumb(area);
+            host.drag(t.centreX(), t.centreY(), t.centreX(), t.centreY() + 10.0f, 4);
+            host.settle();
+            P.near("scroll.thumb_drags", panel.guiScroller(false).offset, 10.0 * static_cast<double>(most) / static_cast<double>(area.h - t.h), 0.05);
+            P.eq("scroll.thumb_let_go", panel.guiScroller(false).dragging() ? 1 : 0, 0);
+            const std::vector<funkgui::Rect>& now = panel.guiLayout().rects;
+            bool whole = !now.empty() && now.size() == atTop.size();
+            for (std::size_t i = 0; whole && i < now.size(); ++i)
+                whole = now[i].y - atTop[i].y == std::round(now[i].y - atTop[i].y);
+            P.eq("scroll.thumb_whole_px", whole ? 1 : 0, 1);
+        }
 
         // A trackpad's run of small steps from the top (Panel::scrollGui, as the wheel over the ground scrolls): the
         // items move, nothing is laid out again.
