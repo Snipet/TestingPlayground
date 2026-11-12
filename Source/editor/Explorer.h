@@ -36,12 +36,14 @@
 //
 // The Panel builds the sections (setContent) whenever what they show changes, and does what a row asks (Hooks), as
 // the tabs, the LIBRARY and EXAMPLES menus and the presets' card do. The card itself, its title and its fold button
-// are the Panel's; folded, the explorer is away (EditorPort::explorerOpen, in the session). The list scrolls with
-// the wheel; every row is a button to a screen reader, every section header a toggle.
+// are the Panel's; folded, the explorer is away (EditorPort::explorerOpen, in the session). The list scrolls as the
+// code does (Scroll.h: the wheel, a thumb that drags); every row is a button to a screen reader, every section header
+// a toggle.
 #pragma once
 
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
+#include "editor/Scroll.h"
 
 #include <array>
 #include <functional>
@@ -117,20 +119,23 @@ namespace playground::ui
         float contentHeight() const noexcept { return contentH_; }
         // Bumps when its rows, its folded sections or its scroll change (the Panel's accessibility revision).
         uint32_t revision() const noexcept { return revision_; }
-        float scroll() const noexcept { return scroll_; }
+        float scroll() const noexcept { return scroll_.offset; }
         void scrollTo(float y);
+        const Scroll& scroller() const noexcept { return scroll_; }   // its bar is at the item's right
 
         // Item
         void tick(float dt, bool hovered, bool focused, funkgui::Point pointer) override;
         void draw(funkgui::Canvas&, const funkgui::Theme&, bool focusRing) const override;
         uint64_t drawKey() const override
         {
-            return DrawKey{}.mix(revision_).mix(bounds_).mix(pointer_).h;
+            return DrawKey{}.mix(revision_).mix(bounds_).mix(pointer_).mix(scroll_.key()).h;
         }
         bool contains(funkgui::Point p) const override { return bounds_.contains(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerExit() override { pointer_ = { -1.0e4f, -1.0e4f }; }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override;
+        void pointerDrag(const funkgui::PointerEvent&, funkgui::GestureController&) override;
+        void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) override;
         void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController&) override;
         bool wheel(const funkgui::WheelEvent&, funkgui::GestureController&, double) override;
         void accessibility(std::vector<funkgui::A11yItem>&) const override;
@@ -151,7 +156,6 @@ namespace playground::ui
 
         void layoutList();
         float viewHeight() const noexcept { return bounds_.h; }
-        float maxScroll() const noexcept;
         funkgui::Rect onScreen(const funkgui::Rect& r) const;
         int groupOf(Section s) const;
         const Hit* hitAt(funkgui::Point p) const;
@@ -165,7 +169,7 @@ namespace playground::ui
         std::vector<Hit> hits_;                       // every header, header button, row and cross, in the content
         std::vector<float> rowY_;                     // per group: its header's y
         float contentH_ = 0.0f;
-        float scroll_ = 0.0f;
+        Scroll scroll_;                               // its content: the list's height; its view: the item's
         funkgui::Point pointer_{ -1.0e4f, -1.0e4f };
         bool hidden_ = false;
         uint32_t revision_ = 1;

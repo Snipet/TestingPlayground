@@ -41,6 +41,8 @@
 //               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
 //   Close       or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
 //               chosen from, Tab moves to the next list
+// Each list scrolls as the code does (Scroll.h: the wheel over it, its thumb dragged, a press on its track), by px:
+// a row at its edge shows in part.
 // The stars, the groups folded, the search, the tag and the order are this Mac's (EditorPort::projectsView): kept as
 // they change, the same in every instance and the explorer's PROJECTS (which groups as this does). While a search or
 // a tag filters, every group with a match shows its matches (a fold then is the filter's alone, the groups folded kept
@@ -50,6 +52,7 @@
 #pragma once
 
 #include "editor/ProjectGroups.h"
+#include "editor/Scroll.h"
 #include "plugin/EditorPort.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -165,7 +168,10 @@ namespace playground::ui
         const std::vector<VersionEntry>& versionList() const noexcept { return versions_; }
         const std::vector<PresetEntry>& presetList() const noexcept { return presets_; }
         int chosen(List l) const noexcept;               // the projects': the chosen project's row (-1: none shown)
-        int firstShown(List l) const noexcept { return first_[static_cast<std::size_t>(l)]; }
+        int firstShown(List l) const;                    // the first row wholly shown
+        float scrolled(List l) const;                    // px (Scroll::offset), clamped to the list as it is
+        Scroll scrollOf(const Places& at, List l) const; // its scroll: content and view as the places have them
+        funkgui::Rect barArea(const Places& at, List l) const;   // where its bar is (Scroll's area)
         std::string chosenProject() const { return chosenName_; }
         const std::vector<std::string>& selection() const noexcept { return selected_; }   // the projects chosen
         const ProjectsView& view() const noexcept { return view_; }
@@ -180,7 +186,7 @@ namespace playground::ui
         std::string saveLabel() const;
         std::string openLabel() const;
         std::string removeLabel() const;
-        funkgui::Point centreOfRow(List l, int i, float width, float height) const;   // a row shown, else far away
+        funkgui::Point centreOfRow(List l, int i, float width, float height) const;   // a row wholly shown, else far away
         funkgui::Point centreOfEmpty(List l, float width, float height) const;        // under its rows, else far away
         funkgui::Point centreOfStar(int row, float width, float height) const;        // a project row's star
         // The categories its menus offer: the kind's (ExportCard::categories()), then the user's others, by name.
@@ -191,7 +197,12 @@ namespace playground::ui
         enum class Menu : uint8_t { row, header, tag, sort };
 
         funkgui::Rect listRect(const Places& at, List l) const;
-        funkgui::Rect rowRect(const Places& at, List l, int i) const;   // a row shown (its index), in the list
+        funkgui::Rect rowRect(const Places& at, List l, int i) const;   // a row (its index), scrolled
+        funkgui::Rect rowsArea(const Places& at, List l) const;         // the rows' part of the list: their clip
+        bool wholly(const Places& at, List l, int i) const;             // a row wholly in view
+        int firstWhole(const Places& at, List l) const;                 // the first row wholly in view
+        void reveal(List l, int row, int rowsShown);     // the least scroll that shows the row (the keys, a choice)
+        void scrollToRow(List l, int row);               // the row at the top, as far as the list scrolls
         static funkgui::Rect starRect(const funkgui::Rect& row);
         int count(List l) const;
         int rowAt(funkgui::Point p, const Places& at, List l) const;
@@ -246,7 +257,8 @@ namespace playground::ui
         std::vector<std::string> selected_;              // the projects chosen, the chosen one among them
         int anchor_ = -1;                                // the row a Shift-click chooses from
         std::array<int, 3> chosen_{ -1, -1, -1 };        // the versions' and the presets' (the projects': chosenName_)
-        std::array<int, 3> first_{ 0, 0, 0 };            // each list's first row shown
+        std::array<Scroll, 3> scroll_{};                 // each list's (its offset kept; content and view: scrollOf)
+        int barList_ = -1;                               // the list whose thumb is dragged
         List focus_ = List::projects;
         funkgui::text::LineEdit name_;
         funkgui::text::LineEdit search_;

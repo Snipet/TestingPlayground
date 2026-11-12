@@ -9,15 +9,20 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
-### Faster builds on every pull request
+### Every list scrolls as the code does
+
+**Fixed**
+- The explorer, the Projects card's lists, the presets' list and the A/B card scroll the way the code does with
+  natural scrolling on. On a Mac they scrolled the other way, and the Settings card, a scrolling interface on the
+  panel and a schematic's pan and probe lanes did too.
+- Those lists, the A/B card's changes and the Settings card move as far as the code for the same turn of the wheel or
+  stroke of the trackpad: three rows a notch, and a trackpad's stroke a px for a px. They scroll by the pixel, so a
+  row at an edge shows in part. The Projects card and the presets' list used to jump a whole row for each trackpad
+  event, and the explorer moved about four times slower than the code on a trackpad.
 
 **Changed**
-- The builds on GitHub's machines keep bgfx's shader compiler between runs, on macOS, Linux and Windows, and on macOS
-  and Linux the compiled objects too (ccache): a run whose code changed little rebuilds little. `main` keeps the
-  caches fresh; a pull request saves its own only when it found none to start from. Each run's log says how many
-  objects came from the cache.
-- A pull request that changes only the docs (`docs/` and the `.md` files beside this one) builds and tests nothing:
-  its checks pass at once.
+- Every scrolling list, card, the chat and a scrolling interface have a thumb you can drag, as the code has, and a
+  click on its track jumps there. A notch of the wheel moves the chat three lines and an interface 72 px.
 
 ### The chat keeps its conversation through a stopped summary and an empty reply ([#40](https://github.com/Snipet/TestingPlayground/pull/40))
 

@@ -108,6 +108,10 @@
 //             E12 steps; refusals; 1M's warning; the Label tool; Show as labels (its tags overlapping nothing new);
 //             copy, paste, cut, duplicate (where the copy meets nothing), text no netlist's and prose refused; each new
 //             menu item
+//   WHEEL     the pan moves the drawing as the code scrolls: a trackpad's delta as it came, the same way with
+//             WheelEvent::reversed set (natural scrolling: JUCE's delta already follows it); the zoom is the hand's (a
+//             notch up zooms in, and with reversed set out), as a slider's. HeadlessHost cannot set reversed: built
+//             WheelEvents to SchematicView::wheel
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -3405,6 +3409,48 @@ PROBE(gui, schematic)
         P.eq("marks.touch_dot", dots, 1);
         P.eq("marks.overlap_outlined", outlinedR4 == 1 && outlinedR5 == 1 ? 1 : 0, 1);
         writePng(P, host, "gui.schematic.errors.png", "errors");
+    }
+
+    // ---- WHEEL: the pan takes the delta as it came, the zoom the hand's direction ---------------------------------------
+    {
+        Rig r(draftWith("#include \"diodetone.cir\"\n" + std::string(pg::kExamples[0].source),
+                        { { "diodetone.cir", libraryText("diodetone.cir") } }, 1));
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        P.eq("wheel.schematic_shown", panel.schematicShown() ? 1 : 0, 1);
+        SV& v = r.view();
+        frame(v, host);
+        const funkgui::Rect c = v.canvasRect();
+        const auto event = [&](float dy, bool smooth, bool reversed) {
+            funkgui::WheelEvent w;
+            w.x = c.centreX();
+            w.y = c.centreY();
+            w.dy = dy;
+            w.smooth = smooth;
+            w.reversed = reversed;
+            return w;
+        };
+        constexpr double kLater = 1.0e6;                 // long after any zoom: a trackpad's delta pans
+        const float y0 = v.view().oy;
+        v.wheel(event(0.05f, true, false), kLater);
+        const double plain = v.view().oy - y0;
+        const float y1 = v.view().oy;
+        v.wheel(event(0.05f, true, true), kLater + 10.0);
+        const double natural = v.view().oy - y1;
+        std::printf("wheel: a trackpad's 0.05 panned %.2f px, with reversed set %.2f\n", plain, natural);
+        P.near("wheel.pan_moves", std::fabs(plain), 0.05 * 512.0, 0.01);
+        P.near("wheel.pan_reversed_same_way", natural, plain, 0.01);
+        const float z0 = v.zoom();
+        v.wheel(event(0.25f, false, false), kLater + 20.0);   // a notch up: in
+        const float z1 = v.zoom();
+        v.wheel(event(0.25f, false, true), kLater + 40.0);    // the same delta, reversed set: the hand went the other way
+        const float z2 = v.zoom();
+        std::printf("wheel: zoom %.3f -> %.3f -> %.3f\n", static_cast<double>(z0), static_cast<double>(z1), static_cast<double>(z2));
+        P.ge("wheel.zoom_in", z1, z0 * 1.2f);
+        P.near("wheel.zoom_reversed_back", z2, z0, 0.02);
     }
 
     return P.finish();
