@@ -35,8 +35,6 @@ namespace playground::ui
         constexpr float kCopyRow = 20.0f;
         constexpr float kWorkingRow = 26.0f;
         constexpr float kJump = 28.0f;
-        constexpr float kWheelSmooth = 512.0f;       // px a unit of a trackpad's wheel (TextEditor's)
-        constexpr float kWheelNotched = 292.0f;      // px a unit of a notched wheel: three lines a notch
         constexpr float kTileH = 112.0f;             // a sent picture's thumbnail, above its bubble
         constexpr float kTileMinW = 64.0f, kTileMaxW = 220.0f;
         constexpr float kTileGap = 6.0f;
@@ -1215,7 +1213,7 @@ namespace playground::ui
     uint64_t ChatView::drawKey() const
     {
         DrawKey k;
-        k.mix(content_).mix(bounds_).mix(scroll_).mix(contentH_).mix(pointer_).mix(open_.size()).mix(planClosed_.size())
+        k.mix(content_).mix(bounds_).mix(scroll_).mix(contentH_).mix(pointer_).mix(bar_.dragging()).mix(open_.size()).mix(planClosed_.size())
             .mix(copiedBlock_).mix(copiedAction_).mix(copiedFor_ > 0.0f);
         for (const auto& [entry, qs] : picks_)
             for (const std::vector<bool>& q : qs)
@@ -1254,6 +1252,13 @@ namespace playground::ui
             follow_ = true;
             return;
         }
+        if (Scroll s = scroller(); !e.popup && s.press(p, barArea()))
+        {
+            bar_ = s;                                    // the thumb drags (a press on its track jumps first)
+            scroll_ = s.offset;
+            follow_ = atEnd();
+            return;
+        }
         if (blocks_.empty())
         {
             const Point o{ bounds_.x + kPadX, bounds_.y + std::max(kPadTop, (bounds_.h - empty_.h) * 0.42f) };
@@ -1279,12 +1284,38 @@ namespace playground::ui
 
     bool ChatView::wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double)
     {
-        if (!bounds_.contains({ e.x, e.y }) || maxScroll() <= 0.0f)
+        // As the code scrolls (Scroll.h), a notch three body lines: the delta as it came, WheelEvent::reversed never read.
+        Scroll s = scroller();
+        if (!bounds_.contains({ e.x, e.y }) || !s.wheel(e.dy, e.smooth))
             return false;
-        scroll_ = std::clamp(scroll_ - e.dy * (e.smooth ? kWheelSmooth : kWheelNotched), 0.0f, maxScroll());
+        scroll_ = s.offset;
         follow_ = atEnd();
         return true;
     }
+
+    Scroll ChatView::scroller() const noexcept
+    {
+        Scroll s = bar_;
+        s.offset = scroll_;
+        s.content = contentH_;
+        s.view = viewHeight();
+        s.row = chat::kBodyLine;
+        s.clamp();
+        return s;
+    }
+
+    void ChatView::pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&)
+    {
+        if (!bar_.dragging())
+            return;
+        Scroll s = scroller();
+        s.drag({ e.x, e.y }, barArea());
+        bar_ = s;
+        scroll_ = s.offset;
+        follow_ = atEnd();
+    }
+
+    void ChatView::pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) { bar_.release(); }
 
     // ---- probes -----------------------------------------------------------------------------------------------------
     std::optional<Point> ChatView::centreOfSuggestion(int i) const
@@ -1709,14 +1740,7 @@ namespace playground::ui
         }
 
         // The scroll bar, and the way back to the end.
-        if (maxScroll() > 0.0f)
-        {
-            const float trackH = bounds_.h - 8.0f;
-            const float thumbH = std::max(24.0f, trackH * viewHeight() / contentH_);
-            const float t = scroll_ / maxScroll();
-            c.rrect(bounds_.right() - kBarW - 3.0f, bounds_.y + 4.0f + t * (trackH - thumbH), kBarW, thumbH, kBarW * 0.5f,
-                    p.faint.withAlpha(0.7f));
-        }
+        scroller().draw(c, barArea(), th);
         if (const auto j = centreOfJump())
         {
             const bool hover = std::hypot(pointer_.x - j->x, pointer_.y - j->y) <= kJump * 0.5f;

@@ -2591,16 +2591,20 @@ namespace playground::ui
             const float bottom = card.h > 0.0f ? card.y - 4.0f : canvas_.bottom() - 6.0f;
             const float most = std::max(0.0f, static_cast<float>(std::min<std::size_t>(pinnedProbes().size(), 3)) * kLaneH
                                                   - (bottom - lanesTop()));
-            laneScroll_ = std::clamp(laneScroll_ - (e.reversed ? -e.dy : e.dy) * (e.smooth ? 512.0f : kLaneH), 0.0f, most);
+            laneScroll_ = std::clamp(laneScroll_ - e.dy * (e.smooth ? 512.0f : kLaneH), 0.0f, most);   // the delta as it came
             return true;
         }
         if (probeCard().contains({ e.x, e.y }))
             return true;
-        const float dy = e.reversed ? -e.dy : e.dy, dx = e.reversed ? -e.dx : e.dx;
+        // The pan moves the drawing as the code scrolls: the deltas as they came (JUCE's already follow natural
+        // scrolling), WheelEvent::reversed never read. The zoom is a value the hand sets, as a slider's (JUCE's Slider):
+        // the hand's own direction, so it reads reversed.
+        const float dy = e.dy, dx = e.dx;
         const bool zooms = !e.smooth || e.mods.cmd || e.mods.ctrl || nowSec - zoomedAt_ < 1.0;
         if (zooms)
         {
-            const float f = std::pow(2.0f, std::clamp(dy, -0.5f, 0.5f) * 2.0f);
+            const float hand = e.reversed ? -dy : dy;
+            const float f = std::pow(2.0f, std::clamp(hand, -0.5f, 0.5f) * 2.0f);
             zoomTo(zoom() * f, { e.x, e.y });
             zoomedAt_ = nowSec;
         }

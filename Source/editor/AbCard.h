@@ -7,8 +7,8 @@
 //             Shift with them A)
 //   CHANGES   a tab a file A or B has (its lines added and taken away; "new" in B only, "gone" in A only, "same"), and
 //             the chosen file's lines as a unified diff: A's line numbers, B's, the lines taken away and added tinted,
-//             three lines of context around each change and the lines between said in one; the wheel, Page Up and Page
-//             Down, Home and End scroll it, Tab moves to the next file
+//             three lines of context around each change and the lines between said in one; the wheel, its thumb, Page Up
+//             and Page Down, Home and End scroll it, Tab moves to the next file
 //   A  B      which side plays (A and B, or Space, switch; the one on its way is outlined until its compile lands)
 //   Dials     the same for both, or each its own (a version's saved ones, Current's as they were)
 //   Match     the louder side turned down to the quieter's loudness (measured offline: AbMatch.h), and by how much
@@ -18,9 +18,10 @@
 // An editor opened while an A/B is on (the window closed and opened again) shows its card at once (attach).
 // While it is open it takes every pointer event and key. The A/B is the processor's: the card shows it (its revision
 // followed each frame: tick()), and closes itself when it ends on its own (another program ran), saying so once
-// (takeNotice).
+// (takeNotice). The versions and the diff scroll as the code does (Scroll.h), by px.
 #pragma once
 
+#include "editor/Scroll.h"
 #include "plugin/EditorPort.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -69,6 +70,8 @@ namespace playground::ui
         Places places(float width, float height) const;
 
         void pointerDown(funkgui::Point p, float width, float height);
+        void pointerDrag(funkgui::Point p, float width, float height);   // a thumb's drag, while pressed
+        void pointerUp();
         void wheel(const funkgui::WheelEvent& e, float width, float height);
         void key(const funkgui::KeyEvent& e, float width, float height);
         funkgui::Cursor cursor(funkgui::Point p, float width, float height) const;
@@ -105,7 +108,11 @@ namespace playground::ui
         const std::vector<VersionEntry>& versionList() const noexcept { return versions_; }   // the project's, newest first
         const std::vector<FileDiff>& files() const noexcept { return diffs_; }
         int file() const noexcept { return file_; }      // the tab shown
-        int scroll() const noexcept { return scroll_; }  // the diff's first line shown
+        int scroll() const noexcept;                     // the diff's first line wholly shown
+        Scroll listScroll(const Places& at) const;       // the versions' scroll and the diff's: content and view as the
+        Scroll diffScroll(const Places& at) const;       // places have them
+        funkgui::Rect listBar(const Places& at) const;   // where their bars are (Scroll's areas)
+        funkgui::Rect diffBar(const Places& at) const;
         // A row's centre (row 0 Current, then the versions), or its A or B chip's (`chip` 0, 1; -1: the row's middle);
         // far away when it is not shown.
         funkgui::Point centreOfRow(int row, int chip, float width, float height) const;
@@ -118,7 +125,8 @@ namespace playground::ui
         void setSide(int side, int row);                 // that side to the row's version
         void follow();                                   // state_ from the port, the diff when the sides changed
         void showFile(int i);
-        int maxScroll(const Places& at) const;
+        funkgui::Rect rowRect(const Places& at, int row) const;   // a version's row, scrolled
+        int rowAt(funkgui::Point p, const Places& at) const;
         float chipX(const funkgui::Rect& row, int chip) const;
 
         EditorPort& port_;
@@ -128,8 +136,7 @@ namespace playground::ui
         std::vector<FileDiff> diffs_;
         Sources diffA_, diffB_;                          // the sides the diff is of
         int file_ = 0, firstTab_ = 0;
-        int scroll_ = 0;
-        int firstRow_ = 0;
+        Scroll diff_, list_;                             // their offsets kept (diffScroll, listScroll)
         std::string why_;                                // the line at the foot: what went wrong
         std::string notice_;
         uint32_t revision_ = 0;

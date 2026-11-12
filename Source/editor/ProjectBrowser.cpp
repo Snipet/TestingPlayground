@@ -103,7 +103,8 @@ namespace playground::ui
         o.folded = filtering() ? &filterFolded_ : &view_.folded;
         o.search = view_.search;
         o.tag = view_.tag;
-        o.byDate = view_.byDate;
+        o.order = view_.order;
+        o.reversed = view_.reversed;
         groups_ = projectgroups::arrange(projects_, o);
         rows_.clear();
         for (int g = 0; g < static_cast<int>(groups_.size()); ++g)
@@ -124,8 +125,8 @@ namespace playground::ui
         }
         anchor_ = std::min(anchor_, static_cast<int>(rows_.size()) - 1);
         // The list keeps its place, as far as its rows reach (a group folded, a filter: fewer).
-        const int shown = width_ > 0.0f ? places(width_, height_).rows[idx(L::projects)] : 1;
-        first_[idx(L::projects)] = std::clamp(first_[idx(L::projects)], 0, std::max(0, static_cast<int>(rows_.size()) - shown));
+        if (width_ > 0.0f)
+            scroll_[idx(L::projects)] = scrollOf(places(width_, height_), L::projects);
         ++revision_;
     }
 
@@ -150,8 +151,11 @@ namespace playground::ui
             out.search = view_.search;
         if (view_.tag != kept_.tag)
             out.tag = view_.tag;
-        if (view_.byDate != kept_.byDate)
-            out.byDate = view_.byDate;
+        if (view_.order != kept_.order || view_.reversed != kept_.reversed)
+        {
+            out.order = view_.order;
+            out.reversed = view_.reversed;
+        }
         std::string why;
         if (out != now && !port_.setProjectsView(out, why))
         {
@@ -202,7 +206,7 @@ namespace playground::ui
         view_.search = text;
         if (!was && filtering())
             filterFolded_.clear();                       // a filter shows every group with a match
-        first_[idx(L::projects)] = 0;
+        scroll_[idx(L::projects)].offset = 0.0f;
         arrange();                                       // kept as it closes, or with the next change kept
     }
 
@@ -436,9 +440,9 @@ namespace playground::ui
                 break;
             }
             case Menu::sort:
-                request.items.push_back(dropdown::choice(kByName, "By name", !view_.byDate));
-                request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.byDate));
-                dropdown::dropdownMenu(request, spots.sort, view_.byDate ? kByDate : kByName);
+                request.items.push_back(dropdown::choice(kByName, "By name", view_.order != ProjectOrder::saved));
+                request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.order == ProjectOrder::saved));
+                dropdown::dropdownMenu(request, spots.sort, view_.order == ProjectOrder::saved ? kByDate : kByName);
                 break;
         }
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
@@ -509,13 +513,13 @@ namespace playground::ui
                 view_.tag = c != nullptr ? *c : std::string();
                 if (!was && filtering())
                     filterFolded_.clear();
-                first_[idx(L::projects)] = 0;
+                scroll_[idx(L::projects)].offset = 0.0f;
                 keepView();
                 arrange();
                 break;
             }
             case Menu::sort:
-                view_.byDate = id == kByDate;
+                view_.order = id == kByDate ? ProjectOrder::saved : ProjectOrder::name;
                 keepView();
                 arrange();
                 break;
@@ -608,7 +612,8 @@ namespace playground::ui
         dragging_ = false;
         pressRow_ = -1;
         chosen_ = { -1, -1, -1 };
-        first_ = { 0, 0, 0 };
+        scroll_ = {};
+        barList_ = -1;
         state_ = port_.project();
         title_ = name;
         chosenName_.clear();
@@ -621,7 +626,7 @@ namespace playground::ui
         if (!chosenName_.empty())
             selected_ = { chosenName_ };
         anchor_ = chosen(L::projects);
-        first_[idx(L::projects)] = std::max(0, anchor_ - 2);
+        scrollToRow(L::projects, anchor_ - 2);
         readChosen();
         focus_ = L::projects;
         name_.set(isFactoryName(name) ? copyName(name) : name, kMaxNameLength);   // a factory project's: its copy's
@@ -659,8 +664,8 @@ namespace playground::ui
         for (std::size_t i = 0; i < presets_.size(); ++i)
             if (!preset.empty() && same(presets_[i].name, preset))
                 chosen_[idx(L::presets)] = static_cast<int>(i);
-        first_[idx(L::versions)] = std::max(0, chosen_[idx(L::versions)] - 2);
-        first_[idx(L::presets)] = std::max(0, chosen_[idx(L::presets)] - 2);
+        scrollToRow(L::versions, chosen_[idx(L::versions)] - 2);
+        scrollToRow(L::presets, chosen_[idx(L::presets)] - 2);
         if (const int row = chosen(L::projects); row >= 0)
             anchor_ = row;
         // A confirmation asked for (Delete, Open anyway, Replace, Add version) is never given over lists that changed
@@ -801,7 +806,7 @@ namespace playground::ui
         presets_.clear();
         chosenRead_ = true;
         chosen_[idx(L::versions)] = chosen_[idx(L::presets)] = -1;
-        first_[idx(L::versions)] = first_[idx(L::presets)] = 0;
+        scroll_[idx(L::versions)].offset = scroll_[idx(L::presets)].offset = 0.0f;
         const std::string name = chosenName_;
         if (name.empty())
             return;
@@ -818,8 +823,8 @@ namespace playground::ui
         for (std::size_t i = 0; i < presets_.size(); ++i)
             if (isOpen && same(presets_[i].name, state_.preset))
                 chosen_[idx(L::presets)] = static_cast<int>(i);
-        first_[idx(L::versions)] = std::max(0, chosen_[idx(L::versions)] - 2);
-        first_[idx(L::presets)] = std::max(0, chosen_[idx(L::presets)] - 2);
+        scrollToRow(L::versions, chosen_[idx(L::versions)] - 2);
+        scrollToRow(L::presets, chosen_[idx(L::presets)] - 2);
     }
 
     int ProjectBrowser::count(List l) const
@@ -877,52 +882,111 @@ namespace playground::ui
         return l == L::projects ? at.projects : l == L::versions ? at.versions : at.presets;
     }
 
+    Scroll ProjectBrowser::scrollOf(const Places& at, List l) const
+    {
+        Scroll s = scroll_[idx(l)];
+        s.content = static_cast<float>(count(l)) * at.rowH;
+        s.view = static_cast<float>(at.rows[idx(l)]) * at.rowH;
+        s.row = at.rowH;
+        s.clamp();
+        return s;
+    }
+
+    float ProjectBrowser::scrolled(List l) const
+    {
+        return width_ > 0.0f ? scrollOf(places(width_, height_), l).offset : scroll_[idx(l)].offset;
+    }
+
+    int ProjectBrowser::firstShown(List l) const
+    {
+        return static_cast<int>(std::ceil(scrolled(l) / Places{}.rowH - 1.0e-3f));
+    }
+
+    int ProjectBrowser::firstWhole(const Places& at, List l) const
+    {
+        return static_cast<int>(std::ceil(scrollOf(at, l).offset / at.rowH - 1.0e-3f));
+    }
+
+    funkgui::Rect ProjectBrowser::rowsArea(const Places& at, List l) const
+    {
+        const funkgui::Rect r = listRect(at, l);
+        return { r.x, r.y + 4.0f, r.w, static_cast<float>(at.rows[idx(l)]) * at.rowH };
+    }
+
+    funkgui::Rect ProjectBrowser::barArea(const Places& at, List l) const
+    {
+        const funkgui::Rect r = rowsArea(at, l);
+        return { r.x, r.y, r.w - 3.0f, r.h };            // the thumb 5 px in from the list's edge, in the rows' gutter
+    }
+
     funkgui::Rect ProjectBrowser::rowRect(const Places& at, List l, int i) const
     {
         const funkgui::Rect r = listRect(at, l);
         const bool scrolls = count(l) > at.rows[idx(l)];
-        return { r.x + 4.0f, r.y + 4.0f + static_cast<float>(i - first_[idx(l)]) * at.rowH, r.w - 8.0f - (scrolls ? 8.0f : 0.0f), at.rowH };
+        return { r.x + 4.0f, r.y + 4.0f + static_cast<float>(i) * at.rowH - scrollOf(at, l).offset, r.w - 8.0f - (scrolls ? 8.0f : 0.0f),
+                 at.rowH };
+    }
+
+    bool ProjectBrowser::wholly(const Places& at, List l, int i) const
+    {
+        if (i < 0 || i >= count(l))
+            return false;
+        const funkgui::Rect a = rowsArea(at, l), rr = rowRect(at, l, i);
+        return rr.y >= a.y - 0.01f && rr.bottom() <= a.bottom() + 0.01f;
+    }
+
+    void ProjectBrowser::reveal(List l, int row, int rowsShown)
+    {
+        const float rh = Places{}.rowH;
+        Scroll& s = scroll_[idx(l)];
+        s.content = static_cast<float>(count(l)) * rh;
+        s.view = static_cast<float>(std::max(1, rowsShown)) * rh;
+        s.reveal(static_cast<float>(row) * rh, static_cast<float>(row + 1) * rh);
+    }
+
+    void ProjectBrowser::scrollToRow(List l, int row)
+    {
+        scroll_[idx(l)].offset = static_cast<float>(std::max(0, row)) * Places{}.rowH;
+        if (width_ > 0.0f)
+            scroll_[idx(l)] = scrollOf(places(width_, height_), l);
     }
 
     funkgui::Rect ProjectBrowser::starRect(const funkgui::Rect& row) { return { row.right() - kStarW, row.y, kStarW, row.h }; }
 
     int ProjectBrowser::rowAt(funkgui::Point p, const Places& at, List l) const
     {
-        const funkgui::Rect r = listRect(at, l);
-        if (!r.contains(p))
-            return -1;
-        const int first = first_[idx(l)];
-        const int row = first + static_cast<int>(std::floor((p.y - r.y - 4.0f) / at.rowH));
-        return row >= first && row < first + at.rows[idx(l)] && row < count(l) ? row : -1;
+        const funkgui::Rect a = rowsArea(at, l);
+        if (!a.contains(p) || scrollOf(at, l).hits(p, barArea(at, l)))
+            return -1;                                   // the bar's
+        const int row = static_cast<int>(std::floor((p.y - a.y + scrollOf(at, l).offset) / at.rowH));
+        return row >= 0 && row < count(l) ? row : -1;
     }
 
     funkgui::Point ProjectBrowser::centreOfRow(List l, int i, float width, float height) const
     {
         const Places at = places(width, height);
-        const int first = first_[idx(l)];
-        if (i < first || i >= first + at.rows[idx(l)] || i >= count(l))
+        if (!wholly(at, l, i))
             return { -1.0e4f, -1.0e4f };
         const funkgui::Rect r = listRect(at, l);
         // A project's: clear of its star.
         const float cx = l == L::projects ? r.x + 4.0f + 0.5f * (r.w - 8.0f - kStarW - 8.0f) : r.centreX();
-        return { cx, r.y + 4.0f + (static_cast<float>(i - first) + 0.5f) * at.rowH };
+        return { cx, rowRect(at, l, i).centreY() };
     }
 
     funkgui::Point ProjectBrowser::centreOfEmpty(List l, float width, float height) const
     {
         const Places at = places(width, height);
-        const int shown = std::min(count(l) - first_[idx(l)], at.rows[idx(l)]);
-        if (shown >= at.rows[idx(l)])
+        const funkgui::Rect a = rowsArea(at, l);
+        const float top = a.y + static_cast<float>(count(l)) * at.rowH - scrollOf(at, l).offset;   // under the last row
+        if (top + at.rowH > a.bottom() + 0.01f)
             return { -1.0e4f, -1.0e4f };
-        const funkgui::Rect r = listRect(at, l);
-        return { r.centreX(), r.y + 4.0f + (static_cast<float>(shown) + 0.5f) * at.rowH };
+        return { a.centreX(), top + 0.5f * at.rowH };
     }
 
     funkgui::Point ProjectBrowser::centreOfStar(int row, float width, float height) const
     {
         const Places at = places(width, height);
-        const int first = first_[idx(L::projects)];
-        if (rowProject(row) == nullptr || row < first || row >= first + at.rows[idx(L::projects)])
+        if (rowProject(row) == nullptr || !wholly(at, L::projects, row))
             return { -1.0e4f, -1.0e4f };
         const funkgui::Rect s = starRect(rowRect(at, L::projects, row));
         return { s.centreX(), s.centreY() };
@@ -938,11 +1002,7 @@ namespace playground::ui
         chosenGroup_ = groups_[static_cast<std::size_t>(rows_[static_cast<std::size_t>(row)].group)].key;
         selected_ = { e->name };
         anchor_ = row;
-        int& first = first_[idx(L::projects)];
-        if (row < first)
-            first = row;
-        if (row >= first + rowsShown)
-            first = row - rowsShown + 1;
+        reveal(L::projects, row, rowsShown);
         focus_ = L::projects;
         ask_ = Ask::none;
         why_.clear();
@@ -976,12 +1036,8 @@ namespace playground::ui
         }
         endCategory();
         int& c = chosen_[idx(l)];
-        int& first = first_[idx(l)];
         c = i;
-        if (c < first)
-            first = c;
-        if (c >= first + rowsShown)
-            first = c - rowsShown + 1;
+        reveal(l, c, rowsShown);
         focus_ = l;
         ask_ = Ask::none;
         why_.clear();
@@ -1296,6 +1352,17 @@ namespace playground::ui
             ++revision_;
             return;
         }
+        // A list's bar: its thumb drags (a press on its track jumps first), never a row's press or a drag onto a group.
+        barList_ = -1;
+        if (!e.popup)
+            for (const List l : { L::projects, L::versions, L::presets })
+                if (Scroll s = scrollOf(at, l); s.press(p, barArea(at, l)))
+                {
+                    scroll_[idx(l)] = s;
+                    barList_ = static_cast<int>(idx(l));
+                    ++revision_;
+                    return;
+                }
         for (const List l : { L::projects, L::versions, L::presets })
             if (listRect(at, l).contains(p))
             {
@@ -1441,6 +1508,16 @@ namespace playground::ui
     {
         width_ = width;
         height_ = height;
+        if (barList_ >= 0)
+        {
+            const auto l = static_cast<List>(barList_);
+            const Places at = places(width, height);
+            Scroll s = scrollOf(at, l);
+            s.drag(p, barArea(at, l));
+            scroll_[idx(l)] = s;
+            ++revision_;
+            return;
+        }
         if (pressRow_ < 0)
             return;
         if (!dragging_)
@@ -1460,6 +1537,11 @@ namespace playground::ui
         width_ = width;
         height_ = height;
         const Places at = places(width, height);
+        if (barList_ >= 0)
+        {
+            scroll_[static_cast<std::size_t>(barList_)].release();
+            barList_ = -1;
+        }
         if (dragging_)
         {
             if (const int row = rowAt(p, at, L::projects); row >= 0)
@@ -1503,11 +1585,10 @@ namespace playground::ui
         for (const List l : { L::projects, L::versions, L::presets })
             if (listRect(at, l).contains({ e.x, e.y }))
             {
-                const int most = std::max(0, count(l) - at.rows[idx(l)]);
-                const float dy = e.reversed ? -e.dy : e.dy;
-                const int step = dy > 0.0f ? -1 : (dy < 0.0f ? 1 : 0);
-                int& first = first_[idx(l)];
-                first = std::clamp(first + step * std::max(1, static_cast<int>(std::round(std::fabs(dy) * 6.0f))), 0, most);
+                // As the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
+                Scroll s = scrollOf(at, l);
+                s.wheel(e.dy, e.smooth);
+                scroll_[idx(l)] = s;
                 ++revision_;
                 return;
             }
@@ -1686,7 +1767,7 @@ namespace playground::ui
             };
             const bool tags = !view_.tag.empty() || std::any_of(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.tags.empty(); });
             trigger(at.tag, view_.tag.empty() ? "Any tag" : "Tag: " + view_.tag, tags);
-            trigger(at.sort, view_.byDate ? "By last saved" : "By name", true);
+            trigger(at.sort, view_.order == ProjectOrder::saved ? "By last saved" : "By name", true);
         }
         const auto mine = static_cast<std::size_t>(std::count_if(projects_.begin(), projects_.end(), [](const ProjectEntry& e) { return !e.factory; }));
         const std::size_t factory = projects_.size() - mine;
@@ -1724,14 +1805,17 @@ namespace playground::ui
         const auto list = [&](List l, const std::string& empty, auto&& row) {
             const funkgui::Rect r = listRect(at, l);
             c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, focus_ == l ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.composerEdge);
-            const int n = count(l), rows = at.rows[idx(l)], first = first_[idx(l)];
+            const int n = count(l);
             if (n == 0 && !empty.empty())
                 c.text(fitText(c, empty, chat::kSmall, r.w - 24.0f).c_str(), r.centreX(), c.capCentreTop(r.y + 4.0f + 0.5f * at.rowH, chat::kSmall),
                        chat::kSmall, p.faint, funkgui::Align::centre);
-            const bool scrolls = n > rows;
-            for (int k = 0; k < rows && first + k < n; ++k)
+            // The rows in view, a row at an edge in part (clipped to the rows' part of the list).
+            const Scroll s = scrollOf(at, l);
+            const int from = static_cast<int>(std::floor(s.offset / at.rowH));
+            const int to = std::min(n, static_cast<int>(std::ceil((s.offset + s.view) / at.rowH)));
+            const funkgui::Canvas::ClipScope clip(c, rowsArea(at, l));
+            for (int i = std::max(0, from); i < to; ++i)
             {
-                const int i = first + k;
                 const funkgui::Rect rr = rowRect(at, l, i);
                 const bool header = l == L::projects && rows_[static_cast<std::size_t>(i)].project < 0;
                 const bool chosen = l == L::projects ? (!header && same(rowProject(i)->name, chosenName_)) : i == chosen_[idx(l)];
@@ -1747,13 +1831,7 @@ namespace playground::ui
                     c.rrect(rr.x, rr.y + 1.0f, rr.w, rr.h - 2.0f, 7.0f, p.hover);
                 row(i, rr, chosen);
             }
-            if (scrolls)
-            {
-                const float track = r.h - 12.0f;
-                const float thumb = std::max(18.0f, track * static_cast<float>(rows) / static_cast<float>(n));
-                const float y = r.y + 6.0f + (track - thumb) * static_cast<float>(std::min(first, n - rows)) / static_cast<float>(std::max(1, n - rows));
-                c.rrect(r.right() - 9.0f, y, 4.0f, thumb, 2.0f, p.dim);
-            }
+            s.draw(c, barArea(at, l), th);
         };
         const auto mark = [&](const funkgui::Rect& rr) { c.disc(rr.x + 12.0f, rr.centreY(), 3.0f, p.accent); };
         const std::string noProjects = projects_.empty() ? "No projects yet: name this program below and Save it."
@@ -1944,7 +2022,7 @@ namespace playground::ui
                 out.push_back(std::move(b));
             };
             combo(kTagId, at.tag, "Tag", view_.tag.empty() ? "Any tag" : view_.tag);
-            combo(kSortId, at.sort, "Order", view_.byDate ? "By last saved" : "By name");
+            combo(kSortId, at.sort, "Order", view_.order == ProjectOrder::saved ? "By last saved" : "By name");
         }
         const std::string of = chosenName_.empty() ? std::string() : " of " + ownName(chosenName_);
         const auto listItem = [&](List l, const std::string& title) {
@@ -1959,10 +2037,8 @@ namespace playground::ui
         };
         const auto list = [&](List l, const std::string& title, auto&& rowItem) {
             listItem(l, title);
-            const int first = first_[idx(l)];
-            for (int k = 0; k < at.rows[idx(l)] && first + k < count(l); ++k)
+            for (int i = firstWhole(at, l); wholly(at, l, i); ++i)
             {
-                const int i = first + k;
                 funkgui::A11yItem row;
                 row.id = kRowId + static_cast<uint32_t>(idx(l)) * 0x1000u + static_cast<uint32_t>(i);
                 row.parent = kListId + static_cast<uint32_t>(idx(l));
@@ -1975,8 +2051,10 @@ namespace playground::ui
         // The projects, in their groups: each group an item of the list (as far as it is shown), its header a toggle
         // (open or folded) and its rows in it, each row's star a toggle in the row.
         listItem(L::projects, "Projects");
-        const int firstRow = first_[idx(L::projects)];
-        const int shownRows = std::min(at.rows[idx(L::projects)], count(L::projects) - firstRow);
+        const int firstRow = firstWhole(at, L::projects);
+        int shownRows = 0;                               // those wholly in view
+        while (wholly(at, L::projects, firstRow + shownRows))
+            ++shownRows;
         for (int k = 0; k < shownRows; ++k)
         {
             const int i = firstRow + k;
