@@ -736,6 +736,7 @@ PROBE(plugin, providers)
         bool subset = !d2.isEmpty();
         juce::var action, dials, spectrum, on;   // enums with no type in the tools' own schemas
         juce::var args, files;                   // arrays whose items they leave open
+        juce::var readProps, editProps;          // read_file's and edit_file's (find's context, count, skip; edit_file's find)
         for (const juce::var& dcl : d2)
         {
             subset = subset && !dcl.hasProperty("parametersJsonSchema")
@@ -754,6 +755,10 @@ PROBE(plugin, providers)
             }
             else if (str(dcl, "name") == "write_file")
                 files = props.getProperty("files", {});
+            else if (str(dcl, "name") == "read_file")
+                readProps = props;
+            else if (str(dcl, "name") == "edit_file")
+                editProps = props;
         }
         P.eq("gemini.subset", script->postCount() - b2 == 2 && subset && !anyHas(retry.getProperty("tools", {}), "additionalProperties")
                                   && !anyHas(retry.getProperty("tools", {}), "anyOf") ? 1 : 0, 1);
@@ -768,6 +773,11 @@ PROBE(plugin, providers)
             return str(p, "type") == "ARRAY" && str(p.getProperty("items", {}), "type") == "STRING" && has(str(p, "description"), "JSON value");
         };
         P.eq("gemini.subset_open_arrays", texts(args) && texts(files) ? 1 : 0, 1);
+        // read_file's context, count and skip, and edit_file's find and regex, in Gemini's types.
+        const auto typed = [](const juce::var& props, const char* name, const char* type) { return str(props.getProperty(name, {}), "type") == type; };
+        P.eq("gemini.subset_file_tools", typed(readProps, "context", "INTEGER") && typed(readProps, "count", "BOOLEAN")
+                                             && typed(readProps, "skip", "INTEGER") && typed(editProps, "find", "STRING")
+                                             && typed(editProps, "regex", "BOOLEAN") ? 1 : 0, 1);
         juce::var args3;
         {
             juce::Array<juce::var> given;

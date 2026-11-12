@@ -2359,14 +2359,19 @@ namespace playground
                        "this before editing a file you "
                        "have not seen in its current form (the user may have typed in it since the last plugin_state). "
                        "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
-                       "lines, find) comes with its lines numbered.",
+                       "lines, find) comes with its lines numbered. A regex takes RE2's syntax. find shows 40 of the lines found, context lines around "
+                       "each (2 unless said); its last line says how many more and the skip that reads on; count gives "
+                       "only how many in each file.",
                        // find with no name searches every file, so nothing is required (ChatFiles.cpp).
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "from", prop("integer", "The first line to read, from 1") },
                                         { "lines", prop("integer", "How many lines (default: to the end)") },
                                         { "find", prop("string", "A text: the lines that hold it, 2 around each (no name: in "
                                                                  "every file)") },
-                                        { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
+                                        { "regex", prop("boolean", "find is a regex") },
+                                        { "context", prop("integer", "find: lines around each, 0 to 10") },
+                                        { "count", prop("boolean", "find: only how many") },
+                                        { "skip", prop("integer", "find: pass over that many lines found") } }),
                        {}));
         // path, files, from and to (ChatImport.cpp): a sample added by its path, several files as one change, a file
         // or folder of the user's brought in, the editor's files out to a folder; in place of name and content, so
@@ -2400,7 +2405,11 @@ namespace playground
                            "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
                            "this to write_file for changes to part of a file. A passage that does not occur gets the "
                            "closest one back, numbered, and what differs. A diff's hunk goes where its old lines occur "
-                           "nearest its @@ line.",
+                           "nearest its @@ line. find (in place of old_text, edits and files) replaces every match in name, "
+                           "or with no name in every file, by new_text as it is (no $1: nothing is captured): a match "
+                           "within a line, in find's own case, never a netlist's *@ line, 2,000 at most; all or none, one "
+                           "step the user can undo; expected only with name. Its result gives each file's count and "
+                           "version and the first 20 lines changed.",
                            claude::object({ { "name", prop("string", "The file's name") },
                                             { "old_text", prop("string", "The passage as it is now, exactly") },
                                             { "new_text", prop("string", "What replaces it") },
@@ -2412,7 +2421,9 @@ namespace playground
                                             { "files", claude::object({ { "anyOf", juce::var(listOrDiff) },
                                                                         { "description", "[{name, edits, expected}] or a unified "
                                                                                          "diff, in place of name: all or none, one "
-                                                                                         "undo step" } }) } }),
+                                                                                         "undo step" } }) },
+                                            { "find", prop("string", "Every match replaced by new_text (no name: in every file)") },
+                                            { "regex", prop("boolean", "find is a regex") } }),
                            {}));
         }
         {
