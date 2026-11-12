@@ -24,6 +24,7 @@
 
 #include "dsp/Regex.h"
 #include "dsp/TextDiff.h"
+#include "fminus/Lang.h"
 
 #include <algorithm>
 #include <cctype>
@@ -63,6 +64,17 @@ namespace playground
         }
 
         std::string numberedLine(int n, std::string_view text) { return std::to_string(n) + "\t" + std::string(text) + "\n"; }
+
+        // A line too long for what a part read has room for (`room` characters, at least half of kMaxOutput): its head, cut
+        // where a character starts, then its length and the way to it all (a part read would show the same head again).
+        std::string cutLongLine(int n, std::string_view text, std::size_t room)
+        {
+            const std::string note = "(line " + std::to_string(n) + " is " + std::to_string(text.size())
+                                   + " characters long: cut here; read_file with no from, lines or find gives the whole file)\n";
+            const std::size_t head = std::to_string(n).size() + 2 + note.size();
+            const std::string_view shown = lang::headOf(text, room > head ? room - head : 0);
+            return std::to_string(n) + "\t" + std::string(shown) + "\n" + note;
+        }
 
         // "a", "a and b", "a, b and c".
         std::string joinedAnd(const std::vector<std::string>& parts)
@@ -630,8 +642,10 @@ namespace playground
         }
 
         // The first `shown` of the lines `found` holds (1-based, ascending), kContext lines around each, numbered, groups
-        // apart ("--"), onto `out`; false when kMaxOutput cut it.
-        bool aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t shown, std::string& out)
+        // apart ("--"), onto `out`; false when kMaxOutput cut it. A line past the room while under half of it is used
+        // is shown cut (cutLongLine), `longCut` set: its note says how to read it all.
+        bool aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t shown, std::string& out,
+                        bool& longCut)
         {
             const int count = static_cast<int>(lines.size());
             int last = 0;                                        // the last line written
@@ -644,7 +658,14 @@ namespace playground
                 {
                     const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                     if (out.size() + l.size() > kMaxOutput)
+                    {
+                        if (out.size() < kMaxOutput / 2)
+                        {
+                            out += cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size());
+                            longCut = true;
+                        }
                         return false;
+                    }
                     out += l;
                 }
                 last = std::max(last, b);
@@ -743,8 +764,9 @@ namespace playground
                 const int count = static_cast<int>(h.lines.size());
                 out += h.file->name + ": " + std::to_string(count) + (count == 1 ? " line" : " lines") + ", version " + versions[k]
                      + (h.found.size() == 1 ? "; line " : "; lines ") + someNumbers(h.found, shown) + ":\n";
-                if (out.size() > kMaxOutput || !aroundEach(h.lines, h.found, shown, out))
-                    return out + "(cut here: give find " + finder.narrower() + ", or a file's name with from and lines)\n";
+                bool longCut = false;
+                if (out.size() > kMaxOutput || !aroundEach(h.lines, h.found, shown, out, longCut))
+                    return longCut ? out : out + "(cut here: give find " + finder.narrower() + ", or a file's name with from and lines)\n";
                 room -= shown;
             }
             if (total > kMaxFound)
@@ -851,7 +873,10 @@ namespace playground
             {
                 const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                 if (out.size() + l.size() > kMaxOutput)
-                    return out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
+                    return out.size() < kMaxOutput / 2
+                               ? out + cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size())
+                                     + (n < to ? "(read from " + std::to_string(n + 1) + " for the lines after it)\n" : "")
+                               : out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
                 out += l;
             }
             return out;
@@ -876,8 +901,9 @@ namespace playground
         std::string out = head + "; " + std::to_string(found.size()) + (found.size() == 1 ? " line" : " lines") + range + " "
                         + finder.verb(found.size()) + " " + finder.quoted() + (anyCase ? " (in another case)" : "") + " ("
                         + someNumbers(found, shownCount) + "), with " + std::to_string(kContext) + " lines around each:\n";
-        if (!aroundEach(lines, found, shownCount, out))
-            return out + "(cut here: give find " + finder.narrower() + ", or from and lines)\n";
+        bool longCut = false;
+        if (!aroundEach(lines, found, shownCount, out, longCut))
+            return longCut ? out : out + "(cut here: give find " + finder.narrower() + ", or from and lines)\n";
         if (found.size() > shownCount)
             out += "(and " + std::to_string(found.size() - shownCount) + " more lines " + finder.verb(2) + " it: give find "
                  + finder.narrower() + ")\n";

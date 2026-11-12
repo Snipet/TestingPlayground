@@ -563,6 +563,8 @@ namespace playground
         bool created = false;                    // a new project
         std::string name;                        // the project saved into (a factory project's copy: its own new name)
         bool copied = false;                     // the user's own copy of a factory project
+        int dropped = 0, droppedFrom = 0, droppedTo = 0;   // the oldest versions the save let go (a project keeps its
+                                                           // newest projectstore::kMaxVersions): how many, their numbers
     };
 
     // A save of the editor's off the message thread (startSave(), saving()): the one in flight, and the last one's

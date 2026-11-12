@@ -185,10 +185,11 @@ namespace playground::projectstore
 namespace playground
 {
     // Claude's projects (the projects tool: ChatProjects.cpp, ChatHost::chatProjects). Safe by design: a save only adds
-    // (a version, a preset, the user's own copy of a factory project), a preset is replaced only with `replace` (the old
-    // values said), and opening a project or applying a preset over unsaved changes (the editor's files, its samples or
-    // the dials changed since they were opened or saved) only with `discard`, which the user must have asked for;
-    // nothing is deleted (that is the user's alone).
+    // (a version, a preset, the user's own copy of a factory project; a project keeps its newest kMaxVersions versions,
+    // the result naming one let go), a preset is replaced only with `replace` (the old values said), and opening a
+    // project over unsaved changes (the editor's files, its samples or the dials changed since they were opened or
+    // saved), or applying a preset over dials moved so (the files stay), only with `discard`, which the user must have
+    // asked for; nothing is deleted (that is the user's alone).
     struct ProjectCall
     {
         enum class Action : uint8_t { list, saveVersion, savePreset, applyPreset, open };
@@ -219,7 +220,11 @@ namespace playground
         virtual ~ChatHost() = default;
 
         virtual Draft chatDraft() const = 0;                        // the editor's files and tab
-        virtual void chatSetDraft(const Draft& draft) = 0;          // the files Claude wrote; the editor follows
+        // The files Claude wrote (the editor follows), `draft` being what the tool made of `read`, the draft it read:
+        // the files it changed (their text, a name, one added or deleted) are written, the others keep their text as it
+        // is now, and a tab the user added since stays, so typing that landed between the read and the write is never
+        // reverted.
+        virtual void chatSetDraft(const Draft& draft, const Draft& read) = 0;
         // chatSetDraft's conditional write (edit_file, edit_circuit): each file `read` names gets its text from `draft`
         // (and the tab `draft` shows is shown), in one change of the draft, under the same lock as the test, only while
         // every one of them is still the text the tool read (`read`'s); false, and nothing set, when a gesture or the
@@ -649,7 +654,8 @@ namespace playground
         // no turn running): by a chat of the store, by a copy of one (another owner's, as a new chat of `owner`, written
         // at once), by the owner's newest (else a new one), by a new one. clearChat: the conversation forgotten (mutex
         // held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner asked from the turn's thread,
-        // at its end.
+        // at its end (an MCP call's: before it frees the chat), unless another was asked meanwhile (setOwner, a session's
+        // restoreChat or adoptChat drop it).
         void keepLocked();
         void showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
         void showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
@@ -791,7 +797,8 @@ namespace playground
         std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
 
         // The chat shown (above): its owner, the owner's name, its id, the user's title (named), when it was made, its file
-        // as last written or read here (another writer's change shows), revision_ when it was last written; storeMutex_
+        // as last written or read here (another writer's change shows), revision_ when it was last written and what it
+        // held then (storedDigest_, keepLocked's: a redraw that changed nothing writes nothing; 0: unknown); storeMutex_
         // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). An open asked from a
         // turn's own thread (turnThread_: the worker's, or an MCP call's; Claude Desktop's projects open) waits in
         // pendingOwner_.
@@ -802,6 +809,7 @@ namespace playground
         int64_t chatCreated_ = 0;
         chatstore::Stamp chatStamp_;
         uint64_t storedRevision_ = 0;
+        uint64_t storedDigest_ = 0;
         mutable std::mutex storeMutex_;
         struct PendingOwner
         {

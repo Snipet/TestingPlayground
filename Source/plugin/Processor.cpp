@@ -2895,7 +2895,7 @@ namespace playground
         }
         const projectstore::Saved& r = *job.result;
         const std::string tidy = projectstore::tidyName(job.name);
-        saved = { r.number, r.unchanged, r.created, tidy, false };
+        saved = { r.number, r.unchanged, r.created, tidy, false, r.dropped, r.droppedFrom, r.droppedTo };
         if (!r.unchanged && job.who)
             journal_.note(*job.who, "saved version " + std::to_string(r.number) + " of \"" + tidy + "\"");
         std::unique_lock<std::mutex> lock(programMutex_);
@@ -3086,7 +3086,7 @@ namespace playground
         const std::optional<std::string> added = projectstore::add(std::move(p), &why);
         if (!added)
             return false;
-        saved = { 1, false, true, *added, true };
+        saved = { 1, false, true, *added, true, 0, 0, 0 };
         if (who)
             journal_.note(*who, "saved \"" + *added + "\", a copy of the factory project \"" + ownName(origin->name)
                                     + "\" (its presets with it)");
@@ -3566,16 +3566,44 @@ namespace playground
         return draft_;
     }
 
-    void Processor::chatSetDraft(const Draft& draft)
+    void Processor::chatSetDraft(const Draft& draft, const Draft& read)
     {
-        Draft d = draft;
-        d.files = tidyFiles(std::move(d.files));
-        if (d.files.empty())
+        if (draft.files.empty())
             return;
-        d.active = std::clamp(d.active, 0, static_cast<int>(d.files.size()) - 1);
-        Draft before;
+        const std::string shown = draft.active >= 0 && draft.active < static_cast<int>(draft.files.size())
+                                      ? draft.files[static_cast<std::size_t>(draft.active)].name
+                                      : std::string();
+        Draft before, d;
         {
             const std::lock_guard<std::mutex> lock(programMutex_);
+            // Each file of the tool's draft comes from the file of its name in what it read, else (a rename) from the one
+            // in its place there whose name it no longer has. One whose text the tool left takes its text now (typing
+            // since the read), and goes if the user closed or renamed it since; a file the user added since stays.
+            Sources files;
+            for (std::size_t i = 0; i < draft.files.size(); ++i)
+            {
+                SourceFile f = draft.files[i];
+                const SourceFile* from = findFile(read.files, f.name);
+                if (from == nullptr && i < read.files.size() && findFile(draft.files, read.files[i].name) == nullptr)
+                    from = &read.files[i];
+                if (from != nullptr && from->text == f.text)
+                {
+                    const SourceFile* now = findFile(draft_.files, from->name);
+                    if (now == nullptr)
+                        continue;
+                    f.text = now->text;
+                }
+                files.push_back(std::move(f));
+            }
+            for (const SourceFile& f : draft_.files)
+                if (findFile(read.files, f.name) == nullptr && findFile(files, f.name) == nullptr)
+                    files.push_back(f);
+            d.files = tidyFiles(std::move(files));
+            if (d.files.empty())
+                return;
+            const auto at = std::find_if(d.files.begin(), d.files.end(), [&](const SourceFile& f) { return f.name == shown; });
+            d.active = at != d.files.end() ? static_cast<int>(at - d.files.begin())
+                                           : std::clamp(draft.active, 0, static_cast<int>(d.files.size()) - 1);
             before = std::exchange(draft_, d);
             ++draftRevision_;                                    // the editor merges it into its tabs
         }

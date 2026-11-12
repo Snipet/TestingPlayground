@@ -445,7 +445,8 @@ namespace playground
             for (const Incoming& in : incoming)
                 if (!names.insert(in.name).second)
                     return fail(in.name + " comes twice. Nothing was written");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             std::size_t added = 0;
             for (const Incoming& in : incoming)
                 added += findIn(d, in.name) < 0 ? 1 : 0;
@@ -488,7 +489,7 @@ namespace playground
             }
             d.active = shown;
             setActivity(fromDisk ? "Bringing files in" : "Writing files");
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             std::string versions;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -539,7 +540,8 @@ namespace playground
             return fail(audioRefusal(file));
         if (!validFileName(file))
             return fail("'" + file + "' cannot name a file: use " + nameRule());
-        Draft d = host_.chatDraft();
+        const Draft read = host_.chatDraft();
+        Draft d = read;
         int i = findIn(d, file);
         int keptLines = 0;
         if (i < 0)
@@ -556,7 +558,7 @@ namespace playground
         }
         d.active = i;
         setActivity("Writing " + file);
-        host_.chatSetDraft(d);
+        host_.chatSetDraft(d, read);
         std::string version;
         {
             const std::lock_guard<std::mutex> lock(mutex_);

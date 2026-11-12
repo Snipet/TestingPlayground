@@ -41,6 +41,13 @@
 //            the answer and the turns before it; the project before keeps its own); a turn whose save waits for
 //            poll() while the user opens a project (the message thread stopping and joining the turn): the job
 //            withdrawn at the stop, the open back in well under a second, nothing saved
+//   DESKTOP  Claude Desktop's open of another project while the chat shown holds a check: the chat shown is the
+//            other project's after the call, the result says nothing cleared, and the project before keeps its chat's
+//            check (opened again, it is there); the user opening a project while Desktop's open waits for its dials:
+//            the user's project and its chat stand when the call ends
+//   CAP      save_version into a project of 100 versions: version 1 let go, and the result says so (not that every
+//            version is kept)
+//   COPY     save_version of a factory project's name with no project open: the result names the factory project
 #include "Audio.h"
 #include "FakeClaude.h"
 #include "Probe.h"
@@ -618,6 +625,75 @@ PROBE(plugin, saves)
             P.eq("chat.switch_nothing_saved", switched && !a.claudeJobWaiting() && !agent.chatState().busy && script->postCount() - b7 == 1
                                                   && before && after && after->versions.size() == before->versions.size()
                                                   && pa.claudeNotice().count == was && pa.project().name == "Glass Song" ? 1 : 0, 1);
+        }
+
+        // ---- DESKTOP: Claude Desktop's open, the plugin's own chat left as the user's ------------------------------
+        // Glass Song's chat holds a check; Claude Desktop opens Other Song: the chat shown becomes Other Song's at the
+        // call's end, and Glass Song's keeps its check (the user's own open keeps a chat's checks with it), the result
+        // claiming no clearing.
+        const std::string glassId = ps::idOf("Glass Song"), otherId = ps::idOf("Other Song");
+        {
+            juce::Array<juce::var> one;
+            one.add(object({ { "label", "Some level" }, { "metric", kInstrument ? "rms_db" : "sine_rms_db" }, { "min", -200.0 } }));
+            (void)call(a, "set_checks", object({ { "checks", juce::var(one) } }));
+            P.eq("desktop.checks_set", agent.chatState().checks && agent.chatOwner() == glassId ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult o = projects(a, { { "action", "open" }, { "name", "Other Song" }, { "discard", true } });
+            std::printf("desktop open: %s\n", textOf(o).c_str());
+            P.eq("desktop.open_shows_other", !o.isError && agent.chatOwner() == otherId && pa.project().name == "Other Song" ? 1 : 0, 1);
+            P.eq("desktop.open_no_clearing_said", has(textOf(o), "cleared") ? 0 : 1, 1);
+            P.eq("desktop.back_to_glass", pa.openProject("Glass Song", 3, why) ? 1 : 0, 1);
+            a.settle();
+            P.eq("desktop.glass_keeps_checks", agent.chatOwner() == glassId && agent.chatState().checks ? 1 : 0, 1);
+        }
+        // Claude Desktop's open waits for its compile and its dials while the user opens another project (Glass Song)
+        // in PROJECTS: the user's choice stands, the chat shown Glass Song's when the call ends.
+        {
+            pg::ChatAgent::McpResult r;
+            std::atomic<bool> done{ false };
+            std::thread t([&] {
+                r = agent.mcpCall("projects", object({ { "action", "open" }, { "name", "Other Song" }, { "discard", true } }));
+                done.store(true);
+            });
+            bool during = false;
+            for (int k = 0; k < 20000 && !done.load(); ++k)
+            {
+                a.poll();
+                if (!during && pa.project().name == "Other Song")
+                {
+                    during = !done.load();
+                    (void)pa.openProject("Glass Song", 3, why);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            t.join();
+            a.settle();
+            std::printf("desktop open, the user's open meanwhile: %s\n", textOf(r).c_str());
+            P.eq("desktop.user_open_during", during ? 1 : 0, 1);
+            P.eq("desktop.user_open_wins", pa.project().name == "Glass Song" && agent.chatOwner() == glassId
+                                               && agent.chatState().owner == "Glass Song" ? 1 : 0, 1);
+        }
+
+        // ---- CAP: a save at the project's 100 versions lets the oldest go, and says which -------------------------
+        {
+            for (int v = 1; v <= ps::kMaxVersions; ++v)
+                (void)ps::saveVersion("Many Takes", program("take " + std::to_string(v)), 0, {});
+            const std::optional<ps::Project> full = ps::load("Many Takes");
+            P.eq("cap.setup", full ? static_cast<int64_t>(full->versions.size()) : 0, ps::kMaxVersions);
+            const pg::ChatAgent::McpResult s = projects(a, { { "action", "save_version" }, { "name", "Many Takes" } });
+            std::printf("save_version at the cap: %s\n", textOf(s).c_str());
+            const std::optional<ps::Project> after = ps::load("Many Takes");
+            P.eq("cap.saved", !s.isError && after && after->versions.size() == static_cast<std::size_t>(ps::kMaxVersions)
+                                  && after->versions.front().number == 2 ? 1 : 0, 1);
+            P.eq("cap.said", has(textOf(s), "version 1, its oldest, is no longer kept") && !has(textOf(s), "Every version is kept") ? 1 : 0, 1);
+        }
+
+        // ---- COPY: a factory project's name saved with no project open: the copy names the factory's ----------------
+        {
+            pa.startAfresh(program("afresh"), "a fresh start");
+            a.settle();
+            const pg::ChatAgent::McpResult s = projects(a, { { "action", "save_version" }, { "name", juce::String(factoryName) } });
+            std::printf("save_version (factory name, none open): %s\n", textOf(s).c_str());
+            P.eq("copy.names_factory", !s.isError && has(textOf(s), "the user's own copy of the factory's \"" + pg::ownName(factoryName) + "\"") ? 1 : 0, 1);
         }
     }
 

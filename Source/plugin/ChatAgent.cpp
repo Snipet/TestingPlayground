@@ -4242,6 +4242,9 @@ namespace playground
         const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
         if (!live)
         {
+            // A project Claude Desktop opened shows its chat now, while the call still holds the chat (readState keeps
+            // it busy): no message of the user's lands in the chat it leaves, nor a turn starts under the switch.
+            applyPendingOwner();
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 busy_ = false;
@@ -4251,7 +4254,6 @@ namespace playground
                 turnThread_.store(std::thread::id{});   // as runTurn's end: before another turn or call can start
                 touch();
             }
-            applyPendingOwner();
         }
         const juce::var content = block.getProperty("content", juce::var());
         juce::Array<juce::var> out;
@@ -4698,7 +4700,8 @@ namespace playground
             std::string file, to;
             if (!stringArg("name", file) || !stringArg("new_name", to))
                 return fail("rename_file needs name and new_name");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             const int i = findFile(d, file);
             if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
             {
@@ -4715,7 +4718,7 @@ namespace playground
             if (findFile(d, to) >= 0)
                 return fail("There is a file " + to + " already");
             d.files[static_cast<std::size_t>(i)].name = to;
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 if (const auto it = seen_.find(file); it != seen_.end())
@@ -4733,7 +4736,8 @@ namespace playground
             std::string file;
             if (!stringArg("name", file))
                 return fail("delete_file needs a name");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             const int i = findFile(d, file);
             if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
             {
@@ -4749,7 +4753,7 @@ namespace playground
                 return fail("The first file is the program and cannot be deleted");
             d.files.erase(d.files.begin() + i);
             d.active = std::min(d.active, static_cast<int>(d.files.size()) - 1);
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 seen_.erase(file);
@@ -4773,7 +4777,8 @@ namespace playground
             const std::string text = lib->source;
             const int lines = lineCount(text);
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             if (const int i = findFile(d, file); i >= 0)
             {
                 if (d.files[static_cast<std::size_t>(i)].text != text)
@@ -4790,7 +4795,7 @@ namespace playground
             setActivity("Adding " + file);
             d.files.push_back({ file, text });
             d.active = static_cast<int>(d.files.size()) - 1;
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 markSeen(file, text);

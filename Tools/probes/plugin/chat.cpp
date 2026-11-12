@@ -95,7 +95,8 @@
 //            and no find), and a pattern of many states over a 30,000-character line stopped at its 20 million steps,
 //            saying where, in one file and in every file (a line found before it: none counted only in the files
 //            searched, and what was not searched named), the steps one budget across the lines and files of a call
-//            (stopped in a second file where neither alone spends it); a part read is not the file seen, nor is an edit
+//            (stopped in a second file where neither alone spends it); that line read by from and lines, and found in
+//            one file and in every file: shown cut, its length said, a whole read named; a part read is not the file seen, nor is an edit
 //            after it (the next state sends it, with the user's line and the edit, and names unchanged a file read
 //            whole), and an edit of a file seen is seen; edit_file's miss gives the closest passage, numbered, and what
 //            differs (the characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a
@@ -2122,6 +2123,7 @@ PROBE(plugin, chat)
                                              && has(refused("a**"), "bad repetition operator: **") && has(refused("a{1001}"), "at most 1000")
                                              && has(refused("(a{100}){100}"), "too large") && has(refused("\\p{L}"), "\\p")
                                              && has(refused("(?:(?:()()()()()()()()()()a){1000}){5}"), "too large")
+                                             && has(refused("(?:(?:()()()()a){1000}){4}"), "take too many steps to write out")
                                              && has(refused("\\Q\\E*"), "missing argument to repetition operator: *")
                                              && refused("[z-a]") == "invalid character class range: z-a (at character 2)" ? 1 : 0, 1);
             // (a+)+$ and (a|aa)+$ on 100,000 a's and a b: exponential for a backtracking engine, here a few steps a
@@ -2745,6 +2747,22 @@ PROBE(plugin, chat)
                                                && inAll == "No line found yet: the search stopped at long.fm's line 1: " + costly
                                                              + "a file's name with from and lines, searches the rest.\n"
                                                && ms < 4000.0 ? 1 : 0, 1);
+
+            // A line longer than a part read may show (12,000 characters): shown cut where a character starts, with its
+            // length, and a whole read named as the way to it all (never "read from 1" again, which shows the same).
+            const std::string partRead = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "from", 1 }, { "lines", 1 } })));
+            const std::string foundOne = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "find", "// aaa" } })));
+            const std::string foundAll = toolText(agent.mcpCall("read_file", input({ { "find", "aaaaaaaa" } })));
+            const std::string longSaid = "line 1 is 30003 characters long: cut here; read_file with no from, lines or find gives the whole file";
+            std::printf("a 30,003-character line read in part: %s\n%s\n%s\n", partRead.substr(partRead.size() - std::min<std::size_t>(partRead.size(), 200)).c_str(),
+                        foundOne.substr(foundOne.size() - std::min<std::size_t>(foundOne.size(), 200)).c_str(),
+                        foundAll.substr(foundAll.size() - std::min<std::size_t>(foundAll.size(), 200)).c_str());
+            P.eq("files.long_line_range", has(partRead, "1\t// aaaa") && has(partRead, longSaid) && !has(partRead, "read from 1 for the rest")
+                                              && partRead.size() <= 12200 ? 1 : 0, 1);
+            P.eq("files.long_line_find", has(foundOne, "1\t// aaaa") && has(foundOne, longSaid) && !has(foundOne, "give find")
+                                             && foundOne.size() <= 12200 ? 1 : 0, 1);
+            P.eq("files.long_line_find_all", has(foundAll, "1\t// aaaa") && has(foundAll, longSaid) && !has(foundAll, "give find")
+                                                 && foundAll.size() <= 12200 ? 1 : 0, 1);
 
             // Stopped partway with a line found before: none is said only of the files searched to their end, and what
             // was not searched is named (the rest of the file it stopped in, and the files after it).

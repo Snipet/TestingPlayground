@@ -20,6 +20,9 @@
 //   SAMPLES a WAV by its path added as a sample; path beside content refused; an audio file's name with content
 //           refused, naming path; from: a folder's audio file left out, said with path, and one named alone refused;
 //           to: the program's samples exported beside its files, byte for byte, and said
+//   TYPING  the processor's write of a tool's draft (chatSetDraft) after the user typed in another file and added a
+//           tab between the tool's read and its write: a file written, renamed, deleted or added, the typing and the
+//           new tab kept
 #include "Probe.h"
 
 #include "plugin/ChatAgent.h"
@@ -34,6 +37,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -317,6 +321,37 @@ PROBE(plugin, import)
                                      && has(t, "and the program's 1 sample") && has(t, "kick.wav (a sample, ") ? 1 : 0, 1);
         if (programs != juce::File())
             programs.deleteRecursively();
+    }
+
+    // ---- TYPING: what the user typed between a tool's read and its write stays -----------------------------------
+    {
+        const std::string typed = "// kept\n// typed meanwhile\n";
+        const auto typing = [&](const std::function<void(pg::Draft&)>& change) {
+            reset();
+            const pg::Draft read = p.chatHost().chatDraft();
+            pg::Draft typedIn = read;
+            for (pg::SourceFile& f : typedIn.files)
+                if (f.name == "keep.fm")
+                    f.text = typed;
+            typedIn.files.push_back({ "new.fm", "// a tab the user added\n" });
+            p.editorPort().setDraft(typedIn);                     // the editor's push, between the read and the write
+            pg::Draft d = read;
+            change(d);
+            p.chatHost().chatSetDraft(d, read);
+            return p.chatHost().chatDraft();
+        };
+        pg::Draft now = typing([](pg::Draft& d) { d.files.front().text = program("written"); });
+        P.eq("typing.write_kept", fileOf(now, pg::kProgramName) != nullptr && fileOf(now, pg::kProgramName)->text == program("written")
+                                      && fileOf(now, "keep.fm") != nullptr && fileOf(now, "keep.fm")->text == typed && fileOf(now, "new.fm") != nullptr ? 1 : 0, 1);
+        now = typing([](pg::Draft& d) { d.files.back().name = "renamed.fm"; });
+        P.eq("typing.rename_kept", fileOf(now, "keep.fm") == nullptr && fileOf(now, "renamed.fm") != nullptr
+                                       && fileOf(now, "renamed.fm")->text == typed && fileOf(now, "new.fm") != nullptr ? 1 : 0, 1);
+        now = typing([](pg::Draft& d) { d.files.pop_back(); });
+        P.eq("typing.delete_kept", fileOf(now, "keep.fm") == nullptr && fileOf(now, "new.fm") != nullptr
+                                       && fileOf(now, pg::kProgramName) != nullptr && fileOf(now, pg::kProgramName)->text == program("before") ? 1 : 0, 1);
+        now = typing([](pg::Draft& d) { d.files.push_back({ "lib.fm", "// added\n" }); });
+        P.eq("typing.add_kept", fileOf(now, "lib.fm") != nullptr && fileOf(now, "keep.fm") != nullptr && fileOf(now, "keep.fm")->text == typed
+                                    && fileOf(now, "new.fm") != nullptr ? 1 : 0, 1);
     }
 
     owned.reset();

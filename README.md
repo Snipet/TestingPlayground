@@ -1551,11 +1551,12 @@ with their notes and its presets), saves the editor's files and the dials as a n
 a project it names: a new one when none has the name), with a note of what changed ("Claude: a brighter filter
 (program.fm +12 -3, 2 dials)", which PROJECTS lists) and a category if you gave one (with nothing new to save, the
 category alone), saves the dials as a preset (with a category), applies a preset of the project open, and opens a
-project or one of its versions. It is safe by design: a save only adds (every version is kept; a factory project is
-never written: a save makes your own copy, its presets with it); a preset of the same name is replaced only when you
-asked for that, and Claude is told its old values; opening a project or applying a preset while the editor holds
-changes nothing saved holds (files or samples changed since they were opened or saved, a dial moved from the version's
-or the preset's value, or from its default with no project open) is refused, naming them, unless you said to drop them;
+project or one of its versions. It is safe by design: a save only adds (a project keeps its newest 100 versions, as
+your own saves do; a factory project is never written: a save makes your own copy, its presets with it); a preset of
+the same name is replaced only when you asked for that, and Claude is told its old values; opening a project while the
+editor holds changes nothing saved holds (files or samples changed since they were opened or saved, a dial moved from
+the version's or the preset's value, or from its default with no project open), or applying a preset over dials moved
+so (your files stay as they are), is refused, naming them, unless you said to drop them;
 while you compare in A/B nothing is saved and no preset applied (Keep a side or Close first); and nothing is ever
 deleted (that stays yours, in PROJECTS). What Claude opens or applies is yours: its checks never send it on to change
 it, and opening another project clears them (they were for the program before). Each save, open and preset shows: the

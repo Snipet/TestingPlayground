@@ -17,6 +17,8 @@
 //   SWITCH   a chat in project A; opening B (no chats yet) shows a new chat, A's kept; a chat in B; opening A again
 //            brings A's back (its words, its history), and its next request sends A's thinking block unchanged
 //            (preserved thinking); B's comes back with B
+//   PILL     the thinking level and web search changed while B's chat shows, then A opened: B's file not written again
+//            (its time and identity as they were); a turn in A: A's written, with a newer time
 //   CARRY    a chat with no project open (an example started afresh), the editor saved as project C: the chat goes
 //            with C (none left with the instance); C saved as D: D gets a copy, C keeps its own
 //   LIST     a new chat: the list has it first (not written yet) and the one before; written, the newest first;
@@ -416,6 +418,29 @@ PROBE(plugin, chats)
             a.settle();
             P.eq("switch.b_back", said(agent.chatState()) == wordsB ? 1 : 0, 1);
             P.eq("switch.two_projects", cs::chatsOf(idA).size() == 1 && cs::chatsOf(idB).size() == 1 ? 1 : 0, 1);
+
+            // A pill changed (the thinking level, web search) changes no conversation: B's chat is not written again
+            // when another project opens, its time (the list's order and the project's newest) as it was.
+            const std::vector<cs::ChatMeta> bBefore = cs::chatsOf(idB);
+            const juce::File bFile = keys.findChildFiles(juce::File::findFiles, true, (bBefore.empty() ? std::string("none") : bBefore[0].id) + ".chat")
+                                         .getFirst();
+            const juce::String bIdentity = juce::String(static_cast<juce::int64>(bFile.getFileIdentifier()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            agent.setEffort("low");
+            agent.setWeb(true);
+            agent.setWeb(false);
+            P.eq("pill.a_opened", port.openProject("Song A", 0, why) ? 1 : 0, 1);
+            a.settle();
+            const std::vector<cs::ChatMeta> bAfter = cs::chatsOf(idB);
+            P.eq("pill.b_not_rewritten", bBefore.size() == 1 && bAfter.size() == 1 && bAfter[0].updatedMs == bBefore[0].updatedMs
+                                             && bFile.existsAsFile()
+                                             && juce::String(static_cast<juce::int64>(bFile.getFileIdentifier())) == bIdentity ? 1 : 0, 1);
+            // A word said is a change: A's chat, written again with its new time.
+            const std::vector<cs::ChatMeta> aBefore = cs::chatsOf(idA);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            turn(a, *script, "and darker", "Plan A3.", "sig-a3", "Darker.");
+            const std::vector<cs::ChatMeta> aAfter = cs::chatsOf(idA);
+            P.eq("pill.a_said_written", aBefore.size() == 1 && aAfter.size() == 1 && aAfter[0].updatedMs > aBefore[0].updatedMs ? 1 : 0, 1);
         }
 
         // ---- CARRY --------------------------------------------------------------------------------------------------

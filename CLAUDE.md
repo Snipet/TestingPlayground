@@ -805,7 +805,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `chatState` asks `hasKey` before taking it. libsecret's lookup and clear say nothing about a keyring left locked (a
   lookup finds nothing, a clear removes nothing): `readKey` asks `has()` after an empty lookup (the key kept, said
   locked), `SecretStore`'s clear unlocks first, and `dropKey` asks `has()` after it (a forget that left the key false,
-  with why, and the chat says it was not removed). Never the keyring while
+  with why, and the chat says it was not removed; a keyring that answers nothing, no Secret Service behind the bus,
+  holds it only when it said so last, or said nothing and there was no file). Never the keyring while
   the store's folder is a test's or a probe's sandbox: a probe gives a `secrets::Store` of its own
   (`setSecretStoreForTests`), or the desktop's with `DBUS_SESSION_BUS_ADDRESS` pointing nowhere (libsecret's calls fail
   at the connection), never the user's bus.
@@ -1155,7 +1156,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
     turn (the projects tool's open: `openProjectAs` with `Journal::Who::chat`) is a `carry` too: the conversation that
     asked for it goes on with it, never left behind with the project before. An `open` asked from a turn's own thread
     (Claude Desktop's projects open, which runs as a turn: the user's own chat changes project, as with PROJECTS)
-    waits for the turn's end (`pendingOwner_`), never joins the worker from itself; a `carry` runs at once. A switch
+    waits for the turn's end (`pendingOwner_`: an MCP call's before it frees the chat; any owner asked meanwhile, the
+    user's open or a session's, drops it), never joins the worker from itself; a `carry` runs at once. A switch
     stops the turn and joins it on the message thread, so nothing a turn does waits for the message thread past
     `ChatAgent::stopping()` (`chatPicture`, view_panel's wait for `poll()`; `onMessageThread`, the projects tool's).
     Deleting a project deletes its chats (the Projects card says so) unless a Finder copy holds its id.
@@ -1168,8 +1170,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
     session names, else a new one, never another of its chats (a project's is its newest).
   - **When it is written.** `ChatAgent::keep` (`saveState(true)`: the panel's pictures kept, so a chat opened again
     keeps its thinking) at a turn's end, at `getStateInformation` (`keepIdle`: not while a turn runs, as a host may
-    ask at every change), before another chat shows, on a new chat and when the agent goes; only when it changed and
-    holds more than the chat's notes; one writer at a time (`storeMutex_`, never under `mutex_`; a switch stops and
+    ask at every change), before another chat shows, on a new chat and when the agent goes; only when it changed (its
+    state, title or name: `storedDigest_`; a pill or a redraw writes nothing, its time kept) and holds more than the
+    chat's notes; one writer at a time (`storeMutex_`, never under `mutex_`; a switch stops and
     joins the worker before it takes it). A chat file another writer changed since it was read here (two instances
     with one chat; `chatstore::Stamp`, its time, size and identity: each save renames a new file in) is a conflict:
     this one is kept under a new id. A project's chat whose folder is gone since it was
@@ -1981,10 +1984,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (list, save_version, save_preset, apply_preset, open: its properties undescribed, what each takes in the
   description's second paragraph, which the guide's projects part has, the tool budget's way). **Safe by design**, and
   keep it so: a save only adds (a version through `saveVersionAs`, a preset through `savePresetAs`, a factory project's
-  save the user's own copy, `saveCopy`); a preset of the name is replaced only with `replace`, the result giving its
-  old values; open and apply_preset are refused while the editor holds unsaved changes (`ProjectState::changed`: its
-  files or samples; a dial off the version's or the preset's value, `baseDials_`, or off its default with no project
-  open), naming them (`unsavedWhat`), unless `discard`, which the guide says only the user may ask for; a save, a
+  save the user's own copy, `saveCopy`; the newest `kMaxVersions` kept, the result naming one let go); a preset of the
+  name is replaced only with `replace`, the result giving its old values; open is refused while the editor holds
+  unsaved changes (`ProjectState::changed`: its files or samples; a dial off the version's or the preset's value,
+  `baseDials_`, or off its default with no project open), apply_preset while a dial is off so (the files stay),
+  naming them (`unsavedWhat`), unless `discard`, which the guide says only the user may ask for; a save, a
   preset and apply_preset are refused while an A/B is on or its Keep or Close still lands (`ab_.st.on`, `abEnding_`:
   what plays is a side's, not the editor's); nothing deletes (no action does: deleting is the user's, in PROJECTS).
   The saves, opens and presets run on the message thread, as PROJECTS runs them: the caller's worker hands poll() a
@@ -2005,7 +2009,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   past) and, the plugin's own chat's, to the journal as `Journal::Who::chat` (Claude Desktop's not: it knows); the
   chat's row says it. projects is none of `kChangingTools`: what it opens or applies is the user's asking, never
   Claude's work for the checks to send on; an open of another project clears the checks (`ProjectAnswer::another`,
-  `ChatAgent::projectsText`), as a fresh start does, and its result says so. The guide says when to save (when the user
+  `ChatAgent::projectsText`), as a fresh start does, and its result says so (Claude Desktop's leaves them with the
+  chat of the project before, the opened one's own chat showing at the call's end). The guide says when to save (when the user
   asks, or at a milestone they agreed to; never silently) in RANDOM AND PROJECTS, and start names that part.
   `plugin.saves` checks both paths, `gui.presets` CLAUDE the editor's side.
 

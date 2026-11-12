@@ -150,6 +150,7 @@ namespace playground
         std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32, then the panel's
         EditorPort& editorPort() noexcept { return *this; }
         ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
+        ChatHost& chatHost() noexcept { return *this; }          // probes: what Claude's tools act on
         // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.
         int editorWidth() const noexcept { return editorW_.load(); }
         int editorHeight() const noexcept { return editorH_.load(); }
@@ -388,7 +389,7 @@ namespace playground
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
-        void chatSetDraft(const Draft& draft) override;
+        void chatSetDraft(const Draft& draft, const Draft& read) override;
         bool chatSetDraftIf(const Draft& draft, const Sources& read) override;
         std::string chatSchematicPins(const std::string& file) const override;
         CompileStatus chatRun(const Sources& files) override;

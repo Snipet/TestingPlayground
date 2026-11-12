@@ -28,6 +28,15 @@ namespace playground
             }
             return h;
         }
+
+        // What a chat's file and .meta hold that changes with its conversation (its state, its title and whether the user
+        // named it; never the time): a redraw that changed none of them (a pill, the model, an MCP call's activity)
+        // writes nothing. Never 0 (0: none known, written at the next keep).
+        uint64_t keptDigest(const std::string& json, const std::string& title, bool named)
+        {
+            const uint64_t h = fnv(json + '\x1f' + title + (named ? "\x1f" "1" : "\x1f" "0"));
+            return h == 0 ? 1 : h;
+        }
     }
 
     // A session's conversation from before the chats were kept here: its chat's id, made from its text, so the same
@@ -151,13 +160,14 @@ namespace playground
         std::string owner, wasId;
         chatstore::ChatMeta meta;
         chatstore::Stamp stamp;
-        uint64_t revision = 0;
+        uint64_t revision = 0, digestWas = 0, digest = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             if (chatOwner_.empty() || revision_ == storedRevision_ || !worthKeeping())
                 return;
             owner = chatOwner_;
             revision = revision_;
+            digestWas = storedDigest_;
             const int64_t now = juce::Time::currentTimeMillis();
             if (chatCreated_ <= 0)
                 chatCreated_ = now;
@@ -176,6 +186,15 @@ namespace playground
         else
         {
             const std::string json = saveState(true);  // its pictures kept: opened again, it keeps its thinking
+            digest = keptDigest(json, meta.title, meta.named);
+            if (!stamp.none() && digest == digestWas)
+            {
+                // Redrawn, not changed: its file (and its time, the list's order and the project's newest) as it was.
+                const std::lock_guard<std::mutex> lock(mutex_);
+                if (chatOwner_ == owner && chatId_ == wasId)
+                    storedRevision_ = revision;
+                return;
+            }
             r = chatstore::saveChat(owner, meta, json, stamp, &why);
             if (r == chatstore::SaveResult::conflict)
             {
@@ -206,6 +225,7 @@ namespace playground
         chatId_ = meta.id;
         chatStamp_ = stamp;
         storedRevision_ = revision;
+        storedDigest_ = digest;
         if (keepFailed_)
         {
             keepFailed_ = false;
@@ -218,6 +238,7 @@ namespace playground
     void ChatAgent::showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label)
     {
         readState(chat.state);
+        const std::string json = saveState(true);
         const std::lock_guard<std::mutex> lock(mutex_);
         chatOwner_ = owner;
         ownerLabel_ = label;
@@ -229,6 +250,7 @@ namespace playground
         keepFailed_ = false;
         touch();
         storedRevision_ = revision_;                   // as it is on disk
+        storedDigest_ = keptDigest(json, titleNow(), chatNamed_);
     }
 
     void ChatAgent::showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label)
@@ -240,6 +262,7 @@ namespace playground
             chatCreated_ = 0;
             chatStamp_ = {};
             storedRevision_ = 0;                       // written now
+            storedDigest_ = 0;
         }
         keepLocked();
     }
@@ -270,6 +293,7 @@ namespace playground
         keepFailed_ = false;
         touch();
         storedRevision_ = revision_;
+        storedDigest_ = 0;
     }
 
     // ---- the processor's side -----------------------------------------------------------------------------------------
@@ -277,6 +301,12 @@ namespace playground
     {
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            if (how == OwnerChange::open && owner != chatOwner_ && onTurnThread())
+            {
+                pendingOwner_ = { true, owner, label };   // Claude Desktop's call opened a project: at the call's end
+                return false;
+            }
+            pendingOwner_ = {};                        // an owner asked since (the user's open meanwhile) stands
             if (owner == chatOwner_)
             {
                 if (ownerLabel_ != label)
@@ -284,11 +314,6 @@ namespace playground
                     ownerLabel_ = label;               // the project renamed: its chats are the same
                     touch();
                 }
-                return false;
-            }
-            if (how == OwnerChange::open && onTurnThread())
-            {
-                pendingOwner_ = { true, owner, label };   // Claude Desktop's call opened a project: at the call's end
                 return false;
             }
         }
@@ -369,6 +394,7 @@ namespace playground
         const std::string source = from.empty() ? owner : from;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            pendingOwner_ = {};                        // the session's owner stands over one a call waits to show
             if (source == owner && owner == chatOwner_ && ((!id.empty() && id == chatId_) || (id.empty() && !worthKeeping())))
             {
                 ownerLabel_ = label;                   // the chat shown already (a host setting the state it got)
@@ -406,6 +432,7 @@ namespace playground
         const std::string id = sessionChatId(json);
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            pendingOwner_ = {};                        // the session's owner stands over one a call waits to show
             if (owner == chatOwner_ && id == chatId_)
             {
                 ownerLabel_ = label;
@@ -434,6 +461,7 @@ namespace playground
             keepFailed_ = false;
             touch();
             storedRevision_ = 0;                       // written now
+            storedDigest_ = 0;
         }
         keepLocked();
     }

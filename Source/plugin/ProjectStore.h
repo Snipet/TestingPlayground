@@ -328,6 +328,8 @@ namespace playground::projectstore
         bool created = false;                            // a new project
         std::string id;                                  // the id in its file now ("" for a project from before ids
                                                          // that this save did not write)
+        int dropped = 0, droppedFrom = 0, droppedTo = 0; // the oldest versions let go for kMaxVersions: how many, their
+                                                         // numbers
     };
     // MIDI learn's mappings for a new version (Version::midi). `inherited`: they came from before the version open now,
     // which had none (opening it left them), and are as they were when it opened: while the project's latest version
