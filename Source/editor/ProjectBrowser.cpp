@@ -31,13 +31,14 @@ namespace playground::ui
         constexpr uint32_t kBoxId = ProjectBrowser::kA11yBase, kListId = kBoxId + 1,   // + the list
                            kFieldId = kBoxId + 4, kSaveId = kBoxId + 5, kOpenId = kBoxId + 6, kRemoveId = kBoxId + 7,
                            kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10, kAbId = kBoxId + 11,
+                           kCompareId = kBoxId + 16,
                            kSearchId = kBoxId + 12, kClearId = kBoxId + 13, kTagId = kBoxId + 14, kSortId = kBoxId + 15,
                            kRowId = kBoxId + 0x100,                                     // + the list * 0x1000 + the row
                            kGroupId = kBoxId + 0x4000,                                  // + the group
                            kStarId = kBoxId + 0x5000;                                   // + the row
         // The menus' ids.
         constexpr int kOpenItem = 1, kStarItem = 2, kExportItem = 3, kDeleteItem = 4, kNewCategory = 10, kNoCategory = 11,
-                      kFoldAll = 20, kUnfoldAll = 21, kRename = 22, kAnyTag = 1, kByName = 1, kByDate = 2, kChoice = 100;
+                      kFoldAll = 20, kUnfoldAll = 21, kRename = 22, kCompareBefore = 30, kCompareEditor = 31, kAnyTag = 1, kByName = 1, kByDate = 2, kChoice = 100;
 
         using L = ProjectBrowser::List;
         using projectgroups::Kind;
@@ -435,6 +436,17 @@ namespace playground::ui
                 dropdown::dropdownMenu(request, spots.tag, current);
                 break;
             }
+            case Menu::version:
+            {
+                const int c = row >= 0 && row < static_cast<int>(versions_.size()) ? row : -1;
+                if (c < 0)
+                    return;
+                request.items.push_back(dropdown::header(v(versions_[static_cast<std::size_t>(c)].number)));
+                request.items.push_back({ kCompareBefore, "Compare with the version before", c + 1 < static_cast<int>(versions_.size()) });
+                request.items.push_back({ kCompareEditor, "Compare with the editor" });
+                request.anchor = { at.x, at.y, 1.0f, 1.0f };
+                break;
+            }
             case Menu::sort:
                 request.items.push_back(dropdown::choice(kByName, "By name", !view_.byDate));
                 request.items.push_back(dropdown::choice(kByDate, "By last saved", view_.byDate));
@@ -459,6 +471,10 @@ namespace playground::ui
         };
         switch (m)
         {
+            case Menu::version:
+                if (id == kCompareBefore || id == kCompareEditor)
+                    compareChosen(id == kCompareBefore ? 1 : 2, row);
+                return;
             case Menu::row:
                 if (id == kOpenItem)
                 {
@@ -723,6 +739,45 @@ namespace playground::ui
         return a;
     }
 
+    std::tuple<std::string, int, int> ProjectBrowser::takeCompare()
+    {
+        std::tuple<std::string, int, int> c{ "", 0, 0 };
+        c.swap(compare_);
+        return c;
+    }
+
+    void ProjectBrowser::compareChosen(int how, int row)
+    {
+        if (chosenName_.empty() || versions_.empty())
+        {
+            ask_ = Ask::none;
+            why_ = projects_.empty() ? "There is no project yet: Compare shows what changed between its versions."
+                                     : "Choose a project: Compare shows what changed between its versions.";
+            return;
+        }
+        const int n = static_cast<int>(versions_.size());   // the newest first
+        int c = row >= 0 && row < n ? row : chosen_[idx(L::versions)];
+        const bool chosen = c >= 0 && c < n;
+        if (!chosen)
+            c = 0;
+        const auto number = [&](int i) { return versions_[static_cast<std::size_t>(i)].number; };
+        int left = 0, right = 0;                         // 0: the editor (DiffCard::kEditor)
+        const ProjectState st = port_.project();
+        if (how == 2 || (how == 0 && chosenIsOpen() && st.edited))
+        {
+            // The editor's changes: against the version chosen, else the one open.
+            left = chosen || how == 2 ? number(c) : (st.version > 0 ? st.version : number(0));
+            right = 0;
+        }
+        else
+        {
+            right = number(c);
+            left = c + 1 < n ? number(c + 1) : 0;        // the first version: against the editor
+        }
+        compare_ = { chosenName_, left, right };
+        close();
+    }
+
     void ProjectBrowser::chooseProjectNamed(const std::string& name, float width, float height)
     {
         readProjects();
@@ -864,6 +919,7 @@ namespace playground::ui
         at.importIt = { at.remove.right() + 8.0f, by, 96.0f, kButtonH };
         at.exportIt = { at.importIt.right() + 8.0f, by, 96.0f, kButtonH };
         at.ab = { at.exportIt.right() + 8.0f, by, 72.0f, kButtonH };
+        at.compare = { at.ab.right() + 8.0f, by, 96.0f, kButtonH };
         // The top: the search field after the title, then the tag's dropdown and the order's at the right.
         const float ty = at.box.y + 21.0f;
         at.sort = { at.box.right() - kPad - kSortW, ty, kSortW, kTopH };
@@ -1439,7 +1495,12 @@ namespace playground::ui
                     ++revision_;
                     return;
                 }
-                if (row >= 0)
+                if (row >= 0 && l == L::versions && e.popup)
+                {
+                    choose(l, row, at.rows[idx(l)]);
+                    showMenu(Menu::version, row, p);
+                }
+                else if (row >= 0)
                     choose(l, row, at.rows[idx(l)]);
                 else if (l == L::presets && !chosenName_.empty() && !factoryChosen())
                     startPreset();                       // a factory project's presets stay as they are
@@ -1477,6 +1538,8 @@ namespace playground::ui
                 close();
             }
         }
+        else if (at.compare.contains(p))
+            compareChosen(0);
         else if (at.ab.contains(p))
         {
             if (chosenName_.empty() || versions_.empty())
@@ -1701,7 +1764,7 @@ namespace playground::ui
                        : funkgui::Cursor::grabbing;
         }
         if (at.save.contains(p) || at.open.contains(p) || at.remove.contains(p) || at.close.contains(p) || at.importIt.contains(p)
-            || at.exportIt.contains(p) || at.ab.contains(p) || at.tag.contains(p) || at.sort.contains(p)
+            || at.exportIt.contains(p) || at.ab.contains(p) || at.compare.contains(p) || at.tag.contains(p) || at.sort.contains(p)
             || (!search_.buffer.empty() && at.clear.contains(p)))
             return funkgui::Cursor::pointingHand;
         for (const List l : { L::projects, L::versions, L::presets })
@@ -1963,6 +2026,7 @@ namespace playground::ui
         button(at.importIt, "Import...", 1, true);
         button(at.exportIt, "Export...", 1, !chosenName_.empty());
         button(at.ab, "A/B...", 1, !chosenName_.empty() && !versions_.empty());
+        button(at.compare, "Compare...", 1, !chosenName_.empty() && !versions_.empty());
 
         // A drag: what it carries, at the pointer.
         if (dragging_ && !dragged_.empty())
@@ -2152,6 +2216,7 @@ namespace playground::ui
         button(kImportId, at.importIt, "Import...");
         button(kExportId, at.exportIt, "Export...");
         button(kAbId, at.ab, "A/B...");
+        button(kCompareId, at.compare, "Compare...");
     }
 
     bool ProjectBrowser::a11yAction(uint32_t id, funkgui::A11yAction a, funkgui::HostServices* host, float width, float height)
@@ -2177,8 +2242,8 @@ namespace playground::ui
             remove();
         else if (id == kCloseId)
             close();
-        else if (id == kImportId || id == kExportId || id == kAbId)
-            press(id == kImportId ? at.importIt : id == kExportId ? at.exportIt : at.ab);
+        else if (id == kImportId || id == kExportId || id == kAbId || id == kCompareId)
+            press(id == kImportId ? at.importIt : id == kExportId ? at.exportIt : id == kAbId ? at.ab : at.compare);
         else if (id == kSearchId)
         {
             searching_ = true;
@@ -2213,6 +2278,12 @@ namespace playground::ui
                 if (!has(selected_, rowProject(i)->name))
                     chooseProject(i, at.rows[idx(l)]);
                 showMenu(Menu::row, i, { r.centreX(), r.centreY() });
+            }
+            else if (l == L::versions && a == funkgui::A11yAction::showMenu)
+            {
+                const funkgui::Rect r = rowRect(at, l, i);
+                choose(l, i, at.rows[idx(l)]);
+                showMenu(Menu::version, i, { r.centreX(), r.centreY() });
             }
             else
                 choose(l, i, at.rows[idx(l)]);

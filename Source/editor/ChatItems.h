@@ -122,6 +122,8 @@ namespace playground::ui
             std::string a11yTitle;
             std::string spec;                         // the footer's line
             std::function<std::string()> specNow;     // ... when it changes with the state (over `spec` when set)
+            std::function<void()> menu;               // a right-click's (a ctrl-click's, a screen reader's showMenu):
+                                                      // none when null (a right-click acts as a click)
         };
 
         ButtonItem(uint32_t id, Spec spec);
@@ -130,6 +132,7 @@ namespace playground::ui
         funkgui::Rect bounds() const noexcept { return bounds_; }
         void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
+        void setMenu(std::function<void()> menu) { spec_.menu = std::move(menu); }
         float preferredWidth() const;                 // a pill's, for its label now
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override

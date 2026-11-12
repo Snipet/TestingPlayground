@@ -67,6 +67,17 @@ namespace playground::projectstore
         };
         std::mutex cacheMutex;
         std::map<std::string, Cached> cache;             // by the file's full path
+        // One version's content as versionCached serves it (the newest kKeptVersions asked, the last asked first),
+        // keyed by the file's path, time and size and the number asked. Under cacheMutex.
+        struct KeptVersion
+        {
+            std::string path;
+            juce::int64 modified = 0, size = 0;
+            int asked = 0;
+            bool missing = false;
+            VersionContent content;
+        };
+        std::deque<KeptVersion> keptVersions;
         // One writer at a time in this process: each read, change and write of a project's file (update and every write
         // made through it, saveVersion, add, remove, idOf's new id, the migration) holds it whole, so the editor's save on
         // a thread of its own (Processor::startSave) and a write on the message thread never interleave (one would write
@@ -1161,6 +1172,89 @@ namespace playground::projectstore
         return Detail{};                                 // never read: the Reader reads it
     }
 
+    namespace
+    {
+        // A version of a project read, as the table keeps it (none: `missing`).
+        VersionRead contentOf(const Project* p, int asked)
+        {
+            VersionRead out;
+            out.read = true;
+            const Version* v = p == nullptr ? nullptr : asked == 0 ? &p->latest() : p->version(asked);
+            if (v == nullptr)
+            {
+                out.missing = true;
+                out.content.number = asked;
+                return out;
+            }
+            out.content = { v->number, v->savedMs, v->note, v->files, v->active, v->dials, v->samples };
+            return out;
+        }
+
+        // Keeps what a read of `f` (as a look before it found it) gave for each number asked, unless the file changed
+        // since; the newest first, kKeptVersions at most. The caller holds cacheMutex.
+        void keepVersions(const juce::File& f, const std::optional<Project>& p, juce::int64 modified, juce::int64 size,
+                          const std::vector<int>& numbers)
+        {
+            juce::int64 m = 0, s = 0;
+            FileId id;
+            if (!look(f, m, s, id) || m != modified || s != size)
+                return;
+            const std::string path = f.getFullPathName().toStdString();
+            for (const int n : numbers)
+            {
+                keptVersions.erase(std::remove_if(keptVersions.begin(), keptVersions.end(),
+                                                  [&](const KeptVersion& k) { return k.path == path && k.asked == n; }),
+                                   keptVersions.end());
+                const VersionRead r = contentOf(p ? &*p : nullptr, n);
+                keptVersions.push_front({ path, modified, size, n, r.missing, r.content });
+            }
+            while (keptVersions.size() > kKeptVersions)
+                keptVersions.pop_back();
+        }
+    }
+
+    std::optional<VersionRead> versionCached(std::string_view name, int number, std::vector<VersionAsk>& unread, std::string* why)
+    {
+        number = std::max(0, number);
+        if (isFactoryName(name))
+        {
+            const std::shared_ptr<const Project> p = factory::find(name);
+            if (p == nullptr)
+            {
+                fail(why, "there is no factory project named \"" + ownName(name) + "\"");
+                return std::nullopt;
+            }
+            return contentOf(p.get(), number);
+        }
+        juce::File f;
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (!presetsFile(name, f, modified, size, id, why))
+            return std::nullopt;
+        const std::string path = f.getFullPathName().toStdString();
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        for (auto it = keptVersions.begin(); it != keptVersions.end(); ++it)
+            if (it->path == path && it->asked == number && it->modified == modified && it->size == size)
+            {
+                KeptVersion k = *it;                     // the last asked first
+                keptVersions.erase(it);
+                keptVersions.push_front(k);
+                VersionRead out;
+                out.read = true;
+                out.missing = k.missing;
+                out.content = std::move(k.content);
+                return out;
+            }
+        unread.push_back({ path, number });
+        return VersionRead{};
+    }
+
+    std::size_t versionsKept()
+    {
+        const std::lock_guard<std::mutex> lock(cacheMutex);
+        return keptVersions.size();
+    }
+
     int parses() { return parsed.load(std::memory_order_relaxed); }
     int readerParses() { return readerParsed.load(std::memory_order_relaxed); }
     int listings() { return listed.load(std::memory_order_relaxed); }
@@ -1797,10 +1891,18 @@ namespace playground::projectstore
     // ---- the Reader ------------------------------------------------------------------------------------------------
     struct Reader::State
     {
+        // A job: a file to read into the cache (number -1), or a version of it into the version table.
+        struct Job
+        {
+            std::string path;
+            int number = -1;
+        };
+        static std::string keyOf(const Job& j) { return j.path + '\x1f' + std::to_string(j.number); }
+
         mutable std::mutex mutex;
         std::condition_variable wake;
-        std::deque<std::string> queue;                   // the paths asked, in order
-        std::set<std::string> asked;                     // queued or being read: each asked once until read
+        std::deque<Job> queue;                           // asked, in order
+        std::set<std::string> asked;                     // queued or being read (keyOf): each asked once until read
         bool stop = false;
         std::atomic<uint64_t> revision{ 0 };
         std::thread thread;
@@ -1809,18 +1911,38 @@ namespace playground::projectstore
         {
             for (;;)
             {
-                std::string path;
+                Job job;
+                std::vector<int> numbers;                // a version job: every version of that file asked meanwhile
+                std::vector<std::string> keys;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
                     wake.wait(lock, [this] { return stop || !queue.empty(); });
                     if (stop)
                         return;
-                    path = std::move(queue.front());
+                    job = std::move(queue.front());
                     queue.pop_front();
+                    keys.push_back(keyOf(job));
+                    if (job.number >= 0)
+                    {
+                        numbers.push_back(job.number);
+                        for (auto it = queue.begin(); it != queue.end();)
+                            if (it->number >= 0 && it->path == job.path)
+                            {
+                                numbers.push_back(it->number);
+                                keys.push_back(keyOf(*it));
+                                it = queue.erase(it);
+                            }
+                            else
+                                ++it;
+                    }
                 }
-                read(path);
+                if (job.number >= 0)
+                    readVersions(job.path, numbers);
+                else
+                    read(job.path);
                 const std::lock_guard<std::mutex> lock(mutex);
-                asked.erase(path);
+                for (const std::string& k : keys)
+                    asked.erase(k);
             }
         }
 
@@ -1846,6 +1968,35 @@ namespace playground::projectstore
             keepRead(f, p, modified, size);
             revision.fetch_add(1, std::memory_order_release);
         }
+
+        // The versions asked of one file, from one read of it, into the version table (and its listing's entry into the
+        // cache, as read() keeps it), unless the table holds them as the file is now.
+        void readVersions(const std::string& path, std::vector<int> numbers)
+        {
+            const juce::File f(juce::String::fromUTF8(path.c_str()));
+            juce::int64 modified = 0, size = 0;
+            FileId id;
+            if (!look(f, modified, size, id))
+                return;
+            {
+                const std::lock_guard<std::mutex> lock(cacheMutex);
+                numbers.erase(std::remove_if(numbers.begin(), numbers.end(),
+                                             [&](int n) {
+                                                 return std::any_of(keptVersions.begin(), keptVersions.end(), [&](const KeptVersion& k) {
+                                                     return k.path == path && k.asked == n && k.modified == modified && k.size == size;
+                                                 });
+                                             }),
+                              numbers.end());
+                if (numbers.empty())
+                    return;
+            }
+            readerParsed.fetch_add(1, std::memory_order_relaxed);
+            const std::optional<Project> p = parse(f, nullptr);
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            keepRead(f, p, modified, size);
+            keepVersions(f, p, modified, size, numbers);
+            revision.fetch_add(1, std::memory_order_release);
+        }
     };
 
     Reader::Reader() : s_(std::make_unique<State>())
@@ -1869,9 +2020,25 @@ namespace playground::projectstore
         {
             const std::lock_guard<std::mutex> lock(s_->mutex);
             for (const std::string& p : paths)
-                if (s_->asked.insert(p).second)
+                if (const State::Job job{ p, -1 }; s_->asked.insert(State::keyOf(job)).second)
                 {
-                    s_->queue.push_back(p);
+                    s_->queue.push_back(job);
+                    more = true;
+                }
+        }
+        if (more)
+            s_->wake.notify_one();
+    }
+
+    void Reader::requestVersions(const std::vector<VersionAsk>& asks)
+    {
+        bool more = false;
+        {
+            const std::lock_guard<std::mutex> lock(s_->mutex);
+            for (const VersionAsk& a : asks)
+                if (const State::Job job{ a.path, std::max(0, a.number) }; s_->asked.insert(State::keyOf(job)).second)
+                {
+                    s_->queue.push_back(job);
                     more = true;
                 }
         }

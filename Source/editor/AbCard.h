@@ -8,7 +8,7 @@
 //   CHANGES   a tab a file A or B has (its lines added and taken away; "new" in B only, "gone" in A only, "same"), and
 //             the chosen file's lines as a unified diff: A's line numbers, B's, the lines taken away and added tinted,
 //             three lines of context around each change and the lines between said in one; the wheel, its thumb, Page Up
-//             and Page Down, Home and End scroll it, Tab moves to the next file
+//             and Page Down, Home and End scroll it, Tab moves to the next file (DiffView.h draws it)
 //   A  B      which side plays (A and B, or Space, switch; the one on its way is outlined until its compile lands)
 //   Dials     the same for both, or each its own (a version's saved ones, Current's as they were)
 //   Match     the louder side turned down to the quieter's loudness (measured offline: AbMatch.h), and by how much
@@ -18,9 +18,12 @@
 // An editor opened while an A/B is on (the window closed and opened again) shows its card at once (attach).
 // While it is open it takes every pointer event and key. The A/B is the processor's: the card shows it (its revision
 // followed each frame: tick()), and closes itself when it ends on its own (another program ran), saying so once
-// (takeNotice). The versions and the diff scroll as the code does (Scroll.h), by px.
+// (takeNotice). The versions and the diff scroll as the code does (Scroll.h), by px. The versions are the store's
+// cache's (EditorPort::projectPolled: no project's file read whole on the message thread), read again when
+// projectsRead() moves while the project's file was not read yet.
 #pragma once
 
+#include "editor/DiffView.h"
 #include "editor/Scroll.h"
 #include "plugin/EditorPort.h"
 
@@ -41,8 +44,8 @@ namespace playground::ui
     {
     public:
         static constexpr uint32_t kA11yBase = 0x7FFB0000u;   // its accessibility ids, past every item's (and the other cards')
-        static constexpr int kContext = 3;                   // lines around a change
-        static constexpr int kMaxDiffRows = 6000;            // a file's diff, at most (the rest said in one row)
+        static constexpr int kContext = DiffView::kContext;          // lines around a change
+        static constexpr int kMaxDiffRows = DiffView::kMaxDiffRows;  // a file's diff, at most (the rest said in one row)
 
         explicit AbCard(EditorPort& port) : port_(port) {}
 
@@ -50,6 +53,8 @@ namespace playground::ui
         // Starts the A/B on `project`'s versions: A Current, B `version` (0: the newest; none when there is no project).
         // False, with why() saying so, when it cannot (the card stays closed).
         bool open(const std::string& project, int version);
+        // The same with both sides given (version numbers, 0 Current): the Compare card's A/B... (DiffCard.h).
+        bool open(const std::string& project, int a, int b);
         // The A/B that is on already (an editor opened while it plays): shown as it is. False when none is on.
         bool attach();
         void close();                                    // Close, Escape: EditorPort::endAb, back to what played before
@@ -79,36 +84,25 @@ namespace playground::ui
                   bool hasPointer) const;
         void accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const;
         bool a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height);
-        uint32_t revision() const noexcept { return revision_; }   // bumps when what it draws changes
+        uint32_t revision() const noexcept { return revision_ + view_.revision(); }   // moves when what it draws changes
 
         std::string takeNotice();                        // what it did ("KEPT B: V3"), once; "" for nothing new
         const std::string& why() const noexcept { return why_; }
 
-        // One file's changes from A to B.
-        enum class Change : uint8_t { same, changed, added, removed };   // added: in B only; removed: in A only
-        struct Line
-        {
-            enum class Kind : uint8_t { same, removed, added, gap } kind = Kind::same;
-            int a = 0, b = 0;                            // its line numbers in A and in B, from 1 (0: none)
-            std::string text;                            // the line (ASCII, tabs as spaces); a gap's words
-        };
-        struct FileDiff
-        {
-            std::string name;
-            Change change = Change::same;
-            int added = 0, removed = 0;
-            std::vector<Line> lines;
-        };
+        // One file's changes from A to B (DiffView.h's).
+        using Change = DiffView::Change;                 // added: in B only; removed: in A only
+        using Line = DiffView::Line;
+        using FileDiff = DiffView::FileDiff;
         // Every file of A or B (A's order, then B's own), its changes as the card shows them.
-        static std::vector<FileDiff> diffOf(const Sources& a, const Sources& b);
-        static std::string tabLabel(const FileDiff& f);  // "program.fm +12 -3", "lib.fm new", "old.fm gone", "panel.gui"
+        static std::vector<FileDiff> diffOf(const Sources& a, const Sources& b) { return DiffView::diffOf(a, b); }
+        static std::string tabLabel(const FileDiff& f) { return DiffView::tabLabel(f); }   // "program.fm +12 -3", ...
 
         // For probes.
         const AbState& state() const noexcept { return state_; }
         const std::vector<VersionEntry>& versionList() const noexcept { return versions_; }   // the project's, newest first
-        const std::vector<FileDiff>& files() const noexcept { return diffs_; }
-        int file() const noexcept { return file_; }      // the tab shown
-        int scroll() const noexcept;                     // the diff's first line wholly shown
+        const std::vector<FileDiff>& files() const noexcept { return view_.files(); }
+        int file() const noexcept { return view_.file(); }   // the tab shown
+        int scroll() const noexcept { return view_.scroll(); }   // the diff's first line wholly shown
         Scroll listScroll(const Places& at) const;       // the versions' scroll and the diff's: content and view as the
         Scroll diffScroll(const Places& at) const;       // places have them
         funkgui::Rect listBar(const Places& at) const;   // where their bars are (Scroll's areas)
@@ -124,7 +118,9 @@ namespace playground::ui
         int rowOfVersion(int version) const;
         void setSide(int side, int row);                 // that side to the row's version
         void follow();                                   // state_ from the port, the diff when the sides changed
-        void showFile(int i);
+        void readVersions(const std::string& project);   // versions_ from the store's cache (projectPolled)
+        funkgui::Rect changes(const Places& at) const;   // the diff's area: its tabs and its lines (DiffView)
+        DiffView::Places viewPlaces(const Places& at) const;
         funkgui::Rect rowRect(const Places& at, int row) const;   // a version's row, scrolled
         int rowAt(funkgui::Point p, const Places& at) const;
         float chipX(const funkgui::Rect& row, int chip) const;
@@ -133,10 +129,11 @@ namespace playground::ui
         bool open_ = false;
         AbState state_;
         std::vector<VersionEntry> versions_;
-        std::vector<FileDiff> diffs_;
+        bool versionsRead_ = true;                       // versions_ from the project's file as read (else: again once
+        uint64_t versionsSeen_ = 0;                      // projectsRead() moves past this)
+        DiffView view_;                                  // the changes: its tabs, its lines, its scroll
         Sources diffA_, diffB_;                          // the sides the diff is of
-        int file_ = 0, firstTab_ = 0;
-        Scroll diff_, list_;                             // their offsets kept (diffScroll, listScroll)
+        Scroll list_;                                    // its offset kept (listScroll)
         std::string why_;                                // the line at the foot: what went wrong
         std::string notice_;
         uint32_t revision_ = 0;

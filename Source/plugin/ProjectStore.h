@@ -284,6 +284,7 @@ namespace playground::projectstore
     // older read). The process has one (reader()), made when first asked for; it goes, its thread joined, with its last
     // holder. readerParses() counts the files it read whole (of parses()), listings() the listings, cached or not
     // (probes).
+    struct VersionAsk;
     class Reader
     {
     public:
@@ -293,6 +294,9 @@ namespace playground::projectstore
         Reader& operator=(const Reader&) = delete;
 
         void request(const std::vector<std::string>& paths);
+        // The versions versionCached could not serve (below): each file read once for every version of it asked
+        // meanwhile, the listing's entry kept as request()'s read keeps it, the versions into their table.
+        void requestVersions(const std::vector<VersionAsk>& asks);
         uint64_t revision() const noexcept;
         bool idle() const;                               // nothing asked waits or is being read (probes)
 
@@ -303,6 +307,41 @@ namespace playground::projectstore
     std::shared_ptr<Reader> reader();
     int readerParses();
     int listings();
+
+    // ---- One version's content, off the message thread (editor/DiffCard.h, the A/B card's sides) -------------------
+    // A version as a caller that must not wait while a project's file is read whole sees it: its files, its dials (with
+    // their values' names), its samples by name and hash (never their bytes), its note and when it was saved. From a
+    // table of its own, the newest kKeptVersions asked (by the file's path, its time and size, and the number asked), so
+    // the card that shows two sides, and asks for them every frame, finds them there; a file the table does not hold as
+    // it is now goes to `unread`, for the Reader's requestVersions, and `read` is false until it has (its revision then
+    // moves, as for a listing). `number` 0 is the newest. `missing`: no such version in the file (or the file is no
+    // project of this plugin's). None, with why, when there is no project of that name. A factory project's at once,
+    // from the factory set (Factory.h).
+    inline constexpr std::size_t kKeptVersions = 6;
+    struct VersionContent
+    {
+        int number = 0;                                  // the version's own number (the newest's, for 0 asked)
+        int64_t savedMs = 0;
+        std::string note;
+        Sources files;
+        int active = 0;
+        std::vector<Dial> dials;
+        std::vector<SampleRef> samples;
+    };
+    struct VersionRead
+    {
+        bool read = false;                               // false: the Reader reads it now
+        bool missing = false;
+        VersionContent content;
+    };
+    struct VersionAsk
+    {
+        std::string path;                                // the project's file
+        int number = 0;                                  // as asked (0: the newest)
+    };
+    std::optional<VersionRead> versionCached(std::string_view name, int number, std::vector<VersionAsk>& unread,
+                                             std::string* why = nullptr);
+    std::size_t versionsKept();                          // how many the table holds now (probes)
     bool exists(std::string_view name);
     // The project of that name: nothing, with why, when there is none, it is not a project of this plugin's, or its
     // file is damaged. Its name is its file's.

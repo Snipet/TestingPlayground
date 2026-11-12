@@ -378,6 +378,11 @@ namespace playground
         int addAssets(const std::vector<std::string>& paths, std::string& why) override;
         bool removeAsset(const std::string& name, std::string& why) override;
 
+        // One version's content (EditorPort.h; ProcessorVersions.cpp): from the store's version table, the Reader reading
+        // what it lacks; the editor's own, no read.
+        VersionContent versionPolled(const std::string& project, int number) const override;
+        VersionContent editorContent() const override;
+
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
         void chatSetDraft(const Draft& draft) override;

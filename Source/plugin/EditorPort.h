@@ -568,6 +568,37 @@ namespace playground
         uint64_t revision = 0;                   // bumps whenever any of the above changes
     };
 
+    // One version of a project as the Compare card (editor/DiffCard.h) shows it (EditorPort::versionPolled), or the
+    // editor's own files, dials and samples (editorContent): its files, its dials by name (each value as the panel says
+    // it: its unit, its option's name; a dial the program that plays lacks, its number or its name), its samples by name
+    // and hash (never their bytes), its note and when it was saved.
+    struct ContentDial
+    {
+        std::string name;
+        float value = 0.0f;
+        std::string label;                       // its value's option name ("" for none)
+        std::string text;                        // as the panel says it ("1.20 kHz", "PITCH")
+        friend bool operator==(const ContentDial&, const ContentDial&) = default;
+    };
+    struct ContentSample
+    {
+        std::string name;
+        std::string hash;                        // its file's (dsp/Assets.h's hashOf)
+        friend bool operator==(const ContentSample&, const ContentSample&) = default;
+    };
+    struct VersionContent
+    {
+        bool read = false;                       // false: the store's Reader reads it now (projectsRead() moves once
+                                                 // it has: ask again then)
+        bool missing = false;                    // no such version (or project) to read
+        bool editor = false;                     // the editor's (editorContent), not a version's
+        Sources files;
+        std::vector<ContentDial> dials;
+        std::vector<ContentSample> samples;
+        std::string note, when;
+        int number = 0;                          // the version's own number (the newest's when 0 was asked)
+    };
+
     class EditorPort
     {
     public:
@@ -831,6 +862,27 @@ namespace playground
             (void)name;
             why = "no samples here";
             return false;
+        }
+
+        // ---- One version's content (the Compare card, editor/DiffCard.h; the A/B card's sides) ----------------------
+        // versionPolled: a version of `project` (0: its newest) from the store's table of the versions asked last
+        // (ProjectStore.h's versionCached); never a project's file read whole here: one the table lacks is read on the
+        // store's Reader, `read` false until projectsRead() moves. A factory project's at once. editorContent: the
+        // editor's files (the draft), its dials as they are and its samples, no read.
+        virtual VersionContent versionPolled(const std::string& project, int number) const
+        {
+            (void)project;
+            (void)number;
+            VersionContent v;
+            v.read = v.missing = true;
+            return v;
+        }
+        virtual VersionContent editorContent() const
+        {
+            VersionContent v;
+            v.read = v.editor = true;
+            v.files = draft().files;
+            return v;
         }
     };
 
