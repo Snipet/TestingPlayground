@@ -1094,7 +1094,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
 
 - **The network.** The chat is the only code that reaches the network at run time, through `claude::Transport`
   (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network; never following a redirect,
-  `withNumRedirectsToFollow(0)`: a 3xx comes back with its location, as an error), to one host at a time, and only when
+  `withNumRedirectsToFollow(0)`: a 3xx comes back with its location, as an error; JUCE's client takes the address
+  as built, `createWithoutParsing`: a parsed query goes into a POST's body), to one host at a time, and only when
   the user sends a message or chooses a provider: `api.anthropic.com` with the user's own key (the Messages API,
   streamed; `GET /v1/models` once per key), or the provider the user chose (below, "Other model providers"): its own
   server alone, with its own key. The build never reaches the network. Probes never do (`plugin.providers` REDIRECT
@@ -1273,7 +1274,14 @@ place (its `products/<key>.cmake`, and its names in the docs).
   models that take it, the compaction block kept and what came before it dropped: the history then starts at the
   block, in its assistant message (never at the message before it, which mid-turn is tool results the API refuses
   without their calls; `repairHistory`, also run on a loaded session), and the files go again with whatever follows,
-  a message or the turn's next tool results; a file's text goes in the plugin's state only when Claude has not seen
+  a message or the turn's next tool results. A compaction block counts only with its summary (`summarized`: its
+  content a string with something in it): one whose summary never came (a Stop or a broken stream before its one
+  delta, a compaction that made none, content null) cuts nothing and is never kept (`repairHistory` takes it out of a
+  loaded chat, and a line stands for a start already lost to it). Blank text never goes into the history (the API
+  refuses it), beside a tool call too; a reply that ends with nothing else to keep (no block, thinking alone) gets
+  "(no answer)" after what it has, shown as the answer (`mendReply`; `repairHistory` mends a loaded one), except one
+  cut off at `max_tokens` that thinks, below; a `pause_turn` reply with nothing in it is not kept (the request goes
+  again as it was). A file's text goes in the plugin's state only when Claude has not seen
   it (`seen_`); a broken stream is retried with what it showed taken back; 80 requests a turn. A reply cut off at
   `max_tokens` (thinking counts) goes back as it came and the turn goes on with a line that tells Claude; a second
   in a row ends the turn. The prompt says what a reply holds; at xhigh and max a note with the user's message says it
