@@ -476,6 +476,10 @@ namespace playground::projectstore
                 p.info = tidyInfo(std::move(in));
             }
             p.samples = sampleFilesOf(root["sampleFiles"]);
+            // When it was made: the file's, else worked out as the next write will set it (ProjectStore.h).
+            p.createdMs = static_cast<int64_t>(static_cast<juce::int64>(root["created"]));
+            if (p.createdMs <= 0)
+                p.createdMs = p.versions.front().savedMs;
             sortPresets(p.presets);                      // by name, case aside, whoever wrote the file (their numbers)
             return p;
         }
@@ -579,6 +583,8 @@ namespace playground::projectstore
             c.entry.category = p.info.category;
             c.entry.tags = p.info.tags;
             c.entry.description = p.info.description;
+            c.entry.createdMs = p.createdMs;
+            c.entry.bytes = static_cast<int64_t>(size);
             for (const Version& v : p.versions)
                 c.versions.push_back({ v.number, v.savedMs, v.note });
             c.info = p.info;
@@ -659,6 +665,8 @@ namespace playground::projectstore
             }
             if (p.id.empty())
                 p.id = newProjectId();                   // made when it is first written (ProjectStore.h)
+            if (p.createdMs <= 0)
+                p.createdMs = p.versions.empty() ? juce::Time::currentTimeMillis() : p.versions.front().savedMs;
             p.writtenAs = p.name;
             const juce::File dir = directory();
             if (!dir.isDirectory() && !dir.createDirectory())
@@ -702,6 +710,8 @@ namespace playground::projectstore
             root->setProperty("name", str(p.name));
             if (!p.id.empty())
                 root->setProperty("id", str(p.id));
+            if (p.createdMs > 0)
+                root->setProperty("created", static_cast<juce::int64>(p.createdMs));
             juce::Array<juce::var> versions;
             for (const Version& v : p.versions)
             {
@@ -1259,6 +1269,18 @@ namespace playground::projectstore
     int readerParses() { return readerParsed.load(std::memory_order_relaxed); }
     int listings() { return listed.load(std::memory_order_relaxed); }
 
+    std::optional<int64_t> fileBytes(std::string_view name)
+    {
+        if (isFactoryName(name))
+            return factory::find(name) != nullptr ? std::optional<int64_t>(0) : std::nullopt;
+        const juce::File f = fileOf(name);
+        juce::int64 modified = 0, size = 0;
+        FileId id;
+        if (f == juce::File() || !look(f, modified, size, id))
+            return std::nullopt;
+        return static_cast<int64_t>(size);
+    }
+
     bool exists(std::string_view name)
     {
         if (isFactoryName(name))
@@ -1646,7 +1668,8 @@ namespace playground::projectstore
             v.folded = stringsOf(root["folded"]);
             v.search = root["search"].toString().toStdString();
             v.tag = root["tag"].toString().toStdString();
-            v.byDate = root["sort"].toString() == "saved";
+            v.order = orderOf(root["sort"].toString().toStdString());
+            v.reversed = static_cast<bool>(root["reverse"]);
             return tidyView(std::move(v));
         }
     }
@@ -1688,7 +1711,9 @@ namespace playground::projectstore
         root->setProperty("folded", stringsVar(v.folded));
         root->setProperty("search", str(v.search));
         root->setProperty("tag", str(v.tag));
-        root->setProperty("sort", v.byDate ? "saved" : "name");
+        root->setProperty("sort", orderWord(v.order));
+        if (v.reversed)
+            root->setProperty("reverse", true);
         const juce::File target = viewFile();
         const juce::File temp = dir.getChildFile(juce::String(kViewFile) + ".saving");
         if (!temp.replaceWithText(juce::JSON::toString(juce::var(root)), false, false, "\n") || !temp.moveFileTo(target))
@@ -1700,6 +1725,23 @@ namespace playground::projectstore
         const std::lock_guard<std::mutex> lock(viewMutex);
         viewCache = { target.getFullPathName().toStdString(), target.getLastModificationTime().toMilliseconds(), target.getSize(), v };
         return true;
+    }
+
+    const char* orderWord(Order order) noexcept
+    {
+        switch (order)
+        {
+            case Order::saved: return "saved";
+            case Order::created: return "created";
+            case Order::size: return "size";
+            case Order::name: break;
+        }
+        return "name";
+    }
+
+    Order orderOf(std::string_view word) noexcept
+    {
+        return word == "saved" ? Order::saved : word == "created" ? Order::created : word == "size" ? Order::size : Order::name;
     }
 
     std::string toJson(const Project& p)

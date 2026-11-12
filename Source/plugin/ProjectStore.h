@@ -6,7 +6,7 @@
 // in the other). A file is JSON:
 //
 //   { "format": "funk-playground-project", "version": 1, "plugin": "<product name>", "kind": "instrument",
-//     "name": "Glass Bloom", "id": "8c1f4e2a-...",
+//     "name": "Glass Bloom", "id": "8c1f4e2a-...", "created": 1761580000000,
 //     "versions": [ { "number": 1, "saved": 1761580000000, "note": "first save", "active": 0,
 //                     "files": [ { "name": "program.fm", "text": "..." }, ... ],
 //                     "dials": [ { "name": "cutoff", "value": 900 }, { "name": "drive", "value": 2, "label": "PITCH" }, ... ],
@@ -59,6 +59,12 @@
 // leaves it out (ProjectExport.h), and a project imported or added (add()) gets a new one, as does a copy of a file
 // made in the Finder (idOf: the copy is the file whose name is not the "name" written in it). "name" is the name it was
 // last written under (`writtenAs`); the project's name is its file's.
+//
+// A project's "created" (optional, ms since 1970: a project from before it has none, and an older build reads past it)
+// is when it was made, what PROJECTS' Date created sorts by. Every write of a file that lacks it sets it (a new
+// project's: its first save; an older one's: its oldest kept version's save as it was read, so it stays fixed whatever
+// versions are removed later); a file not yet written again is read with that same value worked out (load(), the
+// listing), nothing written. An export carries it, so an import keeps it.
 //
 // A project's info (Info) describes it to others: what an export (ProjectExport.h) carries besides the program, and
 // what a project imported brings.
@@ -204,6 +210,7 @@ namespace playground::projectstore
         std::vector<Preset> presets;                     // by name, case aside
         Info info;
         std::vector<SampleFile> samples;                 // the files its versions' samples name, each once
+        int64_t createdMs = 0;                           // when it was made (above), ms since 1970
 
         const Version& latest() const { return versions.back(); }
         const Version* version(int number) const;        // none when it is not kept
@@ -221,6 +228,9 @@ namespace playground::projectstore
         std::string category;                            // its info's: what PROJECTS groups it by ("" for none)
         std::vector<std::string> tags;                   // its info's
         std::string description;                         // its info's (PROJECTS' search reads it)
+        int64_t createdMs = 0;                           // Project::createdMs (worked out for an older file)
+        int64_t bytes = 0;                               // its file's size, as the cache's look found it (a factory
+                                                         // project's: 0)
     };
 
     // `name` as a project or a preset may have it: printable ASCII but / \ : * ? " < > | and a leading '.', its spaces
@@ -343,6 +353,9 @@ namespace playground::projectstore
                                              std::string* why = nullptr);
     std::size_t versionsKept();                          // how many the table holds now (probes)
     bool exists(std::string_view name);
+    // The size of the project's file from a look at it (no read): a factory project's 0; none when there is no such
+    // project (Processor's export job sums them against ProjectExport.h's kMaxBundleBytes).
+    std::optional<int64_t> fileBytes(std::string_view name);
     // The project of that name: nothing, with why, when there is none, it is not a project of this plugin's, or its
     // file is damaged. Its name is its file's.
     std::optional<Project> load(std::string_view name, std::string* why = nullptr);
@@ -402,10 +415,15 @@ namespace playground::projectstore
 
     // How PROJECTS shows the projects (editor/ProjectBrowser.h, editor/ProjectGroups.h): the projects starred (by name,
     // a factory one's as factoryName spells it), the groups folded (ProjectGroups' keys), the search typed, the tag
-    // filtered on and the order. The folder's own, so every instance of this plugin on the Mac (and a probe, in its
-    // folder) shares it: one small file there, kViewFile (hidden: no project's name starts with a '.'), written whole
-    // (beside, then moved over) and read again only when its time or its size changes. None, or one that does not
-    // read: the default (nothing starred or folded, no filter, by name). remove() unstars the project it deletes.
+    // filtered on and the order (Order, and reversed). The folder's own, so every instance of this plugin on the Mac
+    // (and a probe, in its folder) shares it: one small file there, kViewFile (hidden: no project's name starts with a
+    // '.'), written whole (beside, then moved over) and read again only when its time or its size changes. None, or one
+    // that does not read: the default (nothing starred or folded, no filter, by name). remove() unstars the project it
+    // deletes. The order is the file's "sort": "name" (A to Z), "saved" (the latest version's save: the newest first),
+    // "created" (the newest first), "size" (the file's: the largest first), and "reverse": true (written only when set)
+    // turns it around. An older build knew "saved" and "name" alone: it reads any other word as by name, and reads past
+    // "reverse".
+    enum class Order : uint8_t { name, saved, created, size };
     inline constexpr const char* kViewFile = ".projects-view.json";
     inline constexpr std::size_t kMaxFavourites = 500, kMaxFolded = 100, kMaxSearch = 60;
     struct View
@@ -414,11 +432,15 @@ namespace playground::projectstore
         std::vector<std::string> folded;
         std::string search;                              // printable, at most kMaxSearch characters
         std::string tag;                                 // "" for any
-        bool byDate = false;                             // the newest save first, else by name
+        Order order = Order::name;
+        bool reversed = false;
         friend bool operator==(const View&, const View&) = default;
     };
     View view();
     bool setView(const View& v, std::string* why = nullptr);
+    // The order's word in the file, and back (any other word: by name).
+    const char* orderWord(Order order) noexcept;
+    Order orderOf(std::string_view word) noexcept;
 
     // The project's id (above), made and written into its file when it has none, or when another project's file has
     // the same one and this file is the copy (its name is not the one written in it while the other's is, else it was
