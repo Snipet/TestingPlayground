@@ -1095,7 +1095,9 @@ PROBE(plugin, projects)
             (void)waitReader();
         }
         P.eq("version.kept_six", ps::versionsKept() == ps::kKeptVersions ? 1 : 0, 1);
-        P.eq("version.oldest_dropped", !pd.versionPolled("Diffs", 1).read && pd.versionPolled("Diffs", 0).read ? 1 : 0, 1);
+        // 0 first (a hit: the last asked now), then 1, which went; the Reader's read of 1 then drops 99, never 0.
+        const bool zeroKept = pd.versionPolled("Diffs", 0).read;
+        P.eq("version.oldest_dropped", zeroKept && !pd.versionPolled("Diffs", 1).read ? 1 : 0, 1);
         (void)waitReader();
         // Another rewrites it: asked again, as the file is now.
         rewrite(dir, "Diffs", "Diffs", [](juce::var& root) {

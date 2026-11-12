@@ -569,8 +569,9 @@ PROBE(gui, diff)
         f.replaceWithText(juce::JSON::toString(root));
         const int parsed0 = pg::projectstore::parses(), reader0 = pg::projectstore::readerParses();
         panel.openCompare(project, 1, 2);
-        host.settle();
+        // At once: the version table lacks the file as it is now (the Reader may read it before the next frame).
         P.eq("reading.shown", card.isOpen() && card.reading() ? 1 : 0, 1);
+        host.settle();
         writePng(P, host, "gui.diff.reading.png");
         P.eq("reading.read", readBoth() ? 1 : 0, 1);
         P.eq("reading.diff", card.summary() == "5 files, 1 dial, 1 sample" ? 1 : 0, 1);
