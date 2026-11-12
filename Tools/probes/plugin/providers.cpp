@@ -26,6 +26,8 @@
 //   PICTURES  a model that refuses a picture: the request made again with a line of text in its place, a note, and
 //             the model takes none from then on
 //   LIMITS    an answer cut at its length: the turn goes on with the plugin's line
+//   EMPTY     an answer of reasoning alone: kept as "(no answer)" (its reasoning never), shown so; the history valid;
+//             white space beside a tool call: the call run and answered, no blank text kept
 //   CHECKS    a check that cannot pass sends the turn on twice, as with Anthropic
 //   GEMINI    set with its key: its models (not its speech or embedding ones; the newest version first); a turn to
 //             /v1beta/models/<model>:streamGenerateContent?alt=sse with x-goog-api-key, systemInstruction, contents
@@ -35,12 +37,12 @@
 //             (types in upper case, no additionalProperties; an enum with no type a STRING: the projects tool's
 //             action, compare's dials, measure_output's spectrum and run_function's on keep theirs; an array whose items
 //             are left open, run_function's args and write_file's files, one of strings, each a JSON value written out,
-//             read back before the tool runs: a write_file of files on it writes them); a key it calls not valid:
-//             refused, said
+//             read back before the tool runs: a write_file of files on it writes them); an answer of thought alone
+//             kept with a line in place of what it did not say; a key it calls not valid: refused, said
 //   KEPT      a new processor talks to the provider chosen last, its model kept
 //   BACK      Anthropic again, with the planner chosen before the Gemini turns: its request as before (the full
 //             prompt cached, thinking, its key alone), the history without another provider's thought_signature in the
-//             builder's request and in the planner's, every tool id in its alphabet
+//             builder's request and in the planner's, every tool id in its alphabet, no message empty or blank
 //   ERRORS    the provider named in its errors; a local server not running asked about
 //   SERVERS   a turn with no model whose list could not be read says why and sends nothing (LM Studio not running:
 //             is it running?; a key the server refused: the key's problem); a redirect is never followed (the one
@@ -61,7 +63,9 @@
 //   REDIRECT  the real transport (ClaudeApi.cpp) against two servers of the probe's own on 127.0.0.1: a 307 from
 //             the first is returned as it came, its location said, and the second is never reached
 //   TRANSPORT the real transport against the probe's own server: an https:// address is spoken to in TLS (its first
-//             byte a handshake record: on Linux JUCE's own client never connected to one); a 429's body whole and its
+//             byte a handshake record: on Linux JUCE's own client never connected to one); an address with a query
+//             goes out as built, a POST's and a GET's (the query in the request line, the body exactly what was
+//             posted: JUCE's client moved a parsed query into a POST's body); a 429's body whole and its
 //             retry-after; a stream stopped by `cancel` ends soon, "stopped"; (Linux) a 200's body reaches onChunk
 //             piece by piece as it comes, the first piece before the server sends the next
 #include "Probe.h"
@@ -168,6 +172,28 @@ namespace
         std::printf("%s:\n", what);
         for (const pg::ChatEntry& e : s.entries)
             std::printf("  %d %s\n", static_cast<int>(e.kind), e.text.substr(0, 120).c_str());
+    }
+
+    // Every message has content the Messages API takes: some content, and no text block that is empty or blank.
+    bool filled(const juce::Array<juce::var>& messages)
+    {
+        for (const juce::var& m : messages)
+        {
+            const juce::var content = m.getProperty("content", {});
+            if (content.isString())
+            {
+                if (content.toString().trim().isEmpty())
+                    return false;
+                continue;
+            }
+            const juce::Array<juce::var> blocks = arr(content);
+            if (blocks.isEmpty())
+                return false;
+            for (const juce::var& b : blocks)
+                if (str(b, "type") == "text" && juce::String(str(b, "text")).trim().isEmpty())
+                    return false;
+        }
+        return true;
     }
 
     // Every tool call's id in the Messages API's alphabet.
@@ -584,6 +610,46 @@ PROBE(plugin, providers)
                                    && has(script->body(before + 1), "your reply reached its limit") ? 1 : 0, 1);
     }
 
+    // ---- EMPTY -------------------------------------------------------------------------------------------------------------
+    {
+        const auto history = [&] { return arr(claude::parseJson(agent.saveState()).getProperty("messages", {})); };
+        script->add(stream(fake::OpenAiSse("qwen-probe:32b").reasoning("Only thinking, nothing said.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("think it over");
+        agent.waitIdle();
+        const juce::Array<juce::var> h = history();
+        P.eq("empty.reasoning_alone_kept", !h.isEmpty() && str(h[h.size() - 1], "role") == "assistant" && filled(h)
+                                               && has(claude::toJson(h[h.size() - 1]), "(no answer)") ? 1 : 0, 1);
+        P.eq("empty.reasoning_alone_shown", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "(no answer)" ? 1 : 0, 1);
+        script->add(stream(fake::OpenAiSse("qwen-probe:32b").text("Said.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("say it");
+        agent.waitIdle();
+        P.eq("empty.history_valid", filled(history()) ? 1 : 0, 1);
+
+        // White space beside a tool call: the call runs and is answered, and no blank text stays in the history.
+        script->add(stream(fake::OpenAiSse("qwen-probe:32b").text("\n").call(0, "call_ws", "get_status", "{}", true)
+                               .finish("tool_calls").usage(9000, 8).done().str()));
+        script->add(stream(fake::OpenAiSse("qwen-probe:32b").text("Read it.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("what is the status?");
+        agent.waitIdle();
+        const juce::Array<juce::var> w = history();
+        std::string callId;
+        int at = -1;
+        for (int i = 0; i < w.size(); ++i)
+            for (const juce::var& b : arr(w[i].getProperty("content", {})))
+                if (str(b, "type") == "tool_use" && str(b, "name") == "get_status")
+                {
+                    callId = str(b, "id");
+                    at = i;
+                }
+        bool answered = false;
+        for (const juce::var& b : arr(at >= 0 && at + 1 < w.size() ? w[at + 1].getProperty("content", {}) : juce::var()))
+            answered = answered || (str(b, "type") == "tool_result" && str(b, "tool_use_id") == callId);
+        P.eq("empty.blank_beside_call", at >= 0 && arr(w[at].getProperty("content", {})).size() == 1 && filled(w) ? 1 : 0, 1);
+        P.eq("empty.blank_call_answered", answered && !callId.empty()
+                                              && juce::String(lastText(agent.chatState(), pg::ChatEntry::Kind::assistant)).trim() == "Read it."
+                                              ? 1 : 0, 1);
+    }
+
     // ---- CHECKS ------------------------------------------------------------------------------------------------------------
     {
         juce::Array<juce::var> impossible;
@@ -737,6 +803,14 @@ PROBE(plugin, providers)
         agent.waitIdle();
         P.eq("gemini.subset_kept", !has(script->body(script->postCount() - 1), "parametersJsonSchema") ? 1 : 0, 1);
 
+        // An answer of thought alone: kept with a line in place of what it did not say (BACK sends it to Anthropic).
+        script->add(stream(fake::GeminiSse("gemini-3-pro-preview").text("Pondering only.", true).finish("STOP").str()));
+        agent.send("think first");
+        agent.waitIdle();
+        const juce::Array<juce::var> gh = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("gemini.thought_alone_kept", !gh.isEmpty() && str(gh[gh.size() - 1], "role") == "assistant" && filled(gh)
+                                              && !has(claude::toJson(gh[gh.size() - 1]), "Pondering only.") ? 1 : 0, 1);
+
         // A key Gemini calls not valid.
         script->add(fake::Response::failure(400, "INVALID_ARGUMENT", "API key not valid. Please pass a valid API key."));
         agent.send("hello?");
@@ -790,6 +864,7 @@ PROBE(plugin, providers)
             for (const juce::var& blk : arr(m.getProperty("content", {})))
                 gemCall = gemCall || (str(blk, "type") == "tool_use" && str(blk, "name") == "read_file");
         P.eq("back.history_carried", gemCall && idsPlain(messages) ? 1 : 0, 1);
+        P.eq("back.history_filled", filled(messages) ? 1 : 0, 1);
         P.eq("back.no_signature", has(script->body(before + 1), "thought_signature") ? 1 : 0, 0);
         P.eq("back.signature_still_kept", has(agent.saveState(), "sig-gem-1") ? 1 : 0, 1);
         P.eq("back.answer", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Back with Claude." ? 1 : 0, 1);
@@ -1277,6 +1352,42 @@ PROBE(plugin, providers)
             std::printf("transport: https first byte %d, status %d, error %s\n", firstByte.load(), r.status, r.error.c_str());
             P.eq("transport.https_speaks_tls", listening && firstByte.load() == 0x16 ? 1 : 0, 1);
             P.eq("transport.https_refused_plain", r.status == 0 && !r.error.empty() ? 1 : 0, 1);
+        }
+        // An address with a query goes out as it was built, for a POST (Gemini's ...:streamGenerateContent?alt=sse) and a
+        // GET alike: the query in the request line, the body exactly what was posted (never the query moved into it).
+        {
+            const auto asked = [](bool isPost, const std::string& path) {
+                juce::StreamingSocket listener;
+                const bool listening = listener.createListener(0, "127.0.0.1");
+                std::string got;
+                std::thread server([&] {
+                    if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                        return;
+                    const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                    if (c == nullptr)
+                        return;
+                    got = readRequest(*c);
+                    sendText(*c, "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                });
+                const std::atomic<bool> cancel{ false };
+                const std::string host = "http://127.0.0.1:" + std::to_string(listener.getBoundPort());
+                const auto t = claude::httpsTransport();
+                if (isPost)
+                    t->post(host, path, "{\"probe\":true}", { { "content-type", "application/json" } },
+                            [](std::string_view) { return true; }, cancel);
+                else
+                    t->get(host, path, {}, cancel);
+                server.join();
+                return got;
+            };
+            const std::string posted = asked(true, "/v1beta/models/x:streamGenerateContent?alt=sse");
+            const std::size_t postEnd = posted.find("\r\n\r\n");
+            std::printf("transport: POST with a query: %s\n", posted.substr(0, posted.find("\r\n")).c_str());
+            P.eq("transport.query_kept", posted.rfind("POST /v1beta/models/x:streamGenerateContent?alt=sse ", 0) == 0 ? 1 : 0, 1);
+            P.eq("transport.body_alone", postEnd != std::string::npos && posted.substr(postEnd + 4) == "{\"probe\":true}" ? 1 : 0, 1);
+            const std::string get = asked(false, "/v1beta/models?pageSize=1000");
+            std::printf("transport: GET with a query: %s\n", get.substr(0, get.find("\r\n")).c_str());
+            P.eq("transport.get_query_kept", get.rfind("GET /v1beta/models?pageSize=1000 ", 0) == 0 ? 1 : 0, 1);
         }
         // A 429: its body whole (never to onChunk) and its retry-after.
         {
