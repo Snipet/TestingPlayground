@@ -16,11 +16,12 @@ the code.
 1. **Find-and-replace already exists.** Cmd-Alt-F (or the chevron on the Cmd-F bar) gives replace one, replace all,
    match case and whole word (`Source/editor/CodeAssist.cpp`: `openFind`, `replaceOne`, `replaceAll`; README, "The
    editor"). The item becomes: make it findable, add search across all files, and give the AI the same (package 06).
-2. **The lists probably scroll the wrong way on a Mac, not only at another speed.** FunkGui's `TextEditor` ignores
+2. **The lists scroll the wrong way on a Mac, not only at another speed.** FunkGui's `TextEditor` ignores
    `WheelEvent::reversed` (JUCE's deltas already carry the system's direction); the explorer, the Projects card,
-   the Settings card and others flip the delta when `reversed` is set. With natural scrolling on (macOS's default)
-   they therefore move opposite to the code editor. They also step in whole rows or at another rate, and none has
-   a draggable thumb (package 01). This could not be run here; the first step of 01 is to confirm it.
+   the Settings card, a `.gui` panel and the schematic's pan flip the delta when `reversed` is set. With natural
+   scrolling on (macOS's default) they therefore move opposite to the code editor. They also step in whole rows
+   or at another rate, and none has a draggable thumb (package 01). Confirmed from JUCE 8.0.4's source on
+   2026-11-12 (package 01, section 2); still to be felt on a Mac.
 3. **FunkGui has no middle button, no pinch and no 3D.** `PointerEvent` carries no button (a middle press arrives as
    a left one), there is no magnify event, and the GPU layer has no depth buffer, mesh, camera or offscreen pass but
    the picture read-back. Blender-style navigation, 3D and post-effects each need a FunkGui release first

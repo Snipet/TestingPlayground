@@ -31,6 +31,9 @@ From Blender's manual (Node Editors, Navigating) and its View2D keymap:
   A notched wheel always zooms toward the pointer (about 1.31 a notch), whatever key is held. A trackpad pans one
   to one; Shift makes it sideways; Cmd or Ctrl makes it zoom. For a second after any zoom, a trackpad's pan
   zooms too (`zoomedAt_`), which fights panning.
+  The handler flips its deltas on `WheelEvent::reversed` for the zoom, the pan and the probe lanes alike. Package
+  01 takes the flip off the pan and the lanes (content follows the delta as delivered) and leaves it on the zoom,
+  which maps the physical direction, as Blender's does. This package keeps both.
 - **Drags** (`beginDrag`): a right-button drag pans, and so does Alt-left-drag (`press_.popup || press_.mods.alt`).
   **A middle press arrives as a left one** (FunkGui gives no button), so it selects and moves parts.
 - No pinch (FunkGui has no such event).
@@ -80,7 +83,8 @@ reports `smooth` behaves as a trackpad, which is Blender's behaviour for such de
    - `beginDrag`: middle is `Drag::pan`; Ctrl-middle is a new `Drag::zoom` (the anchor is the press point);
      right and Alt-left as now.
    - `wheel`: the table above. The mode of a gesture (pan or zoom) is decided at its first non-inertial event and
-     kept for its inertial tail; `zoomedAt_` goes.
+     kept for its inertial tail; `zoomedAt_` goes. Every pan takes the delta as delivered and every zoom keeps the
+     flip on `reversed` (package 01's rule), the new Ctrl- and Shift-wheel pans and the pinch included.
    - `magnify`: `zoomTo(zoom() * e.scale, {e.x, e.y})`, then `persist()`.
    - `.`: `frameSelection()`, sharing `fit()`'s arithmetic over the selection's bounds (8 units of margin, the
      zoom never above 200 % for a single part), eased.
