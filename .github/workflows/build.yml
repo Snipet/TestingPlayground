@@ -4,12 +4,32 @@
 # FMinus's LLVM, Bison and Flex come prebuilt: the archive for this platform from FMinus's release
 # deps-llvm-<FP_FMINUS_LLVM> (FMinus's .github/workflows/deps.yml makes them), checked against its SHA-256 and unpacked
 # as FMinus's deps cache (FP_FMINUS_DEPS_DIR). Everything else is fetched at its pin (cmake/Deps.cmake), as on a
-# machine with no ~/audio: JUCE, bgfx (whose shader compiler is built here), FunkGui and FMinus's sources.
+# machine with no ~/audio: JUCE, bgfx (whose shader compiler is built here unless the cache below has it), FunkGui and
+# FMinus's sources.
 #
 # The probes' timeouts are tripled (FP_PROBE_TIMEOUT_SCALE=3): hosted runners are slower and noisier than a desk. On
 # Linux the build and the tests run as a user, not root (some probes check what a user cannot read), and the GUI probes
 # on a headless desktop (Xvfb and openbox) with Mesa's software Vulkan. A failed run keeps its test log and the probes'
 # pictures as an artifact for 7 days.
+#
+# Two caches spare a run the work that does not change between runs (actions/cache's restore and save, apart):
+#
+#   shaderc   bgfx's shader compiler, the build's slowest dependency (about a fifth of a Linux build's CPU time with
+#             spirv-tools, glslang and tint), on all three platforms: kept as cmake/Deps.cmake's prebuilt one,
+#             tools/shaderc-<FP_BGFX_TAG>/shaderc (shaderc.exe) and its shaderc.stamp, in a deps folder outside the
+#             checkout given to Configure as FP_DEPS_DIR (nothing else is there, so the rest is fetched as before). Key
+#             shaderc-<platform>-<FP_BGFX_SHA>; a run that missed saves the one its build made, on any ref (it is small).
+#   ccache    the compilers' objects, on macOS and Linux (Windows' clang-cl is still to come): CCACHE_DIR outside the
+#             checkout, at most 2 GB, the compiler told apart by its --version. Key ccache-<platform>-<hash of
+#             cmake/Deps.cmake>-<commit>, restored from the newest with the same pins, else the newest of the
+#             platform; the Build step's log ends with the run's hit rate (ccache -s).
+#
+# Saving keeps the repository's 10 GB of caches for main: the ccache folder is saved after a build that succeeded
+# only on main, or when nothing at all was restored (a pull request then bootstraps its own, which a re-run uses).
+#
+# A pull request that changes only docs/** and the root's *.md files builds nothing (the job `changes` reads its
+# files; on any doubt it builds): each platform's job still starts and succeeds in seconds, every step skipped, so the
+# checks named for the platforms report. Nothing the build or the tests read lives there.
 #
 # Each action is pinned to its release's full commit SHA, with the tag in a comment: a tag can be moved, a SHA cannot.
 name: Build
@@ -29,8 +49,52 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # code: whether anything but docs changed (true on a push, by hand, and whenever the pull request's files cannot be
+  # read whole)
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.files.outputs.code }}
+    steps:
+      - id: files
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          CHANGED: ${{ github.event.pull_request.changed_files }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ]; then
+            if files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename'); then
+              n=0; other=0
+              while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                n=$((n + 1))
+                case "$f" in
+                  docs/*) ;;
+                  */*) other=$((other + 1)); echo "builds: $f" ;;
+                  *.md) ;;
+                  *) other=$((other + 1)); echo "builds: $f" ;;
+                esac
+              done <<< "$files"
+              echo "$n files changed (the pull request says $CHANGED), $other outside the docs"
+              # the API lists 3,000 files at most: a list shorter than the pull request builds
+              if [ "$n" -gt 0 ] && [ "$n" = "$CHANGED" ] && [ "$other" = 0 ]; then code=false; fi
+            else
+              echo "the pull request's files could not be read: building"
+            fi
+          fi
+          echo "code=$code"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.platform }}
+    needs: changes
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     timeout-minutes: 300
@@ -48,11 +112,15 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Only docs changed
+        if: needs.changes.outputs.code != 'true'
+        run: echo "This pull request changes only docs/** and the root's *.md files, which no build or test reads; nothing to build."
+
       - name: Packages and a user (Arch Linux)
-        if: runner.os == 'Linux'
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         run: |
           pacman -Syu --noconfirm --needed \
-            git clang lld cmake ninja python pkgconf which \
+            git clang lld cmake ninja python pkgconf which ccache zstd \
             alsa-lib jack2 ladspa curl \
             freetype2 fontconfig ttf-dejavu \
             libx11 libxext libxrandr libxinerama libxcursor libxrender libxcomposite libxkbcommon \
@@ -63,8 +131,12 @@ jobs:
           git config --system --add safe.directory '*'
           echo "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json" >> "$GITHUB_ENV"
 
+      - name: ccache (macOS)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'macOS'
+        run: command -v ccache || HOMEBREW_NO_AUTO_UPDATE=1 brew install ccache
+
       - name: Visual Studio's environment and its clang-cl (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -78,11 +150,57 @@ jobs:
           }
           "$vs\VC\Tools\Llvm\x64\bin" | Out-File $env:GITHUB_PATH -Append -Encoding utf8   # its clang-cl first
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # the caches' folders, outside the checkout (the env context gives the container's own path on Linux, where
+      # runner.temp would give the host's), and bgfx.cmake's pin, which names the shader compiler
+      - name: The caches' folders and keys
+        id: keys
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          tag=$(sed -nE 's/^set\(FP_BGFX_TAG +([^ )]+)\).*/\1/p' cmake/Deps.cmake)
+          sha=$(sed -nE 's/^set\(FP_BGFX_SHA +([0-9a-f]+)\).*/\1/p' cmake/Deps.cmake)
+          [ -n "$tag" ] && [ -n "$sha" ] || { echo "no FP_BGFX_TAG or FP_BGFX_SHA in cmake/Deps.cmake"; exit 1; }
+          echo "bgfx_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "bgfx_sha=$sha" >> "$GITHUB_OUTPUT"
+          deps="$RUNNER_TEMP/fp-deps"
+          if [ "$RUNNER_OS" = Windows ]; then deps=$(cygpath -m "$deps"); fi
+          mkdir -p "$deps/tools"
+          echo "FP_CI_DEPS=$deps" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Windows ]; then
+            mkdir -p "$RUNNER_TEMP/ccache"
+            {
+              echo "CCACHE_DIR=$RUNNER_TEMP/ccache"
+              echo "CCACHE_MAXSIZE=2G"
+              # the compiler by what it says it is, not by its file's time (Apple's clang is a shim)
+              echo "CCACHE_COMPILERCHECK=string:$(clang --version | cksum | cut -d' ' -f1)"
+            } >> "$GITHUB_ENV"
+          fi
+
+      - name: Restore the shader compiler
+        id: shaderc
+        if: needs.changes.outputs.code == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.FP_CI_DEPS }}/tools/shaderc-${{ steps.keys.outputs.bgfx_tag }}
+          key: shaderc-${{ matrix.platform }}-${{ steps.keys.outputs.bgfx_sha }}
+
+      - name: Restore ccache (macOS, Linux)
+        id: ccache
+        if: needs.changes.outputs.code == 'true' && runner.os != 'Windows'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-${{ hashFiles('cmake/Deps.cmake') }}-
+            ccache-${{ matrix.platform }}-
+
       - name: FMinus's LLVM, Bison and Flex (prebuilt)
+        if: needs.changes.outputs.code == 'true'
         run: |
           llvm=$(sed -nE 's/^set\(FP_FMINUS_LLVM +([0-9.]+)\).*/\1/p' cmake/Deps.cmake)
           [ -n "$llvm" ] || { echo "no FP_FMINUS_LLVM in cmake/Deps.cmake"; exit 1; }
@@ -97,21 +215,76 @@ jobs:
           ls fminus-deps/install
           dir="$RUNNER_TEMP/fminus-deps"
           if [ "$RUNNER_OS" = Windows ]; then dir=$(cygpath -m "$dir"); fi
-          if [ "$RUNNER_OS" = Linux ]; then chown -R ci "$dir" "$GITHUB_WORKSPACE"; fi
+          # the build user's: the checkout, the deps and ccache's folder (restored as root)
+          if [ "$RUNNER_OS" = Linux ]; then chown -R ci "$dir" "$GITHUB_WORKSPACE" "$FP_CI_DEPS" "$CCACHE_DIR"; fi
           echo "FP_FMINUS_DEPS_DIR=$dir" >> "$GITHUB_ENV"
 
       - name: Configure
+        if: needs.changes.outputs.code == 'true'
         run: |
           cmd=(cmake --preset ${{ matrix.preset }}
-               -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR" -DFP_PROBE_TIMEOUT_SCALE=3)
+               -DFP_FMINUS_DEPS_DIR="$FP_FMINUS_DEPS_DIR" -DFP_DEPS_DIR="$FP_CI_DEPS" -DFP_PROBE_TIMEOUT_SCALE=3)
+          if [ "$RUNNER_OS" != Windows ]; then
+            cmd+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
+            cmd+=(-DCMAKE_OBJC_COMPILER_LAUNCHER=ccache -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache)
+          fi
           if [ "$RUNNER_OS" = Linux ]; then runuser -u ci -- "${cmd[@]}"; else "${cmd[@]}"; fi
 
+      # ccache's statistics zeroed before and printed after, whatever the build's outcome: the run's hit rate
       - name: Build
+        if: needs.changes.outputs.code == 'true'
         run: |
           cmd=(cmake --build --preset ${{ matrix.preset }} --parallel ${{ matrix.jobs }})
-          if [ "$RUNNER_OS" = Linux ]; then runuser -u ci -- "${cmd[@]}"; else "${cmd[@]}"; fi
+          as=()
+          if [ "$RUNNER_OS" = Linux ]; then as=(runuser -u ci --); fi
+          if [ "$RUNNER_OS" = Windows ]; then "${cmd[@]}"; exit; fi
+          "${as[@]}" ccache -z
+          rc=0; "${as[@]}" "${cmd[@]}" || rc=$?
+          "${as[@]}" ccache -s
+          exit $rc
+
+      # a run that missed keeps the shader compiler its build made, as Deps.cmake's prebuilt one (on any ref: it is
+      # small)
+      - name: Keep the shader compiler
+        id: keep-shaderc
+        if: success() && needs.changes.outputs.code == 'true' && steps.shaderc.outputs.cache-hit != 'true'
+        env:
+          TAG: ${{ steps.keys.outputs.bgfx_tag }}
+          SHA: ${{ steps.keys.outputs.bgfx_sha }}
+        run: |
+          exe=shaderc; if [ "$RUNNER_OS" = Windows ]; then exe=shaderc.exe; fi
+          found=$(/usr/bin/find "build-${{ matrix.preset }}/_deps/bgfx-build" -type f -name "$exe")
+          echo "found: $found"
+          [ -n "$found" ] && [ "$(printf '%s\n' "$found" | wc -l | tr -d ' ')" = 1 ] || {
+            echo "::warning::not one $exe under build-${{ matrix.preset }}/_deps/bgfx-build: not cached"; exit 0; }
+          dir="$FP_CI_DEPS/tools/shaderc-$TAG"
+          mkdir -p "$dir"
+          cp "$found" "$dir/$exe"
+          echo "bgfx.cmake $SHA" > "$dir/shaderc.stamp"
+          ls -l "$dir"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Save the shader compiler
+        if: success() && steps.keep-shaderc.outputs.ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.FP_CI_DEPS }}/tools/shaderc-${{ steps.keys.outputs.bgfx_tag }}
+          key: ${{ steps.shaderc.outputs.cache-primary-key }}
+
+      # main keeps the cache fresh; elsewhere only a run that restored nothing saves (a first one to start from)
+      - name: Save ccache (macOS, Linux)
+        if: >-
+          success() && needs.changes.outputs.code == 'true' && runner.os != 'Windows' &&
+          (github.ref == 'refs/heads/main' || steps.ccache.outputs.cache-matched-key == '')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.ccache.outputs.cache-primary-key }}
 
       - name: Test
+        if: needs.changes.outputs.code == 'true'
         run: |
           cmd=(ctest --preset ${{ matrix.preset }} --parallel ${{ matrix.tests }})
           if [ "$RUNNER_OS" = Linux ]; then
@@ -128,7 +301,7 @@ jobs:
           "${cmd[@]}"
 
       - name: Keep the test log and the probes' pictures
-        if: failure()
+        if: failure() && needs.changes.outputs.code == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tests-${{ matrix.platform }}
