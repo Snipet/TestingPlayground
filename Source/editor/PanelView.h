@@ -1,9 +1,10 @@
-// Source/sandbox/View.h: the GUI sandbox's panel: a .gui file's interface as the plugin's PANEL view shows it, with no
-// plugin. A funkgui::Panel of the area's size holding the editor's own items (editor/GuiView.h: the controls, pads,
-// envelopes, keyboards, tabs and shaders of GuiItems.h, and the displays of DisplayItem.h, made in the Panel's order),
-// laid out, fed and drawn by the editor's code over the program's card's colour, as Panel.cpp draws them; the dials
-// are mock ports (their values set before it is drawn), the displays read demo meters (MockMeters below), and a
-// HeadlessHost records its frame, which editor/Picture.h draws (on the GPU, else SoftRaster).
+// Source/editor/PanelView.h: the GUI sandbox's panel (Source/sandbox/; moved here from sandbox/View.h so that the
+// Projects card's preview, editor/Preview.h, draws with it too): a .gui file's interface as the plugin's PANEL view
+// shows it, with no plugin. A funkgui::Panel of the area's size holding the editor's own items (editor/GuiView.h: the
+// controls, pads, envelopes, keyboards, tabs and shaders of GuiItems.h, and the displays of DisplayItem.h, made in the
+// Panel's order), laid out, fed and drawn by the editor's code over the program's card's colour, as Panel.cpp draws
+// them; the dials are mock ports (their values set before it is drawn), the displays read demo meters (MockMeters
+// below), and a HeadlessHost records its frame, which editor/Picture.h draws (on the GPU, else SoftRaster).
 #pragma once
 
 #include "editor/DisplayItem.h"

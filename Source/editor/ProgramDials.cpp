@@ -1,5 +1,5 @@
-// Source/sandbox/Dials.cpp: see Dials.h.
-#include "sandbox/Dials.h"
+// Source/editor/ProgramDials.cpp: see ProgramDials.h.
+#include "editor/ProgramDials.h"
 
 #include "fminus/Lang.h"
 
