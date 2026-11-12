@@ -286,7 +286,9 @@ namespace playground::claude
                                       std::size_t maxOther = std::numeric_limits<std::size_t>::max())
             {
                 HttpResult r;
-                juce::URL url(juce::String(host) + juce::String(path));
+                // The address as it was built, never parsed: JUCE would take a query apart (Gemini's ?alt=sse) and, for
+                // a POST, write it into the body before the posted data, out of the request line.
+                juce::URL url = juce::URL::createWithoutParsing(juce::String(host) + juce::String(path));
                 if (post)
                     url = url.withPOSTData(juce::MemoryBlock(body.data(), body.size()));
                 juce::WebInputStream stream(url, post);
@@ -547,8 +549,9 @@ namespace playground::claude
                 if (cb_.serverInput)
                     cb_.serverInput(b.object.getProperty("name", "").toString().toStdString(), input);
             }
-            else if (b.type == "compaction")
+            else if (b.type == "compaction" && !b.summary.empty())
             {
+                // A compaction that made no summary keeps the content it came with (null): never an empty string.
                 bo->setProperty("content", juce::String::fromUTF8(b.summary.c_str()));
                 if (cb_.compaction)
                     cb_.compaction(b.summary.size());

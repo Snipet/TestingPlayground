@@ -250,7 +250,16 @@
 //            in the middle of a turn (an answer with tool calls), the next request starts at the block too, every tool
 //            result answers a call of the message before it (the API refused a result whose call the summary took:
 //            "unexpected tool_use_id"), and the files go with the results; a session saved with that broken history
-//            is repaired when it loads, and works
+//            is repaired when it loads, and works; a Stop after a compaction block started and before its summary came
+//            keeps the history as it was (no block without a summary in it or in the next request), and a chat kept
+//            cut at such a block by an earlier build loads without it, its next request valid
+//   EMPTY    a reply with nothing to keep (no block, white space alone, thinking alone) goes into the history with
+//            "(no answer)" after what it has (its thinking as it came), and the chat shows "(no answer)"; the next
+//            request has no empty message and no blank text; thinking alone cut off at max_tokens goes back as it came,
+//            with no "(no answer)", and the turn goes on; blank text beside a tool call goes, the thinking and the call
+//            exactly as they came and the call answered; a reply paused with nothing in it keeps nothing (the request
+//            goes again as it was); a chat kept with an empty and a blank reply, or with blank text beside a tool
+//            call, is mended when it loads (the call and its result untouched)
 //   PROMPT   the session holds the system prompt's and tools' hash; a session saved without it (or with another)
 //            loses its thinking blocks when it loads (a reply of thinking alone keeps a line), one saved with it keeps
 //            them
@@ -556,6 +565,38 @@ namespace
         for (const auto& b : arr(message.getProperty("content", {})))
             if (str(b, "type") == "text" && str(b, "text").find(part) != std::string::npos)
                 return true;
+        return false;
+    }
+
+    // Every message has content the API takes: some content, and no text block that is empty or blank.
+    bool filled(const juce::Array<juce::var>& messages)
+    {
+        for (const auto& m : messages)
+        {
+            const juce::var content = m.getProperty("content", {});
+            if (content.isString())
+            {
+                if (content.toString().trim().isEmpty())
+                    return false;
+                continue;
+            }
+            const juce::Array<juce::var> blocks = arr(content);
+            if (blocks.isEmpty())
+                return false;
+            for (const auto& b : blocks)
+                if (str(b, "type") == "text" && juce::String(str(b, "text")).trim().isEmpty())
+                    return false;
+        }
+        return true;
+    }
+
+    // A compaction block whose summary never arrived, anywhere in the messages.
+    bool summaryless(const juce::Array<juce::var>& messages)
+    {
+        for (const auto& m : messages)
+            for (const auto& b : arr(m.getProperty("content", {})))
+                if (str(b, "type") == "compaction" && str(b, "content").empty())
+                    return true;
         return false;
     }
 
@@ -4898,6 +4939,204 @@ PROBE(plugin, chat)
             for (const auto& b : arr(message.getProperty("content", {})))
                 gone = gone && str(b, "tool_use_id") != "toolu_gone";
         P.eq("repair.orphan_gone", gone ? 1 : 0, 1);
+        agent.loadState(kept);                     // the conversation the sections below go on with
+    }
+
+    // ---- COMPACT stopped: a Stop after a compaction block started, before its summary came -----------------------------
+    {
+        const std::string kept = agent.saveState();
+        const int before = arr(claude::parseJson(kept).getProperty("messages", {})).size();
+        fake::Response stall;
+        stall.stream = fake::Sse().start().str()
+                     + "event: content_block_start\r\ndata: {\"type\":\"content_block_start\",\"index\":0,"
+                       "\"content_block\":{\"type\":\"compaction\"}}\r\n\r\n";
+        stall.stall = true;
+        script->add(stall);
+        agent.send("a third question");
+        const auto t0 = std::chrono::steady_clock::now();
+        while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        agent.stop();
+        agent.waitIdle();
+        const juce::Array<juce::var> after = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.ge("compactstop.history_kept", static_cast<double>(after.size()), before + 2.0);
+        P.eq("compactstop.no_block", summaryless(after) ? 1 : 0, 0);
+        P.eq("compactstop.alternates", alternates(after) ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Carrying on.").end()));
+        agent.send("go on");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        P.ge("compactstop.request_kept", static_cast<double>(m.size()), before + 3.0);
+        P.eq("compactstop.request_valid", !summaryless(m) && filled(m) && alternates(m) ? 1 : 0, 1);
+
+        // A chat kept in that state by an earlier build: cut at the block, so it starts with the assistant's message.
+        juce::Array<juce::var> cutAnswer, messages;
+        cutAnswer.add(input({ { "type", "compaction" } }));
+        cutAnswer.add(input({ { "type", "text" }, { "text", "(stopped by the user)" } }));
+        messages.add(input({ { "role", "assistant" }, { "content", cutAnswer } }));
+        agent.loadState(claude::toJson(input({ { "version", 1 }, { "messages", messages }, { "entries", juce::Array<juce::var>() } })));
+        const juce::Array<juce::var> loaded = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("compactstop.mended_loaded", !loaded.isEmpty() && !summaryless(loaded) && alternates(loaded) && filled(loaded) ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Carrying on.").end()));
+        agent.send("go on");
+        agent.waitIdle();
+        const juce::Array<juce::var> m2 = messagesOf(script->body(script->postCount() - 1));
+        P.eq("compactstop.mended_request", !summaryless(m2) && filled(m2) && alternates(m2) && says(m2[m2.size() - 1], "go on")
+                                               ? 1 : 0, 1);
+        agent.loadState(kept);                     // the conversation the sections below go on with
+    }
+
+    // ---- EMPTY: a reply with nothing to keep ---------------------------------------------------------------------------
+    {
+        const std::string kept = agent.saveState();
+        const auto lastMessage = [&] {
+            const juce::Array<juce::var> h = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+            return h.isEmpty() ? juce::var() : h[h.size() - 1];
+        };
+        const auto placeholder = [](const juce::var& message) {
+            const juce::Array<juce::var> c = arr(message.getProperty("content", {}));
+            return str(message, "role") == "assistant" && !c.isEmpty() && str(c[c.size() - 1], "type") == "text"
+                && str(c[c.size() - 1], "text") == "(no answer)";
+        };
+        // No block at all.
+        script->add(fake::Response::ok(fake::Sse().start().end()));
+        agent.send("anything");
+        agent.waitIdle();
+        P.eq("empty.placeholder", placeholder(lastMessage()) && arr(lastMessage().getProperty("content", {})).size() == 1 ? 1 : 0, 1);
+        P.eq("empty.shown", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "(no answer)" ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Hello.").end()));
+        agent.send("again");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        P.eq("empty.request_valid", filled(m) && alternates(m) ? 1 : 0, 1);
+
+        // Text that is only white space.
+        script->add(fake::Response::ok(fake::Sse().start().text(" \n\n ").end()));
+        agent.send("anything else");
+        agent.waitIdle();
+        P.eq("empty.blank_placeholder", placeholder(lastMessage()) && arr(lastMessage().getProperty("content", {})).size() == 1 ? 1 : 0, 1);
+        P.eq("empty.blank_shown", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "(no answer)" ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Hello again.").end()));
+        agent.send("and again");
+        agent.waitIdle();
+        const juce::Array<juce::var> m2 = messagesOf(script->body(script->postCount() - 1));
+        P.eq("empty.blank_request_valid", filled(m2) && alternates(m2) ? 1 : 0, 1);
+
+        // Thinking alone: the thinking kept as it came, the line after it.
+        script->add(fake::Response::ok(fake::Sse().start().thinking("Nothing to say.", "sig-alone").end()));
+        agent.send("think about it");
+        agent.waitIdle();
+        const juce::Array<juce::var> c = arr(lastMessage().getProperty("content", {}));
+        P.eq("empty.thinking_kept", c.size() == 2 && str(c[0], "type") == "thinking" && str(c[0], "signature") == "sig-alone"
+                                        && str(c[0], "thinking") == "Nothing to say." && placeholder(lastMessage()) ? 1 : 0, 1);
+
+        // Thinking alone, cut off at max_tokens: it goes back as it came, no line and no "(no answer)", and the turn
+        // goes on from it.
+        {
+            const std::size_t shown = agent.chatState().entries.size();
+            const int from = script->postCount();
+            script->add(fake::Response::ok(fake::Sse().start().thinking("A long thought.", "sig-cut-alone").end("max_tokens")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Finished.").end()));
+            agent.send("think long");
+            agent.waitIdle();
+            const pg::ChatState st = agent.chatState();
+            juce::var cut;
+            for (const auto& message : arr(claude::parseJson(agent.saveState()).getProperty("messages", {})))
+                if (has(claude::toJson(message), "sig-cut-alone"))
+                    cut = message;
+            const juce::Array<juce::var> cc = arr(cut.getProperty("content", {}));
+            P.eq("empty.cutoff_thinking_kept", cc.size() == 1 && str(cc[0], "type") == "thinking"
+                                                   && str(cc[0], "signature") == "sig-cut-alone" ? 1 : 0, 1);
+            int noAnswer = 0;
+            for (std::size_t i = shown; i < st.entries.size(); ++i)
+                noAnswer += st.entries[i].kind == pg::ChatEntry::Kind::assistant && st.entries[i].text == "(no answer)" ? 1 : 0;
+            P.eq("empty.cutoff_no_entry", noAnswer, 0);
+            P.eq("empty.cutoff_went_on", script->postCount() - from == 2
+                                             && has(lastText(st, pg::ChatEntry::Kind::note), "goes on from where it stopped")
+                                             && lastText(st, pg::ChatEntry::Kind::assistant) == "Finished." ? 1 : 0, 1);
+        }
+
+        // Blank text beside a tool call: the blank text goes, the thinking and the call stay exactly as they came.
+        {
+            script->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .thinking("Look first.", "sig-beside")
+                                               .text("\n\n")
+                                               .tool("toolu_beside", "get_status", input({}))
+                                               .end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Looked.").end()));
+            agent.send("look");
+            agent.waitIdle();
+            const juce::Array<juce::var> h = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+            int at = -1;
+            for (int i = 0; i < h.size(); ++i)
+                if (has(claude::toJson(h[i]), "toolu_beside") && str(h[i], "role") == "assistant")
+                    at = i;
+            const juce::Array<juce::var> bc = arr(at >= 0 ? h[at].getProperty("content", {}) : juce::var());
+            P.eq("empty.beside_call_kept", bc.size() == 2 && str(bc[0], "type") == "thinking" && str(bc[0], "signature") == "sig-beside"
+                                               && str(bc[0], "thinking") == "Look first." && str(bc[1], "type") == "tool_use"
+                                               && str(bc[1], "id") == "toolu_beside" && str(bc[1], "name") == "get_status"
+                                               && claude::toJson(bc[1].getProperty("input", {})) == "{}" ? 1 : 0, 1);
+            bool answered = false;
+            for (const auto& b : arr(at >= 0 && at + 1 < h.size() ? h[at + 1].getProperty("content", {}) : juce::var()))
+                answered = answered || (str(b, "type") == "tool_result" && str(b, "tool_use_id") == "toolu_beside");
+            P.eq("empty.beside_call_answered", answered && filled(h) && alternates(h) ? 1 : 0, 1);
+        }
+
+        // A reply the API paused with nothing in it: nothing kept (a placeholder would be a prefill), and the
+        // continuation follows the user's message.
+        const int pauseFrom = script->postCount();
+        script->add(fake::Response::ok(fake::Sse().start().end("pause_turn")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Done after the pause.").end()));
+        agent.send("search for it");
+        agent.waitIdle();
+        const juce::Array<juce::var> resent = messagesOf(script->body(pauseFrom + 1));
+        P.eq("empty.pause_resent", script->postCount() - pauseFrom == 2 && !resent.isEmpty()
+                                       && str(resent[resent.size() - 1], "role") == "user" && filled(resent) ? 1 : 0, 1);
+        const juce::Array<juce::var> h = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("empty.pause_history", filled(h) && alternates(h) && says(h[h.size() - 1], "Done after the pause.") ? 1 : 0, 1);
+
+        // A chat kept with an empty reply and a blank one by an earlier build: mended when it loads.
+        juce::Array<juce::var> q1, q2, blank, messages;
+        q1.add(input({ { "type", "text" }, { "text", "first" } }));
+        q2.add(input({ { "type", "text" }, { "text", "second" } }));
+        blank.add(input({ { "type", "text" }, { "text", "  " } }));
+        messages.add(input({ { "role", "user" }, { "content", q1 } }));
+        messages.add(input({ { "role", "assistant" }, { "content", juce::Array<juce::var>() } }));
+        messages.add(input({ { "role", "user" }, { "content", q2 } }));
+        messages.add(input({ { "role", "assistant" }, { "content", blank } }));
+        agent.loadState(claude::toJson(input({ { "version", 1 }, { "messages", messages }, { "entries", juce::Array<juce::var>() } })));
+        const juce::Array<juce::var> loaded = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        P.eq("empty.mended_loaded", loaded.size() == 4 && placeholder(loaded[1]) && placeholder(loaded[3]) && says(loaded[2], "second")
+                                        && filled(loaded) ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Third.").end()));
+        agent.send("third");
+        agent.waitIdle();
+        const juce::Array<juce::var> m3 = messagesOf(script->body(script->postCount() - 1));
+        P.eq("empty.mended_request", m3.size() == 5 && filled(m3) && alternates(m3) ? 1 : 0, 1);
+
+        // A chat kept with blank text beside a tool call: the blank text goes, the call and its result stay.
+        {
+            juce::Array<juce::var> q, call, result, done, kept2;
+            q.add(input({ { "type", "text" }, { "text", "look" } }));
+            const juce::var use = input({ { "type", "tool_use" }, { "id", "toolu_kept_call" }, { "name", "get_status" },
+                                          { "input", input({}) } });
+            const juce::var res = input({ { "type", "tool_result" }, { "tool_use_id", "toolu_kept_call" }, { "content", "status" } });
+            call.add(input({ { "type", "text" }, { "text", " \n" } }));
+            call.add(use);
+            result.add(res);
+            done.add(input({ { "type", "text" }, { "text", "Looked." } }));
+            kept2.add(input({ { "role", "user" }, { "content", q } }));
+            kept2.add(input({ { "role", "assistant" }, { "content", call } }));
+            kept2.add(input({ { "role", "user" }, { "content", result } }));
+            kept2.add(input({ { "role", "assistant" }, { "content", done } }));
+            agent.loadState(claude::toJson(input({ { "version", 1 }, { "messages", kept2 }, { "entries", juce::Array<juce::var>() } })));
+            const juce::Array<juce::var> l = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+            const juce::Array<juce::var> lc = arr(l.size() == 4 ? l[1].getProperty("content", {}) : juce::var());
+            const juce::Array<juce::var> lr = arr(l.size() == 4 ? l[2].getProperty("content", {}) : juce::var());
+            P.eq("empty.beside_call_mended", lc.size() == 1 && claude::toJson(lc[0]) == claude::toJson(use) && lr.size() == 1
+                                                 && claude::toJson(lr[0]) == claude::toJson(res) && filled(l) && alternates(l) ? 1 : 0, 1);
+        }
         agent.loadState(kept);                     // the conversation the sections below go on with
     }
 
