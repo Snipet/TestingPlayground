@@ -81,13 +81,14 @@
 //             row height round(px * 1.4); the line at the text's top and the caret where they were; the status line's
 //             size (none at 12 px), a click on it 12 px again; Cmd-wheel a step a notch both ways, a pad's deltas
 //             gathered to a step, a plain wheel scrolling and leaving the size; the completion list's rows, its width,
-//             the hover card and the find bar larger at 24 px than at 12; a second Panel follows the preference with
+//             the hover card's code and the find bar larger at 24 px than at 12; a second Panel follows the preference with
 //             no input of its own (and a Panel made after reads it); the IR view drawn in it and its keys stepping
 //             it; a netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom, the size unchanged
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
+#include "editor/SchematicView.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
 #include "plugin/ChatAgent.h"
@@ -1333,6 +1334,8 @@ PROBE(gui, code)
             const funkgui::Point at = ed.pointOf(posIn(ed, "filter.tick", 9));
             host.move(at.x + 3.0f, at.y + ed.rowHeight() * 0.5f);
             host.tick(40);
+            host.draw();                                 // the card's place is where it was drawn
+            std::printf("hover %s: %s\n", code.hoverOpen() ? "open" : "closed", code.hoverText().substr(0, 40).c_str());
             o.hover = code.hoverBox();
             host.move(at.x + 3.0f, at.y + 6.0f * ed.rowHeight());
             host.tick(2);
@@ -1397,7 +1400,9 @@ PROBE(gui, code)
              std::max(330.0, static_cast<double>(code.editorRect().w)) + 0.5);
         P.ge("size.completion_taller", static_cast<double>(at24.completion.h), 1.5 * static_cast<double>(at12.completion.h));
         P.ge("size.hover_opens", at12.hover.h > 0.0f && at24.hover.h > 0.0f ? 1.0 : 0.0, 1.0);
-        P.ge("size.hover_larger", static_cast<double>(at24.hover.w * at24.hover.h), 1.5 * static_cast<double>(at12.hover.w * at12.hover.h));
+        // (its code's line grows, 18 px to 36; its documentation is the chat's size, as the card's width follows it)
+        P.ge("size.hover_code_taller", static_cast<double>(at24.hover.h - at12.hover.h), 17.0);
+        P.ge("size.hover_not_narrower", static_cast<double>(at24.hover.w), static_cast<double>(at12.hover.w));
         P.ge("size.find_taller", static_cast<double>(at24.find.h), 1.5 * static_cast<double>(at12.find.h));
         P.ge("size.find_wider", static_cast<double>(at24.find.w), static_cast<double>(at12.find.w));
         // ... and in the picture: the completion list open at 24 px.

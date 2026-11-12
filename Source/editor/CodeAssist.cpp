@@ -2530,7 +2530,7 @@ namespace playground::ui
         if (hasPanelSwitch())
             s.panel = panelSwitchLabelled() ? take(kPanelWord, kPanelIconRoom) : take("", kPanelGlyphW - 2.0f);
         s.formatOnRun = take("Format on Run", 14.0f);
-        if (size_ != codesize::kDefault)
+        if (sizeShown())
             s.size = take(codesize::label(size_), 0.0f);
         s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
@@ -2542,18 +2542,35 @@ namespace playground::ui
         return s;
     }
 
+    float CodeAssist::widestParts() const
+    {
+        // The line's parts at their widest but the Panel switch and the size: Format on Run, the IR's name, the indent,
+        // a long place with a selection's count. The word stays put as the caret moves.
+        const funkgui::TextStyle& st = chat::kSmall;
+        return widthOf("Format on Run", st) + 16.0f + 14.0f                       // Format on Run
+             + widthOf("LLVM IR", st) + 16.0f                                     // the language
+             + widthOf("Spaces: 4", st) + 16.0f                                   // the indent
+             + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+    }
+
+    bool CodeAssist::sizeShown() const
+    {
+        // A size other than 12 px, while the line leaves the problems' count and Checking... their room beside it with
+        // the switch's icon alone (a narrow program's card: the keys and the wheel still say it in the editor).
+        if (size_ == codesize::kDefault)
+            return false;
+        const float sizeW = widthOf(codesize::label(size_), chat::kSmall) + 16.0f;
+        const float icon = kPanelGlyphW - 2.0f + 16.0f;
+        return statusRect().w - 16.0f - widestParts() - icon - sizeW >= kProblemsRoom;
+    }
+
     bool CodeAssist::panelSwitchLabelled() const
     {
-        // Its word while the line's other parts at their widest (a long place with a selection's count, the IR's name)
-        // leave the problems' count and Checking... their room: the word stays put as the caret moves, and goes only
-        // near the program's card's least width.
+        // Its word while the line's other parts at their widest leave the problems' count and Checking... their room:
+        // the word goes only near the program's card's least width.
         const funkgui::TextStyle& st = chat::kSmall;
-        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom          // the switch, its word
-                          + widthOf("Format on Run", st) + 16.0f + 14.0f              // Format on Run
-                          + widthOf("LLVM IR", st) + 16.0f                            // the language
-                          + widthOf("Spaces: 4", st) + 16.0f                          // the indent
-                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st)    // the place
-                          + (size_ != codesize::kDefault ? widthOf(codesize::label(size_), st) + 16.0f : 0.0f);   // the size
+        const float sizeW = sizeShown() ? widthOf(codesize::label(size_), st) + 16.0f : 0.0f;
+        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom + widestParts() + sizeW;
         return statusRect().w - 16.0f - parts >= kProblemsRoom;
     }
 
@@ -2754,7 +2771,7 @@ namespace playground::ui
         const funkgui::Canvas::Scope s(c, kCodePopupTag, false);
         const funkgui::TextEditor& E = ed();
         const funkgui::TextStyle codeSt = codeStyle(), cardSt = cardCodeStyle();   // at the text size
-        const float lineH = codeLineH(), rowHt = rowH(), maxW = cardMaxW();
+        const float lineH = codeLineH(), rowHt = rowH(), cardW = cardMaxW();
         const auto card = [&](const Rect& r) {
             c.rrect(r.x + 1.0f, r.y + 3.0f, r.w, r.h, 7.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 110 : 40) }, 0.0f, Col{}, 6.0f);
             c.rrect(r.x, r.y, r.w, r.h, 7.0f, p.raised, 1.0f, p.composerEdge);
@@ -2799,11 +2816,11 @@ namespace playground::ui
         if (signature_ && E.focused())
         {
             const lang::Signature& sig = *signature_;
-            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, maxW - 2.0f * kPad, 4);
+            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, cardW - 2.0f * kPad, 4);
             float inner = std::max(widthOf(sig.label, cardSt), 120.0f);
             for (const std::string& l : doc)
                 inner = std::max(inner, widthOf(l, chat::kSmall));
-            const float w = std::min(maxW, inner + 2.0f * kPad);
+            const float w = std::min(cardW, inner + 2.0f * kPad);
             const float h = kPad * 2.0f + lineH + (doc.empty() ? 0.0f : 4.0f + 15.0f * static_cast<float>(doc.size()));
             const funkgui::Point at = E.pointOf(E.caret());
             float x = std::clamp(at.x - 20.0f, 8.0f, panelW - w - 8.0f);
@@ -2922,7 +2939,7 @@ namespace playground::ui
         if (hover_)
         {
             const lang::Hover& h = *hover_;
-            const float innerW = maxW - 2.0f * kPad;
+            const float innerW = cardW - 2.0f * kPad;
             std::vector<std::string> code;
             for (const std::string_view l : lang::splitLines(h.code))
                 if (!l.empty())
@@ -2939,7 +2956,7 @@ namespace playground::ui
                 w = std::max(w, widthOf(l, chat::kSmall));
             for (const std::string& l : problems)
                 w = std::max(w, widthOf(l, chat::kSmall) + 14.0f);
-            w = std::min(maxW, w + 2.0f * kPad);
+            w = std::min(cardW, w + 2.0f * kPad);
             const float codeH = lineH * static_cast<float>(code.size());
             const float docH = 14.0f * static_cast<float>(doc.size());
             const float probH = 14.0f * static_cast<float>(problems.size());

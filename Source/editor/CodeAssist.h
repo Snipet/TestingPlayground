@@ -328,6 +328,7 @@ namespace playground::ui
         }
         funkgui::Rect panelSwitchRect() const;           // where it is (empty without one)
         bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone: a narrow line)
+        bool sizeShown() const;                          // the text size in the line (not 12 px, and room for it)
 
         // ---- commands ---------------------------------------------------------------------------------------------
         bool formatFile();                               // the tab shown (an FMinus file); false with a notice when not
@@ -432,6 +433,7 @@ namespace playground::ui
             funkgui::Rect problems, position, indent, language, formatOnRun, panel, size;   // size: empty at 12 px
         };
         StatusParts statusParts() const;
+        float widestParts() const;                       // the line's parts at their widest, but the switch and the size
 
         // The overlays' measures at the text size (size_): 1 at 12 px.
         float sizeScale() const noexcept { return static_cast<float>(size_) / static_cast<float>(codesize::kDefault); }
