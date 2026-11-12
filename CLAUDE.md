@@ -1632,7 +1632,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   tune_dials and compare, whose words moved into their guide parts or went; 23,343 and 21,969 with all of them, the
   shorter kept where both had cut a first sentence; 23,400 and 22,026 with the guide's cheatsheet part, waveguide.fm,
   level_wobble_db and compare's wav:path, capture's marks costing none: they are past its description's first
-  paragraph, all that tools/list carries, the rest the guide's). `plugin.mcp`
+  paragraph, all that tools/list carries, the rest the guide's; 23,755 and 22,381 with read_file's context, count and skip and
+  edit_file's find, its regex's words read_file's so given once: "find is a regex", RE2 named in the guide, since a
+  description with a digit stays in every copy). `plugin.mcp`
   checks, and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
@@ -1865,7 +1867,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   always). write_file of a `.cir` whose text has no `*@` line keeps the old ones and says so.
 - **read_file and edit_file** (`plugin/ChatFiles.cpp`): every read and write says the file's line count and version
   (its text's hash; the newest 16 versions' texts kept, `fileVersions_`). read_file gives a file whole, or a range
-  (`from`, `lines`) or the lines holding a text (`find`, two around each), numbered, and a part read marks nothing seen;
+  (`from`, `lines`) or the lines holding a text (`find`, `context` lines around each: 0 to 10, 2 unless said; `count`
+  only how many in each file; `skip` passes over that many lines found, the last line saying how many are left and the
+  skip that reads on), numbered, and a part read marks nothing seen;
   `find` with `regex` is a pattern (`dsp/Regex.h`; refused in words when it is none it takes) and with no name searches
   every file, in the tabs' order (each file's line count, version (kept, for `expected`) and lines, at most 40 shown in
   all), in find's own case first, then in any; a pattern's steps are at most 20 million a call (`kSearchSteps`, about
@@ -1900,6 +1904,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   so, however far the tab went back and came again, so each such change is one step, one after another; a change of a
   tab's text it did not count (typing, a gesture, Format) takes the tab out of every group, and a new step where it
   could redo out of the groups whose steps those were; a fresh start or a load ends them all.
+  edit_file's `find` (`replaceText`; never beside `old_text`, `edits` or `files`) replaces every match of a text or,
+  with `regex`, a pattern by `new_text` as it is (no `$1`: the engine keeps no captures; a match's place is
+  `Regex::find`'s, the leftmost and there the longest, each thread keeping only where it started), line by line in
+  find's own case, a match of nothing passed over and a netlist's `*@` lines never touched, in `name` or with no name in
+  every file; all or none, one `chatSetDraftIf` of every file it read (the files with no match as they were), so the
+  user's typing meanwhile is kept and the replacement runs once more on the new text; `expected` only with `name`;
+  refused in words: no match (the lines that hold it in another case, and a text's closest passage), more than 2,000
+  (`kMaxReplaced`), a pattern past its steps; its result each file's count, lines and version and the first 20 lines
+  changed, numbered; seen by `carrySeen`.
 - **run_function** (`plugin/ChatFunction.cpp`, `fminus/PatchCall.cpp`: `Patch::call`, `adopt`, `layout`; FMinus's call
   by signature, `Program::callable` and `call`): one of the program's functions called by name with Claude's arguments
   (a number for a float, a double or a whole one for an int, true or false for a bool, an array or `{extent, values}`
