@@ -9,17 +9,20 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
-Claude Desktop extension: **0.18.0** (was 0.17.0).
+### Every list scrolls as the code does
 
-### Claude searches with more control and replaces every match
+**Fixed**
+- The explorer, the Projects card's lists, the presets' list and the A/B card scroll the way the code does with
+  natural scrolling on. On a Mac they scrolled the other way, and the Settings card, a scrolling interface on the
+  panel and a schematic's pan and probe lanes did too.
+- Those lists, the A/B card's changes and the Settings card move as far as the code for the same turn of the wheel or
+  stroke of the trackpad: three rows a notch, and a trackpad's stroke a px for a px. They scroll by the pixel, so a
+  row at an edge shows in part. The Projects card and the presets' list used to jump a whole row for each trackpad
+  event, and the explorer moved about four times slower than the code on a trackpad.
 
-**Added**
-- Claude's search of the files (read_file's find) shows as many lines around each line found as it asks (none to
-  ten), can give only how many lines each file has, and reads on past the first 40 (its last line says how many are
-  left and how to read them).
-- Claude can replace every match of a text or a pattern at once (edit_file's find), in one file or in all of them: a
-  name changed everywhere is one step you undo with Cmd-Z. It replaces within a line and in the text's own case, never
-  a netlist's drawing lines, at most 2,000 at once, all or none; it never overwrites what you typed meanwhile.
+**Changed**
+- Every scrolling list, card, the chat and a scrolling interface have a thumb you can drag, as the code has, and a
+  click on its track jumps there. A notch of the wheel moves the chat three lines and an interface 72 px.
 
 ### The chat keeps its conversation through a stopped summary and an empty reply ([#40](https://github.com/Snipet/TestingPlayground/pull/40))
 

@@ -142,7 +142,7 @@ namespace playground::ui
         open_ = true;
         focus_ = {};
         ring_ = false;
-        scroll_ = 0.0f;
+        scroll_ = Scroll{};
         ++revision_;
         return true;
     }
@@ -377,7 +377,7 @@ namespace playground::ui
         at.box = { std::round((width - w) * 0.5f), std::round((height - h) * 0.45f), w, h };
         at.body = { at.box.x + kPad, at.box.y + kHeaderH, inner, h - kHeaderH - kFooterH };
         at.maxScroll = std::max(0.0f, at.contentH - at.body.h);
-        at.scroll = std::clamp(scroll_, 0.0f, at.maxScroll);
+        at.scroll = std::clamp(scroll_.offset, 0.0f, at.maxScroll);
         const float dx = at.body.x, dy = at.body.y - at.scroll;
         for (Control& c : at.controls)
         {
@@ -559,6 +559,12 @@ namespace playground::ui
             close();                                     // a click outside the card
             return;
         }
+        if (Scroll s = scrollOf(at); s.press(p, barArea(at)))
+        {
+            scroll_ = s;                                 // the body's thumb drags (a press on its track jumps first)
+            ++revision_;
+            return;
+        }
         for (const Control& c : at.controls)
             if (c.r.contains(p) && (c.act == Act::done || at.body.contains(p)))
             {
@@ -571,12 +577,46 @@ namespace playground::ui
 
     void SettingsCard::wheel(const funkgui::WheelEvent& e, float width, float height)
     {
+        // As the code scrolls (Scroll.h), a notch three lines: the delta as it came, WheelEvent::reversed never read.
         const Places at = places(width, height);
-        if (at.maxScroll <= 0.0f)
+        Scroll s = scrollOf(at);
+        if (!s.wheel(e.dy, e.smooth))
             return;
-        const float k = e.smooth ? 512.0f : 292.0f;     // px a unit of the wheel (the chat's)
-        const float dy = e.reversed ? -e.dy : e.dy;
-        scroll_ = std::clamp(at.scroll - dy * k, 0.0f, at.maxScroll);
+        scroll_ = s;
+        ++revision_;
+    }
+
+    Scroll SettingsCard::scrollOf(const Places& at) const
+    {
+        Scroll s = scroll_;
+        s.content = at.contentH;
+        s.view = at.body.h;
+        s.row = kRowStep;                                // its line pitch
+        s.clamp();
+        return s;
+    }
+
+    funkgui::Rect SettingsCard::barArea(const Places& at) const
+    {
+        return { at.body.x, at.body.y, at.box.right() - 3.0f - at.body.x, at.body.h };   // the bar in the card's margin
+    }
+
+    void SettingsCard::pointerDrag(funkgui::Point p, float width, float height)
+    {
+        if (!scroll_.dragging())
+            return;
+        const Places at = places(width, height);
+        Scroll s = scrollOf(at);
+        s.drag(p, barArea(at));
+        scroll_ = s;
+        ++revision_;
+    }
+
+    void SettingsCard::pointerUp()
+    {
+        if (!scroll_.dragging())
+            return;
+        scroll_.release();
         ++revision_;
     }
 
@@ -604,9 +644,9 @@ namespace playground::ui
             if (c.act != Act::done)
             {
                 if (c.r.y < at.body.y)
-                    scroll_ = std::max(0.0f, at.scroll - (at.body.y - c.r.y) - 4.0f);
+                    scroll_.offset = std::max(0.0f, at.scroll - (at.body.y - c.r.y) - 4.0f);
                 else if (c.r.bottom() > at.body.bottom())
-                    scroll_ = std::min(at.maxScroll, at.scroll + (c.r.bottom() - at.body.bottom()) + 4.0f);
+                    scroll_.offset = std::min(at.maxScroll, at.scroll + (c.r.bottom() - at.body.bottom()) + 4.0f);
             }
             ++revision_;
             return;
@@ -731,9 +771,7 @@ namespace playground::ui
         if (at.maxScroll > 0.0f)
         {
             const funkgui::Rect& b = at.body;
-            const float h = std::max(24.0f, b.h * b.h / (b.h + at.maxScroll));
-            const float y = b.y + (b.h - h) * at.scroll / at.maxScroll;
-            c.rrect(box.right() - 9.0f, y, 3.0f, h, 1.5f, th.ink32);
+            scrollOf(at).draw(c, barArea(at), th);
             c.hairlineH(box.x + 1.0f, b.bottom() + 6.0f, box.w - 2.0f, p.cardEdge);
         }
 

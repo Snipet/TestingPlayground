@@ -14,7 +14,9 @@
 //                       scroll kept (clamped), then every item placed (place()). It lays out once, at no scroll (the
 //                       content's places, and each tabs node's tabs); what is shown is that moved by the scroll
 //   scrollBy()          the scroll moved: the items placed again, each moved by the scroll (whole px), and nothing
-//                       laid out again (a trackpad sends a hundred events a second)
+//                       laid out again (a trackpad sends a hundred events a second). The owner scrolls it as the code
+//                       scrolls (Scroll.h: wheelPx(), a notch kRow * 3 px, the delta as it came); its bars' thumbs drag
+//                       (pressBar(), dragBar(), releaseBar())
 //   clear()             no interface, or one hidden (the editor's panel under the code): every item hidden, its pages
 //                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
@@ -27,6 +29,7 @@
 #include "editor/GuiItems.h"
 #include "editor/GuiLayout.h"
 #include "editor/Items.h"
+#include "editor/Scroll.h"
 
 #include "dsp/Controls.h"
 #include "dsp/Meters.h"
@@ -59,6 +62,8 @@ namespace playground::ui
         static constexpr int kKeyboards = 2;
         static constexpr int kShaders = 4;                 // kMaxGuiShaders
         static constexpr float kScrollGutter = 8.0f;       // the scroll bar's room, at the area's right
+        static constexpr float kRow = 24.0f;               // the rows three of which a wheel's notch scrolls
+        static constexpr float wheelPx(bool smooth) noexcept { return Scroll::pxPerUnit(smooth, kRow); }
 
         struct Hooks
         {
@@ -113,6 +118,14 @@ namespace playground::ui
         // Scrolled by (dx, dy) px, clamped: false when it did not move. The items of `spec` (the one laid out) move by
         // the scroll, rounded to whole px, as the layout placed them at no scroll.
         bool scrollBy(const PanelSpec& spec, float dx, float dy);
+        // The bars (Scroll.h): a press on one starts its thumb's drag (a press on its track jumps first), true when it
+        // was on one; a drag moves the scroll as scrollBy does, true when it moved.
+        bool pressBar(const PanelSpec& spec, funkgui::Point p);
+        bool dragBar(const PanelSpec& spec, funkgui::Point p);
+        void releaseBar() noexcept;
+        bool barDragging() const noexcept { return barX_.dragging() || barY_.dragging(); }
+        Scroll scroller(bool horizontal) const noexcept;   // the scroll on that axis, as Scroll.h has it
+        funkgui::Rect barArea(bool horizontal) const noexcept;
 
         // The items, by what they are.
         int controlItem(int slot) const;                   // slot's control's index in the owner's list, -1 for none
@@ -147,6 +160,7 @@ namespace playground::ui
         float shownX_ = 0.0f, shownY_ = 0.0f;
         std::vector<int> pages_;                           // by node
         float scrollX_ = 0.0f, scrollY_ = 0.0f;
+        Scroll barX_, barY_;                               // their thumbs' drags (the offsets: scrollX_, scrollY_)
     };
 
     // A frame of the displays `items` (DisplayItem) at `displays`: `shown` and, for an audio scope or spectrum, the last
