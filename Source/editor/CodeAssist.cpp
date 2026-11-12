@@ -1274,7 +1274,10 @@ namespace playground::ui
             const StatusParts s = statusParts();
             const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
+            {
                 setFormatOnRun(!formatOnRun());
+                tabs_.notice(formatOnRun() ? "FORMAT ON RUN: ON" : "FORMAT ON RUN: OFF");
+            }
             else if (s.panel.contains(p))
             {
                 if (!e.popup)
@@ -1771,7 +1774,7 @@ namespace playground::ui
     }
 
     // ---- commands ---------------------------------------------------------------------------------------------------
-    bool CodeAssist::formatOnRun() const
+    bool CodeAssist::formatOnRun()
     {
         return funkgui::UiPreferences::get().getInt(kFormatOnRunKey, 0, 0, 1) != 0;
     }
@@ -1779,7 +1782,6 @@ namespace playground::ui
     void CodeAssist::setFormatOnRun(bool on)
     {
         funkgui::UiPreferences::get().setInt(kFormatOnRunKey, on ? 1 : 0);
-        tabs_.notice(on ? "FORMAT ON RUN: ON" : "FORMAT ON RUN: OFF");
     }
 
     bool CodeAssist::formatFile()

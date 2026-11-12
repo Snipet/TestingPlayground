@@ -40,6 +40,9 @@
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/gpu/ShaderLibrary.h>
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+#include <funkgui/gpu/GpuPicture.h>
+#endif
 #include <funkgui/panel/HostServices.h>
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
@@ -240,6 +243,7 @@ namespace playground::ui
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
+        constexpr float kGearGap = 4.0f;                 // the top bar's gear, left of the theme
         constexpr float kBarH = 36.0f;                   // the message box's bottom bar (the pills, send)
         constexpr float kPillH = 26.0f;
         constexpr float kSendD = 28.0f;
@@ -3304,7 +3308,7 @@ namespace playground::ui
             sp.label = [] { return std::string("Settings..."); };
             sp.look = [] { return TB::Look::outlined; };
             sp.shown = [this] { return mutedShown_; };
-            sp.act = [this] { openSettings(); };
+            sp.act = [this] { openSettings("audio"); };
             sp.a11yTitle = "Settings: the audio input is muted, to avoid a feedback loop";
             sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
@@ -3350,6 +3354,18 @@ namespace playground::ui
             mark.specNow = footer;
             desktopMarkItem_ = add(std::make_unique<B>(idFor(), std::move(mark)));
         }
+
+        // SETTINGS' gear (the top bar, left of the theme): the card of pages, in every host (SettingsCard.h).
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::square;
+            sp.icon = [] { return chat::Icon::gear; };
+            sp.act = [this] { openSettings(); };
+            sp.a11yTitle = "Settings";
+            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, DEBUG";
+            gearItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
+        settings_.setHooks(settingsHooks());
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
         // card's width (last of the items: hit by itemAt before the cards' items, drawn over the cards' edges).
@@ -3524,7 +3540,8 @@ namespace playground::ui
         const float barMid = kTopBarY + 0.5f * kTopBarH;
         const float right = W - kMargin;
         at(themeItem_).setBounds({ right - 8.0f - kIconButton, barMid - 0.5f * kIconButton, kIconButton, kIconButton });
-        const float segRight = right - 8.0f - kIconButton - 92.0f;        // the load's text between them
+        at(gearItem_).setBounds({ right - 8.0f - 2.0f * kIconButton - kGearGap, barMid - 0.5f * kIconButton, kIconButton, kIconButton });
+        const float segRight = right - 8.0f - 2.0f * kIconButton - kGearGap - 92.0f;   // the load's text between them
         at(panelViewItem_).setBounds({ segRight - 3.0f - kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         at(viewItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         // The window button left of the switch's track, while there is a code window to have.
@@ -3789,7 +3806,7 @@ namespace playground::ui
     void Panel::placeMeter()
     {
         const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(gearItem_)]).bounds();   // the gear, left of the theme
         const MeterPlaces m = meterPlaces(theme.x, funkgui::text::width(atlas, meterLoad_.c_str(), chat::kSmall), frozenShown_,
                                           funkgui::text::width(atlas, "   ", chat::kSmall));
         auto& flake = static_cast<FrozenItem&>(*items_[static_cast<std::size_t>(frozenItem_)]);
@@ -7071,17 +7088,18 @@ namespace playground::ui
             && std::abs(a.w - anchor.w) < 0.5f && std::abs(a.h - anchor.h) < 0.5f;
     }
 
-    bool Panel::openSettings()
+    bool Panel::openSettings(const std::string& page)
     {
         if (picker_.isOpen())                            // the app's Settings... over the presets' list: it goes
         {
             picker_.close();
             afterPicker(true);
         }
-        if (dialogOpen() || port_.devices() == nullptr)
+        if (dialogOpen())
             return false;
         files().endRename();
-        if (!settings_.open())
+        settings_.setHooks(settingsHooks());
+        if (!settings_.open(page))
             return false;
         focusBeforeSettings_ = focus_;
         setFocus(-1);
@@ -7097,6 +7115,8 @@ namespace playground::ui
             const int back = focusBeforeSettings_;
             setFocus(back >= 0 && items_[static_cast<std::size_t>(back)]->shown() ? back : editorItem_);
             focusBeforeSettings_ = -1;
+            if (std::exchange(keyAfterSettings_, false) && hasChat())
+                openKeyDialog();                         // the AI page's Provider and key...
         }
         dirty_ = true;
     }
@@ -7106,13 +7126,13 @@ namespace playground::ui
     void Panel::syncSettings()
     {
         const bool wasOpen = settings_.isOpen();
-        settings_.sync();
+        settings_.sync(host_);
         if (wasOpen && !settings_.isOpen())
-            afterSettings(true);                         // the window let go of its devices
+            afterSettings(true);                         // the window let go of its devices, and the card showed them
         if (const uint64_t asked = port_.settingsAsked(); asked != seenSettingsAsk_)
         {
             seenSettingsAsk_ = asked;
-            openSettings();
+            openSettings(port_.settingsPage());
         }
         if (settings_.revision() != seenSettingsRev_)
         {
@@ -7147,6 +7167,53 @@ namespace playground::ui
     }
 
     funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
+    funkgui::Point Panel::centreOfSettings() const { return centreOf(gearItem_); }
+
+    // What the card reads of the Panel: the chat's provider, model and key as the Panel holds them (never the chat's
+    // words), its key dialog, and the Debug page's graphics rows (the host's, then the editor's own).
+    SettingsCard::Hooks Panel::settingsHooks()
+    {
+        SettingsCard::Hooks h;
+        h.ai = [this] {
+            SettingsCard::Ai ai;
+            ai.provider = chat_.providerName;
+            for (const ChatModel& m : chat_.models)
+                if (m.id == chat_.model)
+                    ai.model = m.name;
+            if (ai.model.empty())
+                ai.model = chat_.model;
+            ai.hasKey = chat_.hasKey;
+            ai.keyless = chat_.keyless;
+            ai.keyProblem = chat_.keyProblem;
+            return ai;
+        };
+        h.keyDialog = [this] { keyAfterSettings_ = true; };   // afterSettings opens it, the focus given back first
+        h.graphics = [this] {
+            DebugSection g{ "Graphics (FunkGui)", {} };
+            if (hostDebug_)
+                g.rows = hostDebug_();
+            else
+                g.rows.push_back({ "Host", "headless (a picture or a probe: no window)" });
+            const funkgui::shaders::Target t = funkgui::shaders::target();
+            g.rows.push_back({ "Shader target", t.platform.empty() ? std::string("none yet (the renderer has not started)")
+                                                                   : t.platform + ", " + t.profile });
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+            g.rows.push_back({ "GPU pictures", funkgui::gpuPicturesSupported() ? "supported" : "not on this platform (drawn on the CPU)" });
+#else
+            g.rows.push_back({ "GPU pictures", "none in this build (drawn on the CPU)" });
+#endif
+            if (host_ != nullptr)
+                g.rows.push_back({ "Zoom", std::to_string(host_->zoomPercent()) + " %" });
+            char size[48];
+            std::snprintf(size, sizeof size, "%d x %d", static_cast<int>(width_), static_cast<int>(height_));
+            g.rows.push_back({ "Editor size", size });
+            g.rows.push_back({ "Layouts", std::to_string(layouts_) + " by this editor" });
+            const juce::File prefs = funkgui::UiPreferences::get().file();
+            g.rows.push_back({ "Preferences file", prefs == juce::File() ? std::string("in memory") : prefs.getFullPathName().toStdString() });
+            return g;
+        };
+        return h;
+    }
 
     // ---- the recorder: REC in the status bar while the capture tool records for Claude, and the user's marks ----------
     std::string Panel::recordText() const
@@ -7952,7 +8019,7 @@ namespace playground::ui
             c.rrect(code.x - 3.0f, code.y - 3.0f, panel.right() - code.x + 6.0f, code.h + 6.0f, 0.5f * (code.h + 6.0f), pal.raised,
                     1.0f, pal.cardEdge);
             // The load, the snowflake left of it while the dials are frozen (an item: FrozenItem), the alerts left of that.
-            const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+            const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(gearItem_)]).bounds();   // the gear, left of the theme
             const bool alarm = port_.alerts() != 0;
             const funkgui::Col ink = alarm ? pal.danger : pal.faint;
             const MeterPlaces m = meterPlaces(theme.x, c.textWidth(meterLoad_.c_str(), chat::kSmall), frozenShown_,

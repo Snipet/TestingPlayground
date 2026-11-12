@@ -531,10 +531,17 @@ namespace playground::ui
         int keyDialogPreset() const noexcept { return dialogPreset_; }
         int keyDialogField() const noexcept { return dialogField_; }
         void chooseKeyPreset(int preset);
-        // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
-        // while another card is open); the notice while an effect's input is muted, and its Settings... button.
-        bool openSettings();
+        // SETTINGS (SettingsCard.h): the card of pages, in every host, opened by the top bar's gear (at the page it showed
+        // last), the Standalone's Settings... (at EditorPort::settingsPage) and the muted notice (at Audio and MIDI): at
+        // `page` (a page's id, "" the last; false while another card is open); the notice while an effect's input is
+        // muted, and its Settings... button.
+        bool openSettings(const std::string& page = {});
         SettingsCard& settingsCard() noexcept { return settings_; }
+        funkgui::Point centreOfSettings() const;         // the gear
+        // The Debug page's graphics rows from the host the Panel runs in (gpu/CodeWindow.cpp's EditorHost,
+        // nogpu/SoftEditorHost): its frames, the surface, the renderer's counts. None: the Panel's own rows alone (a
+        // headless Panel's). Message thread.
+        void setHostDebug(std::function<std::vector<DebugRow>()> rows) { hostDebug_ = std::move(rows); }
 
         // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
         // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
@@ -852,6 +859,10 @@ namespace playground::ui
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;
+        int gearItem_ = -1;                              // the top bar's gear
+        bool keyAfterSettings_ = false;                  // the card closed for the key dialog (the AI page)
+        std::function<std::vector<DebugRow>()> hostDebug_;   // setHostDebug's
+        SettingsCard::Hooks settingsHooks();             // what the card reads of the Panel (the chat's provider, ...)
         void syncSettings();                             // refresh(): the devices, the app's request, the notice
         void afterSettings(bool wasOpen);                // the card closed: the focus back
         void placeMutedNotice();                         // its button, left of the zoom in the status bar

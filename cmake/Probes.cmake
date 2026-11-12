@@ -109,7 +109,9 @@ function(fp_add_probes key)
                     ${FP_NOGPU_SHARED})
   target_sources(${FP_PROBES} PRIVATE ${_fp_probe_own})
   fp_warn_sources(${_fp_probe_own})
-  target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_PROBE_ROOT}/common)
+  target_include_directories(${FP_PROBES} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_PROBE_ROOT}/common
+                             ${FP_BUILD_COMMIT_DIR})
+  add_dependencies(${FP_PROBES} fp_build_commit)
   if(FP_WINDOWS)
     # <unistd.h>'s few calls over the C runtime (Tools/probes/common/win/): a probe that calls getpid or setenv, as on
     # macOS, includes it, and Windows has none.

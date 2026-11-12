@@ -302,8 +302,8 @@ namespace playground::ui
         // ---- commands ---------------------------------------------------------------------------------------------
         bool formatFile();                               // the tab shown (an FMinus file); false with a notice when not
         int formatAll();                                 // every FMinus tab; how many changed
-        bool formatOnRun() const;
-        void setFormatOnRun(bool on);
+        static bool formatOnRun();                       // UiPreferences' codeFormatOnRun (the settings' Editor page too)
+        static void setFormatOnRun(bool on);
         void openCompletion(bool explicitly);
         void openSignature();
         void openFind(bool replace);
