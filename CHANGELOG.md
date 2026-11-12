@@ -79,6 +79,12 @@ Claude Desktop extension: **0.18.0** (was 0.17.0).
   were missing; it put a file that sorts before `program.fm` in the program's place, and counted the folder sync's
   read-only copies against its sixteen files. It now reads a folder as the plugin does.
 
+### Claude's answer appears as it is written on macOS and Windows
+
+**Fixed**
+- On macOS and Windows Claude's answer (its words, its thinking, a file it writes) now appears as it is written,
+  rather than all at once at the end or in jumps of a few paragraphs.
+
 ## 2026-11-09
 
 ### Shaders on Windows, and Windows' tests counted ([#31](https://github.com/Snipet/TestingPlayground/pull/31))

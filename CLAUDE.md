@@ -770,7 +770,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   JUCE's own Linux `WebInputStream` speaks plain `http://` alone, and its curl client fills a whole read before it
   returns, so `JUCE_USE_CURL` stays 0 on every target. It keeps the transport's rules (no redirect followed, a 200's
   body to `onChunk` as it arrives, `cancel` within a 40 ms poll, two minutes idle at most); `plugin.providers`
-  TRANSPORT checks them against the probe's own server.
+  TRANSPORT checks them against the probe's own server, on every platform.
 - **The user's folders are XDG's** (`fminus/Xdg.h`, plain C++ in the lowest layer for every side): the projects
   `$XDG_DATA_HOME/Funk/<name>` and the chat's store `$XDG_DATA_HOME/Funk/Playground` (`~/.local/share` unset or
   relative), the shaders' cache `$XDG_CACHE_HOME/Funk/<name>/Shaders`, a shader build's temporary folder
@@ -1096,7 +1096,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **The network.** The chat is the only code that reaches the network at run time, through `claude::Transport`
   (`ClaudeApi.cpp`: HTTPS, or HTTP to a server on this Mac or the local network; never following a redirect,
   `withNumRedirectsToFollow(0)`: a 3xx comes back with its location, as an error; JUCE's client takes the address
-  as built, `createWithoutParsing`: a parsed query goes into a POST's body), to one host at a time, and only when
+  as built, `createWithoutParsing`: a parsed query goes into a POST's body; and reads a POST's 200 a byte at a time,
+  a line to `onChunk`, since its read waits for the whole count asked, in blocks while slow reads show a backlog:
+  macOS's read moves what is buffered), to one host at a time, and only when
   the user sends a message or chooses a provider: `api.anthropic.com` with the user's own key (the Messages API,
   streamed; `GET /v1/models` once per key), or the provider the user chose (below, "Other model providers"): its own
   server alone, with its own key. The build never reaches the network. Probes never do (`plugin.providers` REDIRECT
