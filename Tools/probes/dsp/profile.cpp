@@ -8,8 +8,8 @@
 //            multiply): the heavy one on top in its own code, its module Heavy's, with at least 80 % of the time, and
 //            the modules' shares said when the main module's is 0.5 % or more; at least kFewSamples samples (an
 //            instrument's note held 2 s, an effect's test signals 1 s; where the sampler's sleeps are coarse, as a
-//            virtual machine's are, held longer, up to 8 times and the longest a render may be); the shares (and
-//            outside the program's code) summing to 1
+//            virtual machine's are, held longer, each hold worked out from the render before it, up to three times, 8
+//            times the first and the longest a render may be); the shares (and outside the program's code) summing to 1
 //   INLINED  what the optimiser folded into what: half() is listed in the code of the main module's process (named
 //            "Voice::process", "Effect::process": the plugin's appended call as the method it calls), and in no other;
 //            every function a range names is the program's (no "playground_" call's name)
@@ -365,18 +365,26 @@ PROBE(dsp, profile)
     // ---- HEAVY -------------------------------------------------------------------------------------------------------
     // Measured again, held longer, where the sampler took fewer than kFewSamples (its sleeps coarse, as a virtual
     // machine's are: a sample every millisecond or two of the thread's time rather than kIntervalMicros): what is checked
-    // is that a render long enough has them, and then its words.
+    // is that a render long enough has them, and then its words. Each longer hold is worked out from the render before
+    // it, up to three times: a busy machine's sampler keeps no one rate (a hosted runner's took 156 samples of 1 s, then
+    // 136 of the 2 s that the first count asked for), so one longer render sized from the first is not always enough.
     ms::Result longer;
     const ms::Result* heavyRun = &on;
-    if (pg::profile::available() && on.profileSamples > 0 && on.profileSamples < pg::profile::kFewSamples)
+    double heldFor = static_cast<double>(base.holdSeconds);
+    for (int attempt = 0; attempt < 3 && pg::profile::available() && heavyRun->profileSamples > 0
+                          && heavyRun->profileSamples < pg::profile::kFewSamples; ++attempt)
     {
-        const double times = std::min(8.0, std::ceil(1.5 * static_cast<double>(pg::profile::kFewSamples)
-                                                      / static_cast<double>(on.profileSamples)));
+        const std::size_t had = heavyRun->profileSamples;
+        const double times = std::ceil(1.5 * static_cast<double>(pg::profile::kFewSamples) / static_cast<double>(had));
         ms::Request held = withProfile;
-        held.holdSeconds = static_cast<float>(std::min(static_cast<double>(base.holdSeconds) * times, held.longest));
+        const double next = std::min({ heldFor * times, 8.0 * static_cast<double>(base.holdSeconds), held.longest });
+        if (!(next > heldFor))
+            break;                                       // held as long as a render may be already
+        held.holdSeconds = static_cast<float>(next);
         longer = session.measure(held);
-        std::printf("%zu samples held %.1f s (the sampler's sleeps coarse here): held %.1f s, %zu samples\n", on.profileSamples,
-                    static_cast<double>(base.holdSeconds), static_cast<double>(held.holdSeconds), longer.profileSamples);
+        std::printf("%zu samples held %.1f s (the sampler's sleeps coarse here): held %.1f s, %zu samples\n", had, heldFor, next,
+                    longer.profileSamples);
+        heldFor = next;
         heavyRun = &longer;
     }
     const ms::Result& heavyOn = *heavyRun;

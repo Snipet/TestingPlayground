@@ -221,6 +221,44 @@ namespace playground
             return claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(t.c_str()) } });
         }
 
+        // A compaction block counts only when its summary arrived: its content a string with something in it. One
+        // without (a Stop or a broken stream before the summary's one delta; a compaction that made no summary, whose
+        // content the API gives as null) summarizes nothing, and the API ignores it: the history is not cut there.
+        bool summarized(const juce::var& b)
+        {
+            if (str(b, "type") != "compaction")
+                return false;
+            const juce::var content = b.getProperty("content", juce::var());
+            return content.isString() && content.toString().isNotEmpty();
+        }
+
+        bool unsummarized(const juce::var& b) { return str(b, "type") == "compaction" && !summarized(b); }
+
+        // A text block with nothing but white space in it (the API refuses one in a history).
+        bool blankText(const juce::var& b)
+        {
+            return str(b, "type") == "text" && !b.getProperty("text", "").toString().containsNonWhitespaceChars();
+        }
+
+        // A reply as it goes into the history once it ended: a compaction block without its summary goes, and so does
+        // blank text (the API refuses an empty message, and blank text, anywhere but at the end of a history); every
+        // other block stays as it came. A reply left with nothing the user or the API can use (no block, or thinking
+        // alone) gets "(no answer)" after what it has, except one cut off at max_tokens that thinks: it goes back as it
+        // came, and the turn goes on from it. True: the line was added.
+        bool mendReply(juce::Array<juce::var>& blocks, bool cutOff)
+        {
+            blocks.removeIf(unsummarized);
+            blocks.removeIf(blankText);
+            const bool usable = std::any_of(blocks.begin(), blocks.end(), [](const juce::var& b) {
+                const std::string type = str(b, "type");
+                return type != "thinking" && type != "redacted_thinking";
+            });
+            if (usable || (cutOff && !blocks.isEmpty()))
+                return false;
+            blocks.add(text("(no answer)"));
+            return true;
+        }
+
         int lineCount(const std::string& t)
         {
             if (t.empty())
@@ -1981,8 +2019,7 @@ namespace playground
     void ChatAgent::appendAnswer(const juce::Array<juce::var>& content)
     {
         messages_.add(claude::object({ { "role", "assistant" }, { "content", content } }));
-        const bool compacted = std::any_of(content.begin(), content.end(),
-                                           [](const juce::var& b) { return str(b, "type") == "compaction"; });
+        const bool compacted = std::any_of(content.begin(), content.end(), summarized);
         if (!compacted)
             return;
         // The API ignores everything before a compaction block: the history starts at it (repairHistory). Claude has
@@ -1998,9 +2035,39 @@ namespace playground
     // kept from before it can be the results of tool calls the summary took away, which the API refuses ("unexpected
     // tool_use_id found in tool_result blocks"). The history then starts with the assistant message that carries the
     // block, as the API's examples continue after one. And no tool result without its call in the message before it:
-    // such a result goes (a message left with nothing says so in a line, so the roles still alternate).
+    // such a result goes (a message left with nothing says so in a line, so the roles still alternate). Only a
+    // compaction block whose summary arrived cuts the history; one without is taken out (a chat kept by an earlier
+    // build that cut at one has lost what came before: a line in the user's place says so). An assistant message with
+    // blank text loses it, and one left with no content (kept by an earlier build) gets "(no answer)", as a reply
+    // does now.
     void ChatAgent::repairHistory()
     {
+        for (const auto& message : messages_)
+        {
+            const juce::var content = message.getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            if (blocks == nullptr || std::none_of(blocks->begin(), blocks->end(), unsummarized))
+                continue;
+            juce::Array<juce::var> kept = *blocks;
+            kept.removeIf(unsummarized);
+            if (auto* o = message.getDynamicObject())
+                o->setProperty("content", kept);
+        }
+        for (const auto& message : messages_)
+        {
+            if (str(message, "role") != "assistant")
+                continue;
+            const juce::var content = message.getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            if (blocks == nullptr || (!blocks->isEmpty() && std::none_of(blocks->begin(), blocks->end(), blankText)))
+                continue;
+            juce::Array<juce::var> kept = *blocks;
+            kept.removeIf(blankText);
+            if (kept.isEmpty())
+                kept.add(text("(no answer)"));
+            if (auto* o = message.getDynamicObject())
+                o->setProperty("content", kept);
+        }
         for (int i = messages_.size(); --i >= 0;)
         {
             if (str(messages_[i], "role") != "assistant")
@@ -2009,7 +2076,7 @@ namespace playground
             const auto* blocks = content.getArray();
             int at = -1;
             for (int j = 0; blocks != nullptr && j < blocks->size(); ++j)
-                if (str((*blocks)[j], "type") == "compaction")
+                if (summarized((*blocks)[j]))
                     at = j;
             if (at < 0)
                 continue;
@@ -2023,6 +2090,17 @@ namespace playground
             }
             messages_.removeRange(0, i);
             break;
+        }
+        if (!messages_.isEmpty() && str(messages_[0], "role") == "assistant")
+        {
+            // Only a summary starts a history with Claude's message; without one, the lost start says so in a line.
+            const juce::var content = messages_[0].getProperty("content", juce::var());
+            const auto* blocks = content.getArray();
+            if (blocks == nullptr || blocks->isEmpty() || !summarized((*blocks)[0]))
+            {
+                const juce::Array<juce::var> lost{ text("(The start of this conversation was lost.)") };
+                messages_.insert(0, claude::object({ { "role", "user" }, { "content", lost } }));
+            }
         }
         for (int i = 0; i < messages_.size(); ++i)
         {
@@ -3153,9 +3231,10 @@ namespace playground
                 for (const auto& b : blocks)
                 {
                     const std::string type = str(b, "type");
-                    if (type == "compaction")
-                        textOnly.add(b);                   // a summary made in this request stays (no second one)
-                    else if (type == "text" && !str(b, "text").empty())
+                    // A summary made in this request stays (no second one); one whose summary never came is nothing.
+                    if (summarized(b))
+                        textOnly.add(b);
+                    else if (type == "text" && !blankText(b))
                     {
                         // Its citations point at search results that do not go back: the text alone.
                         textOnly.add(claude::object({ { "type", "text" }, { "text", b.getProperty("text", "") } }));
@@ -3188,7 +3267,29 @@ namespace playground
                     toolUses.push_back(b);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                appendAnswer(blocks);
+                if (stopReason == "pause_turn")
+                {
+                    // The request goes again with this reply last, which the API carries on from: as it came, but
+                    // nothing at all when it holds nothing (an empty message would be refused, a line a prefill).
+                    blocks.removeIf(unsummarized);
+                    blocks.removeIf(blankText);
+                    if (!blocks.isEmpty())
+                        appendAnswer(blocks);
+                }
+                else
+                {
+                    // A reply cut off goes on with the plugin's line: no "(no answer)" shown before it.
+                    if (mendReply(blocks, stopReason == "max_tokens") && stopReason != "max_tokens")
+                    {
+                        // Shown as the answer, in place of any white space that streamed in.
+                        if (!entries_.empty() && entries_.back().kind == ChatEntry::Kind::assistant
+                            && !juce::String::fromUTF8(entries_.back().text.c_str()).containsNonWhitespaceChars())
+                            entries_.back().text = "(no answer)";
+                        else
+                            addEntry(ChatEntry::Kind::assistant, "(no answer)");
+                    }
+                    appendAnswer(blocks);
+                }
                 touch();
             }
             // A reply cut off at max_tokens (its thinking counts toward it): the turn goes on, Claude told so, unless
