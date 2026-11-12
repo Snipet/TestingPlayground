@@ -23,13 +23,16 @@ the `**Added**`, `**Fixed**` and `**Changed**` lists, each of `- ` items, with n
 line over 120 columns, and one newline at its end. A pull request that raises the Claude Desktop extension's version
 starts it with `Claude Desktop extension: **0.18.0** (was 0.17.0).` and a blank line.
 
-fold puts the newest first, by the time of the commit that added each file (ties, and files not yet committed, by
-name: those not yet committed first, as the newest). An entry whose heading has no pull request link gets one when the
-commit that brought its file onto the current branch is a "Merge pull request #N from ..." merge (the link built from
-the `origin` remote's owner and name); else its heading is left as it is. The extension lines become one, at the top
-of Unreleased: the highest new version, "was" the lowest old one, a line already there among them. CHANGELOG.md is
-written through a temporary file renamed into place; the entries are removed with `git rm` in a git checkout (unlinked
-otherwise). fold and cut commit nothing: they say what to commit.
+fold's order: the entries not yet committed come first, by name; then the others, newest first by the time of the
+commit that brought each file onto the current branch (along its first-parent line: a pull request's merge, or a
+commit made on the branch itself; the newest such commit when a file was removed and added again), ties by name.
+
+An entry whose heading has no pull request link gets one when that commit is a "Merge pull request #N from ..." merge
+(the link built from the `origin` remote's owner and name); else its heading is left as it is. The extension lines
+become one, at the top of Unreleased: the highest new version, "was" the lowest old one, a line already there among
+them. CHANGELOG.md is written through a temporary file renamed into place, with the line endings it has; check and
+fold read a file's CR LF as LF (a Windows checkout may hold them so) and check refuses a CR alone. The entries are
+removed with `git rm` in a git checkout (unlinked otherwise). fold and cut commit nothing: they say what to commit.
 
 Stdlib only; no network; git only to read the history, and `git rm`.
 """
@@ -112,7 +115,7 @@ def problems_of(root: Path, path: Path) -> list[str]:
         bad(1, "not an entry's name: docs/changelog/<name>.md, the name lower-case letters, digits and hyphens")
         return out
     try:
-        text = path.read_bytes().decode("utf-8")
+        text = path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     except UnicodeDecodeError:
         bad(1, "not UTF-8")
         return out
@@ -147,7 +150,7 @@ def problems_of(root: Path, path: Path) -> list[str]:
         if "\t" in line:
             bad(i, "a tab (indent with spaces)")
         if "\r" in line:
-            bad(i, "a carriage return (end lines with LF alone)")
+            bad(i, "a carriage return alone (end lines with LF, or CR LF)")
         if len(line) > MAX_COLUMNS:
             bad(i, f"{len(line)} columns: wrap it at {MAX_COLUMNS}, as CHANGELOG.md is")
         if i > 1 and line.startswith("Claude Desktop extension"):
@@ -181,7 +184,7 @@ def problems_of(root: Path, path: Path) -> list[str]:
 
 
 def read_entry(root: Path, path: Path) -> Entry:
-    lines = path.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    lines = path.read_bytes().decode("utf-8").replace("\r\n", "\n").rstrip("\n").split("\n")
     extension = None
     if lines and parse_extension(lines[0]) is not None:
         extension = parse_extension(lines[0])
@@ -192,7 +195,12 @@ def read_entry(root: Path, path: Path) -> Entry:
 
 
 def read_changelog(root: Path) -> str:
-    return (root / CHANGELOG).read_bytes().decode("utf-8")
+    """CHANGELOG.md's text with its CR LF read as LF (crlf() says whether it had them, for writing it back so)."""
+    return (root / CHANGELOG).read_bytes().decode("utf-8").replace("\r\n", "\n")
+
+
+def crlf(root: Path) -> bool:
+    return b"\r\n" in (root / CHANGELOG).read_bytes()
 
 
 def split_changelog(text: str) -> tuple[str, str, str] | None:
@@ -241,31 +249,16 @@ def repository_url(root: Path) -> str | None:
     return f"https://{m.group(1)}/{m.group(2)}/{m.group(3)}"
 
 
-def added_by(root: Path, path: Path) -> tuple[str, int] | None:
-    """The commit (on the current branch) that last added the file, and its commit time; None when not committed."""
-    out = git(root, "log", "--diff-filter=A", "--format=%H %ct", "-n", "1", "--", path.relative_to(root).as_posix())
+def added_by(root: Path, path: Path) -> tuple[int, str] | None:
+    """The commit that brought the file onto the current branch, seen along its first-parent line with each merge
+    diffed against its first parent (a pull request's merge, or a commit made on the branch itself; the newest when
+    the file was removed and added again): its commit time and subject. None when it is not committed there."""
+    out = git(root, "log", "--first-parent", "-m", "--diff-filter=A", "--format=%ct %s", "-n", "1", "--",
+              path.relative_to(root).as_posix())
     if not out or not out.strip():
         return None
-    sha, ct = out.split()[:2]
-    return sha, int(ct)
-
-
-def merged_by(root: Path, commit: str) -> str | None:
-    """The subject of the commit on the current branch's first-parent line that brought `commit` onto it (the oldest
-    first-parent commit that holds it), or None when that is the commit itself or cannot be found."""
-    line = git(root, "rev-list", "--first-parent", "HEAD")
-    descendants = git(root, "rev-list", "--ancestry-path", f"{commit}..HEAD")
-    if line is None or descendants is None:
-        return None
-    first_parent = line.split()
-    if commit in first_parent:
-        return None     # committed on this branch itself: no merge brought it
-    after = set(descendants.split())
-    for sha in reversed(first_parent):      # oldest first
-        if sha in after:
-            subject = git(root, "log", "-n", "1", "--format=%s", sha)
-            return subject.strip() if subject else None
-    return None
+    ct, _, subject = out.strip().split("\n")[0].partition(" ")
+    return int(ct), subject
 
 
 # ---- folding ------------------------------------------------------------------------------------------------------
@@ -287,16 +280,15 @@ def gather(root: Path) -> list[Entry]:
         e = read_entry(root, f)
         added = added_by(root, f) if git_ok else None
         if added:
-            e.time = added[1]
+            e.time = added[0]
             heading, _, rest = e.body.partition("\n")
             if not LINK_RE.search(heading) and url:
-                subject = merged_by(root, added[0])
-                m = MERGE_RE.match(subject or "")
+                m = MERGE_RE.match(added[1])
                 if m:
                     n = m.group(1)
                     e.body = f"{heading} ([#{n}]({url}/pull/{n}))" + ("\n" + rest if rest else "")
         entries.append(e)
-    # Not yet committed first (the newest), then the newest commit first; ties by name.
+    # Not yet committed first (the newest), then the newest to reach the branch first; ties by name.
     entries.sort(key=lambda e: (e.time is not None, -(e.time or 0), e.path.name))
     return entries
 
@@ -321,7 +313,9 @@ def folded_body(entries: list[Entry], body: str) -> str:
     return "\n" + "\n\n".join(parts) + "\n\n"
 
 
-def write_atomic(path: Path, text: str) -> None:
+def write_atomic(path: Path, text: str, crlf: bool = False) -> None:
+    if crlf:
+        text = text.replace("\n", "\r\n")
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as f:
@@ -420,7 +414,7 @@ def fold(root: Path, date: str | None) -> int:
         return 0
     if not rest:
         new_body = new_body.rstrip("\n") + "\n"
-    write_atomic(root / CHANGELOG, head + new_body + rest)
+    write_atomic(root / CHANGELOG, head + new_body + rest, crlf(root))
     remove_entries(root, entries)
     if entries:
         print(f"Folded {len(entries)} entr{'y' if len(entries) == 1 else 'ies'} into {CHANGELOG}, newest first, "
@@ -496,6 +490,7 @@ def selftest(_: argparse.Namespace) -> int:
             "no-list.md": ("### Title\n\nWords alone.\n", "no **Added**, **Fixed** or **Changed** list"),
             "empty-list.md": ("### Title\n\n**Fixed**\n\n**Added**\n- A thing.\n", "**Fixed** has no `- ` item"),
             "tab.md": ("### Title\n\n**Added**\n-\tA thing.\n", "a tab"),
+            "lone-cr.md": ("### Title\r\n\r\n**Added**\r\n- A\rthing.\r\n", "a carriage return alone"),
             "long.md": ("### Title\n\n**Added**\n- " + "x" * 120 + "\n", "122 columns"),
             "no-newline.md": (good.rstrip("\n"), "no newline at the end"),
             "two-newlines.md": (good + "\n", "more than one newline"),
@@ -556,28 +551,43 @@ def selftest(_: argparse.Namespace) -> int:
         g(repo, "checkout", "-q", "main")
         g(repo, "merge", "-q", "--no-ff", "-m", "Merge pull request #5 from Owner/a", "a", when=1100)
         g(repo, "merge", "-q", "--no-ff", "-m", "Merge pull request #6 from Owner/b", "b", when=2100)
+        # c: its entry comes in its merge of main (as an entry moved out of CHANGELOG.md during that merge does)
+        g(repo, "checkout", "-q", "-b", "c")
+        (repo / "work.txt").write_text("c's work\n")
+        g(repo, "add", "-A")
+        g(repo, "commit", "-q", "-m", "Work on c", when=2200)
+        g(repo, "checkout", "-q", "main")
         (repo / ENTRIES_DIR / "gamma.md").write_text(entry_text("Gamma"))
         (repo / ENTRIES_DIR / "epsilon.md").write_text(entry_text("Epsilon", kind="**Changed**"))
         g(repo, "add", "-A")
         g(repo, "commit", "-q", "-m", "Gamma and epsilon on main", when=3000)
+        g(repo, "checkout", "-q", "c")
+        g(repo, "merge", "-q", "--no-ff", "--no-commit", "main")
+        (repo / ENTRIES_DIR / "theta.md").write_text(entry_text("Theta"))
+        g(repo, "add", "-A")
+        g(repo, "commit", "-q", "-m", "Merge branch 'main' into c", when=3200)
+        g(repo, "checkout", "-q", "main")
+        g(repo, "merge", "-q", "--no-ff", "-m", "Merge pull request #7 from Owner/c", "c", when=3500)
         (repo / ENTRIES_DIR / "delta.md").write_text(entry_text("Delta", "**0.19.0** (was 0.18.0)"))
         (repo / ENTRIES_DIR / "zeta.md").write_text(entry_text("Zeta"))
         g(repo, "add", "--", "docs/changelog/zeta.md")   # staged, not committed
 
         r = run(repo, "check")
         expect(r.returncode == 0, "check: well-formed entries pass")
-        order = ["Delta", "Zeta", "Epsilon", "Gamma", "Beta", "Alpha"]
+        order = ["Delta", "Zeta", "Theta", "Epsilon", "Gamma", "Beta", "Alpha"]
         want = ("## Unreleased\n\nClaude Desktop extension: **0.19.0** (was 0.16.0).\n\n"
                 + "\n".join(entry_text({"Alpha": "Alpha ([#5](https://github.com/Owner/Repo/pull/5))",
+                                        "Theta": "Theta ([#7](https://github.com/Owner/Repo/pull/7))",
                                         "Beta": linked}.get(t, t),
                                        kind={"Beta": "**Fixed**", "Epsilon": "**Changed**"}.get(t, "**Added**"))
                             for t in order)
                 + "\n" + EXISTING.split("\n\n", 1)[1])
         r = run(repo, "show")
-        expect(r.returncode == 0 and r.stdout == want, "show: the folded section (order, links, extension line)")
+        expect(r.returncode == 0 and r.stdout == want,
+               "show: the folded section (order by merge, links, an entry added in a merge of main, extension line)")
         if r.stdout != want:
             print(r.stdout + r.stderr)
-        expect(len(list((repo / ENTRIES_DIR).glob("*.md"))) == 7 and (repo / CHANGELOG).read_text() == before,
+        expect(len(list((repo / ENTRIES_DIR).glob("*.md"))) == 8 and (repo / CHANGELOG).read_text() == before,
                "show: changes nothing")
         r = run(repo, "fold")
         after = (repo / CHANGELOG).read_text()
@@ -587,11 +597,12 @@ def selftest(_: argparse.Namespace) -> int:
                "fold: the preamble and the dated sections untouched byte for byte")
         expect([p.name for p in (repo / ENTRIES_DIR).iterdir()] == [README], "fold: the entry files gone")
         status = g(repo, "status", "--porcelain")
-        expect("D  docs/changelog/alpha.md" in status and "D  docs/changelog/gamma.md" in status,
+        expect("D  docs/changelog/alpha.md" in status and "D  docs/changelog/gamma.md" in status
+               and "D  docs/changelog/theta.md" in status,
                "fold: committed entries removed with git rm")
         expect("zeta.md" not in status, "fold: a staged entry taken out of the index too")
         expect("delta.md" not in status, "fold: an untracked entry unlinked")
-        expect("Folded 6 entries" in r.stdout and "Commit CHANGELOG.md" in r.stdout, "fold: says what it did")
+        expect("Folded 7 entries" in r.stdout and "Commit CHANGELOG.md" in r.stdout, "fold: says what it did")
         r = run(repo, "fold")
         expect(r.returncode == 0 and (repo / CHANGELOG).read_text() == after, "fold: again changes nothing")
 
@@ -630,6 +641,21 @@ def selftest(_: argparse.Namespace) -> int:
                == PREAMBLE + "## Unreleased\n\n" + entry_text("A") + "\n" + entry_text("B"),
                "fold outside git: by name, into an Unreleased at the end of the file")
         expect(not list((plain / ENTRIES_DIR).iterdir()), "fold outside git: the files unlinked")
+
+        # ---- CR LF, as a Windows checkout may hold the files ----
+        windows = tmp / "windows"
+        (windows / ENTRIES_DIR).mkdir(parents=True)
+        (windows / CHANGELOG).write_bytes((PREAMBLE + "## Unreleased\n\n" + EXISTING + "\n" + OLDER)
+                                          .replace("\n", "\r\n").encode())
+        (windows / ENTRIES_DIR / "a.md").write_bytes(entry_text("A", "**0.18.0** (was 0.17.0)")
+                                                     .replace("\n", "\r\n").encode())
+        r = run(windows, "check")
+        expect(r.returncode == 0, "check: CR LF read as LF")
+        r = run(windows, "fold")
+        crlf_want = (PREAMBLE + "## Unreleased\n\nClaude Desktop extension: **0.18.0** (was 0.16.0).\n\n"
+                     + entry_text("A") + "\n" + EXISTING.split("\n\n", 1)[1] + "\n" + OLDER).replace("\n", "\r\n")
+        expect(r.returncode == 0 and (windows / CHANGELOG).read_bytes() == crlf_want.encode(),
+               "fold: a CR LF CHANGELOG.md written back with CR LF")
     except RuntimeError as e:
         failures.append(str(e))
         print(f"FAIL  {e}")

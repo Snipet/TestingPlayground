@@ -10,5 +10,9 @@ extension's version starts it with `Claude Desktop extension: **0.18.0** (was 0.
 pull request's link out: the fold adds it from the merge.
 
 `scripts/changelog.py check` checks the files (the test `lint.changelog` too), `show` prints the Unreleased section
-they would make, and on `main` `fold` moves them into `CHANGELOG.md`, newest first, and removes them; `cut --date
-YYYY-MM-DD` folds and makes the day's section. This file is never an entry.
+they would make, and on `main` `fold` moves them into `CHANGELOG.md` and removes them; `cut --date YYYY-MM-DD` folds
+and makes the day's section. This file is never an entry.
+
+fold's order: the entries not yet committed come first, by name; then the others, newest first by the time of the
+commit that brought each file onto the current branch (along its first-parent line: a pull request's merge, or a
+commit made on the branch itself; the newest such commit when a file was removed and added again), ties by name.
