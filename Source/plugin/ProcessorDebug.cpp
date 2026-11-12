@@ -260,8 +260,10 @@ namespace playground
 
     bool Processor::showPath(const std::string& path, std::string& why)
     {
+        // The home folder's shorthand, as projectFolder() and the Debug page's rows write it: a leading "~" alone or
+        // before a separator. A "~" anywhere else is the path's own (Windows' 8.3 names: C:\Users\RUNNER~1\...).
         std::string full = path;
-        if (full.rfind("~", 0) == 0)
+        if (full == "~" || full.rfind("~/", 0) == 0 || full.rfind("~\\", 0) == 0)
             full = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString() + full.substr(1);
         if (folderLauncher_)
             return folderLauncher_(FolderApp::files, full, why);

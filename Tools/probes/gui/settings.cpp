@@ -470,7 +470,7 @@ namespace
             P.eq("projects.button_words", b && b->label == st::showFolderWord() ? 1 : 0, 1);
             click(Act::item, st::kShowProjects);
             std::printf("projects: shown %s\n", asked.c_str());
-            P.eq("projects.show_asked", !asked.empty() && asked.find('~') == std::string::npos
+            P.eq("projects.show_asked", !asked.empty() && asked.rfind("~", 0) != 0
                                             && asked == pg::projectstore::directory().getFullPathName().toStdString() ? 1 : 0, 1);
             processor.setFolderLauncher({});
         }
