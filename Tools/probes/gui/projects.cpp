@@ -128,7 +128,8 @@ namespace
         return m;
     }
 
-    // PROJECTS driven through its host: a row scrolled into view first, then clicked.
+    // PROJECTS driven through its host: a row scrolled wholly into view first (the wheel, a notch's third at a time), then
+    // clicked.
     struct Driver
     {
         pg::ui::Panel& panel;
@@ -140,10 +141,9 @@ namespace
             const funkgui::Rect list = b.places(W, H).projects;
             for (int k = 0; k < 64 && row >= 0; ++k)
             {
-                const int first = b.firstShown(BL::projects), rows = b.places(W, H).rows[0];
-                if (row >= first && row < first + rows)
+                if (b.centreOfRow(BL::projects, row, W, H).x > -1.0e3f)
                     return;
-                host.wheel(list.centreX(), list.centreY(), row < first ? 1.0f / 6.0f : -1.0f / 6.0f);
+                host.wheel(list.centreX(), list.centreY(), row < b.firstShown(BL::projects) ? 1.0f / 6.0f : -1.0f / 6.0f);
                 host.settle();
             }
         }

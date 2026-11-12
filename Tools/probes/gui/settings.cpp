@@ -29,7 +29,9 @@
 //   ERROR    the port's error shown under its section (Audio), in words to a screen reader too; JUCE's error with
 //            line breaks in lines of its own, no break drawn
 //   SCROLL   at the least size, more than the card holds: it scrolls, Done stays in the card, Tab scrolls the focused
-//            control into view, the wheel back
+//            control into view, the wheel back; as the code scrolls (editor/Scroll.h): a notch three line pitches,
+//            reversed set (a built WheelEvent: HeadlessHost cannot set it) the same way, its thumb dragged in proportion,
+//            a press on its track jumps
 //   CLOSE    Done, Escape and a click outside the card close it (the click reaching nothing under it: RUN unpressed);
 //            a double-click outside it over a dial closes it and leaves the dial's value (the next one resets it)
 //   GONE     the hooks let go of the devices (the window closing): the card and the notice go
@@ -627,6 +629,33 @@ PROBE(gui, settings)
         P.ge("scroll.was_scrolled", static_cast<double>(before), 1.0);
         P.le("scroll.wheel_back", static_cast<double>(card.places(W(), H()).scroll), 0.0);
         P.eq("scroll.first_shown", card.centreOf(Act::output, 0, W(), H()).has_value() ? 1 : 0, 1);
+        // As the code scrolls (editor/Scroll.h): a notch three line pitches, natural scrolling's reversed set the same way
+        // (a built WheelEvent: HeadlessHost cannot set it), the thumb dragged in proportion, a press on its track jumps.
+        const auto offset = [&] { return static_cast<double>(card.places(W(), H()).scroll); };
+        const pg::ui::Scroll sc = card.scrollOf(card.places(W(), H()));
+        const double notch = std::min(3.0 * sc.row, static_cast<double>(sc.max()));
+        const float notchDy = pg::ui::Scroll::kWheelNotch;
+        host.wheel(at.body.centreX(), at.body.centreY(), -notchDy);
+        P.near("scroll.notch_three_rows", offset(), notch, 0.01);
+        host.wheel(at.body.centreX(), at.body.centreY(), 1000.0f);
+        funkgui::WheelEvent w;
+        w.x = at.body.centreX();
+        w.y = at.body.centreY();
+        w.dy = -notchDy;
+        w.reversed = true;
+        panel.wheel(w);
+        P.near("scroll.reversed_as_code", offset(), notch, 0.01);
+        host.wheel(at.body.centreX(), at.body.centreY(), 1000.0f);
+        const auto now = card.places(W(), H());
+        const funkgui::Rect area = card.barArea(now), t = card.scrollOf(now).thumb(area);
+        host.drag(t.centreX(), t.centreY(), t.centreX(), t.centreY() + 10.0f, 4);
+        host.settle();
+        P.near("scroll.thumb_drags", offset(), 10.0 * static_cast<double>(sc.max()) / static_cast<double>(area.h - t.h), 0.05);
+        P.eq("scroll.thumb_kept_open", card.isOpen() ? 1 : 0, 1);
+        host.click(t.centreX(), area.bottom() - 1.0f);
+        host.settle();
+        P.near("scroll.track_jumps", offset(), static_cast<double>(sc.max()), 0.01);
+        host.wheel(at.body.centreX(), at.body.centreY(), 1000.0f);
     }
     fake.crowd(0);
     fake.fail("", pg::DeviceSection::output);

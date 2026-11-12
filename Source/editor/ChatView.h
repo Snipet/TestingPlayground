@@ -21,6 +21,7 @@
 
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
+#include "editor/Scroll.h"
 
 #include "plugin/ChatPort.h"
 
@@ -91,7 +92,13 @@ namespace playground::ui
         funkgui::Cursor cursorAt(funkgui::Point p) const override;
         void pointerExit() override { pointer_ = { -1.0e4f, -1.0e4f }; }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override;
+        void pointerDrag(const funkgui::PointerEvent&, funkgui::GestureController&) override;   // the thumb's
+        void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) override;
         bool wheel(const funkgui::WheelEvent&, funkgui::GestureController&, double) override;
+        // Its scroll as Scroll.h has it (the offset, the content, the view; a notch three body lines), and where its
+        // bar is.
+        Scroll scroller() const noexcept;
+        funkgui::Rect barArea() const noexcept { return { bounds_.x, bounds_.y + 4.0f, bounds_.w, bounds_.h - 8.0f }; }
         void accessibility(std::vector<funkgui::A11yItem>&) const override;
         bool a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&) override;
         void specLine(char* out, std::size_t n) const override;
@@ -217,6 +224,7 @@ namespace playground::ui
         size_t entryCount_ = 0;
         float contentH_ = 0.0f;
         float scroll_ = 0.0f;
+        Scroll bar_;                                  // the thumb's drag (its offset: scroll_, scroller())
         bool follow_ = true;                          // the view stays at the end as it grows
         float typingY_ = 0.0f;                        // where the working row is, in the content
         float phase_ = 0.0f;                          // the dots' animation
