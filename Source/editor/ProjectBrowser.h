@@ -44,8 +44,14 @@
 //               every one of them as one bundle (the context menu's Export too)
 //   A/B...      the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
 //               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
+//   Compare...  what changed between two of the chosen project's versions, or a version and the editor (the Panel's
+//               COMPARE card, DiffCard.h): the chosen version (the newest, unless one is chosen) against the one before
+//               it (the first version: against the editor); the project open with the editor's changes, the chosen
+//               version (the one open) against the editor. A version row's menu (a right-click): Compare with the version
+//               before, Compare with the editor
 //   Close       or Escape, or a press outside the card (the press goes no further; nothing saved or opened, a
-//               confirmation asked for withdrawn; a drag that began inside and ends outside closes nothing). Return saves when a name was typed, else opens (applies); Up and Down choose in the list
+//               confirmation asked for withdrawn; a drag that began inside and ends outside closes nothing). Return
+//               saves when a name was typed, else opens (applies); Up and Down choose in the list
 //               chosen from, Tab moves to the next list
 // Each list scrolls as the code does (Scroll.h: the wheel over it, its thumb dragged, a press on its track), by px:
 // a row at its edge shows in part.
@@ -73,6 +79,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -123,6 +130,7 @@ namespace playground::ui
         struct Places
         {
             funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
+            funkgui::Rect compare;                       // Compare..., after A/B...
             funkgui::Rect search, clear, tag, sort;      // the top's: the search field, its clear (x), the tag, the order
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
@@ -154,6 +162,7 @@ namespace playground::ui
         bool takeImport();
         std::vector<std::string> takeExport();           // every project to export (several: a bundle); none: {}
         std::pair<std::string, int> takeAb();
+        std::tuple<std::string, int, int> takeCompare(); // COMPARE of that project's sides (left, right; 0 the editor)
         void chooseProjectNamed(const std::string& name, float width, float height);
         // The name a factory project's copy takes: its own, else "<own> 2", ... (case aside, as the store's add()).
         std::string copyName(const std::string& factory) const;
@@ -204,7 +213,7 @@ namespace playground::ui
 
     private:
         enum class Ask : uint8_t { none, addTo, replace, open, remove };
-        enum class Menu : uint8_t { row, header, tag, sort };
+        enum class Menu : uint8_t { row, header, tag, sort, version };
 
         funkgui::Rect listRect(const Places& at, List l) const;
         funkgui::Rect rowRect(const Places& at, List l, int i) const;   // a row (its index), scrolled
@@ -283,6 +292,10 @@ namespace playground::ui
         bool import_ = false;
         std::vector<std::string> export_;
         std::pair<std::string, int> ab_;
+        std::tuple<std::string, int, int> compare_{ "", 0, 0 };
+        // Compare...'s sides for the chosen project: `how` 0 as the button does (DiffCard.h), 1 a version row's "with
+        // the version before", 2 its "with the editor"; `row` the version row (-1: the chosen one).
+        void compareChosen(int how, int row = -1);
         // A press on a project's row, and the drag it may become.
         int pressRow_ = -1;
         funkgui::Point pressAt_{};

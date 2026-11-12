@@ -167,7 +167,7 @@ To install, `cmake --workflow --preset linux-release-build`, then `scripts/packa
 - [Writing a program](#writing-a-program): [the effect](#the-effect-module-effect), [the synth](#the-synth-module-voice)
   and [what both share](#both): dials, MIDI learn, frozen dials, loops and bounds, the host's tempo and wheels,
   samples, circuits, `.gui` interfaces, the examples.
-- [The editor](#the-editor): the explorer, Examples, Library and Random, projects and presets, A/B, export, the code
+- [The editor](#the-editor): the explorer, Examples, Library and Random, projects and presets, A/B, Compare, export, the code
   editor, the schematic, the IR view, the Standalone and the racing wheel.
 - [The chat](#the-chat): Claude in the plugin, checking its work, recording what you play, other model providers,
   Claude Desktop (MCP) and the panel sandbox.
@@ -1060,6 +1060,22 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   sees it in get_status (the sides, which plays, the loudness), and compare renders a version (`version:N`,
   `project:Name@N`). The A/B itself is not kept in the session: a session saved while it is on keeps what Close would
   put back, so a side you never kept is not what the project plays when it opens again.
+- **Compare** (PROJECTS, **Compare...**) shows what changed between two versions of a project, or between a version
+  and what is in the editor now, without playing or opening anything. Its two dropdowns choose the sides (**Editor**,
+  the editor's files, dials and samples as they are now, or any version), the arrow between them swaps them, and under
+  each are its save time and its note. A line says what differs ("3 files, 2 dials, 1 sample", or "The same"); below
+  it, a pill a file ("program.fm +12 -3", "lib.fm new", "old.fm gone") and **DIALS** and **SAMPLES** after them when
+  those differ: the chosen pill's lines taken away and added, numbered on both sides, three lines of context, a dial's
+  value each side as the panel says it, a sample added, removed or replaced. A netlist whose drawing alone moved shows
+  one row, "the drawing changed", since the `*@` lines are layout, not the program. **]** and **[** (and the two small
+  arrows) go to the next and the previous change, on into the next file; Tab the next pill. Compare... starts on the
+  chosen version against the one before it (the first version: against the editor), or, with the project open and
+  edited, the version against the editor; a version's right-click menu offers **Compare with the version before** and
+  **Compare with the editor**, and the top bar's project pill's right-click menu **Compare with the saved version**
+  while the editor has unsaved changes. **Open vN** opens that side's version (asking first over the editor's
+  changes, as PROJECTS does), **A/B...** listens to the two sides in turn, and Escape, **Close** or a click outside
+  the card closes it. A version is read off the panel's thread, so a large project shows "Reading version 12..." for
+  a moment first.
 - **Export** (PROJECTS, **Export...**) keeps a project's description, author, category (a synth's: Bass, Lead, Pad,
   ...; an effect's: Reverb, Delay, ...), tags and genres with it, and takes it off this Mac two ways: **Export source
   (.zip)**, its code to read and edit anywhere (`<Name>/README.md` says what it is; `project.json` keeps the dials, the

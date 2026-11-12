@@ -5,8 +5,8 @@
   **Reversed** turns any of them around. Each row shows what the list is sorted by: the date it was saved or made,
   or its file's size. The order is kept, the same in every instance; the explorer's list stays newest first.
 - Choose several projects (Cmd-click, Shift-click) and **Export...**, or the context menu's **Export N projects...**,
-  writes them all as one .zip, each project's own export inside it. The card shows how far it has come and Cancel
-  stops it. **Import...** takes such a file and brings every project in it, and the status line says how many came
+  writes them all as one .zip, each project's own export inside it, named "<plugin> Projects.zip" unless you name it.
+  The card shows how far it has come and Cancel stops it. **Import...** takes such a file and brings every project in it, and the status line says how many came
   in and which were refused, by name.
 
 **Changed**

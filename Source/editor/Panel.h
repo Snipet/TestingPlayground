@@ -123,6 +123,7 @@
 #include "editor/Columns.h"
 #include "editor/Explorer.h"
 #include "editor/AbCard.h"
+#include "editor/DiffCard.h"
 #include "editor/ExportCard.h"
 #include "editor/NameCard.h"
 #include "editor/PresetPicker.h"
@@ -226,6 +227,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kNameTag = funkgui::tags::firstProduct + 16;        // the name card
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
     inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
+    inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -372,6 +374,12 @@ namespace playground::ui
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
         AbCard& abCard() noexcept { return ab_; }
+        // COMPARE (DiffCard.h): two sides of `project` (version numbers, DiffCard::kEditor the editor's files), what
+        // changed between them. Its ways in: PROJECTS' Compare... and its versions' menu, and the top bar's project pill's
+        // menu (a right-click: projectMenu), "Compare with the saved version" while the editor has changes.
+        void openCompare(const std::string& project, int left, int right);
+        DiffCard& compareCard() noexcept { return compare_; }
+        void projectMenu();
         // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
         // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
         void stepPresets(int step);
@@ -620,8 +628,8 @@ namespace playground::ui
         // press closed it (a click outside its box, its Close, Done or Cancel): the press goes no further, and
         // closingPress_ swallows its double-click's second press, which would land on what lies under it, a card under
         // it included (PROJECTS under a card it opened). A card that closes on a click outside tests its own box first
-        // in its pointerDown and calls its own close() (ProjectBrowser, ExportCard, PresetPicker, SettingsCard); a new
-        // card is one more pressCard line in pointerDown, nothing copied.
+        // in its pointerDown and calls its own close() (ProjectBrowser, ExportCard, DiffCard, PresetPicker,
+        // SettingsCard); a new card is one more pressCard line in pointerDown, nothing copied.
         void pressCard(const std::function<bool()>& isOpen, const std::function<void()>& press, const std::function<void()>& after);
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
         bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
@@ -819,7 +827,7 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen();
+                || picker_.isOpen() || compare_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -855,6 +863,8 @@ namespace playground::ui
         void afterPicker(bool wasOpen);                  // its notice to the status, the focus back once it closed
         ExportCard export_{ port_ };
         AbCard ab_{ port_ };
+        DiffCard compare_{ port_ };
+        void afterCompare(bool wasOpen);                 // its notice, its A/B asked for, the focus back once it closed
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
         uint64_t saveSeen_ = 0;                          // EditorPort::saving().done this Panel last said
