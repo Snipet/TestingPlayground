@@ -97,8 +97,8 @@ namespace playground::ui
                            uint32_t diffId, uint32_t buttonBase = 0) const;
         bool a11yAction(uint32_t id, const funkgui::Rect& area, uint32_t tabBase, uint32_t buttonBase = 0);
 
-        // The next (+1) or the previous (-1) run of changed rows, from the rows shown, on into the pills after (before);
-        // false when there is none.
+        // The next (+1) or the previous (-1) run of changed rows: after (before) the one the last step showed, else the
+        // first shown (the first below the top row), on into the pills after (before); false when there is none.
         bool step(int dir, const funkgui::Rect& area);
         void showFile(int i);
 
@@ -119,6 +119,8 @@ namespace playground::ui
         Scroll diff_;
         std::string left_ = "A", right_ = "B";
         bool changeKeys_ = false;
+        int stepFile_ = -1, stepRun_ = -1;               // where the last step went (its pill, its run), while the rows
+        float stepOffset_ = 0.0f;                        // stay where it put them
         uint32_t revision_ = 0;
     };
 }

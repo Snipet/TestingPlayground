@@ -254,6 +254,7 @@ namespace playground::ui
         const std::string was = keep && file_ >= 0 && file_ < static_cast<int>(diffs_.size()) ? diffs_[static_cast<std::size_t>(file_)].name : std::string();
         diffs_ = std::move(diffs);
         file_ = 0;
+        stepFile_ = -1;
         if (keep)
         {
             for (std::size_t i = 0; i < diffs_.size(); ++i)
@@ -289,6 +290,7 @@ namespace playground::ui
         file_ = std::clamp(i, 0, static_cast<int>(diffs_.size()) - 1);
         firstTab_ = std::min(firstTab_, file_);
         diff_.offset = 0.0f;
+        stepFile_ = -1;
         ++revision_;
     }
 
@@ -372,39 +374,48 @@ namespace playground::ui
     {
         if (diffs_.empty())
             return false;
-        const int top = scroll();
-        // In the pill shown: the first run past the row the last step put at the top (one row of context above it).
-        const std::vector<int> here = runStarts(file_);
-        if (dir > 0)
-        {
-            for (const int r : here)
-                if (std::max(0, r - 1) > top)
-                {
-                    reveal(r, area);
-                    return true;
-                }
-        }
+        const std::vector<int> runs = runStarts(file_);
+        const int n = static_cast<int>(runs.size());
+        // The change it is at: the one the last step showed while the rows stay where it put them, else the first that
+        // starts at or below the top row (it counts as shown when it starts within the rows shown).
+        int target = -1;
+        if (stepFile_ == file_ && diff_.offset == stepOffset_ && stepRun_ >= 0 && stepRun_ < n)
+            target = stepRun_ + dir;
         else
-            for (auto it = here.rbegin(); it != here.rend(); ++it)
-                if (std::max(0, *it - 1) < top)
-                {
-                    reveal(*it, area);
-                    return true;
-                }
+        {
+            const int top = scroll(), rows = places(area).lines;
+            int cur = 0;
+            while (cur < n && runs[static_cast<std::size_t>(cur)] < top)
+                ++cur;
+            const bool shown = cur < n && runs[static_cast<std::size_t>(cur)] < top + rows;
+            target = dir > 0 ? (shown ? cur + 1 : cur) : cur - 1;
+        }
+        if (target >= 0 && target < n)
+        {
+            reveal(runs[static_cast<std::size_t>(target)], area);
+            stepFile_ = file_;
+            stepRun_ = target;
+            stepOffset_ = diff_.offset;
+            return true;
+        }
         // On into the pills after (before) it.
-        const int n = static_cast<int>(diffs_.size());
-        for (int k = 1; k < n; ++k)
+        const int files = static_cast<int>(diffs_.size());
+        for (int k = 1; k < files; ++k)
         {
             const int f = file_ + dir * k;
-            if (f < 0 || f >= n)
+            if (f < 0 || f >= files)
                 break;
-            const std::vector<int> runs = runStarts(f);
-            if (runs.empty())
+            const std::vector<int> there = runStarts(f);
+            if (there.empty())
                 continue;
             showFile(f);
             while (firstTab_ < file_ && file_ >= firstTab_ + static_cast<int>(places(area).tabs.size()))
                 ++firstTab_;
-            reveal(dir > 0 ? runs.front() : runs.back(), area);
+            const int r = dir > 0 ? 0 : static_cast<int>(there.size()) - 1;
+            reveal(there[static_cast<std::size_t>(r)], area);
+            stepFile_ = file_;
+            stepRun_ = r;
+            stepOffset_ = diff_.offset;
             return true;
         }
         return false;
