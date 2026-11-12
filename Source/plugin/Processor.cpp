@@ -523,6 +523,7 @@ namespace playground
 
     Processor::~Processor()
     {
+        finishExport();                                          // an export in flight cancelled, its thread joined
         finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
@@ -1425,6 +1426,7 @@ namespace playground
         }
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         pollSave();                                              // the editor's save, its file written: it lands
+        pollExport();                                            // an export that ended: its thread joined
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -2333,7 +2335,7 @@ namespace playground
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : projectstore::factoryList())
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), true,
-                            e.category, e.tags, e.description, e.savedMs });
+                            e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes });
         return out;
     }
 
@@ -2387,7 +2389,7 @@ namespace playground
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : list)
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
-                            e.category, e.tags, e.description, e.savedMs });
+                            e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes });
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))
@@ -3468,15 +3470,23 @@ namespace playground
         return projectstore::setCategory(project, category, &why);
     }
 
+    static_assert(static_cast<int>(ProjectOrder::name) == static_cast<int>(projectstore::Order::name)
+                  && static_cast<int>(ProjectOrder::saved) == static_cast<int>(projectstore::Order::saved)
+                  && static_cast<int>(ProjectOrder::created) == static_cast<int>(projectstore::Order::created)
+                  && static_cast<int>(ProjectOrder::size) == static_cast<int>(projectstore::Order::size),
+                  "EditorPort's ProjectOrder mirrors ProjectStore's Order");
+
     ProjectsView Processor::projectsView() const
     {
         const projectstore::View v = projectstore::view();
-        return { v.favourites, v.folded, v.search, v.tag, v.byDate };
+        return { v.favourites, v.folded, v.search, v.tag, static_cast<ProjectOrder>(v.order), v.reversed };
     }
 
     bool Processor::setProjectsView(const ProjectsView& view, std::string& why)
     {
-        return projectstore::setView({ view.favourites, view.folded, view.search, view.tag, view.byDate }, &why);
+        return projectstore::setView({ view.favourites, view.folded, view.search, view.tag,
+                                       static_cast<projectstore::Order>(view.order), view.reversed },
+                                     &why);
     }
 
     bool Processor::exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
@@ -3505,13 +3515,42 @@ namespace playground
 
     bool Processor::importProject(const std::string& path, std::string& name, std::string& why)
     {
-        const std::optional<projectstore::Project> p = projectexport::read(juce::File(juce::String::fromUTF8(path.c_str())), &why);
-        if (!p)
+        Imported in;
+        if (!importProjects(path, in, why))
             return false;
-        const std::optional<std::string> added = projectstore::add(*p, &why);
-        if (!added)
+        name = in.names.back();
+        return true;
+    }
+
+    // Each project the file brings (a bundle's every one: ProjectExport.h's readAll) added as a new project; one refused
+    // (the other kind's, damaged) leaves the others. False, with why, when none came in.
+    bool Processor::importProjects(const std::string& path, Imported& out, std::string& why)
+    {
+        out = {};
+        const std::optional<std::vector<projectexport::Item>> items =
+            projectexport::readAll(juce::File(juce::String::fromUTF8(path.c_str())), &why);
+        if (!items)
             return false;
-        name = *added;
+        std::string firstWhy;
+        for (const projectexport::Item& item : *items)
+        {
+            std::string whyNot = item.why;
+            if (item.project)
+                if (const std::optional<std::string> added = projectstore::add(*item.project, &whyNot))
+                {
+                    out.names.push_back(*added);
+                    continue;
+                }
+            if (firstWhy.empty())
+                firstWhy = whyNot;
+            out.refused.push_back(item.name + ": " + whyNot);
+        }
+        if (out.names.empty())
+        {
+            why = items->size() == 1 ? firstWhy
+                                     : "none of its " + std::to_string(items->size()) + " projects came in (" + out.refused.front() + ")";
+            return false;
+        }
         return true;
     }
 

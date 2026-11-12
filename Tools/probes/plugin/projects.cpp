@@ -6,7 +6,11 @@
 //            nothing left is ""
 //   FOLDER   under CTest the default folder is the sandbox's presets/
 //   SAVE     a processor's two files (the second tab shown) and its dials, saved: a new project, version 1, listed
-//            with a date; the file is JSON that names this plugin and its kind; project() is it, not edited
+//            with a date; the file is JSON that names this plugin and its kind; project() is it, not edited; its
+//            "created" is its first save's, as is the listing's createdMs, and the listing's bytes the file's size. A
+//            file from before "created" (versions saved a day apart, the field taken out): listed with its oldest
+//            version's save, nothing written; its oldest version removed, the file keeps that time as "created", and
+//            a version saved later keeps it too
 //   VERSIONS saved again unchanged, no version added; after an edit (noticed) version 2, its note naming the file's
 //            lines; after a dial moved (noticed) version 3, its note "1 dial"; the versions the newest first; another
 //            processor opens version 1 (its files, its tab, its dials, not edited) and the newest (its dial); saving
@@ -26,7 +30,9 @@
 //            so does a load(); a damaged file is read once, not at every listing
 //   CACHED   the explorer's own poll (listCached, presetsCached, the Reader): a file another wrote is not read by
 //            the listing but listed as it was and handed to the Reader, which reads it once on its thread (its
-//            revision moves) and the next listing has it; a project never read is listed once the Reader has read it
+//            revision moves) and the next listing has it; a project never read is listed once the Reader has read it;
+//            the entries' bytes and createdMs come with the listing, no file read (parses() still), bytes the file's
+//            size as it is after the Reader's read
 //   BYNAME   a version whose dials are listed in another order, with a name the program lacks: each lands on its own
 //            parameter, the unknown is ignored
 //   SAME     a version saved as "glass bloom": the same project, named so now (one file)
@@ -50,7 +56,10 @@
 //            kept, it reads back the same from another processor, from the folder's hidden file (no project listed
 //            for it), tidied (a name starred twice in two cases once, a factory project's name kept as spelt, the search
 //            cut to 60); a project deleted loses its star; the file rewritten from outside (as another process would)
-//            read again when its size moved and when its time did
+//            read again when its size moved and when its time did; each order (name, saved, created, size) with and
+//            without reversed round-trips, the file's "sort" its word and "reverse" there only when set; a file of an
+//            older build ("saved", "name", no "reverse") reads as it did; a word an older build would read as by name
+//            ("size") read by that build's rule (anything but "saved") is by name, and an unknown word here is by name
 //   DELETE   a preset deleted (no longer applied); a version deleted, never the only one; a project deleted: gone from
 //            the list, project() none
 //   PANEL    a panel dial (Controls.h's isPanelDial: the 34th of 34, past the host's 32) is kept by name as a host
@@ -95,10 +104,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace pg = playground;
@@ -235,6 +246,12 @@ PROBE(plugin, projects)
     const juce::var json = juce::JSON::parse(file.loadFileAsString());
     P.eq("save.json", json["format"].toString() == "funk-playground-project" && json["plugin"].toString() == pg::product::kName
                           && json["kind"].toString() == pg::product::kKind && json["versions"].size() == 1 ? 1 : 0, 1);
+    {
+        const int64_t first = static_cast<int64_t>(static_cast<juce::int64>(json["versions"][0]["saved"]));
+        P.eq("save.created", static_cast<int64_t>(static_cast<juce::int64>(json["created"])) == first && first > 0 ? 1 : 0, 1);
+        P.eq("save.listed_created", entry && entry->createdMs == first ? 1 : 0, 1);
+        P.eq("save.listed_bytes", entry && entry->bytes == static_cast<int64_t>(file.getSize()) && entry->bytes > 0 ? 1 : 0, 1);
+    }
     pg::ProjectState st = pa.project();
     P.eq("save.open_now", st.name == "Glass Bloom" && st.version == 1 && st.latest == 1 && !st.edited && !st.dialsEdited ? 1 : 0, 1);
 
@@ -482,6 +499,24 @@ PROBE(plugin, projects)
                                            && presetsOfEntry(fresh, "Glass Bloom") == presetsOfEntry(held0, "Glass Bloom") + 1
                                            && freshPresets && freshPresets->size() == static_cast<std::size_t>(presetsOfEntry(fresh, "Glass Bloom"))
                                            ? 1 : 0, 1);
+            {
+                // The sort's numbers come with the listing (no file read): the size as it is now, when it was made.
+                const int sortParses = ps::parses();
+                unread.clear();
+                const std::vector<ps::Entry> again = ps::listCached(unread);
+                const juce::File gb = dir.getChildFile("Glass Bloom.fmproject");
+                const juce::var gj = juce::JSON::parse(gb.loadFileAsString());
+                const auto it = std::find_if(again.begin(), again.end(), [](const ps::Entry& e) { return e.name == "Glass Bloom"; });
+                P.eq("cached.sort_no_parse", ps::parses() - sortParses, 0);
+                P.eq("cached.bytes", it != again.end() && it->bytes == static_cast<int64_t>(gb.getSize()) ? 1 : 0, 1);
+                P.eq("cached.created", it != again.end() && it->createdMs > 0
+                                           && it->createdMs == static_cast<int64_t>(static_cast<juce::int64>(gj["versions"][0]["saved"]))
+                                           ? 1 : 0, 1);
+                std::vector<pg::ProjectEntry> polled = pa.projectsPolled();
+                const auto pe = std::find_if(polled.begin(), polled.end(), [](const pg::ProjectEntry& e) { return e.name == "Glass Bloom"; });
+                P.eq("cached.port_carries", pe != polled.end() && it != again.end() && pe->bytes == it->bytes
+                                                && pe->createdMs == it->createdMs && ps::parses() - sortParses == 0 ? 1 : 0, 1);
+            }
             // A project no one read yet (another wrote it): not listed until the Reader has read it.
             const juce::File newcomer = dir.getChildFile("Newcomer.fmproject");
             dir.getChildFile("Glass Bloom.fmproject").copyFileTo(newcomer);
@@ -665,6 +700,52 @@ PROBE(plugin, projects)
         P.eq("cap.numbers_go_on", !vs.empty() && vs.front().number == 101 && vs.back().number == 2 ? 1 : 0, 1);
     }
 
+    // SAVE (created): a file from before "created", its versions a day apart.
+    {
+        pg::Processor c;
+        pg::EditorPort& pc = c.editorPort();
+        pg::Draft d{ files, 0 };
+        bool all = true;
+        for (int k = 0; k < 3 && all; ++k)
+        {
+            d.files[1].text = "float half(float x) { return 0.5f * x; }\n// olden " + std::to_string(k) + "\n";
+            pc.setDraft(d);
+            all = pc.saveVersion("Olden", saved, why);
+        }
+        const int64_t day = 24LL * 3600 * 1000;
+        const int64_t t0 = juce::Time::currentTimeMillis() - 10 * day;
+        rewrite(dir, "Olden", "Olden", [&](juce::var& root) {
+            root.getDynamicObject()->removeProperty("created");
+            if (juce::Array<juce::var>* vs = root["versions"].getArray())
+                for (int k = 0; k < vs->size(); ++k)
+                    (*vs)[k].getDynamicObject()->setProperty("saved", static_cast<juce::int64>(t0 + k * day));
+        });
+        const juce::File olden = dir.getChildFile("Olden.fmproject");
+        const juce::String oldenText = olden.loadFileAsString();
+        const auto createdListed = [&] {
+            for (const ps::Entry& e : ps::list())
+                if (e.name == "Olden")
+                    return e.createdMs;
+            return int64_t{ -1 };
+        };
+        const auto createdInFile = [&] {
+            const juce::var j = juce::JSON::parse(olden.loadFileAsString());
+            return j.isObject() && j.getDynamicObject()->hasProperty("created") ? static_cast<int64_t>(static_cast<juce::int64>(j["created"]))
+                                                                                : int64_t{ -1 };
+        };
+        P.eq("save.old_saved", all ? 1 : 0, 1);
+        P.eq("save.old_worked_out", createdListed() == t0 ? 1 : 0, 1);
+        const std::optional<ps::Project> loaded = ps::load("Olden");
+        P.eq("save.old_loaded", loaded && loaded->createdMs == t0 ? 1 : 0, 1);
+        P.eq("save.old_nothing_written", olden.loadFileAsString() == oldenText && createdInFile() == -1 ? 1 : 0, 1);
+        P.eq("save.oldest_removed", pc.deleteVersion("Olden", 1, why) && pc.versions("Olden").size() == 2 ? 1 : 0, 1);
+        P.eq("save.created_fixed", createdInFile() == t0 && createdListed() == t0 ? 1 : 0, 1);
+        d.files[1].text = "float half(float x) { return 0.5f * x; }\n// olden later\n";
+        pc.setDraft(d);
+        P.eq("save.created_kept", pc.saveVersion("Olden", saved, why) && createdInFile() == t0 ? 1 : 0, 1);
+        P.eq("save.old_tidy", pc.deleteProject("Olden", why) ? 1 : 0, 1);
+    }
+
     // REFUSE
     {
         rewrite(dir, "glass bloom", "Other Kind", [](juce::var& root) {
@@ -716,18 +797,20 @@ PROBE(plugin, projects)
         v.folded = { "category:pad", "factory" };
         v.search = std::string(80, 's');
         v.tag = "warm";
-        v.byDate = true;
+        v.order = pg::ProjectOrder::saved;
         P.eq("view.kept", pa.setProjectsView(v, why) ? 1 : 0, 1);
         pg::Processor other;
         const pg::ProjectsView back = other.editorPort().projectsView();
         std::printf("view: %zu starred, %zu folded, search %zu, tag %s\n", back.favourites.size(), back.folded.size(), back.search.size(),
                     back.tag.c_str());
         P.eq("view.read_back", back.favourites == std::vector<std::string>{ "glass bloom", "Old Sound", pg::factoryName("Warm Pad") }
-                                   && back.folded == v.folded && back.tag == "warm" && back.byDate ? 1 : 0, 1);
+                                   && back.folded == v.folded && back.tag == "warm" && back.order == pg::ProjectOrder::saved
+                                   && !back.reversed ? 1 : 0, 1);
         P.eq("view.search_cut", static_cast<int64_t>(back.search.size()), static_cast<int64_t>(pg::projectstore::kMaxSearch));
         const juce::var viewJson = juce::JSON::parse(dir.getChildFile(pg::projectstore::kViewFile).loadFileAsString());
         P.eq("view.file_json", viewJson["format"].toString() == "funk-playground-projects-view" && viewJson["favourites"].size() == 3
-                                   && viewJson["sort"].toString() == "saved" ? 1 : 0, 1);
+                                   && viewJson["sort"].toString() == "saved"
+                                   && !viewJson.getDynamicObject()->hasProperty("reverse") ? 1 : 0, 1);
         P.eq("view.hidden_file", dir.getChildFile(pg::projectstore::kViewFile).existsAsFile()
                                      && juce::String(pg::projectstore::kViewFile).startsWithChar('.') && !listed(pa, ".projects-view") ? 1 : 0, 1);
         pg::Processor scratch;
@@ -751,7 +834,8 @@ PROBE(plugin, projects)
             };
             const auto reads = [&](const std::string& filter) {
                 const pg::ProjectsView now = pa.projectsView();
-                return now.favourites == std::vector<std::string>{ "Old Sound" } && now.tag == filter && !now.byDate && now.folded.empty();
+                return now.favourites == std::vector<std::string>{ "Old Sound" } && now.tag == filter && now.order == pg::ProjectOrder::name
+                    && !now.reversed && now.folded.empty();
             };
             (void)pa.projectsView();                     // cached as it is
             const juce::Time was = vf.getLastModificationTime();
@@ -759,6 +843,54 @@ PROBE(plugin, projects)
             P.eq("view.reread_size", rewrite("dark", was) && vf.getSize() != size && vf.getLastModificationTime() == was && reads("dark") ? 1 : 0, 1);
             const juce::int64 sameSize = vf.getSize();
             P.eq("view.reread_time", rewrite("warm", was + juce::RelativeTime::seconds(2.0)) && vf.getSize() == sameSize && reads("warm") ? 1 : 0, 1);
+        }
+        {
+            // The orders: each with and without reversed, kept and read back by another processor, the file's words.
+            const juce::File vf = dir.getChildFile(pg::projectstore::kViewFile);
+            const std::pair<pg::ProjectOrder, const char*> orders[] = { { pg::ProjectOrder::name, "name" },
+                                                                        { pg::ProjectOrder::saved, "saved" },
+                                                                        { pg::ProjectOrder::created, "created" },
+                                                                        { pg::ProjectOrder::size, "size" } };
+            int round = 0, words = 0, bump = 0;
+            for (const auto& [order, word] : orders)
+                for (const bool reversed : { false, true })
+                {
+                    pg::ProjectsView o = pa.projectsView();
+                    o.order = order;
+                    o.reversed = reversed;
+                    pg::Processor reader;
+                    const bool kept = pa.setProjectsView(o, why);
+                    const pg::ProjectsView r = reader.editorPort().projectsView();
+                    if (kept && r.order == order && r.reversed == reversed)
+                        ++round;
+                    const juce::var j = juce::JSON::parse(vf.loadFileAsString());
+                    if (j.isObject() && j["sort"].toString() == word && j.getDynamicObject()->hasProperty("reverse") == reversed
+                        && (!reversed || static_cast<bool>(j["reverse"])))
+                        ++words;
+                }
+            P.eq("view.orders_round_trip", round, 8);
+            P.eq("view.orders_words", words, 8);
+            // A file of an older build, and one this build wrote read by an older build's rule.
+            const auto written = [&](const std::string& sort, const std::string& extra) {
+                return vf.replaceWithText("{\"format\": \"funk-playground-projects-view\", \"version\": 1, \"favourites\": [], "
+                                          "\"folded\": [], \"search\": \"\", \"tag\": \"\", \"sort\": \"" + sort + "\"" + extra + "}\n",
+                                          false, false, "\n")
+                    && vf.setLastModificationTime(juce::Time::getCurrentTime() + juce::RelativeTime::seconds(5.0 + bump++));
+            };
+            P.eq("view.old_saved", written("saved", "") && pa.projectsView().order == pg::ProjectOrder::saved
+                                       && !pa.projectsView().reversed ? 1 : 0, 1);
+            P.eq("view.old_name", written("name", "") && pa.projectsView().order == pg::ProjectOrder::name ? 1 : 0, 1);
+            P.eq("view.unknown_by_name", written("loudest", ", \"reverse\": true") && pa.projectsView().order == pg::ProjectOrder::name
+                                             && pa.projectsView().reversed ? 1 : 0, 1);
+            pg::ProjectsView bySize = pa.projectsView();
+            bySize.order = pg::ProjectOrder::size;
+            bySize.reversed = false;
+            (void)pa.setProjectsView(bySize, why);
+            // An older build: byDate = sort == "saved".
+            const bool oldByDate = juce::JSON::parse(vf.loadFileAsString())["sort"].toString() == "saved";
+            P.eq("view.size_old_rule_by_name", pa.projectsView().order == pg::ProjectOrder::size && !oldByDate ? 1 : 0, 1);
+            P.eq("view.word_helpers", ps::orderOf("created") == ps::Order::created && ps::orderOf("") == ps::Order::name
+                                          && std::string(ps::orderWord(ps::Order::size)) == "size" ? 1 : 0, 1);
         }
         P.eq("view.reset", pa.setProjectsView({}, why) && pa.projectsView() == pg::ProjectsView{} ? 1 : 0, 1);
     }

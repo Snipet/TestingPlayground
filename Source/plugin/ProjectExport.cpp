@@ -2,15 +2,25 @@
 #include "plugin/ProjectExport.h"
 
 #include "Product.h"
+#include "plugin/EditorPort.h"
 
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cstdio>
 #include <cstring>
+#include <memory>
 
 #if defined(__APPLE__)
 #include <compression.h>
+#endif
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 namespace playground::projectexport
@@ -64,8 +74,9 @@ namespace playground::projectexport
             return s.toStdString();
         }
 
-        // Written beside, then moved over: the file is never half written.
-        bool writeFile(const juce::File& to, const void* data, std::size_t size, std::string* why)
+        // Written beside, then moved over (place: over a file there only when `replace`): the file is never half
+        // written.
+        bool writeFile(const juce::File& to, const void* data, std::size_t size, std::string* why, bool replace = true)
         {
             const juce::File dir = to.getParentDirectory();
             if (!dir.isDirectory() && !dir.createDirectory())
@@ -84,10 +95,9 @@ namespace playground::projectexport
                 }
                 out.flush();
             }
-            if (!temp.moveFileTo(to))
+            if (!place(temp, to, replace, why))
             {
                 temp.deleteFile();
-                fail(why, "cannot replace " + to.getFullPathName().toStdString());
                 return false;
             }
             return true;
@@ -225,7 +235,7 @@ namespace playground::projectexport
         return out;
     }
 
-    bool writePackage(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why)
+    bool packageBytes(const projectstore::Project& p, bool allVersions, std::vector<uint8_t>& file, Result& out, std::string*)
     {
         projectstore::Project q = p;
         q.id.clear();                                    // this Mac's: its chats stay here (ProjectExport.h)
@@ -242,7 +252,7 @@ namespace playground::projectexport
         const std::string json = projectstore::toJson(q);
         Method method = Method::stored;
         const std::vector<uint8_t> body = compress(json, method);
-        std::vector<uint8_t> file(kHeaderBytes + body.size(), 0);
+        file.assign(kHeaderBytes + body.size(), 0);
         std::memcpy(file.data(), "FMPK", 4);
         file[4] = static_cast<uint8_t>(kPackageFormat);
         file[5] = static_cast<uint8_t>(method);
@@ -253,13 +263,22 @@ namespace playground::projectexport
         for (int i = 0; i < 4; ++i)
             file[static_cast<std::size_t>(16 + i)] = static_cast<uint8_t>(crc >> (8 * i));
         std::copy(body.begin(), body.end(), file.begin() + kHeaderBytes);
-        if (!writeFile(to, file.data(), file.size(), why))
-            return false;
         out = { static_cast<int64_t>(file.size()), static_cast<int64_t>(json.size()), method, static_cast<int>(q.versions.size()) };
         return true;
     }
 
-    bool writeSource(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why)
+    bool writePackage(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why,
+                      bool replace)
+    {
+        std::vector<uint8_t> file;
+        Result r;
+        if (!packageBytes(p, allVersions, file, r, why) || !writeFile(to, file.data(), file.size(), why, replace))
+            return false;
+        out = r;
+        return true;
+    }
+
+    bool sourceBytes(const projectstore::Project& p, bool allVersions, std::vector<uint8_t>& bytes, Result& out, std::string* why)
     {
         const std::string root = p.name;
         juce::ZipFile::Builder zip;
@@ -338,10 +357,159 @@ namespace playground::projectexport
             fail(why, "cannot make the zip");
             return false;
         }
-        if (!writeFile(to, mem.getData(), mem.getDataSize(), why))
-            return false;
+        const auto* d = static_cast<const uint8_t*>(mem.getData());
+        bytes.assign(d, d + mem.getDataSize());
         out = { static_cast<int64_t>(mem.getDataSize()), raw, Method::zlib, static_cast<int>(q.versions.size()) };
         return true;
+    }
+
+    bool writeSource(const projectstore::Project& p, bool allVersions, const juce::File& to, Result& out, std::string* why,
+                     bool replace)
+    {
+        std::vector<uint8_t> bytes;
+        Result r;
+        if (!sourceBytes(p, allVersions, bytes, r, why) || !writeFile(to, bytes.data(), bytes.size(), why, replace))
+            return false;
+        out = r;
+        return true;
+    }
+
+    namespace
+    {
+        // One export's bytes (a .fmpack's or a source .zip's), `label` its file's name and `stem` the name it falls
+        // back on.
+        std::optional<projectstore::Project> readBytes(const juce::MemoryBlock& bytes, const std::string& label, const std::string& stem,
+                                                       std::string* why)
+        {
+            if (bytes.getSize() < 4)
+            {
+                fail(why, "cannot read " + label);
+                return std::nullopt;
+            }
+            const auto* b = static_cast<const uint8_t*>(bytes.getData());
+            const auto named = [&](const std::string& json) -> std::optional<projectstore::Project> {
+                const std::string name = juce::JSON::parse(str(json))["name"].toString().toStdString();
+                return projectstore::fromJson(json, name.empty() ? stem : name, why);
+            };
+            if (std::memcmp(b, "FMPK", 4) == 0)
+            {
+                if (bytes.getSize() < static_cast<std::size_t>(kHeaderBytes))
+                {
+                    fail(why, label + " is damaged (its header is cut short)");
+                    return std::nullopt;
+                }
+                if (b[4] > kPackageFormat)
+                {
+                    fail(why, label + " is from a newer version of the plugin");
+                    return std::nullopt;
+                }
+                if (b[5] > static_cast<uint8_t>(Method::xz))
+                {
+                    fail(why, label + " is compressed in a way this plugin does not know");
+                    return std::nullopt;
+                }
+                uint64_t size = 0;
+                for (int i = 0; i < 8; ++i)
+                    size |= static_cast<uint64_t>(b[8 + i]) << (8 * i);
+                uint32_t crc = 0;
+                for (int i = 0; i < 4; ++i)
+                    crc |= static_cast<uint32_t>(b[16 + i]) << (8 * i);
+                std::string what;
+                const std::optional<std::string> json = decompress(b + kHeaderBytes, bytes.getSize() - kHeaderBytes, static_cast<Method>(b[5]),
+                                                                   static_cast<std::size_t>(std::min<uint64_t>(size, kMaxRaw + 1)), &what);
+                if (!json)
+                {
+                    fail(why, label + ": " + what);
+                    return std::nullopt;
+                }
+                if (crc32(json->data(), json->size()) != crc)
+                {
+                    fail(why, label + " is damaged (its check does not match)");
+                    return std::nullopt;
+                }
+                return named(*json);
+            }
+            if (b[0] != 'P' || b[1] != 'K')
+            {
+                fail(why, label + " is neither a package (.fmpack) nor a zip");
+                return std::nullopt;
+            }
+            // A zip: the manifest in its folder, each version's files beside it.
+            juce::MemoryInputStream zipIn(bytes, false);
+            juce::ZipFile zip(zipIn);
+            int at = -1;
+            juce::String folder;
+            for (int i = 0; i < zip.getNumEntries(); ++i)
+            {
+                const juce::String n = zip.getEntry(i)->filename;
+                if (n.endsWith("/project.json") && n.upToLastOccurrenceOf("/", false, false).indexOfChar('/') < 0)
+                {
+                    at = i;
+                    folder = n.upToLastOccurrenceOf("/", true, false);
+                    break;
+                }
+            }
+            if (at < 0)
+            {
+                fail(why, label + " is not a project's zip (it has no project.json)");
+                return std::nullopt;
+            }
+            const auto text = [&](const juce::String& path) -> std::optional<std::string> {
+                const int i = zip.getIndexOfFileName(path);
+                if (i < 0)
+                    return std::nullopt;
+                const std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(i));
+                if (in == nullptr)
+                    return std::nullopt;
+                return in->readEntireStreamAsString().toStdString();
+            };
+            const std::optional<std::string> manifestText = text(zip.getEntry(at)->filename);
+            juce::var manifest = juce::JSON::parse(str(manifestText.value_or(std::string())));
+            if (!manifest.isObject() || manifest["format"].toString() != kSourceFormat)
+            {
+                fail(why, label + "'s project.json is not a project's (or it is damaged)");
+                return std::nullopt;
+            }
+            if (static_cast<int>(manifest["version"]) > kSourceVersion)
+            {
+                fail(why, label + " is from a newer version of the plugin");
+                return std::nullopt;
+            }
+            if (juce::Array<juce::var>* versions = manifest["versions"].getArray())
+                for (juce::var& v : *versions)
+                {
+                    juce::String place = v["folder"].toString();
+                    if (place.isNotEmpty() && !place.endsWithChar('/'))
+                        place += "/";
+                    if (juce::Array<juce::var>* files = v["files"].getArray())
+                        for (juce::var& f : *files)
+                        {
+                            const std::optional<std::string> t = text(folder + place + f["name"].toString());
+                            if (!t)
+                            {
+                                fail(why, label + " lacks " + (folder + place + f["name"].toString()).toStdString());
+                                return std::nullopt;
+                            }
+                            f.getDynamicObject()->setProperty("text", str(*t));
+                        }
+                }
+            // Its sample files, each from the file the manifest names (one it lacks, or damaged, is left out: the versions
+            // naming it then say so when opened).
+            if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
+                for (juce::var& f : *files)
+                {
+                    const int i = zip.getIndexOfFileName(folder + f["file"].toString());
+                    const std::unique_ptr<juce::InputStream> in(i >= 0 ? zip.createStreamForEntry(i) : nullptr);
+                    juce::MemoryBlock data;
+                    if (in != nullptr)
+                        in->readIntoMemoryBlock(data);
+                    f.getDynamicObject()->setProperty("data", juce::Base64::toBase64(data.getData(), data.getSize()));
+                    f.getDynamicObject()->removeProperty("file");
+                }
+            manifest.getDynamicObject()->setProperty("format", kProjectFormat);
+            manifest.getDynamicObject()->setProperty("version", 1);
+            return named((juce::JSON::toString(manifest, false) + "\n").toStdString());
+        }
     }
 
     std::optional<projectstore::Project> read(const juce::File& from, std::string* why)
@@ -352,139 +520,358 @@ namespace playground::projectexport
             fail(why, "there is no file " + from.getFullPathName().toStdString());
             return std::nullopt;
         }
+        if (isBundle(from))
+        {
+            fail(why, label + " is a bundle of several projects: import it whole (each comes in as a project)");
+            return std::nullopt;
+        }
         if (from.getSize() > kMaxFile)
         {
             fail(why, label + " is too large to be a project");
             return std::nullopt;
         }
         juce::MemoryBlock bytes;
-        if (!from.loadFileAsData(bytes) || bytes.getSize() < 4)
+        if (!from.loadFileAsData(bytes))
         {
             fail(why, "cannot read " + label);
             return std::nullopt;
         }
-        const auto* b = static_cast<const uint8_t*>(bytes.getData());
-        const auto named = [&](const std::string& json) -> std::optional<projectstore::Project> {
-            const std::string name = juce::JSON::parse(str(json))["name"].toString().toStdString();
-            return projectstore::fromJson(json, name.empty() ? from.getFileNameWithoutExtension().toStdString() : name, why);
+        return readBytes(bytes, label, from.getFileNameWithoutExtension().toStdString(), why);
+    }
+
+    bool place(const juce::File& temp, const juce::File& to, bool replace, std::string* why)
+    {
+        const std::string target = to.getFullPathName().toStdString();
+        if (replace)
+        {
+            if (temp.moveFileTo(to))
+                return true;
+            fail(why, "cannot replace " + target);
+            return false;
+        }
+        const auto taken = [&] {
+            fail(why, target + " is there already (made meanwhile): it is left as it is");
+            return false;
         };
-        if (std::memcmp(b, "FMPK", 4) == 0)
+#if defined(_WIN32)
+        // Without MOVEFILE_REPLACE_EXISTING a file there fails the move.
+        if (MoveFileExW(temp.getFullPathName().toWideCharPointer(), to.getFullPathName().toWideCharPointer(), 0) != 0)
+            return true;
+        if (GetLastError() == ERROR_ALREADY_EXISTS || GetLastError() == ERROR_FILE_EXISTS)
+            return taken();
+        fail(why, "cannot write " + target);
+        return false;
+#else
+        const char* from = temp.getFullPathName().toRawUTF8();
+        const std::string toPath = target;
+        // One step that refuses a file there: renameat2's RENAME_NOREPLACE (Linux), renamex_np's RENAME_EXCL (macOS);
+        // where the file system takes neither, a hard link (which refuses one too), then the temporary unlinked.
+#if defined(__APPLE__)
+        if (renamex_np(from, toPath.c_str(), RENAME_EXCL) == 0)
+            return true;
+#elif defined(RENAME_NOREPLACE)
+        if (renameat2(AT_FDCWD, from, AT_FDCWD, toPath.c_str(), RENAME_NOREPLACE) == 0)
+            return true;
+#else
+        errno = EINVAL;
+#endif
+        if (errno == EEXIST)
+            return taken();
+        if (::link(from, toPath.c_str()) == 0)
         {
-            if (bytes.getSize() < static_cast<std::size_t>(kHeaderBytes))
-            {
-                fail(why, label + " is damaged (its header is cut short)");
-                return std::nullopt;
-            }
-            if (b[4] > kPackageFormat)
-            {
-                fail(why, label + " is from a newer version of the plugin");
-                return std::nullopt;
-            }
-            if (b[5] > static_cast<uint8_t>(Method::xz))
-            {
-                fail(why, label + " is compressed in a way this plugin does not know");
-                return std::nullopt;
-            }
-            uint64_t size = 0;
-            for (int i = 0; i < 8; ++i)
-                size |= static_cast<uint64_t>(b[8 + i]) << (8 * i);
-            uint32_t crc = 0;
-            for (int i = 0; i < 4; ++i)
-                crc |= static_cast<uint32_t>(b[16 + i]) << (8 * i);
-            std::string what;
-            const std::optional<std::string> json = decompress(b + kHeaderBytes, bytes.getSize() - kHeaderBytes, static_cast<Method>(b[5]),
-                                                               static_cast<std::size_t>(std::min<uint64_t>(size, kMaxRaw + 1)), &what);
-            if (!json)
-            {
-                fail(why, label + ": " + what);
-                return std::nullopt;
-            }
-            if (crc32(json->data(), json->size()) != crc)
-            {
-                fail(why, label + " is damaged (its check does not match)");
-                return std::nullopt;
-            }
-            return named(*json);
+            ::unlink(from);
+            return true;
         }
-        if (b[0] != 'P' || b[1] != 'K')
+        if (errno == EEXIST)
+            return taken();
+        // A file system with no hard links either (FAT): looked at, then moved; the one way a file made in between is
+        // replaced.
+        if (to.exists())
+            return taken();
+        if (std::rename(from, toPath.c_str()) == 0)
+            return true;
+        fail(why, "cannot write " + target);
+        return false;
+#endif
+    }
+
+    std::vector<std::string> bundleNames(const std::vector<std::string>& names, bool package)
+    {
+        std::vector<std::string> out;
+        const std::string ext = package ? kPackageExtension : kSourceExtension;
+        for (const std::string& n : names)
         {
-            fail(why, label + " is neither a package (.fmpack) nor a zip");
-            return std::nullopt;
+            std::string base = projectstore::tidyName(ownName(n));
+            if (base.empty())
+                base = "Project";
+            std::string file = base + ext;
+            for (int k = 2; std::any_of(out.begin(), out.end(), [&](const std::string& o) { return projectstore::sameName(o, file); })
+                            || projectstore::sameName(file, kBundleManifest);
+                 ++k)
+                file = base + " " + std::to_string(k) + ext;
+            out.push_back(file);
         }
-        // A zip: the manifest in its folder, each version's files beside it.
-        juce::MemoryInputStream zipIn(bytes, false);
-        juce::ZipFile zip(zipIn);
-        int at = -1;
-        juce::String folder;
-        for (int i = 0; i < zip.getNumEntries(); ++i)
+        return out;
+    }
+
+    namespace
+    {
+        // A zip of stored entries (each export is compressed already), written as it goes: each entry's local header
+        // and bytes, then the central directory. Names in UTF-8 (bit 11). At most 4 GB in all (no zip64): a bundle is
+        // kMaxBundleBytes of project files at most, and an export is no larger than its project's file but for a
+        // source zip's README.
+        class StoredZip
         {
-            const juce::String n = zip.getEntry(i)->filename;
-            if (n.endsWith("/project.json") && n.upToLastOccurrenceOf("/", false, false).indexOfChar('/') < 0)
+        public:
+            explicit StoredZip(juce::OutputStream& out) : out_(out)
             {
-                at = i;
-                folder = n.upToLastOccurrenceOf("/", true, false);
-                break;
+                const juce::Time t = juce::Time::getCurrentTime();
+                time_ = static_cast<uint16_t>((t.getHours() << 11) | (t.getMinutes() << 5) | (t.getSeconds() / 2));
+                date_ = static_cast<uint16_t>(((std::max(1980, t.getYear()) - 1980) << 9) | ((t.getMonth() + 1) << 5) | t.getDayOfMonth());
             }
-        }
-        if (at < 0)
-        {
-            fail(why, label + " is not a project's zip (it has no project.json)");
-            return std::nullopt;
-        }
-        const auto text = [&](const juce::String& path) -> std::optional<std::string> {
-            const int i = zip.getIndexOfFileName(path);
-            if (i < 0)
-                return std::nullopt;
-            const std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(i));
-            if (in == nullptr)
-                return std::nullopt;
-            return in->readEntireStreamAsString().toStdString();
+
+            bool add(const std::string& name, const uint8_t* data, std::size_t size, std::string* why)
+            {
+                const uint64_t at = static_cast<uint64_t>(out_.getPosition());
+                if (at + size + name.size() + 64 > 0xFFFFFFFFull || size > 0xFFFFFFFFull)
+                {
+                    fail(why, "the bundle would be larger than 4 GB");
+                    return false;
+                }
+                Entry e{ name, crc32(data, size), static_cast<uint32_t>(size), static_cast<uint32_t>(at) };
+                bool ok = u32(0x04034b50) && u16(20) && u16(0x0800) && u16(0) && u16(time_) && u16(date_) && u32(e.crc)
+                          && u32(e.size) && u32(e.size) && u16(static_cast<uint16_t>(name.size())) && u16(0)
+                          && out_.write(name.data(), name.size()) && (size == 0 || out_.write(data, size));
+                entries_.push_back(std::move(e));
+                if (!ok)
+                    fail(why, "cannot write the bundle");
+                return ok;
+            }
+
+            bool finish(std::string* why)
+            {
+                const uint64_t start = static_cast<uint64_t>(out_.getPosition());
+                bool ok = true;
+                for (const Entry& e : entries_)
+                    ok = ok && u32(0x02014b50) && u16(20) && u16(20) && u16(0x0800) && u16(0) && u16(time_) && u16(date_)
+                         && u32(e.crc) && u32(e.size) && u32(e.size) && u16(static_cast<uint16_t>(e.name.size())) && u16(0)
+                         && u16(0) && u16(0) && u16(0) && u32(0) && u32(e.offset) && out_.write(e.name.data(), e.name.size());
+                const uint64_t end = static_cast<uint64_t>(out_.getPosition());
+                if (end > 0xFFFFFFFFull)
+                    ok = false;
+                ok = ok && u32(0x06054b50) && u16(0) && u16(0) && u16(static_cast<uint16_t>(entries_.size()))
+                     && u16(static_cast<uint16_t>(entries_.size())) && u32(static_cast<uint32_t>(end - start))
+                     && u32(static_cast<uint32_t>(start)) && u16(0);
+                out_.flush();
+                if (!ok)
+                    fail(why, "cannot write the bundle");
+                return ok;
+            }
+
+        private:
+            struct Entry
+            {
+                std::string name;
+                uint32_t crc = 0, size = 0, offset = 0;
+            };
+            bool u16(uint16_t v) { return out_.writeShort(static_cast<short>(v)); }
+            bool u32(uint32_t v) { return out_.writeInt(static_cast<int>(v)); }
+
+            juce::OutputStream& out_;
+            std::vector<Entry> entries_;
+            uint16_t time_ = 0, date_ = 0;
         };
-        const std::optional<std::string> manifestText = text(zip.getEntry(at)->filename);
-        juce::var manifest = juce::JSON::parse(str(manifestText.value_or(std::string())));
-        if (!manifest.isObject() || manifest["format"].toString() != kSourceFormat)
+    }
+
+    bool writeBundle(const std::vector<std::string>& names, const Loader& load, bool package, bool allVersions, const juce::File& to,
+                     bool replace, const BundleProgress& progress, BundleResult& out, std::string* why)
+    {
+        out = {};
+        const auto cancelled = [&] { return progress.cancelled && progress.cancelled(); };
+        if (names.empty())
         {
-            fail(why, label + "'s project.json is not a project's (or it is damaged)");
+            fail(why, "there is no project to export");
+            return false;
+        }
+        if (static_cast<int>(names.size()) > kMaxBundleProjects)
+        {
+            fail(why, std::to_string(names.size()) + " projects are more than one bundle takes (" + std::to_string(kMaxBundleProjects) + ")");
+            return false;
+        }
+        const juce::File dir = to.getParentDirectory();
+        if (!dir.isDirectory() && !dir.createDirectory())
+        {
+            fail(why, "cannot make the folder " + dir.getFullPathName().toStdString());
+            return false;
+        }
+        const juce::File temp = dir.getChildFile("." + to.getFileName() + ".writing");
+        bool ok = true;
+        {
+            temp.deleteFile();
+            juce::FileOutputStream stream(temp);
+            if (!stream.openedOk())
+            {
+                fail(why, "cannot write " + to.getFullPathName().toStdString());
+                return false;
+            }
+            StoredZip zip(stream);
+            const std::vector<std::string> files = bundleNames(names, package);
+            juce::Array<juce::var> listed;
+            int64_t raw = 0;
+            for (std::size_t i = 0; i < names.size() && ok; ++i)
+            {
+                if (cancelled())
+                {
+                    out.cancelled = true;
+                    ok = false;
+                    break;
+                }
+                std::string whyNot;
+                std::optional<projectstore::Project> p = load(names[i], &whyNot);
+                std::vector<uint8_t> bytes;
+                Result r;
+                if (p)
+                {
+                    p->name = ownName(p->name);          // a factory project's: its own name, as a single export
+                    if (!(package ? packageBytes(*p, allVersions, bytes, r, &whyNot) : sourceBytes(*p, allVersions, bytes, r, &whyNot)))
+                        p.reset();
+                }
+                if (p)
+                {
+                    if (!zip.add(files[i], bytes.data(), bytes.size(), why))
+                    {
+                        ok = false;
+                        break;
+                    }
+                    auto* o = new juce::DynamicObject();
+                    o->setProperty("name", str(p->name));
+                    o->setProperty("file", str(files[i]));
+                    listed.add(juce::var(o));
+                    ++out.projects;
+                    out.file.versions += r.versions;
+                    raw += r.raw;
+                }
+                else
+                    out.failed.push_back(ownName(names[i]) + ": " + whyNot);
+                if (progress.step)
+                    progress.step(names[i], p.has_value(), whyNot);
+            }
+            if (ok && out.projects == 0)
+            {
+                fail(why, out.failed.empty() ? std::string("no project was exported") : out.failed.front());
+                ok = false;
+            }
+            if (ok)
+            {
+                auto* m = new juce::DynamicObject();
+                m->setProperty("format", kBundleFormat);
+                m->setProperty("version", kBundleVersion);
+                m->setProperty("plugin", product::kName);
+                m->setProperty("kind", str(kindName()));
+                m->setProperty("projects", listed);
+                const std::string json = (juce::JSON::toString(juce::var(m), false) + "\n").toStdString();
+                ok = zip.add(kBundleManifest, reinterpret_cast<const uint8_t*>(json.data()), json.size(), why) && zip.finish(why);
+                raw += static_cast<int64_t>(json.size());
+            }
+            out.file.raw = raw;
+            out.file.method = Method::stored;
+        }
+        if (ok && cancelled())
+        {
+            out.cancelled = true;
+            ok = false;
+        }
+        if (out.cancelled)
+            fail(why, "cancelled");
+        if (!ok || !place(temp, to, replace, why))
+        {
+            temp.deleteFile();
+            return false;
+        }
+        out.file.bytes = static_cast<int64_t>(to.getSize());
+        return true;
+    }
+
+    bool isBundle(const juce::File& from)
+    {
+        juce::FileInputStream in(from);
+        char head[2] = {};
+        if (!in.openedOk() || in.read(head, 2) != 2 || head[0] != 'P' || head[1] != 'K')
+            return false;
+        juce::ZipFile zip(from);
+        return zip.getIndexOfFileName(kBundleManifest) >= 0;
+    }
+
+    std::optional<std::vector<Item>> readAll(const juce::File& from, std::string* why)
+    {
+        const std::string label = from.getFileName().toStdString();
+        if (!from.existsAsFile())
+        {
+            fail(why, "there is no file " + from.getFullPathName().toStdString());
             return std::nullopt;
         }
-        if (static_cast<int>(manifest["version"]) > kSourceVersion)
+        if (!isBundle(from))
+        {
+            std::optional<projectstore::Project> p = read(from, why);
+            if (!p)
+                return std::nullopt;
+            std::vector<Item> one(1);
+            one[0].name = p->name;
+            one[0].file = label;
+            one[0].project = std::move(p);
+            return one;
+        }
+        juce::ZipFile zip(from);
+        const auto entryBytes = [&](int index, juce::MemoryBlock& data) {
+            const std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(index));
+            return in != nullptr && in->readIntoMemoryBlock(data) >= 0;
+        };
+        juce::MemoryBlock manifestBytes;
+        const int at = zip.getIndexOfFileName(kBundleManifest);
+        if (at < 0 || zip.getEntry(at)->uncompressedSize > 1024 * 1024 || !entryBytes(at, manifestBytes))
+        {
+            fail(why, label + "'s bundle.json cannot be read");
+            return std::nullopt;
+        }
+        const juce::var m = juce::JSON::parse(manifestBytes.toString());
+        if (!m.isObject() || m["format"].toString() != kBundleFormat)
+        {
+            fail(why, label + "'s bundle.json is not a bundle's (or it is damaged)");
+            return std::nullopt;
+        }
+        if (static_cast<int>(m["version"]) > kBundleVersion)
         {
             fail(why, label + " is from a newer version of the plugin");
             return std::nullopt;
         }
-        if (juce::Array<juce::var>* versions = manifest["versions"].getArray())
-            for (juce::var& v : *versions)
+        std::vector<Item> items;
+        if (const juce::Array<juce::var>* projects = m["projects"].getArray())
+            for (const juce::var& v : *projects)
             {
-                juce::String place = v["folder"].toString();
-                if (place.isNotEmpty() && !place.endsWithChar('/'))
-                    place += "/";
-                if (juce::Array<juce::var>* files = v["files"].getArray())
-                    for (juce::var& f : *files)
-                    {
-                        const std::optional<std::string> t = text(folder + place + f["name"].toString());
-                        if (!t)
-                        {
-                            fail(why, label + " lacks " + (folder + place + f["name"].toString()).toStdString());
-                            return std::nullopt;
-                        }
-                        f.getDynamicObject()->setProperty("text", str(*t));
-                    }
-            }
-        // Its sample files, each from the file the manifest names (one it lacks, or damaged, is left out: the versions
-        // naming it then say so when opened).
-        if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
-            for (juce::var& f : *files)
-            {
-                const int i = zip.getIndexOfFileName(folder + f["file"].toString());
-                const std::unique_ptr<juce::InputStream> in(i >= 0 ? zip.createStreamForEntry(i) : nullptr);
+                if (static_cast<int>(items.size()) >= kMaxBundleProjects)
+                    break;
+                Item item;
+                item.file = v["file"].toString().toStdString();
+                item.name = v["name"].toString().toStdString();
+                if (item.name.empty())
+                    item.name = juce::File::createLegalFileName(str(item.file)).upToLastOccurrenceOf(".", false, false).toStdString();
+                const int i = item.file.empty() || item.file.find('/') != std::string::npos ? -1 : zip.getIndexOfFileName(str(item.file));
                 juce::MemoryBlock data;
-                if (in != nullptr)
-                    in->readIntoMemoryBlock(data);
-                f.getDynamicObject()->setProperty("data", juce::Base64::toBase64(data.getData(), data.getSize()));
-                f.getDynamicObject()->removeProperty("file");
+                if (i < 0)
+                    item.why = label + " lacks " + item.file;
+                else if (zip.getEntry(i)->uncompressedSize > kMaxFile)
+                    item.why = item.file + " is too large to be a project";
+                else if (!entryBytes(i, data))
+                    item.why = "cannot read " + item.file;
+                else
+                    item.project = readBytes(data, item.file, item.name, &item.why);
+                items.push_back(std::move(item));
             }
-        manifest.getDynamicObject()->setProperty("format", kProjectFormat);
-        manifest.getDynamicObject()->setProperty("version", 1);
-        return named((juce::JSON::toString(manifest, false) + "\n").toStdString());
+        if (items.empty())
+        {
+            fail(why, label + " holds no project");
+            return std::nullopt;
+        }
+        return items;
     }
 }
