@@ -7,6 +7,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Providers.h"
+#include "plugin/Usage.h"
 
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
@@ -1237,6 +1238,7 @@ namespace playground
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
+        usage::flush();                            // what the ledger has not written yet
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)
@@ -2764,7 +2766,11 @@ namespace playground
                                int& status, std::string& error, int& retryAfter)
     {
         if (otherTurn())
-            return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
+        {
+            const bool ok = streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
+            countUsage(builder, true);             // the ledger: every request that reported usage (ChatUsage.cpp)
+            return ok;
+        }
         std::string key;
         claude::Transport* transport = nullptr;
         ensureKey();                               // a key saved again during the turn (read without the lock)
@@ -2797,6 +2803,7 @@ namespace playground
                                                          return !cancel_.load();
                                                      },
                                                      cancel_);
+        countUsage(builder, false);                // the ledger: every request that reported usage (ChatUsage.cpp)
         status = r.status;
         retryAfter = r.retryAfterSeconds;
         if (r.status != 200)
@@ -2888,6 +2895,10 @@ namespace playground
     void ChatAgent::runTurn()
     {
         turnThread_.store(std::this_thread::get_id());
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            turnCost_ = {};                        // the footer's cost is this turn's
+        }
         // The provider for the whole turn (startTurn, ChatProviderTurn.cpp): a change while it runs applies to the next
         // one. Another provider's turn has its key, its model and its options from there.
         int maxTokens = 0;                         // what one reply of this turn's model holds
@@ -3194,7 +3205,8 @@ namespace playground
                        + (u.webSearches > 0 ? ", " + std::to_string(u.webSearches) + (u.webSearches == 1 ? " search" : " searches")
                                             : std::string())
                        + (u.compactions > 0 ? "; the conversation was summarized" : "")
-                       + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_);
+                       + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_)
+                       + turnCostText();         // the turn's cost so far, when every request has one
                 // A server here that took far fewer tokens than the request holds cut it to fit its context (Ollama
                 // does, with no error; a remote API refuses a request too long instead): said once a chat.
                 const int64_t took = u.input + u.cacheRead + u.cacheWrite;
@@ -3502,6 +3514,7 @@ namespace playground
         }
         turnThread_.store(std::thread::id{});
         keep();                                    // the turn's work, on this Mac at once
+        usage::flush();                            // the turn's requests into usage.json (never under mutex_)
         applyPendingOwner();
     }
 

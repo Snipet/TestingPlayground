@@ -379,6 +379,10 @@ namespace playground
             return;                                // the model chosen stays the list
         }
         otherListError_.clear();
+        // The prices its list gives (OpenRouter's), for the usage ledger's estimates of requests whose cost was not
+        // reported.
+        for (const auto& [id, price] : providers::listedPrices(p, r.body))
+            usage::setListedPrice(providers::usageName(p), id, price);
         std::vector<ChatModel> found = providers::modelsOf(p, r.body);
         if (found.empty())
             return;
