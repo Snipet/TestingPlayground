@@ -21,7 +21,7 @@
 # CMake's GIT_EXECUTABLE (cmake/Deps.cmake's find_package(Git)): the git plugin.git runs (plugin/Git.h's find()).
 #
 # fp_add_lints(), once after every product: lint.exports (macOS and Linux) and lint.signature (macOS) over every
-# product's bundles, and lint.layers over the sources, labelled `lint`.
+# product's bundles, lint.layers over the sources and lint.changelog over docs/changelog/'s entries, labelled `lint`.
 include_guard(GLOBAL)
 
 set(FP_PROBE_ROOT ${PROJECT_SOURCE_DIR}/Tools/probes)
@@ -197,4 +197,9 @@ function(fp_add_lints)
   add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
                                     -P ${PROJECT_SOURCE_DIR}/cmake/LintLayers.cmake)
   set_tests_properties(lint.layers PROPERTIES LABELS "lint" TIMEOUT 60)
+
+  # ---- the changelog lint: docs/changelog/'s entries well formed, CHANGELOG.md's Unreleased heading there ------------
+  add_test(NAME lint.changelog COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+                                       -P ${PROJECT_SOURCE_DIR}/cmake/LintChangelog.cmake)
+  set_tests_properties(lint.changelog PROPERTIES LABELS "lint" TIMEOUT 60)
 endfunction()
