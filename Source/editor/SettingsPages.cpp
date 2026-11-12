@@ -176,10 +176,10 @@ namespace playground::ui::settings
             request.theme = productTheme(funkgui::Theme::byIndex(host->themeIndex()));
             SettingsCard* card = &ctx.card;
             const int n = static_cast<int>(labels.size());
-            host->showMenu(request, [card, n, pick = std::move(pick)](int chosen) {
+            host->showMenu(request, [card, n, then = std::move(pick)](int chosen) {
                 if (!card->isOpen() || chosen < 1 || chosen > n)
                     return;
-                pick(chosen - 1);
+                then(chosen - 1);
                 card->changed();
             });
         }
