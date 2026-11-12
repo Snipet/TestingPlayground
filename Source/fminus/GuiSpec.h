@@ -53,6 +53,29 @@
 //                           16: parameters, fields, in, out) are its in0..in15 (fminus/Shaders.h); it may #include
 //                           the library (funk/text.sh, funk/shapes.sh: fminus/ShaderLib.h) and the program's .sh
 //                           files; the compiler builds it, and a shader that does not compile is a note on its own line
+//   area x=padX y=padY     room that draws nothing (width=, height=; else 120 x 80): what the pointer does there,
+//                           its pointer properties below, alone
+//
+// The pointer, on area, shader, row, column, grid, section, box, label and the displays (the elements that take no
+// press of their own; a container gets the presses its children do not take, so a knob in it still turns), each the
+// name of a parameter it writes:
+//   x=  y=                  a float: the pointer's place across (left 0, right 1) and up (bottom 0, top 1), as a knob's
+//                           turn maps its range and taper; drag=absolute (the default: they jump to the press and
+//                           follow it) or relative (they move by its travel, 200 px the range, Shift a quarter as fast);
+//                           release=keep (the default) or spring (back to their defaults when let go)
+//   down=                   a bool, int or float: its highest value while pressed, its lowest when let go
+//   wheel=                  a float or an int, nudged by the wheel as a knob is
+//   hover=                  a panel-only parameter (one after the program's 32nd: no host parameter), its highest while
+//                           the pointer is over it
+//   cursor=                 the pointer's shape there: hand, cross, grab, leftright or updown
+// One press is one gesture of x, y and down together (the host's automation, the journal, undo), a double-click puts x
+// and y back to their defaults, a right-click opens the first one's dial menu (MIDI learn). A parameter a pointer writes
+// may have a control too; one without comes in no section of the rest. 16 elements with pointer properties at most.
+// A shader's inputs may also be the pointer over it, with no parameter: pointer.x and pointer.y (0 to 1 across and up
+// its rect, the last place while the pointer is elsewhere), pointer.down (1 while it is pressed), pointer.hover (1
+// while the pointer is over it): in_pointer_x ... in its code, counted among its 16. A dial drawn by a shader:
+//   shader "dial.sc" inputs="cutoff pointer.hover pointer.down" y=cutoff drag=relative cursor=updown width=72 height=72
+//
 // A knob's or a slider's live=field marks where a field of the program has the parameter now (a hidden display's tap;
 // Shared's too, shared->x, as a display names it).
 //

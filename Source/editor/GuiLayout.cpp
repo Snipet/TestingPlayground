@@ -262,6 +262,8 @@ namespace playground::ui
                                      + (n.wheels ? kGuiWheelsW : 0.0f), 72.0f };
                     case GuiKind::shader:
                         return { 200.0f, 120.0f };
+                    case GuiKind::area:
+                        return { 120.0f, 80.0f };      // its width= and height= over it, as a shader's
                     case GuiKind::display:
                     {
                         if (n.display < 0 || static_cast<std::size_t>(n.display) >= spec_.displays.size())
@@ -413,7 +415,8 @@ namespace playground::ui
                 if (own > 0.0f && c.kind != GuiKind::spacer)
                     return false;
                 if (isContainer(c.kind) || c.kind == GuiKind::label || c.kind == GuiKind::divider || c.kind == GuiKind::spacer
-                    || c.kind == GuiKind::envelope || c.kind == GuiKind::shader || c.kind == GuiKind::keyboard)
+                    || c.kind == GuiKind::envelope || c.kind == GuiKind::shader || c.kind == GuiKind::keyboard
+                    || c.kind == GuiKind::area)
                     return true;
                 if (c.kind == GuiKind::display && c.display >= 0 && static_cast<std::size_t>(c.display) < spec_.displays.size())
                 {
@@ -739,6 +742,7 @@ namespace playground::ui
                 return "display";
             case GuiKind::keyboard: return "keyboard from " + std::to_string(n.from) + ", " + std::to_string(n.keys) + " keys";
             case GuiKind::shader:   return "shader \"" + n.file + "\"";
+            case GuiKind::area:     return "area";
         }
         return "element";
     }

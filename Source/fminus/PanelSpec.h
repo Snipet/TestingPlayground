@@ -63,6 +63,7 @@ namespace playground
                                                           // Panel's masks hold a bit each (32 at most)
     inline constexpr int kMaxShaderInputs = 16;           // a shader's inputs: FunkGui's u_params, 4 vec4s
     inline constexpr int kMaxOptions = 8;                 // values a switch or buttons may name
+    inline constexpr int kMaxPointers = 16;               // a .gui file's elements with pointer properties
 
     enum class DisplayKind : uint8_t { meter, vu, led, number, scope, spectrum };   // spectrum: a .gui file's
     enum class DialStyle : uint8_t { knob, vintage, fader, toggle, buttons };   // toggle: #pragma panel style x switch
@@ -112,7 +113,8 @@ namespace playground
         knob, slider, toggle, buttons, menu, xy, envelope,                       // controls (a parameter's or more)
         display,                                                                 // a display (PanelSpec::displays)
         keyboard,                                                                // an instrument's keys, played
-        shader                                                                   // a program's own fragment shader
+        shader,                                                                  // a program's own fragment shader
+        area                                                                     // draws nothing: the pointer's alone
     };
     enum class GuiAlign : uint8_t { stretch, start, center, end };              // across a container's direction
     enum class GuiJustify : uint8_t { start, center, end, between, around };    // along it, when there is room
@@ -142,6 +144,34 @@ namespace playground
         int titleSize = -1;             // a GuiText
         bool operator==(const GuiStyle&) const = default;
     };
+
+    // What the pointer writes over an element (a .gui file's x=, y=, down=, wheel=, hover=; GuiSpec.h): each a
+    // parameter's slot, -1 for none; and how: drag= (absolute: x and y jump to the press; relative: they move by the
+    // pointer's travel, 200 px the range), release= (spring: x and y back to their defaults when let go), cursor=.
+    struct PanelPointer
+    {
+        enum class Drag : uint8_t { absolute, relative };
+        enum class Release : uint8_t { keep, spring };
+        enum class Cursor : uint8_t { normal, hand, cross, grab, leftright, updown };
+        int x = -1, y = -1, down = -1, wheel = -1, hover = -1;
+        Drag drag = Drag::absolute;
+        Release release = Release::keep;
+        Cursor cursor = Cursor::normal;
+        bool any() const noexcept { return x >= 0 || y >= 0 || down >= 0 || wheel >= 0 || hover >= 0; }
+        bool presses() const noexcept { return x >= 0 || y >= 0 || down >= 0; }   // a press is a gesture
+        bool operator==(const PanelPointer&) const = default;
+    };
+
+    // A shader's input that is the pointer over it (inputs="pointer.x pointer.hover"; GuiNode::inputs holds the word):
+    // 0 to 1 across and up its rect, 1 while it is pressed, 1 while the pointer is over it. -1: none of them.
+    inline constexpr const char* kPointerInputs[] = { "pointer.x", "pointer.y", "pointer.down", "pointer.hover" };
+    inline int pointerInput(std::string_view word) noexcept
+    {
+        for (int k = 0; k < 4; ++k)
+            if (word == kPointerInputs[k])
+                return k;
+        return -1;
+    }
 
     struct GuiNode
     {
@@ -177,7 +207,10 @@ namespace playground
         int from = 48, keys = 25;                           // a keyboard's lowest note and its keys
         bool wheels = false;                                // and its pitch and mod wheels, at its left
         std::string file;                                   // a shader's source file
-        std::array<std::string, kMaxShaderInputs> inputs{}; // a shader's inputs: parameters, fields, in, out
+        std::array<std::string, kMaxShaderInputs> inputs{}; // a shader's inputs: parameters ("param:N"), fields
+                                                            // ("field:D"), in, out and the pointer (pointer.x ...)
+        PanelPointer pointer;                               // what the pointer writes over it (area, shader, a
+                                                            // container, a label, a display)
         int shader = -1;                                    // a shader's program (PanelSpec::shaders)
         bool operator==(const GuiNode&) const = default;
     };
