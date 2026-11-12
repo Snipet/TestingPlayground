@@ -384,6 +384,24 @@ void main()
     gl_FragColor = vec4(col, 1.0);
 }
 
+The pointer: area, shader, row, column, grid, section, box, label and a display (what takes no press of its own) may name parameters the pointer writes there: x= and y= (floats: its place across and up, 0 to 1 as a knob's turn), down= (high while pressed, low after), wheel= (a float or an int, nudged as a knob), hover= (high while the pointer is over: one of the panel's own dials, past the 32nd); drag=relative (by its travel, 200 px the range) or absolute (the default: to the press), release=spring (x and y back to their defaults when let go), cursor=hand|cross|grab|leftright|updown. One press is one gesture (one undo, one automation pass); a knob inside a box with these still turns; a param may have a knob too. area x=padX y=padY width=200 height=120 draws nothing: room over which the pointer writes (behind a scope in a box, say). A shader's inputs may be the pointer over it, with no param: pointer.x, pointer.y (0..1 across and up), pointer.down, pointer.hover (0 or 1), in_pointer_x ... in its code. A dial drawn by a shader:
+shader "dial.sc" inputs="cutoff pointer.hover pointer.down" y=cutoff drag=relative cursor=updown width=72 height=72
+
+// dial.sc: a knob of light (in_cutoff its turn), brighter under the pointer and while held.
+#include "funk/shapes.sh"
+
+void main()
+{
+    vec2 c = 0.5 * u_size;
+    float r = 0.42 * min(u_size.x, u_size.y);
+    float lit = 0.5 + 0.25 * in_pointer_hover + 0.25 * in_pointer_down;
+    float a = -135.0 + 270.0 * in_cutoff;
+    vec3 col = mix(vec3(0.0, 0.0, 0.0), vec3(0.16, 0.16, 0.18), circle(v_px, c, r));
+    col = mix(col, vec3(1.0, 0.55, 0.1) * lit, arc(v_px, c, r - 3.0, 3.0, -135.0, a));
+    col = mix(col, vec3(1.0, 1.0, 1.0) * lit, needle(v_px, c, a, 0.8 * r, 2.5));
+    gl_FragColor = vec4(col, circle(v_px, c, r + 1.0));
+}
+
 Classes and defaults, written at the top: class "main" size=large arc=orange, then knob cutoff class="main" (or class="main warm": several, in order); defaults knob look=ring gives every knob that look, defaults section look=card radius=8 every section. An element's own properties beat its classes', which beat the defaults.
 
 Displays, of in (an effect's input), out (the output) or a float, double, int or bool field the program writes (once a call is enough: env = level;): the main module's, or Shared's through the main module's pointer to it, shared->level (its one Shared, read whether a voice sounds or not), or one element of an array of them, an index a dimension (bands[2], grid[1][3]), with label=, color=, and min= and max= for a field (when unsaid, the field's own: [[fminus::range(lo, hi)]], else 0 and 1; its [[ui::label("GR")]] the label, its [[ui::unit("dB")]] and [[ui::decimals(1)]] a number's):
@@ -932,12 +950,16 @@ THE LIBRARY'S FILES (part "library" gives their usage)
             for (const Example& e : kExamples)
             {
                 // An example that #includes library files names them: they come with it (EXAMPLES adds their tabs).
-                const Sources files = withLibraryIncludes(singleFile(e.source));
+                const Sources files = withLibraryIncludes(exampleSources(e));
                 std::string with;
-                for (std::size_t k = 1; k < files.size(); ++k)
-                    with += (k == 1 ? "" : " ") + files[k].name;
+                for (std::size_t k = 1 + static_cast<std::size_t>(e.count); k < files.size(); ++k)
+                    with += (with.empty() ? "" : " ") + files[k].name;
                 s += std::string("\n<example title=\"") + e.title + "\"" + (with.empty() ? "" : " uses=\"" + with + "\"") + ">\n"
                    + e.source + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+                // A folder's example: the files beside its program (its panel.gui, a shader's .sc), each as written.
+                for (int k = 0; k < e.count; ++k)
+                    s += std::string("<example_file of=\"") + e.title + "\" name=\"" + e.files[k].name + "\">\n" + e.files[k].text
+                       + "</example_file>\n";
             }
             s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "

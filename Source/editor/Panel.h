@@ -345,7 +345,8 @@ namespace playground::ui
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
-        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
+        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader,
+                                                      // 5: a pointer's (GuiPointerItem)
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
         int layouts() const noexcept { return layouts_; }    // layout() calls so far (a scroll makes none)

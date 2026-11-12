@@ -33,6 +33,13 @@
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
 //             once for every control that names it; a mistake in them is a note on its line and column
+//   POINTER   area and the pointer's properties (x=, y=, down=, wheel=, hover=, drag=, release=, cursor=) on an
+//             area, a box, a label, a display and a shader, each its slot; the pointer's words among a shader's inputs
+//             (and read so before the compile); a param a pointer writes may have a knob too, and one with none comes in
+//             no section of the rest; the notes (an int under x=, no such param, a host parameter under hover=, a knob
+//             that takes presses, a bool under wheel=, drag= without x= or y=, an empty area, a cursor alone, a word
+//             drag= does not take, a text), each on its line, the property left out; the 17th pointer element a note;
+//             the pointer's words counted among a shader's 16 inputs
 //   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
 //             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
 //             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
@@ -679,6 +686,130 @@ panel background=#1d1b19 accent=orange {
         P.eq("limits.shader_inputs_most", sixteen ? 1 : 0, 1);
         P.eq("limits.shader_input_past_noted", has(c.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
                                                                 + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
+    }
+
+    // ---- POINTER -------------------------------------------------------------------------------------------------------
+    {
+        // px, py (floats), gate (a bool), steps (an int), then floats to the 32nd; lit (a bool) and glow (a float) after
+        // it, the panel's own; a field env.
+        std::string params = "    param float px [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                             "    param float py [[fminus::range(20, 20000)]] [[fminus::default(1000)]];\n"
+                             "    param bool gate [[fminus::default(0)]];\n"
+                             "    param int steps [[fminus::range(0, 7)]] [[fminus::default(0)]];\n";
+        for (int k = 5; k <= pg::kHostControls; ++k)
+            params += "    param float f" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        params += "    param bool lit [[fminus::default(0)]];\n"
+                  "    param float glow [[fminus::range(0, 1)]] [[fminus::default(0)]];\n"
+                  "    float env;\n";
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const int px = 0, py = 1, gate = 2, steps = 3, lit = pg::kHostControls, glow = pg::kHostControls + 1;
+        const std::string shaderCode = "void main() { gl_FragColor = vec4(in_pointer_x, in_pointer_y, in_pointer_down, in_pointer_hover); }\n";
+        const auto build = [&](const std::string& gui) {
+            return compile({ { pg::kProgramName, source }, { "panel.gui", gui }, { "d.sc", shaderCode } });
+        };
+        const std::string gui = "area x=px y=py down=gate wheel=steps hover=lit drag=relative release=spring cursor=cross width=200 height=100\n"
+                                "box down=gate {\n"
+                                "    knob px\n"
+                                "}\n"
+                                "label \"HI\" hover=glow\n"
+                                "meter env x=px\n"
+                                "shader \"d.sc\" inputs=\"px pointer.x pointer.y pointer.down pointer.hover\" y=py cursor=updown\n";
+        const Compiled c = build(gui);
+        std::printf("POINTER notes:\n%s", c.notes.c_str());
+        P.eq("pointer.compiles", c.ok ? 1 : 0, 1);
+        P.eq("pointer.no_line_notes", has(c.notes, "panel.gui:1:") || has(c.notes, "panel.gui:2:") || has(c.notes, "panel.gui:5:")
+                                              || has(c.notes, "panel.gui:6:") || has(c.notes, "panel.gui:7:") ? 0 : 1, 1);
+        const pg::GuiTree& t = c.panel.gui;
+        const pg::GuiNode& area = at(t, find(t, pg::GuiKind::area));
+        P.eq("pointer.area", area.kind == pg::GuiKind::area ? 1 : 0, 1);
+        P.eq("pointer.area_slots", area.pointer.x == px && area.pointer.y == py && area.pointer.down == gate
+                                       && area.pointer.wheel == steps && area.pointer.hover == lit ? 1 : 0, 1);
+        P.eq("pointer.area_shape", area.pointer.drag == pg::PanelPointer::Drag::relative
+                                       && area.pointer.release == pg::PanelPointer::Release::spring
+                                       && area.pointer.cursor == pg::PanelPointer::Cursor::cross ? 1 : 0, 1);
+        P.eq("pointer.area_size", area.width == 200.0f && area.height == 100.0f ? 1 : 0, 1);
+        const pg::GuiNode& box = at(t, find(t, pg::GuiKind::box));
+        P.eq("pointer.box", box.pointer.down == gate && box.pointer.x < 0 && box.pointer.drag == pg::PanelPointer::Drag::absolute ? 1 : 0, 1);
+        P.eq("pointer.knob_too", find(t, pg::GuiKind::knob, "", px) >= 0 ? 1 : 0, 1);   // a param a pointer writes takes a control too
+        P.eq("pointer.label_hover", at(t, find(t, pg::GuiKind::label, "HI")).pointer.hover == glow ? 1 : 0, 1);
+        P.eq("pointer.display", at(t, find(t, pg::GuiKind::display)).pointer.x == px ? 1 : 0, 1);
+        const int sh = find(t, pg::GuiKind::shader);
+        const pg::GuiNode& shader = at(t, sh);
+        P.eq("pointer.shader_inputs", shader.inputs[0] == "param:" + std::to_string(px) && shader.inputs[1] == "pointer.x"
+                                          && shader.inputs[2] == "pointer.y" && shader.inputs[3] == "pointer.down"
+                                          && shader.inputs[4] == "pointer.hover" && shader.inputs[5].empty() ? 1 : 0, 1);
+        P.eq("pointer.shader_names", c.panel.shaders.size() == 1 && c.panel.shaders[0].inputs.size() == 5
+                                         && c.panel.shaders[0].inputs[1] == "pointer.x" && c.panel.shaders[0].inputs[4] == "pointer.hover" ? 1 : 0, 1);
+        P.eq("pointer.shader_props", shader.pointer.y == py && shader.pointer.cursor == pg::PanelPointer::Cursor::updown ? 1 : 0, 1);
+        P.eq("pointer.words", pg::pointerInput("pointer.x") == 0 && pg::pointerInput("pointer.hover") == 3
+                                  && pg::pointerInput("pointer.z") < 0 ? 1 : 0, 1);
+        // Read before the program compiles (readGuiShaders): the pointer's words as they are.
+        const std::vector<pg::PanelShader> early = pg::readGuiShaders({ "panel.gui", gui }, kInstrument);
+        P.eq("pointer.early_shaders", early.size() == 1 && early[0].inputs.size() == 5 && early[0].inputs[2] == "pointer.y" ? 1 : 0, 1);
+        // A parameter only a pointer writes comes in no section of the rest (gate, steps, lit, glow, py); f5 does.
+        P.eq("pointer.rest", has(c.notes, "f5") && !has(c.notes, "gate") && !has(c.notes, "steps") && !has(c.notes, "lit,")
+                                 && !has(c.notes, "glow") ? 1 : 0, 1);
+
+        // The notes, each on its line, the property left out.
+        const std::string bad = "area x=steps\n"                       // 1 an int
+                                "area x=nope\n"                        // 2 none
+                                "area hover=gate\n"                    // 3 a host parameter
+                                "knob px x=py\n"                       // 4 a control that takes presses
+                                "area wheel=gate\n"                    // 5 a bool
+                                "area drag=relative down=gate\n"       // 6 drag= without x= or y=
+                                "area\n"                               // 7 nothing to write
+                                "label \"A\" cursor=hand\n"            // 8 a cursor alone
+                                "area x=px drag=sideways\n"            // 9 a word drag= does not take
+                                "area down=\"gate\"\n";                // 10 a text, not a name
+        const Compiled n = build(bad);
+        std::printf("POINTER bad notes:\n%s", n.notes.c_str());
+        const auto noted = [&](int line, const std::string& words) {
+            return has(n.notes, "panel.gui:" + std::to_string(line) + ":") && has(n.notes, words);
+        };
+        P.eq("pointer.note_int", noted(1, "x= moves a float: steps is an int") ? 1 : 0, 1);
+        P.eq("pointer.note_none", noted(2, "there is no parameter nope") ? 1 : 0, 1);
+        P.eq("pointer.note_hover_host", noted(3, "hover= needs a panel-only param: one after the program's 32nd") ? 1 : 0, 1);
+        P.eq("pointer.note_control", noted(4, "knob takes presses itself") ? 1 : 0, 1);
+        P.eq("pointer.note_wheel_bool", noted(5, "wheel= turns a float or an int: gate is a bool") ? 1 : 0, 1);
+        P.eq("pointer.note_shaping", noted(6, "drag= and release= shape x= and y=") ? 1 : 0, 1);
+        P.eq("pointer.note_empty", noted(7, "area writes what the pointer does there") ? 1 : 0, 1);
+        P.eq("pointer.note_cursor", noted(8, "cursor= is the pointer's shape") ? 1 : 0, 1);
+        P.eq("pointer.note_word", noted(9, "drag= takes absolute or relative") ? 1 : 0, 1);
+        P.eq("pointer.note_text", noted(10, "down= takes a parameter's name") ? 1 : 0, 1);
+        int areas = 0, refused = 0;
+        for (const pg::GuiNode& x : n.panel.gui.nodes)
+            if (x.kind == pg::GuiKind::area)
+            {
+                ++areas;
+                refused += x.pointer.any() ? 0 : 1;
+            }
+        P.eq("pointer.refused_left_out", areas == 8 && refused == 8 - 2 ? 1 : 0, 1);   // all but 6's down= and 9's x=
+        P.eq("pointer.control_unchanged", at(n.panel.gui, find(n.panel.gui, pg::GuiKind::knob, "", px)).pointer.any() ? 0 : 1, 1);
+
+        // The 17th element with pointer properties is a note, left out; the 16 before it kept.
+        std::string many;
+        for (int k = 0; k <= pg::kMaxPointers; ++k)
+            many += "area down=gate\n";
+        const Compiled m = build(many);
+        int with = 0;
+        for (const pg::GuiNode& x : m.panel.gui.nodes)
+            with += x.pointer.any() ? 1 : 0;
+        P.eq("pointer.most", with, pg::kMaxPointers);
+        P.eq("pointer.past_noted", has(m.notes, "panel.gui:" + std::to_string(pg::kMaxPointers + 1) + ":")
+                                       && has(m.notes, "a panel has " + std::to_string(pg::kMaxPointers) + " elements with pointer properties at most") ? 1 : 0, 1);
+
+        // The pointer's words count among a shader's 16 inputs: the 17th name is a note.
+        std::string inputs = "pointer.x pointer.y pointer.down pointer.hover";
+        for (int k = 5; k <= pg::kMaxShaderInputs + 1; ++k)
+            inputs += " f" + std::to_string(k);
+        const Compiled s = build("shader \"d.sc\" inputs=\"" + inputs + "\"\n");
+        const pg::GuiNode& full = at(s.panel.gui, find(s.panel.gui, pg::GuiKind::shader));
+        P.eq("pointer.inputs_cap", full.inputs[0] == "pointer.x" && full.inputs[3] == "pointer.hover"
+                                       && full.inputs[15] == "param:" + std::to_string(pg::kMaxShaderInputs - 1) ? 1 : 0, 1);
+        P.eq("pointer.inputs_past_noted", has(s.notes, "inputs at most: f" + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------
