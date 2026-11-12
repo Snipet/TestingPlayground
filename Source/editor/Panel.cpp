@@ -4842,7 +4842,7 @@ namespace playground::ui
             projectgroups::Options o;
             o.favourites = &projectsView_.favourites;
             o.folded = &projectsView_.folded;
-            o.byDate = true;
+            o.order = ProjectOrder::saved;
             o.factoryGroup = false;
             const std::vector<projectgroups::Group> grouped = projectgroups::arrange(all, o);
             const bool captions = !(grouped.size() == 1 && grouped[0].kind == projectgroups::Kind::uncategorised);
