@@ -4825,7 +4825,7 @@ namespace playground::ui
             projectgroups::Options o;
             o.favourites = &projectsView_.favourites;
             o.folded = &projectsView_.folded;
-            o.byDate = true;
+            o.order = ProjectOrder::saved;
             o.factoryGroup = false;
             const std::vector<projectgroups::Group> grouped = projectgroups::arrange(all, o);
             const bool captions = !(grouped.size() == 1 && grouped[0].kind == projectgroups::Kind::uncategorised);
@@ -7271,7 +7271,7 @@ namespace playground::ui
     void Panel::notice(const std::string& text)
     {
         notice_ = text;
-        noticeUntil_ = (host_ != nullptr ? host_->nowSeconds() : 0.0) + 4.0;
+        noticeUntil_ = (host_ != nullptr ? host_->nowSeconds() : 0.0) + kNoticeFor;
         dirty_ = true;
     }
 
