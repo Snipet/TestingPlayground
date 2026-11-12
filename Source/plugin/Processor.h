@@ -586,7 +586,6 @@ namespace playground
         {
             std::vector<std::string> names;
             bool package = false, allVersions = false;
-            bool replace = false;                                // the file was there as it started (the chooser asked)
             std::string path;
         };
         void runExport(const ExportJob& job);

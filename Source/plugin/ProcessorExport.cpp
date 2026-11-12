@@ -55,9 +55,14 @@ namespace playground
             why = path + " is a folder";
             return false;
         }
+        if (to.exists())
+        {
+            why = path + " is there already: an export never replaces a file (choose another name)";
+            return false;
+        }
         if (exporter_.joinable())
             exporter_.join();                                    // the last one, ended (busy is false)
-        ExportJob taken{ projects, package, allVersions, to.existsAsFile(), path };
+        ExportJob taken{ projects, package, allVersions, path };
         {
             const std::lock_guard<std::mutex> lock(exportMutex_);
             const uint64_t ended = exportState_.ended;
@@ -149,8 +154,8 @@ namespace playground
             if (p)
             {
                 p->name = ownName(p->name);                      // a factory project's: its own name
-                ok = job.package ? projectexport::writePackage(*p, job.allVersions, to, r, &why, job.replace)
-                                 : projectexport::writeSource(*p, job.allVersions, to, r, &why, job.replace);
+                ok = job.package ? projectexport::writePackage(*p, job.allVersions, to, r, &why, false)
+                                 : projectexport::writeSource(*p, job.allVersions, to, r, &why, false);
             }
             {
                 const std::lock_guard<std::mutex> lock(exportMutex_);
@@ -180,7 +185,7 @@ namespace playground
         projectexport::BundleResult r;
         const bool ok = projectexport::writeBundle(
             job.names, [](const std::string& name, std::string* whyNot) { return projectstore::load(name, whyNot); }, job.package,
-            job.allVersions, to, job.replace, progress, r, &why);
+            job.allVersions, to, false, progress, r, &why);
         if (ok)
             out = { r.file.bytes, r.file.raw, r.file.versions, "bundle" };
         endExport(ok, out, why, r.cancelled);

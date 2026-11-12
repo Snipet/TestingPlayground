@@ -121,8 +121,8 @@
 //                     one; startExport is the editor's way); exportFolder() where a chooser starts (the Desktop)
 //   startExport()     the same off the message thread (ExportState): one project its export, several a bundle of their
 //   exporting()       exports (ProjectExport.h), each project's file read and written on a thread of its own, the file
-//   cancelExport()    written beside and moved into place, over a file there only when one was there as it started (the
-//                     chooser asked); one made meanwhile is left as it is and the export fails. A cancel leaves no file.
+//   cancelExport()    written beside and moved into place, never over a file: one there as it starts refuses it at
+//                     once, and one made meanwhile is left as it is and the export fails. A cancel leaves no file.
 //                     Refused at once (false, with why) while one runs, with no project or a path not full, or past
 //                     ProjectExport.h's kMaxBundleProjects; on its thread, before anything is written, past
 //                     kMaxBundleBytes of project files. A processor that goes cancels it and waits for it

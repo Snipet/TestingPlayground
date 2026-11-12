@@ -24,8 +24,9 @@
 //            package read() takes; read() refuses the bundle, saying so; imported (importProjects), every project
 //            comes in with its versions, presets, info and samples the same; a hand-made bundle with one of the other
 //            kind and one of this kind: that one taken, the other refused, naming the kind; a cancel (held, then let
-//            go) leaves no file and no temporary; a file made at the target meanwhile is never replaced (a bundle, and
-//            one project), the export failing in words; a single export through the job writes the bytes
+//            go) leaves no file and no temporary; a file is never replaced: one made at the target meanwhile (a bundle,
+//            and one project) is left as it is, the export failing in words, and one there as it starts refuses it at
+//            once (one project and several), the file untouched; a single export through the job writes the bytes
 //            exportProject wrote; 257 projects and a path not full refused at once, 2 GB of project files in all (a
 //            sparse file) refused on the job's thread, no file written; a processor that goes with an export held
 //            cancels it and waits for it, no file left
@@ -531,8 +532,15 @@ PROBE(plugin, export)
             P.eq("single.ended", waitExport(a) ? 1 : 0, 1);
             const pg::ExportState st = pa.exporting();
             P.eq("single.same_bytes", st.ok && st.done == 1 && st.out.versions == 30 && bytesOf(one) == pb ? 1 : 0, 1);
-            P.eq("single.replaces_what_was_there", pa.startExport({ "Glass Bloom" }, true, false, one.getFullPathName().toStdString(), why)
-                                                       && waitExport(a) && pa.exporting().ok && pa.exporting().out.versions == 1 ? 1 : 0, 1);
+            // A file there already: refused at once, for one project and for several, the file as it was.
+            const std::vector<uint8_t> was = bytesOf(one);
+            std::string w;
+            P.eq("replace.single_refused_at_once", !pa.startExport({ "Glass Bloom" }, true, false, one.getFullPathName().toStdString(), w)
+                                                       && w.find("there already") != std::string::npos && !pa.exporting().busy
+                                                       && bytesOf(one) == was ? 1 : 0, 1);
+            P.eq("replace.bundle_refused_at_once", !pa.startExport(names, false, true, bundle.getFullPathName().toStdString(), w)
+                                                       && w.find("there already") != std::string::npos && !pa.exporting().busy
+                                                       && bundle.existsAsFile() ? 1 : 0, 1);
         }
         // The limits.
         {

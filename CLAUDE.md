@@ -233,8 +233,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   holds for every format. **The export job** (`EditorPort::startExport`, `exporting`, `cancelExport`;
   `plugin/ProcessorExport.cpp`): one project's export or a bundle, each project's file read (`projectstore::load`) and
   written on a thread of the processor's own (`exporter_`), the message thread reading none; the file written beside
-  its place and moved in (`projectexport::place`), over a file only when one was there as the job began (the chooser
-  asked), a file made meanwhile never replaced; a cancel leaves no file; refused at once past `kMaxBundleProjects`
+  its place and moved in (`projectexport::place`), never over a file: one there as it starts refuses it at once (the
+  card asks for another name), one made meanwhile is left as it is and the export fails; a cancel leaves no file; refused at once past `kMaxBundleProjects`
   (256), and on its thread before anything is written past `kMaxBundleBytes` (2 GB of project files, `fileBytes`: a
   look each); poll() joins it once it ended, a processor that goes cancels and joins it; `setExportGate` holds it for
   the probes. `exportProject` (synchronous, a whole read where it is called) stays for what is not the message thread.
