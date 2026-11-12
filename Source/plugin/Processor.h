@@ -113,6 +113,12 @@
 
 namespace playground
 {
+    namespace preview
+    {
+        struct Prepared;                                         // editor/Preview.h (package 04)
+        struct Request;
+    }
+
     class Processor final : public juce::AudioProcessor, private EditorPort, private ChatHost, private juce::Timer
     {
     public:
@@ -184,6 +190,16 @@ namespace playground
         // the picture Claude's view_panel asks for, there.
         void poll();
         void settle();                                           // a save in flight (startSave) lands too
+        // Package 04's previews (ProcessorPreviews.cpp), for the probes: how many poll() drew, how many the table holds,
+        // whether one waits to be prepared or drawn; previewsSettle() polls until none waits (a generous deadline).
+        static constexpr std::size_t kPreviewsKept = 12;
+        uint64_t previewsDrawn() const noexcept { return previewsDrawn_.load(); }
+        std::size_t previewsKept() const;
+        bool previewsWaiting() const;
+        std::size_t previewsQueued() const;                      // waiting for previewThread_
+        std::size_t previewsToDraw() const;                      // prepared, waiting for poll()
+        bool pictureWaiting() const;                             // a picture for Claude asked for, not drawn yet
+        bool previewsSettle(double seconds = 60.0);
         // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
         // shows meanwhile can be checked; open, it goes on (poll() lands it). saveWritten: the last one started has done
         // its store's work (the next poll() lands it), so a probe can time the landing alone.
@@ -390,6 +406,13 @@ namespace playground
         // what it lacks; the editor's own, no read.
         VersionContent versionPolled(const std::string& project, int number) const override;
         VersionContent editorContent() const override;
+
+        // ---- Package 04: panel previews (EditorPort.h's PreviewState; ProcessorPreviews.cpp) -------------------------
+        // A version's panel as the Projects card shows it: the newest kPreviewsKept pictures in a table, a version not
+        // in it read (versionPolled), prepared on previewThread_ (its dials, its .gui, its shaders: preview::prepare)
+        // and drawn by poll() on the message thread, one a poll at most and none in a poll that drew a picture for
+        // Claude (pollPreviews). The table is let go kPictureHoldSeconds after the last previewPolled.
+        PreviewState previewPolled(const std::string& project, int number, int theme) override;
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
@@ -760,7 +783,7 @@ namespace playground
         // Dial values Claude set (slot, plain), applied by poll() on the message thread as host gestures.
         mutable std::mutex dialMutex_;
         // Claude's view_panel: a picture asked for (the agent's thread waits), made by poll() on the message thread.
-        std::mutex pictureMutex_;
+        mutable std::mutex pictureMutex_;
         std::condition_variable pictureDone_;
         bool pictureAsked_ = false, pictureReady_ = false;
         PictureView pictureView_ = PictureView::panel;
@@ -768,6 +791,30 @@ namespace playground
         PictureState pictureState_;                              // what it draws in place of what plays
         PanelPicture picture_;
         std::vector<std::pair<int, float>> pendingDials_;
+        // ---- Package 04: panel previews (ProcessorPreviews.cpp) ---------------------------------------------------------
+        struct PreviewEntry
+        {
+            std::string project;
+            int theme = 0;
+            uint64_t content = 0;                                // the version's files and dials, hashed
+            PreviewState state;
+            std::shared_ptr<const preview::Prepared> prepared;   // set by previewThread_; drawn by poll()
+            bool queued = false;                                 // waits for previewThread_
+            uint64_t used = 0;                                   // previewUse_ when last asked for
+            std::shared_ptr<const preview::Request> request;     // until prepared
+        };
+        void pollPreviews(bool pictureDrawn);                    // poll()'s: one drawn at most, the hold let go
+        void finishPreviews();                                   // the destructor's: previewThread_ stopped and joined
+        void previewLoop();                                      // previewThread_'s
+        mutable std::mutex previewMutex_;
+        std::condition_variable previewWake_;
+        std::vector<PreviewEntry> previews_;                     // previewMutex_
+        bool previewQuit_ = false;                               // previewMutex_
+        uint64_t previewUse_ = 0;                                // previewMutex_
+        double previewAskedAt_ = 0.0;                            // the message thread's: the last previewPolled (ms)
+        std::thread previewThread_;                              // started by the first preview asked for
+        ShaderTools previewTools_;                               // the Compiler's (the constructor's)
+        std::atomic<uint64_t> previewsDrawn_{ 0 };
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
         uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled

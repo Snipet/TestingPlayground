@@ -58,6 +58,14 @@
 //             progress while the job runs (EXPORTING in the status), then "Exported 3 projects to"; the bundle's path
 //             again refused (an export never replaces a file), the file as it was; Cancel while it runs: no file; the
 //             context menu's Export takes every one chosen; Import... brings the bundle's three back, counted
+//   PREVIEW   the chosen version's panel in a pane over the versions (editor/Preview.h; gui.projects.preview.png and
+//             .paper.png; .none.png, a program with no panel.gui; .reading.png, the choice not at rest yet; .factory.png;
+//             .least.png, no pane): nothing asked until the choice rests (the keys through the list ask for none), then
+//             drawn and registered; a version's click shows that version's, the one before let go; one drawn a poll,
+//             none in a poll that drew Claude's view_panel; twelve kept; none read on the message thread; a factory
+//             project's; closed, nothing drawn and the picture held kPictureHoldSeconds of the Panel's clock, then let
+//             go; one image to a screen reader; the least window has no pane, its buttons as they were, and a press
+//             outside still closes the card
 //   READS     PROJECTS and EXPORT read the store's cache: a project another process wrote (a version more, then its
 //             author) is read by the store's Reader alone, none on the message thread, and shows once read (its new
 //             version first in PROJECTS; EXPORT's fields filled, then nothing written as it closes)
@@ -68,12 +76,14 @@
 #include "editor/Panel.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/ProjectGroups.h"
+#include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
 
 #include "Product.h"
 
+#include <funkgui/canvas/Images.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
@@ -1141,6 +1151,197 @@ PROBE(gui, projects)
         card.close();
         host.settle();
         P.eq("reads.export_nothing_written", port.projectPolled("Sketch 3").info.author == "Elsewhere" ? 1 : 0, 1);
+    }
+
+    // ---- PREVIEW: the chosen version's panel over the versions (package 04, editor/Preview.h) ---------------------------
+    {
+        // "Panel Pad": two versions with a panel.gui (v2's a section more), saved as the user saves them.
+        const std::string gui1 = "panel {\n    row {\n        section \"LEVEL\" { knob level }\n    }\n}\n";
+        const std::string gui2 = "panel {\n    row {\n        section \"LEVEL\" { knob level }\n        section \"AGAIN\" { slider level }\n    }\n}\n";
+        std::string why;
+        pg::SavedVersion saved;
+        const auto save = [&](const std::string& name, const pg::Sources& files) {
+            pg::Draft dd;
+            dd.files = files;
+            port.setDraft(dd);
+            port.run(dd.files);
+            processor.settle();
+            return port.saveVersion(name, saved, why);
+        };
+        const bool padSaved = save("Panel Pad", { { "program.fm", program() }, { "panel.gui", gui1 } })
+                           && save("Panel Pad", { { "program.fm", program() }, { "panel.gui", gui2 } }) && saved.number == 2
+                           && save("Panel Two", { { "program.fm", program() }, { "panel.gui", gui1 } })
+                           && save("Panel Three", { { "program.fm", program() }, { "panel.gui", gui2 } });
+        P.eq("preview.setup", padSaved ? 1 : 0, 1);
+        using St = pg::PreviewState::Status;
+        // The Panel's frames and the processor's polls (a frame a 60th of the Panel's clock), until `done`: a generous
+        // deadline, returning as soon as it is done.
+        const auto pump = [&](funkgui::HeadlessHost& h, const std::function<bool()>& done) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            while (!done() && std::chrono::steady_clock::now() < until)
+            {
+                processor.poll();
+                h.tick(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            return done();
+        };
+        const auto shown = [&] { return b.previewShown(); };
+        const auto settled = [&] { const St s = shown().status; return s == St::ready || s == St::failed; };
+        const int parsed0 = pg::projectstore::parses(), reader0 = pg::projectstore::readerParses();
+        const uint64_t drawn0 = processor.previewsDrawn();
+        panel.openProjects();
+        host.settle();
+        const pg::ui::ProjectBrowser::Places at = b.places(W, H);
+        P.eq("preview.pane", at.preview.w > 200.0f && at.preview.h >= 120.0f && at.preview.bottom() < at.versions.y
+                                 ? 1 : 0, 1);
+        P.ge("preview.versions_rows", at.rows[1], 4);
+        P.ge("preview.presets_rows", at.rows[2], 4);
+        // A program with no panel.gui: none, saying so.
+        const std::size_t kept0 = processor.previewsKept();
+        b.chooseProjectNamed("Sketch 1", W, H);
+        host.tick(2);
+        P.eq("preview.rest_asks_nothing", shown().status == St::reading && processor.previewsKept() == kept0 ? 1 : 0, 1);
+        P.eq("preview.no_gui", pump(host, settled) && shown().status == St::failed && shown().why == "this program has no panel.gui" ? 1 : 0, 1);
+        writePng(P, host, "gui.projects.preview.none.png");
+        // Panel Pad: its newest version, drawn and registered.
+        b.chooseProjectNamed("Panel Pad", W, H);
+        host.tick(1);
+        writePng(P, host, "gui.projects.preview.reading.png");
+        P.eq("preview.ready", pump(host, settled) && shown().status == St::ready && shown().number == 2 ? 1 : 0, 1);
+        const uint32_t newest = shown().image;
+        P.eq("preview.registered", newest != 0 && funkgui::images::has(newest) ? 1 : 0, 1);
+        writePng(P, host, "gui.projects.preview.png");
+        paper("gui.projects.preview.paper.png", [&](Driver& dv) {
+            dv.b.chooseProjectNamed("Panel Pad", W, H);
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            while (dv.b.previewShown().status != St::ready && std::chrono::steady_clock::now() < until)
+            {
+                processor.poll();
+                dv.host.tick(1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            P.eq("preview.paper_ready", dv.b.previewShown().status == St::ready && dv.b.previewShown().image != newest ? 1 : 0, 1);
+        });
+        // A version's click: v1's panel.
+        {
+            const funkgui::Point p = b.centreOfRow(BL::versions, 1, W, H);
+            host.click(p.x, p.y);
+            host.tick(1);
+        }
+        P.eq("preview.version", pump(host, [&] { return shown().status == St::ready && shown().number == 1; }) && shown().image != newest ? 1 : 0, 1);
+        P.eq("preview.version_registered", funkgui::images::has(shown().image) && !funkgui::images::has(newest) ? 1 : 0, 1);
+        // The keys through the projects' list: nothing asked on the way (a frame a key, each well under the rest).
+        {
+            const std::size_t kept = processor.previewsKept();
+            const uint64_t drawn = processor.previewsDrawn();
+            b.chooseProjectNamed("Sketch 1", W, H);
+            host.tick(1);
+            bool askedNone = true;
+            for (int k = 0; k < 6; ++k)
+            {
+                host.keys(k % 2 == 0 ? "up" : "down");
+                host.tick(2);
+                processor.poll();
+                askedNone = askedNone && processor.previewsKept() == kept && processor.previewsDrawn() == drawn;
+            }
+            P.eq("preview.keys_ask_nothing", askedNone ? 1 : 0, 1);
+            P.eq("preview.keys_then_rest", pump(host, settled) ? 1 : 0, 1);
+        }
+        // One drawn a poll at most, and none in a poll that drew a picture for Claude.
+        {
+            (void)port.previewPolled("Panel Two", 0, 0);
+            (void)port.previewPolled("Panel Three", 0, 0);
+            (void)port.previewPolled("Panel Two", 0, 1);
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            while (processor.previewsQueued() > 0 && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const std::size_t waiting = processor.previewsToDraw();
+            P.eq("preview.three_prepared", static_cast<int>(waiting), 3);
+            uint64_t before = processor.previewsDrawn();
+            processor.poll();
+            P.eq("preview.one_a_poll", static_cast<int>(processor.previewsDrawn() - before), 1);
+            P.eq("preview.one_a_poll_left", static_cast<int>(processor.previewsToDraw()), 2);
+            // Claude's view_panel waits for this thread's poll: that poll draws it and no preview.
+            pg::ChatAgent::McpResult viewed;
+            std::thread claude([&] { viewed = processor.chatAgent().mcpCall("view_panel", juce::var(new juce::DynamicObject())); });
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            while (!processor.pictureWaiting() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            before = processor.previewsDrawn();
+            processor.poll();
+            claude.join();
+            P.eq("preview.claude_first", processor.previewsDrawn() == before && !viewed.isError ? 1 : 0, 1);
+            processor.poll();
+            P.eq("preview.after_claude", static_cast<int>(processor.previewsDrawn() - before), 1);
+            processor.poll();
+        }
+        // Twelve kept: the newest asked for.
+        {
+            for (int t = 0; t < 2; ++t)
+                for (const char* name : { "Panel Pad", "Panel Two", "Panel Three", "Sketch 1", "Sketch 2", "Sketch 3", "Deep Sub" })
+                {
+                    (void)port.previewPolled(name, 0, t);
+                    processor.previewsSettle();
+                }
+            P.eq("preview.twelve_kept", static_cast<int>(processor.previewsKept()), static_cast<int>(pg::Processor::kPreviewsKept));
+        }
+        const int onThread = (pg::projectstore::parses() - parsed0) - (pg::projectstore::readerParses() - reader0);
+        std::printf("previews: %llu drawn, %d file(s) read on the message thread\n",
+                    static_cast<unsigned long long>(processor.previewsDrawn() - drawn0), onThread);
+        P.eq("preview.none_read_on_the_message_thread", onThread, 0);
+        // A factory project's (the placeholders have no panel.gui: none, saying so; ready once one has).
+        if (!f0.empty())
+        {
+            b.chooseProjectNamed(f0, W, H);
+            P.eq("preview.factory", pump(host, settled) ? 1 : 0, 1);
+            writePng(P, host, "gui.projects.preview.factory.png");
+        }
+        // Closed: nothing asked or drawn; the picture registered kPictureHoldSeconds more (of the Panel's clock).
+        b.chooseProjectNamed("Panel Pad", W, H);
+        pump(host, [&] { return shown().status == St::ready; });
+        const uint32_t last = shown().image;
+        b.close();
+        host.settle();
+        {
+            const uint64_t drawn = processor.previewsDrawn();
+            for (int k = 0; k < 30; ++k)
+            {
+                processor.poll();
+                host.tick(1);
+            }
+            P.eq("preview.closed_draws_nothing", processor.previewsDrawn() == drawn ? 1 : 0, 1);
+            P.eq("preview.closed_held", funkgui::images::has(last) ? 1 : 0, 1);
+            host.tick(static_cast<int>(60.0 * pg::kPictureHoldSeconds) + 30);
+            P.eq("preview.closed_let_go", funkgui::images::has(last) ? 0 : 1, 1);
+        }
+        // Accessibility: one image, titled for the project.
+        {
+            panel.openProjects();
+            host.settle();
+            b.chooseProjectNamed("Panel Pad", W, H);
+            host.tick(2);
+            std::vector<funkgui::A11yItem> items;
+            b.accessibility(items, W, H);
+            const auto it = std::find_if(items.begin(), items.end(), [](const funkgui::A11yItem& a) { return a.role == funkgui::A11yRole::image; });
+            P.eq("preview.a11y", it != items.end() && it->title == "Preview of Panel Pad's panel" ? 1 : 0, 1);
+        }
+        // The least window: no pane, four rows of each list; the order, Compare... and Export... where they were.
+        {
+            const bool least = host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            host.settle();
+            const float lw = static_cast<float>(pg::ui::kMinWidth), lh = static_cast<float>(pg::ui::kMinHeight);
+            const pg::ui::ProjectBrowser::Places small = b.places(lw, lh);
+            std::printf("least window: rows %d %d %d, preview %.0f x %.0f\n", small.rows[0], small.rows[1], small.rows[2], small.preview.w, small.preview.h);
+            P.eq("preview.least_none", least && small.preview.w == 0.0f ? 1 : 0, 1);
+            P.eq("preview.least_buttons", small.sort.w > 0.0f && small.compare.right() <= small.box.right() && small.exportIt.w > 0.0f ? 1 : 0, 1);
+            writePng(P, host, "gui.projects.preview.least.png");
+            host.click(4.0f, lh - 4.0f);                      // outside the card: it closes
+            host.settle();
+            P.eq("preview.least_outside_closes", b.isOpen() ? 0 : 1, 1);
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            host.settle();
+        }
     }
 
     pg::projectstore::setDirectoryForTests({});

@@ -74,6 +74,8 @@
 //            number not kept `missing`, a project that is not there too; the table keeps the newest 6 asked (the 7th
 //            asks the Reader again for the first); a file another rewrote is read again; a factory project's at once;
 //            the editor's own content (editorContent) its draft, its dials, with no read
+//   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
+//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -1116,6 +1118,24 @@ PROBE(plugin, projects)
         const pg::VersionContent ed = pd.editorContent();
         P.eq("version.editor", ed.read && ed.editor && ed.files == pd.draft().files && ed.dials.size() == 2
                                    && ps::parses() == parsed0 ? 1 : 0, 1);
+        // PREVIEW: a version's panel (previewPolled, package 04) reads it as versionPolled does: "reading" until the
+        // Reader has it, then prepared and drawn; nothing parsed on the asking thread either way.
+        {
+            const auto there = [p0 = ps::parses(), r0 = ps::readerParses()] { return (ps::parses() - p0) - (ps::readerParses() - r0); };
+            rewrite(dir, "Diffs", "Diffs", [](juce::var& root) {
+                if (auto* v0 = root["versions"][0].getDynamicObject())
+                    v0->setProperty("note", "rewritten for the preview");
+            });
+            const pg::PreviewState asked = pd.previewPolled("Diffs", 1, 0);
+            P.eq("preview.reading", asked.status == pg::PreviewState::Status::reading ? 1 : 0, 1);
+            (void)waitReader();
+            const pg::PreviewState then = pd.previewPolled("Diffs", 1, 0);
+            (void)d.previewsSettle();
+            const pg::PreviewState last = pd.previewPolled("Diffs", 1, 0);
+            P.eq("preview.answered", then.status != pg::PreviewState::Status::reading
+                                         && (last.status == pg::PreviewState::Status::ready || last.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
+            P.eq("preview.none_here", there(), 0);
+        }
         P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }
 
