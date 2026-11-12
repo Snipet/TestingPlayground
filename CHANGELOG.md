@@ -9,14 +9,20 @@ When a day changed the Claude Desktop extension, its section says the extension'
 
 ## Unreleased
 
-### The code's text size
+### Every list scrolls as the code does
 
-**Added**
-- The code's text can be made larger or smaller: Cmd-= (or Cmd-+) and Cmd--, from 9 to 24 px, and Cmd-0 back to
-  12 px; or Cmd and the wheel over the text (Ctrl on Windows and Linux). Every tab and the IR view follow, and every
-  other editor open on the machine; the line at the top and the caret stay put. The completion list, the hover card,
-  the signature and the find bar grow with the text. While the size is not 12 px the status line shows it, and a
-  click there puts it back. It is a preference of the machine, as the zoom is, not of a session.
+**Fixed**
+- The explorer, the Projects card's lists, the presets' list and the A/B card scroll the way the code does with
+  natural scrolling on. On a Mac they scrolled the other way, and the Settings card, a scrolling interface on the
+  panel and a schematic's pan and probe lanes did too.
+- Those lists, the A/B card's changes and the Settings card move as far as the code for the same turn of the wheel or
+  stroke of the trackpad: three rows a notch, and a trackpad's stroke a px for a px. They scroll by the pixel, so a
+  row at an edge shows in part. The Projects card and the presets' list used to jump a whole row for each trackpad
+  event, and the explorer moved about four times slower than the code on a trackpad.
+
+**Changed**
+- Every scrolling list, card, the chat and a scrolling interface have a thumb you can drag, as the code has, and a
+  click on its track jumps there. A notch of the wheel moves the chat three lines and an interface 72 px.
 
 ### The chat keeps its conversation through a stopped summary and an empty reply ([#40](https://github.com/Snipet/TestingPlayground/pull/40))
 

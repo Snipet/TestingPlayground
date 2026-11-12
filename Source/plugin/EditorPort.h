@@ -117,9 +117,18 @@
 //   projectsView()    how PROJECTS shows them (ProjectsView): the projects starred, the groups folded, the search, the
 //   setProjectsView() tag filtered on and the order; this Mac's (ProjectStore.h's View), every instance's
 //   exportProject()   a project written as a .zip of its source or a .fmpack (ProjectExport.h), every version or the
-//                     newest only; exportFolder() where a chooser starts (the Desktop)
+//                     newest only, at once (it reads the project's file whole: never on the message thread for a large
+//                     one; startExport is the editor's way); exportFolder() where a chooser starts (the Desktop)
+//   startExport()     the same off the message thread (ExportState): one project its export, several a bundle of their
+//   exporting()       exports (ProjectExport.h), each project's file read and written on a thread of its own, the file
+//   cancelExport()    written beside and moved into place, never over a file: one there as it starts refuses it at
+//                     once, and one made meanwhile is left as it is and the export fails. A cancel leaves no file.
+//                     Refused at once (false, with why) while one runs, with no project or a path not full, or past
+//                     ProjectExport.h's kMaxBundleProjects; on its thread, before anything is written, past
+//                     kMaxBundleBytes of project files. A processor that goes cancels it and waits for it
 //   importProject()   a .zip or a .fmpack exported by this plugin, added as a new project (its name, or "<name> 2"); it is
-//                     not opened
+//                     not opened. A bundle: each of its projects (the last one's name given; false when none came in).
+//                     importProjects() says each added and each refused
 //   ab()              A/B listening (AbState below; editor/AbCard.h): two sides, each the editor's files as they were
 //                     when it began ("Current") or a saved version of a project, played in turn while the host plays
 //                     (each a run of its files: the draft stays as it is), the louder turned down to the quieter's
@@ -328,6 +337,8 @@ namespace playground
         std::vector<std::string> tags;           // its info's
         std::string description;                 // its info's: PROJECTS' search reads it, with the name and the tags
         int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
+        int64_t createdMs = 0;                   // when the project was made (ProjectStore.h's "created"), ms since 1970
+        int64_t bytes = 0;                       // its file's size (a factory project's: 0)
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -418,14 +429,17 @@ namespace playground
 
     // How PROJECTS shows the projects (projectsView(); ProjectStore.h's View): the projects starred (by name, a factory
     // one's as factoryName() spells it), the groups folded (editor/ProjectGroups.h's keys), the search typed, the tag
-    // filtered on ("" for any) and the order (byDate: the newest save first, else by name).
+    // filtered on ("" for any) and the order (ProjectOrder: by name, A to Z; the latest save, the newest first; when
+    // made, the newest first; the file's size, the largest first), `reversed` turning it around.
+    enum class ProjectOrder : uint8_t { name, saved, created, size };
     struct ProjectsView
     {
         std::vector<std::string> favourites;
         std::vector<std::string> folded;
         std::string search;
         std::string tag;
-        bool byDate = false;
+        ProjectOrder order = ProjectOrder::name;
+        bool reversed = false;
         friend bool operator==(const ProjectsView&, const ProjectsView&) = default;
     };
 
@@ -446,7 +460,33 @@ namespace playground
         int64_t bytes = 0;                       // the file
         int64_t raw = 0;                         // what it holds, uncompressed
         int versions = 0;
-        std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip"
+        std::string method;                      // "xz", "zlib" or "stored" (a package's), "zip", "bundle"
+    };
+
+    // An export off the message thread (startExport(), exporting(), cancelExport()): the one in flight, else the last
+    // one's outcome. One project: its export (a .zip or a .fmpack, ProjectExport.h); more: a bundle of them.
+    struct ExportState
+    {
+        bool busy = false;                       // one is in flight (its files read and written on a thread of its own)
+        bool finished = false;                   // the last one has ended (ok, failed or cancelled)
+        uint64_t ended = 0;                      // how many have ended: a new outcome when it moves
+        int total = 0;                           // the projects asked for
+        int done = 0;                            // of them, read and written (or failed) so far
+        int failed = 0;                          // of them, left out (failedNames says which and why)
+        std::vector<std::string> failedNames;    // "<name>: <why>"
+        bool ok = false;                         // the file is written
+        bool cancelled = false;
+        std::string path;                        // the file
+        Exported out;                            // the file written (ok)
+        std::string why;                         // why not (!ok)
+    };
+
+    // What an import brought in (importProjects): the projects added (their names now) and those refused, each "<name>:
+    // <why>" (a bundle's of the other kind, say).
+    struct Imported
+    {
+        std::vector<std::string> names;
+        std::vector<std::string> refused;
     };
 
     // The code window (EditorPort::codeWindow): the code editor and the explorer in a top-level window of their own, the
@@ -662,6 +702,11 @@ namespace playground
         virtual bool exportProject(const std::string& project, bool package, bool allVersions, const std::string& path,
                                    Exported& out, std::string& why) = 0;
         virtual bool importProject(const std::string& path, std::string& name, std::string& why) = 0;
+        virtual bool importProjects(const std::string& path, Imported& out, std::string& why) = 0;
+        virtual bool startExport(const std::vector<std::string>& projects, bool package, bool allVersions, const std::string& path,
+                                 std::string& why) = 0;
+        virtual ExportState exporting() const = 0;
+        virtual void cancelExport() = 0;
         virtual std::string exportFolder() const = 0;
         // A/B listening (AbState). Sides are version numbers of `project` (0: Current). False, with why, when a version is
         // not kept (startAb, setAbSides) or none is on (keepAb).

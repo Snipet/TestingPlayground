@@ -17,9 +17,11 @@
 //   the menu    a right-click on a row: Apply, Category (this project's presets' categories, None (Uncategorised), New
 //               category...); a factory project's Category greyed (its presets stay as they are)
 // A press outside the list closes it, and goes no further (Panel). What it did, it says once (takeNotice) for the
-// status line. Its menus are the host's; a menu's answer calls the Panel's hook (setAnswered) as an event does.
+// status line. Its menus are the host's; a menu's answer calls the Panel's hook (setAnswered) as an event does. The
+// list scrolls as the code does (Scroll.h: the wheel over it, its thumb dragged), by px: a row at its edge in part.
 #pragma once
 
+#include "editor/Scroll.h"
 #include "plugin/EditorPort.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -72,6 +74,8 @@ namespace playground::ui
         // Events, the panel's size given. A press outside the box closes it (pointerDown returns false then: the
         // press is the Panel's to drop).
         bool pointerDown(const funkgui::PointerEvent& e, funkgui::HostServices* host, float width, float height);
+        void pointerDrag(funkgui::Point p, float width, float height);   // the thumb's drag, while pressed
+        void pointerUp();
         void wheel(const funkgui::WheelEvent& e, float width, float height);
         void key(const funkgui::KeyEvent& e, funkgui::HostServices* host, float width, float height);
         funkgui::Cursor cursor(funkgui::Point p, float width, float height) const;
@@ -100,12 +104,13 @@ namespace playground::ui
         const std::vector<Row>& rowList() const noexcept { return rows_; }
         bool captions() const noexcept { return captions_; }   // the groups have captions (some preset has a category)
         int highlighted() const noexcept { return lit_; }       // a row (-1: none)
-        int firstShown() const noexcept { return first_; }
+        int firstShown() const;                          // the first row wholly shown
+        Scroll scrollOf(const Places& at) const;         // its scroll: content and view as the places have them
         int rowOf(const std::string& preset) const;      // its row (-1: not listed)
         const std::string& search() const noexcept { return field_.buffer; }
         bool categoryMode() const noexcept { return categoryMode_; }
         const std::string& why() const noexcept { return why_; }
-        funkgui::Point centreOfRow(int row, float width, float height) const;   // a row shown, else far away
+        funkgui::Point centreOfRow(int row, float width, float height) const;   // a row wholly shown, else far away
         // The categories its menu offers: this project's presets' own, each once (its group's spelling), by name.
         std::vector<std::string> categoryChoices() const;
 
@@ -117,7 +122,8 @@ namespace playground::ui
         void setCategory(const std::string& preset, const std::string& typed);
         void showMenu(int row, funkgui::Point at);
         int rowAt(funkgui::Point p, const Places& at) const;
-        funkgui::Rect rowRect(const Places& at, int row) const;
+        funkgui::Rect rowRect(const Places& at, int row) const;   // scrolled
+        bool wholly(const Places& at, int row) const;
 
         EditorPort& port_;
         funkgui::HostServices* host_ = nullptr;
@@ -128,7 +134,8 @@ namespace playground::ui
         std::vector<Group> groups_;
         std::vector<Row> rows_;
         bool captions_ = false;
-        int lit_ = -1, first_ = 0;
+        int lit_ = -1;
+        Scroll scroll_;                                  // its offset kept; content and view: scrollOf
         funkgui::text::LineEdit field_;                  // the search, or the category being named
         std::string searchKept_;                         // the search while the field names a category
         bool categoryMode_ = false;

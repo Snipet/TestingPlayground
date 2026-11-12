@@ -14,12 +14,14 @@
 // A device's error (a choice it refused) is under the section whose choice it was, in the danger colour. The numbers
 // follow the devices while it is open: it reads them again whenever DevicePort::serial moves (a device plugged in, a
 // change made elsewhere). Tab and Shift-Tab (or Down and Up) move the focus over its controls, Return or Space acts
-// on the focused one; the wheel scrolls it when the window is too short for it. While it is open it takes every
+// on the focused one; when the window is too short for it, it scrolls as the code does (Scroll.h: the wheel, a thumb
+// that drags). While it is open it takes every
 // pointer event and key, and the rest of the panel is dimmed. Its selects are dropdowns (Dropdown.h): a field's trigger,
 // open while their menu is (setMenuOpen: the Panel's menuOpenAt), their menu a radio set as wide as the select, the
 // current choice highlighted when it opens.
 #pragma once
 
+#include "editor/Scroll.h"
 #include "plugin/EditorPort.h"
 
 #include <funkgui/a11y/A11yItem.h>
@@ -96,6 +98,10 @@ namespace playground::ui
         Places places(float width, float height) const;
 
         void pointerDown(funkgui::Point p, float width, float height, funkgui::HostServices* host);
+        void pointerDrag(funkgui::Point p, float width, float height);   // the thumb's drag, while pressed
+        void pointerUp();
+        Scroll scrollOf(const Places& at) const;         // the body's scroll: content and view as the places have them
+        funkgui::Rect barArea(const Places& at) const;   // where its bar is (Scroll's area)
         void wheel(const funkgui::WheelEvent& e, float width, float height);
         void key(const funkgui::KeyEvent& e, funkgui::HostServices* host, float width, float height);
         funkgui::Cursor cursor(funkgui::Point p, float width, float height) const;
@@ -129,7 +135,7 @@ namespace playground::ui
         DeviceSetup setup_;
         Key focus_;
         bool ring_ = false;                      // the focus shown (the keys moved it)
-        float scroll_ = 0.0f;
+        Scroll scroll_;                          // its offset kept (scrollOf)
         uint32_t revision_ = 0;
     };
 }

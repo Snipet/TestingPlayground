@@ -74,7 +74,7 @@ namespace playground::ui
         categoryOf_.clear();
         why_.clear();
         open_ = true;
-        first_ = 0;
+        scroll_ = {};
         arrange();
         const int current = cycle_.current >= 0 ? rowOf(cycle_.presets[static_cast<std::size_t>(cycle_.current)].name) : -1;
         const int rows = places(width_, height_).rows;
@@ -176,7 +176,8 @@ namespace playground::ui
             for (const int m : groups_[g].members)
                 rows_.push_back({ static_cast<int>(g), m });
         }
-        first_ = std::clamp(first_, 0, std::max(0, static_cast<int>(rows_.size()) - 1));
+        if (width_ > 0.0f)
+            scroll_ = scrollOf(places(width_, height_));
         ++revision_;
     }
 
@@ -207,23 +208,48 @@ namespace playground::ui
         return at;
     }
 
+    Scroll PresetPicker::scrollOf(const Places& at) const
+    {
+        Scroll s = scroll_;
+        s.content = static_cast<float>(rows_.size()) * at.rowH;
+        s.view = at.list.h;
+        s.row = at.rowH;
+        s.clamp();
+        return s;
+    }
+
+    int PresetPicker::firstShown() const
+    {
+        const Places at = places(width_, height_);
+        return static_cast<int>(std::ceil(scrollOf(at).offset / at.rowH - 1.0e-3f));
+    }
+
     funkgui::Rect PresetPicker::rowRect(const Places& at, int row) const
     {
-        return { at.list.x, at.list.y + static_cast<float>(row - first_) * at.rowH, at.list.w, at.rowH };
+        return { at.list.x, at.list.y + static_cast<float>(row) * at.rowH - scrollOf(at).offset, at.list.w, at.rowH };
+    }
+
+    bool PresetPicker::wholly(const Places& at, int row) const
+    {
+        if (row < 0 || row >= static_cast<int>(rows_.size()))
+            return false;
+        const funkgui::Rect r = rowRect(at, row);
+        return r.y >= at.list.y - 0.01f && r.bottom() <= at.list.bottom() + 0.01f;
     }
 
     int PresetPicker::rowAt(funkgui::Point p, const Places& at) const
     {
-        if (!at.list.contains(p))
-            return -1;
-        const int r = first_ + static_cast<int>(std::floor((p.y - at.list.y) / at.rowH));
-        return r >= first_ && r < first_ + at.rows && r < static_cast<int>(rows_.size()) ? r : -1;
+        const Scroll s = scrollOf(at);
+        if (!at.list.contains(p) || s.hits(p, at.list))
+            return -1;                                   // the bar's
+        const int r = static_cast<int>(std::floor((p.y - at.list.y + s.offset) / at.rowH));
+        return r >= 0 && r < static_cast<int>(rows_.size()) ? r : -1;
     }
 
     funkgui::Point PresetPicker::centreOfRow(int row, float width, float height) const
     {
         const Places at = places(width, height);
-        if (row < first_ || row >= first_ + at.rows || row >= static_cast<int>(rows_.size()))
+        if (!wholly(at, row))
             return { -1.0e4f, -1.0e4f };
         const funkgui::Rect r = rowRect(at, row);
         return { r.centreX(), r.centreY() };
@@ -236,11 +262,10 @@ namespace playground::ui
         lit_ = row;
         // In view, with its caption when it is its group's first.
         const int top = row > 0 && rows_[static_cast<std::size_t>(row - 1)].preset < 0 ? row - 1 : row;
-        if (top < first_)
-            first_ = top;
-        else if (row >= first_ + rowsShown)
-            first_ = row - rowsShown + 1;
-        first_ = std::clamp(first_, 0, std::max(0, static_cast<int>(rows_.size()) - rowsShown));
+        const float rh = Places{}.rowH;
+        scroll_.content = static_cast<float>(rows_.size()) * rh;
+        scroll_.view = static_cast<float>(std::max(1, rowsShown)) * rh;
+        scroll_.reveal(static_cast<float>(top) * rh, static_cast<float>(row + 1) * rh);
         ++revision_;
     }
 
@@ -401,6 +426,12 @@ namespace playground::ui
             ++revision_;
             return true;
         }
+        if (Scroll s = scrollOf(at); !e.popup && s.press(p, at.list))
+        {
+            scroll_ = s;                                 // its thumb drags (a press on its track jumps first)
+            ++revision_;
+            return true;
+        }
         const int row = rowAt(p, at);
         if (row < 0 || rows_[static_cast<std::size_t>(row)].preset < 0)
             return true;                                 // a caption, or under the rows
@@ -413,16 +444,34 @@ namespace playground::ui
 
     void PresetPicker::wheel(const funkgui::WheelEvent& e, float width, float height)
     {
+        // Over its list only, as the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
         const Places at = places(width, height);
-        const float dy = e.reversed ? -e.dy : e.dy;
-        const int step = dy > 0.0f ? -1 : (dy < 0.0f ? 1 : 0);
-        const int most = std::max(0, static_cast<int>(rows_.size()) - at.rows);
-        const int first = std::clamp(first_ + step * std::max(1, static_cast<int>(std::round(std::fabs(dy) * 6.0f))), 0, most);
-        if (first != first_)
-        {
-            first_ = first;
+        if (!at.list.contains({ e.x, e.y }))
+            return;
+        Scroll s = scrollOf(at);
+        s.wheel(e.dy, e.smooth);
+        if (s.offset != scroll_.offset)
             ++revision_;
-        }
+        scroll_ = s;
+    }
+
+    void PresetPicker::pointerDrag(funkgui::Point p, float width, float height)
+    {
+        if (!scroll_.dragging())
+            return;
+        const Places at = places(width, height);
+        Scroll s = scrollOf(at);
+        s.drag(p, at.list);
+        scroll_ = s;
+        ++revision_;
+    }
+
+    void PresetPicker::pointerUp()
+    {
+        if (!scroll_.dragging())
+            return;
+        scroll_.release();
+        ++revision_;
     }
 
     void PresetPicker::key(const funkgui::KeyEvent& e, funkgui::HostServices* host, float width, float height)
@@ -439,7 +488,7 @@ namespace playground::ui
             {
                 arrange();                               // the search filters at once: the first match lit
                 lit_ = -1;
-                first_ = 0;
+                scroll_.offset = 0.0f;
                 step(1, rows);
             }
             ++revision_;
@@ -589,9 +638,13 @@ namespace playground::ui
             c.text(fitText(c, empty, chat::kSmall, at.list.w - 16.0f).c_str(), at.list.centreX(),
                    c.capCentreTop(at.list.y + 0.5f * at.rowH, chat::kSmall), chat::kSmall, p.faint, funkgui::Align::centre);
         }
-        for (int k = 0; k < at.rows && first_ + k < n; ++k)
+        // The rows in view, a row at an edge in part (clipped to the list).
+        const Scroll scroll = scrollOf(at);
+        const int from = std::max(0, static_cast<int>(std::floor(scroll.offset / at.rowH)));
+        const int to = std::min(n, static_cast<int>(std::ceil((scroll.offset + scroll.view) / at.rowH)));
+        c.pushClip(at.list);
+        for (int r = from; r < to; ++r)
         {
-            const int r = first_ + k;
             const Row& rw = rows_[static_cast<std::size_t>(r)];
             const funkgui::Rect rr = rowRect(at, r);
             if (rw.preset < 0)
@@ -624,14 +677,8 @@ namespace playground::ui
             c.text(number.c_str(), rr.right() - 10.0f, c.capCentreTop(rr.centreY(), chat::kSmall), chat::kSmall, p.faint,
                    funkgui::Align::right);
         }
-        if (n > at.rows)
-        {
-            const float track = at.list.h - 8.0f;
-            const float thumb = std::max(16.0f, track * static_cast<float>(at.rows) / static_cast<float>(n));
-            const float y = at.list.y + 4.0f + (track - thumb) * static_cast<float>(std::min(first_, n - at.rows))
-                                                   / static_cast<float>(std::max(1, n - at.rows));
-            c.rrect(at.list.right() - 3.0f, y, 3.0f, thumb, 1.5f, p.dim);
-        }
+        c.popClip();
+        scroll.draw(c, at.list, th);
         if (!why_.empty())
             c.text(fitText(c, why_, chat::kSmall, box.w - 2.0f * kPad).c_str(), box.x + kPad,
                    c.capCentreTop(at.list.bottom() + 4.0f + 0.5f * kWhyH, chat::kSmall), chat::kSmall, p.danger);
@@ -675,9 +722,8 @@ namespace playground::ui
         list.value = std::to_string(cycle_.presets.size()) + (cycle_.presets.size() == 1 ? " preset" : " presets");
         out.push_back(std::move(list));
         const int count = static_cast<int>(cycle_.presets.size());
-        for (int k = 0; k < at.rows && first_ + k < static_cast<int>(rows_.size()); ++k)
+        for (int r = static_cast<int>(std::ceil(scrollOf(at).offset / at.rowH - 1.0e-3f)); wholly(at, r); ++r)
         {
-            const int r = first_ + k;
             const Row& rw = rows_[static_cast<std::size_t>(r)];
             funkgui::A11yItem it;
             it.id = kRowId + static_cast<uint32_t>(r);

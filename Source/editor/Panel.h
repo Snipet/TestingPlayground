@@ -338,6 +338,8 @@ namespace playground::ui
         funkgui::Point centreOfPanelSwitch() const;      // the status line's switch
         bool panelSwitchLabelled() const;                // its word beside its icon (else the icon alone)
         const GuiLayout& guiLayout() const noexcept;
+        Scroll guiScroller(bool horizontal) const noexcept;   // a .gui interface's scroll on that axis (Scroll.h), and
+        funkgui::Rect guiBarArea(bool horizontal) const noexcept;   // where its bar is
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
@@ -615,6 +617,7 @@ namespace playground::ui
                                                          // the rest of its click (a double-click's second press,
                                                          // its doubleClick) reaches nothing under it
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
+        bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
                                                          // items, under the code editor's overlays)

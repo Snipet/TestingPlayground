@@ -22,7 +22,6 @@ namespace playground::ui
         constexpr float kIconX = 18.0f;              // a row's icon's centre, from its left
         constexpr float kTextX = 32.0f;              // its label
         constexpr float kSide = 22.0f;               // the cross's and the header button's square
-        constexpr float kWheelStep = 40.0f;          // px a wheel notch scrolls
         constexpr uint32_t kStride = 512;            // a11y ids a group
 
         constexpr funkgui::TextStyle kHeaderStyle{ 9.5f, 1.4f, 0.06f, false };   // tracked caps, as the panel's titles
@@ -88,26 +87,25 @@ namespace playground::ui
             }
         }
         contentH_ = y + 8.0f;
-        scroll_ = std::clamp(scroll_, 0.0f, maxScroll());
+        scroll_.content = contentH_;
+        scroll_.view = viewHeight();
+        scroll_.row = kRowH;
+        scroll_.clamp();
         ++revision_;
     }
 
-    float ExplorerItem::maxScroll() const noexcept { return std::max(0.0f, contentH_ - viewHeight()); }
-
     void ExplorerItem::scrollTo(float y)
     {
-        const float to = std::clamp(y, 0.0f, maxScroll());
-        if (to != scroll_)
+        if (scroll_.moveTo(y))
             ++revision_;
-        scroll_ = to;
     }
 
-    Rect ExplorerItem::onScreen(const Rect& r) const { return { bounds_.x + r.x, bounds_.y + r.y - scroll_, r.w, r.h }; }
+    Rect ExplorerItem::onScreen(const Rect& r) const { return { bounds_.x + r.x, bounds_.y + r.y - scroll_.offset, r.w, r.h }; }
 
     const ExplorerItem::Hit* ExplorerItem::hitAt(Point p) const
     {
-        if (!bounds_.contains(p))
-            return nullptr;
+        if (!bounds_.contains(p) || scroll_.hits(p, bounds_))
+            return nullptr;                          // the scroll bar's
         // The small buttons first: they sit on their row or header.
         for (const Hit& h : hits_)
             if ((h.part == Part::close || h.part == Part::action) && onScreen(h.r).contains(p))
@@ -179,9 +177,26 @@ namespace playground::ui
 
     void ExplorerItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&)
     {
+        if (!e.popup && scroll_.press({ e.x, e.y }, bounds_))   // the thumb drags; the track jumps, then drags
+        {
+            ++revision_;
+            return;
+        }
         if (const Hit* h = hitAt({ e.x, e.y }))
             act(*h, false);
     }
+
+    void ExplorerItem::pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController&)
+    {
+        if (!scroll_.dragging())
+            return;
+        const float was = scroll_.offset;
+        scroll_.drag({ e.x, e.y }, bounds_);
+        if (scroll_.offset != was)
+            ++revision_;
+    }
+
+    void ExplorerItem::pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) { scroll_.release(); }
 
     void ExplorerItem::doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController&)
     {
@@ -192,10 +207,12 @@ namespace playground::ui
 
     bool ExplorerItem::wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double)
     {
-        if (maxScroll() <= 0.0f)
+        // As the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
+        const float was = scroll_.offset;
+        if (!scroll_.wheel(e.dy, e.smooth))
             return false;
-        const float d = e.smooth ? e.dy * 120.0f : e.dy * kWheelStep * 3.0f;
-        scrollTo(scroll_ - (e.reversed ? -d : d));
+        if (scroll_.offset != was)
+            ++revision_;
         return true;
     }
 
@@ -332,13 +349,8 @@ namespace playground::ui
             c.text(fitText(c, asciiText(grp.empty), chat::kSmall, r.w - kTextX).c_str(), r.x + kTextX,
                    c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.faint);
         }
-        // A thin scroll bar while the list is taller than the card.
-        if (maxScroll() > 0.0f)
-        {
-            const float h = std::max(24.0f, bounds_.h * bounds_.h / contentH_);
-            const float y = bounds_.y + (bounds_.h - h) * (scroll_ / maxScroll());
-            c.rrect(bounds_.right() - 4.0f, y, 3.0f, h, 1.5f, p.cardEdge);
-        }
+        // The scroll bar while the list is taller than the card.
+        scroll_.draw(c, bounds_, th);
     }
 
     // ---- probes --------------------------------------------------------------------------------------------------------

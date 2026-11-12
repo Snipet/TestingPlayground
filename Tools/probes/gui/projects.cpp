@@ -128,7 +128,8 @@ namespace
         return m;
     }
 
-    // PROJECTS driven through its host: a row scrolled into view first, then clicked.
+    // PROJECTS driven through its host: a row scrolled wholly into view first (the wheel, a notch's third at a time), then
+    // clicked.
     struct Driver
     {
         pg::ui::Panel& panel;
@@ -140,10 +141,9 @@ namespace
             const funkgui::Rect list = b.places(W, H).projects;
             for (int k = 0; k < 64 && row >= 0; ++k)
             {
-                const int first = b.firstShown(BL::projects), rows = b.places(W, H).rows[0];
-                if (row >= first && row < first + rows)
+                if (b.centreOfRow(BL::projects, row, W, H).x > -1.0e3f)
                     return;
-                host.wheel(list.centreX(), list.centreY(), row < first ? 1.0f / 6.0f : -1.0f / 6.0f);
+                host.wheel(list.centreX(), list.centreY(), row < b.firstShown(BL::projects) ? 1.0f / 6.0f : -1.0f / 6.0f);
                 host.settle();
             }
         }
@@ -617,13 +617,13 @@ PROBE(gui, projects)
             for (std::size_t i = 1; i < g.members.size(); ++i)
                 newest = newest && b.projectList()[static_cast<std::size_t>(g.members[i - 1])].savedMs
                                        >= b.projectList()[static_cast<std::size_t>(g.members[i])].savedMs;
-        P.eq("sort.newest_first", b.view().byDate && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
+        P.eq("sort.newest_first", b.view().order == pg::ProjectOrder::saved && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
         // Night Choir, spelt in lower case, first now: the group's title spelt as before (the least spelling).
         P.eq("sort.one_spelling", groupOf(b, k2) != nullptr && groupOf(b, k2)->title == c2 ? 1 : 0, 1);
         drive.clickRect(b.places(W, H).sort);
         host.chooseMenuItem("By name");
         host.settle();
-        P.eq("sort.by_name", !b.view().byDate && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
+        P.eq("sort.by_name", b.view().order == pg::ProjectOrder::name && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
     }
 
     // ---- A11Y ------------------------------------------------------------------------------------------------------
