@@ -8,9 +8,8 @@ Cmd-Return) and plays, its parameters becoming the dials. Made from FunkPluginTe
 and the plumbing freely; keep the rules below. README.md is the user's guide (a short start: what the plugins do,
 building from a clone, using them; then the detail: writing a program, the editor, the probes), CHANGELOG.md what each
 day's merged pull requests changed for users (newest first, an Unreleased section on top; a pull request's entry is
-its own file in `docs/changelog/`, folded in on `main`, since one section every open pull request edited made each
-merge conflict with all the others); this file is what a session must know (`scripts/plugin.py info` prints the
-identities).
+its own file in `docs/changelog/`, folded in on `main`, so that no two open pull requests edit the same lines); this
+file is what a session must know (`scripts/plugin.py info` prints the identities).
 
 <!-- origin -->
 The effect was an FDN reverb (the legacy `legacy-visage` FDN, ported) with an FMinus script on its output, and the
