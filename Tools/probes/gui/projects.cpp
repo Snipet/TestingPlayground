@@ -617,13 +617,13 @@ PROBE(gui, projects)
             for (std::size_t i = 1; i < g.members.size(); ++i)
                 newest = newest && b.projectList()[static_cast<std::size_t>(g.members[i - 1])].savedMs
                                        >= b.projectList()[static_cast<std::size_t>(g.members[i])].savedMs;
-        P.eq("sort.newest_first", b.view().byDate && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
+        P.eq("sort.newest_first", b.view().order == pg::ProjectOrder::saved && newest && membersOf(b, k2).front() == "Night Choir" ? 1 : 0, 1);
         // Night Choir, spelt in lower case, first now: the group's title spelt as before (the least spelling).
         P.eq("sort.one_spelling", groupOf(b, k2) != nullptr && groupOf(b, k2)->title == c2 ? 1 : 0, 1);
         drive.clickRect(b.places(W, H).sort);
         host.chooseMenuItem("By name");
         host.settle();
-        P.eq("sort.by_name", !b.view().byDate && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
+        P.eq("sort.by_name", b.view().order == pg::ProjectOrder::name && membersOf(b, k2).front() == "Glass Bloom" ? 1 : 0, 1);
     }
 
     // ---- A11Y ------------------------------------------------------------------------------------------------------
