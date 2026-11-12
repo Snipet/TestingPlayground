@@ -19,7 +19,9 @@
 //            the loudness measured and said (B turned down)
 //   ATTACH   another editor made while it plays (the window opened again: here PAPER's) shows its card at once, as it
 //            is, nothing started again
-//   SCROLL   Tab shows the next file; the wheel and End scroll a long diff, Home back
+//   SCROLL   Tab shows the next file; the wheel and End scroll a long diff, Home back; as the code scrolls
+//            (editor/Scroll.h): a notch three lines, reversed set (a built WheelEvent: HeadlessHost cannot set it) the
+//            same way, its thumb dragged in proportion; the versions' list, which fits, takes no wheel
 //   A11Y     the card's items: the versions' rows and chips, the files' tabs, Play A and Play B, Keep B; its ids in a
 //            range of their own, apart from the other cards' (PROJECTS', EXPORT's, Settings')
 //   KEEP     Keep B: the card closes, the status says so, the editor shows B's files and one Cmd-Z gives the files before
@@ -312,6 +314,35 @@ PROBE(gui, ab)
         host.keys("home");
         host.settle();
         P.eq("scroll.home", card.scroll() == 0 ? 1 : 0, 1);
+        {
+            const AC::Places at = card.places(W, H);
+            const auto offset = [&] { return static_cast<double>(card.diffScroll(card.places(W, H)).offset); };
+            const pg::ui::Scroll sc = card.diffScroll(at);
+            const float notchDy = pg::ui::Scroll::kWheelNotch;
+            host.wheel(d.centreX(), d.centreY(), -notchDy);
+            P.near("scroll.notch_three_lines", offset(), 3.0 * at.lineH, 0.01);
+            host.keys("home");
+            funkgui::WheelEvent w;
+            w.x = d.centreX();
+            w.y = d.centreY();
+            w.dy = -notchDy;
+            w.reversed = true;
+            panel.wheel(w);
+            P.near("scroll.reversed_as_code", offset(), 3.0 * at.lineH, 0.01);
+            host.keys("home");
+            host.settle();
+            const funkgui::Rect area = card.diffBar(at), t = card.diffScroll(at).thumb(area);
+            host.drag(t.centreX(), t.centreY(), t.centreX(), t.centreY() + 20.0f, 4);
+            host.settle();
+            P.near("scroll.thumb_drags", offset(), 20.0 * static_cast<double>(sc.max()) / static_cast<double>(area.h - t.h), 0.05);
+            P.eq("scroll.thumb_kept_open", card.isOpen() ? 1 : 0, 1);
+            host.keys("home");
+            const pg::ui::Scroll list = card.listScroll(at);
+            P.eq("scroll.versions_fit", list.shown() ? 1 : 0, 0);
+            host.wheel(at.list.centreX(), at.list.centreY(), -notchDy);
+            P.near("scroll.versions_no_wheel", card.listScroll(card.places(W, H)).offset, 0.0, 0.0);
+            host.settle();
+        }
         clickAt(host, card.centreOfTab(tabOf(card, "gain.fm"), W, H));
     }
 
