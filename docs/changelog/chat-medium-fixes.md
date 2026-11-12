@@ -1,4 +1,4 @@
-Claude Desktop extension: **0.18.0** (was 0.17.0).
+Claude Desktop extension: **0.19.0** (was 0.18.0).
 
 ### Chat fixes: keys and chats on a full disk, Send and Stop, typing against Claude, pictures, streaming
 
