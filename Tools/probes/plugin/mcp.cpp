@@ -14,7 +14,8 @@
 //            described on measure_output, undescribed in a check's and tune_dials', on no other tool, none of the effect's;
 //            tune_dials' sweep (numbers, its cap said, its first sentence naming it) and compare's b_rate and
 //            previous_run, each on its own tool alone; read_file's from, lines,
-//            find and regex (nothing required), edit_file's edits, expected and files (a list or a diff; nothing required), trace's render settings (its dials; the
+//            find, regex, context, count and skip (nothing required), edit_file's edits, expected, files (a list or a diff)
+//            and find (its regex undescribed: read_file's words; nothing required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
@@ -586,8 +587,9 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
-        // read_file's part (from, lines, find, regex; find with no name searches every file: nothing required) and
-        // edit_file's list, guard and files (edits, expected; files a list or a diff, in place of name: nothing required).
+        // read_file's part (from, lines, find, regex, and find's context, count and skip; find with no name searches every
+        // file: nothing required) and edit_file's list, guard, files and find (edits, expected; files a list or a diff,
+        // in place of name; find every match, its regex described once, read_file's words: nothing required).
         {
             juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -606,6 +608,12 @@ PROBE(plugin, mcp)
                                           && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
                                         && readFile["properties"].hasProperty("find") && readFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && readFile["properties"]["context"]["type"].toString() == "integer"
+                                        && readFile["properties"]["count"]["type"].toString() == "boolean"
+                                        && readFile["properties"]["skip"]["type"].toString() == "integer"
+                                        && editFile["properties"]["find"]["type"].toString() == "string"
+                                        && editFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && !editFile["properties"]["regex"].hasProperty("description")
                                         && !readFile.hasProperty("required") && editFile["properties"].hasProperty("edits")
                                         && editFile["properties"].hasProperty("expected")
                                         && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
