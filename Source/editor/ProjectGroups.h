@@ -8,11 +8,12 @@
 //                  told apart case aside (titled by the least of its spellings, whatever the order), the groups by name
 //   UNCATEGORISED  the user's projects with none, last
 //
-// Each group's projects by name (case aside) or the newest save first (byDate), and a group of none is left out. A
-// filter (a search, a tag) keeps the projects it matches: each of the search's words in the name, the description or
-// a tag (case aside), and the tag one of the project's; a group then left with none is left out. A group's key
-// (keyOf: "favourites", "factory", "uncategorised", "category:<its name in lower case>") is what the view keeps of a
-// group folded. Plain C++, no JUCE.
+// Each group's projects in the order asked (Options::order: by name, A to Z, case aside; the newest save first; the
+// newest made first; the largest file first; `reversed` turning it around, ties by name, A to Z, case aside), and a
+// group of none is left out. A filter (a search, a tag) keeps the projects it matches: each of the search's words in
+// the name, the description or a tag (case aside), and the tag one of the project's; a group then left with none is
+// left out. A group's key (keyOf: "favourites", "factory", "uncategorised", "category:<its name in lower case>") is
+// what the view keeps of a group folded. Plain C++, no JUCE.
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -52,7 +53,8 @@ namespace playground::ui::projectgroups
         const std::vector<std::string>* folded = nullptr;       // the groups folded (keys, case aside)
         std::string search;
         std::string tag;
-        bool byDate = false;
+        ProjectOrder order = ProjectOrder::name;
+        bool reversed = false;
         bool factoryGroup = true;                        // false: a factory project only among the favourites
     };
 

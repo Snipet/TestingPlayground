@@ -80,17 +80,39 @@ namespace playground::ui::projectgroups
             groups.push_back(std::move(g));
             return groups.back();
         };
-        // The projects in their order first (by name, or the newest first), so each group's follow it.
+        // The projects in their order first (o.order, maybe reversed), so each group's follow it. A key: the newest,
+        // the largest first (its value turned negative); by name A to Z; reversed, the other way. Ties by name, A to Z.
         std::vector<int> order(projects.size());
         for (std::size_t i = 0; i < order.size(); ++i)
             order[i] = static_cast<int>(i);
+        const auto sortKey = [&](const ProjectEntry& e) -> int64_t {
+            switch (o.order)
+            {
+                case ProjectOrder::saved: return -e.savedMs;
+                case ProjectOrder::created: return -e.createdMs;
+                case ProjectOrder::size: return -e.bytes;
+                case ProjectOrder::name: break;
+            }
+            return 0;
+        };
+        std::vector<std::string> names(projects.size());
+        for (std::size_t i = 0; i < projects.size(); ++i)
+            names[i] = lower(ownName(projects[i].name));
         std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-            const ProjectEntry& x = projects[static_cast<std::size_t>(a)];
-            const ProjectEntry& y = projects[static_cast<std::size_t>(b)];
-            if (o.byDate && (x.savedMs != y.savedMs || x.when != y.when))
-                return x.savedMs != y.savedMs ? x.savedMs > y.savedMs : x.when > y.when;
-            const std::string nx = lower(ownName(x.name)), ny = lower(ownName(y.name));
-            return nx != ny ? nx < ny : x.factory < y.factory;
+            const std::size_t ia = static_cast<std::size_t>(a), ib = static_cast<std::size_t>(b);
+            const ProjectEntry& x = projects[ia];
+            const ProjectEntry& y = projects[ib];
+            if (o.order != ProjectOrder::name)
+            {
+                const int64_t kx = sortKey(x), ky = sortKey(y);
+                if (kx != ky)
+                    return o.reversed ? kx > ky : kx < ky;
+            }
+            else if (names[ia] != names[ib])
+                return o.reversed ? names[ia] > names[ib] : names[ia] < names[ib];
+            if (names[ia] != names[ib])
+                return names[ia] < names[ib];
+            return x.factory < y.factory;
         });
         const bool filtering = !o.search.empty() || !o.tag.empty();
         const auto add = [&](Group& g, int i, bool shown) {
