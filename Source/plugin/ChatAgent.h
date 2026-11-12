@@ -559,8 +559,9 @@ namespace playground
         std::string panelState(const juce::var& input, PictureState& state, bool& defaults);
         std::string toolText(const std::string& name, const juce::var& input, bool& isError);
         // read_file and edit_file (ChatFiles.cpp): a file whole, a range of its lines or the lines that hold a text or
-        // match a pattern (regex), in one file or in every file, numbered (a part read marks nothing seen); one passage or a list of them replaced, in one file or in several
-        // (`files`: a list, or a unified diff), all or none, in one write that never overwrites what the user typed
+        // match a pattern (regex), in one file or in every file, numbered (context lines around each; or only how many,
+        // count; past the first skip), a part read marking nothing seen; one passage or a list of them replaced, in one
+        // file or in several (`files`: a list, or a unified diff), or every match of find (replaceText), all or none, in one write that never overwrites what the user typed
         // meanwhile (chatSetDraftIf), and with `expected` only while the file is still that version. Every read and
         // write says the file's version (its text's hash); keepVersion keeps the text of the newest kFileVersions
         // given (mutex held), so a refused write shows what changed since. A refusal's text (`refused`) is kept too, but
@@ -576,6 +577,12 @@ namespace playground
         std::string writeFileText(const juce::var& input, bool& isError);
         std::string readFileText(const juce::var& input, bool& isError);
         std::string editFileText(const juce::var& input, bool& isError);
+        // edit_file's find: every match of a text or a pattern replaced by new_text, line by line (never a netlist's *@
+        // line), in one file or in every file, all or none in one chatSetDraftIf of every file it read.
+        std::string replaceText(const juce::var& input, bool& isError);
+        // A write refused because `file` is no longer `version` (`now` its text): whose change, and its lines changed
+        // since (the kept text of `version`); `many`: the call named several files, none written.
+        std::string changedSinceText(const std::string& file, const std::string& version, const std::string& now, bool many);
         std::string keepVersion(const std::string& name, const std::string& text, bool refused = false);
         // The checks measured on the editor's files and the plugin's dials: their entry brought up to date, and the
         // results in words for Claude ("" with no checks). The worker's.

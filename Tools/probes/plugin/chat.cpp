@@ -122,6 +122,16 @@
 //            both files, Cmd-Shift-Z and Cmd-Y redo them though the tab's history went back past them; in a netlist's
 //            Schematic view Cmd-Z undoes the change in both files and the drawing loses its part; a session loaded over
 //            two tabs is one step; a fresh start ends the groups
+//            GREP: find's context (0, 10; 11 refused), count (one file's, every file's: no lines), skip (the first 40's
+//            last line saying how many more and the skip that reads on, the rest after it, past them all, and across the
+//            files in the tabs' order); context, count or skip without find refused
+//            REPLACE: edit_file's find: every match in one file (its count, lines, version and the lines changed) and in
+//            every file (one write of the draft, the tool's row naming them, Cmd-Z in one tab undoing all three), a
+//            netlist's *@ line untouched, regex (new_text as it is: $1 no group; the longest match at the leftmost place),
+//            all or none (a pattern past its steps in a later file, 2,001 matches, a named file's expected after the
+//            user's edit), the user's typing between the read and the write kept and replaced too, the refusals (no
+//            match with the closest line and the lines in another case, find beside old_text, a bad pattern, expected
+//            with no name, two lines, no new_text), and a replacement in a file the chat's Claude had seen seen
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why; with a window, a PNG that shades it and words
@@ -2136,6 +2146,57 @@ PROBE(plugin, chat)
                                            && behind.isError && has(toolText(behind), "lookahead and lookbehind")
                                            && ranged.isError && toolText(ranged) == "from and lines read one file: give its name too"
                                            && nameless.isError && has(toolText(nameless), "read_file needs a name (or find alone") ? 1 : 0, 1);
+
+            // GREP: find's context (0 and 10), count (each file's, no lines) and skip (past the first 40, the last line
+            // saying what is left and the skip that reads on), in one file and across the files.
+            const std::string alone = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" }, { "context", 0 } })));
+            P.eq("grep.context_0", alone == "notes.fm: 12 lines, version " + version + "; 1 line holds \"v7(\" (7), the lines alone:\n7\t" + lineOf(7) + "\n" ? 1 : 0, 1);
+            const std::string wide = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" }, { "context", 10 } })));
+            P.eq("grep.context_10", has(wide, "(7), with 10 lines around each:\n1\t" + lineOf(1) + "\n") && has(wide, "\n12\t" + lineOf(12) + "\n") ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult tooWide = call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" }, { "context", 11 } }));
+            const pg::ChatAgent::McpResult unfound = call("read_file", input({ { "name", "notes.fm" }, { "context", 1 } }));
+            const pg::ChatAgent::McpResult badSkip = call("read_file", input({ { "name", "notes.fm" }, { "find", "v7(" }, { "skip", -1 } }));
+            P.eq("grep.refused", tooWide.isError && toolText(tooWide) == "context is how many lines around each, 0 to 10" && unfound.isError
+                                     && toolText(unfound) == "context, count and skip go with find" && badSkip.isError
+                                     && has(toolText(badSkip), "skip is how many") ? 1 : 0, 1);
+            const std::string counted = toolText(call("read_file", input({ { "name", "notes.fm" }, { "find", "return x * 1" }, { "count", true } })));
+            P.eq("grep.count_one", counted == "notes.fm: 12 lines, version " + version + "; 4 lines hold \"return x * 1\".\n" ? 1 : 0, 1);
+            const std::string everyCount = toolText(call("read_file", input({ { "find", "\\bv[0-9]+\\(|other\\(" }, { "regex", true }, { "count", true } })));
+            std::printf("count in every file:\n%s", everyCount.c_str());
+            P.eq("grep.count_every", everyCount == "13 lines match \"\\bv[0-9]+\\(|other\\(\" (notes.fm 12, other.fm 1; none in the other file).\n" ? 1 : 0, 1);
+
+            // skip: a file of 45 lines found, beside notes.fm.
+            std::string many;
+            for (int i = 1; i <= 45; ++i)
+                many += "int k" + std::to_string(i) + " = " + std::to_string(i) + ";\n";
+            pg::Draft md = fd;
+            md.files.push_back({ "many.fm", many });
+            processor.editorPort().setDraft(md);
+            const std::string first40 = toolText(call("read_file", input({ { "name", "many.fm" }, { "find", "int k" }, { "context", 0 } })));
+            const std::string rest = toolText(call("read_file", input({ { "name", "many.fm" }, { "find", "int k" }, { "context", 0 }, { "skip", 40 } })));
+            const std::string pastAll = toolText(call("read_file", input({ { "name", "many.fm" }, { "find", "int k" }, { "skip", 45 } })));
+            std::printf("skip, the first 40's end and the rest:\n%s%s%s", first40.substr(first40.size() > 120 ? first40.size() - 120 : 0).c_str(),
+                        rest.c_str(), pastAll.c_str());
+            const auto endsWith = [](const std::string& t, const std::string& e) { return t.size() >= e.size() && t.compare(t.size() - e.size(), e.size(), e) == 0; };
+            P.eq("grep.skip_last_line", endsWith(first40, "\n40\tint k40 = 40;\n(5 more: call again with skip=40, or give find a longer text)\n")
+                                            && !has(first40, "\n41\t") ? 1 : 0, 1);
+            P.eq("grep.skip_reads_on", has(rest, "; 45 lines hold \"int k\" (41, 42, 43, 44, 45), the lines alone, after the first 40:\n41\tint k41 = 41;\n")
+                                           && endsWith(rest, "\n45\tint k45 = 45;\n") && !has(rest, "more:") ? 1 : 0, 1);
+            P.eq("grep.skip_past_all", has(pastAll, "; 45 lines hold \"int k\": skip=45 passes over all of them.\n") ? 1 : 0, 1);
+            // Across the files: the lines found counted in the tabs' order, skip passing over notes.fm's 12 and 38 of
+            // many.fm's.
+            const std::string across = toolText(call("read_file", input({ { "find", "int k|\\bv[0-9]+\\(" }, { "regex", true }, { "context", 0 } })));
+            const std::string acrossOn = toolText(call("read_file", input({ { "find", "int k|\\bv[0-9]+\\(" }, { "regex", true }, { "context", 0 },
+                                                                            { "skip", 50 } })));
+            std::printf("across the files, skip 50:\n%s", acrossOn.c_str());
+            P.eq("grep.skip_across", endsWith(across, "\n28\tint k28 = 28;\n(17 more: call again with skip=40, or give find a narrower pattern, or a file's name)\n")
+                                         && has(acrossOn, "57 lines match \"int k|\\bv[0-9]+\\(\" (notes.fm 12, many.fm 45; none in the other 2 files), the lines "
+                                                          "alone, after the first 50:\nmany.fm: 45 lines, version ")
+                                         && has(acrossOn, "; lines 39, 40, 41, 42, 43, 44, 45:\n39\tint k39 = 39;\n") && !has(acrossOn, "notes.fm:")
+                                         && endsWith(acrossOn, "\n45\tint k45 = 45;\n") ? 1 : 0, 1);
+            processor.editorPort().setDraft(fd);
+            for (int k = 0; k < 40 && panel.editor().text() != fileText("notes.fm"); ++k)
+                host.tick(1);
         }
 
         // A part read is not the file seen: the user edits both files while the chat's Claude listens; it then reads a
@@ -2734,6 +2795,201 @@ PROBE(plugin, chat)
                                                  && shared == "No line found yet: the search stopped at b.fm's line " + std::to_string(at) + ": " + costly
                                                                   + "a file's name with from and lines, searches the rest.\n"
                                              ? 1 : 0, 1);
+        }
+        // REPLACE: edit_file's find, every match replaced by new_text: in one file and in every file (one write of the
+        // draft, one step Cmd-Z undoes in each file's tab, the tool's row naming them), with regex (new_text as it is:
+        // no $1), a netlist's *@ lines untouched, all or none (a pattern past its steps in a later file, more than 2,000,
+        // a named file's `expected` after the user's edit), the user's typing between the read and the write kept and
+        // the replacement run on it, the refusals in words, and an edit of a file seen seen.
+        {
+            const std::string aText = "float zq_gain = 1.0f;\nfloat b = zq_gain * 2.0f; // zq_gain\n";
+            const std::string bText = "// uses zq_gain\nfloat c = zq_gain;\n";
+            const std::string cirText = "* pedal.cir: a test\nRzq_gain in out 10k\n*@ part Rzq_gain 2,3 r0\n.end\n";
+            pg::Draft rd;
+            rd.files = { saved.files.front(), { "a.fm", aText }, { "b.fm", bText }, { "pedal.cir", cirText } };
+            rd.active = 1;
+            processor.editorPort().setDraft(rd);
+            const auto sync = [&] {
+                processor.poll();
+                for (int k = 0; k < 40; ++k)
+                {
+                    host.tick(1);
+                    const int a = panel.activeFile();
+                    if (a >= 0 && panel.editor().text() == fileText(panel.fileName(a)))
+                        break;
+                }
+            };
+            sync();
+            const auto replace = [&](const juce::var& in) {
+                const pg::ChatAgent::McpResult r = agent.mcpCall("edit_file", in);
+                sync();
+                return r;
+            };
+            const auto swapped = [](std::string t, const std::string& from, const std::string& to) {
+                for (std::size_t p = t.find(from); p != std::string::npos; p = t.find(from, p + to.size()))
+                    t.replace(p, from.size(), to);
+                return t;
+            };
+            const bool programFree = saved.files.front().text.find("zq_") == std::string::npos;
+
+            // One file: every match in it, the result its count, lines and version and the lines changed.
+            const pg::ChatAgent::McpResult inA = replace(input({ { "name", "a.fm" }, { "find", "zq_gain" }, { "new_text", "zq_level" } }));
+            std::printf("edit_file find in a.fm:\n%s", toolText(inA).c_str());
+            const std::string aLevel = swapped(aText, "zq_gain", "zq_level");
+            P.eq("replace.one_file", !inA.isError && programFree
+                                         && toolText(inA).rfind("Replaced 3 matches of \"zq_gain\" in a.fm (lines 1, 2), one step the user can undo; now 2 lines, version ", 0) == 0
+                                         && has(toolText(inA), ".\nThe lines changed:\n1\tfloat zq_level = 1.0f;\n2\tfloat b = zq_level * 2.0f; // zq_level\n")
+                                         && fileText("a.fm") == aLevel && fileText("b.fm") == bText ? 1 : 0, 1);
+
+            // Every file: a.fm, b.fm and the netlist's part line (its *@ line as it was), in one write of the draft.
+            int writes = 0;
+            agent.setFileWriteHookForTests([&](int) { ++writes; });
+            const pg::ChatAgent::McpResult every = replace(input({ { "find", "zq_" }, { "new_text", "zz_" } }));
+            agent.setFileWriteHookForTests(nullptr);
+            std::printf("edit_file find in every file:\n%s", toolText(every).c_str());
+            const std::string aZ = swapped(aLevel, "zq_", "zz_"), bZ = swapped(bText, "zq_", "zz_");
+            const std::string cirZ = "* pedal.cir: a test\nRzz_gain in out 10k\n*@ part Rzq_gain 2,3 r0\n.end\n";
+            P.eq("replace.every_file", !every.isError
+                                           && toolText(every).rfind("Replaced 6 matches of \"zq_\" in 3 files, one step the user can undo:\n- a.fm: 3 (lines 1, 2); now 2 "
+                                                                    "lines, version ", 0) == 0
+                                           && has(toolText(every), "\n- b.fm: 2 (lines 1, 2); now 2 lines, version ")
+                                           && has(toolText(every), "\n- pedal.cir: 1 (line 2); now 4 lines, version ")
+                                           && has(toolText(every), "\npedal.cir:\n2\tRzz_gain in out 10k\n") && fileText("a.fm") == aZ
+                                           && fileText("b.fm") == bZ && fileText("pedal.cir") == cirZ ? 1 : 0, 1);
+            P.eq("replace.layout_untouched", has(fileText("pedal.cir"), "\n*@ part Rzq_gain 2,3 r0\n") ? 1 : 0, 1);
+            P.eq("replace.one_write", writes == 1
+                                          && lastText(agent.chatState(), pg::ChatEntry::Kind::tool) == "replaced 6 matches of \"zq_\" in a.fm, b.fm and pedal.cir"
+                                      ? 1 : 0, 1);
+            // One step: Cmd-Z in b.fm's tab undoes it in all three files (the editor merged one change of the draft).
+            {
+                int tab = -1;
+                for (int i = 0; i < panel.fileCount(); ++i)
+                    if (panel.fileName(i) == "b.fm")
+                        tab = i;
+                const funkgui::Point t = panel.centreOfTab(tab);
+                host.click(t.x, t.y);
+                host.tick(1);
+                const funkgui::Rect eb = panel.editor().bounds();
+                host.click(eb.centreX(), eb.centreY());
+                host.keys("cmd+z");
+                host.tick(2);
+                processor.poll();
+                P.eq("replace.one_undo_step", tab >= 0 && fileText("a.fm") == aLevel && fileText("b.fm") == bText && fileText("pedal.cir") == cirText ? 1 : 0, 1);
+                processor.editorPort().setDraft(rd);
+                sync();
+            }
+
+            // regex: a pattern's matches, new_text as it is ($1 no group's: nothing is captured), the longest at the
+            // leftmost place.
+            const pg::ChatAgent::McpResult numbers = replace(input({ { "name", "a.fm" }, { "find", "[0-9]+\\.[0-9]+f" }, { "regex", true }, { "new_text", "0.5f" } }));
+            const pg::ChatAgent::McpResult dollar = replace(input({ { "name", "b.fm" }, { "find", "(zq)_gain" }, { "regex", true }, { "new_text", "$1" } }));
+            const pg::ChatAgent::McpResult longest = replace(input({ { "name", "a.fm" }, { "find", "zq|zq_gain" }, { "regex", true }, { "new_text", "g" } }));
+            P.eq("replace.regex", !numbers.isError && has(toolText(numbers), "Replaced 2 matches of \"[0-9]+\\.[0-9]+f\" in a.fm (lines 1, 2)") && !dollar.isError
+                                      && fileText("b.fm") == "// uses $1\nfloat c = $1;\n" && !longest.isError
+                                      && fileText("a.fm") == "float g = 0.5f;\nfloat b = g * 0.5f; // g\n" ? 1 : 0, 1);
+            processor.editorPort().setDraft(rd);
+            sync();
+
+            // All or none: a pattern whose steps run out in pedal.cir, after matches in a.fm and b.fm, changes nothing;
+            // so do 2,001 matches.
+            pg::Draft heavy = rd;
+            std::string rows;
+            for (int k = 0; k < 24; ++k)
+                rows += "* " + std::string(2000, 'a') + "\n";
+            heavy.files[3].text = cirText + rows;
+            processor.editorPort().setDraft(heavy);
+            sync();
+            const pg::ChatAgent::McpResult spent = replace(input({ { "find", "zq_gain|a{1000}b" }, { "regex", true }, { "new_text", "x" } }));
+            std::printf("edit_file find past its steps:\n%s\n", toolText(spent).c_str());
+            P.eq("replace.steps_none", spent.isError && has(toolText(spent), "Nothing was changed: the search stopped at pedal.cir's line ")
+                                           && fileText("a.fm") == aText && fileText("b.fm") == bText ? 1 : 0, 1);
+            pg::Draft lots = rd;
+            lots.files[2].text = bText + std::string(2001, 'q') + "\n";
+            processor.editorPort().setDraft(lots);
+            sync();
+            const pg::ChatAgent::McpResult tooMany = replace(input({ { "find", "q" }, { "new_text", "w" } }));
+            P.eq("replace.too_many_none", tooMany.isError && toolText(tooMany) == "find \"q\" matches more than 2000 times: give a longer text, or a file's name. Nothing was changed."
+                                              && fileText("b.fm") == lots.files[2].text && fileText("a.fm") == aText ? 1 : 0, 1);
+            processor.editorPort().setDraft(rd);
+            sync();
+
+            // expected: the named file's version holds; after the user's edit nothing is written, the edit kept.
+            const std::string aVersion = versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "a.fm" } }))));
+            pg::Draft userEdit = processor.editorPort().draft();
+            for (pg::SourceFile& f : userEdit.files)
+                if (f.name == "a.fm")
+                    f.text += "// the user's zq_gain\n";
+            processor.editorPort().setDraft(userEdit);
+            sync();
+            const pg::ChatAgent::McpResult guardedA = replace(input({ { "name", "a.fm" }, { "find", "zq_gain" }, { "new_text", "zq_level" },
+                                                                     { "expected", juce::String(aVersion) } }));
+            P.eq("replace.expected_none", guardedA.isError
+                                              && has(toolText(guardedA), "a.fm changed since version " + aVersion + " (the user's edit, which is kept): nothing was written.")
+                                              && fileText("a.fm") == aText + "// the user's zq_gain\n" ? 1 : 0, 1);
+            processor.editorPort().setDraft(rd);
+            sync();
+
+            // The user's typing between the read and the write (planted in b.fm): kept, and the replacement run again on
+            // it, in every file.
+            agent.setFileWriteHookForTests([&](int attempt) {
+                if (attempt > 0)
+                    return;
+                pg::Draft d = processor.editorPort().draft();
+                for (pg::SourceFile& f : d.files)
+                    if (f.name == "b.fm")
+                        f.text += "// typed zq_gain meanwhile\n";
+                processor.editorPort().setDraft(d);
+            });
+            const pg::ChatAgent::McpResult planted = replace(input({ { "find", "zq_gain" }, { "new_text", "zq_mix" } }));
+            agent.setFileWriteHookForTests(nullptr);
+            P.eq("replace.typing_kept", !planted.isError && has(toolText(planted), "Replaced 7 matches of \"zq_gain\" in 3 files")
+                                            && fileText("b.fm") == swapped(bText, "zq_gain", "zq_mix") + "// typed zq_mix meanwhile\n"
+                                            && fileText("a.fm") == swapped(aText, "zq_gain", "zq_mix") ? 1 : 0, 1);
+            processor.editorPort().setDraft(rd);
+            sync();
+
+            // Refused, in words, nothing changed: no match (the closest line; one in another case named), find beside
+            // old_text, a pattern it does not take, expected with no name, a find of two lines, no new_text.
+            const pg::ChatAgent::McpResult noMatch = replace(input({ { "name", "a.fm" }, { "find", "zq_gian" }, { "new_text", "x" } }));
+            const pg::ChatAgent::McpResult cased = replace(input({ { "find", "ZQ_GAIN" }, { "new_text", "x" } }));
+            std::printf("edit_file find, none:\n%s\n%s\n", toolText(noMatch).c_str(), toolText(cased).c_str());
+            P.eq("replace.none", noMatch.isError && toolText(noMatch).rfind("No line of a.fm holds \"zq_gian\" (find replaces in its own case).\nThe closest passage, line ", 0) == 0
+                                     && has(toolText(noMatch), "Nothing was changed.") && cased.isError
+                                     && has(toolText(cased), "In another case: a.fm lines 1, 2; b.fm lines 1, 2; pedal.cir line 2 (give find as they write it).")
+                                 ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult beside = replace(input({ { "name", "a.fm" }, { "find", "zq_gain" }, { "old_text", "zq_gain" }, { "new_text", "x" } }));
+            const pg::ChatAgent::McpResult badPattern = replace(input({ { "find", "(zq" }, { "regex", true }, { "new_text", "x" } }));
+            const pg::ChatAgent::McpResult nameless = replace(input({ { "find", "zq_gain" }, { "new_text", "x" }, { "expected", "12345678" } }));
+            const pg::ChatAgent::McpResult twoLines = replace(input({ { "find", "zq_gain\nfloat" }, { "new_text", "x" } }));
+            const pg::ChatAgent::McpResult noNew = replace(input({ { "find", "zq_gain" } }));
+            P.eq("replace.refused", beside.isError && has(toolText(beside), "not find with old_text") && badPattern.isError
+                                        && has(toolText(badPattern), "is not a regex this search takes") && nameless.isError
+                                        && has(toolText(nameless), "expected holds for a named file") && twoLines.isError
+                                        && has(toolText(twoLines), "find matches within a line") && noNew.isError && has(toolText(noNew), "find needs new_text")
+                                        && fileText("a.fm") == aText && fileText("b.fm") == bText && fileText("pedal.cir") == cirText ? 1 : 0, 1);
+
+            // Seen: the chat's Claude saw b.fm whole (the state sent it); its replacement there leaves it seen, so the
+            // next state names it unchanged.
+            script->add(fake::Response::ok(fake::Sse().start().text("Looked.").end()));
+            agent.send("look at b.fm");
+            agent.waitIdle();
+            script->add(fake::Response::ok(fake::Sse()
+                                               .start()
+                                               .tool("toolu_r1", "edit_file", input({ { "name", "b.fm" }, { "find", "zq_gain" }, { "new_text", "zq_drive" } }))
+                                               .end("tool_use")));
+            script->add(fake::Response::ok(fake::Sse().start().text("Renamed.").end()));
+            agent.send("rename zq_gain in b.fm");
+            agent.waitIdle();
+            processor.getParameters()[0]->setValueNotifyingHost(0.35f);
+            script->add(fake::Response::ok(fake::Sse().start().text("Seen.").end()));
+            agent.send("and now?");
+            agent.waitIdle();
+            std::string state;
+            for (const auto& b : arr(messagesOf(script->body(script->postCount() - 1)).getLast().getProperty("content", {})))
+                if (str(b, "text").rfind("<plugin_state>", 0) == 0)
+                    state = str(b, "text");
+            P.eq("replace.seen", fileText("b.fm") == swapped(bText, "zq_gain", "zq_drive")
+                                     && has(state, "<file name=\"b.fm\" lines=\"2\" unchanged=\"true\"/>") ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);
