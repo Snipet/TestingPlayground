@@ -7,8 +7,10 @@ main module is `Effect`, one instance; the synth's `Voice`, one instance a note)
 Cmd-Return) and plays, its parameters becoming the dials. Made from FunkPluginTemplate. Change the panel, the examples
 and the plumbing freely; keep the rules below. README.md is the user's guide (a short start: what the plugins do,
 building from a clone, using them; then the detail: writing a program, the editor, the probes), CHANGELOG.md what each
-day's merged pull requests changed for users (newest first, an Unreleased section on top); this file is what a session
-must know (`scripts/plugin.py info` prints the identities).
+day's merged pull requests changed for users (newest first, an Unreleased section on top; a pull request's entry is
+its own file in `docs/changelog/`, folded in on `main`, since one section every open pull request edited made each
+merge conflict with all the others); this file is what a session must know (`scripts/plugin.py info` prints the
+identities).
 
 <!-- origin -->
 The effect was an FDN reverb (the legacy `legacy-visage` FDN, ported) with an FMinus script on its output, and the
@@ -70,6 +72,7 @@ FunkPluginTemplate are carried over by hand (`Source/plugin`, `Source/editor`, t
 | `Assets/logo/**` | its outputs: `<kind>/` (`effect`, `instrument`: a product's `PRODUCT_KIND`) the app icon (`icon.iconset`, 16 to 1024 px: every size from 64 up on the pixel grid (the crest, the trough, the floor and the stem on whole px), 32 hinted on its own grid, 16 set pixel by pixel; `icon.icns`; `icon.svg`; `installer-1024.png`, the master an installer takes), `extension-512.png`, the mark's SVGs (`mark-graphite`, `mark-paper`, `mark-flat`) and lockups; `readme-*.png` (the README's header: both marks), `construction.png`, `sheet.png` (the top bar's tiles in FunkGui's own pixels: logo.swift mirrors its rasteriser) | generated, committed. CMakeLists.txt gives JUCE `installer-1024.png` as ICON_BIG and puts `icon.icns` over the Icon.icns JUCE makes, in every bundle (the Standalone's `CFBundleIconFile`; the About box shows it) |
 | `Tools/probes/**` | probes on FunkGui's Harness, each run for every product: `fminus/` (the examples, the contract, the library, the panel's lines), `dsp/` (the Engine, its meters, the Host block), `plugin/`, `gui/`; `common/Rig.h` runs a program in an Engine, `common/Cadence.h` an editor's frames at FramePump's cadence, `common/Probe.h`'s `probe::skip` says a row a machine cannot judge (and `emulated`, `noDisplay`, `common/Pictures.h`'s `noGpuPictures` say why: "Linux"); `installer/`, the installer's (no product's: their own executable, each run once; `Fixture.h`, their payload, root and `System` stand-in) | spec rows only, no golden files; where the kinds differ, a probe branches on `product::kIsInstrument` |
 | `Tools/probes/fixtures/factory/` | the factory set's test fixtures, made by the website repository's `scripts/factory-fixtures.ts` (its README, "The plugins' test fixtures") from `factory/`: known answers for SHA-256 and ECDSA P-256 (`vectors.json`), the test keys' public halves (`keys.json`), and a little signed site per case with what a plugin must do with it (`cases.json`; the folder's README says each); `plugin.verify` and `plugin.factorystore` read them through `PROBE_SOURCE_DIR` | made there, never by hand: regenerated as a whole (fresh keys, so every signature changes; the cases stay) when a check in the website's `scripts/factory.ts` changes; no private key, nothing of a user's |
+| `docs/changelog/`, `scripts/changelog.py` | the changelog's entries: a file a pull request that users would notice (`<name>.md`: a `### ` heading, its **Added**, **Fixed** and **Changed** lists, the extension's line first when it moves), `README.md` the convention; the script's `check`, `show`, `fold` (into `CHANGELOG.md`'s Unreleased, newest first, linked from the merge, the files removed) and `cut --date` (the day's section), its `selftest` | a pull request adds its file and never edits `CHANGELOG.md`; `fold` and `cut` run on `main` alone; `lint.changelog` (`cmake/LintChangelog.cmake`, no Python) checks the files as `check` does |
 
 There are no starters here (`scripts/starters/` is the template's, and new plugins start from FunkPluginTemplate).
 `plugin.py add` makes another product of this tree from one of these (its kind, a copy of its examples and its icon;
@@ -85,7 +88,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (with `$DISPLAY` unset the menus' pictures are skipped, saying so; a bare X server ends the process: "Linux" below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
   renderer and probes, and the installer) and run every test in `build-dev`: each of the 74 probes once for each product
-  (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints and the installer's probes once
+  (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints (`lint.layers`, `lint.changelog`, ...) and
+  the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
   change to its window). Done means it exits 0 with no warning from our sources (they build with `-Werror`). While
   working on one product, `cmake --workflow --preset effect-verify` (or `synth-verify`) builds and tests it alone (the
@@ -2094,5 +2098,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
 ## Git
 
 Work on a branch; commit messages say what changed and why. Never commit build directories (`build-*/` is ignored).
+A pull request never edits `CHANGELOG.md`'s Unreleased section: its entry is `docs/changelog/<name>.md`, and
+`scripts/changelog.py fold` (or `cut`) moves it there, on `main`.
 Text about this repository's own history goes in `<!-- origin -->` blocks (README.md, CLAUDE.md), apart from what the
 docs say about the code, so that a project made from this one can leave it out.
