@@ -7099,6 +7099,7 @@ namespace playground::ui
             return false;
         files().endRename();
         settings_.setHooks(settingsHooks());
+        settings_.sync(host_);                           // the host the pages lay out with (the theme, the zoom)
         if (!settings_.open(page))
             return false;
         focusBeforeSettings_ = focus_;

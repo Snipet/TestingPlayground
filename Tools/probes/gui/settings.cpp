@@ -277,7 +277,12 @@ namespace
             for (std::size_t j = 0; j < i; ++j)
                 apart = apart && !meet(c.r, at.controls[j].r);
             for (const pg::ui::SettingsCard::Line& l : at.lines)
-                clear = clear && !meet(c.r, l.r);
+            {
+                // What is drawn: a page's text is clipped to its body (one scrolled half out of it is cut at its edge).
+                const float top = std::max(l.r.y, at.body.y), bottom = std::min(l.r.bottom(), at.body.bottom());
+                const funkgui::Rect drawn{ l.r.x, top, l.r.w, bottom - top };
+                clear = clear && (bottom <= top || !meet(c.r, drawn));
+            }
         }
         bool linesIn = true;
         for (const pg::ui::SettingsCard::Line& l : at.lines)
@@ -566,7 +571,11 @@ namespace
                 {
                     ++rail;
                     checked += it.checked ? 1 : 0;
-                    P.eq("a11y.rail_" + it.title.substr(15, 3), it.role == funkgui::A11yRole::button ? 1 : 0, 1);
+                    std::string id = "?";
+                    for (const st::Page& pg2 : st::pages())
+                        if (it.title == std::string("Settings page: ") + pg2.title)
+                            id = pg2.id;
+                    P.eq("a11y.rail_" + id, it.role == funkgui::A11yRole::button ? 1 : 0, 1);
                 }
             P.eq("a11y.rail_entries", rail, static_cast<int64_t>(st::pages().size()) - 1);
             P.eq("a11y.one_checked", checked, 1);

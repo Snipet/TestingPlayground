@@ -77,7 +77,7 @@ namespace playground::ui
     int SettingsCard::shownPage() const
     {
         const auto all = settings::pages();
-        settings::Context ctx{ port_, nullptr, const_cast<SettingsCard&>(*this) };
+        settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
         const auto listed = [&](int i) {
             return i >= 0 && i < static_cast<int>(all.size()) && (all[static_cast<std::size_t>(i)].shown == nullptr
                                                                    || all[static_cast<std::size_t>(i)].shown(ctx));
@@ -125,7 +125,7 @@ namespace playground::ui
     bool SettingsCard::showPage(std::string_view id)
     {
         const auto all = settings::pages();
-        settings::Context ctx{ port_, nullptr, *this };
+        settings::Context ctx{ port_, host_, *this };
         for (int i = 0; i < static_cast<int>(all.size()); ++i)
         {
             const settings::Page& p = all[static_cast<std::size_t>(i)];
@@ -192,6 +192,8 @@ namespace playground::ui
 
     bool SettingsCard::sync(funkgui::HostServices* host)
     {
+        if (host != nullptr)
+            host_ = host;
         bool moved = false;
         DevicePort* d = port_.devices();
         if (d == nullptr)
@@ -265,7 +267,7 @@ namespace playground::ui
         at.body = { at.box.x + kRailW + kPad, at.box.y + kHeaderH, inner, h - kHeaderH - kFooterH };
 
         // The rail: the pages listed, each a control.
-        settings::Context ctx{ port_, nullptr, const_cast<SettingsCard&>(*this) };
+        settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
         {
             float y = at.box.y + kRailTop;
             for (int i = 0; i < static_cast<int>(all.size()); ++i)
@@ -384,6 +386,8 @@ namespace playground::ui
 
     void SettingsCard::pointerDown(funkgui::Point p, float width, float height, funkgui::HostServices* host)
     {
+        if (host != nullptr)
+            host_ = host;
         const Places at = places(width, height);
         ring_ = false;
         if (!at.box.contains(p))
@@ -454,6 +458,8 @@ namespace playground::ui
 
     void SettingsCard::key(const funkgui::KeyEvent& e, funkgui::HostServices* host, float width, float height)
     {
+        if (host != nullptr)
+            host_ = host;
         using funkgui::Key;
         if (e.key == Key::escape)
         {
@@ -717,6 +723,8 @@ namespace playground::ui
 
     bool SettingsCard::a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height, funkgui::HostServices* host)
     {
+        if (host != nullptr)
+            host_ = host;
         const Places at = places(width, height);
         for (const Control& c : at.controls)
         {

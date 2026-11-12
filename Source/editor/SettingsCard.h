@@ -185,6 +185,8 @@ namespace playground::ui
         void gatherDebug();
 
         EditorPort& port_;
+        funkgui::HostServices* host_ = nullptr;          // the Panel's host, as sync() and the input last gave it: what a
+                                                         // page lays out with (the theme, the zoom steps)
         Hooks hooks_;
         std::function<bool(const funkgui::Rect&)> menuOpen_;
         bool open_ = false;
