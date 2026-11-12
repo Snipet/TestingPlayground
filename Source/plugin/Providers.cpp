@@ -1,6 +1,8 @@
 // Source/plugin/Providers.cpp: see Providers.h.
 #include "plugin/Providers.h"
 
+#include "fminus/Lang.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -60,13 +62,73 @@ namespace playground::providers
             return colon == std::string::npos ? authority : authority.substr(0, colon);
         }
 
+        bool hexDigit(char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }
+        bool ipv6Char(char c) { return hexDigit(c) || c == ':' || c == '.'; }
+
+        // An authority this parser and every client read alike: a host and at most a port of decimal digits (1 to
+        // 65535), no backslash (some clients read one as the path's start) and no '%' (an escape a '/' or '@' may hide
+        // behind), a bracketed host closed and holding an IPv6 address's characters alone. False for any other, so that
+        // the origin a key is bound to is the server it reaches.
+        bool plainAuthority(const std::string& authority)
+        {
+            if (authority.find_first_of("\\%") != std::string::npos)
+                return false;
+            std::string host = authority, port;
+            if (!authority.empty() && authority.front() == '[')
+            {
+                const std::size_t close = authority.find(']');
+                if (close == std::string::npos || close < 3)
+                    return false;
+                host = authority.substr(0, close + 1);
+                const std::string inside = authority.substr(1, close - 1);
+                if (inside.find(':') == std::string::npos
+                    || !std::all_of(inside.begin(), inside.end(), ipv6Char))
+                    return false;
+                const std::string rest = authority.substr(close + 1);
+                if (!rest.empty() && rest.front() != ':')
+                    return false;                  // "[::1].example.com"
+                port = rest;
+            }
+            else if (const std::size_t colon = authority.find(':'); colon != std::string::npos)
+            {
+                host = authority.substr(0, colon);
+                port = authority.substr(colon);
+            }
+            if (host.empty())
+                return false;
+            if (!port.empty())
+            {
+                const std::string digits = port.substr(1);
+                if (digits.empty() || digits.size() > 5
+                    || !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }))
+                    return false;
+                const int n = std::atoi(digits.c_str());
+                if (n < 1 || n > 65535)
+                    return false;
+            }
+            return true;
+        }
+
+        // A host taken as this Mac's or the local network's (http:// allowed): a name of its own (localhost,
+        // *.localhost, *.local), or an address read strictly, so that the address a resolver reaches is the one judged
+        // here. A dotted IPv4 address is four decimal parts with no leading zero (inet_aton and the resolvers behind it
+        // read "010" as octal 8, "0x7f" as hex, "127.1" and "2130706433" as short forms: each refused, never local);
+        // an IPv6 one is [::1] or a first group of four hex digits in fe80::/10's fe80 or fc00::/7 (fc.., fd..).
         bool localHost(const std::string& host)
         {
             if (host == "localhost" || (host.size() > 10 && host.compare(host.size() - 10, 10, ".localhost") == 0)
                 || (host.size() > 6 && host.compare(host.size() - 6, 6, ".local") == 0))
                 return true;
             if (!host.empty() && host.front() == '[')
-                return host == "[::1]" || startsWith(host, "[fe80:") || startsWith(host, "[fd") || startsWith(host, "[fc");
+            {
+                if (host.size() < 4 || host.back() != ']'
+                    || !std::all_of(host.begin() + 1, host.end() - 1, ipv6Char))
+                    return false;
+                if (host == "[::1]")
+                    return true;
+                const std::string first = host.substr(1, host.find(':') == std::string::npos ? 0 : host.find(':') - 1);
+                return first.size() == 4 && (first == "fe80" || startsWith(first, "fc") || startsWith(first, "fd"));
+            }
             // a dotted IPv4 address
             int parts[4] = { -1, -1, -1, -1 };
             int n = 0;
@@ -75,7 +137,8 @@ namespace playground::providers
             {
                 const std::size_t dot = std::min(host.find('.', p), host.size());
                 const std::string part = host.substr(p, dot - p);
-                if (part.empty() || part.size() > 3 || !std::all_of(part.begin(), part.end(), [](char c) { return c >= '0' && c <= '9'; }))
+                if (part.empty() || part.size() > 3 || (part.size() > 1 && part.front() == '0')
+                    || !std::all_of(part.begin(), part.end(), [](char c) { return c >= '0' && c <= '9'; }))
                     return false;
                 parts[n++] = std::atoi(part.c_str());
                 p = dot + 1;
@@ -140,7 +203,8 @@ namespace playground::providers
             why = "the server's address must start with https:// (or http:// for a server on this Mac or the local network)";
             return {};
         }
-        if (u.authority.empty() || contains(u.authority, "@") || contains(base, "?") || contains(base, "#")
+        if (u.authority.empty() || contains(u.authority, "@") || !plainAuthority(u.authority) || contains(base, "?")
+            || contains(base, "#")
             || std::any_of(base.begin(), base.end(), [](unsigned char c) { return c <= ' ' || c >= 127; }))
         {
             why = "that is not a server's address (https://host/path, with no spaces, user, query or fragment)";
@@ -149,7 +213,12 @@ namespace playground::providers
         const std::string host = hostOnly(u.authority);
         if (u.scheme == "http" && !localHost(host))
         {
-            why = "http:// is only for a server on this Mac or the local network: use https://";
+            // An address of numbers alone that is not read as local: a leading zero or another form the system reads
+            // otherwise (010 is octal 8 there) is said, so the user writes it plainly.
+            const bool numbers = !host.empty() && host.find_first_not_of("0123456789.") == std::string::npos;
+            why = numbers ? "http:// is only for a server on this Mac or the local network, its address four plain "
+                            "numbers (192.168.1.20: no leading zeros), else use https://"
+                          : "http:// is only for a server on this Mac or the local network: use https://";
             return {};
         }
         std::string path = u.path;
@@ -179,7 +248,7 @@ namespace playground::providers
     bool isLocal(std::string_view base)
     {
         Url u;
-        return split(base, u) && localHost(hostOnly(u.authority));
+        return split(base, u) && plainAuthority(u.authority) && localHost(hostOnly(u.authority));
     }
 
     std::string baseOf(const ChatProvider& p)
@@ -1140,7 +1209,7 @@ namespace playground::providers
                 const std::string text = raw.toString().toStdString();
                 v = claude::parseJson(text);
                 if (!v.isObject())
-                    return text.substr(0, 500);
+                    return std::string(lang::headOf(text, 500));   // never inside a character
             }
             if (!v.isObject())
                 return {};
@@ -1151,7 +1220,7 @@ namespace playground::providers
                 return m;
             if (std::string m = str(v, "message"); !m.empty())
                 return m;
-            return claude::toJson(v).substr(0, 500);
+            return std::string(lang::headOf(claude::toJson(v), 500));
         }
 
         std::string errorOf(const juce::var& e)
@@ -1397,7 +1466,7 @@ namespace playground::providers
                 return errorOf(v.getProperty("error", juce::var()));
             if (v.isObject() && v.hasProperty("message"))
                 return str(v, "message");
-            return body.substr(0, 300);
+            return std::string(lang::headOf(body, 300));   // a page that is no JSON: never cut inside a character
         }
     }
 
@@ -1444,7 +1513,7 @@ namespace playground::providers
     std::string redirectText(const ChatProvider& p, int status, const std::string& location)
     {
         return nameOf(p) + " answered with a redirect (HTTP " + std::to_string(status)
-             + (location.empty() ? std::string() : ", to " + location.substr(0, 200))
+             + (location.empty() ? std::string() : ", to " + std::string(lang::headOf(location, 200)))
              + "): the chat follows none, so nothing went there. If you trust that address, make it the server's";
     }
 

@@ -136,7 +136,8 @@
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
 //            again says them unchanged in a line; a program with FMinus's -Wswitch warning plays, and run_program says
 //            it on one line (clang's note left out, no Notes:); one card a turn with its rows,
-//            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
+//            a note that Claude went on; checks that cannot pass: twice (the first saying it asks once more), then the
+//            turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
 //            that only sweeps a dial (tune_dials' sweep sets nothing), nor one that only exports the files (write_file's
 //            to); the session keeps them (and loads
@@ -224,13 +225,15 @@
 //            goes to the planner (the question and its context after the history before the reply that asks) and its
 //            answer is the tool's result (a second plan entry, an answer); the footer counts the planner's tokens; the
 //            session keeps the plan entries; a planner that fails (a 400) leaves the turn to the builder with a note;
-//            with no planner, ask_planner is refused
+//            one stopped as its plan streams: the plan read so far kept on its card (not in the history), "Stopped.",
+//            nothing sent to the builder; with no planner, ask_planner is refused
 //   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
 //            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
 //            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
 //            answer (labels) goes in the next request after the other results, as its tool result, and the turn goes
 //            on; the entry keeps the answers. A question answered by a message instead: its result says so and the
-//            words follow in the same message. A question of one option is refused in its result and asks nothing
+//            words follow in the same message. A question of one option is refused in its result and asks nothing.
+//            Its limits count characters (a label and a question in kana within them taken), a header cut whole
 //   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
 //            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
 //            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
@@ -257,7 +260,7 @@
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
 //   BROKEN   a stream cut short (no message_stop) is asked again; what it showed is taken back, and the answer appears
-//            once
+//            once; one stopped in the wait before asking again: the history keeps none of what was taken back
 //   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the block, in its
 //            assistant message (what came before is dropped), and sends the files' text again with the next message;
 //            in the middle of a turn (an answer with tool calls), the next request starts at the block too, every tool
@@ -3069,6 +3072,8 @@ PROBE(plugin, chat)
             const int b2 = turn("louder", 4);
             P.eq("checks.limit_posts", ss->postCount() - b2, 4);
             P.eq("checks.limit_last_says", says(lastUser(b2 + 3), "will not ask again") ? 1 : 0, 1);
+            P.eq("checks.limit_first_says_once_more", says(lastUser(b2 + 2), "asks once more")
+                                                          && !says(lastUser(b2 + 2), "Your turn ends") ? 1 : 0, 1);
             P.eq("checks.limit_answer", lastText(sa.chatState(), pg::ChatEntry::Kind::assistant)
                                             == "It cannot pass: +30 dBFS is beyond the output." ? 1 : 0, 1);
 
@@ -4384,6 +4389,30 @@ PROBE(plugin, chat)
         P.eq("planner.fails_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "goes on without a plan") ? 1 : 0, 1);
         P.eq("planner.fails_builder", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Built it without a plan." ? 1 : 0, 1);
 
+        // Stopped while the plan streams: the plan read so far stays on its card (never in the history), the chat says
+        // "Stopped.", and nothing goes to the builder.
+        fake::Response planning = fake::Response::ok(fake::Sse().start().text("1. A plan begun."));
+        planning.stall = true;
+        script->add(planning);
+        const int bs = script->postCount();
+        agent.send("plan and stop");
+        for (int i = 0; i < 5000 && script->streaming.load() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        agent.stop();
+        agent.waitIdle();
+        {
+            const pg::ChatState ps = agent.chatState();
+            P.eq("planner.stopped_posts", script->postCount() - bs, 1);
+            P.eq("planner.stopped_plan_kept", !ps.entries.empty() && ps.entries.size() >= 2
+                                                  && ps.entries[ps.entries.size() - 2].kind == pg::ChatEntry::Kind::plan
+                                                  && ps.entries[ps.entries.size() - 2].text == "1. A plan begun." ? 1 : 0, 1);
+            P.eq("planner.stopped_note", !ps.entries.empty() && ps.entries.back().kind == pg::ChatEntry::Kind::note
+                                             && ps.entries.back().text == "Stopped." ? 1 : 0, 1);
+            const juce::Array<juce::var> m = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+            P.eq("planner.stopped_history", !m.isEmpty() && str(m[m.size() - 1], "role") == "user"
+                                                && !has(claude::toJson(m[m.size() - 1]), "A plan begun") ? 1 : 0, 1);
+        }
+
         // No planner: ask_planner is refused, and a message goes straight to the builder.
         agent.setPlanner({});
         script->add(fake::Response::ok(fake::Sse().start().tool("toolu_ap2", "ask_planner", input({ { "question", "Which?" } })).end("tool_use")));
@@ -4534,6 +4563,39 @@ PROBE(plugin, chat)
             for (const pg::ChatEntry& e : agent.chatState().entries)
                 n += e.kind == pg::ChatEntry::Kind::question ? 1 : 0;
             P.eq("ask.bad_asks_nothing", n == questionsBefore && !agent.chatState().asking ? 1 : 0, 1);
+        }
+        // Its limits count characters, as its schema says, in any script; a header cut never splits one.
+        {
+            std::string kana25, kana140;
+            for (int i = 0; i < 140; ++i)
+                (i < 25 ? kana25 : kana140) += "\xE3\x81\x82";   // HIRAGANA A: three bytes
+            kana140 += kana25;
+            const auto utf = [](const std::string& t) { return juce::String::fromUTF8(t.c_str()); };
+            const juce::var wide = input(
+                { { "questions",
+                    juce::Array<juce::var>{ input({ { "header", utf("Filtercharakter\xC3\xBCs") },   // 17: cut to 16
+                                                    { "question", utf(kana140) },                      // 140, 420 bytes
+                                                    { "options", juce::Array<juce::var>{ input({ { "label", utf(kana25) } }),
+                                                                                         option("Nein", "") } } }) } } });
+            // Its JSON with the characters escaped, as the scripted stream sends it in pieces of a few bytes.
+            std::string json = claude::toJson(wide);
+            const std::pair<std::string, std::string> escapes[] = { { "\xE3\x81\x82", "\\u3042" }, { "\xC3\xBC", "\\u00fc" } };
+            for (const auto& [from, to] : escapes)
+                for (std::size_t at = json.find(from); at != std::string::npos; at = json.find(from, at + to.size()))
+                    json.replace(at, from.size(), to);
+            script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_a6", "ask_user", json).end("tool_use")));
+            agent.send("auf Deutsch");
+            agent.waitIdle();
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.characters_taken", st.asking && q != nullptr && q->questions.size() == 1
+                                             && q->questions[0].question == kana140 && q->questions[0].options.size() == 2
+                                             && q->questions[0].options[0].label == kana25 ? 1 : 0, 1);
+            P.eq("ask.header_cut_whole", q != nullptr && !q->questions.empty()
+                                             && q->questions[0].header == "Filtercharakter\xC3\xBC" ? 1 : 0, 1);
+            script->add(fake::Response::ok(fake::Sse().start().text("Gut.").end()));
+            agent.send("egal");
+            agent.waitIdle();
         }
     }
 
@@ -5109,6 +5171,24 @@ PROBE(plugin, chat)
             half = half || has(e.text, "Half an answ");
         P.eq("broken.half_taken_back", half ? 0 : 1, 1);
         P.eq("broken.note", has(lastText(st, pg::ChatEntry::Kind::note), "broke off") ? 1 : 0, 1);
+
+        // Stopped in the wait before asking again: what the chat took back stays out of the history too.
+        fake::Response cutAgain = fake::Response::ok(fake::Sse().start().text("A second half answ"));
+        cutAgain.retryAfter = 30;
+        script->add(cutAgain);
+        agent.send("tell me more");
+        for (int i = 0; i < 5000 && !juce::String(agent.chatState().activity).containsIgnoreCase("retrying"); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        P.eq("broken.waiting", juce::String(agent.chatState().activity).containsIgnoreCase("retrying") ? 1 : 0, 1);
+        agent.stop();
+        agent.waitIdle();
+        const juce::Array<juce::var> m = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        P.eq("broken.stopped_in_wait_kept_nothing", !m.isEmpty() && str(m[m.size() - 1], "role") == "assistant" && c.size() == 1
+                                                        && str(c[0], "text") == "(stopped by the user)"
+                                                        && !has(agent.saveState(), "A second half") ? 1 : 0, 1);
+        P.eq("broken.stopped_in_wait_note", lastText(agent.chatState(), pg::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
+        P.eq("broken.stopped_in_wait_alternates", alternates(m) ? 1 : 0, 1);
     }
 
     // ---- COMPACT -------------------------------------------------------------------------------------------------------

@@ -1276,7 +1276,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
     a server here that read under half of what was sent cut the conversation (Ollama does, silently): noted once a
     chat. A change to the prompt's headings keeps `shortPrompt` cut at THREADS (`plugin.providers` checks it).
   - **Servers and keys**: a base URL is `https://`, or `http://` to this Mac or the local network only
-    (`providers::canonical`); a key is bound to its server's origin (above, "The key") and the headers carry it to that
+    (`providers::canonical`, strict so that a resolver reads the address alike: no part with a leading zero, no hex or
+    short form, no backslash or `%`, a port of digits, a bracket closed); a key is bound to its server's origin (above,
+    "The key") and the headers carry it to that
     server alone (`Authorization: Bearer` for an OpenAI-compatible one, `x-goog-api-key` for Gemini), and no redirect
     takes either elsewhere (above, "The network"; `redirectText`); a server here needs none. A turn uses the key of
     the turn's own provider even when the user switched meanwhile.

@@ -545,7 +545,8 @@ namespace playground
         // The start of a turn (the worker's, first): the provider, and for another one its key, its models and the
         // turn's model and options, all from one moment (a provider chosen while the list was on its way, nothing
         // sent yet, is the turn's: it looks again). anthropic: the turn is Anthropic's (turnProvider_ set);
-        // other: another provider's, ready (`maxTokens` its model's); ended: it cannot start, said in the chat.
+        // other: another provider's, ready (`maxTokens` its model's, 0 when its server keeps a limit of its own);
+        // ended: it cannot start, said in the chat.
         enum class Start : uint8_t { anthropic, other, ended };
         Start startTurn(int& maxTokens);
         // The provider's state in chatState (mutex held; `kept`: keyKept's, asked before), the settings kept

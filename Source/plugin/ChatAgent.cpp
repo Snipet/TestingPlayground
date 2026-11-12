@@ -171,6 +171,8 @@ namespace playground
             std::size_t cut = t.rfind('\n', kMaxToolOutput);
             if (cut == std::string::npos || cut < kMaxToolOutput / 2)
                 cut = kMaxToolOutput;
+            while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0) == 0x80)
+                --cut;                             // never inside a character
             const int lines = static_cast<int>(std::count(t.begin() + static_cast<std::ptrdiff_t>(cut), t.end(), '\n'));
             return t.substr(0, cut) + "\n(" + std::to_string(lines) + " more lines left out: fix these first)\n";
         }
@@ -296,11 +298,19 @@ namespace playground
                    "and the hard decisions, then write the code once, straight into its files, a few files to a reply.)";
         }
 
+        // The limit a reply cut off reached, as Claude is told it: its size when the request or the model's list gave
+        // one (0: another provider's server cut it at a limit of its own, which no request named).
+        std::string reachedLimit(int maxTokens)
+        {
+            return maxTokens > 0 ? "its limit of about " + thousands(maxTokens) + " tokens, your thinking included"
+                                 : std::string("the length limit of the model's server");
+        }
+
         // After a reply cut off at max_tokens with no tool call: what the turn goes on with.
         std::string cutOffNote(int maxTokens)
         {
-            return "(From the plugin: your reply reached its limit of about " + thousands(maxTokens)
-                 + " tokens, your thinking included, and was cut off. Go on from where it stopped: write what you have "
+            return "(From the plugin: your reply reached " + reachedLimit(maxTokens)
+                 + ", and was cut off. Go on from where it stopped: write what you have "
                    "worked out into its files now, then do what remains a step at a time.)";
         }
 
@@ -1078,6 +1088,22 @@ namespace playground
         constexpr int kAskMaxQuestions = 4, kAskMinOptions = 2, kAskMaxOptions = 6;
         constexpr std::size_t kAskMaxQuestionText = 400, kAskMaxLabel = 60, kAskMaxDescription = 200, kAskMaxHeader = 16;
 
+        // A text's length in characters (UTF-8: every byte but a continuation byte starts one), as ask_user's schema
+        // and its refusals count, and the text cut to its first `n` characters, never inside one.
+        std::size_t characters(const std::string& t)
+        {
+            const auto starts = [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; };
+            return static_cast<std::size_t>(std::count_if(t.begin(), t.end(), starts));
+        }
+        std::string firstCharacters(const std::string& t, std::size_t n)
+        {
+            std::size_t at = 0;
+            for (std::size_t seen = 0; at < t.size(); ++at)
+                if ((static_cast<unsigned char>(t[at]) & 0xC0) != 0x80 && seen++ == n)
+                    break;
+            return t.substr(0, at);
+        }
+
         // ask_user's input, checked: false, with why, for one the chat cannot show.
         bool parseQuestions(const juce::var& input, std::vector<ChatQuestion>& out, std::string& why)
         {
@@ -1094,13 +1120,12 @@ namespace playground
                 cq.question = juce::String(str(q, "question")).trim().toStdString();
                 cq.header = juce::String(str(q, "header")).trim().toStdString();
                 cq.multi = static_cast<bool>(q.getProperty("multi_select", false));
-                if (cq.question.empty() || cq.question.size() > kAskMaxQuestionText)
+                if (cq.question.empty() || characters(cq.question) > kAskMaxQuestionText)
                 {
                     why = "Each question needs its text (at most " + std::to_string(kAskMaxQuestionText) + " characters).";
                     return false;
                 }
-                if (cq.header.size() > kAskMaxHeader)
-                    cq.header = cq.header.substr(0, kAskMaxHeader);
+                cq.header = firstCharacters(cq.header, kAskMaxHeader);
                 const auto* os = q.getProperty("options", juce::var()).getArray();
                 if (os == nullptr || os->size() < kAskMinOptions || os->size() > kAskMaxOptions)
                 {
@@ -1113,7 +1138,7 @@ namespace playground
                     ChatOption co;
                     co.label = juce::String(str(o, "label")).trim().toStdString();
                     co.description = juce::String(str(o, "description")).trim().toStdString();
-                    if (co.label.empty() || co.label.size() > kAskMaxLabel)
+                    if (co.label.empty() || characters(co.label) > kAskMaxLabel)
                     {
                         why = "Each option needs a label of a few words (at most " + std::to_string(kAskMaxLabel) + " characters).";
                         return false;
@@ -1124,8 +1149,7 @@ namespace playground
                             why = "Two options of \"" + cq.question + "\" have the label \"" + co.label + "\".";
                             return false;
                         }
-                    if (co.description.size() > kAskMaxDescription)
-                        co.description = co.description.substr(0, kAskMaxDescription);
+                    co.description = firstCharacters(co.description, kAskMaxDescription);
                     cq.options.push_back(std::move(co));
                 }
                 out.push_back(std::move(cq));
@@ -3060,8 +3084,16 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             turnStart = entries_.size();
         }
-        for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
+        for (int round = 0; round < kMaxRounds; ++round)
         {
+            if (cancel_.load())
+            {
+                // Stopped before this request went (in the models list's fetch, the planner, or between requests): the
+                // history ends as it is, valid (a user's message or results, or a paused reply), and the chat says so.
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::note, "Stopped.");
+                break;
+            }
             std::string beta;
             std::string body = requestBody(beta);  // Anthropic's as it was; another provider's translated
             int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
@@ -3252,6 +3284,8 @@ namespace playground
                     for (int k = 0; k < 10 && !cancel_.load(); ++k)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
+                if (brokeOff && cancel_.load())
+                    builder.reset();               // stopped in the wait: what was taken back stays out of the history
             }
 
             const bool stopped = cancel_.load();
@@ -3392,8 +3426,12 @@ namespace playground
             const bool endsHere = cutOff && cutOffs >= kMaxCutOffs;
             if (cutOff)
             {
-                const std::string limit = std::string(other ? "The model's reply" : "Claude's reply") + " reached its length limit (" + thousands(maxTokens)
-                                        + " tokens, its thinking included)";
+                const std::string limit =
+                    std::string(other ? "The model's reply" : "Claude's reply")
+                    + (maxTokens > 0
+                           ? " reached its length limit (" + thousands(maxTokens) + " tokens, its thinking included)"
+                           : std::string(" reached the length limit of its server (on a server of your own, the "
+                                         "model's context length in its settings)"));
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::note,
                          endsHere ? limit + " twice in a row, so the turn ends here. Send \"continue\" to let it go "
@@ -3430,9 +3468,13 @@ namespace playground
                             + (current ? " and dials as they are now" : " as they are now, each with the dials it takes")
                             + ".\n" + results
                             + "Fix what fails, or change a check with set_checks if it asks for the wrong thing, or say why "
-                              "it cannot pass. Your turn ends when you answer without a tool call"
-                            + (checkNudges == kMaxCheckNudges ? std::string(", and the plugin will not ask again this turn.)")
-                                                              : std::string(".)"));
+                              "it cannot pass. "
+                            + (checkNudges == kMaxCheckNudges
+                                   ? std::string("Your turn ends when you answer without a tool call, and the plugin "
+                                                 "will not ask again this turn.)")
+                                   : std::string("When you answer without a tool call, the plugin measures the checks "
+                                                 "again and, if one still fails, asks ")
+                                         + (checkNudges + 1 == kMaxCheckNudges ? "once more.)" : "again.)"));
                         const std::lock_guard<std::mutex> lock(mutex_);
                         messages_.add(claude::object({ { "role", "user" }, { "content", juce::Array<juce::var>{ text(line) } } }));
                         addEntry(ChatEntry::Kind::note, "A check fails, so Claude goes on (" + std::to_string(checkNudges) + " of "
@@ -3481,8 +3523,8 @@ namespace playground
                 if (cutOff || invalid || cancel_.load())
                 {
                     const std::string why = cutOff
-                                                ? "Your reply reached its limit of about " + thousands(maxTokens)
-                                                      + " tokens, your thinking included, and was cut off before this "
+                                                ? "Your reply reached " + reachedLimit(maxTokens)
+                                                      + ", and was cut off before this "
                                                         "call was complete, so it did not run. Do the work in smaller "
                                                         "steps (edit_file, or several files)."
                                             : invalid ? claude::toJson(claude::object({ { "INVALID_JSON",
@@ -3602,9 +3644,10 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             busy_ = false;
             activity_.clear();
+            turnThread_.store(std::thread::id{});   // under the lock that frees the chat: a call that takes it next
+                                                    // keeps its own
             touch();
         }
-        turnThread_.store(std::thread::id{});
         keep();                                    // the turn's work, on this Mac at once
         applyPendingOwner();
     }
@@ -3734,8 +3777,11 @@ namespace playground
             if (why.empty())
                 why = "it wrote nothing";
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (at < entries_.size() && entries_[at].kind == ChatEntry::Kind::plan)
-                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(at));   // no empty card
+            // No empty card; a plan stopped as it streamed keeps what the user read (it never joins the history).
+            const bool begun = at < entries_.size() && cancel_.load()
+                            && entries_[at].text.find_first_not_of(" \t\n") != std::string::npos;
+            if (at < entries_.size() && entries_[at].kind == ChatEntry::Kind::plan && !begun)
+                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(at));
             touch();
         }
         return out;
@@ -4202,9 +4248,9 @@ namespace playground
                 mcpWorking_.store(false);
                 mcpRunning_ = 0;
                 activity_.clear();
+                turnThread_.store(std::thread::id{});   // as runTurn's end: before another turn or call can start
                 touch();
             }
-            turnThread_.store(std::thread::id{});
             applyPendingOwner();
         }
         const juce::var content = block.getProperty("content", juce::var());
