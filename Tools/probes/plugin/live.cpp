@@ -183,6 +183,14 @@ namespace
         Host& operator=(const Host&) = delete;
 
         void start() { thread = std::thread([this] { run(); }); }
+        // Until the host has played n blocks, ten seconds at most: what the probe waits for before a tool listens (a
+        // program's crossfade over), by its blocks, not by a time the host's thread may not have had.
+        void played(int n)
+        {
+            const auto by = Clock::now() + std::chrono::seconds(10);
+            while (blocks.load() < n && Clock::now() < by)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
         void end()
         {
             stop.store(true);
@@ -402,7 +410,7 @@ PROBE(plugin, live)
             }
             Host host(p);
             host.start();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            host.played(20);                                // 107 ms of blocks
             readersBefore = p.meterReaders();
             const auto called = Clock::now();
             j = listen(kListen, true);
@@ -501,7 +509,9 @@ PROBE(plugin, live)
         }
         const juce::var shown = v["displays"];
         P.eq("listen.display", shown.size() == 1 ? 1 : 0, 1);
-        if (shown.size() == 1)
+        if (shown.size() == 1 && kInstrument && stalled)          // a voice's field: a note sounding in the window
+            probe::skip(P, "listen.display_now", why);
+        else if (shown.size() == 1)
             P.near("listen.display_now", static_cast<double>(shown[0]["now"]), kInstrument ? 0.25 : 0.50118723, 1e-3);
         P.ge("listen.cpu", static_cast<double>(v["cpu_percent"]["max"]), 0.0);
         P.eq("listen.cpu_said", v["cpu_percent"].isObject() && has(t, "CPU per block: p50 ") ? 1 : 0, 1);
@@ -517,7 +527,7 @@ PROBE(plugin, live)
         P.eq("mono.compiles", load(p, pg::singleFile("#pragma mono\n" + listenProgram())) ? 1 : 0, 1);
         Host host(p);
         host.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        host.played(10);
         const std::string j = listen(0.8, true);
         host.end();
         const juce::var voices = juce::JSON::parse(juce::String::fromUTF8(j.c_str()))["voices"];
@@ -534,7 +544,7 @@ PROBE(plugin, live)
         Host host(p);
         host.bypass.store(true);
         host.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        host.played(10);
         const std::string t = listen(0.3, false);
         host.end();
         P.eq("bypass.said", has(t, kInstrument ? "bypassed (silent)" : "bypassed (the input passes)") ? 1 : 0, 1);
