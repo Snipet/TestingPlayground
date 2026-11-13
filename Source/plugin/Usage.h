@@ -11,6 +11,13 @@
 //                 instances, two products and two hosts add up instead of overwriting); on the agent's worker, never
 //                 under its mutex
 //   snapshot      a copy of the ledger (the file and what is not written yet) for a range of days
+//   reset         the ledger emptied, the file and what is not written yet (the Settings card's Usage page, asked
+//                 first): under the ledger's own lock and the folder's .lock, as a flush, the empty file written beside
+//                 and renamed in. A reset that fails changes nothing: the file is as it was and the counts not written
+//                 yet are kept for the next flush. A count that arrives while a reset runs (after it took what waited)
+//                 is after the reset: it is kept, and the next flush writes it to the emptied file
+//   revision      moves whenever this process's ledger changes (a count added, a flush or a reset done), so a reader
+//                 of snapshots (ChatAgent::usage) knows when to read again; another process's write does not move it
 //   Price, costOf the price of a model (UsagePrices.cpp's table, a provider's listed price) and a row's cost: the
 //                 provider's reported figure where every request reported one, else an estimate at list prices, else
 //                 none
@@ -22,6 +29,7 @@
 //
 // The header is JUCE-free (the editor's page will take a Snapshot); Usage.cpp reads and writes the file with juce_core.
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
@@ -151,7 +159,11 @@ namespace playground::usage
         bool flush() { return flush(usage::today()); }
         Snapshot snapshot(Range range, std::string_view today) const;
         Snapshot snapshot(Range range) const { return snapshot(range, usage::today()); }
+        // Empties the ledger (above, "reset"): true when the emptied file is in place; false (the file as it was, the
+        // counts not written yet kept) when the lock or the write failed.
+        bool reset();
         bool pending() const;
+        uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
         void setFile(std::filesystem::path file);
         std::filesystem::path file() const;
 
@@ -160,14 +172,20 @@ namespace playground::usage
         std::mutex flushMutex_;                // one flush at a time in this ledger
         std::filesystem::path file_;
         std::vector<Row> pending_;
+        std::atomic<uint64_t> revision_{ 0 };
     };
 
     // The process's ledger, on usage.json in the chat store's folder (chatstore::directory(), looked up at each flush and
     // snapshot, so a probe's own folder takes it).
     void add(const Key& key, const Counts& counts);
     bool flush();
+    bool reset();
+    uint64_t revision() noexcept;
     Snapshot snapshot(Range range);
     std::filesystem::path processFile();
+    // Probes only: every write of a ledger's file fails (as a full disk or a folder that may not be written would),
+    // so a flush and a reset can be seen failing; nothing else changes.
+    void setWritesFailForTests(bool fail);
 
     // The file's rows (none when it is missing or no ledger), and the JSON a set of rows is written as.
     std::vector<Row> read(const std::filesystem::path& file, bool* damaged = nullptr);

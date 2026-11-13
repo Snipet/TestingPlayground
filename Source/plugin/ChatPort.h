@@ -35,7 +35,18 @@
 //                    cannot be read (the chat shown says why, and nothing stops)
 //   renameChat()     the chat shown named ("" for its first message's words again)
 //   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
+//   usage()          what the chat's requests used and cost (Usage.h's ledger: every product's, on this Mac) for a range
+//                    of days, as last read: never waits. It returns the last view read (none before the first) and asks
+//                    for a read on the chat's job thread when the range differs, this process's ledger moved
+//                    (usage::revision) or a few seconds passed (another process may have written the file); the
+//                    message thread never reads the file or takes its folder's lock. A read that finds what the view
+//                    already holds publishes nothing: the view and its serial stay as they were
+//   resetUsage()     empties the ledger (the Settings card's Reset, asked first): queued on the job thread, and always
+//                    run once asked (the agent's destructor runs one still queued); the view says it is resetting
+//                    until it is done, and a reset that failed says why until the next reset
 #pragma once
+
+#include "plugin/Usage.h"
 
 #include <algorithm>
 #include <cctype>
@@ -251,6 +262,31 @@ namespace playground
         bool ready() const noexcept { return hasKey || keyless; }
     };
 
+    // What the Settings card's Usage page shows (ChatPort::usage): the ledger's rows in a range, each with its cost
+    // as Usage.h prices it (the price table in use when read). Counts and names only.
+    struct UsageRow
+    {
+        usage::Key key;
+        usage::Counts counts;
+        usage::Cost cost;                     // the provider's figure, an estimate, or none ("no price known")
+        friend bool operator==(const UsageRow& a, const UsageRow& b)
+        {
+            return a.key == b.key && a.counts == b.counts && a.cost.kind == b.cost.kind && a.cost.microUsd == b.cost.microUsd;
+        }
+    };
+
+    struct UsageView
+    {
+        uint64_t serial = 0;                  // moves whenever anything below changes, and only then
+        bool read = false;                    // a read has landed (false: none yet)
+        usage::Range range = usage::Range::week;   // what the rows are for
+        std::string today;                    // the day they were read on ("2026-11-12")
+        std::vector<UsageRow> rows;           // in the range, summed by key, in order
+        std::string pricesAsOf;               // the price table's date (usage::pricesInUse)
+        bool resetting = false;               // a confirmed reset not done yet
+        std::string resetError;               // why the last reset failed ("" when it did not), until the next one
+    };
+
     class ChatPort
     {
     public:
@@ -281,5 +317,7 @@ namespace playground
         virtual bool openChat(const std::string& id) = 0;
         virtual void renameChat(const std::string& title) = 0;
         virtual void deleteChat() = 0;
+        virtual std::shared_ptr<const UsageView> usage(usage::Range range) = 0;
+        virtual void resetUsage() = 0;
     };
 }

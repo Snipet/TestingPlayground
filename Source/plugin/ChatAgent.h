@@ -162,6 +162,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -378,6 +379,12 @@ namespace playground
         bool openChat(const std::string& id) override;
         void renameChat(const std::string& title) override;
         void deleteChat() override;
+        std::shared_ptr<const UsageView> usage(usage::Range range) override;
+        void resetUsage() override;
+        // Probes only: how long a view of usage() stands before it is read again with nothing else moved (another
+        // process's write: kUsageRereadSeconds by default).
+        void setUsageRereadSecondsForTests(double seconds);
+        static constexpr double kUsageRereadSeconds = 3.0;
 
         // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
         // saved half-done: its user message and what came back so far are. The panel's pictures (view_panel's,
@@ -545,6 +552,13 @@ namespace playground
         // ", $0.12" (or ", ~$0.12", an estimate) for the footer while every request this turn has a cost; "" else.
         // Under mutex_.
         std::string turnCostText() const;
+        // The Usage page's reads and its reset (ChatPort::usage, resetUsage), on the job thread: a snapshot of the
+        // range priced and published as the view when it differs from the one held; the reset done (when still
+        // pending: the destructor runs one the job thread never reached), then the view read again for the range last
+        // asked. Under usageMutex_ only while the view and the flags change, never across the file's I/O.
+        void readUsage(usage::Range range);
+        void runUsageReset();
+        void publishUsage(UsageView view);          // usageMutex_ held
         // Another provider: the key of `p`'s server ("" for none), read with mutex_ released (the keyring may ask the
         // user to unlock it, and wait: never under the lock the editor's chatState() takes) and kept as otherKey_ while
         // `p` is the provider chosen and no key was saved or removed meanwhile (keyGeneration_); whether one is kept for
@@ -865,5 +879,14 @@ namespace playground
         bool jobRunning_ = false;                                   // a job is running
         bool jobStop_ = false;
         std::thread jobThread_;
+        // The Usage page's view (usage(), above): under usageMutex_ (the editor's, the job thread's; never mutex_).
+        mutable std::mutex usageMutex_;
+        std::shared_ptr<const UsageView> usageView_ = std::make_shared<const UsageView>();
+        bool usageReading_ = false;                                 // a read is queued or running
+        usage::Range usageAsked_ = usage::Range::week;              // the range last asked for
+        uint64_t usageReadRevision_ = 0;                            // usage::revision() when the last read began
+        std::chrono::steady_clock::time_point usageReadAt_{};       // when the last read ended
+        bool usageResetPending_ = false;                            // a reset confirmed and not yet run
+        double usageReread_ = kUsageRereadSeconds;
     };
 }

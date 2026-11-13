@@ -1273,6 +1273,8 @@ namespace playground
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
+        runUsageReset();                           // a reset the user confirmed runs, though the job thread never
+                                                   // reached it (a queued job is dropped above): nothing if none waits
         usage::flush();                            // what the ledger has not written yet
     }
 

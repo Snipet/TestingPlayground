@@ -319,9 +319,13 @@ namespace playground::usage
             return s.str();
         }
 
+        std::atomic<bool> writesFail{ false };     // setWritesFailForTests
+
         // `bytes` written beside `p` and renamed over it, 0600 (FactoryStore.cpp's writeFile, made private).
         bool writeFile(const fs::path& p, const std::string& bytes)
         {
+            if (writesFail.load())
+                return false;
             std::error_code ec;
             fs::create_directories(p.parent_path(), ec);
             const std::string tag = juce::Uuid().toString().substring(0, 12).toStdString();
@@ -480,6 +484,7 @@ namespace playground::usage
             k.day = today();
         const std::lock_guard<std::mutex> lock(mutex_);
         addRows(pending_, k, counts);
+        revision_.fetch_add(1, std::memory_order_acq_rel);
     }
 
     bool Ledger::pending() const
@@ -532,9 +537,56 @@ namespace playground::usage
                 ok = writeFile(file, write(tidy(std::move(rows), todayDay)));
             }
         }
+        if (ok)
+            revision_.fetch_add(1, std::memory_order_acq_rel);
         if (!ok)
         {
             // Kept for the next flush, with what came meanwhile.
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (const Row& r : taken)
+                addRows(pending_, r.key, r.counts);
+        }
+        return ok;
+    }
+
+    bool Ledger::reset()
+    {
+        const std::lock_guard<std::mutex> one(flushMutex_);        // one flush or reset at a time
+        std::vector<Row> taken;                                     // what waited: counted before the reset
+        fs::path file;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            taken.swap(pending_);
+            file = file_;
+        }
+        bool ok = false;
+        if (!file.empty())
+        {
+            const FolderLock lock(file.parent_path());
+            if (lock.held())
+            {
+                // A file that is no ledger is kept beside as usage.json.bad, as a flush keeps it, and put back when the
+                // empty one cannot be written.
+                bool damaged = false;
+                (void) read(file, &damaged);
+                fs::path bad = file;
+                bad += ".bad";
+                std::error_code ec;
+                if (damaged)
+                    fs::rename(file, bad, ec);
+                ok = writeFile(file, write({}));
+                if (!ok && damaged && !ec)
+                {
+                    std::error_code back;
+                    fs::rename(bad, file, back);
+                }
+            }
+        }
+        if (ok)
+            revision_.fetch_add(1, std::memory_order_acq_rel);
+        else
+        {
+            // Nothing lost: the counts that waited go back, with what came meanwhile.
             const std::lock_guard<std::mutex> lock(mutex_);
             for (const Row& r : taken)
                 addRows(pending_, r.key, r.counts);
@@ -609,6 +661,17 @@ namespace playground::usage
         l.setFile(processFile());
         return l.flush();
     }
+
+    bool reset()
+    {
+        Ledger& l = processLedger();
+        l.setFile(processFile());
+        return l.reset();
+    }
+
+    uint64_t revision() noexcept { return processLedger().revision(); }
+
+    void setWritesFailForTests(bool fail) { writesFail.store(fail); }
 
     Snapshot snapshot(Range range)
     {
