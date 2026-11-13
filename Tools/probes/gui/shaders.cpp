@@ -1638,22 +1638,22 @@ PROBE(gui, shaders)
         {
             constexpr int kDeep = 100'000;
             const auto nested = [](int n, const std::string& open, const std::string& inner, const std::string& close) {
-                std::string t;
-                t.reserve(static_cast<std::size_t>(n) * (open.size() + close.size()) + inner.size());
+                std::string text;
+                text.reserve(static_cast<std::size_t>(n) * (open.size() + close.size()) + inner.size());
                 for (int k = 0; k < n; ++k)
-                    t += open;
-                t += inner;
+                    text += open;
+                text += inner;
                 for (int k = 0; k < n && !close.empty(); ++k)
-                    t += close;
-                return t;
+                    text += close;
+                return text;
             };
-            const auto count = [](const std::string& t, const std::string& w) {
+            const auto count = [](const std::string& text, const std::string& w) {
                 std::size_t c = 0;
-                for (std::size_t p = t.find(w); p != std::string::npos; p = t.find(w, p + w.size()))
+                for (std::size_t p = text.find(w); p != std::string::npos; p = text.find(w, p + w.size()))
                     ++c;
                 return c;
             };
-            const auto lines = [](const std::string& t) { return std::count(t.begin(), t.end(), '\n'); };
+            const auto lines = [](const std::string& text) { return std::count(text.begin(), text.end(), '\n'); };
             const std::string closed = nested(kDeep, "vec2(", "x", ")");
             const std::string closedOut = pg::shaderText("t.sc", closed, err);
             P.eq("text.deep_closed", count(closedOut, "((vec2)(") == static_cast<std::size_t>(kDeep)
