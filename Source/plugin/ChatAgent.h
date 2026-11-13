@@ -388,6 +388,7 @@ namespace playground
         // going lets it go), and how many reads have run.
         void holdUsageReadsForTests(bool hold);
         uint64_t usageReadsForTests() const;
+        int usageReadsHeldForTests() const;         // reads waiting at the hold now (0 or 1: the job thread is serial)
         static constexpr double kUsageRereadSeconds = 3.0;
 
         // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
@@ -894,6 +895,7 @@ namespace playground
         double usageReread_ = kUsageRereadSeconds;
         std::condition_variable usageCv_;                           // holdUsageReadsForTests
         bool usageHold_ = false, usageStopping_ = false;
+        int usageHeld_ = 0;                                         // reads waiting at the hold
         uint64_t usageReads_ = 0;
     };
 }

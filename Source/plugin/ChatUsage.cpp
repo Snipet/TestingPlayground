@@ -153,6 +153,12 @@ namespace playground
         usageCv_.notify_all();
     }
 
+    int ChatAgent::usageReadsHeldForTests() const
+    {
+        const std::lock_guard<std::mutex> lock(usageMutex_);
+        return usageHeld_;
+    }
+
     uint64_t ChatAgent::usageReadsForTests() const
     {
         const std::lock_guard<std::mutex> lock(usageMutex_);
@@ -163,7 +169,9 @@ namespace playground
     {
         {
             std::unique_lock<std::mutex> lock(usageMutex_);
+            ++usageHeld_;
             usageCv_.wait(lock, [this] { return !usageHold_ || usageStopping_; });
+            --usageHeld_;
         }
         const uint64_t revision = usage::revision();     // a count added while reading asks for another read
         UsageView v = readView(range);
