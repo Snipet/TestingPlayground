@@ -175,6 +175,8 @@ namespace playground::factorystore
         // For probes: true when nothing is asked of the thread and nothing runs on it; requests() counts the transport's
         // calls this store made; cancel() ends a fetch in flight (the store stays usable).
         bool idle() const;
+        // The store's own answer of its last write of factory.json: true when the answer in use is the one on disk.
+        bool answerWritten() const;
         int requests() const noexcept;
         void cancel();
 

@@ -20,7 +20,10 @@ namespace playground::files
         for (;;)
         {
             if (MoveFileExW(f.c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
+            {
+                ec.clear();                              // a try before may have failed: a success says nothing of it
                 return true;
+            }
             const DWORD e = GetLastError();
             ec = std::error_code(static_cast<int>(e), std::system_category());
             const bool held = e == ERROR_SHARING_VIOLATION || e == ERROR_ACCESS_DENIED || e == ERROR_LOCK_VIOLATION;

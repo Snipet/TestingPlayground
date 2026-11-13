@@ -495,9 +495,8 @@ namespace playground::factorystore
                 out.close();
                 written = static_cast<bool>(out);
             }
-            if (written)
-                (void)files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
-            if (!written || ec)
+            const bool moved = written && files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
+            if (!written || !moved)                  // the helper's answer, never ec
             {
                 std::error_code e;
                 fs::remove(temp, e);
@@ -708,6 +707,7 @@ namespace playground::factorystore
         std::condition_variable cv;
         bool stop = false;
         bool loadWanted = false, fetchWanted = false, forced = false, answerDirty = false;
+        bool answerUnwritten = false;              // the last answer's write failed (answerWritten)
         bool busy = false;
         bool editorSeen = false;
         bool autoFetched = false;                        // an editor's open has fetched once in this store
@@ -828,7 +828,7 @@ namespace playground::factorystore
         {
             {
                 const std::lock_guard<std::mutex> lock(m);
-                if (!answerDirty)
+                if (!answerDirty && !answerUnwritten)   // an answer not written yet is newer than the file
                     answer = readAnswer(answerFile);
             }
             Refusal r;
@@ -1131,12 +1131,12 @@ namespace playground::factorystore
             bool allowed = false;
             {
                 std::unique_lock<std::mutex> lock(m);
-                if (!answerDirty)
+                if (!answerDirty && !answerUnwritten)
                 {
                     lock.unlock();
                     const Answer onDisk = readAnswer(answerFile);   // the other product may have asked meanwhile
                     lock.lock();
-                    if (!answerDirty)
+                    if (!answerDirty && !answerUnwritten)
                         answer = onDisk;
                 }
                 a = answer;
@@ -1176,10 +1176,13 @@ namespace playground::factorystore
                 if (doAnswer)
                 {
                     const std::string word = answerWord(a);
-                    (void)writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
+                    const bool wrote = writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
                     const std::lock_guard<std::mutex> lock(m);
                     if (answer == a)
-                        answerDirty = false;
+                    {
+                        answerDirty = false;             // the loop waits on it: a failed write is kept apart, below
+                        answerUnwritten = !wrote;        // the file as it was; the next answer's write takes this one
+                    }
                 }
                 bool loaded = false;
                 {
@@ -1283,6 +1286,12 @@ namespace playground::factorystore
     {
         const std::lock_guard<std::mutex> lock(s_->m);
         return !s_->busy && !s_->loadWanted && !s_->fetchWanted && !s_->answerDirty;
+    }
+
+    bool Store::answerWritten() const
+    {
+        const std::lock_guard<std::mutex> lock(s_->m);
+        return !s_->answerDirty && !s_->answerUnwritten;
     }
 
     int Store::requests() const noexcept { return s_->requests.load(); }

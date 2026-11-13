@@ -81,9 +81,8 @@ namespace playground::updates
                 out.close();
                 written = static_cast<bool>(out);
             }
-            if (written)
-                (void)files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
-            if (!written || ec)
+            const bool moved = written && files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
+            if (!written || !moved)                  // the helper's answer, never ec
             {
                 std::error_code e;
                 fs::remove(temp, e);
@@ -826,6 +825,12 @@ namespace playground::updates
     {
         const std::lock_guard<std::mutex> lock(s_->m);
         return !s_->busy && !s_->loadWanted && !s_->checkWanted && !s_->writeWanted;
+    }
+
+    bool Check::written() const
+    {
+        const std::lock_guard<std::mutex> lock(s_->m);
+        return !s_->answerDirty && !s_->skippedDirty && !s_->resultDirty;
     }
 
     int Check::requests() const noexcept { return s_->requests.load(); }

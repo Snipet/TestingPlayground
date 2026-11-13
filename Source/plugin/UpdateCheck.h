@@ -146,6 +146,8 @@ namespace playground::updates
         // For probes: true when nothing is asked of the thread and nothing runs on it; how many requests it made; a check
         // in flight ended (the check stays usable).
         bool idle() const;
+        // The check's own answer of its writes of app.json: true when nothing this process changed waits to be written.
+        bool written() const;
         int requests() const noexcept;
         void cancel();
 

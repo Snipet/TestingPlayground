@@ -770,12 +770,21 @@ PROBE(plugin, updates)
             r.close();
             const std::vector<us::Row> rows = us::read(file);
             P.eq("held.usage.flush_lands", flushed && rows.size() == 1 && rows[0].counts.requests == 2 ? 1 : 0, 1);
+            // What it wrote is gone from its rows: a second flush with nothing added counts nothing again.
+            const bool again = ledger.flush();
+            const std::vector<us::Row> rows2 = us::read(file);
+            P.eq("held.usage.flush_lands.counted_once", again && !ledger.pending() && rows2.size() == 1
+                                                            && rows2[0].counts.requests == 2 ? 1 : 0, 1);
             ledger.requestReset();
             Reader r2(file);
             (void)r2.open(kLetGo);
             const bool reset = ledger.reset();
             r2.close();
             P.eq("held.usage.reset_lands", reset && !ledger.lastResetFailed() && us::read(file).empty() ? 1 : 0, 1);
+            // The cut's rows went with the file: nothing waits, and the next flush brings no count back.
+            const bool after = ledger.flush();
+            P.eq("held.usage.reset_lands.stays_empty", after && !ledger.pending() && !ledger.resetOwed()
+                                                           && us::read(file).empty() ? 1 : 0, 1);
             if (kPosix)
             {
                 probe::skip(P, "held.usage.flush_never", kPosixWhy);
@@ -823,6 +832,7 @@ PROBE(plugin, updates)
                 r.close();
             }
             P.eq("held.app.lands", appJson(h)["updates"].toString() == "no" && appJson(h)["seen"].toString() == "0.1.0" ? 1 : 0, 1);
+            P.eq("held.app.lands.written", c.written() ? 1 : 0, 1);   // the check's own answer, not the file's alone
             if (kPosix)
                 probe::skip(P, "held.app.never", kPosixWhy);
             else
@@ -833,12 +843,14 @@ PROBE(plugin, updates)
                     c.setAnswer(up::Answer::later);
                     (void)settle(c);
                     P.eq("held.app.never.unchanged", appJson(h)["updates"].toString() == "no" ? 1 : 0, 1);
+                    P.eq("held.app.never.not_written", c.written() ? 0 : 1, 1);
                     never.close();
                 }
                 c.skip("0.9.0");                         // the next write takes the answer that waited with it
                 (void)settle(c);
                 P.eq("held.app.never.nothing_lost", appJson(h)["updates"].toString() == "later"
                                                         && appJson(h)["skipped"].toString() == "0.9.0" ? 1 : 0, 1);
+                P.eq("held.app.never.written_after", c.written() ? 1 : 0, 1);
             }
         }
 
@@ -863,6 +875,7 @@ PROBE(plugin, updates)
                 r.close();
             }
             P.eq("held.factory.lands", textOf(answerFile).find("\"yes\"") != std::string::npos ? 1 : 0, 1);
+            P.eq("held.factory.lands.written", store.answerWritten() ? 1 : 0, 1);   // the store's own answer
             if (kPosix)
                 probe::skip(P, "held.factory.never", kPosixWhy);
             else
@@ -874,7 +887,12 @@ PROBE(plugin, updates)
                 // As before this change: the file as it was, the answer kept in the store (its next write takes it).
                 P.eq("held.factory.never", textOf(answerFile).find("\"yes\"") != std::string::npos
                                                && store.answer() == pg::factorystore::Answer::no ? 1 : 0, 1);
+                P.eq("held.factory.never.not_written", store.answerWritten() ? 0 : 1, 1);
                 never.close();
+                store.setAnswer(pg::factorystore::Answer::no);   // the next write takes it
+                (void)idle();
+                P.eq("held.factory.never.written_after", store.answerWritten()
+                                                             && textOf(answerFile).find("\"no\"") != std::string::npos ? 1 : 0, 1);
             }
         }
     }
