@@ -1,9 +1,10 @@
-// Source/sandbox/Dials.h: the GUI sandbox's dials, mocked, never compiled: a program's parameter declarations as
-// FMinus's language service reads them (fminus/Lang.h: the main module's params, in order, with their
-// [[fminus::range]] and [[fminus::default]], then its circuits' pots and switches, lang::circuitDials, as the plugin
-// makes them dials: Patch.h's "Circuits"), or a list Claude gives, or both (Claude's replacing a declaration of the
-// same name); and the fields the displays read: the main module's, and Shared's through its pointer (displayFields).
-// JUCE's var for the lists (juce_core).
+// Source/editor/ProgramDials.h: the GUI sandbox's dials (moved here from sandbox/Dials.h so that the Projects card's
+// preview, editor/Preview.h, reads them too), mocked, never compiled: a program's parameter declarations as FMinus's
+// language service reads them (fminus/Lang.h: the main module's params, in order, with their [[fminus::range]] and
+// [[fminus::default]], then its circuits' pots and switches, lang::circuitDials, as the plugin makes them dials:
+// Patch.h's "Circuits"), or a list Claude gives, or both (Claude's replacing a declaration of the same name); and the
+// fields the displays read: the main module's, and Shared's through its pointer (displayFields). JUCE's var for the
+// lists (juce_core).
 #pragma once
 
 #include "dsp/Controls.h"

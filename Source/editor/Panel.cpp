@@ -4525,6 +4525,8 @@ namespace playground::ui
 
     void Panel::releasePictures()
     {
+        if (previewPicture_ != 0)
+            pictures_.push_back(std::exchange(previewPicture_, 0u));
         for (const uint32_t id : pictures_)
             if (--pictureUse()[id] <= 0)
             {
@@ -4532,6 +4534,40 @@ namespace playground::ui
                 funkgui::images::remove(id);
             }
         pictures_.clear();
+    }
+
+    void Panel::syncPreview(double nowSec)
+    {
+        const PreviewState& pv = projects_.previewShown();
+        const bool shows = projects_.isOpen() && pv.status == PreviewState::Status::ready && pv.rgba != nullptr && pv.w > 0 && pv.h > 0;
+        const auto release = [&] {
+            if (previewPicture_ != 0 && --pictureUse()[previewPicture_] <= 0)
+            {
+                pictureUse().erase(previewPicture_);
+                funkgui::images::remove(previewPicture_);
+            }
+            previewPicture_ = 0;
+        };
+        if (shows)
+        {
+            previewClosedAt_ = -1.0;
+            if (pv.image == previewPicture_)
+                return;
+            release();
+            if (pictureUse()[pv.image]++ == 0)
+                funkgui::images::set(pv.image, pv.w, pv.h, pv.rgba->data());
+            previewPicture_ = pv.image;
+            dirty_ = true;
+            return;
+        }
+        if (previewPicture_ == 0)
+            return;
+        if (projects_.isOpen())
+            release();                                   // another choice: the one before goes
+        else if (previewClosedAt_ < 0.0)
+            previewClosedAt_ = nowSec;
+        else if (nowSec - previewClosedAt_ >= kPictureHoldSeconds)
+            release();
     }
 
     void Panel::openPictures()
@@ -5931,6 +5967,9 @@ namespace playground::ui
         // PROJECTS and EXPORT read the store's cache alone: what its Reader has read since shows now.
         if (projects_.poll())
             dirty_ = true;
+        if (projects_.pollPreview(nowSec, host_ != nullptr ? host_->themeIndex() : 0))   // package 04
+            dirty_ = true;
+        syncPreview(nowSec);
         if (export_.poll())
             dirty_ = true;
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.

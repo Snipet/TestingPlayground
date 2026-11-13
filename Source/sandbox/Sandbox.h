@@ -1,10 +1,10 @@
 // Source/sandbox/Sandbox.h: the GUI sandbox's document, in the helper (Source/sandbox/Main.cpp): a .gui file being
 // designed, the program files beside it (from an instance or a folder: read for the dials and fields they declare and
-// the shaders they hold, never compiled), the dials (sandbox/Dials.h) and what the plugin would make of them: GuiSpec's
-// tree and notes (fminus/GuiSpec.h), its shaders built with shaderc (fminus/Shaders.h), its layout (editor/GuiLayout.h)
-// and its picture (sandbox/View.h). Each request of SandboxProtocol.h is a method; each returns its reply (ok, text and
-// what the op adds). One document at a time: open replaces it (the server keeps the others, and sends one back with a
-// request for it: `load`).
+// the shaders they hold, never compiled), the dials (editor/ProgramDials.h) and what the plugin would make of them:
+// GuiSpec's tree and notes (fminus/GuiSpec.h), its shaders built with shaderc (fminus/Shaders.h), its layout
+// (editor/GuiLayout.h) and its picture (editor/PanelView.h). Each request of SandboxProtocol.h is a method; each
+// returns its reply (ok, text and what the op adds). One document at a time: open replaces it (the server keeps the
+// others, and sends one back with a request for it: `load`).
 //
 // The layout report (open's and edit's): the natural size against the area (the last render's; after open the PANEL
 // view's at the default size); one line an element on the pages shown (its line, kind and name, its place in the area);
@@ -12,7 +12,7 @@
 // dials no control names (the plugin puts them last, in a section without a title). About 40 lines; `detail` all.
 #pragma once
 
-#include "sandbox/Dials.h"
+#include "editor/ProgramDials.h"
 
 #include "dsp/Controls.h"
 #include "dsp/Sources.h"
