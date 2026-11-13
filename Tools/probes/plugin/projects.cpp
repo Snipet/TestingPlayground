@@ -76,7 +76,8 @@
 //            the editor's own content (editorContent) its draft, its dials, with no read
 //   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
 //            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread;
-//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered; a read of
+//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered; one held in
+//            flight (the probes' gate) counts as waiting and not prepared, and lands once let go; a read of
 //            the Reader's that throws leaves that file unlisted until it changes, and a save that throws fails in words,
 //            the file as it was, the next save taken
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
@@ -1187,6 +1188,32 @@ PROBE(plugin, projects)
                                              && thrown.why == "the plugin itself failed while preparing it: an unknown error; this is "
                                                               "not a fault in your program" ? 1 : 0, 1);
             P.eq("preview.thrown_next", next.status == last.status ? 1 : 0, 1);
+            // A job in flight (taken by the preview thread, not prepared yet: held there by the probes' gate) counts
+            // as waiting and as not prepared, so previewsSettle waits for it; let go, it is prepared and drawn.
+            d.setPreviewGate(true);
+            pg::PreviewState held = pd.previewPolled("Diffs", 2, 0);
+            for (int k = 0; k < 2000 && held.status == pg::PreviewState::Status::reading; ++k)
+            {
+                (void)waitReader();
+                d.poll();
+                held = pd.previewPolled("Diffs", 2, 0);
+            }
+            const auto gateUntil = std::chrono::steady_clock::now() + probe::kWorkWait;
+            while (!d.previewGateHeld() && std::chrono::steady_clock::now() < gateUntil)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const bool inFlight = d.previewGateHeld();
+            const bool waitingHeld = d.previewsWaiting();
+            const std::size_t queuedHeld = d.previewsQueued(), toDrawHeld = d.previewsToDraw();
+            const bool settledHeld = d.previewsSettle(0.2);
+            std::printf("preview in flight: held %d, waiting %d, queued %zu, to draw %zu, settled %d\n", inFlight ? 1 : 0,
+                        waitingHeld ? 1 : 0, queuedHeld, toDrawHeld, settledHeld ? 1 : 0);
+            P.eq("preview.in_flight_counted", inFlight && waitingHeld && queuedHeld == 1 && toDrawHeld == 0 && !settledHeld ? 1 : 0, 1);
+            d.setPreviewGate(false);
+            const bool settledAfter = d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+            const pg::PreviewState landed = pd.previewPolled("Diffs", 2, 0);
+            P.eq("preview.in_flight_lands", settledAfter && !d.previewsWaiting() && d.previewsQueued() == 0
+                                                && (landed.status == pg::PreviewState::Status::ready
+                                                    || landed.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
         }
         P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }

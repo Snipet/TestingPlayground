@@ -71,7 +71,7 @@ namespace playground
                 return e.state;
             }
         // A new one: prepared on previewThread_, drawn by poll(). The oldest past kPreviewsKept goes (never one that
-        // waits for the thread, which holds no picture yet).
+        // waits for the thread or is being prepared, which holds no picture yet and lands where it is).
         PreviewEntry e;
         e.project = project;
         e.theme = theme;
@@ -91,7 +91,7 @@ namespace playground
         {
             auto oldest = previews_.end();
             for (auto it = previews_.begin(); it != previews_.end(); ++it)
-                if (!it->queued && (oldest == previews_.end() || it->used < oldest->used))
+                if (!it->queued && !it->inFlight && (oldest == previews_.end() || it->used < oldest->used))
                     oldest = it;
             if (oldest == previews_.end())
                 break;
@@ -137,6 +137,12 @@ namespace playground
                 theme = job->theme;
                 content = job->content;
                 job->queued = false;
+                job->inFlight = true;                  // waiting still (previewsWaiting), and spared, until it lands
+#if defined(FP_PROBES)
+                previewGateHeld_ = previewGateShut_;
+                previewWake_.wait(lock, [this] { return !previewGateShut_ || previewQuit_; });
+                previewGateHeld_ = false;
+#endif
                 lock.unlock();
                 try
                 {
@@ -167,8 +173,9 @@ namespace playground
                 continue;
             }
             for (PreviewEntry& e : previews_)
-                if (e.project == project && e.state.number == number && e.theme == theme && e.content == content)
+                if (e.inFlight && e.project == project && e.state.number == number && e.theme == theme && e.content == content)
                 {
+                    e.inFlight = false;
                     e.request.reset();
                     if (!prepared || !prepared->ok)
                     {
@@ -199,7 +206,8 @@ namespace playground
             // The hold: the pictures let go once the card has not asked for one in a while (closed, or gone).
             if (nowMs() - previewAskedAt_ > kPictureHoldSeconds * 1000.0)
             {
-                previews_.erase(std::remove_if(previews_.begin(), previews_.end(), [](const PreviewEntry& e) { return !e.queued; }),
+                previews_.erase(std::remove_if(previews_.begin(), previews_.end(),
+                                               [](const PreviewEntry& e) { return !e.queued && !e.inFlight; }),
                                 previews_.end());
                 return;
             }
@@ -257,13 +265,15 @@ namespace playground
     bool Processor::previewsWaiting() const
     {
         const std::lock_guard<std::mutex> lock(previewMutex_);
-        return std::any_of(previews_.begin(), previews_.end(), [](const PreviewEntry& e) { return e.queued || e.prepared != nullptr; });
+        return std::any_of(previews_.begin(), previews_.end(),
+                           [](const PreviewEntry& e) { return e.queued || e.inFlight || e.prepared != nullptr; });
     }
 
     std::size_t Processor::previewsQueued() const
     {
         const std::lock_guard<std::mutex> lock(previewMutex_);
-        return static_cast<std::size_t>(std::count_if(previews_.begin(), previews_.end(), [](const PreviewEntry& e) { return e.queued; }));
+        return static_cast<std::size_t>(
+            std::count_if(previews_.begin(), previews_.end(), [](const PreviewEntry& e) { return e.queued || e.inFlight; }));
     }
 
     std::size_t Processor::previewsToDraw() const
@@ -271,6 +281,23 @@ namespace playground
         const std::lock_guard<std::mutex> lock(previewMutex_);
         return static_cast<std::size_t>(std::count_if(previews_.begin(), previews_.end(), [](const PreviewEntry& e) { return e.prepared != nullptr; }));
     }
+
+#if defined(FP_PROBES)
+    void Processor::setPreviewGate(bool shut)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(previewMutex_);
+            previewGateShut_ = shut;
+        }
+        previewWake_.notify_all();
+    }
+
+    bool Processor::previewGateHeld() const
+    {
+        const std::lock_guard<std::mutex> lock(previewMutex_);
+        return previewGateHeld_;
+    }
+#endif
 
     bool Processor::pictureWaiting() const
     {
