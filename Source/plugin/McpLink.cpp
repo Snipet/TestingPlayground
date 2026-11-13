@@ -1,6 +1,7 @@
 // Source/plugin/McpLink.cpp: see McpLink.h.
 #include "plugin/McpLink.h"
 
+#include "dsp/Faults.h"
 #include "mcp/McpProtocol.h"
 #include "mcp/McpTarget.h"
 
@@ -44,6 +45,30 @@ namespace playground
             auto* o = new juce::DynamicObject();
             o->setProperty("id", id);
             return juce::var(o);
+        }
+
+        // A call that failed inside the plugin (an exception past the tool's own catch): an error result in words, and
+        // nothing past the link's thread (std::terminate would end the host).
+        ChatAgent::McpResult failedCall(std::exception_ptr e)
+        {
+            ChatAgent::McpResult r;
+            r.content = words("The call failed inside the plugin (" + playground::faults::words(e) + "). Try again.");
+            r.isError = true;
+            return r;
+        }
+
+        // hooks.call, never throwing.
+        ChatAgent::McpResult callSafely(const McpLink::Hooks& hooks, const std::string& name, const juce::var& arguments,
+                                        uint64_t call)
+        {
+            try
+            {
+                return hooks.call(name, arguments, call);
+            }
+            catch (...)
+            {
+                return failedCall(std::current_exception());
+            }
         }
     }
 
@@ -300,7 +325,13 @@ namespace playground
             }
             if (scanNow_.exchange(false) || std::chrono::steady_clock::now() >= scanned_ + kScanEvery)
             {
-                scan();
+                try
+                {
+                    scan();
+                }
+                catch (...)
+                {
+                }                                        // the others' cards as last read: looked at again next time
                 scanned_ = std::chrono::steady_clock::now();
             }
             if (fds[0].revents != 0)
@@ -346,7 +377,27 @@ namespace playground
                         c->spoke = true;
                         ++talking_;
                     }
-                    request(c, line);
+                    try
+                    {
+                        request(c, line);
+                    }
+                    catch (...)
+                    {
+                        // A request that failed inside the plugin (a line JUCE could not take, out of memory): answered
+                        // with an error when its id reads, and the poll thread goes on.
+                        try
+                        {
+                            const juce::var id = juce::JSON::parse(juce::String::fromUTF8(line.c_str())).getProperty("id", juce::var());
+                            juce::var reply = replyTo(id);
+                            reply.getDynamicObject()->setProperty(
+                                "error", juce::String::fromUTF8(("it failed inside the plugin ("
+                                                                 + playground::faults::words(std::current_exception()) + ")").c_str()));
+                            answer(*c, reply);
+                        }
+                        catch (...)
+                        {
+                        }
+                    }
                 }
             }
             for (std::size_t k = dead.size(); k-- > 0;)
@@ -436,7 +487,7 @@ namespace playground
             else
             {
                 began(name);
-                o.setProperty("result", resultOf(hooks_.call(name, arguments, 0)));
+                o.setProperty("result", resultOf(callSafely(hooks_, name, arguments, 0)));
                 ended(name);
             }
         }
@@ -514,7 +565,7 @@ namespace playground
         l.done = std::make_shared<std::atomic<bool>>(false);
         began(name);
         l.thread = std::thread([this, client, id, name, arguments, call = l.call, done = l.done] {
-            const ChatAgent::McpResult r = hooks_.call(name, arguments, call);
+            const ChatAgent::McpResult r = callSafely(hooks_, name, arguments, call);
             ended(name);
             juce::var reply = replyTo(id);
             reply.getDynamicObject()->setProperty("result", resultOf(r));
@@ -555,7 +606,7 @@ namespace playground
                 runningId_ = job.id;
             }
             began(job.name);
-            const ChatAgent::McpResult r = hooks_.call(job.name, job.arguments, job.call);
+            const ChatAgent::McpResult r = callSafely(hooks_, job.name, job.arguments, job.call);
             ended(job.name);
             {
                 const std::lock_guard<std::mutex> lock(jobMutex_);

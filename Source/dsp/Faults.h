@@ -16,7 +16,7 @@ namespace playground::faults
     // one line, cut past 300 bytes), "an unknown error" for anything else (or none).
     std::string words(std::exception_ptr e);
 
-    // The places the compiler's threads can be made to throw, for the probes (reach()).
+    // The places the plugin's threads can be made to throw, for the probes (reach()).
     enum class Stage
     {
         compile,           // Compiler's build (a RUN, compileNow, a refine, a stop's restore)
@@ -25,6 +25,8 @@ namespace playground::faults
         ir,                // the IR's compile for the IR alone
         selfTest,          // a circuit's self-test, on its coordinator
         selfTestBatch,     // a batch of a self-test's parallel work, on its workers
+        tool,              // a chat tool's work (ChatAgent::runTool, a turn's or an MCP call's; mcpCall's live tools)
+        turn,              // a chat turn's own work, outside its tools (ChatAgent::runTurn, once its message is taken)
         count
     };
     enum class Kind

@@ -31,6 +31,9 @@
 //            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta;
 //            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
+//   THROW    a tool that throws (out of memory, planted: dsp/Faults.h) is an error result in words and the turn goes
+//            on; the turn's own work that throws outside a tool ends the turn with a line in the chat, the chat freed,
+//            and the next message plays
 //   LIMIT    a reply cut off at max_tokens with no tool call: a note, the reply in the history as it came (its thinking
 //            and signature), and the turn goes on with a line that tells Claude; a second cut off in a row ends the
 //            turn with a note, the history still valid, and the next message goes; a tool call cut off twice gets
@@ -324,6 +327,7 @@
 #include "editor/Panel.h"
 #include "editor/Picture.h"
 #include "editor/SchematicView.h"
+#include "dsp/Faults.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatImages.h"
 #include "plugin/ChatStore.h"
@@ -1098,6 +1102,37 @@ PROBE(plugin, chat)
             wrote = wrote || f.name == "x.fm";
         P.eq("invalid.ran_nothing", wrote ? 1 : 0, 0);
         P.eq("invalid.turn_went_on", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Sorry, again." ? 1 : 0, 1);
+    }
+
+    // ---- THROW ---------------------------------------------------------------------------------------------------------
+    {
+        // A tool that throws (out of memory in it): its result an error in words, the turn goes on.
+        script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_t1", "read_file", "{\"name\": \"program.fm\"}")
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Carried on.").end()));
+        pg::faults::plantForTests(pg::faults::Stage::tool, pg::faults::Kind::outOfMemory, 1);
+        agent.send("read it");
+        agent.waitIdle();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        P.eq("throw.tool_error_result",
+             results.size() == 1 && static_cast<bool>(results[0].getProperty("is_error", false))
+                     && has(str(results[0], "content"), "The tool read_file failed inside the plugin (out of memory)") ? 1 : 0, 1);
+        P.eq("throw.tool_turn_went_on", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Carried on." ? 1 : 0, 1);
+
+        // The turn's own work that throws, outside a tool: the turn ends with a line in the chat, the chat freed.
+        const int before = script->postCount();
+        pg::faults::plantForTests(pg::faults::Stage::turn, pg::faults::Kind::error, 1);
+        agent.send("again");
+        agent.waitIdle();
+        P.eq("throw.turn_no_request", script->postCount() - before, 0);
+        P.eq("throw.turn_said", lastText(agent.chatState(), pg::ChatEntry::Kind::error)
+                                    == "The turn stopped: it failed inside the plugin (a planted failure in two lines)." ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Fine now.").end()));
+        agent.send("and now");
+        agent.waitIdle();
+        P.eq("throw.turn_next", !agent.chatState().busy && lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Fine now."
+                                    ? 1 : 0, 1);
     }
 
     // ---- LIMIT ---------------------------------------------------------------------------------------------------------

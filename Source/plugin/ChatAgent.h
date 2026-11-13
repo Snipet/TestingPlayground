@@ -162,6 +162,7 @@
 
 #include <array>
 #include <atomic>
+#include <exception>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -579,6 +580,8 @@ namespace playground
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block; its rows failed if an error
         juce::var toolResult(const juce::var& toolUse);            // runTool's work
+        // A tool that threw (Faults.h): its tool_result an error in words, the call answered.
+        static juce::var failedTool(const juce::var& toolUse, std::exception_ptr e);
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)

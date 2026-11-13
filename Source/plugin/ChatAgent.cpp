@@ -2411,7 +2411,33 @@ namespace playground
 
     void ChatAgent::startWorker()
     {
-        worker_ = std::thread([this] { runTurn(); });
+        worker_ = std::thread([this] {
+            try
+            {
+                runTurn();
+            }
+            catch (...)
+            {
+                // What the turn met outside its tools (runTool answers those as errors): it ends, saying so in the chat,
+                // the chat freed, and nothing reaches std::terminate, which would end the host.
+                try
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    addEntry(ChatEntry::Kind::error, "The turn stopped: it failed inside the plugin ("
+                                                         + faults::words(std::current_exception()) + ").");
+                    busy_ = false;
+                    activity_.clear();
+                    turnThread_.store(std::thread::id{});
+                    touch();
+                }
+                catch (...)
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    busy_ = false;
+                    turnThread_.store(std::thread::id{});
+                }
+            }
+        });
     }
 
     // The key read with mutex_ released: on Linux the keyring may have the desktop ask the user to unlock it and wait
@@ -3082,6 +3108,7 @@ namespace playground
         turnThread_.store(std::this_thread::get_id());
         if (!takePending())
             return;                                // stopped while its pictures were read
+        faults::reach(faults::Stage::turn);
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             turnCost_ = {};                        // the footer's cost is this turn's
@@ -4313,7 +4340,17 @@ namespace playground
             turnThread_.store(std::this_thread::get_id());
         }
         const juce::var use = claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } });
-        const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
+        juce::var block;
+        try
+        {
+            if (live)
+                faults::reach(faults::Stage::tool);
+            block = live ? liveTool(use, { true, call }) : runTool(use);   // runTool catches its own
+        }
+        catch (...)
+        {
+            block = failedTool(use, std::current_exception());
+        }
         if (!live)
         {
             // A project Claude Desktop opened shows its chat now, while the call still holds the chat (readState keeps
@@ -4473,7 +4510,18 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             before = entries_.size();
         }
-        const juce::var block = toolResult(use);
+        juce::var block;
+        try
+        {
+            faults::reach(faults::Stage::tool);
+            block = toolResult(use);
+        }
+        catch (...)
+        {
+            // What the tool met (out of memory in a render, a reader's exception): its result an error in words, so the
+            // turn (or the MCP call) goes on with the call answered, and nothing reaches the thread's top.
+            block = failedTool(use, std::current_exception());
+        }
         if (static_cast<bool>(block.getProperty("is_error", false)))
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -4483,6 +4531,16 @@ namespace playground
             touch();
         }
         return block;
+    }
+
+    juce::var ChatAgent::failedTool(const juce::var& use, std::exception_ptr e)
+    {
+        return claude::object({ { "type", "tool_result" },
+                                { "tool_use_id", use.getProperty("id", juce::var()) },
+                                { "is_error", true },
+                                { "content", juce::String::fromUTF8(("The tool " + str(use, "name") + " failed inside the plugin ("
+                                                                     + faults::words(e) + "): what it had done before that "
+                                                                     "stands. Try again, or in smaller steps.").c_str()) } });
     }
 
     juce::var ChatAgent::toolResult(const juce::var& use)

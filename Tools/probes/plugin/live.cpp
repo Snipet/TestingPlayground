@@ -41,6 +41,8 @@
 //           edited, with read_file's versions, one redrawn, one added, one closed, one as it was), and after a second
 //           opening too; files "none" leaves it out; a token of no record is not this instance's
 //   CANCEL  two cancels before a listen starts: the first one's listen still stops at once
+//   THROW   a tool that throws inside an MCP call (planted: dsp/Faults.h), a worker's call and a live one: an error
+//           result in words, and the next call runs
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 //   STOPPED the journal's words for a run whose program stopped as it played (runWords): what plays now, as get_status
 //           says it (nothing; the program before again; the program before on)
@@ -50,6 +52,7 @@
 
 #include "Audio.h"
 
+#include "dsp/Faults.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/Journal.h"
 #include "plugin/McpLink.h"
@@ -987,6 +990,27 @@ PROBE(plugin, live)
         P.eq("journal.edit_after_panel_edit_apart", panel.lines.size() == 3 && has(panel.lines[0], "edited panel.gui")
                                                         && has(panel.lines[1], "applied the panel")
                                                         && has(panel.lines[2], "edited panel.gui") ? 1 : 0, 1);
+    }
+
+    // ---- THROW ---------------------------------------------------------------------------------------------------------
+    {
+        // A tool that throws inside an MCP call (planted: dsp/Faults.h): the call answers with an error in words, the chat
+        // is freed (the next call runs), for a call the link's worker runs and for a live one alike.
+        pg::Processor q;
+        q.setRateAndBufferSizeDetails(kFs, kBlock);
+        q.prepareToPlay(kFs, kBlock);
+        pg::ChatAgent& a = q.chatAgent();
+        const juce::var file = object({ { "name", juce::String(pg::kProgramName) } });
+        pg::faults::plantForTests(pg::faults::Stage::tool, pg::faults::Kind::outOfMemory, 1);
+        const pg::ChatAgent::McpResult worked = a.mcpCall("read_file", file);
+        P.eq("throw.call_error", worked.isError && has(textOf(worked), "The tool read_file failed inside the plugin (out of memory)")
+                                     ? 1 : 0, 1);
+        pg::faults::plantForTests(pg::faults::Stage::tool, pg::faults::Kind::unknown, 1);
+        const pg::ChatAgent::McpResult live = a.mcpCall("get_status", juce::var(new juce::DynamicObject()));
+        P.eq("throw.live_error", live.isError && has(textOf(live), "The tool get_status failed inside the plugin (an unknown error)")
+                                     ? 1 : 0, 1);
+        const pg::ChatAgent::McpResult next = a.mcpCall("read_file", file);
+        P.eq("throw.next_call", !next.isError && has(textOf(next), "module ") ? 1 : 0, 1);
     }
 
     owned.reset();
