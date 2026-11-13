@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 
 namespace playground
 {
@@ -125,7 +126,18 @@ namespace playground
             const uint64_t content = job->content;
             job->queued = false;
             lock.unlock();
-            auto prepared = std::make_shared<const preview::Prepared>(preview::prepare(*request, previewTools_));
+            // A text the readers choke on costs this preview, never the process (this thread's).
+            std::shared_ptr<const preview::Prepared> prepared;
+            try
+            {
+                prepared = std::make_shared<const preview::Prepared>(preview::prepare(*request, previewTools_));
+            }
+            catch (const std::exception&)
+            {
+                auto failed = std::make_shared<preview::Prepared>();
+                failed->why = "its files could not be read";
+                prepared = std::move(failed);
+            }
             lock.lock();
             for (PreviewEntry& e : previews_)
                 if (e.project == project && e.state.number == number && e.theme == theme && e.content == content)

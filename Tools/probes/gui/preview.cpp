@@ -13,12 +13,13 @@
 //            here (picture::forceSoftRasterForTests), so the row is judged on every machine; the card's picture is the
 //            same scaled to 640 px across. A GPU picture where this platform has them (else skipped, saying why)
 //   VALUES   a version's saved values set its dials by name (case aside; an option's name for an int), the others at
-//            their defaults, a name the program lacks ignored; the picture differs from the defaults' in the knob's
-//            cell alone
+//            their defaults, a name the program lacks ignored; the level moved changes the picture in one cell, the
+//            wave moved too in another
 //   SHADER   a .gui with a shader: built through the process's cache with the tools given (CTest's shaderc), or, with
 //            no shaderc, a note that it shows as a placeholder, the picture drawn all the same
-//   FAILS    no .gui file ("this program has no panel.gui"), a .gui of which nothing reads (its first note), no files:
-//            no preview, saying why; draw() of one draws nothing
+//   FAILS    no .gui file ("this program has no panel.gui"), a .gui of which nothing reads and a program of no dials
+//            (its first note; with dials, they are drawn as the PANEL view shows them), no files: no preview, saying
+//            why; draw() of one draws nothing
 #include "Pictures.h"
 #include "Probe.h"
 
@@ -283,24 +284,42 @@ PROBE(gui, preview)
             P.near("values.wave_by_name", saved.values01[static_cast<std::size_t>(wave)], pg::normOf(k[static_cast<std::size_t>(wave)], 2.0f), 1e-6);
             P.near("values.level_default", defaults.values01[static_cast<std::size_t>(level)], pg::normOf(k[static_cast<std::size_t>(level)], 0.5f), 1e-6);
         }
-        const pg::preview::Picture a = pg::preview::draw(defaults, 0, 0), b = pg::preview::draw(saved, 0, 0);
-        writeImage(imageOf(b.image), "gui.preview.values.png");
-        // The cells that changed: the level's knob and the wave's buttons; the tone's knob as it was.
-        const juce::Image ia = imageOf(a.image), ib = imageOf(b.image);
-        const auto changedIn = [&](int x0, int x1) {
-            int n = 0;
-            for (int y = 0; y < std::min(ia.getHeight(), ib.getHeight()); ++y)
-                for (int x = x0; x < std::min({ x1, ia.getWidth(), ib.getWidth() }); ++x)
-                    n += ia.getPixelAt(x, y) != ib.getPixelAt(x, y) ? 1 : 0;
-            return n;
+        // Level alone moved, then the wave too: each change in a cell of its own (the bounds of what changed apart).
+        request.dials = { { "level", 0.9f, "" } };
+        const pg::preview::Prepared levelOnly = pg::preview::prepare(request, tools(true));
+        const pg::preview::Picture a = pg::preview::draw(defaults, 0, 0), b = pg::preview::draw(levelOnly, 0, 0),
+                                   c = pg::preview::draw(saved, 0, 0);
+        writeImage(imageOf(c.image), "gui.preview.values.png");
+        struct Changed
+        {
+            int n = 0, x0 = 1 << 30, x1 = -1, y0 = 1 << 30, y1 = -1;
         };
-        const int w = ia.getWidth();
-        const int left = changedIn(0, w / 3), middle = changedIn(w / 3, 2 * w / 3), right = changedIn(2 * w / 3, w);
-        std::printf("pixels changed by the saved values: %d in the left third, %d in the middle, %d in the right\n", left, middle, right);
-        P.eq("values.same_size", ia.isValid() && ia.getWidth() == ib.getWidth() && ia.getHeight() == ib.getHeight() ? 1 : 0, 1);
-        P.ge("values.level_drawn", left, 50);
-        P.ge("values.wave_drawn", right, 50);
-        P.eq("values.tone_unchanged", middle, 0);
+        const auto changed = [](const funkgui::Image& p, const funkgui::Image& q) {
+            Changed ch;
+            if (p.w != q.w || p.h != q.h)
+                return ch;
+            for (int y = 0; y < p.h; ++y)
+                for (int x = 0; x < p.w; ++x)
+                {
+                    const std::size_t i = (static_cast<std::size_t>(y) * static_cast<std::size_t>(p.w) + static_cast<std::size_t>(x)) * 4;
+                    if (std::equal(p.rgba.begin() + static_cast<std::ptrdiff_t>(i), p.rgba.begin() + static_cast<std::ptrdiff_t>(i + 4),
+                                   q.rgba.begin() + static_cast<std::ptrdiff_t>(i)))
+                        continue;
+                    ++ch.n;
+                    ch.x0 = std::min(ch.x0, x);
+                    ch.x1 = std::max(ch.x1, x);
+                    ch.y0 = std::min(ch.y0, y);
+                    ch.y1 = std::max(ch.y1, y);
+                }
+            return ch;
+        };
+        const Changed byLevel = changed(a.image, b.image), byWave = changed(b.image, c.image);
+        std::printf("pixels changed: %d by the level (x %d to %d), %d by the wave (x %d to %d)\n", byLevel.n, byLevel.x0, byLevel.x1,
+                    byWave.n, byWave.x0, byWave.x1);
+        P.eq("values.same_size", a.image.w == c.image.w && a.image.h == c.image.h && a.image.w > 0 ? 1 : 0, 1);
+        P.ge("values.level_drawn", byLevel.n, 50);
+        P.ge("values.wave_drawn", byWave.n, 50);
+        P.eq("values.cells_apart", byLevel.x1 < byWave.x0 || byWave.x1 < byLevel.x0 || byLevel.y1 < byWave.y0 || byWave.y1 < byLevel.y0 ? 1 : 0, 1);
     }
 
     // ---- SHADER ------------------------------------------------------------------------------------------------------------
@@ -335,10 +354,16 @@ PROBE(gui, preview)
         P.eq("fails.no_gui", !noGui.ok && noGui.why == "this program has no panel.gui" ? 1 : 0, 1);
         const pg::preview::Picture nothing = pg::preview::draw(noGui, 0, pg::preview::kMaxWidth);
         P.eq("fails.draws_nothing", nothing.image.w == 0 && nothing.why == noGui.why ? 1 : 0, 1);
-        request.files.push_back({ "panel.gui", "}}} not a panel {{{\n" });
+        // A .gui of which nothing reads: with dials, they come in a section of their own as the PANEL view shows them;
+        // with none, nothing to draw, its first note the why.
+        request.files.push_back({ "panel.gui", "not a panel\n" });
+        const pg::preview::Prepared dialsOnly = pg::preview::prepare(request, tools(true));
+        P.eq("fails.unreadable_dials_shown", dialsOnly.ok && has(dialsOnly.notes, "unknown element 'not'") ? 1 : 0, 1);
+        request.files[0].text = kInstrument ? "module Voice\n{\n    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+                                            : "module Effect\n{\n    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
         const pg::preview::Prepared broken = pg::preview::prepare(request, tools(true));
         std::printf("a .gui that does not read: %s\n", broken.why.c_str());
-        P.eq("fails.unreadable", !broken.ok && broken.why.rfind("panel.gui does not read", 0) == 0 ? 1 : 0, 1);
+        P.eq("fails.unreadable", !broken.ok && broken.why.rfind("panel.gui does not read: unknown element 'not'", 0) == 0 ? 1 : 0, 1);
         request.files.clear();
         const pg::preview::Prepared empty = pg::preview::prepare(request, tools(true));
         P.eq("fails.no_files", !empty.ok && empty.why == "the version has no files" ? 1 : 0, 1);

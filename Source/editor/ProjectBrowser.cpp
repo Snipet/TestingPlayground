@@ -19,6 +19,9 @@ namespace playground::ui
     namespace
     {
         constexpr float kBoxW = 860.0f, kBoxH = 720.0f;
+        constexpr float kBoxLeast = 640.0f;              // its height before the preview (package 04), where kBoxH
+                                                         // would cover the top bar
+        constexpr float kBelowBar = 54.0f;               // the top bar's bottom and a gap: a taller box starts here
         constexpr float kPad = 24.0f;
         constexpr float kListTop = 100.0f;               // below the title, the folder's line and the lists' captions
         constexpr float kBelowLists = 132.0f;            // the field, its line, the buttons
@@ -1031,8 +1034,12 @@ namespace playground::ui
     ProjectBrowser::Places ProjectBrowser::places(float width, float height) const
     {
         Places at;
-        const float w = std::min(kBoxW, width - 32.0f), h = std::min(kBoxH, height - 32.0f);
-        at.box = { std::round((width - w) * 0.5f), std::round((height - h) * 0.45f), w, h };
+        // As tall as kBoxH, the preview's room, where the window has it below the top bar (its project pill stays in
+        // view, as with the card at kBoxLeast); else as it always was.
+        const float w = std::min(kBoxW, width - 32.0f), least = std::min(kBoxLeast, height - 32.0f);
+        const float h = std::max(least, std::min(kBoxH, height - kBelowBar - 16.0f));
+        const float y = h > least ? std::max(kBelowBar, std::round((height - h) * 0.45f)) : std::round((height - h) * 0.45f);
+        at.box = { std::round((width - w) * 0.5f), y, w, h };
         const float top = at.box.y + kListTop;
         const float listsH = std::max(3.0f * at.rowH + kCaptionH, h - kListTop - kBelowLists);
         const auto rowsIn = [&](float room) { return std::max(1, static_cast<int>(std::floor((room - 8.0f) / at.rowH))); };

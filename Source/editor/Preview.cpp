@@ -101,9 +101,9 @@ namespace playground::preview
         for (const SourceFile& f : out.files)
             names.push_back(f.name);
         out.spec = readGuiSpec(out.files[static_cast<std::size_t>(gui)], out.controls, fields, r.instrument, names, out.notes);
-        if (out.spec.gui.nodes.empty())
+        if (out.spec.gui.nodes.size() <= 1)
         {
-            // Nothing of it reads: its first note says why (as the editor's problems list would).
+            // Nothing of it reads (no element under its root): its first note says why, as the problems list would.
             const std::string first = out.notes.substr(0, out.notes.find('\n'));
             const std::size_t at = first.find(": note: ");
             out.why = out.files[static_cast<std::size_t>(gui)].name + " does not read"

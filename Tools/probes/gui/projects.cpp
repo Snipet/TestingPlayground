@@ -1250,10 +1250,15 @@ PROBE(gui, projects)
         }
         // One drawn a poll at most, and none in a poll that drew a picture for Claude.
         {
-            (void)port.previewPolled("Panel Two", 0, 0);
-            (void)port.previewPolled("Panel Three", 0, 0);
-            (void)port.previewPolled("Panel Two", 0, 1);
+            // Asked until each is read (the store's Reader) and prepared (the processor's thread), no poll between.
             const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+            const auto ask = [&](const char* name, int theme) {
+                while (port.previewPolled(name, 0, theme).status == St::reading && std::chrono::steady_clock::now() < until)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            };
+            ask("Panel Two", 0);
+            ask("Panel Three", 0);
+            ask("Panel Two", 1);
             while (processor.previewsQueued() > 0 && std::chrono::steady_clock::now() < until)
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             const std::size_t waiting = processor.previewsToDraw();
@@ -1294,11 +1299,13 @@ PROBE(gui, projects)
         if (!f0.empty())
         {
             b.chooseProjectNamed(f0, W, H);
-            P.eq("preview.factory", pump(host, settled) ? 1 : 0, 1);
+            host.tick(1);
+            P.eq("preview.factory", pump(host, settled) && b.previewWanted().first == f0 ? 1 : 0, 1);
             writePng(P, host, "gui.projects.preview.factory.png");
         }
         // Closed: nothing asked or drawn; the picture registered kPictureHoldSeconds more (of the Panel's clock).
         b.chooseProjectNamed("Panel Pad", W, H);
+        host.tick(1);
         pump(host, [&] { return shown().status == St::ready; });
         const uint32_t last = shown().image;
         b.close();
