@@ -49,7 +49,7 @@
 //   envelope attack decay sustain release   the ADSR shape its four parameters make, drawn (width=, height=)
 //   keyboard from=48 keys=25   an instrument's keys, which play notes (octaves= instead of keys=; color=)
 //   shader "glow.sc" inputs="cutoff env out"   a fragment shader of the program's own files, drawn by the GPU over
-//                           its cell (width=, height=; it stretches as a scope does), four at most: its inputs (up to
+//                           its cell (width=, height= its size, else 200 x 120; it stretches as a scope does), four at most: its inputs (up to
 //                           16: parameters, fields, in, out) are its in0..in15 (fminus/Shaders.h); it may #include
 //                           the library (funk/text.sh, funk/shapes.sh: fminus/ShaderLib.h) and the program's .sh
 //                           files; the compiler builds it, and a shader that does not compile is a note on its own line

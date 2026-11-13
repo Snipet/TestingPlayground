@@ -1800,7 +1800,7 @@ namespace playground::ui
         }
         if (sink_.any())
         {
-            sink_.specLine(out, n, ("SHADER " + upper(asciiText(file_))).c_str());
+            sink_.specLine(out, n, ("shader " + file_).c_str());
             return;
         }
         std::snprintf(out, n, "shader %s   %s", file_.c_str(), program_ != 0 ? "drawn" : (why_.empty() ? "not built" : why_.c_str()));

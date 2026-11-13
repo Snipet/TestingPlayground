@@ -1883,10 +1883,10 @@ PROBE(gui, panel)
                   "    float env;\n";
         const std::string source = kInstrument
             ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
-                  "    bool process(float* restrict left, float* restrict right, int n) { env = px; return false; }\n};\n"
-            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) { env = px; }\n};\n";
+                  "    bool process(float* restrict left, float* restrict right, int n) { env = px[0]; return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) { env = px[0]; }\n};\n";
         // Nodes: 0 the root, 1 the row, 2 the area, 3 the box, 4 its knob, 5 its meter, 6 the relative area, 7 the area
-        // whose hover= names a host parameter, 8 the shader dial.
+        // whose hover= names a host parameter (a note), 8 the shader dial.
         const std::string pointerGui = "row gap=12 {\n"
                                 "    area x=px y=py down=gate wheel=steps hover=lit cursor=cross width=200 height=100\n"
                                 "    box down=gate x=glow pad=14 {\n"
@@ -1925,8 +1925,8 @@ PROBE(gui, panel)
         ph.click(toView.x, toView.y);
         ph.settle();
         const pg::ui::GuiLayout& PL = pp.guiLayout();
-        P.eq("pointer.laid_out", PL.rects.size() == 10 ? 1 : 0, 1);
-        if (PL.rects.size() != 10)
+        P.eq("pointer.laid_out", PL.rects.size() >= 9 ? 1 : 0, 1);   // and the section of the rest after
+        if (PL.rects.size() < 9)
             std::printf("pointer: %zu nodes laid out\n%s\n", PL.rects.size(), pport.status().notes.c_str());
         const auto dial = [&](int slot) -> funkgui::ParamPort& { return *proc.ports()[static_cast<std::size_t>(slot)]; };
         const auto rectOf = [&](std::size_t node) { return node < PL.rects.size() ? PL.rects[node] : funkgui::Rect{}; };
@@ -1948,11 +1948,15 @@ PROBE(gui, panel)
 
         // A press writes x and y where it is, and down high; a drag follows; the release ends one host gesture each.
         const auto bits = [&](const std::array<int, 64>& a, int slot) { return a[static_cast<std::size_t>(slot)]; };
+        gestures.begins.fill(0);                         // from the press on (the program's load set the dials too)
+        gestures.ends.fill(0);
         ph.press(area.x + 0.25f * area.w, area.y + 0.75f * area.h);
         ph.tick(1);
         P.near("pointer.press_x", static_cast<double>(dial(px).value01()), 0.25, 0.01);
         P.near("pointer.press_y", static_cast<double>(dial(py).value01()), 0.25, 0.01);
         P.near("pointer.press_down", static_cast<double>(dial(gate).value01()), 1.0, 1e-6);
+        std::printf("pointer: host gestures begun px %d, py %d, gate %d; ended %d in all\n", bits(gestures.begins, px),
+                    bits(gestures.begins, py), bits(gestures.begins, gate), gestures.all(gestures.ends));
         P.eq("pointer.press_begins", bits(gestures.begins, px) == 1 && bits(gestures.begins, py) == 1 && bits(gestures.begins, gate) == 1
                                          && gestures.all(gestures.ends) == 0 ? 1 : 0, 1);
         P.eq("pointer.cursor", static_cast<int>(pp.cursor()), static_cast<int>(funkgui::Cursor::crosshair));

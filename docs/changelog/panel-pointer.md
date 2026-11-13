@@ -20,3 +20,7 @@ Claude Desktop extension: **0.19.0** (was 0.18.0).
 - Claude is taught the pointer, with a shader dial as its example, and view_panel and the GUI sandbox draw a panel as
   if the pointer were over its shaders or pressing them (`values` naming `pointer.hover`, `pointer.down`, `pointer.x`,
   `pointer.y`).
+
+**Changed**
+- A shader's `width=` and `height=` are its size, not only its least: a 72 px dial is 72 px (unsized, 200 x 120 as
+  before).
