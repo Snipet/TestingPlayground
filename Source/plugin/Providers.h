@@ -40,6 +40,7 @@
 
 #include "plugin/ChatPort.h"
 #include "plugin/ClaudeApi.h"
+#include "plugin/Usage.h"
 
 #include <cstdint>
 #include <functional>
@@ -70,6 +71,7 @@ namespace playground::providers
     const ChatPreset* presetOf(const ChatProvider& p);   // the preset it is, nullptr for none (a custom server)
     std::string nameOf(const ChatProvider& p);           // the preset's name, else the server's host
     bool keyless(const ChatProvider& p);                 // an OpenAI-compatible server on this Mac or the local network
+    std::string usageName(const ChatProvider& p);        // its name in the usage ledger (usage::providerName): its kind
     // Whether a turn with no model chosen takes the list's first: Gemini's (ordered here: the newest version, pro before
     // flash) and a server's on this Mac or the local network (the models its user loaded). OpenAI's, OpenRouter's and
     // another remote server's lists are long and their newest is anyone's guess, of any price: the user chooses.
@@ -107,6 +109,11 @@ namespace playground::providers
     // tools), in the order the picker offers them (the newest first where the list says when).
     Endpoint modelsEndpoint(const ChatProvider& p);
     std::vector<ChatModel> modelsOf(const ChatProvider& p, const std::string& body);
+    // The prices a models list gives (OpenRouter's `pricing`: USD a token, as strings), by model, in Usage.h's units
+    // (USD a million tokens; a web search's a search): a model whose prompt or completion price is missing, negative or
+    // not a number has none. Its cache read and write at the prompt's price where the list does not say them. None from
+    // any other server.
+    std::vector<std::pair<std::string, usage::Price>> listedPrices(const ChatProvider& p, const std::string& body);
     // A model no list described (one typed, or chosen before the list came): its id and nothing known of it.
     ChatModel plainModel(const std::string& id);
     // The same for `p`'s server: its thinking levels where its name tells them (levelsOf: OpenAI's, Gemini's).
