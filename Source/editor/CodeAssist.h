@@ -16,7 +16,17 @@
 //                    Cmd-F, Cmd-Alt-F    find, find and replace (the bar at the editor's top right: Return the next,
 //                                        Shift-Return the one before, Tab the other field, in the replace field Return
 //                                        replaces one and Alt-Return all, Escape closes); Cmd-G and Shift-Cmd-G the
-//                                        next and the one before from the text too
+//                                        next and the one before from the text too; Ctrl-H off the Mac (Windows' and
+//                                        Linux's key) find and replace, Cmd-H staying the Mac's Hide; the status line's
+//                                        magnifier opens it with the replace row
+//                    Shift-Cmd-F         find in all files: the bar's third toggle (All files) on. Every file's tab as
+//                                        text (the program's files, a .gui, a netlist), never the IR tab and never a
+//                                        netlist's *@ lines (its drawing); "12 of 37 in 5 files"; the next and the one
+//                                        before walk every match in the tabs' order, showing its tab (a netlist shown as
+//                                        a schematic in its Netlist view); a list of the matches under the bar (a row a
+//                                        match, file:line and the line, the match marked; a click goes there, Up and
+//                                        Down walk it; it scrolls as the code does); All replaces in every file as one
+//                                        undo step across the tabs (Tabs::editAcross: Cmd-Z in any of them undoes all)
 //                    Cmd-/               the lines' // comments on or off
 //                    Alt-Up, Alt-Down    the lines moved; with Shift, copied
 //                    Shift-Cmd-K         the lines deleted;  Cmd-L the line selected;  Cmd-D the word, then its next
@@ -32,8 +42,9 @@
 //                  the compiler's thread (EditorPort::check: FMinus's pass over the text and the main module's
 //                  methods, without the code, the instances or a swap of what plays), and its messages replace them
 //                  (RUN's again when the files are what RUN compiled: they say more; RUN itself cancels a check due)
-//   the status     under the editor: the problems' count (a click jumps to the next), Checking..., the caret's line and
-//   line           column, the indent, the language, the Format on Run switch (a machine-wide preference) and, at its
+//   the status     under the editor: a magnifier at its left (find and replace, the bar with its replace row), the
+//   line           problems' count (a click jumps to the next), Checking..., the caret's line and
+//                  column, the indent, the language, the Format on Run switch (a machine-wide preference) and, at its
 //                  right end, the Panel switch: the program's panel under the code shown or hidden (the Panel's,
 //                  setPanelSwitch; its icon alone where its word would crowd the problems' count)
 //
@@ -59,6 +70,7 @@
 // keep their sizes: the zoom is the whole editor's.
 #pragma once
 
+#include "editor/Scroll.h"
 #include "editor/Theme.h"
 #include "fminus/Lang.h"
 
@@ -78,6 +90,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace funkgui
@@ -217,6 +230,11 @@ namespace playground::ui
             std::function<void(int)> show;                                        // shows a tab
             std::function<bool(const std::string&, const std::string&)> addQuiet; // a file as a tab, not shown
             std::function<void(const std::string&)> notice;                       // a word in the status
+            // Find in all files: tab i shown as text (a netlist shown as a schematic switched to its Netlist view first,
+            // so the find bar stays); edits in several tabs as one undo step across them (FilesItem's undo groups), a
+            // read-only one never written: false when nothing changed.
+            std::function<void(int)> showText;
+            std::function<bool(std::vector<std::pair<int, std::vector<funkgui::TextEdit>>>)> editAcross;
         };
 
         explicit CodeAssist(Tabs tabs);
@@ -246,6 +264,8 @@ namespace playground::ui
         // Input before the editor's: true when the assistant used it.
         bool key(const funkgui::KeyEvent&);
         bool pointerDown(const funkgui::PointerEvent&);
+        void pointerDrag(funkgui::Point p);              // the results list's bar, while pointerDown pressed it
+        void pointerUp();
         bool wheel(const funkgui::WheelEvent&);
         bool over(funkgui::Point) const;                 // over an overlay or the status line (not the text)
         std::optional<funkgui::Cursor> cursorAt(funkgui::Point) const;
@@ -337,7 +357,9 @@ namespace playground::ui
         void setFormatOnRun(bool on);
         void openCompletion(bool explicitly);
         void openSignature();
-        void openFind(bool replace);
+        // The bar, with its replace row (when the text is not read only); allFiles set the All files toggle (Cmd-F and
+        // Cmd-Alt-F off, Shift-Cmd-F on), unset left as it was (the status line's magnifier).
+        void openFind(bool replace, std::optional<bool> allFiles = std::nullopt);
         void closeFind();
         void setFindText(const std::string& text);       // probes: as typed in the find field
         void setReplaceText(const std::string& text);
@@ -364,8 +386,21 @@ namespace playground::ui
         std::string hoverText() const;                   // its code and documentation, and the problems there
         bool findOpen() const noexcept { return findOpen_; }
         bool replaceOpen() const noexcept { return replaceOpen_; }   // the find bar's replace row
+        bool allFiles() const noexcept { return allFiles_; }          // the bar's All files toggle
+        void setAllFiles(bool on);
+        int findFiles() const noexcept { return matchFiles_; }        // all files: the files with a match
+        std::string findCountText() const;               // the bar's counter: "12 of 37 in 5 files", "No results"
+        // All files: match k's tab and range (in the tabs' order); the results list, its row height, row k's place
+        // (empty when scrolled out of it) and its scroll; the status line's magnifier.
+        int findMatchTab(int k) const;
+        funkgui::TextRange findMatchRange(int k) const;
+        funkgui::Rect findListBox() const { return listShown() ? listRect() : funkgui::Rect{}; }
+        float findListRowH() const { return rowH(); }
+        funkgui::Rect findListRow(int k) const;
+        float findListScroll() const noexcept { return list_.offset; }
+        funkgui::Rect findButtonRect() const { return statusParts().find; }
         bool goToOpen() const noexcept { return gotoOpen_; }
-        int findCount() const noexcept { return static_cast<int>(matches_.size()); }
+        int findCount() const noexcept { return static_cast<int>(allFiles_ ? all_.size() : matches_.size()); }
         // Where the overlays are (the completion list's box, the hover card as last drawn, the find bar), a completion
         // row's height, and the status line's size (empty at 12 px): the text size's rows.
         funkgui::Rect completionBox() const { return popupGeometry(panelW_, panelH_).box; }
@@ -409,6 +444,11 @@ namespace playground::ui
         void updateOccurrences();
         void updateMatches();
         void showMatch(int k);
+        void showFileMatch(int k);                       // all files: match k shown in its tab, its row in the list
+        bool currentRange(funkgui::TextRange& out) const;   // the current match, when it is in the tab shown
+        bool listShown() const;                          // the results list under the bar
+        funkgui::Rect listRect() const;
+        void layoutList() const;                         // its scroll's content and view, for the list as it is
         bool findKey(const funkgui::KeyEvent& e);
         std::vector<int> selectedLines(int& first, int& last) const;
         void setDiagnostics(const std::vector<Diagnostic>& messages, const Sources& compiled);
@@ -425,12 +465,13 @@ namespace playground::ui
         funkgui::Rect goToBarRect() const;
         struct FindParts
         {
-            funkgui::Rect bar, toggle, field, caseBtn, wordBtn, count, prev, next, close, replaceField, replaceBtn, allBtn;
+            funkgui::Rect bar, toggle, field, caseBtn, wordBtn, filesBtn, count, prev, next, close, replaceField, replaceBtn,
+                allBtn;
         };
         FindParts findParts() const;
         struct StatusParts
         {
-            funkgui::Rect problems, position, indent, language, formatOnRun, panel, size;   // size: empty at 12 px
+            funkgui::Rect find, problems, position, indent, language, formatOnRun, panel, size;   // size: empty at 12 px
         };
         StatusParts statusParts() const;
         float widestParts() const;                       // the line's parts at their widest, but the switch and the size
@@ -512,6 +553,20 @@ namespace playground::ui
         uint32_t matchesRev_ = 0;
         int matchesTab_ = -1;
         std::string matchesNeedle_;
+        // all files: every file tab's matches in the tabs' order (current_ indexes them), the files they are in, and
+        // whether the cap cut them; the files' revision they are of (filesRevision)
+        struct FileMatch
+        {
+            int tab = 0;
+            funkgui::TextRange range;
+        };
+        bool allFiles_ = false;
+        std::vector<FileMatch> all_;
+        int matchFiles_ = 0;
+        bool capped_ = false;
+        uint64_t allRev_ = 0;
+        mutable Scroll list_;                            // the results list's (its content and view: layoutList)
+        bool listDrag_ = false;                          // its bar pressed
 
         // go to a line
         bool gotoOpen_ = false;

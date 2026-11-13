@@ -24,6 +24,11 @@
 //   gui.code.size_9.png, gui.code.size_12.png, gui.code.size_24.png (and .paper.png each)
 //                            the text size (CodeAssist.h's codesize) at 9, 12 and 24 px: the program and, at 24 px,
 //                            the completion list scaled with it; the status line saying the size (not at 12)
+//   gui.code.find_files.png, gui.code.find_files.paper.png
+//                            find in all files: the bar with its All files toggle on, the counter ("1 of 7 in 4 files"),
+//                            the results list under it, the status line's magnifier lit
+//   gui.code.find_files_large.png   the same at 18 px: the list's rows and font at the text size
+//   gui.code.find_files_least.png   the bar and its list at the least window, sixteen files, a walk to the last tab
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -95,6 +100,23 @@
 //             the hover card's code and the find bar larger at 24 px than at 12; a second Panel follows the preference with
 //             no input of its own (and a Panel made after reads it); the IR view drawn in it and its keys stepping
 //             it; a netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom, the size unchanged
+//   FIND FILES find made findable and across the files (CodeAssist.h's Shift-Cmd-F):
+//     BUTTON     the status line's magnifier at its left, before the problems: a click opens the bar with its replace
+//                row, All files as it was; its screen reader's button
+//     CTRLH      off the Mac, Ctrl-H (JUCE's command key there: cmd and ctrl, and ctrl alone) opens find and replace; on a
+//                Mac Cmd-H opens nothing (the system's Hide)
+//     FILES      Shift-Cmd-F: the toggle on; a word in four files (the program, another .fm, a .gui, a netlist) counted
+//                across them, never in the netlist's *@ line nor the IR tab; "1 of 7 in 4 files"; Return and Shift-Return
+//                walk every match in the tabs' order, showing each tab; the list's rows (one a match), a click on one
+//                going there, Down the next; the toggle off finds in the tab shown alone; from anywhere in the panel
+//                (no focus) Shift-Cmd-F opens it
+//     REPLACEALL All in every file: each written, the *@ line untouched, the IR never; one Cmd-Z in another tab undoes
+//                every file, Cmd-Shift-Z redoes them all
+//     SCHEMATIC  a match in a netlist shown as a schematic: the walk shows it in its Netlist view, the bar staying open;
+//                a click on its row the same
+//     SIZE       at 18 px the list's rows are the completion rows' (22 at 12 px scaled) and the bar wider
+//     STRIP      sixteen files at the least window: a walk to a match in the last tab (scrolled out of the strip) shows
+//                it and brings it into view
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -1741,6 +1763,292 @@ PROBE(gui, code)
         }
         funkgui::UiPreferences::get().setTheme(0);
         cs::write(cs::kDefault);
+    }
+    // ---- FIND FILES -------------------------------------------------------------------------------------------------
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::Draft files;
+        files.files = { { pg::kProgramName, program() + "// zork one\n// zork two\n" },
+                        { "notes.fm", "// zork in notes\n" },
+                        { "panel.gui", "// zork in the interface\n" },
+                        { "tone.cir", "* tone.cir: a zork test\nR1 in zork 10k\nR2 zork out 1k\n*@ zork drawing\n.end\n" } };
+        port.setDraft(files);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        const auto tabNamed = [&](const std::string& n) {
+            for (int i = 0; i < panel.fileCount(); ++i)
+                if (panel.fileName(i) == n)
+                    return i;
+            return -1;
+        };
+        const auto show = [&](int i) {
+            const funkgui::Point t = panel.centreOfTab(i);
+            host.click(t.x, t.y);
+            host.settle();
+        };
+        const auto marks = [](const funkgui::TextEditor& e) {
+            int n = 0;
+            for (const funkgui::Decoration& d : e.decorations())
+                n += d.kind == funkgui::DecorationKind::findMatch || d.kind == funkgui::DecorationKind::findCurrent ? 1 : 0;
+            return n;
+        };
+        const int notes = tabNamed("notes.fm"), guiTab = tabNamed("panel.gui"), cirTab = tabNamed("tone.cir");
+        P.eq("files.setup", panel.fileCount() == 4 && notes == 1 && guiTab == 2 && cirTab == 3 ? 1 : 0, 1);
+        show(0);
+
+        // BUTTON: the magnifier, at the status line's left.
+        {
+            const funkgui::Rect b = code.findButtonRect();
+            const funkgui::Rect status = code.statusRect();
+            P.eq("button.shown", !b.isEmpty() && status.contains({ b.centreX(), b.centreY() }) && b.x < status.x + 8.0f ? 1 : 0, 1);
+            host.move(b.centreX(), b.centreY());
+            P.eq("button.hand", panel.cursor() == funkgui::Cursor::pointingHand ? 1 : 0, 1);
+            host.click(b.centreX(), b.centreY());
+            P.eq("button.opens_replace", code.findOpen() && code.replaceOpen() && code.takesKeys() && !code.allFiles() ? 1 : 0, 1);
+            host.keys("escape");
+            P.eq("button.closes", code.findOpen() ? 0 : 1, 1);
+            std::vector<funkgui::A11yItem> tree;
+            panel.accessibility(tree);
+            int found = 0;
+            for (const funkgui::A11yItem& a : tree)
+                found += a.title == "Find and replace" && a.role == funkgui::A11yRole::button ? 1 : 0;
+            P.eq("button.a11y", found, 1);
+        }
+
+        // CTRLH: Windows' and Linux's find and replace; on a Mac Cmd-H is the system's.
+        {
+            focusEditor(panel, host);
+#if defined(__APPLE__)
+            host.keys("cmd+h");
+            P.eq("ctrlh.mac_cmd_h_not_ours", code.findOpen() ? 0 : 1, 1);
+#else
+            funkgui::KeyEvent h;                         // as JUCE gives Ctrl-H there: the command key is Ctrl
+            h.key = funkgui::Key::character;
+            h.ch = U'h';
+            h.mods.cmd = true;
+            h.mods.ctrl = true;
+            panel.key(h);
+            host.tick(1);
+            P.eq("ctrlh.opens_replace", code.findOpen() && code.replaceOpen() ? 1 : 0, 1);
+            host.keys("escape");
+            focusEditor(panel, host);
+            host.keys("ctrl+h");
+            P.eq("ctrlh.ctrl_alone", code.findOpen() && code.replaceOpen() ? 1 : 0, 1);
+            host.keys("escape");
+#endif
+        }
+
+        // FILES: Shift-Cmd-F, the word in four files.
+        panel.openIrView(0);                             // the IR tab open beside them: never searched
+        host.settle();
+        show(0);
+        focusEditor(panel, host);
+        panel.editor().setCaret({ 0, 0 });
+        host.keys("cmd+shift+f");
+        P.eq("files.opens_on", code.findOpen() && code.allFiles() ? 1 : 0, 1);
+        type(panel, host, "zork");
+        P.eq("files.count", code.findCount(), 7);
+        P.eq("files.files", code.findFiles(), 4);
+        P.eq("files.counter", code.findCountText() == "1 of 7 in 4 files" ? 1 : 0, 1);
+        std::printf("counter: %s\n", code.findCountText().c_str());
+        int inCir = 0, layout = 0;
+        for (int k = 0; k < code.findCount(); ++k)
+            if (code.findMatchTab(k) == cirTab)
+            {
+                ++inCir;
+                layout += pg::cir::isLayoutLine(panel.fileEditor(cirTab).line(code.findMatchRange(k).from.line)) ? 1 : 0;
+            }
+        P.eq("files.netlist_text", inCir, 3);
+        P.eq("files.no_layout_line", layout, 0);
+        P.eq("files.marked_in_other_tabs", marks(panel.fileEditor(notes)) == 1 && marks(panel.fileEditor(cirTab)) == 3 ? 1 : 0, 1);
+        P.eq("files.first", code.findCurrent() == 0 && panel.activeFile() == 0 ? 1 : 0, 1);
+        host.keys("return");
+        P.eq("files.next_same_tab", code.findCurrent() == 1 && panel.activeFile() == 0 ? 1 : 0, 1);
+        host.keys("return");
+        P.eq("files.walk_changes_tab", code.findCurrent() == 2 && panel.activeFile() == notes
+                                           && panel.editor().selectedText() == "zork" && code.findOpen() ? 1 : 0, 1);
+        host.keys("return");
+        P.eq("files.walk_gui", panel.activeFile() == guiTab && code.findCurrent() == 3 ? 1 : 0, 1);
+        host.keys("shift+return");
+        P.eq("files.walk_back", panel.activeFile() == notes && code.findCurrent() == 2 ? 1 : 0, 1);
+        for (int k = 0; k < 5; ++k)
+            host.keys("return");
+        P.eq("files.walk_wraps", panel.activeFile() == 0 && code.findCurrent() == 0 ? 1 : 0, 1);
+        // The list: a row a match.
+        const funkgui::Rect list = code.findListBox();
+        P.eq("files.list_shown", list.isEmpty() ? 0 : 1, 1);
+        P.ge("files.list_under_bar", static_cast<double>(list.y), static_cast<double>(code.findBox().bottom()));
+        int rows = 0;
+        for (int k = 0; k < code.findCount(); ++k)
+            rows += code.findListRow(k).isEmpty() ? 0 : 1;
+        P.eq("files.list_rows", rows, 7);
+        P.eq("files.list_row_h", std::abs(code.findListRowH() - 22.0f) < 0.5f ? 1 : 0, 1);
+        {
+            const funkgui::Rect r = code.findListRow(5);
+            host.click(r.centreX(), r.centreY());
+            P.eq("files.list_click", panel.activeFile() == cirTab && code.findCurrent() == 5 && code.findOpen() && code.takesKeys() ? 1 : 0, 1);
+            host.keys("down");
+            P.eq("files.list_down", code.findCurrent() == 6 && panel.activeFile() == cirTab ? 1 : 0, 1);
+        }
+        host.move(10.0f, 10.0f);
+        writePng(P, host, "gui.code.find_files.png", "find_files");
+        // The IR tab shown: none of its text found, the count the files'.
+        panel.openIrView(0);
+        host.settle();
+        P.eq("files.ir_never", code.findOpen() && code.findCount() == 7 && marks(panel.editor()) == 0 ? 1 : 0, 1);
+        show(0);
+        // The toggle off: the tab shown alone.
+        {
+            code.setAllFiles(false);
+            P.eq("files.toggle_off", code.findCount() == 2 && code.findListBox().isEmpty() && marks(panel.fileEditor(notes)) == 0 ? 1 : 0, 1);
+            code.setAllFiles(true);
+            P.eq("files.toggle_on", code.findCount() == 7 ? 1 : 0, 1);
+        }
+        host.keys("escape");
+        // From anywhere in the panel: no item has the keys.
+        host.keys("escape");
+        host.settle();
+        host.keys("cmd+shift+f");
+        P.eq("files.from_anywhere", code.findOpen() && code.allFiles() && code.findCount() == 7 ? 1 : 0, 1);
+
+        // REPLACEALL: every file, one undo step across them.
+        const std::string before0 = panel.fileEditor(0).text(), beforeN = panel.fileEditor(notes).text(),
+                          beforeG = panel.fileEditor(guiTab).text(), beforeC = panel.fileEditor(cirTab).text();
+        host.keys("cmd+alt+f");                          // the replace row, All files kept (the bar has the keys)
+        P.eq("replaceall.row", code.replaceOpen() && code.allFiles() ? 1 : 0, 1);
+        type(panel, host, "blip");
+        host.keys("alt+return");
+        host.tick(2);
+        const auto none = [&](int i) { return panel.fileEditor(i).text().find("zork") == std::string::npos; };
+        P.eq("replaceall.every_file", none(0) && none(notes) && none(guiTab) ? 1 : 0, 1);
+        P.eq("replaceall.layout_kept",
+             panel.fileEditor(cirTab).text() == "* tone.cir: a blip test\nR1 in blip 10k\nR2 blip out 1k\n*@ zork drawing\n.end\n" ? 1 : 0, 1);
+        P.eq("replaceall.none_left", code.findCount(), 0);
+        host.keys("escape");
+        show(notes);
+        focusEditor(panel, host);
+        host.keys("cmd+z");
+        host.tick(1);
+        P.eq("replaceall.undo_all", panel.fileEditor(0).text() == before0 && panel.fileEditor(notes).text() == beforeN
+                                        && panel.fileEditor(guiTab).text() == beforeG && panel.fileEditor(cirTab).text() == beforeC ? 1 : 0, 1);
+        host.keys("cmd+shift+z");
+        host.tick(1);
+        P.eq("replaceall.redo_all", none(0) && none(notes) && none(guiTab) && panel.fileEditor(cirTab).text().find("R1 in blip") != std::string::npos ? 1 : 0, 1);
+        host.keys("cmd+z");
+        host.tick(1);
+        P.eq("replaceall.undo_again", panel.fileEditor(guiTab).text() == beforeG && panel.fileEditor(cirTab).text() == beforeC ? 1 : 0, 1);
+
+        // SCHEMATIC: a match in a netlist shown as a schematic.
+        show(cirTab);
+        panel.setSchematic(true);
+        host.settle();
+        P.eq("schematic.shown", panel.schematicShown() ? 1 : 0, 1);
+        show(guiTab);
+        focusEditor(panel, host);
+        panel.editor().setCaret({ 0, 0 });
+        host.keys("cmd+shift+f");
+        type(panel, host, "zork");
+        P.eq("schematic.from_gui", panel.activeFile() == guiTab && code.findCurrent() == 3 ? 1 : 0, 1);
+        host.keys("return");
+        P.eq("schematic.netlist_view", panel.activeFile() == cirTab && !panel.schematicShown() && code.findOpen()
+                                           && panel.editor().selectedText() == "zork" ? 1 : 0, 1);
+        host.keys("escape");
+        panel.setSchematic(true);
+        host.settle();
+        show(0);
+        focusEditor(panel, host);
+        host.keys("cmd+shift+f");
+        type(panel, host, "zork");
+        {
+            const funkgui::Rect r = code.findListRow(6);
+            host.click(r.centreX(), r.centreY());
+            P.eq("schematic.row_click", panel.activeFile() == cirTab && !panel.schematicShown() && code.findCurrent() == 6 ? 1 : 0, 1);
+        }
+        const float w12 = code.findBox().w;              // the bar with All files on, at 12 px
+        host.keys("escape");
+
+        // PAPER.
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.settle();
+            const funkgui::Point t0 = paper.centreOfTab(0);
+            paperHost.click(t0.x, t0.y);
+            paperHost.settle();
+            const funkgui::Rect a = paper.editor().textArea();
+            paperHost.click(a.x + 30.0f, a.y + 4.0f);
+            paper.editor().setCaret({ 0, 0 });
+            paperHost.keys("cmd+shift+f");
+            type(paper, paperHost, "zork");
+            paperHost.keys("return");
+            paperHost.move(10.0f, 10.0f);
+            writePng(P, paperHost, "gui.code.find_files.paper.png", "find_files_paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+
+        // SIZE: the list at 18 px.
+        {
+            namespace cs = pg::ui::codesize;
+            cs::write(180);
+            pg::ui::Panel large(processor.ports(), port);
+            funkgui::HeadlessHost largeHost(large, 0, 2.0f);
+            largeHost.settle();
+            pg::ui::CodeAssist& lc = large.codeAssist();
+            const funkgui::Point t0 = large.centreOfTab(0);
+            largeHost.click(t0.x, t0.y);
+            largeHost.settle();
+            const funkgui::Rect a = large.editor().textArea();
+            largeHost.click(a.x + 30.0f, a.y + 4.0f);
+            large.editor().setCaret({ 0, 0 });
+            largeHost.keys("cmd+shift+f");
+            type(large, largeHost, "zork");
+            P.eq("size.text_18", large.codeTextSize(), 180);
+            P.near("size.list_rows_scaled", static_cast<double>(lc.findListRowH()), 33.0, 0.5);
+            P.near("size.list_row_completion", static_cast<double>(lc.findListRowH()), static_cast<double>(lc.completionRowHeight()), 1e-3);
+            const funkgui::Rect r0 = lc.findListRow(0);
+            P.near("size.row_height_drawn", static_cast<double>(r0.h), 33.0, 0.5);
+            P.ge("size.bar_wider", static_cast<double>(lc.findBox().w), static_cast<double>(w12) + 1.0);
+            largeHost.move(10.0f, 10.0f);
+            writePng(P, largeHost, "gui.code.find_files_large.png", "find_files_large");
+            cs::write(cs::kDefault);
+        }
+    }
+    {
+        // STRIP: sixteen files at the least window; the word in the last file alone.
+        pg::Draft many;
+        many.files.push_back({ pg::kProgramName, program() });
+        for (int k = 1; k < static_cast<int>(pg::kMaxFiles); ++k)
+            many.files.push_back({ "file" + std::to_string(k) + ".fm",
+                                   "// file " + std::to_string(k) + (k == static_cast<int>(pg::kMaxFiles) - 1 ? " quux\n" : "\n") });
+        port.setDraft(many);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+        host.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        const funkgui::Point first = panel.centreOfTab(0);
+        host.click(first.x, first.y);
+        host.settle();
+        const int last = panel.fileCount() - 1;
+        P.eq("strip.last_out", panel.fileTabRect(last).isEmpty() ? 1 : 0, 1);
+        focusEditor(panel, host);
+        panel.editor().setCaret({ 0, 0 });
+        host.keys("cmd+shift+f");
+        type(panel, host, "quux");
+        host.settle();
+        P.eq("strip.walked", panel.activeFile() == last && code.findCount() == 1 && code.findCountText() == "1 of 1 in 1 file" ? 1 : 0, 1);
+        P.eq("strip.in_view", panel.fileTabRect(last).isEmpty() ? 0 : 1, 1);
+        P.near("strip.whole", static_cast<double>(panel.fileTabRect(last).w), static_cast<double>(panel.fileTabWidth(last)), 0.5);
+        const funkgui::Rect bar = code.findBox(), ed = panel.editorArea();
+        P.ge("strip.bar_in_editor", static_cast<double>(bar.x), static_cast<double>(ed.x));
+        host.move(10.0f, 10.0f);
+        writePng(P, host, "gui.code.find_files_least.png", "find_files_least");
+        host.keys("escape");
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();
