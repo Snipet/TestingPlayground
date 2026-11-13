@@ -76,7 +76,9 @@
 //            the editor's own content (editorContent) its draft, its dials, with no read
 //   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
 //            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread;
-//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered
+//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered; a read of
+//            the Reader's that throws leaves that file unlisted until it changes, and a save that throws fails in words,
+//            the file as it was, the next save taken
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -539,6 +541,30 @@ PROBE(plugin, projects)
             const std::vector<ps::Entry> second = ps::listCached(unread);
             P.eq("cached.new_listed", presetsOfEntry(second, "Newcomer") >= 0 && unread.empty() ? 1 : 0, 1);
             newcomer.deleteFile();
+            // A read that throws on the Reader's thread (fminus/Failure.h's seam): the file taken as one it cannot read
+            // (not listed, not read again while it stays as it is), the thread alive; changed, it is read and listed.
+            const juce::File thrower = dir.getChildFile("Thrower.fmproject");
+            dir.getChildFile("Glass Bloom.fmproject").copyFileTo(thrower);
+            unread.clear();
+            (void)ps::listCached(unread);
+            pg::failure::plant("reader", pg::failure::Kind::badAlloc);
+            reader->request(unread);
+            const bool thrownDone = waitReader();
+            const int readerFired = pg::failure::fired();
+            pg::failure::unplant();
+            unread.clear();
+            const std::vector<ps::Entry> afterThrow = ps::listCached(unread);
+            P.eq("cached.thrown_unlisted", thrownDone && readerFired == 1 && presetsOfEntry(afterThrow, "Thrower") < 0 && unread.empty()
+                                               ? 1 : 0, 1);
+            rewrite(dir, "Thrower", "Thrower", addPreset("After"));
+            unread.clear();
+            (void)ps::listCached(unread);
+            reader->request(unread);
+            const bool readAgain = waitReader();
+            unread.clear();
+            const std::vector<ps::Entry> thrownNext = ps::listCached(unread);
+            P.eq("cached.thrown_next", readAgain && presetsOfEntry(thrownNext, "Thrower") >= 0 && unread.empty() ? 1 : 0, 1);
+            thrower.deleteFile();
             P.eq("cached.tidy", ps::removePreset("Glass Bloom", "Other") ? 1 : 0, 1);
         }
         // Back as it was (the presets above as saved): Zed and Zz go.
@@ -1320,6 +1346,32 @@ PROBE(plugin, projects)
                          && tb3->versions[2].files[0].text.find("// seven") != std::string::npos
                          && tb3->versions[2].files[0].text.find("// eight") == std::string::npos;
         P.eq("async.close_saves_both", closed ? 1 : 0, 1);
+        // A save that throws on the saver's thread (fminus/Failure.h's seam): it fails in words, the project's file as it
+        // was (nothing half-written), and the next save is taken as any.
+        {
+            const juce::File twinAFile = dir.getChildFile("Twin A.fmproject");
+            juce::MemoryBlock fileBefore;
+            (void)twinAFile.loadFileAsData(fileBefore);
+            edit("// thrown\n");
+            pg::failure::plant("save", pg::failure::Kind::runtime);
+            const bool thrownStarted = port.startSave("Twin A", w);
+            s.settle();
+            const int saveFired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::SaveState failed = port.saving();
+            juce::MemoryBlock fileAfter;
+            (void)twinAFile.loadFileAsData(fileAfter);
+            std::printf("async: a save that throws: %s\n", failed.why.c_str());
+            P.eq("async.thrown_in_words", thrownStarted && saveFired == 1 && !failed.busy && !failed.ok
+                                              && failed.why == "the plugin itself failed while saving the project: a planted failure; this is "
+                                                               "not a fault in your program" ? 1 : 0, 1);
+            P.eq("async.thrown_file_kept", fileAfter == fileBefore ? 1 : 0, 1);
+            const bool nextStarted = port.startSave("Twin A", w);
+            s.settle();
+            const std::optional<ps::Project> ta3 = ps::load("Twin A");
+            P.eq("async.thrown_next", nextStarted && port.saving().ok && ta3 && ta3->versions.size() == 3
+                                          && ta3->latest().files[0].text.find("// thrown") != std::string::npos ? 1 : 0, 1);
+        }
         for (const char* n : { "Large", "Twin A", "Twin B" })
             (void)port.deleteProject(n, w);
     }

@@ -76,10 +76,11 @@ namespace playground
         }
         exportCancel_.store(false);
         exporter_ = std::thread([this, job = std::move(taken)] {
-            // An exception (fminus/Failure.h) fails the export in words, as its own refusals do: never the process.
+            // An exception (fminus/Failure.h) fails the export in words, as its own refusals do, never the process; and
+            // as a failed export leaves no file, the temporary this one wrote beside its place goes (the writers' own
+            // name: projectexport's ".<name>.writing"; only that, never the place, which no export writes over).
             try
             {
-                failure::at("export");
                 runExport(job);
             }
             catch (...)
@@ -88,6 +89,8 @@ namespace playground
                 try
                 {
                     failed = failure::sentence("exporting");
+                    const juce::File target(juce::String::fromUTF8(job.path.c_str()));
+                    target.getSiblingFile("." + target.getFileName() + ".writing").deleteFile();
                 }
                 catch (...)
                 {
