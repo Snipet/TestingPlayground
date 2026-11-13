@@ -128,6 +128,7 @@
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
+#include "editor/TabStrip.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -462,7 +463,10 @@ namespace playground::ui
         funkgui::Point centreOfIrTab() const;
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
-        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab, as much as is in view (empty: scrolled out)
+        float fileTabWidth(int i) const;                 // its whole width (its name's)
+        bool fileTabEdited(int i) const;                 // its dot: its text is not what plays
+        TabStrip tabStrip() const;                       // the strip's places and scroll, as laid out now (TabStrip.h)
         // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
         // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
         // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
@@ -869,7 +873,8 @@ namespace playground::ui
         SettingsCard settings_{ port_ };
         uint64_t seenSettingsAsk_ = 0;
         uint32_t seenSettingsRev_ = 0;
-        uint32_t seenPrefsRev_ = ~0u;                    // UiPreferences' revision the text size was read at
+        uint32_t seenPrefsRev_ = ~0u;
+        int filesPlaying_ = 0;                           // the tabs were given what plays (FilesItem::setPlaying)                    // UiPreferences' revision the text size was read at
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;

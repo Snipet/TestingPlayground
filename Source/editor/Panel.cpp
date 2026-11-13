@@ -16,6 +16,7 @@
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
 #include "editor/SchematicView.h"
+#include "editor/TabStrip.h"
 
 #include "editor/Theme.h"
 
@@ -791,23 +792,21 @@ namespace playground::ui
         constexpr float kTabH = 26.0f;
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
-        constexpr float kTabMinW = 64.0f;
-        constexpr float kTabNarrowW = 26.0f;             // the least a tab narrows to when many do not fit (kMaxFiles,
-                                                         // sixteen, fit a program's card of kProgramMinW, the IR tab
-                                                         // open and a netlist's pills too: it takes no more than they
-                                                         // leave); a letter of its name, and its close box beside it
-                                                         // while it shows or is under the pointer
-        constexpr float kTabMaxW = 150.0f;
+        constexpr float kTabMinW = 64.0f;                // a tab is as wide as its name, within these, never narrowed:
+        constexpr float kTabMaxW = 150.0f;               // the strip scrolls instead (TabStrip.h)
+        constexpr float kIrNarrowW = 26.0f;              // the IR tab beside a netlist's pills in a narrow bar: its chip
+        constexpr float kStripLeast = 5.0f * kTabMinW;   // the strip's room the pills' labels and the IR tab's name leave
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
         constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
         constexpr float kIrIconW = 16.0f;                // the IR tab's icon, before its name
         // A .cir tab's Netlist / Schematic pills, at the bar's right end (left of the IR tab): icon-only when their
-        // labels would narrow the files' tabs below kTabNarrowW.
+        // labels would leave the strip of files less than kStripLeast (and its tabs do not all fit).
         constexpr float kPillIconW = 28.0f;
         constexpr float kPillTrack = 3.0f;               // the track around the pair
         constexpr uint32_t kPillsA11y = 40;              // FilesItem's ids: the group, then Netlist and Schematic
         constexpr uint32_t kPanelSwitchA11y = 44;        // ... the status line's Panel switch
+        constexpr uint32_t kFilesMenuA11y = 37;          // ... the files dropdown (while the tabs overflow)
     }
 
     // Not in the unnamed namespace: Panel.h names it.
@@ -860,7 +859,11 @@ namespace playground::ui
             close_ = std::move(close);
         }
         // ... and its menuOpenAt, which the Schematic view's triggers (More, the probe chip) draw open by.
-        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { schematic_.setMenuOpen(std::move(open)); }
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open)
+        {
+            menuOpen_ = open;                            // the files dropdown's too
+            schematic_.setMenuOpen(std::move(open));
+        }
         // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
         // fields, a dial's port and control, and RUN (the Panel's).
         void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
@@ -1366,51 +1369,71 @@ namespace playground::ui
             }
         }
 
-        // ---- geometry (logical px): the tabs from the bar's left, each as wide as its name -------------------
-        funkgui::Rect tabRect(int i) const
+        // ---- geometry (logical px): the strip of tabs from the bar's left (TabStrip.h), each as wide as its name;
+        // the + box, the files dropdown, the pills and the IR tab at its right, which never scroll ------------------
+        // The strip laid out for the bar as it is now; the tab that became active (or is renamed) brought into view.
+        const TabStrip& strip() const
         {
-            float x = bar_.x;
-            for (int k = 0; k < i; ++k)
-                x += tabWidth(k) + kTabGap;
-            return { x, bar_.y, tabWidth(i), kTabH };
+            std::vector<float> w;
+            w.reserve(tabs_.size());
+            for (int k = 0; k < count(); ++k)
+                w.push_back(naturalWidth(k));
+            const float fixed = (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f) + pillsReserve();
+            strip_.layout(bar_, w, fixed, canAdd() ? kNewTabW : 0.0f, kTabGap, editorBounds_.y);
+            const int want = renaming_ >= 0 ? renaming_ : active_;
+            if (want != revealed_ || count() != revealedCount_ || bar_.w != revealedW_)
+            {
+                strip_.reveal(want);
+                revealed_ = want;
+                revealedCount_ = count();
+                revealedW_ = bar_.w;
+            }
+            return strip_;
+        }
+        funkgui::Rect tabRect(int i) const { return strip().tab(i); }             // scrolled, maybe out of view
+        funkgui::Rect shownTabRect(int i) const { return strip().shown(i); }      // in view (empty when out)
+        float tabWidth(int i) const { return naturalWidth(i); }
+        void revealTab(int i) const                      // (the strip's scroll is no part of the files: mutable)
+        {
+            strip();
+            strip_.reveal(i);
         }
         funkgui::Rect closeRect(int i) const
         {
             const funkgui::Rect t = tabRect(i);
-            const float right = t.right() - tabPad(i) + 4.0f;
-            // A narrowed tab's box keeps clear of its middle, so that a click there shows its file (at kTabNarrowW).
-            const float x = narrow(i) ? std::max(right - kTabCloseW, t.centreX() + 1.0f) : right - kTabCloseW;
-            return { x, t.y + 4.0f, right - x, kTabH - 8.0f };
+            const float right = t.right() - kTabPad + 4.0f;
+            return { right - kTabCloseW, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
         }
-        // A tab narrowed to fit: less padding, and its close box only while it is shown (not under the IR tab) or under
-        // the pointer.
-        bool narrow(int i) const { return tabWidth(i) < naturalWidth(i) - 0.5f; }
-        float tabPad(int i) const { return narrow(i) ? 6.0f : kTabPad; }
+        // Its close box shows on the tab shown, and on one under the pointer (the program's has none); its room is
+        // always kept, so a tab does not change width as the pointer moves.
         bool closeShown(int i) const
         {
-            return i > 0 && (!narrow(i) || (i == active_ && !irShown()) || tabRect(i).contains(pointer_));
+            if (i <= 0)
+                return false;
+            const funkgui::Rect r = shownTabRect(i);
+            return !r.isEmpty() && closeRect(i).right() <= r.right() + 0.5f && closeRect(i).x >= r.x - 0.5f
+                && ((i == active_ && !irShown()) || (r.contains(pointer_) && strip().tabAt(pointer_) == i));
         }
-        funkgui::Rect newTabRect() const
-        {
-            const funkgui::Rect last = tabRect(count() - 1);
-            return { last.right() + kTabGap, bar_.y, kNewTabW, kTabH };
-        }
+        funkgui::Rect newTabRect() const { return strip().newTab(); }
+        funkgui::Rect filesMenuRect() const { return strip().menu(); }
         bool canAdd() const noexcept { return tabs_.size() < kMaxFiles; }
         // The IR tab, apart from the files' at the bar's right end: its icon, its name, its close box. As wide as its
-        // name (up to 40% of the bar), but never wider than the files' tabs leave at their narrowest (kTabNarrowW each,
-        // and the new-file box), so that they never run under it: its name is cut first.
+        // name, up to 40% of the bar; beside a netlist's pills in a bar too narrow for both and a strip of
+        // kStripLeast, its chip alone (kIrNarrowW: while it is not shown).
+        float irNaturalWidth() const
+        {
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
+            return std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW, std::max(kTabMinW, bar_.w * 0.4f));
+        }
         float irTabWidth() const
         {
             if (!ir_.open)
                 return 0.0f;
-            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
-            const float natural = std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW,
-                                             std::max(kTabMinW, bar_.w * 0.4f));
-            const int n = count();
-            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
-                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap + pillsReserve();
-            // Beside a netlist's pills it narrows further, to kTabNarrowW (its icon; its box under the pointer).
-            return std::max(pillsShown() ? kTabNarrowW : kTabMinW, std::min(natural, bar_.w - files));
+            const float natural = irNaturalWidth();
+            if (pillsShown() && !irShown()
+                && bar_.w - natural - 3.0f * kTabGap - pillsWidth(false) - 2.0f * kTabGap - stripExtras() < kStripLeast)
+                return kIrNarrowW;
+            return natural;
         }
         bool irNarrow() const { return irTabWidth() < kTabMinW - 0.5f; }
         funkgui::Rect irTabRect() const
@@ -1422,6 +1445,74 @@ namespace playground::ui
         {
             const funkgui::Rect t = irTabRect();
             return { t.right() - kTabPad - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
+        }
+        // The + box and the files dropdown with their gaps: what the strip's controls take beside its view.
+        float stripExtras() const { return (canAdd() ? kNewTabW + kTabGap : 0.0f) + TabStrip::kMenuW + kTabGap; }
+        // The strip's area: the bar and the gap under it down to the editor (the strip's scroll bar is in that gap).
+        funkgui::Rect stripArea() const { return { bar_.x, bar_.y, bar_.w, std::max(bar_.h, editorBounds_.y - bar_.y) }; }
+        // The files dropdown's menu: every file, the one shown checked; a choice shows it (brought into view).
+        void openFilesMenu(funkgui::HostServices& h)
+        {
+            funkgui::MenuRequest request;
+            for (int i = 0; i < count(); ++i)
+                request.items.push_back(dropdown::choice(i + 1, name(i), i == active_ && !irShown()));
+            dropdown::dropdownMenu(request, filesMenuRect(), irShown() ? 0 : active_ + 1);
+            request.minWidth = std::max(request.minWidth, 160.0f);
+            const int at = count();
+            h.showMenu(request, [this, at](int chosen) {
+                if (chosen >= 1 && chosen <= at && chosen <= count())
+                    select(chosen - 1);
+            });
+        }
+        // Ctrl-Tab and Ctrl-Shift-Tab: the next file's tab, or the one before, wrapping (the files only: from the IR
+        // tab, the file under it is the start).
+        void stepTab(int dir)
+        {
+            const int n = count();
+            if (n <= 1 && !irShown())
+                return;
+            endRename();
+            const int from = active_;
+            const int to = irShown() && n == 1 ? 0 : ((from + dir) % n + n) % n;
+            if (irShown() && to == from)
+            {
+                ir_.shown = false;
+                editor().setFocused(false);
+                show();
+                assist_.tabShown();
+                structure_ += kStructureStep;
+                syncSchematic();
+                return;
+            }
+            select(to);
+        }
+        // A tab's text differs from what plays (a netlist but for its drawing's *@ lines: cir::sameProgram), so its tab
+        // has a dot before its name; the Panel gives what plays (setPlaying) when the files or the status change.
+        void setPlaying(const Sources& playing)
+        {
+            playing_ = playing;
+            ++playingRev_;
+        }
+        bool edited(int i) const
+        {
+            const uint64_t r = revision();
+            if (r != editedRev_ || playingRev_ != editedPlaying_ || edited_.size() != tabs_.size())
+            {
+                editedRev_ = r;
+                editedPlaying_ = playingRev_;
+                edited_.assign(tabs_.size(), false);
+                for (int k = 0; k < count(); ++k)
+                {
+                    const SourceFile* was = nullptr;
+                    for (const SourceFile& f : playing_)
+                        if (f.name == name(k))
+                            was = &f;
+                    const std::string now = tabs_[static_cast<std::size_t>(k)].editor->text();
+                    edited_[static_cast<std::size_t>(k)]
+                        = was == nullptr || !cir::sameProgram(Sources{ SourceFile{ name(k), now } }, Sources{ *was });
+                }
+            }
+            return i >= 0 && i < static_cast<int>(edited_.size()) && edited_[static_cast<std::size_t>(i)];
         }
 
         // ---- Item --------------------------------------------------------------------------------------------
@@ -1449,7 +1540,9 @@ namespace playground::ui
             k.mix(revision()).mix(active_).mix(tabs_.size()).mix(problems_->size()).mix(pointer_).mix(focused_).mix(hidden_);
             k.mix(ir_.open).mix(ir_.shown).mix(ir_.view).mix(renaming_).mix(edit_.buffer).mix(edit_.caret).mix(edit_.allSelected)
                 .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_).mix(size_);
-            k.mix(editor()).mix(assist_.drawKey());
+            k.mix(editor()).mix(assist_.drawKey()).mix(strip().key()).mix(playingRev_).mix(pressedStripBar_);
+            if (menuOpen_)
+                k.mix(menuOpen_(filesMenuRect()));
             if (schematicShown())
                 k.mix(schematic_.drawKey());
             return k.h;
@@ -1466,51 +1559,115 @@ namespace playground::ui
                 ed.draw(c, th, ring);
             assist_.drawInEditor(c, th);
 
-            // The tabs: pills, the shown one raised, a file the last run's errors name marked before its name.
+            // The tabs: a strip joined to the editor. The tab shown has the editor's ground, its top corners rounded,
+            // and runs down into the editor; the others are their names on the card's ground, a divider between
+            // neighbours, a tint under the pointer; a hairline under the rest. A file the last run's errors name has a
+            // red disc before its name, else one whose text differs from what plays a dot there.
             const funkgui::Canvas::Scope s(c, kTabTag, false);
             const chat::Palette p = chat::palette(th);
             const funkgui::TextStyle& st = chat::kSmall;
+            const TabStrip& sp = strip();
+            const funkgui::Rect view = sp.view();
+            const float joinY = editorBounds_.y;                       // the editor's top
+            const funkgui::Col ground = codeGround(th);
+            const int shownTab = irShown() ? -1 : active_;
+            const funkgui::Rect activeR = shownTab >= 0 ? sp.shown(shownTab) : funkgui::Rect{};
+            // the hairline under the strip, but under the tab shown
+            {
+                const float l = bar_.x, r = sp.overflows() ? view.right() : bar_.right();
+                if (activeR.isEmpty())
+                    c.hairlineH(l, joinY - 1.0f, r - l, p.cardEdge);
+                else
+                {
+                    if (activeR.x > l)
+                        c.hairlineH(l, joinY - 1.0f, activeR.x - l, p.cardEdge);
+                    if (r > activeR.right())
+                        c.hairlineH(activeR.right(), joinY - 1.0f, r - activeR.right(), p.cardEdge);
+                }
+            }
+            c.pushClip({ view.x, view.y, view.w, joinY + 1.0f - view.y });
+            const int hoverTab = sp.tabAt(pointer_);
             for (int i = 0; i < count(); ++i)
             {
                 const funkgui::Rect r = tabRect(i);
-                const bool shown = i == active_ && !irShown();   // the IR tab's over it
-                const bool hover = r.contains(pointer_);
+                if (r.right() < view.x || r.x > view.right())
+                    continue;                                          // scrolled out
+                const bool shown = i == shownTab;
+                const bool hover = i == hoverTab;
                 if (shown)
-                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
+                {
+                    // outlined but at its foot, where it opens into the editor
+                    c.rrect4(r.x, r.y, r.w, joinY + 1.0f - r.y, 7.0f, 7.0f, 0.0f, 0.0f, ground, 1.0f, p.cardEdge);
+                    c.rrect(r.x + 1.0f, joinY - 1.5f, r.w - 2.0f, 3.0f, 0.0f, ground);
+                }
                 else if (hover)
-                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.hover);
+                    c.rrect(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f, 6.0f, p.hover);
+                // a divider between two tabs that are neither shown nor under the pointer
+                // (none under an edge's chevron and fade: it would show through as a stray mark)
+                const bool underFade = (!sp.chevron(false).isEmpty() && r.right() < view.x + TabStrip::kChevronW + TabStrip::kFadeW)
+                                    || (!sp.chevron(true).isEmpty() && r.right() > view.right() - TabStrip::kChevronW - TabStrip::kFadeW);
+                if (i + 1 < count() && !shown && !hover && i + 1 != shownTab && i + 1 != hoverTab && !underFade)
+                    c.hairlineV(r.right(), r.y + 7.0f, r.h - 14.0f, p.cardEdge);
                 const float textTop = c.capCentreTop(r.centreY(), st);
                 if (hasErrors(name(i)))
                     c.disc(r.x + 6.0f, r.centreY(), 2.5f, p.danger);
-                const float pad = tabPad(i);
-                const float nameW = r.w - 2.0f * pad - (closeShown(i) ? kTabCloseW : 0.0f);
+                else if (edited(i))
+                    c.disc(r.x + 6.0f, r.centreY(), 2.0f, shown || hover ? p.text : p.soft);
+                const float nameW = r.w - 2.0f * kTabPad - (i > 0 ? kTabCloseW : 0.0f);
                 if (i == renaming_)
                 {
                     // The name being edited: its text, the selection (all of it, until a key), the caret.
                     const std::string& b = edit_.buffer;
                     const float w = c.textWidth(b.c_str(), st);
                     if (edit_.allSelected && !b.empty())
-                        c.rrect(r.x + pad - 1.0f, r.y + 5.0f, std::min(w, nameW) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                    c.text(fitText(c, b, st, nameW).c_str(), r.x + pad, textTop, st, why_.empty() ? p.text : p.danger);
+                        c.rrect(r.x + kTabPad - 1.0f, r.y + 5.0f, std::min(w, nameW) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                    c.text(fitText(c, b, st, nameW).c_str(), r.x + kTabPad, textTop, st, why_.empty() ? p.text : p.danger);
                     const std::string head = b.substr(0, static_cast<std::size_t>(std::clamp(
                                                              edit_.caret, 0, static_cast<int>(b.size()))));
-                    const float cx = r.x + pad + std::min(c.textWidth(head.c_str(), st), nameW);
+                    const float cx = r.x + kTabPad + std::min(c.textWidth(head.c_str(), st), nameW);
                     c.rrect(cx, r.y + 5.0f, 1.5f, r.h - 10.0f, 0.0f, p.accent);
                 }
                 else
-                {
-                    const funkgui::Col ink = shown || hover ? p.text : p.soft;
-                    // A narrowed tab keeps the name's first letters, without an ellipsis (the footer has it whole).
-                    std::string label = name(i);
-                    if (narrow(i))
-                        while (label.size() > 1 && c.textWidth(label.c_str(), st) > nameW)
-                            label.pop_back();
-                    else
-                        label = fitText(c, label, st, nameW);
-                    c.text(label.c_str(), r.x + pad, textTop, st, ink);
-                }
+                    c.text(fitText(c, name(i), st, nameW).c_str(), r.x + kTabPad, textTop, st, shown || hover ? p.text : p.soft);
                 if (closeShown(i))
                     drawCross(c, closeRect(i), 3.0f, closeRect(i).contains(pointer_) ? p.text : p.faint);
+            }
+            // An edge that hides tabs fades into the card, its chevron over the fade.
+            for (const bool right : { false, true })
+            {
+                const funkgui::Rect ch = sp.chevron(right);
+                if (ch.isEmpty())
+                    continue;
+                // the chevron on the card's ground, then the tabs fading in beyond it
+                const funkgui::Col card = p.card;
+                const float h = joinY - 1.0f - view.y;
+                c.rrect(ch.x, view.y, ch.w, h, 0.0f, card);
+                constexpr int kSteps = 7;
+                const float stepW = TabStrip::kFadeW / static_cast<float>(kSteps);
+                for (int k = 0; k < kSteps; ++k)
+                {
+                    const float a = 1.0f - static_cast<float>(k + 1) / static_cast<float>(kSteps + 1);
+                    const float x = right ? ch.x - static_cast<float>(k + 1) * stepW : ch.right() + static_cast<float>(k) * stepW;
+                    c.rrect(x, view.y, stepW + 0.5f, h, 0.0f, card.withAlpha(a));
+                }
+                const bool hot = ch.contains(pointer_);
+                chat::drawIcon(c, right ? chat::Icon::chevronRight : chat::Icon::chevronLeft, ch.centreX(), ch.centreY(), 9.0f,
+                               hot ? p.text : p.soft);
+            }
+            c.popClip();
+            // The strip's scroll bar, in the gap under it, while the pointer is over the strip or it is dragged.
+            if (sp.barShown(stripArea().contains(pointer_) && !assist_.over(pointer_)))
+            {
+                const funkgui::Rect t = sp.barThumb();
+                c.rrect(t.x, t.y, t.w, t.h, 0.5f * t.h, sp.dragging() ? th.ink52 : th.ink32);
+            }
+            // The files dropdown: every file, for a jump to one scrolled out.
+            if (const funkgui::Rect m = filesMenuRect(); !m.isEmpty())
+            {
+                dropdown::State ds;
+                ds.hover = m.contains(pointer_);
+                ds.open = menuOpen_ && menuOpen_(m);
+                (void)dropdown::drawTrigger(c, p, m.reduced(1.0f), dropdown::Base::ghost, ds);
             }
             if (canAdd())
             {
@@ -1575,29 +1732,32 @@ namespace playground::ui
             }
         }
 
-        bool contains(funkgui::Point p) const override { return bar_.contains(p) || editor().contains(p) || overlayAt(p); }
+        bool contains(funkgui::Point p) const override { return stripArea().contains(p) || editor().contains(p) || overlayAt(p); }
         // Over what the code editor draws over everything (the completion list, the find and go-to bars, the status
         // line): the window bounds the list, not the program's card, so it may lie over a column's edge.
         bool overlayAt(funkgui::Point p) const { return !hidden_ && assist_.over(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override
         {
-            if (schematicShown() && !bar_.contains(p) && !assist_.statusRect().contains(p))
+            if (schematicShown() && !stripArea().contains(p) && !assist_.statusRect().contains(p))
                 return schematic_.cursorAt(p);
             if (const std::optional<funkgui::Cursor> own = assist_.cursorAt(p))
                 return *own;
-            if (bar_.contains(p))
+            if (stripArea().contains(p))
                 return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) || (ir_.open && irTabRect().contains(p))
                                || (pillsShown() && (pillRect(0).contains(p) || pillRect(1).contains(p)))
+                               || filesMenuRect().contains(p) || strip().chevron(false).contains(p)
+                               || strip().chevron(true).contains(p) || strip().barHits(p)
                            ? funkgui::Cursor::pointingHand
                            : funkgui::Cursor::normal;
             return editor().cursorAt(p);
         }
-        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h) override
         {
             const funkgui::Point p{ e.x, e.y };
             pressedSchematic_ = false;
+            pressedStripBar_ = false;
             schematic_.setGestures(&g);                  // a circuit dial's knob writes through it
-            if (!bar_.contains(p))
+            if (!stripArea().contains(p))
             {
                 endRename();
                 if (schematicShown() && !assist_.statusRect().contains(p))
@@ -1617,6 +1777,27 @@ namespace playground::ui
                 return;
             }
             pressedEditor_ = false;
+            // The strip's scroll bar (in the gap under the tabs), its chevrons and its files dropdown.
+            if (!e.popup && strip_.press(p))
+            {
+                pressedStripBar_ = true;
+                return;
+            }
+            for (const bool right : { false, true })
+                if (strip().chevron(right).contains(p))
+                {
+                    endRename();
+                    strip_.step(right);
+                    return;
+                }
+            if (filesMenuRect().contains(p))
+            {
+                endRename();
+                openFilesMenu(h);
+                return;
+            }
+            if (!bar_.contains(p))
+                return;                                  // the gap under the tabs
             if (pillsShown())
                 for (int k = 0; k < 2; ++k)
                     if (pillRect(k).contains(p))
@@ -1666,7 +1847,9 @@ namespace playground::ui
         void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             schematic_.setGestures(&g);
-            if (pressedSchematic_)
+            if (pressedStripBar_)
+                strip_.drag({ e.x, e.y });
+            else if (pressedSchematic_)
                 schematic_.pointerDrag(e);
             else if (pressedEditor_)
                 editor().pointerDrag(e);
@@ -1674,18 +1857,21 @@ namespace playground::ui
         void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             schematic_.setGestures(&g);
-            if (pressedSchematic_)
+            if (pressedStripBar_)
+                strip_.release();
+            else if (pressedSchematic_)
                 schematic_.pointerUp(e);
             else if (pressedEditor_)
                 editor().pointerUp(e);
             pressedEditor_ = false;
             pressedSchematic_ = false;
+            pressedStripBar_ = false;
         }
         void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             const funkgui::Point p{ e.x, e.y };
             schematic_.setGestures(&g);
-            if (!bar_.contains(p))
+            if (!stripArea().contains(p))
             {
                 if (schematicShown())
                 {
@@ -1702,14 +1888,23 @@ namespace playground::ui
         }
         bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double nowSec) override
         {
-            if (bar_.contains({ e.x, e.y }))
-                return false;
+            if (stripArea().contains({ e.x, e.y }))
+            {
+                strip();                                 // laid out for the bar as it is
+                return strip_.wheel(e);                  // the strip scrolls sideways (nothing when every tab fits)
+            }
             if (schematicShown())
                 return schematic_.wheel(e, nowSec);
             return assist_.wheel(e) || editor().wheel(e);
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
+            // Ctrl-Tab, Ctrl-Shift-Tab: the next file's tab, the one before (in the drawing too, not while renaming).
+            if (renaming_ < 0 && e.key == funkgui::Key::tab && e.mods.ctrl && !e.mods.alt)
+            {
+                stepTab(e.mods.shift ? -1 : 1);
+                return true;
+            }
             if (renaming_ < 0 && schematicShown())
             {
                 recount();
@@ -1769,7 +1964,7 @@ namespace playground::ui
                 tab.id = id_ + 2 + static_cast<uint32_t>(i);
                 tab.parent = group.id;
                 tab.role = funkgui::A11yRole::radioButton;
-                tab.bounds = tabRect(i);
+                tab.bounds = shownTabRect(i);           // empty while scrolled out (a press still shows it)
                 tab.title = name(i);
                 tab.checkable = true;
                 tab.checked = i == active_ && !irShown();
@@ -1780,10 +1975,21 @@ namespace playground::ui
                     funkgui::A11yItem close;
                     close.id = id_ + 2 + static_cast<uint32_t>(kMaxFiles) + static_cast<uint32_t>(i);
                     close.role = funkgui::A11yRole::button;
-                    close.bounds = closeRect(i);
+                    close.bounds = shownTabRect(i).isEmpty() ? funkgui::Rect{} : closeRect(i);
                     close.title = "Close " + name(i);
                     out.push_back(std::move(close));
                 }
+            }
+            if (const funkgui::Rect m = filesMenuRect(); !m.isEmpty())
+            {
+                funkgui::A11yItem menu;
+                menu.id = id_ + kFilesMenuA11y;
+                menu.role = funkgui::A11yRole::comboBox;
+                menu.bounds = m;
+                menu.title = "Files";
+                menu.value = irShown() ? irName() : name(active_);
+                menu.help = "every file: a choice shows it";
+                out.push_back(std::move(menu));
             }
             if (canAdd())
             {
@@ -1870,6 +2076,12 @@ namespace playground::ui
             }
             if (id == id_ + kPillsA11y)
                 return true;
+            if (id == id_ + kFilesMenuA11y)
+            {
+                if (host_ != nullptr && !filesMenuRect().isEmpty())
+                    openFilesMenu(*host_);
+                return true;
+            }
             if (id == id_ + kPanelSwitchA11y && assist_.hasPanelSwitch())
             {
                 assist_.togglePanelSwitch();
@@ -1930,6 +2142,10 @@ namespace playground::ui
                                   upper(irName()).c_str(), upper(irview::word(static_cast<irview::View>(ir_.view))).c_str());
                 else if (canAdd() && newTabRect().contains(pointer_))
                     std::snprintf(out, n, "NEW FILE   ONE THE PROGRAM CAN #INCLUDE BY ITS NAME");
+                else if (filesMenuRect().contains(pointer_))
+                    std::snprintf(out, n, "%s", upper(shortcutText("Files   every one, a click shows it   Ctrl-Tab the next")).c_str());
+                else if (strip().chevron(false).contains(pointer_) || strip().chevron(true).contains(pointer_))
+                    std::snprintf(out, n, "MORE FILES   A CLICK SHOWS THE NEXT TAB THAT WAY   THE WHEEL SCROLLS THE TABS");
                 else if (const int i = tabAt(pointer_); i == 0)
                     std::snprintf(out, n, "%s   THE PROGRAM   DOUBLE-CLICK RENAMES IT", upper(name(0)).c_str());
                 else if (i > 0)
@@ -2054,14 +2270,17 @@ namespace playground::ui
                 persist_();
         }
         void toggleSchematic() { setSchematic(!schematicShown()); }
-        // Which of the pills shows: the labelled pair, unless it would narrow the files' tabs below kTabNarrowW.
+        // Which of the pills shows: the labelled pair, unless the files' tabs do not all fit beside it and it would
+        // leave their strip less than kStripLeast (the IR tab at its name's width).
         bool pillsShown() const { return circuitShown(); }
         bool pillsLabelled() const
         {
-            const int n = count();
-            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
-                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + (ir_.open ? kTabMinW + 3.0f * kTabGap : 0.0f);
-            return files + pillsWidth(true) + 2.0f * kTabGap <= bar_.w;
+            float files = 0.0f;
+            for (int k = 0; k < count(); ++k)
+                files += naturalWidth(k);
+            const float others = (canAdd() ? kNewTabW + kTabGap : 0.0f) + (ir_.open ? irNaturalWidth() + 3.0f * kTabGap : 0.0f)
+                               + pillsWidth(true) + 2.0f * kTabGap;
+            return files + others <= bar_.w || bar_.w - others - TabStrip::kMenuW - kTabGap >= kStripLeast;
         }
         float pillWidth(int k, bool labelled) const
         {
@@ -2419,10 +2638,7 @@ namespace playground::ui
             ed.setScroll(scroll.x, scroll.y);
         }
 
-        // A tab as wide as its name (kTabMinW to kTabMaxW), all narrowed alike, down to kTabNarrowW, when they do not
-        // fit the bar.
-        float tabWidth(int i) const { return std::min(naturalWidth(i), widthCap()); }
-
+        // A tab as wide as its name, kTabMinW to kTabMaxW (its close box's room kept on every tab but the program's).
         float naturalWidth(int i) const
         {
             const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(), chat::kSmall);
@@ -2430,40 +2646,7 @@ namespace playground::ui
             return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f) + 2.0f, kTabMinW, kTabMaxW);
         }
 
-        float widthCap() const
-        {
-            const int n = count();
-            const float room = bar_.w - (canAdd() ? kNewTabW + kTabGap : 0.0f) - kTabGap * static_cast<float>(n - 1)
-                             - (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f) - pillsReserve();
-            std::vector<float> w;
-            float sum = 0.0f;
-            for (int k = 0; k < n; ++k)
-            {
-                w.push_back(naturalWidth(k));
-                sum += w.back();
-            }
-            if (sum <= room)
-                return kTabMaxW;
-            // The widest narrowed first: the cap that makes them fit.
-            std::sort(w.begin(), w.end());
-            float left = room;
-            for (int k = 0; k < n; ++k)
-            {
-                const float cap = left / static_cast<float>(n - k);
-                if (w[static_cast<std::size_t>(k)] >= cap)
-                    return std::max(cap, kTabNarrowW);
-                left -= w[static_cast<std::size_t>(k)];
-            }
-            return kTabMaxW;
-        }
-
-        int tabAt(funkgui::Point p) const
-        {
-            for (int i = 0; i < count(); ++i)
-                if (tabRect(i).contains(p))
-                    return i;
-            return -1;
-        }
+        int tabAt(funkgui::Point p) const { return strip().tabAt(p); }
 
         bool hasErrors(const std::string& file) const
         {
@@ -2481,6 +2664,15 @@ namespace playground::ui
         }
 
         funkgui::Rect bar_, editorBounds_;
+        mutable TabStrip strip_;                         // the files' tabs' places and scroll (strip())
+        mutable int revealed_ = -1, revealedCount_ = 0;  // the tab last brought into view, at that count and width
+        mutable float revealedW_ = -1.0f;
+        bool pressedStripBar_ = false;                   // a press on the strip's scroll bar drags it
+        std::function<bool(const funkgui::Rect&)> menuOpen_;   // the Panel's menuOpenAt: the files dropdown drawn open
+        Sources playing_;                                // what plays (setPlaying): the tabs' edited dots
+        uint64_t playingRev_ = 0;
+        mutable std::vector<bool> edited_;
+        mutable uint64_t editedRev_ = ~uint64_t{ 0 }, editedPlaying_ = ~uint64_t{ 0 };
         uint32_t id_;
         const std::vector<Problem>* problems_;       // the Panel's
         Close close_;
@@ -5281,10 +5473,12 @@ namespace playground::ui
     std::string Panel::fileName(int i) const { return i >= 0 && i < files().count() ? files().name(i) : std::string(); }
     int Panel::activeFile() const { return files().active(); }
     bool Panel::renamingFile() const { return files().renaming(); }
+    // A tab scrolled out is brought into view first, as a user would scroll to it.
     funkgui::Point Panel::centreOfTab(int i) const
     {
+        files().revealTab(i);
         const funkgui::Rect r = files().tabRect(i);
-        return { std::min(r.x + kTabPad + 4.0f, r.centreX() - 1.0f), r.centreY() };   // a narrowed tab's: left of its box
+        return { std::min(r.x + kTabPad + 4.0f, r.centreX() - 1.0f), r.centreY() };   // left of its close box
     }
     funkgui::Point Panel::centreOfNewTab() const
     {
@@ -5293,6 +5487,7 @@ namespace playground::ui
     }
     funkgui::Point Panel::centreOfCloseTab(int i) const
     {
+        files().revealTab(i);
         const funkgui::Rect r = files().closeRect(i);
         return { r.centreX(), r.centreY() };
     }
@@ -5313,7 +5508,10 @@ namespace playground::ui
         return { r.centreX(), r.centreY() };
     }
     funkgui::Rect Panel::irTabRect() const { return files().irOpen() ? files().irTabRect() : funkgui::Rect{}; }
-    funkgui::Rect Panel::fileTabRect(int i) const { return files().tabRect(i); }
+    funkgui::Rect Panel::fileTabRect(int i) const { return files().shownTabRect(i); }
+    float Panel::fileTabWidth(int i) const { return i >= 0 && i < files().count() ? files().tabWidth(i) : 0.0f; }
+    TabStrip Panel::tabStrip() const { return files().strip(); }
+    bool Panel::fileTabEdited(int i) const { return files().edited(i); }
 
     // ---- a netlist's Schematic view (SchematicView.h) -----------------------------------------------------------------
     bool Panel::schematicShown() const { return !full() && files().schematicShown(); }
@@ -5719,6 +5917,11 @@ namespace playground::ui
             edited_ = peer_->edited_;                    // the editor's, in the code window (this Panel's copy is hidden)
         else if (textChanged || statusChanged)
             edited_ = !cir::sameProgram(files().draft().files, running_);   // a netlist's *@ lines are no edit
+        if (statusChanged || filesPlaying_ == 0)
+        {
+            files().setPlaying(running_);                // the tabs' dots: each file against what plays
+            filesPlaying_ = 1;
+        }
         syncIr();
         const std::string statusBefore = status_;
 
@@ -8812,6 +9015,14 @@ namespace playground::ui
                 return false;
             files().toggleSchematic();
             setFocus(editorItem_);
+            return true;
+        }
+        // Ctrl-Tab and Ctrl-Shift-Tab: the next file's tab and the one before, wherever the keys are, while the code
+        // shows (the files' item takes them itself when it has the keys).
+        if (e.key == funkgui::Key::tab && e.mods.ctrl && !e.mods.alt && !full() && !out_ && !files().renaming())
+        {
+            files().stepTab(e.mods.shift ? -1 : 1);
+            dirty_ = true;
             return true;
         }
         // A text field, while it has the caret: every key is its own (Tab indents in the editor), but Escape, which
