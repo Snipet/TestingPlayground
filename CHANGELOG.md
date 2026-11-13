@@ -7,6 +7,8 @@ at version 0.1.0 and have no tagged releases yet, so the days stand in for versi
 When a day changed the Claude Desktop extension, its section says the extension's new version. Open the new `.mcpb`
 (or run the installer again) to update it: Claude Desktop replaces an extension only with a newer version.
 
+Each pull request's entry waits in its own file in `docs/changelog/` until `scripts/changelog.py` folds it in here.
+
 ## Unreleased
 
 ### Every list scrolls as the code does
