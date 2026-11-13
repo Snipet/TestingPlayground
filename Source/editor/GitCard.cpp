@@ -505,7 +505,10 @@ namespace playground::ui
         {
             const auto line = [&](const funkgui::Rect& r, const char* cap, const funkgui::text::LineEdit& e, bool focused, const char* hint) {
                 caption(r, cap);
-                c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, focused ? funkgui::mix(p.composerEdge, p.accent, 0.6f) : p.composerEdge);
+                // While git works the fields take nothing: drawn quiet, no focus ring.
+                const bool live = focused && !running_;
+                c.rrect(r.x, r.y, r.w, r.h, 10.0f, running_ ? p.card : p.composer, 1.0f,
+                        live ? funkgui::mix(p.composerEdge, p.accent, 0.6f) : p.composerEdge);
                 const funkgui::TextStyle& st = chat::kBody;
                 const float maxW = r.w - 28.0f;
                 const float top = c.capCentreTop(r.centreY(), st);
@@ -515,7 +518,7 @@ namespace playground::ui
                 {
                     if (e.allSelected && focused)
                         c.rrect(r.x + 12.0f, r.y + 8.0f, std::min(c.textWidth(e.buffer.c_str(), st), maxW) + 4.0f, r.h - 16.0f, 3.0f, th.accentDim);
-                    c.text(fitText(c, e.buffer, st, maxW).c_str(), r.x + 14.0f, top, st, p.text);
+                    c.text(fitText(c, e.buffer, st, maxW).c_str(), r.x + 14.0f, top, st, running_ ? p.faint : p.text);
                 }
                 if (focused && !running_)
                 {
@@ -557,10 +560,18 @@ namespace playground::ui
         // The outcome (or what git does now): git's own words as they are, wrapped.
         {
             const funkgui::Rect& r = at.outcome;
-            const std::string said = running_ ? step_ + "..." : outcome_;
+            const std::string said = running_          ? step_ + "..."
+                                   : confirmDisconnect_ ? std::string("Press Disconnect again to remove the link to ") + link_.shortRemote
+                                                              + ". The working folder stays where it is; nothing is deleted."
+                                                        : outcome_;
+            if (running_)
+            {
+                c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.accent.withAlpha(0.07f), 1.0f, p.accent.withAlpha(0.35f));
+                c.text("GIT IS WORKING", r.x + 12.0f, c.capCentreTop(r.y - 10.0f, chat::kSmallStrong), chat::kSmallStrong, p.accent);
+            }
             if (!said.empty())
             {
-                if (failed_ && !running_)
+                if (failed_ && !running_ && !confirmDisconnect_)
                     c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.danger.withAlpha(0.08f), 1.0f, p.danger.withAlpha(0.35f));
                 const std::vector<std::string> lines = wrapped(c, asciiText(said), chat::kSmall, r.w - 24.0f);
                 for (std::size_t i = 0; i < lines.size() && i < static_cast<std::size_t>(kOutcomeLines); ++i)
@@ -568,7 +579,7 @@ namespace playground::ui
                     const bool last = i + 1 == static_cast<std::size_t>(kOutcomeLines) && lines.size() > i + 1;
                     c.text(fitText(c, last ? lines[i] + " ..." : lines[i], chat::kSmall, r.w - 24.0f).c_str(), r.x + 12.0f,
                            c.capCentreTop(r.y + 6.0f + (static_cast<float>(i) + 0.5f) * kLineH, chat::kSmall), chat::kSmall,
-                           failed_ && !running_ ? p.danger : p.soft);
+                           running_ ? p.accent : failed_ && !confirmDisconnect_ ? p.danger : p.soft);
                 }
             }
         }

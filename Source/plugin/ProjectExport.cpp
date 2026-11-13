@@ -888,9 +888,16 @@ namespace playground::projectexport
         constexpr juce::int64 kMaxTreeText = 8 * 1024 * 1024;   // a program's file in a tree, at most
 
         // What the tree in `folder` wrote last: its project.json's files and samples (to take away before a new one).
+        // The record is that project.json alone: none, or one that is not a tree's, names nothing. Each name must be a
+        // plain one (treeName: no '/' or '\\', no "..", nothing hidden, so never a path outside the folder), and only a
+        // regular file is named: a link (to anything) or a folder is left as it is, as is samples/ when it is a link.
         std::vector<juce::File> treeWritten(const juce::File& folder)
         {
             std::vector<juce::File> out;
+            const auto take = [&out](const juce::File& f) {
+                if (!f.isSymbolicLink() && f.existsAsFile())
+                    out.push_back(f);
+            };
             const juce::File manifest = folder.getChildFile(kTreeManifest);
             if (!manifest.existsAsFile() || manifest.getSize() > kMaxTreeText)
                 return out;
@@ -902,13 +909,13 @@ namespace playground::projectexport
                     if (const juce::Array<juce::var>* files = v["files"].getArray())
                         for (const juce::var& f : *files)
                             if (const std::string n = f["name"].toString().toStdString(); treeName(n))
-                                out.push_back(folder.getChildFile(str(n)));
+                                take(folder.getChildFile(str(n)));
             if (const juce::Array<juce::var>* files = m["sampleFiles"].getArray())
                 for (const juce::var& f : *files)
                 {
                     const std::string file = f["file"].toString().toStdString();
-                    if (file.rfind("samples/", 0) == 0 && treeName(file.substr(8)))
-                        out.push_back(folder.getChildFile("samples").getChildFile(str(file.substr(8))));
+                    if (file.rfind("samples/", 0) == 0 && treeName(file.substr(8)) && !folder.getChildFile("samples").isSymbolicLink())
+                        take(folder.getChildFile("samples").getChildFile(str(file.substr(8))));
                 }
             return out;
         }
@@ -940,6 +947,25 @@ namespace playground::projectexport
                 fail(why, "a file's name cannot go into a repository: " + f.name);
                 return false;
             }
+        // Nothing is written through a link: the folder, its samples/ and each file's place must not be one.
+        const auto linkAt = [&](const juce::File& f) { return f.isSymbolicLink() ? f.getFullPathName().toStdString() : std::string(); };
+        std::string link = linkAt(folder);
+        if (link.empty() && !v->samples.empty())
+            link = linkAt(folder.getChildFile("samples"));
+        for (const SourceFile& f : v->files)
+            if (link.empty())
+                link = linkAt(folder.getChildFile(str(f.name)));
+        for (const projectstore::SampleRef& r : v->samples)
+            if (link.empty() && treeName(r.name))
+                link = linkAt(folder.getChildFile("samples").getChildFile(str(r.name)));
+        for (const char* own : { kTreeManifest, "README.md", ".gitattributes" })
+            if (link.empty())
+                link = linkAt(folder.getChildFile(own));
+        if (!link.empty())
+        {
+            fail(why, link + " is a link: nothing is written through one");
+            return false;
+        }
         if (!folder.isDirectory() && !folder.createDirectory())
         {
             fail(why, "cannot make the folder " + folder.getFullPathName().toStdString());

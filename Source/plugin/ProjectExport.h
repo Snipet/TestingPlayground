@@ -140,9 +140,12 @@ namespace playground::projectexport
     //   samples/<file>    each sample's file as it was added
     //   README.md         written when there is none, never rewritten (the user's to change)
     //   .gitattributes    "* text=auto eol=lf" and "samples/* binary", written when there is none
-    // writeTree takes away first only what the tree there wrote (the files and samples its project.json names), so a
-    // file the user added to the repository by hand stays. Each file is written beside and moved over. readTree reads
-    // it back as a project of that one version (the other kind's, or no project.json: refused, with why).
+    // writeTree takes away first only what the tree there wrote: the regular files its project.json (the one record)
+    // names, each a plain name (no folder, no "..", nothing hidden: never a path outside the folder), never a link or a
+    // folder; with no record, or one that is not a tree's, nothing. A file the user added by hand stays. Nothing is
+    // written through a link (the folder, samples/ or a file's place a link: refused, nothing changed). Each file is
+    // written beside and moved over. readTree reads it back as a project of that one version (the other kind's, or no
+    // project.json: refused, with why).
     inline constexpr const char* kTreeFormat = "funk-playground-git";
     inline constexpr int kTreeVersion = 1;
     inline constexpr const char* kTreeManifest = "project.json";

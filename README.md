@@ -1192,8 +1192,10 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
     top as the newest, **Take theirs** saves theirs as the newest with yours the version before. Then **Push**.
   - A linked project shows a small **branch mark** after its name — in PROJECTS, in the explorer and in the top bar's
     pill — with the versions to push and the commits to pull when they are known.
-  - **Add from Git...** (PROJECTS, beside Import...) makes a new project here from a repository another machine pushed
-    to; a repository of the other kind, or one that holds no project, is refused.
+  - **Add from Git** makes a new project here from a repository another machine pushed to: PROJECTS' **Git...** with no
+    project chosen (the empty card says so too), or **Add from Git...** in the top bar's project pill's right-click menu
+    while no project is open. A repository of the other kind, or one
+    that holds no project, is refused, its clone left where the card says.
   - Settings &rarr; Projects says which git is used: **Find git** looks for it, **Choose git...** picks a particular
     one, and it can go back to the usual places. In a host that keeps its plugins in a sandbox (some Audio Unit hosts),
     git may not be allowed to run or reach the network; the card shows git's own words and says the Standalone app can

@@ -2182,8 +2182,12 @@ place (its `products/<key>.cmake`, and its names in the docs).
 repository of the user's, one repository a project, a plain-text working folder, a commit a saved version (no libgit2,
 no hosting API). `ProjectExport`'s `writeTree`/`readTree` write a version as the source export's layout without
 `versions/` (format `funk-playground-git`: `project.json` without the id, the files beside it, `samples/`, a README and
-`.gitattributes` written once and never rewritten); `writeTree` takes away only what the tree there wrote, so a file the
-user added by hand stays. The links are `ProjectStore`'s `.git-links.json` beside the view file (hidden, never listed,
+`.gitattributes` written once and never rewritten); `writeTree` takes away only the regular files the tree there wrote
+(the previous `project.json`'s names, each a plain one, never a path outside the folder or a link; no record, nothing),
+so a file the user added by hand stays, and writes nothing through a link (refused). Nothing else in the projects' git
+deletes anything: Connect asks the remote by its address before making any folder, makes only a new one, and leaves it
+on a later failure (said); a clone that is no project is left (said), a failed one git takes away itself; the projects'
+`Git` folder a link is refused (`gitprojects::gitRoot`). The links are `ProjectStore`'s `.git-links.json` beside the view file (hidden, never listed,
 read again only when its time or size changes, written under the store's one writer), keyed by the project's id so a
 rename keeps the link; `Entry::git`/`ahead`/`behind` join from it, so the listing reads no repository, and no remote's
 address goes into a project file (an export carries none). `GitProjects`' operations (Connect, Push, Pull as

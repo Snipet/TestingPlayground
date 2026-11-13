@@ -2009,7 +2009,8 @@ namespace playground::ui
             s.draw(c, barArea(at, l), th);
         };
         const auto mark = [&](const funkgui::Rect& rr) { c.disc(rr.x + 12.0f, rr.centreY(), 3.0f, p.accent); };
-        const std::string noProjects = projects_.empty() ? "No projects yet: name this program below and Save it."
+        const std::string noProjects = projects_.empty() ? "No projects yet: name this program below and Save it, or Git... to add one "
+                                                           "from a git repository."
                                      : filtering()       ? "Nothing matches: Escape in the search clears it."
                                                          : std::string();
         list(L::projects, noProjects, [&](int i, const funkgui::Rect& rr, bool chosen) {
