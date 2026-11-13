@@ -1503,16 +1503,16 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   row a model (fast mode a row of its own, at fast mode's prices), its provider, requests, tokens in, cached and out,
   its cost and its share, and a total. A cost marked **~** is an estimate at list prices as of the price table's date,
   which the footnote gives; OpenRouter's are its own figures; "no price" for a model with none, left out of the cost
-  total. **Reset…** asks first, in the page, then empties the record of what was counted until then, for every
-  product on this Mac (what is counted after it stays; your provider's own record is not touched); one that fails
-  loses nothing and says so until the next. **Debug**: what this build is and what it is doing, in sections (the versions, this build's commit
-  and FMinus's, LLVM's; the graphics: the renderer, its frames, the surface, the shader target; the program, its compile
-  and dials; the audio: rate, blocks, load, the synth's voices; the shaders; the stores' folders and counts; Claude
-  Desktop's link; the product's `<PREFIX>…` switches), read once a second while the page shows and not at all
-  otherwise, with **Copy all** (plain text, for a bug report). It shows no key, no word of a chat, no file's text and no
-  audio. **About**: the name, the version, the website and where the licences are. The card keeps the page it showed
-  while it is open and opens there again; Tab, Return and the arrows reach the rail and every control, and a page
-  longer than the window scrolls.
+  total. **Reset…** asks first, in the page, then empties the record of what was counted until then, for every product
+  on this Mac (what is counted after it stays; your provider's own record is not touched); one that fails loses nothing
+  and says so until the next. **Debug**: what this build is and what it is doing, in sections (the versions, this
+  build's commit and FMinus's, LLVM's; the graphics: the renderer, its frames, the surface, the shader target; the
+  program, its compile and dials; the audio: rate, blocks, load, the synth's voices; the shaders; the stores' folders
+  and counts; Claude Desktop's link; the product's `<PREFIX>…` switches), read once a second while the page shows and
+  not at all otherwise, with **Copy all** (plain text, for a bug report). It shows no key, no word of a chat, no file's
+  text and no audio. **About**: the name, the version, the website and where the licences are. The card keeps the page
+  it showed while it is open and opens there again; Tab, Return and the arrows reach the rail and every control, and a
+  page longer than the window scrolls.
 - **The window** resizes in both directions, from 1000 x 600 (logical px, before the zoom) up: the editor and the chat's
   conversation take the height, the chat about a third of the width. The session keeps the size. The code window
   (above) resizes from 720 x 480, the explorer folding away under 832 px.

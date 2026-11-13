@@ -1409,16 +1409,17 @@ place (its `products/<key>.cmake`, and its names in the docs).
   table in use; fast mode's cache tokens by its multiplier), else none: never a guess for a model with no price. The
   footer adds the turn's cost when every request of it has one, its words otherwise unchanged (probes hold them).
   **The price table's date** (`kAsOf`) moves when the rows are checked against Anthropic's pricing page, before each
-  release, and the website's `src/lib/prices.json` with it in the same step; a later table offered (`offerPrices`,
-  the website's, package 08) replaces it, an earlier one never does. **The Usage page** reads the ledger through
-  `ChatPort::usage`: the view last read, never waited for (the message thread never reads the file or takes its
-  folder's lock); a read asked on the chat's job thread when the range differs, `usage::revision` moved or
-  `kUsageRereadSeconds` passed, published only when it differs (its `serial`), priced with the table in use, so a
-  later table shows at the next read with no change of the page's. `resetUsage` makes the cut at once (`usage::requestReset`,
-  in memory: what was counted before it goes, a count after it stays, and a flush while the reset is owed waits for it)
-  and queues the reset, which always runs: a read on the job thread runs an owed one before it lets go, and the agent's
-  destructor runs one the job thread never reached before its last flush (`runUsageReset`). One that fails loses
-  nothing (the file as it was, the counts set aside back) and says so until the next.
+  release, and the website's `src/lib/prices.json` with it in the same step; a later table offered (`offerPrices`, the
+  website's, package 08) replaces it, an earlier one never does. **The Usage page** reads the ledger through
+  `ChatPort::usage`: the view last read, never waited for (the message thread never reads the file or takes its folder's
+  lock); a read asked on the chat's job thread when the range differs, `usage::revision` moved or `kUsageRereadSeconds`
+  passed, published only when it differs (its `serial`), priced with the table in use, so a later table shows at the
+  next read with no change of the page's. `resetUsage` makes the cut at once (`usage::requestReset`, in memory: what was
+  counted before it goes, a count after it stays, and a flush while the reset is owed waits for it) and queues the
+  reset, which always runs: a read on the job thread runs an owed one before it lets go, and the agent's destructor runs
+  one the job thread never reached before its last flush (`runUsageReset`). One that fails loses nothing (the file as it
+  was, the counts set aside back) and says so until the next, on every instance's page whichever ran it
+  (`usage::lastResetFailed`, the ledger's).
 - **Large work.** `max_tokens` is the model's own limit (from /v1/models, at most 128K); server-side compaction (beta
   `compact-2026-01-12`, trigger 150K input tokens, instructions that keep the design and leave out code) on the
   models that take it, the compaction block kept and what came before it dropped: the history then starts at the
