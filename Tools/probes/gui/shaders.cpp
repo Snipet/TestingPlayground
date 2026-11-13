@@ -70,7 +70,9 @@
 //   TEXT      text and includes (Shaders.h; fminus/ShaderLib.h; editor/ShaderFont.h): the atlas made from FunkGui's
 //             bake, every glyph in its cell, ShaderLib.h's numbers the bake's; the pre-pass (a string a vec4 of its
 //             codes, a longer one a mat4, the escapes; one too long, a character the font lacks, one with no end and a
-//             wrong escape each a note at its line and column; comments and #include lines left alone, line for line);
+//             wrong escape each a note at its line and column; comments and #include lines left alone, line for line;
+//             DEEP: vec2( nested 100,000 deep, closed, unclosed, with comments and strings, at most one note, and the
+//             time at two sizes linear, as are #include lines with no end);
 //             the includes (the library's and the program's .sh files, in turn theirs, each once; a missing one a note at
 //             its line, in the shader or in the .sh; a clock read in an included .sh animates the shader, the library
 //             reads none); a panel of text.sc (text, numbers, a mat4 string from ink.sh, a .sh of the program's own that
@@ -123,6 +125,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <mutex>
@@ -1627,6 +1630,69 @@ PROBE(gui, shaders)
                      "myvec3(x); vec3 g(vec3 p) { return ((vec2)(((vec4)(vec4(16961.0, 0.0, 0.0, 0.0))))).xyy; }\n"
                      "/* vec2(y) */ bvec4 m = ((bvec4)(\n  t));\n"
                  && err.empty() ? 1 : 0, 1);
+
+        // DEEP: a file's nesting drives neither the stack nor the time. vec2( nested 100,000 deep (closed: each a cast;
+        // unclosed: left as it is), and the same with a comment and a string at each level, at most one note; then the
+        // time at two sizes, a quarter and the whole, each the least of three on this thread's clock: linear (4x), not
+        // quadratic (16x). The same for the walk's #include lines with no end.
+        {
+            constexpr int kDeep = 100'000;
+            const auto nested = [](int n, const std::string& open, const std::string& inner, const std::string& close) {
+                std::string t;
+                t.reserve(static_cast<std::size_t>(n) * (open.size() + close.size()) + inner.size());
+                for (int k = 0; k < n; ++k)
+                    t += open;
+                t += inner;
+                for (int k = 0; k < n && !close.empty(); ++k)
+                    t += close;
+                return t;
+            };
+            const auto count = [](const std::string& t, const std::string& w) {
+                std::size_t c = 0;
+                for (std::size_t p = t.find(w); p != std::string::npos; p = t.find(w, p + w.size()))
+                    ++c;
+                return c;
+            };
+            const auto lines = [](const std::string& t) { return std::count(t.begin(), t.end(), '\n'); };
+            const std::string closed = nested(kDeep, "vec2(", "x", ")");
+            const std::string closedOut = pg::shaderText("t.sc", closed, err);
+            P.eq("text.deep_closed", count(closedOut, "((vec2)(") == static_cast<std::size_t>(kDeep)
+                                         && closedOut.size() == closed.size() + 4 * static_cast<std::size_t>(kDeep) && err.empty() ? 1 : 0, 1);
+            const std::string unclosed = nested(kDeep, "vec2(", "x", "");
+            const std::string unclosedOut = pg::shaderText("t.sc", unclosed, err);
+            P.eq("text.deep_unclosed", unclosedOut == unclosed && err.empty() ? 1 : 0, 1);
+            const std::string mixed = nested(kDeep, "vec2(/* ) */ ", "\"A\"", ") // (\n");
+            const std::string mixedOut = pg::shaderText("t.sc", mixed, err);
+            P.eq("text.deep_mixed", count(mixedOut, "((vec2)(") == static_cast<std::size_t>(kDeep) && lines(mixedOut) == lines(mixed)
+                                        && err.empty() ? 1 : 0, 1);
+            const std::string open = nested(kDeep, "vec2(\"A ", "", "\n");
+            const std::string openOut = pg::shaderText("t.sc", open, err);
+            P.eq("text.deep_notes", count(err, "note:") == 1 && lines(openOut) == lines(open) ? 1 : 0, 1);
+            const std::vector<std::string> deepReached = pg::shaderIncludes("t.sc", nested(kDeep, "#include <x\n", "", ""), {}, err);
+            P.eq("text.deep_includes", deepReached.empty() && count(err, "note:") <= 1 ? 1 : 0, 1);
+
+            const auto least = [](const std::function<void()>& f) {
+                double best = 1e300;
+                for (int k = 0; k < 3; ++k)
+                {
+                    const double t0 = probe::threadMs();
+                    f();
+                    best = std::min(best, probe::threadMs() - t0);
+                }
+                return std::max(best, 0.05);
+            };
+            const std::string quarterText = nested(kDeep / 4, "vec2(/* ) */ ", "\"A\"", ") // (\n");
+            const double quarter = least([&] { (void)pg::shaderText("t.sc", quarterText, err); });
+            const double whole = least([&] { (void)pg::shaderText("t.sc", mixed, err); });
+            const std::string quarterIncludes = nested(kDeep / 4, "#include <x\n", "", "");
+            const std::string wholeIncludes = nested(kDeep, "#include <x\n", "", "");
+            const double quarterInc = least([&] { (void)pg::shaderIncludes("t.sc", quarterIncludes, {}, err); });
+            const double wholeInc = least([&] { (void)pg::shaderIncludes("t.sc", wholeIncludes, {}, err); });
+            std::printf("TEXT deep: shaderText %.1f ms at %d levels, %.1f ms at %d (x%.1f); #include lines %.1f ms, %.1f ms (x%.1f)\n",
+                        quarter, kDeep / 4, whole, kDeep, whole / quarter, quarterInc, wholeInc, wholeInc / quarterInc);
+            P.le("text.deep_linear", whole / quarter, 9.0);
+            P.le("text.deep_includes_linear", wholeInc / quarterInc, 9.0);
+        }
 
         // The includes: the library's and the program's .sh files, in turn theirs, each once; one there is none of a note.
         const pg::Sources headers{ { "b.sh", "#include \"funk/text.sh\"\n#include \"c.sh\"\n" }, { "c.sh", "float c1() { return 1.0; }\n" },

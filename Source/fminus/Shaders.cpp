@@ -24,6 +24,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 
 #if defined(_WIN32)
 #include <random>
@@ -712,8 +713,10 @@ namespace playground
                         if (q < e && (text[q] == '"' || text[q] == '<'))
                         {
                             const char close = text[q] == '"' ? '"' : '>';
-                            const std::size_t z = text.find(close, q + 1);
-                            if (z != std::string::npos && z < e)
+                            // Looked for on its line alone: a search to the text's end, line after line, would make
+                            // a file of many unclosed #include lines quadratic.
+                            const std::size_t z = std::string_view(text.data(), e).find(close, q + 1);
+                            if (z != std::string::npos)
                                 include(text.substr(q + 1, z - q - 1), line, static_cast<int>(q - lineStart) + 1);
                         }
                         out.append(text, i, e - i);
@@ -861,61 +864,101 @@ namespace playground
             return std::min(end, to);
         }
 
-        // The ')' that closes the '(' at `open`, before `to`; npos when none does.
-        std::size_t closing(const std::string& t, std::size_t open, std::size_t to)
+        // The text's brackets in one pass: each '(' outside a comment with its ')' (npos: none), whether a comma stands
+        // between them outside a nested ( ), [ ] or { } (the brackets counted as a depth, any closer taking one off, as
+        // a C reader that does not check their kinds), and whether anything but space and comments does. Stacks, never
+        // a recursion, and each character looked at once (a comma marks each paren once): a file's depth or length never
+        // drives the stack or the time.
+        struct Paren
         {
-            int depth = 0;
-            for (std::size_t i = open; i < to;)
+            std::size_t open = 0, close = std::string::npos;
+            bool comma = false, something = false;
+        };
+
+        std::vector<Paren> parensOf(const std::string& t)
+        {
+            struct Level
             {
-                if (const std::size_t past = pastComment(t, i, to); past != i)
+                std::vector<std::size_t> open;       // the parens not closed yet opened at this depth, innermost last
+                std::size_t marked = 0;              // the first `marked` of them have a comma already
+            };
+            std::vector<Paren> parens;
+            std::vector<std::size_t> open;           // every paren not closed yet, innermost last (indexes into parens)
+            std::vector<std::ptrdiff_t> openDepth;   // the depth inside each
+            std::unordered_map<std::ptrdiff_t, Level> levels;
+            std::ptrdiff_t depth = 0;
+            for (std::size_t i = 0; i < t.size();)
+            {
+                if (const std::size_t past = pastComment(t, i, t.size()); past != i)
                 {
                     i = past;
                     continue;
                 }
-                if (t[i] == '(')
+                const char c = t[i];
+                const bool space = c == ' ' || c == '\t' || c == '\r' || c == '\n';
+                if (!space && c != ')' && !open.empty())
+                    parens[open.back()].something = true;   // inside the innermost paren, so inside each around it
+                if (c == '(' || c == '[' || c == '{')
+                {
                     ++depth;
-                else if (t[i] == ')' && --depth == 0)
-                    return i;
+                    if (c == '(')
+                    {
+                        open.push_back(parens.size());
+                        openDepth.push_back(depth);
+                        levels[depth].open.push_back(parens.size());
+                        parens.push_back({ i, std::string::npos, false, false });
+                    }
+                }
+                else if (c == ')' || c == ']' || c == '}')
+                {
+                    --depth;
+                    if (c == ')' && !open.empty())
+                    {
+                        const std::size_t p = open.back();
+                        Level& at = levels[openDepth.back()];
+                        open.pop_back();
+                        openDepth.pop_back();
+                        at.open.pop_back();          // the innermost paren is the last opened at its depth too
+                        at.marked = std::min(at.marked, at.open.size());
+                        parens[p].close = i;
+                        if (!open.empty() && parens[p].something)
+                            parens[open.back()].something = true;
+                    }
+                }
+                else if (c == ',')
+                    if (const auto it = levels.find(depth); it != levels.end())
+                    {
+                        Level& at = it->second;      // each paren open where this comma is at its own depth
+                        for (; at.marked < at.open.size(); ++at.marked)
+                            parens[at.open[at.marked]].comma = true;
+                    }
                 ++i;
             }
-            return std::string::npos;
+            return parens;
         }
 
-        // Whether the arguments between the '(' at `open` and its ')' at `close` are one value: something, and no comma
-        // outside a nested ( ), [ ] or { }.
-        bool oneValue(const std::string& t, std::size_t open, std::size_t close)
+        // `t` with each vector of one value a cast: one pass over parensOf's answers, so linear in the text whatever its
+        // nesting.
+        std::string castOnes(const std::string& t)
         {
-            int depth = 0;
-            bool something = false;
-            for (std::size_t i = open + 1; i < close;)
+            const std::vector<Paren> parens = parensOf(t);
+            std::string out;
+            out.reserve(t.size() + t.size() / 16);
+            std::vector<std::size_t> ends;           // the ')' of each cast still open, innermost last: each gets one more
+            std::size_t i = 0;
+            while (i < t.size())
             {
-                if (const std::size_t past = pastComment(t, i, close); past != i)
-                {
-                    i = past;
-                    continue;
-                }
-                const char c = t[i++];
-                if (c == '(' || c == '[' || c == '{')
-                    ++depth;
-                else if (c == ')' || c == ']' || c == '}')
-                    --depth;
-                else if (c == ',' && depth == 0)
-                    return false;
-                something = something || (c != ' ' && c != '\t' && c != '\r' && c != '\n');
-            }
-            return something;
-        }
-
-        // t[from, to) with each vector of one value a cast, onto `out`.
-        void castOnes(const std::string& t, std::size_t from, std::size_t to, std::string& out)
-        {
-            std::size_t i = from;
-            while (i < to)
-            {
-                if (const std::size_t past = pastComment(t, i, to); past != i)
+                if (const std::size_t past = pastComment(t, i, t.size()); past != i)
                 {
                     out.append(t, i, past - i);
                     i = past;
+                    continue;
+                }
+                if (!ends.empty() && i == ends.back())
+                {
+                    out += "))";
+                    ends.pop_back();
+                    ++i;
                     continue;
                 }
                 if (!identChar(t[i]))
@@ -924,37 +967,31 @@ namespace playground
                     continue;
                 }
                 std::size_t e = i;                   // a whole word (a name, or a number)
-                while (e < to && identChar(t[e]))
+                while (e < t.size() && identChar(t[e]))
                     ++e;
                 const std::string_view word(t.data() + i, e - i);
                 std::size_t open = e;
-                while (open < to && (t[open] == ' ' || t[open] == '\t' || t[open] == '\r' || t[open] == '\n'))
+                while (open < t.size() && (t[open] == ' ' || t[open] == '\t' || t[open] == '\r' || t[open] == '\n'))
                     ++open;
-                const std::size_t close =
-                    vectorType(word) && open < to && t[open] == '(' ? closing(t, open, to) : std::string::npos;
-                if (close == std::string::npos)
+                const Paren* p = nullptr;
+                if (vectorType(word) && open < t.size() && t[open] == '(')
                 {
-                    out.append(word);
-                    i = e;
-                    continue;
+                    const auto it = std::lower_bound(parens.begin(), parens.end(), open,
+                                                     [](const Paren& q, std::size_t at) { return q.open < at; });
+                    if (it != parens.end() && it->open == open && it->close != std::string::npos)
+                        p = &*it;
                 }
-                const bool one = oneValue(t, open, close);
-                out += one ? "((" : "";
-                out.append(word);
-                out += one ? ")" : "";
-                out.append(t, e, open - e);          // what lay between the type and its '('
-                out += '(';
-                castOnes(t, open + 1, close, out);
-                out += one ? "))" : ")";
-                i = close + 1;
+                if (p != nullptr && !p->comma && p->something)
+                {
+                    out += "((";
+                    out.append(word);
+                    out += ")";
+                    ends.push_back(p->close);
+                }
+                else
+                    out.append(word);
+                i = e;
             }
-        }
-
-        std::string castOnes(const std::string& t)
-        {
-            std::string out;
-            out.reserve(t.size() + t.size() / 16);
-            castOnes(t, 0, t.size(), out);
             return out;
         }
 
