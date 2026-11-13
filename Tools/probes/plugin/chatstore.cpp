@@ -8,6 +8,9 @@
 //           and the folder 0700; it loads back the same; saved twice it is written differently (a fresh salt and IV)
 //   TAMPER  one byte changed anywhere (magic, salt, IV, ciphertext, HMAC), or the file cut short: the key does not
 //           load, and loadKey says why
+//   FULL    a write the system refuses (POSIX: the file size limit, as a full disk refuses it): saving a key, or a
+//           chat, reports the failure with why, the old file is as it was and still loads, no temporary is left; a
+//           chat's stamp stays its old file's, and it saves once the limit is gone
 //   FORGET  forgetKey deletes the file: no key
 //   CHOICE  the model, thinking level and fast mode round-trip; a damaged chat.json loads as no choice
 //   OLD     what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin, sealed as the key's
@@ -26,7 +29,11 @@
 #include <juce_core/juce_core.h>
 
 #include <sys/stat.h>
+#if !defined(_WIN32)
+#include <sys/resource.h>
+#endif
 
+#include <csignal>
 #include <cstdlib>
 #include <string>
 
@@ -114,6 +121,71 @@ PROBE(plugin, chatstore)
     const juce::MemoryBlock second = readAll(keyFile);
     P.eq("save.fresh_salt_iv", second == first ? 0 : 1, 1);
     P.eq("save.again_loads", store::loadKey().value_or("") == key ? 1 : 0, 1);
+
+    // FULL: a write the system refuses (a full disk, as the file size limit makes it: no byte may be written).
+#if !defined(_WIN32)
+    {
+        // The limit and SIGXFSZ's default (which would end the process) for this block alone: nothing else of the probe
+        // runs meanwhile (no thread, no output), and both are as they were when it ends.
+        struct NoWrites
+        {
+            rlimit old{};
+            void (*was)(int) = SIG_DFL;
+            NoWrites()
+            {
+                ::getrlimit(RLIMIT_FSIZE, &old);
+                was = std::signal(SIGXFSZ, SIG_IGN);
+                rlimit none{ 0, old.rlim_max };
+                ::setrlimit(RLIMIT_FSIZE, &none);
+            }
+            ~NoWrites()
+            {
+                ::setrlimit(RLIMIT_FSIZE, &old);
+                std::signal(SIGXFSZ, was);
+            }
+        };
+        const auto temps = [&](const juce::File& folder) {
+            return folder.findChildFiles(juce::File::findFiles, false, "*.tmp").size();
+        };
+        const juce::MemoryBlock keyBefore = readAll(keyFile);
+        bool saved = false;
+        why.clear();
+        {
+            const NoWrites full;
+            saved = store::saveKey(key, &why);
+        }
+        P.eq("full.key_save_fails", saved ? 1 : 0, 0);
+        P.eq("full.key_why", why.empty() ? 0 : 1, 1);
+        P.eq("full.key_kept", readAll(keyFile) == keyBefore && store::loadKey().value_or("") == key ? 1 : 0, 1);
+        P.eq("full.key_no_temp", temps(dir), 0);
+
+        const std::string owner = store::instanceOwner(store::newId());
+        const store::ChatMeta meta{ store::newId(), "A short chat", false, 1000, 2000 };
+        const std::string state = R"({"version":1,"messages":[],"entries":[{"k":"user","t":"kept"}]})";
+        store::Stamp stamp;
+        P.eq("full.chat_written", store::saveChat(owner, meta, state, stamp) == store::SaveResult::ok ? 1 : 0, 1);
+        const juce::File owners = store::chatsDirectory().getChildFile(juce::String(owner));
+        const juce::File chatFile = owners.getChildFile(juce::String(meta.id) + ".chat");
+        const juce::MemoryBlock chatBefore = readAll(chatFile);
+        const store::Stamp stampBefore = stamp;
+        store::SaveResult r = store::SaveResult::ok;
+        why.clear();
+        {
+            const NoWrites full;
+            r = store::saveChat(owner, meta, state + " ", stamp, &why);
+        }
+        const auto back = store::loadChat(owner, meta.id);
+        P.eq("full.chat_save_fails", r == store::SaveResult::failed && !why.empty() ? 1 : 0, 1);
+        P.eq("full.chat_kept", readAll(chatFile) == chatBefore && back && back->state == state ? 1 : 0, 1);
+        P.eq("full.chat_stamp_kept", stamp == stampBefore ? 1 : 0, 1);
+        P.eq("full.chat_no_temp", temps(owners) + temps(store::chatsDirectory()), 0);
+        P.eq("full.chat_saves_after", store::saveChat(owner, meta, state + " ", stamp) == store::SaveResult::ok ? 1 : 0, 1);
+        store::removeOwner(owner);
+    }
+#else
+    probe::skip(P, "full.key_save_fails", "POSIX only: the write refused through the file size limit (setrlimit), which "
+                                          "Windows has no counterpart of");
+#endif
 
     // TAMPER: each part, one byte flipped; then cut short.
     const struct
