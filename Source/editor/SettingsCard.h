@@ -174,6 +174,9 @@ namespace playground::ui
 
         // For the pages (SettingsPages.cpp): after an action, what changed read at once; whether a select's menu is open.
         void changed();
+        // Where the press that is calling a page's act() was (the chart's bar under it); none for a key's or a screen
+        // reader's press.
+        std::optional<funkgui::Point> pressPoint() const noexcept { return press_; }
         // A page's view state (a choice of its own that is no setting: a range, the bar picked), kept while the card
         // lives, made on first use.
         template <typename T>
@@ -218,6 +221,7 @@ namespace playground::ui
         // The Debug page: its viewer counted (EditorPort::addDebugViewer), its sections, when they were read.
         bool viewer_ = false;
         mutable std::map<std::string, std::shared_ptr<void>> states_;   // the pages' view states (viewState)
+        std::optional<funkgui::Point> press_;    // set only while pointerDown calls act()
         std::vector<DebugSection> debug_;
         double debugAt_ = -1.0;                  // the host's clock at the last read (-1: read, the clock not taken)
     };

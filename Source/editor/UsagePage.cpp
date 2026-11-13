@@ -347,8 +347,12 @@ namespace playground::ui::settings
         {
             usage::Range range = usage::Range::month;
             bool cost = false;
-            int picked = -1;                     // the bar the keys picked (-1 none)
-            int hover = -1;                      // the bar under the pointer, as the last paint found it
+            int picked = -1;                     // the bar a click or the keys picked (-1 none)
+            // A key's pick holds over the bar under the pointer until the pointer moves (a hand resting on the chart
+            // would hide the keys' work): where the pointer was when the pick was first drawn.
+            bool keyed = false, keyPointerSet = false;
+            funkgui::Point keyPointer;
+            int shown = -1;                      // the bar the readout shows, as the last paint drew it (a11y's value)
             bool asking = false;                 // Reset asked, not yet answered
             std::shared_ptr<const UsageView> data;
             uint64_t modelRev = 0;
@@ -585,8 +589,13 @@ namespace playground::ui::settings
                     menu({ kShows[0], kShows[1] }, v.cost ? 1 : 0, [card](int i) { card->viewState<View>(kUsagePage.id).cost = i == 1; });
                     break;
                 case kChart:
-                    if (v.hover >= 0)
-                        v.picked = v.hover;              // a click picks the bar under the pointer
+                    // A click picks the bar under it (a key's or a screen reader's press has no point: nothing).
+                    if (const auto at = ctx.card.pressPoint(); at && ready(v) && !v.model.empty())
+                        if (const int b = bucketAt(plotOf(c.r), static_cast<int>(v.model.buckets.size()), *at); b >= 0)
+                        {
+                            v.picked = b;
+                            v.keyed = false;
+                        }
                     break;
                 case kReset:
                     v.asking = true;
@@ -612,6 +621,7 @@ namespace playground::ui::settings
             h = mix(h, v.cost ? 1u : 0u);
             h = mix(h, static_cast<uint64_t>(v.picked + 1));
             h = mix(h, v.asking ? 1u : 0u);
+            h = mix(h, v.keyed ? 1u : 0u);
             return mix(h, v.modelMade ? 1u : 0u);
         }
 
@@ -629,7 +639,20 @@ namespace playground::ui::settings
             const bool has = ready(v);
             const Model& m = v.model;
             const int n = has ? static_cast<int>(m.buckets.size()) : 0;
-            v.hover = hasPointer && at.body.contains(pointer) ? bucketAt(plot, n, pointer) : -1;
+            const int hover = hasPointer && at.body.contains(pointer) ? bucketAt(plot, n, pointer) : -1;
+            // The bar shown: under the pointer, unless the keys picked one since the pointer last moved.
+            if (v.keyed)
+            {
+                if (!v.keyPointerSet)
+                {
+                    v.keyPointer = pointer;
+                    v.keyPointerSet = true;
+                }
+                else if (pointer.x != v.keyPointer.x || pointer.y != v.keyPointer.y)
+                    v.keyed = false;
+            }
+            const int shown = !v.keyed && hover >= 0 ? hover : v.picked;
+            v.shown = has && !m.empty() ? shown : -1;
 
             // The frame: the baseline, and the gridlines with their labels at round steps.
             const bool empty = !has || m.empty();
@@ -653,7 +676,6 @@ namespace playground::ui::settings
             {
                 const float slot = plot.w / static_cast<float>(n);
                 const float barW = std::clamp(std::floor(slot * 0.66f), 2.0f, 26.0f);
-                const int shown = v.hover >= 0 ? v.hover : v.picked;
                 if (shown >= 0)
                     c.rrect(plot.x + slot * static_cast<float>(shown), plot.y - 4.0f, slot, plot.h + 4.0f + kLabelsH, 4.0f, p.hover);
                 // The bars, the largest model at the bottom of each stack.
@@ -692,7 +714,6 @@ namespace playground::ui::settings
 
             // The readout: the bar under the pointer, else the one picked, else the legend.
             const float ry = r.bottom() + 0.5f * kReadoutH;
-            const int shown = v.hover >= 0 ? v.hover : v.picked;
             if (has && !m.empty() && shown >= 0)
                 c.text(fitText(c, readoutText(m, shown, v.cost), chat::kSmall, r.w - 8.0f).c_str(), r.x + 4.0f, c.capCentreTop(ry, chat::kSmall),
                        chat::kSmall, p.text);
@@ -784,6 +805,8 @@ namespace playground::ui::settings
             else
                 return false;
             v.picked = at;
+            v.keyed = true;                      // held over the pointer's bar until the pointer moves
+            v.keyPointerSet = false;
             return true;
         }
 
@@ -800,7 +823,7 @@ namespace playground::ui::settings
                 return;
             const bool has = ready(v) && !v.model.empty();
             const Model& m = v.model;
-            const int shown = v.hover >= 0 ? v.hover : v.picked;
+            const int shown = v.shown >= 0 ? v.shown : v.picked;   // what the readout shows
             funkgui::A11yItem group;
             group.id = chart->id;
             group.parent = SettingsCard::kA11yBase;

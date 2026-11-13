@@ -405,7 +405,9 @@ namespace playground::ui
             if (c.r.contains(p) && (fixed(c) || at.body.contains(p)))
             {
                 focus_ = { c.act, c.index };
+                press_ = p;
                 act(c, host);
+                press_.reset();
                 break;
             }
         ++revision_;
