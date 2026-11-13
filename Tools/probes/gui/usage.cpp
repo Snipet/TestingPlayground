@@ -373,6 +373,21 @@ PROBE(gui, usage)
         P.eq(std::string(name) + ".written", h.writePng(path.c_str(), 2) ? 1 : 0, 1);
         std::printf("wrote %s\n", path.c_str());
     };
+    // Holds `who`'s job thread in a usage read, and returns once one is waiting at the hold (a fact, not a hope): a
+    // read that began before the hold runs past it (and ends by running any reset owed), so this asks for reads,
+    // alternating the range so that each call asks for one, until one waits there. The job thread is serial: one at most.
+    const auto holdARead = [&](pg::ChatAgent& who, usage::Range r) {
+        who.holdUsageReadsForTests(true);
+        const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+        bool other = false;
+        while (who.usageReadsHeldForTests() == 0 && std::chrono::steady_clock::now() < until)
+        {
+            (void) who.usage(other ? usage::Range::all : r);
+            other = !other;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return who.usageReadsHeldForTests() == 1;
+    };
     const auto focusOn = [&](Act act, int code) {
         for (int i = 0; i < 80; ++i)
         {
@@ -411,9 +426,8 @@ PROBE(gui, usage)
     {
         // A read held on the job thread: usage() answers at once with the view it has.
         agent.setUsageRereadSecondsForTests(0.0);
-        agent.holdUsageReadsForTests(true);
-        const auto held = view();
-        host.tick(2);                            // a read is asked for, and held
+        P.eq("read.held", holdARead(agent, state().range) ? 1 : 0, 1);
+        const auto held = view();                // no read can publish while the one read waits at the hold
         const double t0 = probe::threadMs();
         std::shared_ptr<const pg::UsageView> got;
         for (int i = 0; i < 100; ++i)
@@ -923,8 +937,7 @@ PROBE(gui, usage)
         waitFor([&] { return !view()->rows.empty(); });
         settle();
         usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 111, 0));   // before the cut
-        agent.holdUsageReadsForTests(true);
-        (void) port.chat().usage(usage::Range::all);   // a read asked for, held on the job thread
+        P.eq("inflight.held", holdARead(agent, usage::Range::all) ? 1 : 0, 1);   // the reset's job queues behind it
         port.chat().resetUsage();
         usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 222, 0));   // after the cut
         P.eq("inflight.resetting_said", view()->resetting ? 1 : 0, 1);
@@ -959,8 +972,7 @@ PROBE(gui, usage)
         {
             auto other = std::make_unique<pg::Processor>();
             pg::ChatAgent& a = other->chatAgent();
-            a.holdUsageReadsForTests(true);
-            (void) a.usage(usage::Range::week);  // the job thread held in a read
+            P.eq("destructor.held", holdARead(a, usage::Range::week) ? 1 : 0, 1);   // its job thread held in a read
             a.resetUsage();                      // queued behind it: the job thread will never reach it
             usage::add({ usage::today(), "anthropic", "claude-haiku-4-5", false }, counts(1, 333, 0));   // after the cut
             P.eq("destructor.queued", usage::read(file).empty() ? 0 : 1, 1);
@@ -1044,13 +1056,20 @@ PROBE(gui, usage)
         b.setUsageRereadSecondsForTests(0.0);
         const auto bView = [&] { return b.usage(usage::Range::month); };
         P.eq("two.b_read", waitFor([&] { return bView()->read; }) ? 1 : 0, 1);
-        agent.holdUsageReadsForTests(true);
         agent.setUsageRereadSecondsForTests(0.0);
-        (void) port.chat().usage(usage::Range::all);   // A's job thread held in a read: A's reset job waits behind it
+        // A's job thread held in a read, waited for: A can run no reset (its reads and its reset job queue behind it).
+        P.eq("two.a_held", holdARead(agent, usage::Range::all) ? 1 : 0, 1);
         usage::setWritesFailForTests(true);
-        port.chat().resetUsage();                       // A confirms
-        const uint64_t bReads = b.usageReadsForTests();
-        P.eq("two.b_ran_it", waitFor([&] { return b.usageReadsForTests() > bReads && !usage::resetOwed(); }) ? 1 : 0, 1);
+        const uint64_t bReads = b.usageReadsForTests();  // before the confirmation: a B read counted after it ran after it
+        port.chat().resetUsage();                        // A confirms: the reset is owed by the ledger
+        // B's page asks for its view, as a page does, so that B reads; a B read that ends after the confirmation runs the
+        // owed reset before it lets go. With A still held and no other agent, "no longer owed" means B's thread ran it.
+        const bool ran = waitFor([&] {
+            (void) bView();
+            return agent.usageReadsHeldForTests() == 1 && b.usageReadsForTests() > bReads && !usage::resetOwed();
+        });
+        P.eq("two.b_ran_it", ran ? 1 : 0, 1);
+        P.eq("two.a_still_held", agent.usageReadsHeldForTests(), 1);
         P.eq("two.b_says", waitFor([&] { return !bView()->resetError.empty() && !bView()->resetting; }) ? 1 : 0, 1);
         agent.holdUsageReadsForTests(false);
         P.eq("two.a_says", waitFor([&] { return !view()->resetError.empty() && !view()->resetting; }) ? 1 : 0, 1);
