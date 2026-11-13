@@ -3685,7 +3685,7 @@ namespace playground::ui
             sp.icon = [] { return chat::Icon::gear; };
             sp.act = [this] { openSettings(); };
             sp.a11yTitle = "Settings";
-            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, DEBUG";
+            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, THE NETWORK, DEBUG";
             gearItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
         settings_.setHooks(settingsHooks());
