@@ -1665,8 +1665,10 @@ PROBE(gui, shaders)
             const std::string mixedOut = pg::shaderText("t.sc", mixed, err);
             P.eq("text.deep_mixed", count(mixedOut, "((vec2)(") == static_cast<std::size_t>(kDeep) && lines(mixedOut) == lines(mixed)
                                         && err.empty() ? 1 : 0, 1);
-            const std::string open = nested(kDeep, "vec2(\"A ", "", "\n");
+            const std::string open = nested(kDeep, "vec2(\"A \n", "", "");      // each line's string unclosed
             const std::string openOut = pg::shaderText("t.sc", open, err);
+            std::printf("TEXT deep_notes: %zu notes, lines %ld of %ld: %s", count(err, "note:"), static_cast<long>(lines(openOut)),
+                        static_cast<long>(lines(open)), err.c_str());
             P.eq("text.deep_notes", count(err, "note:") == 1 && lines(openOut) == lines(open) ? 1 : 0, 1);
             const std::vector<std::string> deepReached = pg::shaderIncludes("t.sc", nested(kDeep, "#include <x\n", "", ""), {}, err);
             P.eq("text.deep_includes", deepReached.empty() && count(err, "note:") <= 1 ? 1 : 0, 1);
