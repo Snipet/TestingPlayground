@@ -159,9 +159,9 @@ To install, `cmake --workflow --preset linux-release-build`, then `scripts/packa
   provider), then describe a sound: "a tape delay with wow and flutter", "a warm detuned pad".
 - **Or use Claude Desktop.** Open the product's `.mcpb` (from the build, or the copy the installer puts in place) and
   Claude Desktop offers to add it; then, with the plugin open, ask Claude Desktop for an effect or a sound.
-- **Settings**, the top bar's gear: the theme, the zoom, the editor, the projects' folder, the AI, Usage and a Debug page. In
-  the effect's Standalone, its **Audio and MIDI** page (also **Settings…**, Cmd-, on macOS) picks the audio input,
-  which starts muted: unmute it with headphones on.
+- **Settings**, the top bar's gear: the theme, the zoom, the editor, the projects' folder, the AI, Usage and a Debug
+  page. In the effect's Standalone, its **Audio and MIDI** page (also **Settings…**, Cmd-, on macOS) picks the audio
+  input, which starts muted: unmute it with headphones on.
 
 ## Contents
 
