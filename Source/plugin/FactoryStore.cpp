@@ -1,5 +1,6 @@
 // Source/plugin/FactoryStore.cpp: see FactoryStore.h.
 #include "plugin/FactoryStore.h"
+#include "plugin/FileReplace.h"
 
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
@@ -480,7 +481,7 @@ namespace playground::factorystore
         }
 
         // `bytes` written to `p`: beside it under a name of this write's own, then renamed over it (one step on every
-        // platform: rename(2), and MoveFileEx with MOVEFILE_REPLACE_EXISTING under std::filesystem on Windows).
+        // platform: files::replace, which on Windows waits out a reader of the old file for up to half a second).
         bool writeFile(const fs::path& p, const std::string& bytes)
         {
             std::error_code ec;
@@ -495,7 +496,7 @@ namespace playground::factorystore
                 written = static_cast<bool>(out);
             }
             if (written)
-                fs::rename(temp, p, ec);
+                (void)files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
             if (!written || ec)
             {
                 std::error_code e;

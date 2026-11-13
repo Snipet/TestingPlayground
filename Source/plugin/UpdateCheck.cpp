@@ -1,5 +1,6 @@
 // Source/plugin/UpdateCheck.cpp: see UpdateCheck.h.
 #include "plugin/UpdateCheck.h"
+#include "plugin/FileReplace.h"
 
 #include "plugin/ClaudeApi.h"
 #include "plugin/FactoryStore.h"
@@ -81,7 +82,7 @@ namespace playground::updates
                 written = static_cast<bool>(out);
             }
             if (written)
-                fs::rename(temp, p, ec);
+                (void)files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
             if (!written || ec)
             {
                 std::error_code e;

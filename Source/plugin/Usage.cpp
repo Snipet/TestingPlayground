@@ -1,5 +1,6 @@
 // The chat's usage ledger (Usage.h).
 #include "plugin/Usage.h"
+#include "plugin/FileReplace.h"
 
 #include "plugin/ChatStore.h"
 
@@ -355,7 +356,7 @@ namespace playground::usage
             {
                 fs::permissions(temp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
                 ec.clear();
-                fs::rename(temp, p, ec);
+                (void)files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
             }
             if (!written || ec)
             {
