@@ -6,7 +6,8 @@
 //   STORE    a chat written: its .chat and .meta sealed ("FPC1"), 0600 in 0700 folders, the store's salt 0600, no word
 //            of it in clear anywhere under the folder; it loads back; a byte changed: refused, saying why; another
 //            writer's change since it was read, of the same size and time (only the file's identity tells it): a
-//            conflict, nothing written; an owner or an id that is no folder's
+//            conflict, nothing written; files not sealed here (a chat and its .meta, a chat alone) are not listed, a
+//            chat sealed here without its .meta is, titled "Chat"; an owner or an id that is no folder's
 //            name (../, upper case, a slash) is refused before it reaches a path
 //   ID       a project gets a UUID when it is first saved, kept by its next save; renamed in the Finder it keeps it
 //            (load, idOf), and nameOfId finds it by it; a copy made in the Finder gets an id of its own when opened,
@@ -20,7 +21,8 @@
 //            with C (none left with the instance); C saved as D: D gets a copy, C keeps its own
 //   LIST     a new chat: the list has it first (not written yet) and the one before; written, the newest first;
 //            renamed (the list and the file say so), another opened, the name cleared (its first message's words
-//            again), deleted (the newest other one shows, the files gone), an id that is none refused
+//            again), deleted (the newest other one shows, the files gone), an id that is none refused; a chat listed
+//            that cannot be read: opening it changes nothing, and the chat shown says why
 //   SESSION  the session holds no word of the chat and no "json", only the instance, the owner and the chat's id;
 //            another processor loading it shows the same chat; on another Mac (an empty store) a new, empty chat;
 //            a project renamed in the Finder since the session named it is found by its id, its chat with it
@@ -238,6 +240,39 @@ PROBE(plugin, chats)
                                 && loaded->meta.createdMs == 1000 && loaded->meta.updatedMs == 2000 ? 1 : 0, 1);
         const std::vector<cs::ChatMeta> list = cs::chatsOf(owner);
         P.eq("store.listed", list.size() == 1 && list[0].id == meta.id ? 1 : 0, 1);
+        // Files not sealed here (a copied Library: each byte as another machine's keys sealed it fails this one's MAC,
+        // as a byte changed does) are left out of the list; a chat sealed here whose .meta is gone is listed, "Chat".
+        {
+            const std::string good = bytesOf(chatFile), goodMeta = bytesOf(metaFile);
+            const auto flipped = [](std::string b) {
+                b[40] = static_cast<char>(b[40] ^ 0x10);
+                return b;
+            };
+            const std::string elsewhere = cs::newId(), bare = cs::newId(), noMeta = cs::newId();
+            const auto put = [&](const std::string& id, const char* ext, const std::string& bytes) {
+                dir.getChildFile(juce::String(id) + ext).replaceWithData(bytes.data(), bytes.size());
+            };
+            put(elsewhere, ".chat", flipped(good));
+            put(elsewhere, ".meta", flipped(goodMeta));
+            put(bare, ".chat", flipped(good));
+            put(noMeta, ".chat", good);
+            const auto listed = [&](const std::string& id) {
+                for (const cs::ChatMeta& m : cs::chatsOf(owner))
+                    if (m.id == id)
+                        return 1;
+                return 0;
+            };
+            P.eq("store.elsewhere_left_out", listed(elsewhere), 0);
+            P.eq("store.elsewhere_bare_left_out", listed(bare), 0);
+            bool chatTitled = false;
+            for (const cs::ChatMeta& m : cs::chatsOf(owner))
+                chatTitled = chatTitled || (m.id == noMeta && m.title == "Chat");
+            P.eq("store.no_meta_listed", chatTitled ? 1 : 0, 1);
+            P.eq("store.listed_again_same", listed(elsewhere) + listed(bare), 0);   // the answers kept, the same
+            for (const std::string& id : { elsewhere, bare, noMeta })
+                cs::removeChat(owner, id);
+            P.eq("store.only_its_own_left", cs::chatsOf(owner).size() == 1 ? 1 : 0, 1);
+        }
         // A byte changed: refused, saying why.
         {
             const std::string good = bytesOf(chatFile);
@@ -439,6 +474,27 @@ PROBE(plugin, chats)
             P.eq("list.deleted", cs::chatsOf(idA).size() == 1 && !cs::hasChat(idA, secondId) && agent.chatList().chats.size() == 1
                                      && has(said(agent.chatState()), "PHRASE-A") ? 1 : 0, 1);
             P.eq("list.bad_id", agent.openChat("not-an-id") ? 1 : 0, 0);
+            // A chat its .meta lists that cannot be read (damaged since): opening it changes nothing and says why.
+            {
+                const juce::File dir = chats.getChildFile(juce::String(idA));
+                const std::string shown = agent.chatRef().id, dead = cs::newId();
+                std::string bad = bytesOf(dir.getChildFile(juce::String(shown) + ".chat"));
+                const std::string meta = bytesOf(dir.getChildFile(juce::String(shown) + ".meta"));
+                bad[40] = static_cast<char>(bad[40] ^ 0x10);
+                dir.getChildFile(juce::String(dead) + ".chat").replaceWithData(bad.data(), bad.size());
+                dir.getChildFile(juce::String(dead) + ".meta").replaceWithData(meta.data(), meta.size());
+                bool listed = false;
+                for (const pg::ChatListEntry& e : agent.chatList().chats)
+                    listed = listed || e.id == dead;
+                const std::string before = said(agent.chatState());
+                const bool opened = agent.openChat(dead);
+                const pg::ChatState after = agent.chatState();
+                P.eq("list.unreadable_listed", listed ? 1 : 0, 1);
+                P.eq("list.unreadable_refused", opened ? 1 : 0, 0);
+                P.eq("list.unreadable_says", agent.chatRef().id == shown && has(said(after), before)
+                                                 && has(lastOf(after, pg::ChatEntry::Kind::note), "That chat could not be opened") ? 1 : 0, 1);
+                cs::removeChat(idA, dead);
+            }
         }
 
         // ---- SESSION ------------------------------------------------------------------------------------------------

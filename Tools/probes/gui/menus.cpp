@@ -896,7 +896,7 @@ PROBE(gui, menus)
             pg::ui::Panel panel(processor.ports(), processor.editorPort());
             funkgui::HeadlessHost host(panel, t, 2.0f);
             host.settle();
-            R.eq("settings.opens", panel.openSettings() ? 1 : 0, 1);
+            R.eq("settings.opens", panel.openSettings("audio") ? 1 : 0, 1);
             host.settle();
             pg::ui::SettingsCard& card = panel.settingsCard();
             const float W = static_cast<float>(panel.width()), H = static_cast<float>(panel.height());

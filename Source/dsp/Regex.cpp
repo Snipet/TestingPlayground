@@ -921,6 +921,7 @@ namespace playground::regex
         for (int k = 0; k < 2; ++k)
         {
             dense_[k].assign(prog_.size(), 0);
+            start_[k].assign(prog_.size(), 0);
             sparse_[k].assign(prog_.size(), 0);
         }
         stack_.reserve(2 * prog_.size() + 2);
@@ -1031,5 +1032,133 @@ namespace playground::regex
             cur = next;
             pos += len;
         }
+    }
+
+    Found Regex::closeFrom(std::size_t l, uint32_t pc0, std::string_view t, std::size_t pos, std::size_t start, std::uint64_t& steps,
+                           Kept& kept)
+    {
+        std::vector<uint32_t>& dense = dense_[l];
+        std::vector<uint32_t>& sparse = sparse_[l];
+        std::size_t& count = count_[l];
+        stack_.clear();
+        stack_.push_back(pc0);
+        while (!stack_.empty())
+        {
+            const uint32_t pc = stack_.back();
+            stack_.pop_back();
+            if (sparse[pc] < count && dense[sparse[pc]] == pc)
+                continue;                                 // in the set already, from a thread that started no later
+            if (steps == 0)
+                return Found::spent;
+            --steps;
+            sparse[pc] = static_cast<uint32_t>(count);
+            start_[l][count] = start;
+            dense[count++] = pc;
+            const Inst& in = prog_[pc];
+            switch (in.op)
+            {
+            case Op::match:
+                if (!kept.any || start < kept.begin || (start == kept.begin && pos > kept.end))
+                    kept = { true, start, pos };
+                break;
+            case Op::jump:
+                stack_.push_back(in.a);
+                break;
+            case Op::split:
+                stack_.push_back(in.b);
+                stack_.push_back(in.a);
+                break;
+            case Op::bol:
+                if (pos == 0)
+                    stack_.push_back(pc + 1);
+                break;
+            case Op::eol:
+                if (pos == t.size())
+                    stack_.push_back(pc + 1);
+                break;
+            case Op::edge:
+            case Op::noEdge:
+            {
+                const bool before = pos > 0 && isAsciiWord(static_cast<unsigned char>(t[pos - 1]));
+                const bool after = pos < t.size() && isAsciiWord(static_cast<unsigned char>(t[pos]));
+                if ((before != after) == (in.op == Op::edge))
+                    stack_.push_back(pc + 1);
+                break;
+            }
+            case Op::ch:
+            case Op::set:
+            case Op::any:
+                break;                                    // it reads the next character: find()'s step
+            }
+        }
+        return Found::no;
+    }
+
+    Found Regex::find(std::string_view t, std::size_t from, std::uint64_t& steps, std::size_t& begin, std::size_t& end)
+    {
+        if (!ok() || from > t.size())
+            return Found::no;
+        // The states of each list are in the order their threads started: those carried from the list before come
+        // first (in its order), the thread that starts here last, so a state two threads reach keeps the earlier
+        // start. Once a match is kept no thread starts again, and only threads that started no later than it go on
+        // (one that started earlier may still match, further left); it ends when none is left.
+        std::size_t cur = 0, pos = from;
+        count_[0] = count_[1] = 0;
+        Kept kept;
+        while (true)
+        {
+            if (!kept.any)
+            {
+                if (count_[cur] == 0 && !firstAny_)
+                {
+                    while (pos < t.size() && !first_[static_cast<unsigned char>(t[pos])])
+                        ++pos;
+                    if (pos == t.size())
+                        return Found::no;
+                }
+                if (closeFrom(cur, 0, t, pos, pos, steps, kept) == Found::spent)
+                    return Found::spent;
+            }
+            bool alive = false;
+            for (std::size_t k = 0; k < count_[cur] && !alive; ++k)
+                alive = !kept.any || start_[cur][k] <= kept.begin;
+            if (pos == t.size() || (kept.any && !alive))
+                break;
+            if (steps == 0)
+                return Found::spent;
+            --steps;
+            std::size_t len = 1;
+            const uint32_t c = decode(t, pos, len);
+            const std::size_t next = cur ^ 1;
+            count_[next] = 0;
+            for (std::size_t k = 0; k < count_[cur]; ++k)
+            {
+                const std::size_t start = start_[cur][k];
+                if (kept.any && start > kept.begin)
+                    continue;
+                const uint32_t pc = dense_[cur][k];
+                const Inst& in = prog_[pc];
+                bool takes = false;
+                if (in.op == Op::ch)
+                    takes = c == in.a || c == in.b;
+                else if (in.op == Op::any)
+                    takes = in.b == 0 || c != '\n';
+                else if (in.op == Op::set)
+                {
+                    const std::vector<Range>& r = sets_[in.a];
+                    const auto it = std::upper_bound(r.begin(), r.end(), c, [](uint32_t x, const Range& y) { return x < y.lo; });
+                    takes = (it != r.begin() && c <= std::prev(it)->hi) != (in.b != 0);
+                }
+                if (takes && closeFrom(next, pc + 1, t, pos + len, start, steps, kept) == Found::spent)
+                    return Found::spent;
+            }
+            cur = next;
+            pos += len;
+        }
+        if (!kept.any)
+            return Found::no;
+        begin = kept.begin;
+        end = kept.end;
+        return Found::yes;
     }
 }

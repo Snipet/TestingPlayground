@@ -250,7 +250,8 @@ panel background=#1b1d24 gradient=#0e0f13 accent=teal {
         host.settle();
         // The editor's check while typing landed, and no compile running: either would be a change of its own (on a
         // loaded machine it lands late).
-        for (int k = 0; k < 600 && (panel.codeAssist().checking() || p.editorPort().compiling()); ++k)
+        for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+             (panel.codeAssist().checking() || p.editorPort().compiling()) && std::chrono::steady_clock::now() < by;)
         {
             host.tick(1, 1.0f / 12.0f);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

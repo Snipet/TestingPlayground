@@ -22,7 +22,8 @@
 //                    chatState().attached; one that cannot be read gets a note. detach() takes one back
 //   send()           a message from the user (and the pictures attached, which it takes; a message of pictures alone
 //                    goes too); Claude answers (and works) in the background. While Claude's question
-//                    waits (asking), the message answers it in the user's own words
+//                    waits (asking), the message answers it in the user's own words. False when it was not taken
+//                    (nothing to send, or the chat busy: a turn, or a call of Claude Desktop's): the box keeps it
 //   answer()         the user's answer to Claude's question (ask_user), one per question: the chosen options' labels;
 //                    Claude's turn goes on with it
 //   clearChecks()    forgets Claude's checks (set_checks): the plugin no longer measures them after a run
@@ -30,7 +31,8 @@
 //   newChat()        a new conversation; the one shown stays in the chat list
 //   chatList()       the chats kept on this Mac (ChatStore.h) for the project open, or for this plugin while none is
 //                    (a chat with no project stays with it): the newest first, the one shown marked
-//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there
+//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there, or
+//                    cannot be read (the chat shown says why, and nothing stops)
 //   renameChat()     the chat shown named ("" for its first message's words again)
 //   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
 #pragma once
@@ -260,7 +262,7 @@ namespace playground
 
         virtual void attach(const std::vector<std::string>& paths) = 0;
         virtual void detach(uint32_t id) = 0;
-        virtual void send(const std::string& text) = 0;
+        virtual bool send(const std::string& text) = 0;
         virtual void answer(const std::vector<std::string>& answers) = 0;
         virtual void clearChecks() = 0;
         virtual void stop() = 0;

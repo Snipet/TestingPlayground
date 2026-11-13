@@ -129,6 +129,7 @@
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
+#include "editor/TabStrip.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -300,6 +301,8 @@ namespace playground::ui
         // For probes.
         funkgui::TextEditor& editor() noexcept;         // the shown file's
         CodeAssist& codeAssist() noexcept;               // its completion, hover, find bar, problems (CodeAssist.h)
+        funkgui::TextEditor& fileEditor(int i);          // file i's (shown or not)
+        int codeTextSize() const;                        // the text size its editors draw in, tenths of a px
         int fileCount() const;
         std::string fileName(int i) const;
         int activeFile() const;
@@ -420,6 +423,7 @@ namespace playground::ui
         // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
         bool mergeDraft();
         bool pushFiles();
+        void giveTyping();                               // pushFiles, in the event that typed (Panel::key)
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& chatPlaceholder() const;      // what it says while empty
@@ -464,7 +468,10 @@ namespace playground::ui
         funkgui::Point centreOfIrTab() const;
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
-        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab, as much as is in view (empty: scrolled out)
+        float fileTabWidth(int i) const;                 // its whole width (its name's)
+        bool fileTabEdited(int i) const;                 // its dot: its text is not what plays
+        TabStrip tabStrip() const;                       // the strip's places and scroll, as laid out now (TabStrip.h)
         // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
         // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
         // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
@@ -539,11 +546,23 @@ namespace playground::ui
         std::optional<funkgui::Point> centreOfKeyModel() const;
         int keyDialogPreset() const noexcept { return dialogPreset_; }
         int keyDialogField() const noexcept { return dialogField_; }
+        // What the dialog shows now: the key's field as drawn (masked), its hint while empty, and its lines (the server
+        // the key is for and sent to): the server's address typed, never the preset's when it differs.
+        std::string keyDialogShown() const { return keyEdit_.buffer.empty() ? std::string() : maskedKey(); }
+        std::string keyDialogHint() const;
+        std::vector<std::string> keyDialogLines() const;
         void chooseKeyPreset(int preset);
-        // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
-        // while another card is open); the notice while an effect's input is muted, and its Settings... button.
-        bool openSettings();
+        // SETTINGS (SettingsCard.h): the card of pages, in every host, opened by the top bar's gear (at the page it showed
+        // last), the Standalone's Settings... (at EditorPort::settingsPage) and the muted notice (at Audio and MIDI): at
+        // `page` (a page's id, "" the last; false while another card is open); the notice while an effect's input is
+        // muted, and its Settings... button.
+        bool openSettings(const std::string& page = {});
         SettingsCard& settingsCard() noexcept { return settings_; }
+        funkgui::Point centreOfSettings() const;         // the gear
+        // The Debug page's graphics rows from the host the Panel runs in (gpu/CodeWindow.cpp's EditorHost,
+        // nogpu/SoftEditorHost): its frames, the surface, the renderer's counts. None: the Panel's own rows alone (a
+        // headless Panel's). Message thread.
+        void setHostDebug(std::function<std::vector<DebugRow>()> rows) { hostDebug_ = std::move(rows); }
 
         // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
         // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
@@ -620,9 +639,10 @@ namespace playground::ui
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
         bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
                                                          // double-click is none of the panel's
-        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
-                                                         // the rest of its click (a double-click's second press,
-                                                         // its doubleClick) reaches nothing under it
+        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done),
+                                                         // or sent the message (send is stop under it now): the
+                                                         // rest of its click (a double-click's second press, its
+                                                         // doubleClick) reaches nothing under it
         // A press on the card on top (pointerDown, "A card's press"): the card takes it (`press`), then the Panel's
         // after-hook for it (`after`: its notice, the focus back). When the card that took it is no longer open, the
         // press closed it (a click outside its box, its Close, Done or Cancel): the press goes no further, and
@@ -632,6 +652,7 @@ namespace playground::ui
         // SettingsCard); a new card is one more pressCard line in pointerDown, nothing copied.
         void pressCard(const std::function<bool()>& isOpen, const std::function<void()>& press, const std::function<void()>& after);
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
+        uint32_t sends_ = 0;                             // messages sent from the box (a press's: did it send?)
         bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
@@ -666,7 +687,7 @@ namespace playground::ui
         // The chat.
         void refreshChat(double nowSec);
         void reshowChat();                               // the conversation laid out again (a row opened, ...)
-        void sendChat();                                 // the message box's text, to Claude
+        bool sendChat();                                 // the message box's text, to Claude (true: it went)
         void suggest(const std::string& text);           // a suggestion into the message box
         void openModels();
         void openThinking();
@@ -715,6 +736,10 @@ namespace playground::ui
         bool dialogAsBefore() const;
         ChatProvider dialogProvider() const;
         bool dialogHasKey() const;
+        bool dialogInfoNow() const;                      // dialogInfo_ is the address typed's (read when it rests)
+        void readDialogInfo();
+        std::string dialogTitle() const;                 // the preset's name, else the server typed's host
+        bool dialogPresetServer() const;                 // the address typed is the preset's own (or it has none)
         void openProviders();
         funkgui::text::LineEdit& dialogEdit();
         int dialogFields() const;                        // the fields shown, as a mask of 1 << field
@@ -876,9 +901,15 @@ namespace playground::ui
         SettingsCard settings_{ port_ };
         uint64_t seenSettingsAsk_ = 0;
         uint32_t seenSettingsRev_ = 0;
+        uint32_t seenPrefsRev_ = ~0u;
+        int filesPlaying_ = 0;                           // the tabs were given what plays (FilesItem::setPlaying)                    // UiPreferences' revision the text size was read at
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;
+        int gearItem_ = -1;                              // the top bar's gear
+        bool keyAfterSettings_ = false;                  // the card closed for the key dialog (the AI page)
+        std::function<std::vector<DebugRow>()> hostDebug_;   // setHostDebug's
+        SettingsCard::Hooks settingsHooks();             // what the card reads of the Panel (the chat's provider, ...)
         void syncSettings();                             // refresh(): the devices, the app's request, the notice
         void afterSettings(bool wasOpen);                // the card closed: the focus back
         void placeMutedNotice();                         // its button, left of the zoom in the status bar
@@ -956,6 +987,8 @@ namespace playground::ui
         funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
         int dialogField_ = 0;
         ChatProviderInfo dialogInfo_;
+        std::string dialogInfoBase_;                     // the address dialogInfo_ was read for
+        double baseTypedAt_ = 0.0;                       // when the address was last typed in (read once it rests)
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

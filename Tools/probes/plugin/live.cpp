@@ -10,7 +10,8 @@
 //           and velocity, the keys held, three voices at once, none stolen or dropped, the spectrum's strongest peak at
 //           one of the notes; a racing wheel's fields off rest (steering, throttle, gear, buttons; the brake at rest
 //           left out); the CPU per block; the text and the JSON; the meters' readers raised while it listens and back
-//           after
+//           after. A try the machine stalled (the notes outside the window, the host kept from its blocks) is made
+//           again, four at most, each saying how it stalled; with every one stalled the rows it defeats are skipped
 //   MONO    an instrument's: a #pragma mono program's voices are one at a time (of 1: mono), where LISTEN's are of 16
 //   BYPASS  the host's bypass: listen says so
 //   SILENT  a host that calls nothing: listen says the host is not calling the plugin, and measures nothing
@@ -139,14 +140,41 @@ namespace
         }
     };
 
+    using Clock = std::chrono::steady_clock;
+
+    double secondsBetween(Clock::time_point from, Clock::time_point to) { return std::chrono::duration<double>(to - from).count(); }
+
+    // What an instrument's host sends once a tool listens, each that long after it first saw the listener, by the clock
+    // and by its blocks both: the three note-ons (A4, C5, E5) and a racing wheel's controls between them.
+    //   listen's window begins when its warm-up ends: once the scope holds kFft (4096) samples measured since its reader
+    //   came, 85 ms of blocks, 0.3 s at most (Live.cpp); its counters (the note-ons) are differences from the warm-up's
+    //   last read, so a note the audio thread played before that is held but not counted. The first sent 450 ms after
+    //   the reader leaves 150 ms past that cap for the listen's thread to wake late. The window then lasts its seconds
+    //   from its start (1.0 s for LISTEN's JSON listen; its last read at most a 40 ms poll short of that), so the last,
+    //   sent 550 ms after the reader, lands at least 410 ms before it ends, and the text listen after it hears no
+    //   note-on but the keys held. Further than that a try has stalled: tried again (LISTEN).
+    struct Sent
+    {
+        int ms;                                                 // after the listener was seen
+        int note;                                               // a note-on's key; -1 the racing wheel's controls
+        bool sent = false;
+        Clock::time_point before{}, after{};                    // around the block that carried it
+    };
+
     // A host that plays the processor in real time on a thread of its own: an effect's input a 1 kHz sine at -12 dBFS;
-    // an instrument's three note-ons, 40, 50 and 60 blocks after a tool starts listening.
+    // an instrument's three note-ons and a racing wheel's controls once a tool listens (Sent). Never faster than real
+    // time: a block that comes late (the thread kept from a core) moves the schedule on rather than playing the blocks
+    // it missed back to back, so that its blocks keep meaning time; the time so lost is kept with when it was lost.
     struct Host
     {
         pg::Processor& p;
         std::atomic<bool> stop{ false }, bypass{ false };
         std::atomic<int> blocks{ 0 };
         std::atomic<int> notesAt{ -1 };                          // the block a listener was first seen at
+        // The thread's own (read after end()): when it saw the listener, what it sent, and the time it lost.
+        Clock::time_point heardAt{};
+        std::vector<Sent> sent{ { 450, 69 }, { 475, -1 }, { 500, 72 }, { 550, 76 } };
+        std::vector<std::pair<Clock::time_point, double>> lost; // when a block came late, and by how many seconds
         std::thread thread;
 
         explicit Host(pg::Processor& proc) : p(proc) {}
@@ -155,6 +183,14 @@ namespace
         Host& operator=(const Host&) = delete;
 
         void start() { thread = std::thread([this] { run(); }); }
+        // Until the host has played n blocks, ten seconds at most: what the probe waits for before a tool listens (a
+        // program's crossfade over), by its blocks, not by a time the host's thread may not have had.
+        void played(int n)
+        {
+            const auto by = Clock::now() + std::chrono::seconds(10);
+            while (blocks.load() < n && Clock::now() < by)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
         void end()
         {
             stop.store(true);
@@ -165,7 +201,8 @@ namespace
         void run()
         {
             juce::AudioBuffer<float> buffer(2, kBlock);
-            auto next = std::chrono::steady_clock::now();
+            const auto period = std::chrono::microseconds(static_cast<int64_t>(1.0e6 * kBlock / kFs));
+            auto next = Clock::now();
             std::size_t pos = 0;
             for (int b = 0; !stop.load(); ++b)
             {
@@ -178,26 +215,50 @@ namespace
                     buffer.setSample(1, i, v);
                 }
                 juce::MidiBuffer midi;
+                std::vector<Sent*> now;                              // what this block carries
                 if constexpr (kInstrument)
                 {
                     if (notesAt.load() < 0 && p.meterReaders() > 0)
+                    {
                         notesAt.store(b);
+                        heardAt = Clock::now();
+                    }
                     const int at = notesAt.load();
                     if (at >= 0)
-                        for (const auto& [k, note] : { std::pair{ 40, 69 }, std::pair{ 50, 72 }, std::pair{ 60, 76 } })
-                            if (b == at + k)
-                                midi.addEvent(juce::MidiMessage::noteOn(1, note, static_cast<juce::uint8>(100)), 8);
-                    if (at >= 0 && b == at + 45)                     // a racing wheel: half right, half throttle, 2nd, cross
-                        for (const auto& [cc, value] : { std::pair{ 16, 96 }, std::pair{ 17, 64 }, std::pair{ 20, 2 }, std::pair{ 21, 1 } })
-                            midi.addEvent(juce::MidiMessage::controllerEvent(1, cc, value), 16);
+                        for (Sent& s : sent)
+                        {
+                            // its time by the clock, and as many blocks (the blocks never run ahead of the clock)
+                            const int blocksAfter = static_cast<int>(std::ceil(s.ms * 1e-3 * kFs / kBlock));
+                            if (s.sent || b < at + blocksAfter || secondsBetween(heardAt, Clock::now()) < s.ms * 1e-3)
+                                continue;
+                            if (s.note >= 0)
+                                midi.addEvent(juce::MidiMessage::noteOn(1, s.note, static_cast<juce::uint8>(100)), 8);
+                            else                                     // a racing wheel: half right, half throttle, 2nd, cross
+                                for (const auto& [cc, value] : { std::pair{ 16, 96 }, std::pair{ 17, 64 }, std::pair{ 20, 2 }, std::pair{ 21, 1 } })
+                                    midi.addEvent(juce::MidiMessage::controllerEvent(1, cc, value), 16);
+                            s.sent = true;
+                            now.push_back(&s);
+                        }
                 }
+                const auto before = Clock::now();
                 if (bypass.load())
                     p.processBlockBypassed(buffer, midi);
                 else
                     p.processBlock(buffer, midi);
+                const auto after = Clock::now();
+                for (Sent* s : now)
+                {
+                    s->before = before;
+                    s->after = after;
+                }
                 pos += kBlock;
                 blocks.store(b + 1);
-                next += std::chrono::microseconds(static_cast<int64_t>(1.0e6 * kBlock / kFs));
+                next += period;
+                if (after > next)
+                {
+                    lost.emplace_back(after, secondsBetween(next, after));
+                    next = after;
+                }
                 std::this_thread::sleep_until(next);
             }
         }
@@ -317,20 +378,90 @@ PROBE(plugin, live)
     };
 
     // ---- LISTEN --------------------------------------------------------------------------------------------------------
+    // A try is the host playing while a JSON listen of 1 s and a text one of 0.5 s hear it. Its rows hold only when the
+    // host's notes landed inside the JSON listen's window (Sent) and the host was not kept from its blocks for long: a
+    // try the machine stalled so (told by the times the probe took itself) is made again, four at most, the keys and
+    // the wheel of the try before let go first; the rows that need that premise are skipped only when every try
+    // stalled.
     {
-        Host host(p);
-        host.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        P.eq("listen.no_reader_before", p.meterReaders(), 0);
-        const std::string j = listen(1.0, true);
-        const int readersAfter = p.meterReaders();
-        const std::string t = listen(0.5, false);
-        host.end();
-        std::printf("listen, json:\n%s\nlisten, text:\n%s", j.c_str(), t.c_str());
+        constexpr int kTries = 4;
+        constexpr double kListen = 1.0;                          // the JSON listen's seconds
+        constexpr double kLastRead = 0.05;                       // its last read at most a poll (0.04 s) short of them
+        constexpr double kMostLost = 0.25;                       // of the host's time in it: at real time 187 blocks
+                                                                 // come in 1 s, 0.25 s lost leaves 140 (listen.blocks)
+        std::string j, t, stall;
+        int readersBefore = 0, readersAfter = 0, tries = 0;
+        for (; tries < kTries; ++tries)
+        {
+            if (tries > 0 && kInstrument)
+            {
+                // A fresh state: the keys of the try before let go and the wheel at rest (Events.h's wheelcc::restOf),
+                // then blocks until the voices have ended, so this try's keys, voices and wheel are its own.
+                juce::AudioBuffer<float> buffer(2, kBlock);
+                buffer.clear();
+                juce::MidiBuffer midi;
+                for (const int note : { 69, 72, 76 })
+                    midi.addEvent(juce::MidiMessage::noteOff(1, note), 0);
+                for (const auto& [cc, value] : { std::pair{ 16, 64 }, std::pair{ 17, 0 }, std::pair{ 20, 0 }, std::pair{ 21, 0 } })
+                    midi.addEvent(juce::MidiMessage::controllerEvent(1, cc, value), 0);
+                p.processBlock(buffer, midi);
+                for (int k = 0; k < 16; ++k)
+                    block(p);
+            }
+            Host host(p);
+            host.start();
+            host.played(20);                                // 107 ms of blocks
+            readersBefore = p.meterReaders();
+            const auto called = Clock::now();
+            j = listen(kListen, true);
+            const auto returned = Clock::now();
+            readersAfter = p.meterReaders();
+            t = listen(0.5, false);
+            host.end();
+
+            // Whether the machine kept the premise, from the times the probe took: the window's first read came before
+            // the call returned less the seconds it says it listened (its start; the read before it is the counters'
+            // base), and its last read no earlier than a poll short of its seconds after the call began.
+            const double took = static_cast<double>(juce::JSON::parse(juce::String::fromUTF8(j.c_str()))["seconds"]);
+            const auto windowBy = returned - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(took));
+            const auto lastReadFrom = called + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(kListen - kLastRead));
+            double lostIn = 0.0;
+            for (const auto& [when, seconds] : host.lost)
+                if (when >= called && when <= returned)
+                    lostIn += seconds;
+            stall.clear();
+            if (lostIn > kMostLost)
+                stall = "the host was kept from its blocks for " + std::to_string(lostIn) + " s of the listen";
+            if constexpr (kInstrument)
+                for (const Sent& s : host.sent)
+                {
+                    const std::string what = s.note >= 0 ? "the note-on " + std::to_string(s.note) : std::string("the racing wheel");
+                    const auto at = [&](Clock::time_point x) { return std::to_string(secondsBetween(host.heardAt, x)); };
+                    if (!s.sent)
+                        stall = what + " was never sent";
+                    else if (s.before <= windowBy)
+                        stall = what + " went in " + at(s.before) + " s after the listener came, the window began by " + at(windowBy) + " s";
+                    else if (s.after >= lastReadFrom)
+                        stall = what + " was played by " + at(s.after) + " s after the listener came, the window's last read may have been at " + at(lastReadFrom) + " s";
+                    if (!stall.empty())
+                        break;
+                }
+            if (stall.empty())
+                break;
+            std::printf("listen, try %d stalled: %s\n", tries + 1, stall.c_str());
+        }
+        const bool stalled = !stall.empty();
+        std::printf("listen, %d tries%s\nlisten, json:\n%s\nlisten, text:\n%s", stalled ? tries : tries + 1,
+                    stalled ? ", every one stalled" : "", j.c_str(), t.c_str());
+        const std::string why = "every one of " + std::to_string(kTries) + " tries stalled; the last: " + stall;
+        P.eq("listen.no_reader_before", readersBefore, 0);
         const juce::var v = juce::JSON::parse(juce::String::fromUTF8(j.c_str()));
         const juce::var h = v["host"];
         P.eq("listen.json_live", static_cast<bool>(v["live"]) ? 1 : 0, 1);
-        P.ge("listen.blocks", static_cast<double>(h["blocks"]), 120.0);
+        if (stalled)
+            probe::skip(P, "listen.blocks", why);
+        else
+            P.ge("listen.blocks", static_cast<double>(h["blocks"]), 120.0);
         P.eq("listen.host", static_cast<bool>(h["known"]) && static_cast<bool>(h["playing"]) && static_cast<int>(h["beats_per_bar"]) == 7
                                     && static_cast<int>(h["beat_unit"]) == 8 && !static_cast<bool>(h["bypassed"]) ? 1 : 0, 1);
         P.near("listen.host_bpm", static_cast<double>(h["bpm"]), 100.0, 1e-6);
@@ -342,23 +473,30 @@ PROBE(plugin, live)
         if constexpr (kInstrument)
         {
             const juce::var midi = v["midi"], voices = v["voices"];
-            P.eq("listen.note_ons", static_cast<int>(midi["note_ons"]), 3);
-            P.eq("listen.note_range", static_cast<int>(midi["lowest"]) == 69 && static_cast<int>(midi["highest"]) == 76 ? 1 : 0, 1);
-            P.eq("listen.velocity", static_cast<int>(midi["velocity_min"]) == 100 && static_cast<int>(midi["velocity_max"]) == 100 ? 1 : 0, 1);
-            P.eq("listen.held", midi["held"].size(), 3);
-            P.eq("listen.voices_at_once", static_cast<int>(voices["most"]), 3);
             P.eq("listen.voices_of_sixteen", static_cast<int>(voices["of"]) == pg::Patch::kVoices && voices["mono"].isVoid()
                                                  && has(t, " at once (of 16), ") ? 1 : 0, 1);
             P.eq("listen.none_stolen_or_dropped", static_cast<int>(voices["steals"]) == 0 && static_cast<int>(voices["dropped"]) == 0 ? 1 : 0, 1);
-            const bool atANote = std::fabs(top - 440.0) < 9.0 || std::fabs(top - 523.25) < 10.0 || std::fabs(top - 659.26) < 13.0;
-            P.eq("listen.peak_at_a_note", atANote ? 1 : 0, 1);
-            P.eq("listen.text_no_new_notes", has(t, "MIDI: 0 note-ons") ? 1 : 0, 1);
-            P.eq("listen.text_held", has(t, "held now: A4 C5 E5") ? 1 : 0, 1);
-            const juce::var rw = v["racing_wheel"];
-            P.eq("listen.racing_json", std::fabs(static_cast<double>(rw["steering"]["now"]) - 0.5) < 1e-3
-                                           && static_cast<double>(rw["steering"]["min"]) == 0.0 && static_cast<int>(rw["gear"]["now"]) == 2
-                                           && static_cast<int>(rw["buttons"]["now"]) == 1 && rw["brake"].isVoid() ? 1 : 0, 1);
-            P.eq("listen.racing_text", has(t, "; racing wheel: steering +0.50, throttle 0.50, gear 2, buttons 0x1.") ? 1 : 0, 1);
+            if (stalled)
+                for (const char* key : { "listen.note_ons", "listen.note_range", "listen.velocity", "listen.held", "listen.voices_at_once",
+                                         "listen.peak_at_a_note", "listen.text_no_new_notes", "listen.text_held", "listen.racing_json", "listen.racing_text" })
+                    probe::skip(P, key, why);
+            else
+            {
+                P.eq("listen.note_ons", static_cast<int>(midi["note_ons"]), 3);
+                P.eq("listen.note_range", static_cast<int>(midi["lowest"]) == 69 && static_cast<int>(midi["highest"]) == 76 ? 1 : 0, 1);
+                P.eq("listen.velocity", static_cast<int>(midi["velocity_min"]) == 100 && static_cast<int>(midi["velocity_max"]) == 100 ? 1 : 0, 1);
+                P.eq("listen.held", midi["held"].size(), 3);
+                P.eq("listen.voices_at_once", static_cast<int>(voices["most"]), 3);
+                const bool atANote = std::fabs(top - 440.0) < 9.0 || std::fabs(top - 523.25) < 10.0 || std::fabs(top - 659.26) < 13.0;
+                P.eq("listen.peak_at_a_note", atANote ? 1 : 0, 1);
+                P.eq("listen.text_no_new_notes", has(t, "MIDI: 0 note-ons") ? 1 : 0, 1);
+                P.eq("listen.text_held", has(t, "held now: A4 C5 E5") ? 1 : 0, 1);
+                const juce::var rw = v["racing_wheel"];
+                P.eq("listen.racing_json", std::fabs(static_cast<double>(rw["steering"]["now"]) - 0.5) < 1e-3
+                                               && static_cast<double>(rw["steering"]["min"]) == 0.0 && static_cast<int>(rw["gear"]["now"]) == 2
+                                               && static_cast<int>(rw["buttons"]["now"]) == 1 && rw["brake"].isVoid() ? 1 : 0, 1);
+                P.eq("listen.racing_text", has(t, "; racing wheel: steering +0.50, throttle 0.50, gear 2, buttons 0x1.") ? 1 : 0, 1);
+            }
         }
         else
         {
@@ -371,7 +509,9 @@ PROBE(plugin, live)
         }
         const juce::var shown = v["displays"];
         P.eq("listen.display", shown.size() == 1 ? 1 : 0, 1);
-        if (shown.size() == 1)
+        if (shown.size() == 1 && kInstrument && stalled)          // a voice's field: a note sounding in the window
+            probe::skip(P, "listen.display_now", why);
+        else if (shown.size() == 1)
             P.near("listen.display_now", static_cast<double>(shown[0]["now"]), kInstrument ? 0.25 : 0.50118723, 1e-3);
         P.ge("listen.cpu", static_cast<double>(v["cpu_percent"]["max"]), 0.0);
         P.eq("listen.cpu_said", v["cpu_percent"].isObject() && has(t, "CPU per block: p50 ") ? 1 : 0, 1);
@@ -387,7 +527,7 @@ PROBE(plugin, live)
         P.eq("mono.compiles", load(p, pg::singleFile("#pragma mono\n" + listenProgram())) ? 1 : 0, 1);
         Host host(p);
         host.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        host.played(10);
         const std::string j = listen(0.8, true);
         host.end();
         const juce::var voices = juce::JSON::parse(juce::String::fromUTF8(j.c_str()))["voices"];
@@ -404,7 +544,7 @@ PROBE(plugin, live)
         Host host(p);
         host.bypass.store(true);
         host.start();
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        host.played(10);
         const std::string t = listen(0.3, false);
         host.end();
         P.eq("bypass.said", has(t, kInstrument ? "bypassed (silent)" : "bypassed (the input passes)") ? 1 : 0, 1);
