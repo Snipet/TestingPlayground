@@ -53,7 +53,8 @@ namespace playground
         bool complete = true;                     // nothing after `since` was dropped (the journal keeps the newest)
         std::vector<std::string> lines;           // a change a line, oldest first ("14:02:31-33 the user moved cutoff
                                                   // ..."), a dial's moves in one (its net change, Journal.h)
-        int changes = 0;                          // of them, what the user, the host or the plugin's chat changed
+        int changes = 0;                          // of them, what the user, the host or the plugin's chat changed (or a
+                                                  // program that stopped as it played)
         int byUser = 0;                           // of those, the user's alone
         int alerts = 0;                           // the output guard's
     };

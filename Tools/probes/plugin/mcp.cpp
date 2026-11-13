@@ -1,6 +1,9 @@
 // PROBE name=plugin.mcp timeout=240
 //
 // plugin.mcp: Claude Desktop's way into the plugin (plugin/McpLink.h, mcp/Main.cpp), in a folder of the probe's own:
+//   CLAIM    a socket's number: an instance listening and never accepting, its queue full, skipped at once (the next
+//            number; skipped, saying why, where a full queue refuses as nobody listening does: macOS); a socket removed by its own instance alone; the folder's claim lock one at a time, a scan
+//            clearing nothing while a claim holds it, and a stale socket once it is free
 //   LINK     a processor listens on a private socket in the folder (0600, the folder 0700) and leaves tools.json and
 //            guide.md there; info names its kind, plugin and files; tools are the chat's, but ask_user and
 //            ask_planner, each MCP description its first sentence or paragraph (tools.json's size printed, with the
@@ -42,8 +45,9 @@
 //            GPU, its text says; on Linux by SoftRaster, saying why); an unknown tool, and ask_user, are errors;
 //            tune_dials refuses a metric that is none, naming the plugin's
 //   WAVE     on a second connection, with a slow program in the editor: get_status and info answered while a tune runs
-//            (each reply a whole line); the tune cancelled, its dial as it was; a call waiting behind it cancelled,
-//            answered at once; a tune with a time limit of a second stops there with the best so far; pictures fit
+//            (each reply a whole line); the tune cancelled, its dial as it was (another call cancelled right after it
+//            too); a call waiting behind it cancelled, answered at once; a tune with a time limit of a second stops
+//            there with the best so far; pictures fit
 //            (view_panel's window and view_sound at most 100,000 base64 characters, the text saying what was sent;
 //            detail "high" the picture whole)
 //   CROSSING a large request (half a megabyte) sent while the link answers the guide's start (more than the socket's
@@ -71,7 +75,11 @@
 //            outbox, a ping is answered meanwhile, and the call is answered at its deadline
 //   MATCH    a second processor, on the track "Bass Line" with the project "Moog Bass": `instance` reaches it by its
 //            name, by "2", by its track's name in another case, by part of its project's; a word matching nothing
-//            describes both so that Claude asks; a fresh server, with both open and none named, asks which one
+//            describes both so that Claude asks; a number's name no open instance has ("3", "Synth 3", "Bass (Synth
+//            3)") reaches none, though a track's name holds the digit; a track named in Cyrillic reached in another case
+//            and by its words; a fresh server, with both open and none named, asks which one; to that server (of
+//            2025-03-26) a batch answered as one array (a request, a notification, an unknown method, a number), and
+//            JSON that is no request an invalid request
 //   TARGET   Claude Desktop's target (mcp/McpTarget.h): two open and none chosen, a call naming none is refused with
 //            both described, never guessed (though the server's calls went to the second just before), and
 //            list_instances says none is; the second chosen in its plugin (EditorPort::chooseDesktop), such calls go
@@ -119,17 +127,21 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <cstring>
 #include <fcntl.h>
 #include <functional>
 #include <map>
 #include <poll.h>
 #include <spawn.h>
 #include <string>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <thread>
 #include <vector>
@@ -511,6 +523,83 @@ PROBE(plugin, mcp)
     const std::string var = std::string(pg::product::kEnvPrefix) + "MCP_DIR";
     setenv(var.c_str(), dir.c_str(), 1);
     const char* serverPath = std::getenv((std::string(pg::product::kEnvPrefix) + "MCP_SERVER").c_str());
+
+    // ---- CLAIM: a socket's number, in a folder of its own ----------------------------------------------------------------
+    {
+        const std::string cdir = "/tmp/" + std::string(pg::product::kEnvPrefix) + "claim-" + std::to_string(getpid());
+        mkdir(cdir.c_str(), 0700);
+        // An instance whose host is stopped: it listens and never accepts, its queue full. A claim skips it at once.
+        const std::string one = cdir + "/1.sock";
+        const int stuck = pg::mcp::listenFresh(one);
+        std::vector<int> queued;
+        int fullErrno = 0;                               // the connect the full queue refused: its errno
+        for (int k = 0; k < 128; ++k)                    // listenFresh's backlog is 8: Linux queues 9, macOS about 12
+        {
+            const int c = socket(AF_UNIX, SOCK_STREAM, 0);
+            sockaddr_un addr{};
+            addr.sun_family = AF_UNIX;
+            std::strncpy(addr.sun_path, one.c_str(), sizeof addr.sun_path - 1);
+            fcntl(c, F_SETFL, fcntl(c, F_GETFL, 0) | O_NONBLOCK);
+            const bool in = connect(c, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) == 0;
+            const int e = errno;
+            queued.push_back(c);
+            if (!in)
+            {
+                fullErrno = e;                           // the queue is full
+                break;
+            }
+        }
+        std::atomic<bool> done{ false };
+        int number = 0, fd = -1;
+        std::string path;
+        std::thread claimer([&] {
+            fd = pg::mcp::claim(cdir, number, path);
+            done.store(true);
+        });
+        for (int k = 0; k < 1000 && !done.load(); ++k)  // 10 s: a claim not blocked returns in microseconds
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const bool atOnce = done.load();
+        for (const int c : queued)
+            close(c);
+        if (stuck >= 0)
+            close(stuck);                                // (a claim still waiting is let go)
+        claimer.join();
+        std::printf("claim beside a stuck instance: the full queue's connect gave %s (%d), queued %zu; the claim %s, number %d\n",
+                    fullErrno == 0 ? "nothing (never full)" : std::strerror(fullErrno), fullErrno, queued.size(),
+                    atOnce ? "at once" : "WAITED", number);
+        // Only where a full queue says so (EAGAIN: Linux) can a stuck instance be told from one gone. macOS, as the
+        // BSDs, refuses a connect to a full queue as one nobody listens on, blocking or not: a stuck instance reads as
+        // gone there (as it always did), and nothing waits.
+        if (fullErrno == EAGAIN || fullErrno == EWOULDBLOCK)
+            P.eq("claim.stuck_skipped", stuck >= 0 && atOnce && number == 2 && fd >= 0 ? 1 : 0, 1);
+        else
+            probe::skip(P, "claim.stuck_skipped",
+                        fullErrno == 0 ? "the stuck instance's queue never filled, so there is nothing to skip"
+                                       : "this system refuses a connect to a full queue as it refuses one nobody listens on, "
+                                         "so a stuck instance reads as gone here");
+        // Its socket removed by its own instance alone: one another bound in its place stays.
+        const std::string mine = pg::mcp::pathIdentity(path);
+        if (fd >= 0)
+            close(fd);
+        pg::mcp::removePath(path);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));   // past a coarse file clock's tick
+        const int other = pg::mcp::listenFresh(path);
+        pg::mcp::removeOwn(path, mine);
+        struct stat st{};
+        P.eq("claim.removes_own_alone", !mine.empty() && other >= 0 && lstat(path.c_str(), &st) == 0 ? 1 : 0, 1);
+        if (other >= 0)
+            close(other);
+        // While a claim holds the folder's lock, a scan clears nothing (a socket bound, not yet listening, refuses as a
+        // stale one does).
+        {
+            const pg::mcp::ClaimLock held(cdir, true);
+            const pg::mcp::ClaimLock second(cdir, false);
+            P.eq("claim.lock_one_at_a_time", held.held() && !second.held() ? 1 : 0, 1);
+            P.eq("claim.scan_waits", pg::mcp::removeIfStale(cdir, path) || lstat(path.c_str(), &st) != 0 ? 0 : 1, 1);
+        }
+        P.eq("claim.scan_clears_stale", pg::mcp::removeIfStale(cdir, path) && lstat(path.c_str(), &st) != 0 ? 1 : 0, 1);
+        juce::File(juce::String(cdir)).deleteRecursively();
+    }
 
     // ---- LINK ------------------------------------------------------------------------------------------------------------
     auto a = std::make_unique<pg::Processor>();
@@ -1056,7 +1145,11 @@ PROBE(plugin, mcp)
         const pg::DesktopState acting = a->editorPort().desktop();
         P.eq("indicator.running", tuning && acting.running && acting.doing == "Tune the dials" && acting.ago < 60.0 ? 1 : 0, 1);
         w.send(204, "cancel", object({ { "id", 201 } }));
-        const juce::var cancelled = w.wait(204, 5000), tuned = w.wait(201, 30000);
+        const juce::var cancelled = w.wait(204, 5000);
+        // Another call's cancel right after the tune's (a listen's, as a connection closing sends them): the tune
+        // still knows it was cancelled itself.
+        a->chatAgent().mcpCancel(987654321);
+        const juce::var tuned = w.wait(201, 30000);
         std::printf("cancelled tune: %s\n", firstText(tuned["result"]).c_str());
         waitIdle(*a, 10000);
         P.eq("cancel.answered", static_cast<bool>(cancelled["result"]["cancelled"]) ? 1 : 0, 1);
@@ -1370,6 +1463,40 @@ PROBE(plugin, mcp)
         res2 = writeTo("the moog one", "byproject.fm");
         std::printf("by project: %s\n", firstText(res2).substr(0, 200).c_str());
         P.eq("match.project_part", hasFile(*b, "byproject.fm") || hasFile(*b, "byproject.fm") ? 1 : 0, 1);
+        {
+            // A number's name no open instance has ("3", "Synth 3", "Bass (Synth 3)") reaches none, even one on a track
+            // whose name holds that digit; a track named in another script is matched case aside, and by its words.
+            const pg::Draft aBefore = a->editorPort().draft();
+            juce::AudioProcessor::TrackProperties inst;
+            inst.name = "Inst 3";
+            a->updateTrackProperties(inst);
+            const std::string kind = kInstrument ? "Synth" : "Effect";
+            const juce::var bare = writeTo("3", "gone_bare.fm");
+            const juce::var named = writeTo((kind + " 3").c_str(), "gone_named.fm");
+            const juce::var listed = writeTo(("Bass (" + kind + " 3)").c_str(), "gone_listed.fm");
+            std::printf("a number no instance has: %s\n", firstText(named).substr(0, 120).c_str());
+            bool none = true;
+            for (const char* f : { "gone_bare.fm", "gone_named.fm", "gone_listed.fm" })
+                none = none && !hasFile(*a, f) && !hasFile(*b, f);
+            P.eq("match.gone_number_refused", none && static_cast<bool>(bare["isError"]) && static_cast<bool>(named["isError"])
+                                                  && static_cast<bool>(listed["isError"]) && has(firstText(named), "matches") ? 1 : 0, 1);
+            inst.name = juce::String::fromUTF8("\xd0\x91\xd0\xb0\xd1\x81");          // "Бас"
+            a->updateTrackProperties(inst);
+            const auto writeUtf8 = [&](const char* instance, const char* file) {   // `instance` as UTF-8, as JSON carries it
+                return s.request({ a.get(), b.get() }, "tools/call",
+                                 object({ { "name", "write_file" },
+                                          { "arguments", object({ { "name", file }, { "content", "// a file\n" },
+                                                                  { "instance", juce::String::fromUTF8(instance) } }) } }))["result"];
+            };
+            const juce::var lowered = writeUtf8("\xd0\xb1\xd0\xb0\xd1\x81", "script_case.fm");       // "бас"
+            const juce::var worded = writeUtf8("the \xd0\x91\xd0\xb0\xd1\x81 track", "script_words.fm");
+            std::printf("a track in another script: %s\n", firstText(lowered).substr(0, 120).c_str());
+            P.eq("match.any_script", hasFile(*a, "script_case.fm") && hasFile(*a, "script_words.fm") && !hasFile(*b, "script_case.fm") ? 1 : 0, 1);
+            inst.name = {};
+            a->updateTrackProperties(inst);
+            a->editorPort().setDraft(aBefore);
+            a->poll();
+        }
         res2 = writeTo("the drums", "nowhere.fm");
         std::printf("no match: %s\n", firstText(res2).c_str());
         P.eq("match.none_asks", static_cast<bool>(res2["isError"]) && firstText(res2).find("Ask the user") != std::string::npos
@@ -1394,6 +1521,40 @@ PROBE(plugin, mcp)
                     for (const juce::var& tool : *t)
                         titles = titles && tool["annotations"]["title"].toString() == tool["title"].toString() && tool["title"].toString().isNotEmpty();
                 P.eq("server.older_client_titles", titles ? 1 : 0, 1);
+                // 2025-03-26's batches: each request answered, as one array once all are in (a notification has none,
+                // an element that is no object an invalid request); JSON that is no request, an invalid request.
+                {
+                    const auto lineOf = [&](const std::string& request) {
+                        const std::string l = request + "\n";
+                        [[maybe_unused]] const ssize_t wrote = write(fresh.in, l.data(), l.size());
+                        std::string got;
+                        for (int k = 0; k < 500; ++k)
+                        {
+                            got.clear();
+                            if (fresh.reader->next(got, 10) > 0 && !got.empty())
+                                if (const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str())); !v.hasProperty("method"))
+                                    return v;                // (a notification read past)
+                            a->poll();
+                            b->poll();
+                        }
+                        return juce::var();
+                    };
+                    const juce::var answers = lineOf("[{\"jsonrpc\":\"2.0\",\"id\":\"b1\",\"method\":\"ping\"},"
+                                                     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"},"
+                                                     "{\"jsonrpc\":\"2.0\",\"id\":\"b2\",\"method\":\"no/such\"},5]");
+                    std::printf("a batch: %s\n", juce::JSON::toString(answers, true).toRawUTF8());
+                    bool pinged = false, unknown = false, invalid = false;
+                    if (const juce::Array<juce::var>* got = answers.getArray())
+                        for (const juce::var& x : *got)
+                        {
+                            pinged = pinged || (x["id"].toString() == "b1" && x.hasProperty("result"));
+                            unknown = unknown || (x["id"].toString() == "b2" && static_cast<int>(x["error"]["code"]) == -32601);
+                            invalid = invalid || (x["id"].isVoid() && static_cast<int>(x["error"]["code"]) == -32600);
+                        }
+                    P.eq("server.batch", answers.isArray() && answers.size() == 3 && pinged && unknown && invalid ? 1 : 0, 1);
+                    const juce::var number = lineOf("5");
+                    P.eq("server.not_a_request", static_cast<int>(number["error"]["code"]) == -32600 ? 1 : 0, 1);
+                }
                 fresh.stop();
             }
         }

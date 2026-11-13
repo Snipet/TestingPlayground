@@ -4189,10 +4189,10 @@ namespace playground
     {
         if (call == 0)
             return;
-        mcpCancelled_.store(call);
         const std::lock_guard<std::mutex> lock(mutex_);
         if (mcpRunning_ == call)
         {
+            mcpRunningCancelled_ = true;                 // its own: a cancel of another call after it changes nothing
             cancel_.store(true);
             activity_ = "Stopping";
             touch();
@@ -4251,7 +4251,8 @@ namespace playground
                 const std::lock_guard<std::mutex> stopped(liveMutex_);
                 early = mcpStopped_.erase(call) != 0;
             }
-            cancel_.store(call != 0 && (early || mcpCancelled_.load() == call));   // a cancel that came before it started
+            mcpRunningCancelled_ = call != 0 && early;   // a cancel that came before it started
+            cancel_.store(mcpRunningCancelled_);
             if (!mcpNoted_)
             {
                 addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
@@ -4273,6 +4274,7 @@ namespace playground
                 busy_ = false;
                 mcpWorking_.store(false);
                 mcpRunning_ = 0;
+                mcpRunningCancelled_ = false;
                 activity_.clear();
                 turnThread_.store(std::thread::id{});   // as runTurn's end: before another turn or call can start
                 touch();
@@ -5252,7 +5254,7 @@ namespace playground
             bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
+                dropped = mcpRunning_ != 0 && mcpRunningCancelled_;
             }
             if (!t.error.empty())
             {

@@ -84,10 +84,12 @@ namespace playground
     Journal::Change* Journal::mergeable(const std::string& key, Who who, int64_t windowMs, int64_t now)
     {
         const bool dial = key.rfind("dial:", 0) == 0;
+        const bool file = key.rfind("file:", 0) == 0;
         for (auto it = changes_.rbegin(); it != changes_.rend(); ++it)
         {
-            if (dial && it->setsDials)
-                return nullptr;                           // a move after a preset (a run...) is not the one before it
+            if ((dial && it->setsDials) || (file && it->run))
+                return nullptr;                           // a move after a preset (a run...), an edit after a run, is
+                                                          // not the one before it
             if (it->key == key)
                 return it->seq > issued_ && it->who == who && now - it->toMs <= windowMs ? &*it : nullptr;
         }
@@ -181,6 +183,19 @@ namespace playground
         c.who = who;
         c.words = words;
         c.setsDials = true;
+        c.run = true;
+        c.fromMs = c.toMs = now;
+        add(std::move(c));
+    }
+
+    void Journal::runNote(Who who, const std::string& words)
+    {
+        const int64_t now = nowMs();
+        const std::lock_guard<std::mutex> lock(mutex_);
+        Change c;
+        c.who = who;
+        c.words = words;
+        c.run = true;
         c.fromMs = c.toMs = now;
         add(std::move(c));
     }
@@ -320,7 +335,7 @@ namespace playground
             for (const std::vector<const Change*>& row : rows)
             {
                 out.lines.push_back(netLine(row));
-                if (row.front()->who == Who::plugin)
+                if (row.front()->key.rfind("alert:", 0) == 0)   // the output guard's (a program that stopped is a change)
                     ++out.alerts;
                 else
                 {

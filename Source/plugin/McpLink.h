@@ -137,6 +137,7 @@ namespace playground
 
         Hooks hooks_;
         std::string id_, path_, dir_;
+        std::string pathId_;                             // the socket file bound (mcp::pathIdentity)
         std::string token_;                              // its card's: its own, random (mcp/McpTarget.h)
         mutable std::mutex nameMutex_;
         std::string name_;                               // the user's ("" none)

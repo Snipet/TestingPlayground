@@ -26,6 +26,7 @@
 #include <sstream>
 
 #if !defined(_WIN32)
+#include <sys/stat.h>                                // stat (readPath: a regular file alone)
 #include <unistd.h>                                  // access (shaderc's place)
 #endif
 
@@ -290,6 +291,21 @@ namespace playground::sandbox
         return out;
     }
 
+    namespace
+    {
+        // Whether `file` is a regular file, a link followed (stat's S_ISREG): no FIFO, socket or device. Windows has
+        // none of those under a path a user names: existsAsFile says it there.
+        bool regularFile(const juce::File& file)
+        {
+#if defined(_WIN32)
+            return file.existsAsFile();
+#else
+            struct stat st{};
+            return stat(file.getFullPathName().toRawUTF8(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
+        }
+    }
+
     bool Sandbox::readPath(const std::string& given, Sources& out, std::string& why) const
     {
         std::string path = juce::String(str(given)).trim().toStdString();
@@ -316,22 +332,33 @@ namespace playground::sandbox
             why = "there is no file or folder " + given;
             return false;
         }
+        const auto tooLarge = [&](const std::string& name, juce::int64 bytes) {
+            why = name + " is " + std::to_string(bytes / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
+                + " KB at most";
+            return false;
+        };
         const auto readOne = [&](const juce::File& file, const std::string& name) {
             if (!file.existsAsFile())
                 return false;
-            const juce::int64 bytes = file.getSize();
-            if (static_cast<std::size_t>(bytes) > kMaxFileBytes)
+            // A regular file alone (a link to one too): a FIFO would block the open, a device read without end.
+            if (!regularFile(file))
             {
-                why = name + " is " + std::to_string(bytes / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
-                    + " KB at most";
+                why = name + " is not a regular file";
                 return false;
             }
+            const juce::int64 bytes = file.getSize();
+            if (static_cast<std::size_t>(bytes) > kMaxFileBytes)
+                return tooLarge(name, bytes);
+            juce::FileInputStream in(file);
             juce::MemoryBlock mb;
-            if (!file.loadFileAsData(mb))
+            if (!in.openedOk())
             {
                 why = "could not read " + name;
                 return false;
             }
+            in.readIntoMemoryBlock(mb, static_cast<juce::pointer_sized_int>(kMaxFileBytes + 1));   // never more, whatever it grew to
+            if (mb.getSize() > kMaxFileBytes)
+                return tooLarge(name, static_cast<juce::int64>(mb.getSize()));
             out.push_back({ name, std::string(static_cast<const char*>(mb.getData()), mb.getSize()) });
             return true;
         };
@@ -353,7 +380,8 @@ namespace playground::sandbox
         // plugin and the headless renderer read a folder; the folder sync's read-only copies (its manifest's, and a
         // host.fm of the plugin's own text) are not the program's and count for nothing.
         juce::MemoryBlock manifest;
-        if (const juce::File m = named.getChildFile(".fmsync"); m.existsAsFile() && m.getSize() <= static_cast<juce::int64>(kMaxTotalBytes))
+        if (const juce::File m = named.getChildFile(".fmsync");
+            m.existsAsFile() && regularFile(m) && m.getSize() <= static_cast<juce::int64>(kMaxTotalBytes))
             (void)m.loadFileAsData(manifest);
         const std::vector<std::string> copies = syncCopies(std::string_view(static_cast<const char*>(manifest.getData()), manifest.getSize()));
         std::vector<std::string> names;

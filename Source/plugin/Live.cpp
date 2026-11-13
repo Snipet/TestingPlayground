@@ -404,9 +404,9 @@ namespace playground
             "get_status",
             "Read the plugin's state now: files, what plays, the last compile, dials, CPU load, alerts, and a token: since "
             "set to one gives only what changed after it.\n\n"
-            "files: none (the default without since), changed (with since: each file as a diff against its text at "
-            "that token), all (each whole). A token of another instance, or of before a reload, gets the whole "
-            "state. Your other MCP results start with a line when something changed.",
+            "files: none (the default without since), changed (with since, through MCP: each file as a diff against "
+            "its text at that token), all (each whole). A token of another instance, or of before a reload, gets the "
+            "whole state. Your other MCP results start with a line when something changed.",
             claude::object({ { "since", prop("string", "A token from an earlier call") },
                              { "files", claude::object({ { "type", "string" },
                                                          { "enum", juce::Array<juce::var>{ "none", "changed", "all" } } }) } }));
@@ -669,6 +669,10 @@ namespace playground
                                     : "The files against their text at that token (edits made through MCP since are in it too):\n" + part;
             }
         }
+        else if (files == "changed" && ch.known)
+            // The diffs are Claude Desktop's (its tokens keep the files' texts); the plugin's chat is sent what it has
+            // not seen with its next message.
+            out += "(No diffs here, only through MCP: read_file shows a file, files \"all\" all of them.)\n";
         out += "Token: " + ch.token + " (get_status with since \"" + ch.token + "\" shows only what changes after this).\n";
         return out;
     }

@@ -58,6 +58,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -536,23 +537,138 @@ namespace playground::mcp
 #endif
     }
 
+    // Whether nothing listens at the socket `path` (a file left by an instance gone). POSIX asks without waiting: an
+    // instance whose host is stopped never accepts, and once its queue is full a blocking connect waits for it; only a
+    // refusal says nobody is there (a full queue, EAGAIN, or anything else is an instance). On macOS (as the BSDs) a
+    // full queue is refused too, so there a stuck instance with a full queue reads as gone, as it always did.
+    inline bool stale(const std::string& path)
+    {
+#if defined(_WIN32)
+        if (const int fd = connectTo(path); fd >= 0)
+        {
+            closeFd(fd);                                 // an instance listens there
+            return false;
+        }
+        return refused();
+#else
+        if (!fits(path))
+            return false;
+        const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0)
+            return false;
+        noSigpipe(fd);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::strncpy(addr.sun_path, path.c_str(), sizeof addr.sun_path - 1);
+        const int flags = fcntl(fd, F_GETFL, 0);
+        const bool gone = flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0
+                       && connect(fd, reinterpret_cast<const sockaddr*>(&addr), sizeof addr) != 0 && refused();
+        close(fd);
+        return gone;
+#endif
+    }
+
+    // What names the file at `path` (its device, inode and change time; "" on Windows, or none there): the socket an
+    // instance bound, so that it removes its own file alone, never one another instance bound in its place.
+    inline std::string pathIdentity([[maybe_unused]] const std::string& path)
+    {
+#if defined(_WIN32)
+        return {};
+#else
+        struct stat st{};
+        if (lstat(path.c_str(), &st) != 0)
+            return {};
+        // Its change time too: an inode freed (the file unlinked) may be the next file's on a tmpfs.
+#if defined(__APPLE__)
+        const auto& changed = st.st_ctimespec;
+#else
+        const auto& changed = st.st_ctim;
+#endif
+        return std::to_string(static_cast<unsigned long long>(st.st_dev)) + ":" + std::to_string(static_cast<unsigned long long>(st.st_ino))
+             + ":" + std::to_string(static_cast<long long>(changed.tv_sec)) + "." + std::to_string(static_cast<long long>(changed.tv_nsec));
+#endif
+    }
+
+    // The socket at `path` removed when it is still the one `identity` names (pathIdentity's when it was bound).
+    inline void removeOwn(const std::string& path, const std::string& identity)
+    {
+        if (identity.empty() || pathIdentity(path) == identity)
+            removePath(path);
+    }
+
+    // The folder's claim lock (its .claim-lock, flock'd; POSIX): held while a socket is tested, cleared and bound to
+    // listening, so that no other process's claim or scan sees a socket bound and not yet listening (which refuses, as
+    // a stale one does) and clears it. `wait` false: taken only when free at once; true: waited for 2 s at most (a
+    // process stopped while it held it never hangs another: past that, not held). Windows: none (always taken).
+    struct ClaimLock
+    {
+        int fd = -1;
+        ClaimLock(const ClaimLock&) = delete;
+        ClaimLock& operator=(const ClaimLock&) = delete;
+        ClaimLock([[maybe_unused]] const std::string& dir, [[maybe_unused]] bool wait)
+        {
+#if !defined(_WIN32)
+            fd = open((dir + "/.claim-lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+            if (fd < 0)
+                return;
+            int r = 0;
+            for (int tries = wait ? 200 : 1; tries > 0; --tries)
+            {
+                if ((r = flock(fd, LOCK_EX | LOCK_NB)) == 0 || (errno != EWOULDBLOCK && errno != EINTR))
+                    break;
+                if (tries > 1)
+                    poll(nullptr, 0, 10);                // 10 ms
+            }
+            if (r != 0)
+            {
+                close(fd);
+                fd = -1;
+            }
+#endif
+        }
+        ~ClaimLock()
+        {
+#if !defined(_WIN32)
+            if (fd >= 0)
+                close(fd);                               // releases the flock
+#endif
+        }
+        bool held() const
+        {
+#if defined(_WIN32)
+            return true;
+#else
+            return fd >= 0;
+#endif
+        }
+    };
+
+    // The socket at `path` in `dir` removed when nothing listens there, the claim lock held (taken only when free at
+    // once: a scan never waits for another process): whether it was.
+    inline bool removeIfStale(const std::string& dir, const std::string& path)
+    {
+        const ClaimLock lock(dir, false);
+        if (!lock.held() || !stale(path))
+            return false;
+        removePath(path);
+        return true;
+    }
+
     // An instance's socket: the lowest number free in `dir` (a socket nothing listens on, left by an instance gone, is
-    // cleared and taken). Its listening descriptor, its number and its path; -1 when none can be had.
+    // cleared and taken). Its listening descriptor, its number and its path; -1 when none can be had. On POSIX the
+    // test, the clearing and the bind to listen are one step across processes (ClaimLock), so that two instances
+    // starting at once never take one number.
     inline int claim(const std::string& dir, int& number, std::string& path)
     {
+        const ClaimLock lock(dir, true);                 // not held (refused, or held 2 s elsewhere): claimed as before
         for (int k = 1; k < 1000; ++k)
         {
             const std::string p = dir + "/" + std::to_string(k) + ".sock";
             if (pathExists(p))
             {
-                if (const int fd = connectTo(p); fd >= 0)
-                {
-                    closeFd(fd);                             // an instance listens there
-                    continue;
-                }
-                if (!refused())
-                    continue;
-                removePath(p);                               // left by an instance gone
+                if (!stale(p))
+                    continue;                            // an instance listens there
+                removePath(p);                           // left by an instance gone
             }
             if (const int fd = listenFresh(p); fd >= 0)
             {

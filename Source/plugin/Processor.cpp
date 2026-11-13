@@ -1474,7 +1474,7 @@ namespace playground
                     journal_.dialsNote(Journal::Who::user, runWords(compiled));
                 }
                 else
-                    journal_.note(Journal::Who::user, runWords(s));        // (a panel's edit sets no dial)
+                    journal_.runNote(Journal::Who::user, runWords(s));     // (a panel's edit sets no dial)
             }
             else if (s.stopped && (!s.restored.empty() || s.program == s.stoppedProgram) && s.stoppedProgram != stopJournaled_
                      && s.stoppedProgram != chatStopJournaled_.load())
@@ -3662,7 +3662,7 @@ namespace playground
             if (s.ok && !s.panelOnly)
                 journal_.dialsNote(Journal::Who::chat, runWords(s));
             else
-                journal_.note(Journal::Who::chat, runWords(s));
+                journal_.runNote(Journal::Who::chat, runWords(s));
         }
         return s.request >= id ? s : CompileStatus{};
     }

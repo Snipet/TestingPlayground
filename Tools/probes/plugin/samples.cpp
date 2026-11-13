@@ -32,7 +32,8 @@
 //   CAPTURE   a recording of a program that reads a sample (the synth's player from its note-on, the effect's input
 //             with a frame of it added) replays bit for bit: the take's replay line compiles with the samples
 //   TOOLS     write_file's path adds one (its name tidied), get_status lists it (and which the program reads),
-//             rename_file and delete_file act on it, content for an audio file's name refused
+//             rename_file and delete_file act on it, content for an audio file's name refused; none of them a change
+//             its next result names (Claude Desktop's own)
 //   EXAMPLE   sample.fm's one-shot (readAt: the index and the fraction apart): the synth's voice plays the hit at note
 //             60 bit for bit and an octave up in half the time, and 3 s a semitone up ends after frames / step samples;
 //             the effect plays it over its input
@@ -837,6 +838,11 @@ PROBE(plugin, samples)
         P.eq("tools.renamed", has(renamed, "Renamed the sample Big-Kick.wav to boom.wav") && p.editorPort().assets()[0].name == "boom.wav" ? 1 : 0, 1);
         const std::string deleted = textOf(p.chatAgent().mcpCall("delete_file", object({ { "name", "boom.wav" } })));
         P.eq("tools.deleted", has(deleted, "Deleted the sample boom.wav") && p.editorPort().assets().size() == 1 ? 1 : 0, 1);
+        // Claude Desktop's own adds, renames and deletes are its own: its next result names none as a change.
+        const std::string next = textOf(p.chatAgent().mcpCall("read_file", object({ { "name", "program.fm" } })));
+        std::printf("the result after Claude Desktop's samples: %s\n", next.substr(0, next.find('\n')).c_str());
+        P.eq("tools.own_not_journalled", !has(named, "the plugin's own chat") && !has(deleted, "the plugin's own chat")
+                                             && !has(next, "the plugin's own chat") ? 1 : 0, 1);
         // A line a #pragma sample names that the samples lack.
         run(p, withLibrary(player("hat.wav")));
         const std::string lacking = textOf(p.chatAgent().mcpCall("get_status", juce::var(new juce::DynamicObject())));

@@ -37,7 +37,7 @@ namespace playground
             compiler_.setAssets(assets_);                    // under the lock: two replacements reach it in order
         }
         ++assetsRevision_;
-        if (!words.empty())
+        if (!words.empty() && !(who == Journal::Who::chat && chat_.mcpWorking()))   // Claude Desktop knows its own
             journal_.note(who, words);
     }
 
@@ -57,8 +57,9 @@ namespace playground
             compiler_.setAssets(assets_);
         }
         ++assetsRevision_;
-        journal_.note(who, std::string(replaced ? "replaced" : "added") + " the sample " + asset->name() + " ("
-                               + asset->describe() + ")");
+        if (!(who == Journal::Who::chat && chat_.mcpWorking()))                     // Claude Desktop knows its own
+            journal_.note(who, std::string(replaced ? "replaced" : "added") + " the sample " + asset->name() + " ("
+                                   + asset->describe() + ")");
         return true;
     }
 

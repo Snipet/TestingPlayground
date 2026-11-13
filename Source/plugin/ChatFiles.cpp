@@ -565,12 +565,13 @@ namespace playground
     std::string ChatAgent::keepVersion(const std::string& name, const std::string& text, bool refused)
     {
         const std::string version = versionOf(text);
-        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused };
+        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused, mcpWorking_.load() };
         const auto same = [&](const FileVersion& v) { return v.name == name && v.version == version; };
         if (const auto was = std::find_if(fileVersions_.begin(), fileVersions_.end(), same); refused && was != fileVersions_.end())
         {
             kept.given = was->given;                             // newest again (so kept longest), given as it was
             kept.asked = was->asked;
+            kept.desktop = was->desktop;
         }
         fileVersions_.erase(std::remove_if(fileVersions_.begin(), fileVersions_.end(), same), fileVersions_.end());
         fileVersions_.push_back(std::move(kept));
@@ -1016,14 +1017,15 @@ namespace playground
     }
 
     // The text changed since `version` (the file's lines that changed, against the kept text), refused: the user's edit,
-    // unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after it gave `version`.
+    // unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after it gave `version`:
+    // the caller's own when the same side gave it (the plugin's chat, or Claude Desktop), else the other Claude's.
     // A text Claude saw before `version`, which the user's undo brought back, is the user's; so is one only a refusal
     // showed (this one keeps it, as given as it was: a second refusal says the same).
     std::string ChatAgent::changedSinceText(const std::string& file, const std::string& version, const std::string& now, bool many)
     {
         std::shared_ptr<const std::string> then;
         std::string nowVersion;
-        bool known = false;
+        bool known = false, other = false;                   // given by this side's calls, or by the other Claude's
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             const std::string current = versionOf(now);
@@ -1039,11 +1041,16 @@ namespace playground
                 if (v.name == file && v.version == current)
                     is = &v;
             }
-            known = is != nullptr && is->asked && is->given > thenGiven;
+            const bool claude = is != nullptr && is->asked && is->given > thenGiven;
+            known = claude && is->desktop == mcpWorking_.load();
+            other = claude && !known;
             nowVersion = keepVersion(file, now, true);
         }
+        const std::string whose = mcpWorking_.load() ? "a call of the plugin's own chat" : "a call of Claude Desktop's";
         std::string out = file + " changed since version " + version
-                        + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")
+                        + (known   ? " (now version " + nowVersion + ", which one of your own calls gave)"
+                           : other ? " (now version " + nowVersion + ", which " + whose + " gave)"
+                                   : " (the user's edit, which is kept)")
                         + ": nothing was written" + (many ? " to any file. " : ". ");
         if (!then)
             return out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").";

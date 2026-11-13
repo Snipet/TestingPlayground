@@ -1665,14 +1665,18 @@ place (its `products/<key>.cmake`, and its names in the docs).
   checks, and prints each product's size and its slack (and tools.json as the link writes it, pretty-printed, for
   comparison: until then the bound was 26,000 bytes on that). Each product has its own server, extension and socket
   folder.
-  The server is juce_core only; it finds the instances by their sockets (`<n>.sock`, the lowest number free: its
+  The server is juce_core only; it finds the instances by their sockets (`<n>.sock`, the lowest number free, claimed
+  under the folder's `.claim-lock` (flock, waited for 2 s at most: tested without waiting, cleared and bound to
+  listening in one step, which the server's scan takes too, never waiting, before it clears one; none on Windows) and
+  removed by its own instance alone: its
   number's name, "Effect 2" or "Synth 2", until the user names it, `McpLink::setName`, kept with the session as the
   state's `<MCP desktopName>`: `McpLink::userName`, the user's own, so a link that cannot listen loses none; a rename
   tells the host the session changed, a restore does not) and falls back on the tools.json and guide.md the newest
   left. It is for someone who never sees a tool: its instructions keep tools and ids from the user, each tool has a
   title in words, an instance is matched by its name, its number (and its number's name, which still reach a named
-  one, as does list_instances' own "Bass (Synth 2)", and its number counts among a named one's words), track or project words,
-  and an unclear one makes Claude ask in the user's words; the prompts (Make a sound, Improve the sound, Explain the
+  one, as does list_instances' own "Bass (Synth 2)", and its number counts among a named one's words; a number's name
+  no open instance has matches none), track or project words (case and words by code point), and an unclear one
+  makes Claude ask in the user's words; the prompts (Make a sound, Improve the sound, Explain the
   sound, Fix what I hear) name sounds and tracks, never tools, are text only, carry the plugin's get_status when there
   is a target, and one whose tools the plugin lacks is not listed. **The target** (`mcp/McpTarget.h`): a call that
   names no instance goes to the one the user chose in a plugin (Use with Claude Desktop, `target.json`, whose token
@@ -1689,7 +1693,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Claude Desktop should pick up, or it keeps the old one.
 - **MCP threads.** The server is one loop (`poll()` over stdin and the sockets): a request never waits for an
   instance, its answer is a continuation run when the reply comes; one writer owns stdout; several calls may be in
-  flight. A tool call has a deadline (`kCallMs`, 200 s, under Claude Desktop's 240 s; `<prefix>MCP_DEADLINE_MS` in the
+  flight; a batch (2025-03-26's) is answered as one array once all its answers are in. A tool call has a deadline
+  (`kCallMs`, 200 s, under Claude Desktop's 240 s; `<prefix>MCP_DEADLINE_MS` in the
   probes): past it the client is answered ("still running") and the instance asked to stop it; a client's
   `notifications/cancelled` becomes a `cancel` line too; a late reply is dropped (never two answers to one id), and a
   slow instance is never dropped, only one whose socket closes. The link (`McpLink`) answers info, tools, guide,
@@ -1725,8 +1730,10 @@ place (its `products/<key>.cmake`, and its names in the docs).
   host", "the plugin's own chat": a "you" reads as the Claude reading it), a dial's moves as one line, its net change
   (first -> last, at its first move's place, with who and how many times) up to a change that sets dials with no line
   of each (`Journal::dialsNote`: a run that compiled, a version opened, a preset applied, a fresh start, a state
-  loaded; a move after it is a line after it, never merged across it), the files as diffs (`dsp/TextDiff.h`)
-  against their texts at that token (`mcpMarks_`, the newest 16 tokens', under `liveMutex_`). The session keeps those
+  loaded; a move after it is a line after it, never merged across it; a file's edits too, and at a run that sets
+  none, `Journal::runNote`), the files as diffs (`dsp/TextDiff.h`; MCP's alone: the
+  plugin's chat is told to read_file) against their texts at that token (`mcpMarks_`, the newest 16 tokens', under
+  `liveMutex_`). The session keeps those
   tokens with their files' hashes and lines (`ChatAgent::mcpMarksToKeep`, Live.h's `KeptMark`, the state's `<MCP>`):
   in the plugin opened again (a new journal, which knows no token from before) they are `mcpKept_`, and `since` with
   one of them gives the whole state, then which files changed since it (by hash, with read_file's versions; not how).
@@ -1804,11 +1811,13 @@ place (its `products/<key>.cmake`, and its names in the docs).
     first). `<prefix>SANDBOX_TEST_HANG` (a request it never answers) is the probe's.
   - **Read only but apply.** open reads an instance's files through get_status (files "all" and `peek`, the server's
     own: live, no write, and nothing kept of the look, no token, no mark, `mcpHint`'s cursor where it was, so what the
-    user changed still starts Claude's next result), a file or folder the user named (read only, 256 KB a file, sixteen
-    files; a folder's `isProgramFile` kinds, program.fm first, the folder sync's copies left out as the renderer leaves
+    user changed still starts Claude's next result), a file or folder the user named (read only, regular files
+    alone, 256 KB a file, sixteen files; a folder's `isProgramFile` kinds, program.fm first, the folder sync's copies
+    left out as the renderer leaves
     them: Sources.h's `syncCopies`, `programFirst`); apply alone writes, through the link's write_file and run_program, into the program's own .gui file (the
     first .gui, else panel.gui), and only when the user asks (the guide says so), its answer starting with write_file's
-    line of what the user changed. The plugin's own chat has no sandbox. Its notes are in the guide's interface part
+    line of what the user changed, within one deadline from the request (`callMs_`), and nothing once it is cancelled.
+    The plugin's own chat has no sandbox. Its notes are in the guide's interface part
     (`ChatAgent::mcpGuide`'s `kSandboxNotes`); a change to the tool changes them and `FP_MCP_VERSION`.
 - **capture** (`plugin/Capture.h`, `plugin/ChatCapture.cpp`, `ChatHost::chatCapture`): the recorder of what the host
   plays. `Processor::hostBlock` and `play` call its audio side (begin, the input before each Engine call, the output
@@ -1925,7 +1934,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   typed meanwhile is never overwritten; the edits run once more on the new text), and with `expected` (a version) only
   while the file is still that version, else nothing, saying whose change it was and showing the lines changed since
   (the version is compared, not kept, before that lookup, so the oldest kept is still found): Claude's own only when a
-  read or write of Claude's gave the text now after it gave that version (`FileVersion::given`), so the user's undo
+  read or write of Claude's gave the text now after it gave that version (`FileVersion::given`; the other Claude's,
+  the chat's or Claude Desktop's, named as theirs: `FileVersion::desktop`), so the user's undo
   back to a text Claude saw before is the user's, and what a refusal alone showed counts as no call that gave it. Its `files` does that for
   several files at once (a property, not a tool: the tool budget), in place of `name`: a list of `{name, edits or
   old_text and new_text, expected}` (one sent as a JSON string is read as the list), or a unified diff (its

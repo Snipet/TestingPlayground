@@ -166,11 +166,40 @@ namespace
         return {};
     }
 
-    std::string lower(std::string s)
+    // A code point in lower case: ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic, by table (towlower, which
+    // juce_core's toLowerCase calls, folds nothing past ASCII in the C locale the server runs in).
+    juce::juce_wchar foldChar(juce::juce_wchar c)
     {
-        for (char& c : s)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return s;
+        if ((c >= 'A' && c <= 'Z') || (c >= 0xC0 && c <= 0xDE && c != 0xD7) || (c >= 0x391 && c <= 0x3AB && c != 0x3A2)
+            || (c >= 0x410 && c <= 0x42F))
+            return c + 0x20;
+        if (c >= 0x400 && c <= 0x40F)
+            return c + 0x50;
+        if ((c >= 0x100 && c <= 0x137 && c != 0x130) || (c >= 0x14A && c <= 0x177) || (c >= 0x460 && c <= 0x481)
+            || (c >= 0x48A && c <= 0x4BF) || (c >= 0x4D0 && c <= 0x52F))
+            return (c & 1) == 0 ? c + 1 : c;            // pairs: upper even, lower odd
+        if ((c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E) || (c >= 0x4C1 && c <= 0x4CE))
+            return (c & 1) == 1 ? c + 1 : c;            // pairs: upper odd, lower even
+        return c;
+    }
+
+    // Whether a code point is part of a word: ASCII's letters and digits, and every other script's characters but
+    // its spaces and punctuation (Latin-1's signs, the general and CJK punctuation, the full-width ASCII signs).
+    bool wordChar(juce::juce_wchar c)
+    {
+        if (c < 0x80)
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        return !(c <= 0xBF || c == 0xD7 || c == 0xF7 || (c >= 0x2000 && c <= 0x206F) || (c >= 0x3000 && c <= 0x303F)
+                 || (c >= 0xFF00 && c <= 0xFF0F) || c == 0xFEFF);
+    }
+
+    // Lower case by code point (a track named in another script is matched case aside).
+    std::string lower(const std::string& s)
+    {
+        juce::String out;
+        for (const juce::juce_wchar c : juce::String::fromUTF8(s.c_str()))
+            out += foldChar(c);
+        return out.toStdString();
     }
 
     // A JSON-RPC id as a key (a number and a string are different ids).
@@ -468,14 +497,84 @@ namespace
         {
             if (open_.erase(key(id)) == 0)
                 return;
-            send(object({ { "jsonrpc", "2.0" }, { "id", id }, { "result", result } }));
+            answer(id, object({ { "jsonrpc", "2.0" }, { "id", id }, { "result", result } }));
         }
 
         void fail(const juce::var& id, int code, const std::string& message)
         {
             if (open_.erase(key(id)) == 0)
                 return;
-            send(object({ { "jsonrpc", "2.0" }, { "id", id }, { "error", object({ { "code", code }, { "message", str(message) } }) } }));
+            answer(id, object({ { "jsonrpc", "2.0" }, { "id", id }, { "error", object({ { "code", code }, { "message", str(message) } }) } }));
+        }
+
+        // ---- a batch (JSON-RPC's array of requests, which MCP 2025-03-26 has clients send): its requests handled as
+        // any, their answers (continuations, in any order) kept and written as one array once the last is in; a request
+        // of it cancelled has none. ------------------------------------------------------------------------------------
+        struct Batch
+        {
+            juce::Array<juce::var> answers;
+            std::size_t waiting = 0;                     // its requests not yet answered (and 1 while it is read)
+        };
+        std::map<uint64_t, Batch> batches_;
+        std::map<std::string, uint64_t> batched_;        // an open request's key -> its batch
+        uint64_t batchSerial_ = 0;
+
+        static juce::var invalidRequest()
+        {
+            return object({ { "jsonrpc", "2.0" }, { "id", juce::var() }, { "error", object({ { "code", -32600 }, { "message", "Invalid Request" } }) } });
+        }
+
+        // Request `id`'s answer `msg`: written, or into its batch.
+        void answer(const juce::var& id, const juce::var& msg)
+        {
+            const auto b = batched_.find(key(id));
+            if (b == batched_.end())
+            {
+                send(msg);
+                return;
+            }
+            const uint64_t n = b->second;
+            batched_.erase(b);
+            batches_[n].answers.add(msg);
+            settleBatch(n);
+        }
+
+        // One fewer of batch `n`'s answers to wait for: written once none is left (nothing when it has none).
+        void settleBatch(uint64_t n)
+        {
+            const auto it = batches_.find(n);
+            if (it == batches_.end() || --it->second.waiting > 0)
+                return;
+            if (!it->second.answers.isEmpty())
+                send(juce::var(it->second.answers));
+            batches_.erase(it);
+        }
+
+        void batch(const juce::Array<juce::var>& items)
+        {
+            if (items.isEmpty())
+            {
+                send(invalidRequest());
+                return;
+            }
+            const uint64_t n = ++batchSerial_;
+            batches_[n].waiting = 1;
+            for (const juce::var& m : items)
+            {
+                if (!m.isObject())
+                {
+                    batches_[n].answers.add(invalidRequest());
+                    continue;
+                }
+                if (const juce::DynamicObject* o = m.getDynamicObject(); o->hasProperty("id"))
+                    if (const std::string k = key(m["id"]); open_.count(k) == 0 && batched_.count(k) == 0)
+                    {
+                        batched_[k] = n;
+                        ++batches_[n].waiting;
+                    }
+                handle(m);
+            }
+            settleBatch(n);
         }
 
         bool stillOpen(const juce::var& id) const { return open_.count(key(id)) != 0; }
@@ -487,10 +586,20 @@ namespace
             if (line.empty())
                 return;
             const juce::var msg = juce::JSON::parse(str(line));
+            if (const juce::Array<juce::var>* items = msg.getArray())
+            {
+                batch(*items);
+                return;
+            }
             if (!msg.isObject())
             {
-                send(object({ { "jsonrpc", "2.0" }, { "id", juce::var() },
-                              { "error", object({ { "code", -32700 }, { "message", "Parse error" } }) } }));
+                // JSON that is no request (a number, a string) is an invalid request; what is no JSON, a parse error.
+                const juce::String trimmed = str(line).trim();
+                if (!juce::JSON::fromString(trimmed).isVoid() || trimmed == "null")
+                    send(invalidRequest());
+                else
+                    send(object({ { "jsonrpc", "2.0" }, { "id", juce::var() },
+                                  { "error", object({ { "code", -32700 }, { "message", "Parse error" } }) } }));
                 return;
             }
             handle(msg);
@@ -543,6 +652,12 @@ namespace
         {
             if (open_.erase(key(id)) == 0)
                 return;
+            if (const auto b = batched_.find(key(id)); b != batched_.end())
+            {
+                const uint64_t n = b->second;            // a batch's request: the others' answers go without it
+                batched_.erase(b);
+                settleBatch(n);
+            }
             std::cerr << "cancelled: request " << key(id) << (reason.empty() ? std::string() : " (" + reason + ")") << std::endl;
             for (auto it = asks_.begin(); it != asks_.end();)
                 if (it->client == key(id))
@@ -635,11 +750,10 @@ namespace
                 const int fd = pg::mcp::connectTo(path);
                 if (fd < 0)
                 {
-                    if (pg::mcp::refused())
-                    {
-                        pg::mcp::removePath(path);       // nothing listens: its instance is gone (a crash, a host killed)
+                    // Nothing listens: its instance is gone (a crash, a host killed), unless it is one binding its
+                    // socket now (asked again under the folder's claim lock, never waited for).
+                    if (pg::mcp::refused() && pg::mcp::removeIfStale(dir, path))
                         pg::mcp::target::removeCard(dir, id);
-                    }
                     continue;
                 }
                 if (!pg::mcp::nonBlocking(fd))
@@ -906,21 +1020,45 @@ namespace
                                                        "instance", "with", "of", "in", "that", "this", "called", "named", "plugin",
                                                        "playground", "use", "please", "it", "its", "for", "and" };
             std::vector<std::string> out;
-            std::string w;
+            juce::String w;
             const auto flush = [&] {
-                if (!w.empty() && std::none_of(std::begin(kFiller), std::end(kFiller), [&](const char* f) { return w == f; }))
-                    out.push_back(w);
+                const std::string word = w.toStdString();
+                if (!word.empty() && std::none_of(std::begin(kFiller), std::end(kFiller), [&](const char* f) { return word == f; }))
+                    out.push_back(word);
                 w.clear();
             };
-            for (const char ch : text)
+            // By code point: a letter or a digit of any script is a word's (a track named "Бас" is the word "бас").
+            for (const juce::juce_wchar ch : juce::String::fromUTF8(text.c_str()))
             {
-                if (std::isalnum(static_cast<unsigned char>(ch)) != 0)
-                    w += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+                if (wordChar(ch))
+                    w += foldChar(ch);
                 else
                     flush();
             }
             flush();
             return out;
+        }
+
+        // The number `w` (lower case, trimmed) names in a number's form: digits alone, "<kind> N", or ending "(<kind> N)"
+        // as list_instances writes a named one; "" when it is no such form.
+        static std::string numberNamed(const std::string& w)
+        {
+            const auto digits = [](const std::string& t) {
+                return !t.empty() && t.size() <= 6 && std::all_of(t.begin(), t.end(), [](char c) { return c >= '0' && c <= '9'; });
+            };
+            if (digits(w))
+                return std::to_string(std::stoi(w));
+            std::string inner = w;
+            if (const std::size_t open = w.rfind('('); open != std::string::npos && !w.empty() && w.back() == ')')
+                inner = w.substr(open + 1, w.size() - open - 2);
+            const std::string kind = lower(kThing) + " ";
+            if (inner.rfind(kind, 0) == 0)
+            {
+                const std::string n = juce::String(inner.substr(kind.size())).trim().toStdString();
+                if (digits(n))
+                    return std::to_string(std::stoi(n));
+            }
+            return {};
         }
 
         // The instances `wanted` names: its id, its name or its number's name ("2", "Bass", "Synth 2"), both as
@@ -938,6 +1076,10 @@ namespace
                     exact.push_back(&s);
             if (!exact.empty())
                 return exact;
+            // A number's name ("3", "Synth 3", "Bass (Synth 3)") no open instance has names none: never another one
+            // whose track or project holds that digit.
+            if (const std::string n = numberNamed(w); !n.empty() && std::none_of(all.begin(), all.end(), [&](const Seen& s) { return s.id == n; }))
+                return {};
             const std::vector<std::string> asked = words(wanted);
             std::vector<const Seen*> best;
             int top = 0;
@@ -1131,6 +1273,8 @@ namespace
             if (!wanted.empty())
             {
                 gather([this, id, wanted, go](std::vector<Seen> all) {
+                    if (!stillOpen(id))
+                        return;                          // cancelled while the instances were asked (apply writes nothing)
                     const std::string thing2 = kThing;
                     const std::vector<const Seen*> found = matching(all, wanted);
                     if (found.size() == 1)
@@ -1664,9 +1808,10 @@ namespace
         // and unseen by the plugin's record of what MCP was last told, so that the user's changes still reach Claude's
         // next result), to `then` (false, and why, when it could not).
         void instanceFiles(const std::string& instance, const std::string& client,
-                           std::function<void(bool, std::vector<std::pair<std::string, std::string>>, const std::string&)> then)
+                           std::function<void(bool, std::vector<std::pair<std::string, std::string>>, const std::string&)> then,
+                           int ms = 20000)
         {
-            ask(instance, "call", object({ { "name", "get_status" }, { "arguments", object({ { "files", "all" }, { "peek", true } }) } }), 20000,
+            ask(instance, "call", object({ { "name", "get_status" }, { "arguments", object({ { "files", "all" }, { "peek", true } }) } }), ms,
                 false, client, [then](Got g, const juce::var& r, const std::string& why) {
                     if (g != Got::result || static_cast<bool>(r["isError"]))
                     {
@@ -1818,7 +1963,9 @@ namespace
                         return;
                     }
                 }
-                withInstance(id, wanted, [this, id, st](const std::string& instance) { applyTo(id, instance, st); });
+                // One deadline from the request (callMs_, under Claude Desktop's own), each ask given what is left of it.
+                const Clock::time_point until = Clock::now() + std::chrono::milliseconds(callMs_);
+                withInstance(id, wanted, [this, id, st, until](const std::string& instance) { applyTo(id, instance, st, until); });
                 return;
             }
             if (action == "close")
@@ -1858,15 +2005,36 @@ namespace
             return t.find("since the last MCP call here") != std::string::npos ? t : std::string();
         }
 
+        // A tool result's text blocks but its hint (hintOf), joined: what the tool itself said.
+        static std::string textAfterHint(const juce::var& result)
+        {
+            std::string out;
+            const bool hinted = !hintOf(result).empty();
+            if (const juce::Array<juce::var>* c = result["content"].getArray())
+                for (int k = hinted ? 1 : 0; k < c->size(); ++k)
+                    if ((*c)[k]["type"].toString() == "text")
+                        out += (out.empty() ? "" : "\n") + (*c)[k]["text"].toString().toStdString();
+            return out;
+        }
+
         // apply: sandbox `st`'s .gui written into instance `instance`'s program (into its own .gui file when it has one,
         // else as panel.gui), and run there, so that it shows; what changed said, and what the user changed since the
         // last MCP call (write_file's hint), as any other result says it.
-        void applyTo(const juce::var& id, const std::string& instance, const juce::var& st)
+        void applyTo(const juce::var& id, const std::string& instance, const juce::var& st, Clock::time_point until)
         {
+            if (!stillOpen(id))
+                return;                                  // cancelled while the instance was found: nothing written
             const std::string text = guiOf(st).second;
             const int number = numberOf(st);
-            instanceFiles(instance, key(id), [this, id, instance, text, number](bool ok, std::vector<std::pair<std::string, std::string>> files,
-                                                                               const std::string& why) {
+            // What is left of the request's deadline, for each ask (a millisecond at least: past it, an ask expires at once).
+            const auto left = [until] {
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(until - Clock::now()).count();
+                return static_cast<int>(std::clamp<long long>(ms, 1, 1000000));
+            };
+            const std::string late = "Still running after " + std::to_string(callMs_ / 1000) + " s, longer than a call may take here, so the "
+                                   + std::string(kThing) + " was asked to stop it";
+            instanceFiles(instance, key(id), [this, id, instance, text, number, left, late](bool ok, std::vector<std::pair<std::string, std::string>> files,
+                                                                                          const std::string& why) {
                 if (!ok)
                 {
                     reply(id, textContent("Could not read the " + std::string(kThing) + "'s program, so nothing was applied: " + why, true));
@@ -1884,18 +2052,26 @@ namespace
                     }
                 const std::string thing = kThing;
                 ask(instance, "call", object({ { "name", "write_file" }, { "arguments", object({ { "name", str(target) }, { "content", str(text) } }) } }),
-                    callMs_, true, key(id),
-                    [this, id, instance, target, text, before, had, number, thing](Got g, const juce::var& w, const std::string& why2) {
+                    left(), true, key(id),
+                    [this, id, instance, target, text, before, had, number, thing, left, late](Got g, const juce::var& w, const std::string& why2) {
+                        if (g == Got::late)
+                        {
+                            reply(id, textContent(late + ": " + target + " may or may not have been written. Check the plugin's "
+                                                  "state before going on.", true));
+                            return;
+                        }
                         if (g != Got::result || static_cast<bool>(w["isError"]))
                         {
+                            // Its refusal, not the line of what changed since the last MCP call before it.
                             reply(id, textContent("The " + thing + " did not take it, so nothing was applied: "
-                                                  + (g == Got::result ? firstText(w) : why2), true));
+                                                  + (g == Got::result ? textAfterHint(w) : why2), true));
                             return;
                         }
                         const std::string hint = hintOf(w);
-                        ask(instance, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }), callMs_, true,
-                            key(id), [this, id, instance, target, text, before, had, number, thing, hint](Got g3, const juce::var& run, const std::string& why3) {
+                        ask(instance, "call", object({ { "name", "run_program" }, { "arguments", juce::var(new juce::DynamicObject()) } }), left(), true,
+                            key(id), [this, id, instance, target, text, before, had, number, thing, hint, late](Got g3, const juce::var& run, const std::string& why3) {
                                 const auto [added, removed] = lineChanges(before, text);
+                                const bool ran = g3 == Got::result && !static_cast<bool>(run["isError"]);
                                 std::string said = (hint.empty() ? std::string() : hint + "\n") + "Applied sandbox #" + std::to_string(number)
                                                  + " to " + instanceName(instance) + ": wrote " + target + " into its program ("
                                                  + std::to_string(lineCount(text)) + " lines; "
@@ -1903,8 +2079,13 @@ namespace
                                                          : before == text ? std::string("the same as it was")
                                                                           : "it had " + std::to_string(lineCount(before)) + ": +" + std::to_string(added)
                                                                                 + " -" + std::to_string(removed) + " lines")
-                                                 + ") and ran it, so the user sees it in the plugin's PANEL view. ";
-                                if (g3 != Got::result)
+                                                 + (ran                 ? ") and ran it, so the user sees it in the plugin's PANEL view. "
+                                                    : g3 == Got::result ? ") and ran it, but the run failed, so the PANEL view does not "
+                                                                          "show it yet. "
+                                                                        : ") and asked it to run it. ");
+                                if (g3 == Got::late)
+                                    said += late + ".";
+                                else if (g3 != Got::result)
                                     said += "The run did not answer: " + why3 + ".";
                                 else
                                 {
@@ -1915,10 +2096,10 @@ namespace
                                                 runText += b["text"].toString().toStdString() + "\n";
                                     said += "The run:\n" + runText;
                                 }
-                                reply(id, textContent(said, g3 != Got::result || static_cast<bool>(run["isError"])));
+                                reply(id, textContent(said, !ran));
                             });
                     });
-            });
+            }, left());
         }
 
         // ---- the prompts: requests the user picks in Claude Desktop ------------------------------------------------------

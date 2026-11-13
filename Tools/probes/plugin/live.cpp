@@ -43,11 +43,14 @@
 //   NEWCHAT New chat while a call of Claude Desktop's runs: the chat stays busy until it ends
 //   STOPPED the journal's words for a run whose program stopped as it played (runWords): what plays now, as get_status
 //           says it (nothing; the program before again; the program before on)
+//   JOURNAL a program that stopped as it played is a change, never the output guard's alert (which the guard's is);
+//           an edit after a run is a line after the run's, never merged into the edit before it
 #include "Probe.h"
 
 #include "Audio.h"
 
 #include "mcp/McpProtocol.h"
+#include "plugin/Journal.h"
 #include "plugin/McpLink.h"
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
@@ -817,6 +820,33 @@ PROBE(plugin, live)
         P.eq("stopped.plays_again", again == said + "the program before plays again" ? 1 : 0, 1);
         P.eq("stopped.plays_on", on == said + "the program before plays on" ? 1 : 0, 1);
         std::printf("stopped: %s | %s | %s\n", nothing.c_str(), again.c_str(), on.c_str());
+    }
+
+    // ---- JOURNAL ---------------------------------------------------------------------------------------------------
+    {
+        pg::Journal j;
+        const std::string t0 = j.since("", true).token;
+        j.note(pg::Journal::Who::plugin, "the program stopped (process() ran past its budget); the program before plays again");
+        const pg::Changes stop = j.since(t0, true);
+        P.eq("journal.stop_a_change", stop.alerts == 0 && stop.changes == 1 ? 1 : 0, 1);
+        j.alert(1u);
+        const pg::Changes guard = j.since(stop.token, true);
+        P.eq("journal.guard_an_alert", guard.alerts == 1 && guard.changes == 0 ? 1 : 0, 1);
+        j.file(pg::Journal::Who::user, "program.fm", "edited");
+        j.dialsNote(pg::Journal::Who::user, "ran it: it compiled, 1 dial");
+        j.file(pg::Journal::Who::user, "program.fm", "edited");
+        const pg::Changes ran = j.since(guard.token, true);
+        for (const std::string& l : ran.lines)
+            std::printf("journal: %s\n", l.c_str());
+        P.eq("journal.edit_after_run_apart", ran.lines.size() == 3 && has(ran.lines[0], "edited program.fm") && has(ran.lines[1], "ran it")
+                                                 && has(ran.lines[2], "edited program.fm") ? 1 : 0, 1);
+        j.file(pg::Journal::Who::user, "panel.gui", "edited");
+        j.runNote(pg::Journal::Who::user, "ran it: applied the panel as the program plays");
+        j.file(pg::Journal::Who::user, "panel.gui", "edited");
+        const pg::Changes panel = j.since(ran.token, true);
+        P.eq("journal.edit_after_panel_edit_apart", panel.lines.size() == 3 && has(panel.lines[0], "edited panel.gui")
+                                                        && has(panel.lines[1], "applied the panel")
+                                                        && has(panel.lines[2], "edited panel.gui") ? 1 : 0, 1);
     }
 
     owned.reset();

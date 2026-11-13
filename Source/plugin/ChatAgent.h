@@ -736,6 +736,8 @@ namespace playground
             std::shared_ptr<const std::string> text;
             uint64_t given = 0;                                     // when it was given last (versionsGiven_ then)
             bool asked = true;                                      // given by a read or a write, not a refusal alone
+            bool desktop = false;                                   // given to Claude Desktop (an MCP call), else to the
+                                                                    // plugin's own chat
         };
         static constexpr std::size_t kFileVersions = 16;
         std::deque<FileVersion> fileVersions_;                      // the newest versions read or written (keepVersion)
@@ -834,7 +836,8 @@ namespace playground
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
         uint64_t mcpRunning_ = 0;                                   // the MCP call running (its number; mutex held)
-        std::atomic<uint64_t> mcpCancelled_{ 0 };                   // the MCP call last cancelled
+        bool mcpRunningCancelled_ = false;                          // that call was cancelled (mutex held): its own
+                                                                    // cancel, never another call's after it
         std::thread worker_;
         // Pictures to read: jobs run in order on one thread, started on first use, so the message thread never waits
         // for them.

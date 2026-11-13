@@ -76,6 +76,7 @@ namespace playground
             path_.clear();
             return;
         }
+        pathId_ = mcp::pathIdentity(path_);
         id_ = std::to_string(number);
         dir_ = dir;
         token_ = newToken();
@@ -124,8 +125,12 @@ namespace playground
             worker_.join();
         if (listen_ >= 0)
         {
-            mcp::closeFd(listen_);
-            mcp::removePath(path_);
+            {
+                // Under the folder's claim lock: no claim sees the socket refuse and binds its own before this looks.
+                const mcp::ClaimLock lock(dir_, true);
+                mcp::closeFd(listen_);
+                mcp::removeOwn(path_, pathId_);          // never a socket another instance bound in its place
+            }
             mcp::target::removeCard(dir_, id_, token_);
             mcp::target::clearTarget(dir_, token_);    // the user's choice goes with it
         }

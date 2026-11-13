@@ -53,6 +53,27 @@ Claude Desktop extension: **0.20.0** (was 0.19.0).
 - set_checks describes a check's own dials_from and snapshot, as its listing gives them back, and no longer asks for
   a label (a check without one is named by its metric).
 - write_file's sample path says it replaces a sample of the same name.
+- Claude Desktop cancelling a tuning (tune_dials) leaves the dials as they were even when another of its calls is
+  cancelled right after (closing a conversation cancels them all).
+- Samples Claude Desktop adds, renames or deletes itself no longer head its own next result as a change of the plugin's
+  own chat.
+- A plugin opened while another instance's host is stopped (in a debugger, or crashing) no longer hangs; two instances
+  started at the same moment no longer take one number for Claude Desktop, and closing one never removes the other's.
+- A program that stopped as it played is told to Claude Desktop as a change, no longer as "the output guard acted".
+- get_status's changes since a token show typing after a run as a line after the run's, not folded into the edit
+  before it; the plugin's own chat is told that its diffs are Claude Desktop's alone (read_file shows a file).
+- When the plugin's chat and Claude Desktop both work on one file, an edit refused because the file changed says which
+  Claude's call changed it, not "one of your own calls".
+- Claude Desktop names an instance by its number only when that instance is open ("Synth 3" with Synth 3 closed no
+  longer reaches a track named "Inst 3"), and a track or project named in another script (Cyrillic, Japanese) is
+  found in any case and by its words.
+- The panel sandbox's apply, cancelled while it looks for the instance, writes nothing; when the plugin refuses the
+  panel, the answer quotes the refusal; when the program does not run, it says so; and the whole apply answers within
+  one call's time.
+- The panel sandbox refuses a file that is no regular file (a pipe, a device) in a folder it opens, instead of waiting
+  on it until it gives up, and never reads more than its limit.
+- The MCP server answers a batch of requests (a client of protocol 2025-03-26 may send them) and answers JSON that is
+  no request as an invalid request.
 
 **Changed**
 - Claude Fable 5.2 is in the model list before your key's list arrives (in place of Fable 5.1), and Fable 5.2 and

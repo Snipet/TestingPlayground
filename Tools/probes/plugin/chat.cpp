@@ -107,7 +107,8 @@
 //            refuses a write after the user's edit, keeps it and shows its line (the result's first line naming the
 //            edit), and with the version it gives the write goes; given the oldest of the versions kept, it still shows
 //            the lines changed; edit_circuit's result gives its version, and an `expected` from before it is refused as
-//            Claude's own change; edit_file's files (MULTI): one bad edit in the second file changes neither; files
+//            Claude's own change, and a version Claude Desktop's write gave as its, not the chat's; edit_file's files
+//            (MULTI): one bad edit in the second file changes neither; files
 //            beside name is refused; two files in one write, the result a line each and the tool's row naming both,
 //            merged as one undo step across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other
 //            redoes both; a tab typed in since keeps its typing and its edit while the other's Cmd-Z undoes its own);
@@ -2478,6 +2479,48 @@ PROBE(plugin, chat)
                                                      && has(toolText(stale), "tone.cir changed since version " + before + " (now version " + drawn
                                                                                  + ", which one of your own calls gave): nothing was written.")
                                                      && !has(toolText(stale), "the user's edit") && has(fileText("tone.cir"), "22n") ? 1 : 0, 1);
+        }
+        // Two Claudes: the plugin's chat reads a version, Claude Desktop writes the next; the chat's stale `expected` is
+        // refused naming Claude Desktop's call, never "one of your own".
+        {
+            const auto chatTool = [&](const char* id, const char* tool, const juce::var& in) {
+                const int before = script->postCount();
+                script->add(fake::Response::ok(fake::Sse().start().tool(id, tool, in).end("tool_use")));
+                script->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+                agent.send("go on");
+                agent.waitIdle();
+                processor.poll();
+                std::string out;
+                if (script->postCount() >= before + 2)
+                {
+                    const juce::Array<juce::var> m = messagesOf(script->body(before + 1));
+                    const juce::var last = m.isEmpty() ? juce::var() : m[m.size() - 1];
+                    for (const juce::var& b : arr(last.getProperty("content", {})))
+                        if (str(b, "type") == "tool_result")
+                        {
+                            const juce::var c = b.getProperty("content", {});
+                            if (c.isString())
+                                out += c.toString().toStdString();
+                            for (const juce::var& t : arr(c))
+                                out += str(t, "text");
+                        }
+                }
+                return out;
+            };
+            const std::string chatRead = chatTool("toolu_v1", "read_file", input({ { "name", "notes.fm" } }));
+            const std::string vChat = versionIn(chatRead);
+            const pg::ChatAgent::McpResult desk = call("write_file", input({ { "name", "notes.fm" },
+                                                                             { "content", juce::String(fileText("notes.fm") + "// Claude Desktop's line\n") } }));
+            const std::string vDesk = versionIn(toolText(desk));
+            juce::Array<juce::var> e1;
+            e1.add(input({ { "old_text", "// Claude Desktop's line" }, { "new_text", "// the chat's line" } }));
+            const std::string stale = chatTool("toolu_v2", "edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(e1) },
+                                                                                 { "expected", juce::String(vChat) } }));
+            std::printf("the chat's edit_file after Claude Desktop's write:\n%s\n", stale.c_str());
+            P.eq("files.expected_other_claude", !vChat.empty() && !vDesk.empty() && vChat != vDesk
+                                                    && has(stale, "notes.fm changed since version " + vChat + " (now version " + vDesk
+                                                                      + ", which a call of Claude Desktop's gave): nothing was written.")
+                                                    && has(fileText("notes.fm"), "// Claude Desktop's line") ? 1 : 0, 1);
         }
         // MULTI: edit_file's files, several files' edits in one write (all or none, each file's version guard), which the
         // editor merges as one undo step across their tabs; and as a unified diff.
