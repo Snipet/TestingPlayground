@@ -1,5 +1,5 @@
-// Source/sandbox/View.cpp: see View.h.
-#include "sandbox/View.h"
+// Source/editor/PanelView.cpp: see PanelView.h.
+#include "editor/PanelView.h"
 
 #include "sandbox/SandboxProtocol.h"
 

@@ -18,7 +18,10 @@ namespace playground::ui
 {
     namespace
     {
-        constexpr float kBoxW = 860.0f, kBoxH = 640.0f;
+        constexpr float kBoxW = 860.0f, kBoxH = 720.0f;
+        constexpr float kBoxLeast = 640.0f;              // its height before the preview (package 04), where kBoxH
+                                                         // would cover the top bar
+        constexpr float kBelowBar = 54.0f;               // the top bar's bottom and a gap: a taller box starts here
         constexpr float kPad = 24.0f;
         constexpr float kListTop = 100.0f;               // below the title, the folder's line and the lists' captions
         constexpr float kBelowLists = 132.0f;            // the field, its line, the buttons
@@ -30,10 +33,13 @@ namespace playground::ui
         constexpr float kDragAfter = 5.0f;               // px a press moves before it is a drag
         constexpr float kTopH = 32.0f;                   // the search field, the tag's and the order's dropdowns
         constexpr float kTagW = 140.0f, kSortW = 150.0f, kSearchX = 150.0f;
+        // The preview pane (package 04): the PANEL view's shape (853 x 612), at most kPaneMaxH tall, at least kPaneMinH,
+        // else none.
+        constexpr float kPaneAspect = 853.0f / 612.0f, kPaneMaxH = 240.0f, kPaneMinH = 120.0f;
         constexpr uint32_t kBoxId = ProjectBrowser::kA11yBase, kListId = kBoxId + 1,   // + the list
                            kFieldId = kBoxId + 4, kSaveId = kBoxId + 5, kOpenId = kBoxId + 6, kRemoveId = kBoxId + 7,
                            kCloseId = kBoxId + 8, kImportId = kBoxId + 9, kExportId = kBoxId + 10, kAbId = kBoxId + 11,
-                           kCompareId = kBoxId + 16,
+                           kCompareId = kBoxId + 16, kPreviewId = kBoxId + 17,
                            kSearchId = kBoxId + 12, kClearId = kBoxId + 13, kTagId = kBoxId + 14, kSortId = kBoxId + 15,
                            kRowId = kBoxId + 0x100,                                     // + the list * 0x1000 + the row
                            kGroupId = kBoxId + 0x4000,                                  // + the group
@@ -698,6 +704,9 @@ namespace playground::ui
         barList_ = -1;
         state_ = port_.project();
         title_ = name;
+        preview_ = {};
+        previewWant_ = { "", 0 };
+        previewMoved_ = true;
         chosenName_.clear();
         chosenGroup_.clear();
         selected_.clear();
@@ -776,7 +785,51 @@ namespace playground::ui
         ask_ = Ask::none;
         dragging_ = false;
         pressRow_ = -1;
+        preview_ = {};                                   // the Panel lets its picture go (syncPreview)
         ++revision_;
+    }
+
+    std::pair<std::string, int> ProjectBrowser::previewWanted() const
+    {
+        if (chosenName_.empty())
+            return { "", 0 };
+        const int v = chosen_[idx(L::versions)];
+        return { chosenName_, v >= 0 && v < static_cast<int>(versions_.size()) ? versions_[static_cast<std::size_t>(v)].number : 0 };
+    }
+
+    bool ProjectBrowser::pollPreview(double nowSeconds, int theme)
+    {
+        if (!open_)
+            return false;
+        previewNow_ = nowSeconds;
+        const std::pair<std::string, int> want = previewWanted();
+        if (want != previewWant_)
+        {
+            // The same version as shown, named by its number once the versions are read (its newest asked as 0
+            // before): no new rest.
+            const bool same = want.first == previewWant_.first && want.second != 0 && want.second == preview_.number;
+            previewWant_ = want;
+            if (!same)
+                previewMoved_ = true;
+        }
+        if (previewMoved_)
+        {
+            previewSince_ = nowSeconds;
+            previewMoved_ = false;
+        }
+        PreviewState next;
+        if (!want.first.empty())
+        {
+            if (nowSeconds - previewSince_ < kPreviewRest)
+                next.status = PreviewState::Status::reading;   // the choice not at rest yet: nothing asked
+            else
+                next = port_.previewPolled(want.first, want.second, theme);
+        }
+        if (next == preview_)
+            return false;
+        preview_ = std::move(next);
+        ++revision_;
+        return true;
     }
 
     bool ProjectBrowser::takeStartedSave() { return std::exchange(startedSave_, false); }
@@ -981,8 +1034,12 @@ namespace playground::ui
     ProjectBrowser::Places ProjectBrowser::places(float width, float height) const
     {
         Places at;
-        const float w = std::min(kBoxW, width - 32.0f), h = std::min(kBoxH, height - 32.0f);
-        at.box = { std::round((width - w) * 0.5f), std::round((height - h) * 0.45f), w, h };
+        // As tall as kBoxH, the preview's room, where the window has it below the top bar (its project pill stays in
+        // view, as with the card at kBoxLeast); else as it always was.
+        const float w = std::min(kBoxW, width - 32.0f), least = std::min(kBoxLeast, height - 32.0f);
+        const float h = std::max(least, std::min(kBoxH, height - kBelowBar - 16.0f));
+        const float y = h > least ? std::max(kBelowBar, std::round((height - h) * 0.45f)) : std::round((height - h) * 0.45f);
+        at.box = { std::round((width - w) * 0.5f), y, w, h };
         const float top = at.box.y + kListTop;
         const float listsH = std::max(3.0f * at.rowH + kCaptionH, h - kListTop - kBelowLists);
         const auto rowsIn = [&](float room) { return std::max(1, static_cast<int>(std::floor((room - 8.0f) / at.rowH))); };
@@ -990,9 +1047,19 @@ namespace playground::ui
         const float rightX = at.box.x + kPad + leftW + kGap, rightW = at.box.right() - kPad - rightX;
         at.rows[idx(L::projects)] = rowsIn(listsH);
         at.projects = { at.box.x + kPad, top, leftW, static_cast<float>(at.rows[idx(L::projects)]) * at.rowH + 8.0f };
-        const float versionsRoom = std::round((listsH - kCaptionH) * 0.56f);
+        // The preview over the versions, when the right side keeps four rows of each list and the captions with it.
+        const float keep = 2.0f * (4.0f * at.rowH + 8.0f) + kCaptionH;
+        const float paneRoom = listsH - kCaptionH - keep;
+        float rightTop = top;
+        if (paneRoom >= kPaneMinH)
+        {
+            const float paneH = std::round(std::min({ rightW / kPaneAspect, kPaneMaxH, paneRoom }));
+            at.preview = { rightX, top, rightW, paneH };
+            rightTop = at.preview.bottom() + kCaptionH;
+        }
+        const float versionsRoom = std::round((top + listsH - rightTop - kCaptionH) * 0.56f);
         at.rows[idx(L::versions)] = rowsIn(versionsRoom);
-        at.versions = { rightX, top, rightW, static_cast<float>(at.rows[idx(L::versions)]) * at.rowH + 8.0f };
+        at.versions = { rightX, rightTop, rightW, static_cast<float>(at.rows[idx(L::versions)]) * at.rowH + 8.0f };
         const float presetsTop = at.versions.bottom() + kCaptionH;
         at.rows[idx(L::presets)] = rowsIn(top + listsH - presetsTop);
         at.presets = { rightX, presetsTop, rightW, static_cast<float>(at.rows[idx(L::presets)]) * at.rowH + 8.0f };
@@ -1957,6 +2024,39 @@ namespace playground::ui
         caption(at.projects, L::projects, selected_.size() > 1 ? "PROJECTS   " + std::to_string(selected_.size()) + " CHOSEN" : "PROJECTS");
         caption(at.versions, L::versions, "VERSIONS" + of);
         caption(at.presets, L::presets, "PRESETS" + of);
+        // The preview (package 04): the chosen version's panel, fitted, under a caption of its own; the words while it
+        // comes or when there is none. A click on it does nothing (the double-click and Open open).
+        if (at.preview.w > 0.0f)
+        {
+            const funkgui::Rect& r = at.preview;
+            const PreviewState& pv = preview_;
+            std::string what = "PREVIEW";
+            if (!previewWant_.first.empty())
+                what += " OF " + upper(asciiText(ownName(previewWant_.first)))
+                      + (pv.number > 0 ? " " + upper(v(pv.number)) : std::string());
+            const funkgui::TextStyle& st = chat::kSmallStrong;
+            c.text(fitText(c, what, st, r.w).c_str(), r.x + 2.0f, c.capCentreTop(r.y - 11.0f, st), st, p.faint);
+            c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.composer, 1.0f, p.composerEdge);
+            std::string words;
+            switch (pv.status)
+            {
+                case PreviewState::Status::none: words = "Choose a project to see its panel."; break;
+                case PreviewState::Status::reading: words = "Reading..."; break;
+                case PreviewState::Status::drawing: words = "Drawing..."; break;
+                case PreviewState::Status::failed: words = "No preview (" + pv.why + ")"; break;
+                case PreviewState::Status::ready: break;
+            }
+            if (pv.status == PreviewState::Status::ready && pv.w > 0 && pv.h > 0)
+            {
+                const float inset = 6.0f, aw = r.w - 2.0f * inset, ah = r.h - 2.0f * inset;
+                const float scale = std::min(aw / static_cast<float>(pv.w), ah / static_cast<float>(pv.h));
+                const float iw = std::round(static_cast<float>(pv.w) * scale), ih = std::round(static_cast<float>(pv.h) * scale);
+                c.image(pv.image, { std::round(r.centreX() - 0.5f * iw), std::round(r.centreY() - 0.5f * ih), iw, ih }, 4.0f);
+            }
+            else
+                c.text(fitText(c, words, chat::kSmall, r.w - 24.0f).c_str(), r.centreX(), c.capCentreTop(r.centreY(), chat::kSmall),
+                       chat::kSmall, p.faint, funkgui::Align::centre);
+        }
         // The group under a drag, to be drawn as its target.
         const int dropRow = dragging_ ? rowAt(dragAt_, at, L::projects) : -1;
         const int dropGroup = dropRow >= 0 ? rows_[static_cast<std::size_t>(dropRow)].group : -1;
@@ -2276,6 +2376,21 @@ namespace playground::ui
             s.help = "Stars it: the favourites are pinned at the top";
             out.push_back(std::move(row));
             out.push_back(std::move(s));
+        }
+        if (at.preview.w > 0.0f)                         // the preview (package 04): one image
+        {
+            funkgui::A11yItem img;
+            img.id = kPreviewId;
+            img.parent = kBoxId;
+            img.role = funkgui::A11yRole::image;
+            img.bounds = at.preview;
+            img.title = previewWant_.first.empty() ? "Preview of a project's panel"
+                                                   : "Preview of " + ownName(previewWant_.first) + "'s panel";
+            img.value = preview_.status == PreviewState::Status::ready     ? std::string()
+                      : preview_.status == PreviewState::Status::failed    ? "No preview: " + preview_.why
+                      : preview_.status == PreviewState::Status::none      ? "Choose a project"
+                                                                           : "Reading";
+            out.push_back(std::move(img));
         }
         list(L::versions, "Versions" + of, [&](int i, funkgui::A11yItem& row) {
             const VersionEntry& e = versions_[static_cast<std::size_t>(i)];

@@ -122,6 +122,15 @@ namespace playground::ui
         // message thread, so one it lacks shows when the Reader has it. Whether it read them.
         bool poll();
         bool chosenRead() const noexcept { return chosenRead_; }   // the chosen project's file read (else: reading)
+        // ---- Package 04: the preview (Preview.h; EditorPort::previewPolled) -------------------------------------------
+        // While open, each frame (the Panel's refresh): the chosen project's version (the one chosen, else its newest)
+        // asked for kPreviewRest seconds after the choice rests (the keys through a list ask for nothing on the way), in
+        // FunkGui's theme `theme`. Whether what it shows changed. previewShown(): what the pane shows (the Panel
+        // registers its picture, Panel::syncPreview).
+        static constexpr double kPreviewRest = 0.15;
+        bool pollPreview(double nowSeconds, int theme);
+        const PreviewState& previewShown() const noexcept { return preview_; }
+        std::pair<std::string, int> previewWanted() const;      // the project and the number (0: newest) it shows
         // Whether its Save started a save of the editor's (EditorPort::startSave), once: the Panel then says SAVING and,
         // when it has ended, what came of it.
         bool takeStartedSave();
@@ -132,6 +141,8 @@ namespace playground::ui
             funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
             funkgui::Rect compare;                       // Compare..., after A/B...
             funkgui::Rect search, clear, tag, sort;      // the top's: the search field, its clear (x), the tag, the order
+            funkgui::Rect preview;                       // the chosen version's panel, over the versions (w 0: none, a
+                                                         // window too short for it and four rows of each list)
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
         };
@@ -308,5 +319,11 @@ namespace playground::ui
         std::function<void()> answered_;
         std::function<bool(const funkgui::Rect&)> menuOpen_;
         uint32_t revision_ = 0;
+        // Package 04's preview: what was chosen and when, and what the port last said of it.
+        std::pair<std::string, int> previewWant_{ "", 0 };
+        double previewSince_ = 0.0, previewNow_ = 0.0;
+        bool previewMoved_ = true;                       // the choice changed since previewSince_ (the clock starts at
+                                                         // the next pollPreview)
+        PreviewState preview_;
     };
 }
