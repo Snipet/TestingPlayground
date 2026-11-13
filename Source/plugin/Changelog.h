@@ -44,6 +44,10 @@ namespace playground::changelog
     // Empty only when the changelog has none of these.
     std::vector<Version> since(const std::vector<Version>& all, const std::string& seen, const std::string& current);
     std::vector<Version> since(const std::string& seen, const std::string& current);
+    // Whether since() would show anything, from the versions' numbers alone: nothing copied (UpdateState's
+    // whatsNewDue asks it at every read).
+    bool anythingSince(const std::vector<Version>& all, const std::string& seen, const std::string& current);
+    bool anythingSince(const std::string& seen, const std::string& current);
 
     // The card's markdown of `shown`: each version under its own heading when there are several (one's date as a line
     // of its own), in the editor's light markdown (editor/Markdown.h).
@@ -53,7 +57,8 @@ namespace playground::changelog
 
     // The addresses a link of the card may open: https:// of the repository (generated: CMakeLists.txt's
     // FP_REPOSITORY_URL) or of the website (factorystore::kSite), the origin alone or a path under it; never another
-    // scheme, host, port, a user's part, or a control character or space.
+    // scheme, host, port, a user's part, or a control character or space; never a path with a `.` or `..` segment
+    // (%2e spelt any way too), nor an encoded slash or backslash (%2f, %5c) anywhere: none leaves the origin's path.
     const char* repository();
     bool linkAllowed(std::string_view url);
 }

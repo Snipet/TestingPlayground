@@ -134,6 +134,23 @@ PROBE(plugin, changelog)
         P.eq("since.text_kept", made.size() > 1 && made[1].text == "- Four." ? 1 : 0, 1);
         P.eq("since.days_kept", made.size() > 2 && made[2].text == "## 2026-02-20\n\n- Three." ? 1 : 0, 1);
         P.eq("since.nothing_to_show", static_cast<int64_t>(cl::since(cl::parse("# Changelog\n"), "", "0.1.0").size()), 0);
+        // anythingSince (whatsNewDue's, copying nothing) agrees with since() over every case above, and more.
+        const std::vector<cl::Version> none = cl::parse("# Changelog\n");
+        const std::vector<cl::Version> noUnreleased = cl::parse("## Version 0.2.0 (2026-02-01)\n\n- Two.\n");
+        const std::vector<std::pair<std::string, std::string>> cases = {
+            { "", "0.3.0" }, { "0.3.0", "0.3.0" }, { "0.2.0", "0.3.0" }, { "0.1.0", "0.4.0" }, { "0.1.0", "0.3.0" },
+            { "0.2.5", "0.4.0" }, { "0.4.0", "0.2.0" }, { "soon", "0.3.0" }, { "", "0.5.0" }, { "0.2.0", "0.5.0" },
+            { "0.3.0", "0.4.0-rc.1" }, { "0.4.0", "0.5.0" }, { "0.0.1", "0.0.5" }, { "", "" }, { "0.1.0", "soon" } };
+        int agree = 0, all3 = 0;
+        for (const std::vector<cl::Version>* set : { &made, &none, &noUnreleased })
+            for (const auto& [seen, current] : cases)
+            {
+                ++all3;
+                agree += cl::anythingSince(*set, seen, current) == !cl::since(*set, seen, current).empty() ? 1 : 0;
+            }
+        P.eq("since.anything_agrees", agree, all3);
+        P.eq("since.anything_real", cl::anythingSince("", pg::product::kVersion) ? 1 : 0, 1);
+        P.eq("since.anything_none", cl::anythingSince(none, "", "0.1.0") ? 1 : 0, 0);
     }
 
     // ---- ODD ----------------------------------------------------------------------------------------------------------
@@ -187,6 +204,20 @@ PROBE(plugin, changelog)
             "http://" + site.substr(8), repo + "Evil/pull/1", site + ".evil.example/x", "https://example.com/",
             "https://user@" + site.substr(8) + "/", site + ":8443/", repo + "/pull/1 2", repo + "/pull/\n1",
             repo + "\\..\\x", "", "javascript:alert(1)", "file:///etc/passwd", "HTTPS://" + site.substr(8) };
+        // A path that could leave the origin's: . and .. segments, %2e spelt any way, an encoded slash or backslash.
+        const std::vector<std::string> escapes = { "/../../other/repo", "/..", "/./x", "/a/../b", "/%2e%2e/other", "/%2E%2E/other",
+                                                   "/.%2E/other", "/%2e./other", "/%2e/x", "/a/%2E", "/x%2fy", "/x%2Fy",
+                                                   "/x%5cy", "/x%5Cy", "?q=%2f", "#%5c" };
+        int escaped = 0, tried = 0;
+        for (const std::string& origin : { repo, site })
+            for (const std::string& e : escapes)
+            {
+                ++tried;
+                escaped += cl::linkAllowed(origin + e) ? 0 : 1;
+            }
+        P.eq("links.no_escape", escaped, tried);
+        P.eq("links.dots_in_a_name", cl::linkAllowed(repo + "/blob/v0.1.0/a..b.md") && cl::linkAllowed(site + "/x.y/...z") ? 1 : 0, 1);
+        P.eq("links.dots_after_query", cl::linkAllowed(site + "/download?v=../x") ? 1 : 0, 1);
         int no = 0;
         for (const std::string& u : refused)
             no += cl::linkAllowed(u) ? 0 : 1;

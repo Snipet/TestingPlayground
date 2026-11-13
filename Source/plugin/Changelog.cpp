@@ -168,6 +168,30 @@ namespace playground::changelog
 
     std::vector<Version> since(const std::string& seen, const std::string& current) { return since(versions(), seen, current); }
 
+    bool anythingSince(const std::vector<Version>& all, const std::string& seen, const std::string& current)
+    {
+        // since()'s rule, asked of the numbers alone.
+        bool own = false, unreleased = false, between = false;
+        const bool seenBelow = updates::validVersion(seen) && updates::validVersion(current)
+                            && updates::compareVersions(seen, current) < 0;
+        for (const Version& v : all)
+        {
+            if (v.unreleased())
+            {
+                unreleased = true;
+                continue;
+            }
+            own = own || sameVersion(v.number, current);
+            between = between || (seenBelow && updates::compareVersions(v.number, seen) > 0
+                                  && updates::compareVersions(v.number, current) <= 0);
+        }
+        if (!own && unreleased)
+            return true;
+        return seenBelow ? between : own;
+    }
+
+    bool anythingSince(const std::string& seen, const std::string& current) { return anythingSince(versions(), seen, current); }
+
     std::string markdown(const std::vector<Version>& shown)
     {
         std::string md;
@@ -211,6 +235,33 @@ namespace playground::changelog
             const char next = url[origin.size()];
             return next == '/' || next == '?' || next == '#';
         };
-        return under(repository()) || under(factorystore::kSite);
+        if (!under(repository()) && !under(factorystore::kSite))
+            return false;
+        // An encoded slash or backslash anywhere, any case.
+        std::string lower(url);
+        for (char& ch : lower)
+            if (ch >= 'A' && ch <= 'Z')
+                ch = static_cast<char>(ch - 'A' + 'a');
+        if (lower.find("%2f") != std::string::npos || lower.find("%5c") != std::string::npos)
+            return false;
+        // The path's segments (after "https://host", before ? or #): none . or .., %2e spelt any way.
+        const std::size_t host = lower.find('/', 8);
+        if (host == std::string::npos)
+            return true;
+        const std::string path = lower.substr(host, lower.find_first_of("?#", host) - host);
+        std::size_t at = 0;
+        while (at <= path.size())
+        {
+            std::size_t end = path.find('/', at);
+            if (end == std::string::npos)
+                end = path.size();
+            std::string seg = path.substr(at, end - at);
+            for (std::size_t i; (i = seg.find("%2e")) != std::string::npos;)
+                seg.replace(i, 3, ".");
+            if (seg == "." || seg == "..")
+                return false;
+            at = end + 1;
+        }
+        return true;
     }
 }

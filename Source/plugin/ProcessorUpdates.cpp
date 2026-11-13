@@ -93,7 +93,7 @@ namespace playground
         u.whatsNewOff = updates::offFrom(std::getenv((std::string(product::kEnvPrefix) + "WHATSNEW").c_str()));
         u.whatsNewReady = checkLoaded && seenFresh;
         u.whatsNewDue = u.whatsNewReady && !u.whatsNewOff && u.seen != u.current
-                     && !changelog::since(u.seen, u.current).empty();
+                     && changelog::anythingSince(u.seen, u.current);
         return u;
     }
 
