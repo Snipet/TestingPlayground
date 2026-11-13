@@ -20,7 +20,8 @@
 //            bars' count (7, 30, 12, the months since the oldest row)
 //   STACK    the frame's own bar primitives: each bar's pieces bottom up in series order (the most tokens first), in
 //            the series' inks; a day's stacks as seeded (Other on top)
-//   SERIES   the inks: the accent first; the four others neither accent nor the errors' colour, each 3:1 or more
+//   SERIES   the inks: the accent first; the four others neither accent nor the errors' colour (CIE76 30 or more apart
+//            from both), each 3:1 or more
 //            against the card and the chart's ground in both themes, every pair apart under protanopia,
 //            deuteranopia and tritanopia (Machado 2009, CIE76 10 or more)
 //   TABLE    a row a model (fast apart), a total row; an estimate marked ~, OpenRouter's reported figure, "no price"
@@ -130,11 +131,6 @@ namespace
     {
         const double x = luminance(a), y = luminance(b);
         return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
-    }
-
-    int distance(funkgui::Col a, funkgui::Col b)
-    {
-        return std::abs(a.r - b.r) + std::abs(a.g - b.g) + std::abs(a.b - b.b);
     }
 
     // A colour as one with a colour vision deficiency sees it (Machado, Oliveira and Fernandes 2009, severity 1, on
@@ -543,18 +539,17 @@ PROBE(gui, usage)
         const pg::ui::chat::Palette p = pg::ui::chat::palette(th);
         const std::string t = themeIdx == 0 ? "graphite" : "paper";
         P.eq("series." + t + ".accent_first", packed(pg::ui::chat::seriesInk(th, 0)) == packed(th.accent) ? 1 : 0, 1);
-        double least = 100.0;
-        int nearest = 1000;
+        double least = 100.0, nearest = 1000.0;
         for (int k = 0; k < pg::ui::chat::kSeriesInks; ++k)
         {
             const funkgui::Col ink = pg::ui::chat::seriesInk(th, k);
             least = std::min({ least, contrast(ink, p.card), contrast(ink, p.raised) });
-            if (k > 0)
-                nearest = std::min({ nearest, distance(ink, th.accent), distance(ink, th.signal) });
+            if (k > 0)                          // as seen with normal colour vision, CIE76
+                nearest = std::min({ nearest, deltaE(seen(ink, 0), seen(th.accent, 0)), deltaE(seen(ink, 0), seen(th.signal, 0)) });
         }
-        std::printf("%s: least contrast %.2f, nearest to the accent or the errors' colour %d\n", t.c_str(), least, nearest);
+        std::printf("%s: least contrast %.2f, nearest to the accent or the errors' colour %.1f (CIE76)\n", t.c_str(), least, nearest);
         P.ge("series." + t + ".contrast", least, 3.0);
-        P.ge("series." + t + ".apart_from_accent_and_signal", static_cast<double>(nearest), 120.0);
+        P.ge("series." + t + ".apart_from_accent_and_signal", nearest, 30.0);
         // Every pair of the five (this product's accent and the four) apart for every kind of colour vision.
         double leastSeen = 1000.0;
         for (int kind = 0; kind < 4; ++kind)
