@@ -77,15 +77,6 @@ namespace
         P.eq(std::string(name) + ".written", host.writePng(probe::outPath(name).c_str(), 2) ? 1 : 0, 1);
     }
 
-    funkgui::Point mid(const funkgui::Rect& r) { return { r.centreX(), r.centreY() }; }
-
-    void clickAt(funkgui::HeadlessHost& host, funkgui::Point p)
-    {
-        host.click(p.x, p.y, {});
-        host.tick(2);
-        host.settle();
-    }
-
     bool pump(pg::Processor& p, funkgui::HeadlessHost& host, double seconds, const std::function<bool()>& done)
     {
         const auto from = std::chrono::steady_clock::now();
