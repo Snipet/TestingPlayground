@@ -18,6 +18,7 @@
 //            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
 //            its number acts on the first (put back in the helper), a render naming the second shows the second as it
 //            was; a number no sandbox has refused; apply without a number refused
+//   NOTREGULAR a folder holding a FIFO x.sh: refused ("not a regular file"), never read (the time printed)
 //   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc, the .sh; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an array as its elements (ring[i]), an enumeration's an int as FMinus makes it, Shared's
@@ -26,6 +27,9 @@
 //            in the library's text (funk/text.sh); values naming the field the shader reads (an input with no display
 //            of its own) changes its colour. On Linux, where FunkGui draws no GPU picture (common/Pictures.h), the
 //            render is SoftRaster's, its text saying why, the shader's cell the placeholder; the GPU's rows skipped
+//   POINTER  a shader dial whose inputs are pointer.hover and pointer.down, opened from a folder: render's values of
+//            pointer.hover and pointer.down draw it hovered and pressed (gui.sandbox.pointer.png), the text saying so;
+//            its colours on the GPU (skipped where there are no GPU pictures)
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
@@ -39,12 +43,19 @@
 //            (gui.sandbox.example.png, .example.view.png); reading the instance leaves the plugin's record of what
 //            MCP was told alone (the host's change still starts the next result)
 //   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; a dial
-//            the host moved since the last MCP call said first
+//            the host moved since the last MCP call said first; an apply naming its instance cancelled in the same
+//            write: nothing written, nothing answered; write_file's refusal (a 17th file) quoted, not the hint before
+//            it; a program that does not compile: written, the run's failure said, never "the user sees it"
+//   STRAY    a .gui with a { where an element's name should be (one around a knob, one the file ends inside) opens,
+//            the reader's notes on them in its report
 //   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
 //            renders what view_panel's picture shows, pixel for pixel within MATCH's bound (gui.sandbox.circuit.png,
-//            .circuit.view.png)
+//            .circuit.view.png); the same files as a folder the user named (open from file): the netlist read, so
+//            the same dials and circuit dials, with a file that sorts before program.fm in it too (program.fm stays
+//            the program), and with the folder sync's read-only copies (host.fm of the plugin's text, fifteen its
+//            manifest names), which count for nothing
 //   MOST     33 dials of Claude's: the report says the 33rd to the 64th are the panel's own
 //   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
@@ -54,6 +65,7 @@
 #include "Pictures.h"
 #include "Probe.h"
 
+#include "fminus/Patch.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -93,6 +105,7 @@
 #include <dirent.h>
 #endif
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -563,13 +576,27 @@ PROBE(plugin, sandbox)
         P.eq("two.apply_needs_number", r.error && has(r.text, "apply needs sandbox") ? 1 : 0, 1);
     }
 
+    // ---- NOTREGULAR: a folder holding a FIFO of an editor's kind: refused, never read (it would block) -------------
+    {
+        const std::filesystem::path folder = std::filesystem::path(dir) / "fifo";
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / pg::kProgramName) << program();
+        const bool made = mkfifo((folder / "x.sh").c_str(), 0600) == 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("a folder with a FIFO (%.2f s): %s", took, r.text.c_str());
+        P.eq("notregular.refused", made && r.error && has(r.text, "x.sh is not a regular file") ? 1 : 0, 1);
+        std::filesystem::remove_all(folder);
+    }
+
     // ---- SHADER ----------------------------------------------------------------------------------------------------------
     int shaderNumber = 0;
     {
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=120\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
         // The shader takes its colour from a .sh file of the program's own and writes its title with the library's text.
         std::ofstream(folder / "glow.sc") << "#include \"funk/text.sh\"\n#include \"tint.sh\"\n\nvoid main()\n{\n"
@@ -710,6 +737,61 @@ PROBE(plugin, sandbox)
         P.eq("none.kept_after_close", !kept.error && !kept.png.empty() && has(kept.text, "Sandbox #" + std::to_string(first) + ".") ? 1 : 0, 1);
     }
 
+    // ---- POINTER: a shader dial drawn hovered and pressed (render's values: pointer.hover, pointer.down) --------------
+    {
+        const std::filesystem::path folder = std::filesystem::path(dir) / "pointer";
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / pg::kProgramName) << program();
+        std::ofstream(folder / "panel.gui") << "row {\n    shader \"dial.sc\" inputs=\"glow pointer.hover pointer.down\" y=glow "
+                                                "drag=relative cursor=updown width=120 height=120\n    knob level\n}\n";
+        // Blue at rest; red under the pointer; green while pressed.
+        std::ofstream(folder / "dial.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9 * in_pointer_hover * (1.0 - in_pointer_down), "
+                                             "0.9 * in_pointer_down, 0.9 * (1.0 - in_pointer_hover), 1.0);\n}\n";
+        const Result o = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
+        const int number = numberIn(o.text);
+        P.eq("pointer.opened", !o.error && number > 0 && !has(o.text, "panel.gui:") ? 1 : 0, 1);
+        float x = 0, y = 0, w = 0, h = 0;
+        const bool found = rectOf(o.text, "shader \"dial.sc\"", x, y, w, h);
+        const auto render = [&](juce::var values, int& red, int& green, int& blue) {
+            const Result v = s.sandbox(object({ { "action", "render" }, { "sandbox", number }, { "width", 400 }, { "height", 200 },
+                                                { "detail", "high" }, { "values", values } }));
+            const juce::Image im = decode(v.png);
+            red = green = blue = 0;
+            if (found && im.isValid())
+                for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
+                    for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
+                    {
+                        const juce::Colour c = im.getPixelAt(px, py);
+                        red += c.getRed() > 180 && c.getGreen() < 60 && c.getBlue() < 60 ? 1 : 0;
+                        green += c.getRed() < 60 && c.getGreen() > 180 && c.getBlue() < 60 ? 1 : 0;
+                        blue += c.getRed() < 60 && c.getGreen() < 60 && c.getBlue() > 180 ? 1 : 0;
+                    }
+            return v;
+        };
+        int rr = 0, rg = 0, rb = 0, hr = 0, hg = 0, hb = 0, dr = 0, dg = 0, db = 0;
+        render(object({}), rr, rg, rb);
+        const Result hovered = render(object({ { "pointer.hover", 1 } }), hr, hg, hb);
+        const Result pressed = render(object({ { "pointer.hover", 1 }, { "pointer.down", 1 } }), dr, dg, db);
+        writeBytes(probe::outPath("gui.sandbox.pointer.png"), pressed.png);
+        std::printf("pointer: %s", pressed.text.c_str());
+        std::printf("dial cell at rest %d red %d green %d blue; hovered %d %d %d; pressed %d %d %d\n", rr, rg, rb, hr, hg, hb, dr, dg, db);
+        P.eq("pointer.said", !hovered.error && has(hovered.text, "the shaders drawn with the pointer at pointer.hover")
+                                 && has(pressed.text, "pointer.hover, pointer.down") ? 1 : 0, 1);
+        const std::string noGpu = probe::noGpuPictures();
+        if (noGpu.empty())
+        {
+            const int n = static_cast<int>((w - 8.0f) * pg::sandbox::kDpi) * static_cast<int>((h - 8.0f) * pg::sandbox::kDpi);
+            P.ge("pointer.rest_blue", rb, n * 9 / 10);
+            P.ge("pointer.hover_red", hr, n * 9 / 10);
+            P.ge("pointer.down_green", dg, n * 9 / 10);
+        }
+        else
+            for (const char* row : { "pointer.rest_blue", "pointer.hover_red", "pointer.down_green" })
+                probe::skip(P, row, probe::noGpuPicturesSkip());
+        const Result c = s.sandbox(object({ { "action", "close" }, { "sandbox", number } }));
+        P.eq("pointer.closed", !c.error ? 1 : 0, 1);
+    }
+
     // ---- MATCH and APPLY: a processor playing the prompt's example -------------------------------------------------------
     {
         pg::Processor processor;
@@ -828,6 +910,70 @@ PROBE(plugin, sandbox)
         P.eq("apply.written", !a.error && has(a.text, "wrote panel.gui into its program") && has(written, "label \"APPLIED HERE\"") ? 1 : 0, 1);
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
         P.eq("apply.hint", a.text.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
+        const auto panelText = [&] {
+            for (const pg::SourceFile& f : port.draft().files)
+                if (f.name == "panel.gui")
+                    return f.text;
+            return std::string();
+        };
+        const std::string instance = processor.mcpLink() != nullptr ? processor.mcpLink()->id() : "1";
+        // Cancelled while the server asks which instance `instance` names: nothing is written, nothing run.
+        {
+            const Result e2 = s.sandbox(object({ { "action", "edit" }, { "sandbox", exampleNumber },
+                                                 { "edits", juce::Array<juce::var>{ object({ { "old_text", "APPLIED HERE" }, { "new_text", "CANCELLED HERE" } }) } } }),
+                                        &processor);
+            const int id = s.next++;
+            const std::string both
+                = line(object({ { "jsonrpc", "2.0" }, { "id", id }, { "method", "tools/call" },
+                                { "params", object({ { "name", "gui_sandbox" },
+                                                     { "arguments", object({ { "action", "apply" }, { "sandbox", exampleNumber },
+                                                                             { "instance", juce::String(instance) } }) } }) } }))
+                + "\n" + line(object({ { "jsonrpc", "2.0" }, { "method", "notifications/cancelled" }, { "params", object({ { "requestId", id } }) } }))
+                + "\n";
+            [[maybe_unused]] const ssize_t n = write(s.in, both.data(), both.size());
+            bool answered = false;
+            for (int k = 0; k < 200; ++k)                // a second
+            {
+                std::string got;
+                if (s.reader->next(got, 5) > 0)
+                {
+                    const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
+                    answered = answered || (v.hasProperty("id") && static_cast<int>(v["id"]) == id);
+                }
+                processor.poll();
+            }
+            processor.settle();
+            std::printf("apply cancelled: panel.gui %s\n", has(panelText(), "CANCELLED HERE") ? "WRITTEN" : "as it was");
+            P.eq("apply.cancelled_writes_nothing", !e2.error && !answered && has(panelText(), "APPLIED HERE") && !has(panelText(), "CANCELLED HERE") ? 1 : 0, 1);
+        }
+        // Refused by write_file (a 17th file: sixteen and no .gui) after the host moved a dial: the refusal is quoted,
+        // not the line of what changed.
+        {
+            const pg::Draft keep = port.draft();
+            pg::Draft full;
+            full.files.push_back(keep.files.front());
+            for (int k = 1; k < 16; ++k)
+                full.files.push_back({ "f" + std::to_string(k) + ".fm", "// f\n" });
+            port.setDraft(full);
+            processor.poll();
+            processor.getParameters()[1]->setValueNotifyingHost(0.25f);
+            processor.poll();
+            const Result r = s.sandbox(object({ { "action", "apply" }, { "sandbox", exampleNumber } }), &processor);
+            std::printf("apply refused: %s", r.text.c_str());
+            P.eq("apply.refusal_quoted", r.error && has(r.text, "nothing was applied: ") && has(r.text, "16 files")
+                                             && !has(r.text, "nothing was applied: (") ? 1 : 0, 1);
+            // A program that does not compile: written, but the run failed, and the answer says so.
+            pg::Draft broken = keep;
+            broken.files.front().text += "\nthis is not FMinus\n";
+            port.setDraft(broken);
+            processor.poll();
+            const Result f = s.sandbox(object({ { "action", "apply" }, { "sandbox", exampleNumber } }), &processor);
+            std::printf("apply, the run failing: %s", f.text.substr(0, 600).c_str());
+            P.eq("apply.run_failed_said", f.error && has(f.text, "but the run failed") && !has(f.text, "so the user sees it") ? 1 : 0, 1);
+            port.setDraft(keep);
+            port.run(keep.files);
+            processor.settle();
+        }
         s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
     }
 
@@ -886,6 +1032,43 @@ PROBE(plugin, sandbox)
         P.le("circuit.match_pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
         P.le("circuit.match_largest", d.largestOutside, 40);
         s.sandbox(object({ { "action", "close" }, { "sandbox", number } }), &processor);
+
+        // The same files in a folder the user named: the netlist read too, so the same dials and circuit dials.
+        const auto sameDials = [&](const Result& r) {
+            return !r.error && has(r.text, "Dials: 4, 4 from the program's declarations")
+                && has(r.text, "Circuit dials (the program's circuits' pots and switches, after its params, as the plugin makes "
+                               "them): " + defaults + ".")
+                && !has(r.text, "no parameter");
+        };
+        const std::filesystem::path cf = std::filesystem::path(dir) / "circuit";
+        std::filesystem::create_directories(cf);
+        std::ofstream(cf / pg::kProgramName) << program;
+        std::ofstream(cf / "screamer.cir") << (lib != nullptr ? lib->source : "");
+        std::ofstream(cf / "panel.gui") << circuitGui;
+        const auto openFolder = [&](const char* what) {
+            const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(cf.string()) } }));
+            std::printf("from the folder (%s):\n%s", what, r.text.c_str());
+            s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
+            return r;
+        };
+        P.eq("circuit.folder_same_dials", sameDials(openFolder("its three files")) ? 1 : 0, 1);
+        // A file of the program's that sorts before program.fm does not take the program's place.
+        std::ofstream(cf / "adsr.fm") << "module Adsr\n{\n    float level;\n};\n";
+        std::ofstream(cf / pg::kProgramName) << "#include \"adsr.fm\"\n" + program;
+        P.eq("circuit.folder_program_first", sameDials(openFolder("a file before program.fm")) ? 1 : 0, 1);
+        // The folder sync's read-only copies count for nothing: host.fm of the plugin's text, and fifteen copies its
+        // manifest names (with the four files, 20 past the 16 the sandbox reads).
+        std::ofstream(cf / "host.fm") << pg::Patch::hostSource();
+        std::ofstream manifest(cf / ".fmsync");
+        manifest << "fmsync 1\n";
+        for (int k = 0; k < 15; ++k)
+        {
+            const std::string name = "copy" + std::to_string(k) + ".fm";
+            std::ofstream(cf / name) << "module Copy" << k << "\n{\n    float x;\n};\n";
+            manifest << "copy 0123456789abcdef " << name << "\n";
+        }
+        manifest.close();
+        P.eq("circuit.folder_copies_left_out", sameDials(openFolder("with the folder sync's copies")) ? 1 : 0, 1);
     }
 
     // ---- MOST: past the host's 32 dials ----------------------------------------------------------------------------------
@@ -896,6 +1079,18 @@ PROBE(plugin, sandbox)
         const Result r = s.sandbox(object({ { "action", "open" }, { "text", "knob d33\n" }, { "dials", many } }));
         std::printf("33 dials:\n%s", r.text.c_str());
         P.eq("most.panel_own_said", !r.error && has(r.text, "The 33rd to the 64th are the panel's own (no host parameter).") ? 1 : 0, 1);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
+    }
+
+    // ---- STRAY: a .gui with a { where an element's name should be ---------------------------------------------------------
+    {
+        juce::Array<juce::var> one;
+        one.add(object({ { "name", "drive" }, { "range", juce::Array<juce::var>{ 0.0, 24.0 } }, { "default", 6.0 } }));
+        const Result r = s.sandbox(object({ { "action", "open" }, { "text", "row {\n    {\n        knob drive\n    }\n}\n{\n" }, { "dials", one } }));
+        std::printf("stray:\n%s", r.text.c_str());
+        P.eq("stray.opens", r.answered && !r.error && numberIn(r.text) > 0 ? 1 : 0, 1);
+        P.eq("stray.noted", has(r.text, "panel.gui:2:5: note: a { with no element before it")
+                                && has(r.text, "panel.gui:6:1: note: this { has no }") ? 1 : 0, 1);
         s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
     }
     s.stop();

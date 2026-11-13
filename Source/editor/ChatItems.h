@@ -38,11 +38,13 @@ namespace playground::ui
 
         InputItem(uint32_t id, std::function<void()> send, std::function<void(uint32_t)> detach = {});
 
-        // The pictures attached to the next message, shown in a row above the text (a remove button each), and the
-        // files still being read (a placeholder each). The Panel lays the box out again when the row comes or goes.
+        // The pictures attached to the next message, shown in rows above the text (as many to a row as the box's width
+        // holds: a remove button each), and the files still being read (a placeholder each). The Panel lays the box
+        // out again when the rows change.
         void setPictures(std::vector<ChatPicturePtr> pictures, int pending);
         int pictureCount() const noexcept { return static_cast<int>(pictures_.size()); }
         float stripHeight() const noexcept;
+        int tilesPerRow() const noexcept;
         std::optional<funkgui::Point> centreOfRemove(int i) const;   // for probes
         funkgui::Rect pictureRect(int i) const;                     // the i-th tile (attached, then pending)
 
@@ -134,6 +136,9 @@ namespace playground::ui
         void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
         void setMenu(std::function<void()> menu) { spec_.menu = std::move(menu); }
         float preferredWidth() const;                 // a pill's, for its label now
+        // A pill with an icon drawn as its icon alone (no label), where the bar has no room for its words: its
+        // accessibility title and its footer's line stay.
+        void setCompact(bool compact) { compact_ = compact; }
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override
         {
@@ -165,5 +170,6 @@ namespace playground::ui
         funkgui::Rect bounds_;
         bool hovered_ = false, focused_ = false;
         bool hidden_ = false;
+        bool compact_ = false;
     };
 }

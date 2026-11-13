@@ -6,6 +6,7 @@
 #include "editor/Theme.h"
 
 #include "fminus/CirDoc.h"
+#include "plugin/EditorPort.h"                       // shortcutText
 
 #include <funkgui/canvas/Tags.h>
 #include <funkgui/core/TypeScale.h>
@@ -21,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <utility>
 
@@ -29,9 +31,9 @@ namespace playground::ui
     namespace
     {
         constexpr float kStatusH = 22.0f;                // the status line under the editor
-        constexpr float kRowH = 22.0f;                   // a completion row
+        constexpr float kRowH = 22.0f;                   // a completion row (at 12 px: the size scales it)
         constexpr int   kRows = 10;                      // completion rows shown at once
-        constexpr float kPopupW = 440.0f;
+        constexpr float kPopupW = 440.0f;                // at 12 px, as kFindW, kFindRowH, kCardMaxW and kGoToW
         constexpr float kDetailH = 78.0f;                // the chosen item's signature and documentation
         constexpr float kPad = 8.0f;
         constexpr float kFindW = 420.0f;
@@ -52,9 +54,54 @@ namespace playground::ui
         constexpr int kMaxFind = 200;                    // characters in the find bar's fields
         constexpr int kMaxGoTo = 16;                     // characters in the go-to-line field ("123456:789")
         constexpr float kGoToW = 330.0f;
-        constexpr int kMaxMatches = 10000;
-        constexpr funkgui::TextStyle kCode = funkgui::editorFont(funkgui::EditorFont::code);
-        constexpr funkgui::TextStyle kCardCode{ 11.5f, 0.0f, 0.0f, true };
+        constexpr int kMaxMatches = 10000;               // in the tab shown, or in every file
+        constexpr float kFilesExtraW = 60.0f;            // the bar wider with All files on (its counter's words)
+        constexpr int kListRows = 8;                     // the results list's rows shown at once
+        constexpr float kFindIconW = 22.0f;              // the status line's magnifier
+        // The matches in `E`'s lines, appended to `out` until it holds `limit` (a netlist's *@ lines left out with
+        // `skipLayout`: its drawing); false when the cap cut them.
+        bool scanMatches(const funkgui::TextEditor& E, std::string_view needle, bool matchCase, bool wholeWord, bool skipLayout,
+                         std::size_t limit, std::vector<funkgui::TextRange>& out)
+        {
+            const auto low = [&](char c) { return matchCase ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
+            for (int l = 0; l < E.lineCount(); ++l)
+            {
+                const std::string& s = E.line(l);
+                if (skipLayout && cir::isLayoutLine(s))
+                    continue;
+                for (std::size_t k = 0; k + needle.size() <= s.size(); ++k)
+                {
+                    bool same = true;
+                    for (std::size_t j = 0; j < needle.size() && same; ++j)
+                        same = low(s[k + j]) == low(needle[j]);
+                    if (!same)
+                        continue;
+                    if (wholeWord && ((k > 0 && lang::isIdentChar(s[k - 1]))
+                                      || (k + needle.size() < s.size() && lang::isIdentChar(s[k + needle.size()]))))
+                        continue;
+                    if (out.size() >= limit)
+                        return false;
+                    out.push_back({ { l, static_cast<int>(k) }, { l, static_cast<int>(k + needle.size()) } });
+                    k += needle.size() - 1;
+                }
+            }
+            return true;
+        }
+        std::string thousands(std::size_t n)             // "10,000"
+        {
+            std::string d = std::to_string(n), out;
+            for (std::size_t i = 0; i < d.size(); ++i)
+            {
+                if (i > 0 && (d.size() - i) % 3 == 0)
+                    out += ',';
+                out += d[i];
+            }
+            return out;
+        }
+        // The overlays' measures at 12 px, the default text size: each scales with the size (CodeAssist::sizeScale).
+        constexpr float kCardCodePx = 11.5f;             // the signature's and the hover card's code
+        constexpr float kCodeLineH = 18.0f;              // ... a line of it
+        constexpr float kWheelSizeStep = 0.12f;          // a smooth wheel's deltas a size step (about 60 px of a pad)
 
         using funkgui::Col;
         using funkgui::Rect;
@@ -595,8 +642,78 @@ namespace playground::ui
         return p;
     }
 
+    // ---- the text size ----------------------------------------------------------------------------------------------
+    namespace codesize
+    {
+        int read() { return funkgui::UiPreferences::get().getInt(kKey, kDefault, kLeast, kMost); }
+
+        void write(int tenths)
+        {
+            const int v = std::clamp(tenths, kLeast, kMost);
+            if (read() != v)
+                funkgui::UiPreferences::get().setInt(kKey, v);
+        }
+
+        int step(int tenths, int dir)
+        {
+            if (dir == 0)
+                return kDefault;
+            if (dir > 0)
+            {
+                for (const int s : kSteps)
+                    if (s > tenths)
+                        return s;
+                return kMost;
+            }
+            for (auto it = std::rbegin(kSteps); it != std::rend(kSteps); ++it)
+                if (*it < tenths)
+                    return *it;
+            return kLeast;
+        }
+
+        funkgui::TextStyle style(int tenths)
+        {
+            funkgui::TextStyle st = funkgui::editorFont(funkgui::EditorFont::code);
+            st.px = static_cast<float>(std::clamp(tenths, kLeast, kMost)) / 10.0f;
+            return st;
+        }
+
+        std::string label(int tenths)
+        {
+            char buf[24];
+            if (tenths % 10 == 0)
+                std::snprintf(buf, sizeof buf, "%d px", tenths / 10);
+            else
+                std::snprintf(buf, sizeof buf, "%d.%d px", tenths / 10, tenths % 10);
+            return buf;
+        }
+    }
+
     // ---- the assistant ----------------------------------------------------------------------------------------------
     CodeAssist::CodeAssist(Tabs tabs) : tabs_(std::move(tabs)) {}
+
+    funkgui::TextStyle CodeAssist::codeStyle() const { return codesize::style(size_); }
+    funkgui::TextStyle CodeAssist::cardCodeStyle() const { return { kCardCodePx * sizeScale(), 0.0f, 0.0f, true }; }
+    float CodeAssist::rowH() const { return std::round(kRowH * sizeScale()); }
+    float CodeAssist::codeLineH() const { return std::round(kCodeLineH * sizeScale()); }
+    // The bars (their rows and widths) never shrink under 12 px's: their buttons and the count keep their room.
+    float CodeAssist::findRowH() const { return std::round(kFindRowH * std::max(1.0f, sizeScale())); }
+    // The widths scale with the size, capped by the editor's (the completion list and the cards go over the Panel).
+    float CodeAssist::popupW() const { return std::min(kPopupW * sizeScale(), std::max(kPopupW * 0.75f, editorRect().w)); }
+    float CodeAssist::cardMaxW() const { return std::min(kCardMaxW * sizeScale(), std::max(kCardMaxW * 0.75f, editorRect().w)); }
+
+    bool CodeAssist::stepSize(int dir)
+    {
+        const int next = codesize::step(size_, dir);
+        if (next == size_)
+            return false;
+        codesize::write(next);
+        size_ = next;
+        closeOverlays();                                 // laid out for the size before
+        if (sizeHook_)
+            sizeHook_(next);
+        return true;
+    }
     CodeAssist::~CodeAssist() = default;
 
     funkgui::TextEditor& CodeAssist::ed() const { return tabs_.editor(tabs_.active()); }
@@ -789,6 +906,14 @@ namespace playground::ui
     // ---- keys -------------------------------------------------------------------------------------------------------
     bool CodeAssist::key(const funkgui::KeyEvent& e)
     {
+        // The text size: Cmd-= or Cmd-+ larger, Cmd-- smaller, Cmd-0 12 px, whatever has the keys here (a bar's field
+        // too); taken at an end as well.
+        if (e.key == funkgui::Key::character && e.mods.cmd && !e.mods.alt
+            && (e.ch == U'=' || e.ch == U'+' || e.ch == U'-' || e.ch == U'_' || e.ch == U'0'))
+        {
+            (void)stepSize(e.ch == U'0' ? 0 : e.ch == U'-' || e.ch == U'_' ? -1 : 1);
+            return true;
+        }
         if (gotoOpen_)
             return goToKey(e);
         if (findFocus_)
@@ -887,14 +1012,28 @@ namespace playground::ui
             }
             if (cmd && e.mods.alt && f)
             {
-                openFind(true);
+                openFind(true, false);
+                return true;
+            }
+            if (cmd && e.mods.shift && !e.mods.alt && is('f'))
+            {
+                openFind(false, true);                   // find in all files
                 return true;
             }
             if (cmd && !e.mods.alt && is('f'))
             {
-                openFind(false);
+                openFind(false, false);
                 return true;
             }
+#if !defined(__APPLE__)
+            // Ctrl-H, find and replace: Windows' and Linux's key (JUCE's command key is Ctrl there). On a Mac Cmd-H is
+            // the system's Hide, and stays so.
+            if ((cmd || e.mods.ctrl) && !e.mods.alt && !e.mods.shift && is('h'))
+            {
+                openFind(true, false);
+                return true;
+            }
+#endif
             if (cmd && is('g'))
             {
                 findNext(!e.mods.shift);
@@ -1215,6 +1354,8 @@ namespace playground::ui
             return true;
         if (findOpen_ && findBarRect().contains(p))
             return true;
+        if (listShown() && listRect().contains(p))
+            return true;
         if (gotoOpen_ && goToBarRect().contains(p))
             return true;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
@@ -1227,7 +1368,7 @@ namespace playground::ui
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
-            return s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p)
+            return s.find.contains(p) || s.formatOnRun.contains(p) || s.panel.contains(p) || s.position.contains(p) || s.size.contains(p)
                            || (s.problems.contains(p) && !viewShown())
                        ? funkgui::Cursor::pointingHand
                        : funkgui::Cursor::normal;
@@ -1235,6 +1376,8 @@ namespace playground::ui
         if (gotoOpen_ && goToBarRect().contains(p))
             return funkgui::Cursor::normal;
         if (findOpen_ && findBarRect().contains(p))
+            return funkgui::Cursor::pointingHand;
+        if (listShown() && listRect().contains(p))
             return funkgui::Cursor::pointingHand;
         if (completion_ && popupGeometry(panelW_, panelH_).box.contains(p))
             return funkgui::Cursor::pointingHand;
@@ -1250,7 +1393,7 @@ namespace playground::ui
             const Popup g = popupGeometry(panelW_, panelH_);
             if (g.list.contains(p))
             {
-                const int row = scrollRow_ + static_cast<int>((p.y - g.list.y) / kRowH);
+                const int row = scrollRow_ + static_cast<int>((p.y - g.list.y) / rowH());
                 if (row >= 0 && row < static_cast<int>(completion_->items.size()))
                 {
                     choice_ = row;
@@ -1269,12 +1412,22 @@ namespace playground::ui
                 return true;                             // the field keeps the keys
             closeGoTo();
         }
+        if (statusParts().find.contains(p))
+        {
+            openFind(true);                              // the bar with its replace row, All files as it was
+            return true;
+        }
         if (statusRect().contains(p))
         {
             const StatusParts s = statusParts();
             const bool words = statusWords_ && !statusWords_().empty();   // a netlist's drawing: no caret to move
             if (s.formatOnRun.contains(p))
+            {
                 setFormatOnRun(!formatOnRun());
+                tabs_.notice(formatOnRun() ? "FORMAT ON RUN: ON" : "FORMAT ON RUN: OFF");
+            }
+            else if (s.size.contains(p))
+                (void)stepSize(0);                       // back to 12 px
             else if (s.panel.contains(p))
             {
                 if (!e.popup)
@@ -1337,6 +1490,8 @@ namespace playground::ui
                 wholeWord_ = !wholeWord_;
                 updateMatches();
             }
+            else if (f.filesBtn.contains(p))
+                setAllFiles(!allFiles_);
             else if (f.prev.contains(p))
                 findNext(false);
             else if (f.next.contains(p))
@@ -1353,16 +1508,80 @@ namespace playground::ui
                 findField_ = 0;
             return true;
         }
+        if (listShown() && listRect().contains(p))
+        {
+            // The results list: its bar drags it; a row goes to its match, the bar keeping the keys (Up and Down walk on).
+            findFocus_ = true;
+            findField_ = 0;
+            ed().setFocused(false);
+            layoutList();
+            const Rect r = listRect();
+            if (!e.popup && list_.press(p, r))
+            {
+                listDrag_ = true;
+                return true;
+            }
+            const float y = p.y - (r.y + 4.0f) + list_.offset;
+            const int k = static_cast<int>(std::floor(y / rowH()));
+            if (y >= 0.0f && k >= 0 && k < static_cast<int>(all_.size()) && p.y < r.bottom() - 4.0f)
+                showFileMatch(k);
+            return true;
+        }
         findFocus_ = false;
         if (e.mods.cmd && !e.popup && ed().contains(p) && goToDefinitionAt(p))
             return true;
         return false;
     }
 
+    void CodeAssist::pointerDrag(funkgui::Point p)
+    {
+        if (listDrag_ && listShown())
+        {
+            layoutList();
+            list_.drag(p, listRect());
+        }
+    }
+
+    void CodeAssist::pointerUp()
+    {
+        listDrag_ = false;
+        list_.release();
+    }
+
     bool CodeAssist::wheel(const funkgui::WheelEvent& e)
     {
+        // The results list scrolls as the code does (ui::Scroll: the delta as JUCE gave it, never WheelEvent::reversed).
+        if (listShown() && listRect().contains({ e.x, e.y }) && !e.mods.cmd && !e.mods.ctrl)
+        {
+            layoutList();
+            (void)list_.wheel(e.dy, e.smooth);
+            return true;                                 // over the list: never the text under it
+        }
         hover_.reset();                                  // the text moves under it
         still_ = 0.0f;
+        // Cmd-wheel (Ctrl-wheel off the Mac) over the text: the size, a step a notch, the wheel's own way (as the
+        // Schematic view's zoom: away from you larger); a pad's deltas gathered to a step, its momentum left out.
+        if ((e.mods.cmd || e.mods.ctrl) && editorRect().contains({ e.x, e.y }))
+        {
+            const float dy = e.reversed ? -e.dy : e.dy;
+            if (!e.smooth)
+            {
+                if (dy != 0.0f)
+                    (void)stepSize(dy > 0.0f ? 1 : -1);
+            }
+            else if (!e.inertial && dy != 0.0f)
+            {
+                if ((wheelSize_ > 0.0f) != (dy > 0.0f))
+                    wheelSize_ = 0.0f;
+                wheelSize_ += dy;
+                if (std::abs(wheelSize_) >= kWheelSizeStep)
+                {
+                    (void)stepSize(wheelSize_ > 0.0f ? 1 : -1);
+                    wheelSize_ = 0.0f;
+                }
+            }
+            return true;
+        }
         if (!completion_)
             return false;
         const Popup g = popupGeometry(panelW_, panelH_);
@@ -1397,7 +1616,7 @@ namespace playground::ui
             updateConditionals();
         }
         // Find's matches follow the text.
-        if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_))
+        if (findOpen_ && (E.revision() != matchesRev_ || activeTab() != matchesTab_ || (allFiles_ && filesRevision() != allRev_)))
             updateMatches();
         // The hover card: the pointer still over a word.
         if (std::fabs(pointer.x - lastPointer_.x) > 0.5f || std::fabs(pointer.y - lastPointer_.y) > 0.5f)
@@ -1487,11 +1706,16 @@ namespace playground::ui
         k.mix(findOpen_).mix(replaceOpen_).mix(findFocus_).mix(findField_).mix(matchCase_).mix(wholeWord_);
         k.mix(findEdit_.buffer).mix(findEdit_.caret).mix(findEdit_.allSelected);
         k.mix(replaceEdit_.buffer).mix(replaceEdit_.caret).mix(replaceEdit_.allSelected);
-        k.mix(matches_.size()).mix(current_);
+        k.mix(matches_.size()).mix(current_).mix(allFiles_).mix(all_.size()).mix(matchFiles_).mix(capped_);
+        if (listShown())
+        {
+            layoutList();
+            k.mix(list_.key()).mix(listRect());
+        }
         k.mix(gotoOpen_).mix(gotoBad_).mix(gotoEdit_.buffer).mix(gotoEdit_.caret).mix(gotoEdit_.allSelected);
         // Format on Run is a machine-wide switch (another window may flip it), the Panel switch the session's.
         k.mix(statusWords_ ? statusWords_() : std::string()).mix(formatOnRun());
-        k.mix(hasPanelSwitch()).mix(panelSwitchOn());
+        k.mix(hasPanelSwitch()).mix(panelSwitchOn()).mix(size_);
         return k.h;
     }
 
@@ -1771,7 +1995,7 @@ namespace playground::ui
     }
 
     // ---- commands ---------------------------------------------------------------------------------------------------
-    bool CodeAssist::formatOnRun() const
+    bool CodeAssist::formatOnRun()
     {
         return funkgui::UiPreferences::get().getInt(kFormatOnRunKey, 0, 0, 1) != 0;
     }
@@ -1779,7 +2003,6 @@ namespace playground::ui
     void CodeAssist::setFormatOnRun(bool on)
     {
         funkgui::UiPreferences::get().setInt(kFormatOnRunKey, on ? 1 : 0);
-        tabs_.notice(on ? "FORMAT ON RUN: ON" : "FORMAT ON RUN: OFF");
     }
 
     bool CodeAssist::formatFile()
@@ -1980,12 +2203,14 @@ namespace playground::ui
     }
 
     // ---- find and replace -------------------------------------------------------------------------------------------
-    void CodeAssist::openFind(bool replace)
+    void CodeAssist::openFind(bool replace, std::optional<bool> allFiles)
     {
         funkgui::TextEditor& E = ed();
         gotoOpen_ = false;
         findOpen_ = true;
         replaceOpen_ = !E.options().readOnly && (replaceOpen_ || replace);   // nothing to replace in a read-only text
+        if (allFiles)
+            allFiles_ = *allFiles;
         findFocus_ = true;
         findField_ = replace && !findEdit_.buffer.empty() && !E.hasSelection() ? 1 : 0;
         const std::string sel = E.selectedText();
@@ -2004,7 +2229,12 @@ namespace playground::ui
         findOpen_ = false;
         findFocus_ = false;
         matches_.clear();
+        all_.clear();
+        matchFiles_ = 0;
+        capped_ = false;
         current_ = -1;
+        listDrag_ = false;
+        list_.release();
         // Every tab's: one shown while the bar was open keeps its matches (one shown again with the bar open has its
         // own set again by updateMatches).
         for (int i = 0; i < tabs_.count(); ++i)
@@ -2014,6 +2244,20 @@ namespace playground::ui
             ed().setFocused(true);
     }
 
+    void CodeAssist::setAllFiles(bool on)
+    {
+        if (allFiles_ == on)
+            return;
+        allFiles_ = on;
+        list_.offset = 0.0f;
+        if (!findOpen_)
+            return;
+        if (!on)                                         // the other tabs' marks go: only the shown one's are found
+            for (int i = 0; i < tabs_.count(); ++i)
+                tabs_.editor(i).setDecorations({}, funkgui::kFindDecorations);
+        updateMatches();
+    }
+
     void CodeAssist::setFindText(const std::string& text)
     {
         if (!findOpen_)
@@ -2021,7 +2265,7 @@ namespace playground::ui
         findEdit_.set(text, kMaxFind);
         findEdit_.allSelected = false;
         updateMatches();
-        if (!matches_.empty())
+        if (findCount() > 0)
             findNext(true);
     }
 
@@ -2038,31 +2282,53 @@ namespace playground::ui
         matchesRev_ = E.revision();
         matchesTab_ = activeTab();
         matches_.clear();
+        all_.clear();
+        matchFiles_ = 0;
+        capped_ = false;
         const std::string& needle = findEdit_.buffer;
         matchesNeedle_ = needle;
-        if (!needle.empty())
-        {
-            const auto low = [&](char c) { return matchCase_ ? c : static_cast<char>(std::tolower(static_cast<unsigned char>(c))); };
-            for (int l = 0; l < E.lineCount() && static_cast<int>(matches_.size()) < kMaxMatches; ++l)
-            {
-                const std::string& s = E.line(l);
-                for (std::size_t k = 0; k + needle.size() <= s.size(); ++k)
-                {
-                    bool same = true;
-                    for (std::size_t j = 0; j < needle.size() && same; ++j)
-                        same = low(s[k + j]) == low(needle[j]);
-                    if (!same)
-                        continue;
-                    if (wholeWord_ && ((k > 0 && lang::isIdentChar(s[k - 1]))
-                                       || (k + needle.size() < s.size() && lang::isIdentChar(s[k + needle.size()]))))
-                        continue;
-                    matches_.push_back({ { l, static_cast<int>(k) }, { l, static_cast<int>(k + needle.size()) } });
-                    k += needle.size() - 1;
-                }
-            }
-        }
-        // The current one: the selection's, else none.
         current_ = -1;
+        if (allFiles_)
+        {
+            // Every file's tab as text, in the tabs' order: never a view (the IR's is past them), never a netlist's *@
+            // lines (its drawing: a replace there would move it). The cap holds across them.
+            allRev_ = filesRevision();
+            const int files = tabs_.count();
+            std::vector<funkgui::TextRange> found;
+            for (int i = 0; i < files; ++i)
+            {
+                found.clear();
+                funkgui::TextEditor& T = tabs_.editor(i);
+                if (!needle.empty() && !capped_)
+                    capped_ = !scanMatches(T, needle, matchCase_, wholeWord_, fileKindOf(tabs_.name(i)) == FileKind::Circuit,
+                                           static_cast<std::size_t>(kMaxMatches) - all_.size(), found);
+                matchFiles_ += found.empty() ? 0 : 1;
+                for (const funkgui::TextRange& r : found)
+                {
+                    if (i == matchesTab_ && E.hasSelection() && r.from == E.selectionStart() && r.to == E.selectionEnd())
+                        current_ = static_cast<int>(all_.size());
+                    all_.push_back({ i, r });
+                    if (i == matchesTab_)
+                        matches_.push_back(r);
+                }
+                std::vector<funkgui::Decoration> decos;
+                decos.reserve(found.size());
+                for (std::size_t k = 0; k < found.size(); ++k)
+                {
+                    const bool cur = current_ >= 0 && all_[static_cast<std::size_t>(current_)].tab == i
+                                     && all_[static_cast<std::size_t>(current_)].range.from == found[k].from;
+                    decos.push_back({ found[k].from, found[k].to, cur ? funkgui::DecorationKind::findCurrent : funkgui::DecorationKind::findMatch });
+                }
+                T.setDecorations(std::move(decos), funkgui::kFindDecorations);
+            }
+            if (matchesTab_ >= files)                    // a view shown: none of its text is found
+                E.setDecorations({}, funkgui::kFindDecorations);
+            layoutList();
+            return;
+        }
+        if (!needle.empty())
+            capped_ = !scanMatches(E, needle, matchCase_, wholeWord_, false, static_cast<std::size_t>(kMaxMatches), matches_);
+        // The current one: the selection's, else none.
         for (std::size_t k = 0; k < matches_.size(); ++k)
             if (E.hasSelection() && matches_[k].from == E.selectionStart() && matches_[k].to == E.selectionEnd())
                 current_ = static_cast<int>(k);
@@ -2075,12 +2341,61 @@ namespace playground::ui
 
     void CodeAssist::showMatch(int k)
     {
+        if (allFiles_)
+        {
+            showFileMatch(k);
+            return;
+        }
         if (k < 0 || k >= static_cast<int>(matches_.size()))
             return;
         funkgui::TextEditor& E = ed();
         E.select(matches_[static_cast<std::size_t>(k)].from, matches_[static_cast<std::size_t>(k)].to);
         E.scrollToCaret();
         updateMatches();
+    }
+
+    void CodeAssist::showFileMatch(int k)
+    {
+        if (k < 0 || k >= static_cast<int>(all_.size()))
+            return;
+        const FileMatch m = all_[static_cast<std::size_t>(k)];
+        if (m.tab != activeTab())
+        {
+            // Its tab shown as the user's click shows it (the strip brings it into view), a netlist in its Netlist view.
+            if (tabs_.showText)
+                tabs_.showText(m.tab);
+            else
+                tabs_.show(m.tab);
+            if (activeTab() != m.tab || !findOpen_)
+                return;
+        }
+        funkgui::TextEditor& E = ed();
+        if (findFocus_)
+            E.setFocused(false);                         // the bar keeps the keys
+        E.select(m.range.from, m.range.to);
+        E.scrollToCaret();
+        updateMatches();
+        if (current_ >= 0 && listShown())
+        {
+            layoutList();
+            const float rh = rowH();
+            list_.reveal(static_cast<float>(current_) * rh, static_cast<float>(current_ + 1) * rh);
+        }
+    }
+
+    bool CodeAssist::currentRange(funkgui::TextRange& out) const
+    {
+        if (allFiles_)
+        {
+            if (current_ < 0 || current_ >= static_cast<int>(all_.size()) || all_[static_cast<std::size_t>(current_)].tab != activeTab())
+                return false;
+            out = all_[static_cast<std::size_t>(current_)].range;
+            return true;
+        }
+        if (current_ < 0 || current_ >= static_cast<int>(matches_.size()))
+            return false;
+        out = matches_[static_cast<std::size_t>(current_)];
+        return true;
     }
 
     bool CodeAssist::findNext(bool forward)
@@ -2091,11 +2406,51 @@ namespace playground::ui
                 openFind(false);
             return false;
         }
-        if (matchesRev_ != ed().revision() || matchesTab_ != activeTab() || matchesNeedle_ != findEdit_.buffer)
+        if (matchesRev_ != ed().revision() || matchesTab_ != activeTab() || matchesNeedle_ != findEdit_.buffer
+            || (allFiles_ && allRev_ != filesRevision()))
             updateMatches();
+        funkgui::TextEditor& E = ed();
+        if (allFiles_)
+        {
+            // Every match in the tabs' order, from the selection in the tab shown (from the first, or the last, while a
+            // view shows), round to the first again.
+            if (all_.empty())
+                return false;
+            const int at = activeTab();
+            const bool view = at >= tabs_.count();
+            const TextPos from = forward ? E.selectionEnd() : E.selectionStart();
+            const auto selected = [&](const FileMatch& m) {
+                return m.tab == at && E.hasSelection() && m.range.from == E.selectionStart();
+            };
+            const int n = static_cast<int>(all_.size());
+            int k = -1;
+            if (forward)
+            {
+                for (int i = 0; i < n && k < 0 && !view; ++i)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(i)];
+                    if ((m.tab > at || (m.tab == at && from <= m.range.from)) && !selected(m))
+                        k = i;
+                }
+                if (k < 0)
+                    k = 0;
+            }
+            else
+            {
+                for (int i = n - 1; i >= 0 && k < 0 && !view; --i)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(i)];
+                    if ((m.tab < at || (m.tab == at && m.range.to <= from)) && !selected(m))
+                        k = i;
+                }
+                if (k < 0)
+                    k = n - 1;
+            }
+            showFileMatch(k);
+            return true;
+        }
         if (matches_.empty())
             return false;
-        funkgui::TextEditor& E = ed();
         const TextPos from = forward ? E.selectionEnd() : E.selectionStart();
         int k = -1;
         if (forward)
@@ -2121,9 +2476,9 @@ namespace playground::ui
     bool CodeAssist::replaceOne()
     {
         funkgui::TextEditor& E = ed();
-        if (current_ < 0 || current_ >= static_cast<int>(matches_.size()))
+        funkgui::TextRange m;
+        if (!currentRange(m))
             return findNext(true);
-        const funkgui::TextRange m = matches_[static_cast<std::size_t>(current_)];
         if (!E.replaceRange(m.from, m.to, replaceEdit_.buffer))
             return false;
         updateMatches();
@@ -2135,6 +2490,37 @@ namespace playground::ui
     {
         funkgui::TextEditor& E = ed();
         updateMatches();
+        if (allFiles_)
+        {
+            // Every file's matches, one applyEdits a tab, tied into one undo step across them (Tabs::editAcross).
+            std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits;
+            for (const FileMatch& m : all_)
+            {
+                if (tabs_.editor(m.tab).options().readOnly)
+                    continue;
+                if (edits.empty() || edits.back().first != m.tab)
+                    edits.push_back({ m.tab, {} });
+                edits.back().second.push_back({ m.range.from, m.range.to, replaceEdit_.buffer });
+            }
+            int n = 0;
+            for (const auto& e : edits)
+                n += static_cast<int>(e.second.size());
+            const int files = static_cast<int>(edits.size());
+            if (n == 0)
+                return 0;
+            bool done = false;
+            if (tabs_.editAcross)
+                done = tabs_.editAcross(std::move(edits));
+            else
+                for (auto& e : edits)
+                    done = tabs_.editor(e.first).applyEdits(std::move(e.second)) || done;
+            if (!done)
+                return 0;
+            updateMatches();
+            tabs_.notice("REPLACED " + thousands(static_cast<std::size_t>(n)) + " IN " + std::to_string(files)
+                         + (files == 1 ? " FILE" : " FILES"));
+            return n;
+        }
         std::vector<funkgui::TextEdit> edits;
         for (const funkgui::TextRange& m : matches_)
             edits.push_back({ m.from, m.to, replaceEdit_.buffer });
@@ -2144,6 +2530,70 @@ namespace playground::ui
         updateMatches();
         tabs_.notice("REPLACED " + std::to_string(n));
         return n;
+    }
+
+    std::string CodeAssist::findCountText() const
+    {
+        if (findEdit_.buffer.empty())
+            return {};
+        const std::size_t n = allFiles_ ? all_.size() : matches_.size();
+        if (n == 0)
+            return "No results";
+        const std::string total = thousands(n) + (capped_ ? "+" : "");
+        std::string t = current_ >= 0 ? std::to_string(current_ + 1) + " of " + total
+                                      : total + (allFiles_ ? "" : " found");
+        if (allFiles_)
+            t += " in " + std::to_string(matchFiles_) + (matchFiles_ == 1 ? " file" : " files");
+        return t;
+    }
+
+    int CodeAssist::findMatchTab(int k) const
+    {
+        return k >= 0 && k < static_cast<int>(all_.size()) ? all_[static_cast<std::size_t>(k)].tab : -1;
+    }
+
+    funkgui::TextRange CodeAssist::findMatchRange(int k) const
+    {
+        return k >= 0 && k < static_cast<int>(all_.size()) ? all_[static_cast<std::size_t>(k)].range : funkgui::TextRange{};
+    }
+
+    // ---- the results list (all files) ---------------------------------------------------------------------------
+    bool CodeAssist::listShown() const { return findOpen_ && allFiles_ && !all_.empty() && !listRect().isEmpty(); }
+
+    funkgui::Rect CodeAssist::listRect() const
+    {
+        // Under the bar, as wide; kListRows rows of the text size at most, as many as the editor leaves room for.
+        const Rect b = findBarRect();
+        const Rect e = editorRect();
+        const float rh = rowH();
+        const float top = b.bottom() + 4.0f;
+        const int room = static_cast<int>(std::floor((e.bottom() - 8.0f - top - 8.0f) / rh));
+        const int rows = std::min({ kListRows, static_cast<int>(all_.size()), room });
+        if (rows < 1)
+            return {};
+        return { b.x, top, b.w, static_cast<float>(rows) * rh + 8.0f };
+    }
+
+    void CodeAssist::layoutList() const
+    {
+        const Rect r = listRect();
+        list_.row = rowH();
+        list_.view = std::max(0.0f, r.h - 8.0f);
+        list_.content = static_cast<float>(all_.size()) * rowH();
+        list_.clamp();
+    }
+
+    funkgui::Rect CodeAssist::findListRow(int k) const
+    {
+        if (!listShown() || k < 0 || k >= static_cast<int>(all_.size()))
+            return {};
+        layoutList();
+        const Rect r = listRect();
+        const float rh = rowH();
+        const float y = r.y + 4.0f + static_cast<float>(k) * rh - list_.offset;
+        if (y < r.y + 4.0f - 0.5f || y + rh > r.bottom() - 4.0f + 0.5f)
+            return {};
+        return { r.x + 4.0f, y, r.w - 8.0f, rh };
     }
 
     bool CodeAssist::findKey(const funkgui::KeyEvent& e)
@@ -2189,6 +2639,8 @@ namespace playground::ui
                         replaceOpen_ = true;
                         findField_ = 1;
                     }
+                    else if ((c == 'f' || c == 'F') && e.mods.shift)
+                        setAllFiles(true);               // Shift-Cmd-F: find in all files
                     else if (c == 'f' || c == 'F' || c == 'a' || c == 'A')
                         f.allSelected = !f.buffer.empty();
                     if (findField_ == 0)
@@ -2211,11 +2663,24 @@ namespace playground::ui
         f.key(e, kMaxFind);
         if (findField_ == 0 && f.buffer != before)
         {
-            // Incremental: the first match from the selection's start.
+            // Incremental: the first match from the selection's start (all files: in the tab shown, else the next tab's).
             funkgui::TextEditor& E = ed();
             const TextPos from = E.selectionStart();
             E.setCaret(from);
             updateMatches();
+            if (allFiles_)
+            {
+                const int at = activeTab();
+                for (std::size_t k = 0; k < all_.size(); ++k)
+                    if (all_[k].tab > at || (all_[k].tab == at && from <= all_[k].range.from))
+                    {
+                        showFileMatch(static_cast<int>(k));
+                        return true;
+                    }
+                if (!all_.empty())
+                    showFileMatch(0);
+                return true;
+            }
             for (std::size_t k = 0; k < matches_.size(); ++k)
                 if (from <= matches_[k].from)
                 {
@@ -2337,9 +2802,9 @@ namespace playground::ui
     funkgui::Rect CodeAssist::goToBarRect() const
     {
         const Rect e = editorRect();
-        const float w = std::min(kGoToW, e.w - 100.0f);
+        const float w = std::min(kGoToW * std::max(1.0f, sizeScale()), e.w - 100.0f);
         const float minimap = 72.0f + 18.0f;
-        return { e.right() - w - minimap, e.y + 4.0f, w, kFindRowH + 4.0f };
+        return { e.right() - w - minimap, e.y + 4.0f, w, findRowH() + 4.0f };
     }
 
     // ---- geometry ---------------------------------------------------------------------------------------------------
@@ -2352,35 +2817,37 @@ namespace playground::ui
         const funkgui::Point at = E.pointOf({ completion_->replace.from.line, completion_->replace.from.col });
         const int n = static_cast<int>(completion_->items.size());
         g.rows = std::min(n, kRows);
-        const float listH = static_cast<float>(g.rows) * kRowH;
+        const float listH = static_cast<float>(g.rows) * rowH();
+        const float popW = popupW();
         // The chosen item's detail: its signature (a line) and its documentation (up to four lines), or nothing.
         float detailH = 0.0f;
         if (choice_ >= 0 && choice_ < n)
         {
             const lang::Completion& it = completion_->items[static_cast<std::size_t>(choice_)];
-            const std::size_t docLines = wrap(reflow(it.doc), chat::kSmall, kPopupW - 24.0f, it.detail.empty() ? 4 : 3).size();
+            const std::size_t docLines = wrap(reflow(it.doc), chat::kSmall, popW - 24.0f, it.detail.empty() ? 4 : 3).size();
             const bool hasDoc = !it.doc.empty();
             if (!it.detail.empty() || hasDoc)
-                detailH = 12.0f + (it.detail.empty() ? 0.0f : 18.0f) + (hasDoc ? 14.0f * static_cast<float>(docLines) : 0.0f);
+                detailH = 12.0f + (it.detail.empty() ? 0.0f : codeLineH()) + (hasDoc ? 14.0f * static_cast<float>(docLines) : 0.0f);
         }
-        detailH = std::min(detailH, kDetailH);
+        detailH = std::min(detailH, kDetailH - kCodeLineH + codeLineH());
         const float h = listH + detailH + 2.0f * 4.0f;
-        float x = std::min(at.x - 30.0f, panelW - kPopupW - 8.0f);
+        float x = std::min(at.x - 30.0f, panelW - popW - 8.0f);
         x = std::max(8.0f, x);
         float y = at.y + E.rowHeight() + 2.0f;
         if (y + h > panelH - 8.0f)
             y = std::max(8.0f, at.y - h - 2.0f);
-        g.box = { x, y, kPopupW, h };
-        g.list = { x + 4.0f, y + 4.0f, kPopupW - 8.0f, listH };
-        g.detail = { x + 4.0f, y + 4.0f + listH, kPopupW - 8.0f, detailH };
+        g.box = { x, y, popW, h };
+        g.list = { x + 4.0f, y + 4.0f, popW - 8.0f, listH };
+        g.detail = { x + 4.0f, y + 4.0f + listH, popW - 8.0f, detailH };
         return g;
     }
 
     funkgui::Rect CodeAssist::findBarRect() const
     {
         const Rect e = editorRect();
-        const float w = std::min(kFindW, e.w - 100.0f);
-        const float h = replaceOpen_ ? 2.0f * kFindRowH + 6.0f : kFindRowH + 4.0f;
+        const float w = std::min((kFindW + (allFiles_ ? kFilesExtraW : 0.0f)) * std::max(1.0f, sizeScale()), e.w - 100.0f);
+        const float rh = findRowH();
+        const float h = replaceOpen_ ? 2.0f * rh + 6.0f : rh + 4.0f;
         const float minimap = 72.0f + 18.0f;
         return { e.right() - w - minimap, e.y + 4.0f, w, h };
     }
@@ -2389,17 +2856,22 @@ namespace playground::ui
     {
         FindParts f;
         f.bar = findBarRect();
-        const float y = f.bar.y + 3.0f, h = kFindRowH - 4.0f;
-        f.toggle = { f.bar.x + 3.0f, y, 18.0f, replaceOpen_ ? 2.0f * kFindRowH - 2.0f : h };
+        const float rh = findRowH();
+        const float y = f.bar.y + 3.0f, h = rh - 4.0f;
+        f.toggle = { f.bar.x + 3.0f, y, 18.0f, replaceOpen_ ? 2.0f * rh - 2.0f : h };
         const float right = f.bar.right() - 4.0f;
         f.close = { right - 22.0f, y + 2.0f, 22.0f, h - 4.0f };
         f.next = { f.close.x - 24.0f, y + 2.0f, 22.0f, h - 4.0f };
         f.prev = { f.next.x - 24.0f, y + 2.0f, 22.0f, h - 4.0f };
-        f.count = { f.prev.x - 70.0f, y, 66.0f, h };
-        f.wordBtn = { f.count.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
+        // The counter as wide as its words (66 px at least), leaving the field 80 px: all files' are longer.
+        const float roomLeft = f.prev.x - 4.0f - (f.toggle.right() + 4.0f) - 3.0f * 26.0f - 4.0f - 80.0f;
+        const float countW = std::clamp(widthOf(findCountText(), chat::kSmall) + 10.0f, 66.0f, std::max(66.0f, roomLeft));
+        f.count = { f.prev.x - 4.0f - countW, y, countW, h };
+        f.filesBtn = { f.count.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
+        f.wordBtn = { f.filesBtn.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.caseBtn = { f.wordBtn.x - 26.0f, y + 3.0f, 24.0f, h - 6.0f };
         f.field = { f.toggle.right() + 4.0f, y, std::max(40.0f, f.caseBtn.x - 4.0f - f.toggle.right() - 4.0f), h };
-        const float y2 = y + kFindRowH;
+        const float y2 = y + rh;
         f.allBtn = { right - 40.0f, y2 + 2.0f, 40.0f, h - 4.0f };
         f.replaceBtn = { f.allBtn.x - 62.0f, y2 + 2.0f, 58.0f, h - 4.0f };
         f.replaceField = { f.field.x, y2, f.field.w, h };
@@ -2420,27 +2892,51 @@ namespace playground::ui
         if (hasPanelSwitch())
             s.panel = panelSwitchLabelled() ? take(kPanelWord, kPanelIconRoom) : take("", kPanelGlyphW - 2.0f);
         s.formatOnRun = take("Format on Run", 14.0f);
+        if (sizeShown())
+            s.size = take(codesize::label(size_), 0.0f);
         s.language = take(viewShown() ? "LLVM IR" : language(activeTab()), 0.0f);
         s.indent = take(viewShown() ? "Spaces: 2" : "Spaces: 4", 0.0f);
         const funkgui::TextEditor& E = ed();
         char buf[64];
         std::snprintf(buf, sizeof buf, "Ln %d, Col %d", E.caret().line + 1, E.caret().col + 1);
         s.position = take(buf, E.hasSelection() ? widthOf(" (999 selected)", st) : 0.0f);
-        s.problems = { r.x + 4.0f, r.y, std::max(0.0f, std::min(200.0f, s.position.x - r.x - 8.0f)), r.h };
+        // The magnifier at the line's left: find and replace (a click; Cmd-F, Cmd-Alt-F, Shift-Cmd-F).
+        s.find = { r.x + 2.0f, r.y, kFindIconW, r.h };
+        const float left = s.find.right();
+        s.problems = { left, r.y, std::max(0.0f, std::min(200.0f, s.position.x - left - 4.0f)), r.h };
         return s;
+    }
+
+    float CodeAssist::widestParts() const
+    {
+        // The line's parts at their widest but the Panel switch and the size: Format on Run, the IR's name, the indent,
+        // a long place with a selection's count. The word stays put as the caret moves.
+        const funkgui::TextStyle& st = chat::kSmall;
+        // (The magnifier at the line's left is inside the problems' room, kProblemsRoom, as their own icon is.)
+        return widthOf("Format on Run", st) + 16.0f + 14.0f                       // Format on Run
+             + widthOf("LLVM IR", st) + 16.0f                                     // the language
+             + widthOf("Spaces: 4", st) + 16.0f                                   // the indent
+             + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+    }
+
+    bool CodeAssist::sizeShown() const
+    {
+        // A size other than 12 px, while the line leaves the problems' count and Checking... their room beside it with
+        // the switch's icon alone (a narrow program's card: the keys and the wheel still say it in the editor).
+        if (size_ == codesize::kDefault)
+            return false;
+        const float sizeW = widthOf(codesize::label(size_), chat::kSmall) + 16.0f;
+        const float icon = kPanelGlyphW - 2.0f + 16.0f;
+        return statusRect().w - 16.0f - widestParts() - icon - sizeW >= kProblemsRoom;
     }
 
     bool CodeAssist::panelSwitchLabelled() const
     {
-        // Its word while the line's other parts at their widest (a long place with a selection's count, the IR's name)
-        // leave the problems' count and Checking... their room: the word stays put as the caret moves, and goes only
-        // near the program's card's least width.
+        // Its word while the line's other parts at their widest leave the problems' count and Checking... their room:
+        // the word goes only near the program's card's least width.
         const funkgui::TextStyle& st = chat::kSmall;
-        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom          // the switch, its word
-                          + widthOf("Format on Run", st) + 16.0f + 14.0f              // Format on Run
-                          + widthOf("LLVM IR", st) + 16.0f                            // the language
-                          + widthOf("Spaces: 4", st) + 16.0f                          // the indent
-                          + widthOf("Ln 9999, Col 99", st) + 16.0f + widthOf(" (999 selected)", st);   // the place
+        const float sizeW = sizeShown() ? widthOf(codesize::label(size_), st) + 16.0f : 0.0f;
+        const float parts = widthOf(kPanelWord, st) + 16.0f + kPanelIconRoom + widestParts() + sizeW;
         return statusRect().w - 16.0f - parts >= kProblemsRoom;
     }
 
@@ -2460,6 +2956,7 @@ namespace playground::ui
         const bool dark = th.ground.r < 128;
         const funkgui::Canvas::Scope s(c, kCodeTag, false);
         const funkgui::TextStyle& st = chat::kSmall;
+        const funkgui::TextStyle code = codeStyle();     // the bars' fields
         // The status line.
         {
             const Rect r = statusRect();
@@ -2468,9 +2965,11 @@ namespace playground::ui
             const StatusParts parts = statusParts();
             const float mid = r.centreY();
             const float top = c.capCentreTop(mid, st);
+            // The magnifier: find and replace (lit while the bar is open).
+            chat::drawIcon(c, chat::Icon::search, parts.find.centreX(), mid, 11.0f, findOpen_ ? p.accent : p.dim);
             // The problems' count; a view's (the IR's) place says it is read only, and its size.
             const int errors = errorCount(), warnings = warningCount();
-            float x = parts.problems.x + 6.0f;
+            float x = parts.problems.x + 2.0f;
             constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF }, kAmber{ 0xE2, 0xA3, 0x36, 0xFF };
             if (viewShown())
             {
@@ -2525,6 +3024,8 @@ namespace playground::ui
             if (on)
                 chat::drawIcon(c, chat::Icon::check, box.centreX(), box.centreY(), 9.0f, p.onAccent);
             c.text("Format on Run", parts.formatOnRun.right() - 8.0f, top, st, on ? p.text : p.faint, funkgui::Align::right);
+            if (parts.size.w > 0.0f)
+                c.text(codesize::label(size_).c_str(), parts.size.right() - 8.0f, top, st, p.soft, funkgui::Align::right);
             // The Panel switch: a window with its panel at the bottom, filled while the panel shows; its word beside it.
             if (hasPanelSwitch())
             {
@@ -2550,22 +3051,22 @@ namespace playground::ui
             c.rrect(f.bar.x + 1.0f, f.bar.y + 2.0f, f.bar.w, f.bar.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
             c.rrect(f.bar.x, f.bar.y, f.bar.w, f.bar.h, 6.0f, p.raised, 1.0f, p.composerEdge);
             chat::drawIcon(c, replaceOpen_ ? chat::Icon::chevronDown : chat::Icon::chevronRight, f.toggle.centreX(),
-                           f.bar.y + 3.0f + (kFindRowH - 4.0f) * 0.5f, 10.0f, p.soft);
+                           f.bar.y + 3.0f + (findRowH() - 4.0f) * 0.5f, 10.0f, p.soft);
             const auto field = [&](const Rect& r, const funkgui::text::LineEdit& edit, bool active, const char* placeholder) {
                 c.rrect(r.x, r.y + 2.0f, r.w, r.h - 4.0f, 4.0f, p.composer, 1.0f, active && findFocus_ ? p.accent : p.composerEdge);
-                const float t = c.capCentreTop(r.centreY(), kCode);
+                const float t = c.capCentreTop(r.centreY(), code);
                 const funkgui::Canvas::ClipScope clip(c, { r.x + 2.0f, r.y, r.w - 4.0f, r.h });
                 if (edit.buffer.empty())
-                    c.text(placeholder, r.x + 6.0f, t, kCode, p.faint);
+                    c.text(placeholder, r.x + 6.0f, t, code, p.faint);
                 else
                 {
                     if (edit.allSelected)
-                        c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, kCode), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                    c.text(edit.buffer.c_str(), r.x + 6.0f, t, kCode, p.text);
+                        c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, code), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                    c.text(edit.buffer.c_str(), r.x + 6.0f, t, code, p.text);
                 }
                 if (active && findFocus_)
                 {
-                    const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), kCode);
+                    const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), code);
                     c.rrect(cx, r.y + 6.0f, 1.5f, r.h - 12.0f, 0.0f, p.accent);
                 }
             };
@@ -2577,17 +3078,20 @@ namespace playground::ui
             };
             toggle(f.caseBtn, "Aa", matchCase_);
             toggle(f.wordBtn, "ab", wholeWord_);
-            char count[32];
-            if (findEdit_.buffer.empty())
-                count[0] = '\0';
-            else if (matches_.empty())
-                std::snprintf(count, sizeof count, "No results");
-            else if (current_ >= 0)
-                std::snprintf(count, sizeof count, "%d of %zu", current_ + 1, matches_.size());
-            else
-                std::snprintf(count, sizeof count, "%zu found", matches_.size());
-            c.text(count, f.count.centreX(), c.capCentreTop(f.count.centreY(), st), st,
-                   !findEdit_.buffer.empty() && matches_.empty() ? Col{ 0xE5, 0x48, 0x4D, 0xFF } : p.soft, funkgui::Align::centre);
+            // All files: two pages, one over the other.
+            toggle(f.filesBtn, "", allFiles_);
+            {
+                const Col ink = allFiles_ ? p.text : p.soft;
+                const float cx = std::round(f.filesBtn.centreX()), cy = std::round(f.filesBtn.centreY());
+                c.rrect(cx - 3.0f, cy - 6.0f, 8.0f, 10.0f, 1.5f, ink.withAlpha(0.0f), 1.1f, ink);
+                c.rrect(cx - 6.0f, cy - 3.0f, 8.0f, 10.0f, 1.5f, allFiles_ ? th.accentDim : p.raised, 1.1f, ink);
+            }
+            {
+                const std::string count = findCountText();
+                const funkgui::Canvas::ClipScope clip(c, f.count);
+                c.text(count.c_str(), f.count.centreX(), c.capCentreTop(f.count.centreY(), st), st,
+                       !findEdit_.buffer.empty() && findCount() == 0 ? Col{ 0xE5, 0x48, 0x4D, 0xFF } : p.soft, funkgui::Align::centre);
+            }
             chat::drawIcon(c, chat::Icon::chevronUp, f.prev.centreX(), f.prev.centreY(), 10.0f, p.soft);
             chat::drawIcon(c, chat::Icon::chevronDown, f.next.centreX(), f.next.centreY(), 10.0f, p.soft);
             chat::drawIcon(c, chat::Icon::cross, f.close.centreX(), f.close.centreY(), 9.0f, p.soft);
@@ -2599,6 +3103,58 @@ namespace playground::ui
                 c.rrect(f.allBtn.x, f.allBtn.y, f.allBtn.w, f.allBtn.h, 4.0f, p.hover);
                 c.text("All", f.allBtn.centreX(), c.capCentreTop(f.allBtn.centreY(), st), st, p.text, funkgui::Align::centre);
             }
+            // All files: the results list under the bar, a row a match (file:line, then the line from its first
+            // character, the match marked), in the code's font and rows at the text size; the current one lit.
+            if (listShown())
+            {
+                layoutList();
+                const Rect L = listRect();
+                c.rrect(L.x + 1.0f, L.y + 2.0f, L.w, L.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
+                c.rrect(L.x, L.y, L.w, L.h, 6.0f, p.raised, 1.0f, p.composerEdge);
+                const Rect in{ L.x + 4.0f, L.y + 4.0f, L.w - 8.0f, L.h - 8.0f };
+                const funkgui::Canvas::ClipScope clip(c, in);
+                const float rh = rowH();
+                const int first = std::max(0, static_cast<int>(std::floor(list_.offset / rh)));
+                const int last = std::min(static_cast<int>(all_.size()), static_cast<int>(std::ceil((list_.offset + in.h) / rh)) + 1);
+                const float barRoom = list_.shown() ? Scroll::kBarW + 2.0f * Scroll::kBarInset : 0.0f;
+                for (int k = first; k < last; ++k)
+                {
+                    const FileMatch& m = all_[static_cast<std::size_t>(k)];
+                    const float y = in.y + static_cast<float>(k) * rh - list_.offset;
+                    if (k == current_)                   // the current one: lit, an accent bar at its left
+                    {
+                        c.rrect(in.x, y, in.w - barRoom, rh, 4.0f, p.hover);
+                        c.rrect(in.x, y + 3.0f, 2.5f, rh - 6.0f, 1.0f, p.accent);
+                    }
+                    const float t = c.capCentreTop(y + rh * 0.5f, code);
+                    const std::string place = tabs_.name(m.tab) + ":" + std::to_string(m.range.from.line + 1);
+                    c.text(place.c_str(), in.x + 6.0f, t, code, k == current_ ? p.soft : p.faint);
+                    float x = in.x + 6.0f + widthOf(place, code) + widthOf("  ", code);
+                    // The line from its first character; a match far in, from a little before it ("...").
+                    const std::string& line = tabs_.editor(m.tab).line(m.range.from.line);
+                    std::size_t from = line.find_first_not_of(" 	");
+                    if (from == std::string::npos || from > static_cast<std::size_t>(m.range.from.col))
+                        from = static_cast<std::size_t>(m.range.from.col);
+                    std::string lead;
+                    if (static_cast<std::size_t>(m.range.from.col) > from + 48)
+                    {
+                        from = static_cast<std::size_t>(m.range.from.col) - 24;
+                        while (from > 0 && (static_cast<unsigned char>(line[from]) & 0xC0) == 0x80)
+                            --from;                      // a whole character
+                        lead = "...";
+                    }
+                    const std::string before = lead + line.substr(from, static_cast<std::size_t>(m.range.from.col) - from);
+                    const std::string hit = line.substr(static_cast<std::size_t>(m.range.from.col),
+                                                        static_cast<std::size_t>(m.range.to.col - m.range.from.col));
+                    const std::string after = line.substr(static_cast<std::size_t>(m.range.to.col));
+                    const float hx = x + widthOf(before, code), hw = widthOf(hit, code);
+                    c.rrect(hx - 1.0f, y + 3.0f, hw + 2.0f, rh - 6.0f, 2.0f, th.accentDim);
+                    c.text(before.c_str(), x, t, code, p.soft);
+                    c.text(hit.c_str(), hx, t, code, p.text);
+                    c.text(after.c_str(), hx + hw, t, code, p.soft);
+                }
+                list_.draw(c, in, th);
+            }
         }
         // The go-to-line bar: one field, where the find bar sits.
         if (gotoOpen_)
@@ -2606,25 +3162,25 @@ namespace playground::ui
             const Rect b = goToBarRect();
             c.rrect(b.x + 1.0f, b.y + 2.0f, b.w, b.h, 6.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 90 : 30) });
             c.rrect(b.x, b.y, b.w, b.h, 6.0f, p.raised, 1.0f, p.composerEdge);
-            const Rect r{ b.x + 4.0f, b.y + 3.0f, b.w - 8.0f, kFindRowH - 4.0f };
+            const Rect r{ b.x + 4.0f, b.y + 3.0f, b.w - 8.0f, findRowH() - 4.0f };
             constexpr Col kRed{ 0xE5, 0x48, 0x4D, 0xFF };
             c.rrect(r.x, r.y + 2.0f, r.w, r.h - 4.0f, 4.0f, p.composer, 1.0f, gotoBad_ ? kRed : p.accent);
-            const float t = c.capCentreTop(r.centreY(), kCode);
+            const float t = c.capCentreTop(r.centreY(), code);
             const funkgui::Canvas::ClipScope clip(c, { r.x + 2.0f, r.y, r.w - 4.0f, r.h });
             const funkgui::text::LineEdit& edit = gotoEdit_;
             if (edit.buffer.empty())
             {
                 char hint[96];
                 std::snprintf(hint, sizeof hint, "Go to line 1 to %d (or line:column)", ed().lineCount());
-                c.text(hint, r.x + 6.0f, t, kCode, p.faint);
+                c.text(hint, r.x + 6.0f, t, code, p.faint);
             }
             else
             {
                 if (edit.allSelected)
-                    c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, kCode), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                c.text(edit.buffer.c_str(), r.x + 6.0f, t, kCode, gotoBad_ ? kRed : p.text);
+                    c.rrect(r.x + 5.0f, r.y + 5.0f, std::min(widthOf(edit.buffer, code), r.w - 10.0f) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                c.text(edit.buffer.c_str(), r.x + 6.0f, t, code, gotoBad_ ? kRed : p.text);
             }
-            const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), kCode);
+            const float cx = r.x + 6.0f + widthOf(std::string_view(edit.buffer).substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(edit.buffer.size())))), code);
             c.rrect(cx, r.y + 6.0f, 1.5f, r.h - 12.0f, 0.0f, p.accent);
         }
     }
@@ -2637,6 +3193,8 @@ namespace playground::ui
         const bool dark = th.ground.r < 128;
         const funkgui::Canvas::Scope s(c, kCodePopupTag, false);
         const funkgui::TextEditor& E = ed();
+        const funkgui::TextStyle codeSt = codeStyle(), cardSt = cardCodeStyle();   // at the text size
+        const float lineH = codeLineH(), rowHt = rowH(), cardW = cardMaxW();
         const auto card = [&](const Rect& r) {
             c.rrect(r.x + 1.0f, r.y + 3.0f, r.w, r.h, 7.0f, Col{ 0, 0, 0, static_cast<uint8_t>(dark ? 110 : 40) }, 0.0f, Col{}, 6.0f);
             c.rrect(r.x, r.y, r.w, r.h, 7.0f, p.raised, 1.0f, p.composerEdge);
@@ -2681,12 +3239,11 @@ namespace playground::ui
         if (signature_ && E.focused())
         {
             const lang::Signature& sig = *signature_;
-            const float lineH = 18.0f;
-            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, kCardMaxW - 2.0f * kPad, 4);
-            float inner = std::max(widthOf(sig.label, kCardCode), 120.0f);
+            std::vector<std::string> doc = wrap(reflow(sig.doc), chat::kSmall, cardW - 2.0f * kPad, 4);
+            float inner = std::max(widthOf(sig.label, cardSt), 120.0f);
             for (const std::string& l : doc)
                 inner = std::max(inner, widthOf(l, chat::kSmall));
-            const float w = std::min(kCardMaxW, inner + 2.0f * kPad);
+            const float w = std::min(cardW, inner + 2.0f * kPad);
             const float h = kPad * 2.0f + lineH + (doc.empty() ? 0.0f : 4.0f + 15.0f * static_cast<float>(doc.size()));
             const funkgui::Point at = E.pointOf(E.caret());
             float x = std::clamp(at.x - 20.0f, 8.0f, panelW - w - 8.0f);
@@ -2696,25 +3253,25 @@ namespace playground::ui
             const Rect r{ x, y, w, h };
             card(r);
             // The label, the active parameter in the accent, underlined.
-            const float top = c.capCentreTop(y + kPad + lineH * 0.5f, kCardCode);
+            const float top = c.capCentreTop(y + kPad + lineH * 0.5f, cardSt);
             float pen = x + kPad;
             int from = 0;
             const auto piece = [&](int a, int b, Col ink) {
                 if (b <= a)
                     return;
                 const std::string t = sig.label.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a));
-                c.text(t.c_str(), pen, top, kCardCode, ink);
-                pen += widthOf(t, kCardCode);
+                c.text(t.c_str(), pen, top, cardSt, ink);
+                pen += widthOf(t, cardSt);
             };
             if (sig.active >= 0 && sig.active < static_cast<int>(sig.params.size()))
             {
                 const auto [a, b] = sig.params[static_cast<std::size_t>(sig.active)];
                 piece(from, a, p.soft);
                 const float x0 = pen;
-                const funkgui::TextStyle strong{ kCardCode.px, kCardCode.tracking, 0.06f, true };
+                const funkgui::TextStyle strong{ cardSt.px, cardSt.tracking, 0.06f, true };
                 const std::string t = sig.label.substr(static_cast<std::size_t>(a), static_cast<std::size_t>(b - a));
                 c.text(t.c_str(), pen, top, strong, p.accent);
-                pen += widthOf(t, kCardCode);
+                pen += widthOf(t, cardSt);
                 c.segment(x0, y + kPad + lineH - 1.0f, pen, y + kPad + lineH - 1.0f, 1.0f, p.accent);
                 from = b;
             }
@@ -2743,16 +3300,17 @@ namespace playground::ui
             for (int k = 0; k < g.rows && first + k < n; ++k)
             {
                 const lang::Completion& it = completion_->items[static_cast<std::size_t>(first + k)];
-                const float y = g.list.y + static_cast<float>(k) * kRowH;
+                const float y = g.list.y + static_cast<float>(k) * rowHt;
                 if (first + k == choice_)
-                    c.rrect(g.list.x, y, g.list.w, kRowH, 4.0f, funkgui::mix(p.raised, th.accent, dark ? 0.22f : 0.16f));
+                    c.rrect(g.list.x, y, g.list.w, rowHt, 4.0f, funkgui::mix(p.raised, th.accent, dark ? 0.22f : 0.16f));
                 const KindLook look = kindLook(it.kind);
                 const Col kc = dark ? look.dark : look.light;
-                c.rrect(g.list.x + 6.0f, y + 4.0f, 14.0f, 14.0f, 3.0f, kc.withAlpha(0.16f), 1.0f, kc.withAlpha(0.7f));
+                const float mid = y + rowHt * 0.5f;
+                c.rrect(g.list.x + 6.0f, mid - 7.0f, 14.0f, 14.0f, 3.0f, kc.withAlpha(0.16f), 1.0f, kc.withAlpha(0.7f));
                 const char letter[2] = { look.letter, '\0' };
-                c.text(letter, g.list.x + 13.0f, c.capCentreTop(y + 11.0f, chat::kSmallStrong), chat::kSmallStrong, kc, funkgui::Align::centre);
+                c.text(letter, g.list.x + 13.0f, c.capCentreTop(mid, chat::kSmallStrong), chat::kSmallStrong, kc, funkgui::Align::centre);
                 // The label, the letters typed in the accent.
-                const float top = c.capCentreTop(y + kRowH * 0.5f, kCode);
+                const float top = c.capCentreTop(mid, codeSt);
                 float pen = g.list.x + 28.0f;
                 const std::string& prefix = completion_->prefix;
                 std::size_t k2 = 0;
@@ -2764,15 +3322,15 @@ namespace playground::ui
                     if (hit)
                         ++k2;
                     const char one[2] = { ch, '\0' };
-                    c.text(one, pen, top, kCode, hit ? p.accent : p.text);
-                    pen += widthOf(std::string_view(one, 1), kCode);
+                    c.text(one, pen, top, codeSt, hit ? p.accent : p.text);
+                    pen += widthOf(std::string_view(one, 1), codeSt);
                 }
                 // Its detail, at the right, faint.
                 const float room = g.list.right() - 8.0f - (pen + 16.0f);
                 if (room > 40.0f && !it.detail.empty())
                 {
                     const std::string d = fitText(c, it.detail, chat::kSmall, room);
-                    c.text(d.c_str(), g.list.right() - 8.0f, c.capCentreTop(y + kRowH * 0.5f, chat::kSmall), chat::kSmall,
+                    c.text(d.c_str(), g.list.right() - 8.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall,
                            first + k == choice_ ? p.dim : p.faint, funkgui::Align::right);
                 }
             }
@@ -2788,9 +3346,9 @@ namespace playground::ui
                 {
                     // (the item's own name plain unless it is a constant's: a local's of a constant's name)
                     const bool constant = it.kind == lang::Kind::constant || it.kind == lang::Kind::enumeration;
-                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, kCardCode,
+                    codeLine(it.code.empty() ? it.detail : it.code, d.x + 8.0f, y, d.w - 16.0f, cardSt,
                              constant ? std::vector<std::string>{} : std::vector<std::string>{ it.label });
-                    y += 18.0f;
+                    y += lineH;
                 }
                 for (const std::string& l : wrap(reflow(it.doc), chat::kSmall, d.w - 16.0f, it.detail.empty() ? 4 : 3))
                 {
@@ -2804,7 +3362,7 @@ namespace playground::ui
         if (hover_)
         {
             const lang::Hover& h = *hover_;
-            const float innerW = kCardMaxW - 2.0f * kPad;
+            const float innerW = cardW - 2.0f * kPad;
             std::vector<std::string> code;
             for (const std::string_view l : lang::splitLines(h.code))
                 if (!l.empty())
@@ -2816,13 +3374,13 @@ namespace playground::ui
                     problems.push_back(l);
             float w = 160.0f;
             for (const std::string& l : code)
-                w = std::max(w, widthOf(l, kCardCode));
+                w = std::max(w, widthOf(l, cardSt));
             for (const std::string& l : doc)
                 w = std::max(w, widthOf(l, chat::kSmall));
             for (const std::string& l : problems)
                 w = std::max(w, widthOf(l, chat::kSmall) + 14.0f);
-            w = std::min(kCardMaxW, w + 2.0f * kPad);
-            const float codeH = 18.0f * static_cast<float>(code.size());
+            w = std::min(cardW, w + 2.0f * kPad);
+            const float codeH = lineH * static_cast<float>(code.size());
             const float docH = 14.0f * static_cast<float>(doc.size());
             const float probH = 14.0f * static_cast<float>(problems.size());
             const float gap = (code.empty() ? 0.0f : 1.0f) + (doc.empty() ? 0.0f : 1.0f) + (problems.empty() ? 0.0f : 1.0f);
@@ -2833,6 +3391,7 @@ namespace playground::ui
             if (y < 8.0f)
                 y = word.y + E.rowHeight() + 4.0f;
             const Rect r{ x, y, w, hgt };
+            hoverDrawn_ = r;
             card(r);
             float dy = y + kPad;
             for (const std::string& l : problems)
@@ -2851,8 +3410,8 @@ namespace playground::ui
             }
             for (const std::string& l : code)
             {
-                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, kCardCode, h.plain);
-                dy += 18.0f;
+                codeLine(l, x + kPad, dy + 2.0f, w - 2.0f * kPad, cardSt, h.plain);
+                dy += lineH;
             }
             if (!code.empty() && !doc.empty())
             {
@@ -2872,7 +3431,19 @@ namespace playground::ui
         if (statusRect().contains(pointer))
         {
             const StatusParts s = statusParts();
-            if (s.formatOnRun.contains(pointer))
+            const auto upper = [&](std::string words) {
+                words = shortcutText(words);
+                for (char& ch : words)
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                std::snprintf(out, n, "%s", words.c_str());
+            };
+            if (s.find.contains(pointer))
+                upper(std::string("Find and replace   a click opens it   Cmd-F finds   Cmd-Alt-F")
+#if !defined(__APPLE__)
+                      + " (or Ctrl-H)"
+#endif
+                      + " replaces   Cmd-Shift-F in all files");
+            else if (s.formatOnRun.contains(pointer))
                 std::snprintf(out, n, "FORMAT ON RUN   %s   A CLICK TURNS IT %s   SHIFT-ALT-F FORMATS THE FILE NOW",
                               formatOnRun() ? "ON: RUN FORMATS EVERY FMINUS FILE FIRST" : "OFF", formatOnRun() ? "OFF" : "ON");
             else if (s.panel.contains(pointer))
@@ -2885,6 +3456,14 @@ namespace playground::ui
             }
             else if (s.position.contains(pointer))
                 std::snprintf(out, n, "LINE AND COLUMN   A CLICK (OR CTRL-G) GOES TO A LINE");
+            else if (s.size.contains(pointer))
+            {
+                std::string words = shortcutText("Text size " + codesize::label(size_) + ", " + kThisMachine
+                                                 + "'s   a click: 12 px   Cmd-= larger   Cmd-- smaller   Cmd-0 12 px");
+                for (char& ch : words)
+                    ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+                std::snprintf(out, n, "%s", words.c_str());
+            }
             else if (viewShown())
                 std::snprintf(out, n, "LLVM IR   READ ONLY: WHAT FMINUS MADE OF THE PROGRAM   CMD-F FINDS   CTRL-G GOES TO A LINE");
             else if (s.problems.contains(pointer))
@@ -2896,7 +3475,29 @@ namespace playground::ui
         }
         if (findOpen_ && findBarRect().contains(pointer))
         {
-            std::snprintf(out, n, "FIND   RETURN THE NEXT   SHIFT-RETURN THE ONE BEFORE   TAB THE OTHER FIELD   ESCAPE CLOSES");
+            const FindParts f = findParts();
+            std::string words;
+            if (f.caseBtn.contains(pointer))
+                words = std::string("Match case   ") + (matchCase_ ? "on" : "off") + "   a click turns it " + (matchCase_ ? "off" : "on");
+            else if (f.wordBtn.contains(pointer))
+                words = std::string("Whole word   ") + (wholeWord_ ? "on" : "off") + "   a click turns it " + (wholeWord_ ? "off" : "on");
+            else if (f.filesBtn.contains(pointer))
+                words = std::string("All files   ") + (allFiles_ ? "on: every file's tab" : "off: the tab shown")
+                      + "   a click turns it " + (allFiles_ ? "off" : "on") + "   Cmd-Shift-F opens find with it on";
+            else
+                words = "Find   Return the next   Shift-Return the one before   Tab the other field   Escape closes";
+            words = shortcutText(words);
+            for (char& ch : words)
+                ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            std::snprintf(out, n, "%s", words.c_str());
+            return true;
+        }
+        if (listShown() && listRect().contains(pointer))
+        {
+            std::snprintf(out, n, "FIND IN ALL FILES   %s   A CLICK GOES TO A MATCH   UP AND DOWN WALK THEM",
+                          findCountText().c_str());
+            for (char* q = out; *q != '\0'; ++q)
+                *q = static_cast<char>(std::toupper(static_cast<unsigned char>(*q)));
             return true;
         }
         if (gotoOpen_ && goToBarRect().contains(pointer))

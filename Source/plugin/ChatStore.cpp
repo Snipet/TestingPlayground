@@ -270,8 +270,32 @@ namespace playground::chatstore
             return diff == 0;
         }
 
-        // Writes `bytes` to `file` (0600) through a temporary beside it, renamed over it. `unique`: the temporary's name
-        // is this write's own (a chat's file, which two processes may write at once).
+        // `from` renamed over `to` in one step: the old file stays whole until the new one takes its place (never JUCE's
+        // moveFileTo, which deletes the old file first). Windows: MoveFileExW, tried again for up to half a second while
+        // a reader holds `to` without sharing its deletion (mcp::replacePath's way).
+        bool replaceFile(const juce::File& from, const juce::File& to)
+        {
+#if defined(_WIN32)
+            const std::wstring f = from.getFullPathName().toWideCharPointer(), t = to.getFullPathName().toWideCharPointer();
+            for (int tries = 0; tries < 100; ++tries)
+            {
+                if (MoveFileExW(f.c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING) != 0)
+                    return true;
+                const DWORD e = GetLastError();
+                if (e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED && e != ERROR_LOCK_VIOLATION)
+                    return false;
+                Sleep(5);
+            }
+            return false;
+#else
+            return std::rename(from.getFullPathName().toRawUTF8(), to.getFullPathName().toRawUTF8()) == 0;
+#endif
+        }
+
+        // Writes `bytes` to `file` (0600) through a temporary beside it, renamed over it once the temporary is known to
+        // hold them all: the stream unbuffered, so each write's own result is the system's (a full disk, a quota), and
+        // the temporary's size checked. On any failure the temporary goes and `file` is as it was. `unique`: the
+        // temporary's name is this write's own (a chat's file, which two processes may write at once).
         bool writePrivate(const juce::File& file, const void* bytes, std::size_t n, std::string* why, bool unique = false)
         {
             std::string suffix = ".tmp";
@@ -283,18 +307,26 @@ namespace playground::chatstore
             }
             const juce::File temp = file.getSiblingFile(file.getFileName() + juce::String(suffix));
             temp.deleteFile();
+            bool written = false;
             {
-                juce::FileOutputStream out(temp);
-                if (!out.openedOk() || !out.write(bytes, n))
+                juce::FileOutputStream out(temp, 0);
+                written = out.openedOk() && out.write(bytes, n);
+                if (written)
                 {
-                    if (why != nullptr)
-                        *why = "cannot write " + temp.getFullPathName().toStdString();
-                    return false;
+                    out.flush();
+                    written = out.getStatus().wasOk();
                 }
-                out.flush();
+            }
+            written = written && temp.getSize() == static_cast<juce::int64>(n);
+            if (!written)
+            {
+                temp.deleteFile();
+                if (why != nullptr)
+                    *why = "cannot write " + temp.getFullPathName().toStdString();
+                return false;
             }
             makePrivate(temp, 0600);
-            if (!temp.moveFileTo(file))
+            if (!replaceFile(temp, file))
             {
                 temp.deleteFile();
                 if (why != nullptr)
@@ -510,6 +542,15 @@ namespace playground::chatstore
             seen[itemKey(item)] = { kept, std::chrono::steady_clock::now() };
         }
 
+        // What the store said of `item` last here (a save it took, a look, a removal), however long ago: none when it
+        // said nothing yet.
+        std::optional<bool> lastSaid(const secrets::Item& item)
+        {
+            const std::lock_guard<std::mutex> lock(storeMutex);
+            const auto it = seen.find(itemKey(item));
+            return it != seen.end() ? std::optional<bool>(it->second.kept) : std::nullopt;
+        }
+
         // The store keys go to, when it can be asked now: a probe's; else none while the folder is a test's or a
         // probe's sandbox (a test never reaches the user's keyring); else the desktop's (SecretStore.h: Linux).
         secrets::Store* usableStore()
@@ -619,18 +660,23 @@ namespace playground::chatstore
 
         // Both places emptied: the store's item and the file, each whatever the other did. False, with why, when either
         // still holds the key: the store's is looked for again after clear() (a keyring the user left locked keeps it,
-        // and its clear says nothing: SecretStore.h).
+        // and its clear says nothing: SecretStore.h). A store that can be asked nothing (a session bus with no Secret
+        // Service behind it) and whose clear failed is taken to hold the key only when it said so last here, or, having
+        // said nothing, when there is no file (the key could only have come from it): one that never held it (every
+        // save fell back to the file) fails no removal.
         bool dropKey(const secrets::Item& item, const juce::File& file, std::string* why)
         {
             std::string problem;
+            const bool hadFile = file.existsAsFile();
             if (secrets::Store* store = usableStore())
             {
                 std::string w;
                 const bool cleared = store->clear(item, &w);
                 const int has = store->has(item, nullptr);
-                const bool left = has == 1 || (has < 0 && !cleared);   // not asked again either: as it was, kept
+                const std::optional<bool> said = lastSaid(item);
+                const bool left = has == 1 || (has < 0 && !cleared && (said ? *said : !hadFile));
                 remember(item, left);
-                if (!cleared)
+                if (left && !cleared)
                     problem = store->name() + ": " + (w.empty() ? std::string("it failed") : w);
                 else if (left)
                     problem = store->name() + " still holds it (it is locked: remove the key again, and unlock it when it asks)";
@@ -1039,13 +1085,55 @@ namespace playground::chatstore
             return juce::JSON::toString(v, true).toStdString();
         }
 
-        // A chat's .meta, or what its .chat file says of it when that is missing or damaged.
-        ChatMeta readMeta(const juce::File& dir, std::string_view id)
+        // Whether a chat's file was sealed here: its magic, and its MAC under this machine's keys (nothing decrypted).
+        // A file's answer is kept by its stamp (its time, size and identity: a save renames a new file in), so a list
+        // read again and again reads each such file once while it stays as it is.
+        bool sealedHere(const juce::File& file)
+        {
+            static std::mutex mutex;
+            static std::map<std::string, std::pair<Stamp, bool>> known;
+            const Stamp stamp = stampOf(file);
+            if (stamp.none())
+                return false;
+            const std::string path = file.getFullPathName().toStdString();
+            {
+                const std::lock_guard<std::mutex> lock(mutex);
+                if (const auto it = known.find(path); it != known.end() && it->second.first == stamp)
+                    return it->second.second;
+            }
+            bool ok = false;
+            juce::MemoryBlock block;
+            if (file.loadFileAsData(block))
+            {
+                const auto* bytes = static_cast<const uint8_t*>(block.getData());
+                const std::size_t n = block.getSize();
+                const bool shaped = n >= 4 + kSaltBytes + kIvBytes + kBlockBytes + kMacBytes
+                                 && sameBytes(bytes, reinterpret_cast<const uint8_t*>(kChatMagic), 4);
+                if (shaped)
+                    if (const std::optional<Keys> keys = keysOf(bytes + 4))
+                    {
+                        const auto tag = hmac(keys->mac, bytes, n - kMacBytes);
+                        ok = sameBytes(tag.data(), bytes + n - kMacBytes, kMacBytes);
+                    }
+            }
+            const std::lock_guard<std::mutex> lock(mutex);
+            if (known.size() >= 256)
+                known.clear();                       // the folders' chats: a few hundred at most
+            known[path] = { stamp, ok };
+            return ok;
+        }
+
+        // A chat's .meta, or what its .chat file says of it when that is missing or damaged (`fromMeta` false then).
+        ChatMeta readMeta(const juce::File& dir, std::string_view id, bool* fromMeta = nullptr)
         {
             ChatMeta m;
             m.id = std::string(id);
+            if (fromMeta != nullptr)
+                *fromMeta = false;
             if (const std::optional<std::string> text = unsealChat(metaFile(dir, id), nullptr))
             {
+                if (fromMeta != nullptr)
+                    *fromMeta = true;
                 const juce::var v = juce::JSON::parse(juce::String::fromUTF8(text->c_str()));
                 if (v.getDynamicObject() != nullptr && v["format"].toString() == "funk-playground-chat")
                 {
@@ -1141,8 +1229,15 @@ namespace playground::chatstore
         for (const juce::File& f : dir.findChildFiles(juce::File::findFiles, false, juce::String("*") + kChatExtension))
         {
             const std::string id = f.getFileNameWithoutExtension().toStdString();
-            if (validId(id))
-                out.push_back(readMeta(dir, id));
+            if (!validId(id))
+                continue;
+            // A .meta sealed here vouches for its chat (both are written together); without one, the chat itself must
+            // have been sealed here: a chat from another machine or account (a copied Library), or a damaged one,
+            // could be neither opened nor told apart in the list.
+            bool fromMeta = false;
+            ChatMeta m = readMeta(dir, id, &fromMeta);
+            if (fromMeta || sealedHere(f))
+                out.push_back(std::move(m));
         }
         std::sort(out.begin(), out.end(), [](const ChatMeta& a, const ChatMeta& b) {
             return a.updatedMs != b.updatedMs ? a.updatedMs > b.updatedMs : a.id < b.id;

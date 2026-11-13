@@ -57,6 +57,27 @@ namespace fake
                                                                                          { "output_tokens", 1 } }) } }) } }));
         }
 
+        // message_start with the cache writes split by lifetime (usage.cache_creation's ephemeral_5m_input_tokens and
+        // ephemeral_1h_input_tokens), cache_creation_input_tokens their sum, as the API reference has it.
+        Sse& startSplit(const std::string& model, int input, int cacheRead, int write5m, int write1h)
+        {
+            return event("message_start",
+                         claude::object({ { "type", "message_start" },
+                                          { "message",
+                                            claude::object({ { "id", "msg_fake" },
+                                                             { "type", "message" },
+                                                             { "role", "assistant" },
+                                                             { "model", juce::String(model) },
+                                                             { "content", juce::Array<juce::var>() },
+                                                             { "stop_reason", juce::var() },
+                                                             { "usage", claude::object({ { "input_tokens", input },
+                                                                                         { "cache_read_input_tokens", cacheRead },
+                                                                                         { "cache_creation_input_tokens", write5m + write1h },
+                                                                                         { "cache_creation", claude::object({ { "ephemeral_5m_input_tokens", write5m },
+                                                                                                                              { "ephemeral_1h_input_tokens", write1h } }) },
+                                                                                         { "output_tokens", 1 } }) } }) } }));
+        }
+
         Sse& thinking(const std::string& summary, const std::string& signature)
         {
             const int i = blocks_++;
@@ -527,6 +548,15 @@ namespace fake
             return raw(claude::object({ { "id", "chatcmpl-probe" }, { "object", "chat.completion.chunk" }, { "model", juce::String(model_) },
                                         { "choices", juce::Array<juce::var>() }, { "usage", u } }));
         }
+        // OpenRouter's usage chunk with its usage accounting's cost (USD).
+        OpenAiSse& usageCost(int prompt, int completion, int cached, double cost)
+        {
+            juce::var u = claude::object({ { "prompt_tokens", prompt }, { "completion_tokens", completion }, { "total_tokens", prompt + completion },
+                                           { "prompt_tokens_details", claude::object({ { "cached_tokens", cached } }) },
+                                           { "cost", cost } });
+            return raw(claude::object({ { "id", "chatcmpl-probe" }, { "object", "chat.completion.chunk" }, { "model", juce::String(model_) },
+                                        { "choices", juce::Array<juce::var>() }, { "usage", u } }));
+        }
         OpenAiSse& error(const std::string& message)
         {
             return raw(claude::object({ { "error", claude::object({ { "message", juce::String(message) }, { "code", 502 } }) } }));
@@ -623,6 +653,8 @@ namespace fake
         std::string defaultEffort = {};
         bool defaultEnabled = true, mandatory = false;
         int thinking = -1;
+        // OpenRouter's pricing (USD a token, as strings), written only when prompt is given.
+        std::string pricePrompt = {}, priceCompletion = {}, priceCacheRead = {};
     };
     inline std::string openAiModels(const std::vector<ListedModel>& models, bool openRouter = false)
     {
@@ -657,6 +689,14 @@ namespace fake
                                                                  { "mandatory", m.mandatory } }));
                 }
                 o->setProperty("supported_parameters", params);
+                if (!m.pricePrompt.empty())
+                {
+                    juce::var pricing = claude::object({ { "prompt", juce::String(m.pricePrompt) },
+                                                         { "completion", juce::String(m.priceCompletion) } });
+                    if (!m.priceCacheRead.empty())
+                        pricing.getDynamicObject()->setProperty("input_cache_read", juce::String(m.priceCacheRead));
+                    o->setProperty("pricing", pricing);
+                }
             }
             data.add(v);
         }

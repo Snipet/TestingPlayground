@@ -29,6 +29,15 @@ namespace playground
     {
         constexpr std::size_t kMaxImportBytes = 256 * 1024;   // a file brought in at most
         constexpr std::size_t kMaxFolderName = 64;            // an export's folder name at most
+        // The disk that takes two names differing only in case as one (an export refuses such a pair everywhere, so that
+        // the folder copies whole to any disk).
+#if defined(__APPLE__)
+        constexpr const char* kCaseBlindDisk = "this Mac's disk";
+#elif defined(_WIN32)
+        constexpr const char* kCaseBlindDisk = "this computer's disk";
+#else
+        constexpr const char* kCaseBlindDisk = "a disk that ignores case (macOS's and Windows' do)";
+#endif
 
         int lineCount(const std::string& t)
         {
@@ -157,8 +166,7 @@ namespace playground
         struct Incoming
         {
             std::string name, text;
-            int replaced = 0;                          // characters outside ASCII the editor holds as '?'
-            bool lineEnds = false;                     // CR LF (or CR) line ends, read as LF
+            std::string held;                          // what the editor's rule changed (asEditorHolds), or ""
         };
 
         // The program files of `given` (a file, or a folder's), checked; "" or why none is taken. `left`: what a folder
@@ -166,10 +174,11 @@ namespace playground
         std::string readFrom(const std::string& given, std::vector<Incoming>& out, std::vector<std::string>& left, std::string& where)
         {
             std::string path = juce::String(given).trim().toStdString();
-            if (path.rfind("~/", 0) == 0 || path == "~")
+            if (path == "~" || path.rfind("~/", 0) == 0 || path.rfind("~\\", 0) == 0)   // as kWholePath shows it
                 path = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString() + path.substr(1);
             if (path.empty() || !juce::File::isAbsolutePath(juce::String::fromUTF8(path.c_str())))
-                return "from names a file or a folder on this Mac, whole (/Users/... or ~/...): '" + given + "' is not one";
+                return std::string("from names a file or a folder on ") + kThisMachine + ", whole (" + kWholePath + "): '" + given
+                     + "' is not one";
             const juce::File named(juce::String::fromUTF8(path.c_str()));
             where = named.getFullPathName().toStdString();
             std::vector<juce::File> files;
@@ -229,7 +238,7 @@ namespace playground
                     problems += "\n- " + n + " could not be read";
                     continue;
                 }
-                Incoming in{ n, std::string(static_cast<const char*>(mb.getData()), mb.getSize()) };
+                Incoming in{ n, std::string(static_cast<const char*>(mb.getData()), mb.getSize()), {} };
                 if (!isText(in.text))
                 {
                     problems += "\n- " + n + " is not text (it holds a NUL byte, or bytes that are not UTF-8)";
@@ -248,10 +257,7 @@ namespace playground
                     left.push_back(n + " (the folder sync's read-only copy)");
                     continue;
                 }
-                in.replaced = outsideAscii(in.text);
-                in.lineEnds = in.text.find('\r') != std::string::npos;
-                if (in.replaced > 0 || in.lineEnds)
-                    in.text = funkgui::TextEditor::sanitise(in.text);
+                in.held = asEditorHolds(in.text);
                 out.push_back(std::move(in));
             }
             if (!problems.empty())
@@ -268,6 +274,26 @@ namespace playground
                 }();
             return {};
         }
+    }
+
+    std::string asEditorHolds(std::string& text)
+    {
+        const std::size_t nul = text.find('\0');            // sanitise reads the text to its first NUL
+        const std::string_view kept = std::string_view(text).substr(0, nul);
+        const int replaced = outsideAscii(kept);
+        const bool lineEnds = kept.find('\r') != std::string_view::npos;
+        if (replaced == 0 && !lineEnds && nul == std::string::npos)
+            return {};
+        text = funkgui::TextEditor::sanitise(text);
+        std::string out;
+        if (lineEnds)
+            out = "CR LF line ends read as LF";
+        if (replaced > 0)
+            out += (out.empty() ? "" : "; ") + std::to_string(replaced) + (replaced == 1 ? " character" : " characters")
+                 + " outside ASCII became '?', as the editor holds ASCII";
+        if (nul != std::string::npos)
+            out += std::string(out.empty() ? "" : "; ") + "what followed a NUL character was left out";
+        return out;
     }
 
     std::string ChatAgent::writeFileText(const juce::var& input, bool& isError)
@@ -302,7 +328,8 @@ namespace playground
         {
             const juce::var p = input.getProperty("path", juce::var()), n = input.getProperty("name", juce::var());
             if (!p.isString() || p.toString().trim().isEmpty() || (!n.isVoid() && !n.isString()))
-                return fail("path is an audio file on this Mac (WAV, AIFF or FLAC), and name, if given, the sample's name");
+                return fail(std::string("path is an audio file on ") + kThisMachine
+                            + " (WAV, AIFF or FLAC), and name, if given, the sample's name");
             std::string done, why;
             setActivity("Adding a sample");
             if (!host_.chatAddAsset(p.toString().toStdString(), n.isString() ? n.toString().toStdString() : std::string(), done, why))
@@ -324,7 +351,7 @@ namespace playground
             if (!good)
                 return fail("to is the export's folder name: letters, digits, spaces, _, - and ., not starting with '.', at most "
                             + std::to_string(kMaxFolderName) + " characters (a name, not a path: it goes in the plugin's "
-                              "Programs folder on this Mac)");
+                              "Programs folder on " + kThisMachine + ")");
             const Draft d = host_.chatDraft();
             if (d.files.empty())
                 return fail("The editor has no file to export.");
@@ -350,8 +377,8 @@ namespace playground
                 std::map<std::string, std::string> seen;
                 for (const Out& f : outs)
                     if (const auto [it, added] = seen.emplace(lowered(f.name), f.name); !added)
-                        return fail(it->second + " and " + f.name + " differ only in case, which this Mac's disk takes as one "
-                                    "name: rename one (rename_file) and export again. Nothing was exported.");
+                        return fail(it->second + " and " + f.name + " differ only in case, which " + kCaseBlindDisk
+                                    + " takes as one name: rename one (rename_file) and export again. Nothing was exported.");
             }
             const juce::File base = exportsFolder();
             if (!base.isDirectory() && !base.createDirectory().wasOk())
@@ -385,7 +412,7 @@ namespace playground
             note("exported the files to " + stem);
             return "Exported the editor's " + std::to_string(d.files.size()) + (d.files.size() == 1 ? " file" : " files")
                  + (sampled == 0 ? std::string() : " and the program's " + std::to_string(sampled) + (sampled == 1 ? " sample" : " samples"))
-                 + " as they are now, on this Mac (the user can open them), to " + dir.getFullPathName().toStdString()
+                 + " as they are now, on " + kThisMachine + " (the user can open them), to " + dir.getFullPathName().toStdString()
                  + (stem != to ? " (\"" + to + "\" was taken, and nothing is replaced)" : std::string()) + ":" + listed
                  + "\nIt changed nothing in the plugin.";
         }
@@ -401,7 +428,7 @@ namespace playground
             {
                 const juce::var f = input.getProperty("from", juce::var());
                 if (!f.isString())
-                    return fail("from is a path: a file or a folder on this Mac that the user named");
+                    return fail(std::string("from is a path: a file or a folder on ") + kThisMachine + " that the user named");
                 if (const std::string why = readFrom(f.toString().toStdString(), incoming, left, where); !why.empty())
                     return fail(where.empty() ? "Nothing was brought in: " + why : "From " + where + ": " + why);
             }
@@ -416,7 +443,8 @@ namespace playground
                     const juce::var n = e.getProperty("name", juce::var()), c = e.getProperty("content", juce::var());
                     if (!n.isString() || !c.isString())
                         return fail("files[" + std::to_string(k) + "] needs a name and the content");
-                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), 0, false });
+                    incoming.push_back({ n.toString().toStdString(), c.toString().toStdString(), {} });
+                    incoming.back().held = asEditorHolds(incoming.back().text);
                     if (assets::isAudioName(incoming.back().name))
                         return fail("files[" + std::to_string(k) + "]: " + audioRefusal(incoming.back().name) + ". Nothing was written");
                     if (!validFileName(incoming.back().name))
@@ -428,7 +456,8 @@ namespace playground
             for (const Incoming& in : incoming)
                 if (!names.insert(in.name).second)
                     return fail(in.name + " comes twice. Nothing was written");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             std::size_t added = 0;
             for (const Incoming& in : incoming)
                 added += findIn(d, in.name) < 0 ? 1 : 0;
@@ -465,16 +494,13 @@ namespace playground
                         + (before.count(in.name) == 0 ? "new" : "replaced");
                 if (kept > 0)
                     listed += "; kept the drawing's " + std::to_string(kept) + " *@ lines";
-                if (in.lineEnds)
-                    listed += "; CR LF line ends read as LF";
-                if (in.replaced > 0)
-                    listed += "; " + std::to_string(in.replaced) + (in.replaced == 1 ? " character" : " characters")
-                            + " outside ASCII became '?', as the editor holds ASCII";
+                if (!in.held.empty())
+                    listed += "; " + in.held;
                 listed += ")";
             }
             d.active = shown;
             setActivity(fromDisk ? "Bringing files in" : "Writing files");
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             std::string versions;
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
@@ -520,11 +546,13 @@ namespace playground
             file = n.toString().toStdString();
             content = c.toString().toStdString();
         }
+        const std::string held = asEditorHolds(content);
         if (assets::isAudioName(file))
             return fail(audioRefusal(file));
         if (!validFileName(file))
             return fail("'" + file + "' cannot name a file: use " + nameRule());
-        Draft d = host_.chatDraft();
+        const Draft read = host_.chatDraft();
+        Draft d = read;
         int i = findIn(d, file);
         int keptLines = 0;
         if (i < 0)
@@ -541,7 +569,7 @@ namespace playground
         }
         d.active = i;
         setActivity("Writing " + file);
-        host_.chatSetDraft(d);
+        host_.chatSetDraft(d, read);
         std::string version;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -551,7 +579,7 @@ namespace playground
         const int lines = lineCount(content);
         const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
         note("wrote " + file + " (" + count + ")");
-        std::string out = "Wrote " + file + " (" + count + "; version " + version + ").";
+        std::string out = "Wrote " + file + " (" + count + (held.empty() ? "" : "; " + held) + "; version " + version + ").";
         if (keptLines > 0)
             out += " Kept the drawing's " + std::to_string(keptLines) + " *@ lines; send edit_circuit 'layout' to redraw it.";
         bool included = i == 0;

@@ -20,10 +20,17 @@
 // several; a line that could be part of the change is never passed over, parseDiff); all or none across them, in one
 // write of the draft (chatSetDraftIf's, of every file it read), which the editor merges as one undo step across their
 // tabs (Panel.cpp's FilesItem::merge).
+// read_file's find shows `context` lines around each (0 to 10, 2 unless said), or with `count` only how many, and with
+// `skip` passes over that many, its last line saying what is left and the skip that reads on. edit_file's find
+// (replaceText) replaces every match of a text or a pattern (Regex::find: where, never a group) by new_text as it is,
+// line by line in find's own case, never a netlist's *@ line, in one file or every file: all or none, at most
+// kMaxReplaced, in one chatSetDraftIf of every file it read.
 #include "plugin/ChatAgent.h"
 
 #include "dsp/Regex.h"
 #include "dsp/TextDiff.h"
+#include "fminus/CirDoc.h"
+#include "fminus/Lang.h"
 
 #include <algorithm>
 #include <cctype>
@@ -38,7 +45,8 @@ namespace playground
     {
         constexpr std::size_t kMaxOutput = 12000;          // a numbered read's characters at most
         constexpr std::size_t kMaxFound = 40;              // find: the lines that hold it, shown at most
-        constexpr int kContext = 2;                        // find: lines around each
+        constexpr int kContext = 2;                        // find: lines around each, unless context says (0 to kMaxContext)
+        constexpr int kMaxContext = 10;
         constexpr int kMaxEdits = 32;                      // edit_file's edits a call
         constexpr std::size_t kMaxHunks = 256;             // a diff's hunks a file (each one scan of the file's text)
         constexpr std::size_t kMaxPassage = 30;            // a closest passage's lines shown at most
@@ -63,6 +71,17 @@ namespace playground
         }
 
         std::string numberedLine(int n, std::string_view text) { return std::to_string(n) + "\t" + std::string(text) + "\n"; }
+
+        // A line too long for what a part read has room for (`room` characters, at least half of kMaxOutput): its head, cut
+        // where a character starts, then its length and the way to it all (a part read would show the same head again).
+        std::string cutLongLine(int n, std::string_view text, std::size_t room)
+        {
+            const std::string note = "(line " + std::to_string(n) + " is " + std::to_string(text.size())
+                                   + " characters long: cut here; read_file with no from, lines or find gives the whole file)\n";
+            const std::size_t head = std::to_string(n).size() + 2 + note.size();
+            const std::string_view shown = lang::headOf(text, room > head ? room - head : 0);
+            return std::to_string(n) + "\t" + std::string(shown) + "\n" + note;
+        }
 
         // "a", "a and b", "a, b and c".
         std::string joinedAnd(const std::vector<std::string>& parts)
@@ -180,7 +199,7 @@ namespace playground
 
         // The passage of `text` most like `oldText`, its lines numbered and what differs in words ("" when nothing in
         // the file is near it).
-        std::string closest(std::string_view text, std::string_view oldText)
+        std::string closest(std::string_view text, std::string_view oldText, double* scoreOut = nullptr)
         {
             const std::vector<std::string_view> fl = linesOf(text), ol = linesOf(oldText);
             if (fl.empty() || ol.empty())
@@ -213,6 +232,8 @@ namespace playground
                     at = s;
                 }
             }
+            if (scoreOut != nullptr)
+                *scoreOut = best / static_cast<double>(scored.size());
             if (best / static_cast<double>(scored.size()) < 0.3)
                 return {};
             std::string out = "The closest passage, " + (k == 1 ? "line " + std::to_string(at + 1) : "lines " + std::to_string(at + 1) + " to "
@@ -544,12 +565,13 @@ namespace playground
     std::string ChatAgent::keepVersion(const std::string& name, const std::string& text, bool refused)
     {
         const std::string version = versionOf(text);
-        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused };
+        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused, mcpWorking_.load() };
         const auto same = [&](const FileVersion& v) { return v.name == name && v.version == version; };
         if (const auto was = std::find_if(fileVersions_.begin(), fileVersions_.end(), same); refused && was != fileVersions_.end())
         {
             kept.given = was->given;                             // newest again (so kept longest), given as it was
             kept.asked = was->asked;
+            kept.desktop = was->desktop;
         }
         fileVersions_.erase(std::remove_if(fileVersions_.begin(), fileVersions_.end(), same), fileVersions_.end());
         fileVersions_.push_back(std::move(kept));
@@ -618,38 +640,83 @@ namespace playground
             }
         };
 
-        // Up to 12 of the line numbers `found` holds, of its first `shown`; ", ..." after them when there are more.
-        std::string someNumbers(const std::vector<int>& found, std::size_t shown)
+        // Up to 12 of the line numbers `found` holds, of the `shown` from its `first`; ", ..." after them when there are
+        // more.
+        std::string someNumbers(const std::vector<int>& found, std::size_t first, std::size_t shown)
         {
             std::string numbers;
             for (std::size_t i = 0; i < shown && i < 12; ++i)
-                numbers += (i == 0 ? "" : ", ") + std::to_string(found[i]);
+                numbers += (i == 0 ? "" : ", ") + std::to_string(found[first + i]);
             if (shown > 12)
                 numbers += ", ...";
             return numbers;
         }
 
-        // The first `shown` of the lines `found` holds (1-based, ascending), kContext lines around each, numbered, groups
-        // apart ("--"), onto `out`; false when kMaxOutput cut it.
-        bool aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t shown, std::string& out)
+        // ", with 2 lines around each" (", the lines alone" with none), as a find's head says it.
+        std::string aroundWords(int context)
+        {
+            return context == 0 ? std::string(", the lines alone") : ", with " + std::to_string(context) + (context == 1 ? " line" : " lines") + " around each";
+        }
+
+        // The `shown` of the lines `found` holds (1-based, ascending) from its `first`, `context` lines around each,
+        // numbered, groups apart ("--"), onto `out`: how many of them it wrote whole (`shown` unless kMaxOutput cut it).
+        // A line past the room while under half of it is used is shown cut (cutLongLine), its number in `longCut` (else
+        // 0): its note says how to read it all, and longReadOn how to read the lines found after it.
+        std::size_t aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t first, std::size_t shown,
+                               int context, std::string& out, int& longCut)
         {
             const int count = static_cast<int>(lines.size());
             int last = 0;                                        // the last line written
             for (std::size_t i = 0; i < shown; ++i)
             {
-                const int a = std::max(1, found[i] - kContext), b = std::min(count, found[i] + kContext);
+                const int hit = found[first + i];
+                const int a = std::max(1, hit - context), b = std::min(count, hit + context);
                 if (last > 0 && a > last + 1)
                     out += "--\n";
                 for (int n = std::max(a, last + 1); n <= b; ++n)
                 {
                     const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                     if (out.size() + l.size() > kMaxOutput)
-                        return false;
+                    {
+                        if (out.size() < kMaxOutput / 2)
+                        {
+                            out += cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size());
+                            longCut = n;
+                        }
+                        return i;
+                    }
                     out += l;
                 }
                 last = std::max(last, b);
             }
-            return true;
+            return shown;
+        }
+
+        // How a find's reading goes on: its context, whether it counts alone, and the hits it passes over first.
+        struct Reading
+        {
+            int context = kContext;
+            bool count = false;
+            std::size_t skip = 0;
+        };
+
+        // The last line of a find that showed hits up to `next` (their index) of `total`: what is left, and how to read on.
+        std::string readOn(std::size_t next, std::size_t total, const std::string& narrower)
+        {
+            return "(" + std::to_string(total - next) + " more: call again with skip=" + std::to_string(next) + ", or give find " + narrower + ")\n";
+        }
+
+        // After a find cut at long line `cut` of a file whose hits are `found`, shown from its `first`, `before` hits (of
+        // every file) ahead of them and `total` in all: the skip that reads the hits after that line, and a context that
+        // keeps it out of their first group (else the same line is cut again); "" when none is left.
+        std::string longReadOn(const std::vector<int>& found, std::size_t first, int cut, int context, std::size_t before, std::size_t total)
+        {
+            const std::size_t k = std::max(first, static_cast<std::size_t>(std::upper_bound(found.begin(), found.end(), cut) - found.begin()));
+            if (before + k >= total)
+                return {};
+            const int narrower = k < found.size() ? std::min(context, found[k] - cut - 1) : context;
+            return "(" + std::to_string(total - before - k) + " more after line " + std::to_string(cut) + ": call again with skip="
+                 + std::to_string(before + k) + (narrower < context ? " and context=" + std::to_string(narrower) : std::string()) + ")\n";
         }
 
         // find with no name: every file's lines that hold it, file by file in the tabs' order (in its case in every file
@@ -708,7 +775,8 @@ namespace playground
         // Its words: how many lines in each file and in how many others none (when the steps ran out: of the files it
         // searched to their end, and what it never searched), then each file's (its line count and version, `versions`,
         // as a read says them) with kContext lines around each, at most kMaxFound lines shown in all.
-        std::string everywhereText(const Draft& d, const Finder& finder, const Everywhere& e, const std::vector<std::string>& versions)
+        std::string everywhereText(const Draft& d, const Finder& finder, const Everywhere& e, const std::vector<std::string>& versions,
+                                   const Reading& r)
         {
             const std::size_t fileCount = d.files.size();
             const bool cut = !e.stoppedAt.empty();
@@ -733,23 +801,43 @@ namespace playground
             if (cut)
                 each += std::string("; not searched") + (e.anyCase ? " in another case: " : ": ") + e.unsearched;
             std::string out = std::to_string(total) + (total == 1 ? " line " : " lines ") + finder.verb(total) + " " + finder.quoted()
-                            + (e.anyCase ? " (in another case)" : "") + " (" + each + "), with " + std::to_string(kContext)
-                            + " lines around each:\n";
+                            + (e.anyCase ? " (in another case)" : "") + " (" + each + ")";
+            if (r.count)
+                return out + ".\n" + (stopped.empty() ? "" : "(" + stopped + ")\n");
+            if (r.skip >= total)
+                return out + ": skip=" + std::to_string(r.skip) + " passes over " + (total == 1 ? "it" : "all of them") + ".\n"
+                     + (stopped.empty() ? "" : "(" + stopped + ")\n");
+            out += aroundWords(r.context) + (r.skip > 0 ? ", after the first " + std::to_string(r.skip) : std::string()) + ":\n";
+            std::size_t passed = r.skip;                         // hits still to pass over
             std::size_t room = kMaxFound;                        // lines still to show
+            std::size_t next = 0;                                // the index of the hit after the last one shown
             for (std::size_t k = 0; k < e.hits.size() && room > 0; ++k)
             {
                 const FileHits& h = e.hits[k];
-                const std::size_t shown = std::min(h.found.size(), room);
+                if (passed >= h.found.size())
+                {
+                    passed -= h.found.size();
+                    next += h.found.size();
+                    continue;
+                }
+                const std::size_t first = passed, shown = std::min(h.found.size() - first, room);
+                passed = 0;
+                next += first;
                 const int count = static_cast<int>(h.lines.size());
                 out += h.file->name + ": " + std::to_string(count) + (count == 1 ? " line" : " lines") + ", version " + versions[k]
-                     + (h.found.size() == 1 ? "; line " : "; lines ") + someNumbers(h.found, shown) + ":\n";
-                if (out.size() > kMaxOutput || !aroundEach(h.lines, h.found, shown, out))
-                    return out + "(cut here: give find " + finder.narrower() + ", or a file's name with from and lines)\n";
+                     + (shown == 1 ? "; line " : "; lines ") + someNumbers(h.found, first, shown) + ":\n";
+                int longCut = 0;
+                const std::size_t written = out.size() > kMaxOutput ? 0 : aroundEach(h.lines, h.found, first, shown, r.context, out, longCut);
+                if (longCut > 0)
+                    return out + longReadOn(h.found, first, longCut, r.context, next - first, total) + (stopped.empty() ? "" : "(" + stopped + ")\n");
+                next += written;
+                if (written < shown)
+                    return out + "(cut here: call again with skip=" + std::to_string(next) + ", or give find " + finder.narrower()
+                         + ", or a file's name with from and lines)\n";
                 room -= shown;
             }
-            if (total > kMaxFound)
-                out += "(and " + std::to_string(total - kMaxFound) + " more lines " + finder.verb(2) + " it: give find "
-                     + finder.narrower() + ", or a file's name)\n";
+            if (total > next)
+                out += readOn(next, total, finder.narrower() + ", or a file's name");
             if (!stopped.empty())
                 out += "(" + stopped + ")\n";
             return out;
@@ -769,6 +857,35 @@ namespace playground
         const bool everyFile = finding && (nameVar.isVoid() || nameVar.isUndefined() || (nameVar.isString() && nameVar.toString().isEmpty()));
         if (!nameVar.isString() && !everyFile)
             return fail("read_file needs a name (or find alone, to search every file)");
+        // context, count and skip: how a find reads (each checked as a double, so one past an int's range is refused).
+        Reading reading;
+        {
+            const juce::var contextVar = input.getProperty("context", juce::var()), countVar = input.getProperty("count", juce::var()),
+                            skipVar = input.getProperty("skip", juce::var());
+            const auto given = [](const juce::var& v) { return !v.isVoid() && !v.isUndefined(); };
+            if (!finding && (given(contextVar) || given(countVar) || given(skipVar)))
+                return fail("context, count and skip go with find");
+            if (given(contextVar))
+            {
+                const double c = isNumber(contextVar) ? static_cast<double>(contextVar) : -1.0;
+                if (!(c >= 0.0 && c <= kMaxContext && c == std::floor(c)))
+                    return fail("context is how many lines around each, 0 to " + std::to_string(kMaxContext));
+                reading.context = static_cast<int>(c);
+            }
+            if (given(countVar))
+            {
+                if (!countVar.isBool())
+                    return fail("count is true or false");
+                reading.count = static_cast<bool>(countVar);
+            }
+            if (given(skipVar))
+            {
+                const double k = isNumber(skipVar) ? static_cast<double>(skipVar) : -1.0;
+                if (!(k >= 0.0 && k <= 1.0e9 && k == std::floor(k)))
+                    return fail("skip is how many of the lines found to pass over, 0 or more");
+                reading.skip = static_cast<std::size_t>(k);
+            }
+        }
         Finder finder;
         if (finding)
         {
@@ -796,7 +913,7 @@ namespace playground
                 for (const FileHits& h : e.hits)
                     versions.push_back(keepVersion(h.file->name, h.file->text));
             }
-            return everywhereText(d, finder, e, versions);       // a part read: nothing marked seen
+            return everywhereText(d, finder, e, versions, reading);   // a part read: nothing marked seen
         }
 
         const std::string file = nameVar.toString().toStdString();
@@ -851,7 +968,10 @@ namespace playground
             {
                 const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                 if (out.size() + l.size() > kMaxOutput)
-                    return out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
+                    return out.size() < kMaxOutput / 2
+                               ? out + cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size())
+                                     + (n < to ? "(read from " + std::to_string(n + 1) + " for the lines after it)\n" : "")
+                               : out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
                 out += l;
             }
             return out;
@@ -872,18 +992,71 @@ namespace playground
         const std::string stopped = stoppedAt > 0 ? finder.stoppedNote("line " + std::to_string(stoppedAt), true) : std::string();
         if (found.empty())
             return head + "; " + (stopped.empty() ? "no line" + range + " " + finder.verb(1) + " " + finder.quoted() : stopped) + ".\n";
-        const std::size_t shownCount = std::min(found.size(), kMaxFound);
         std::string out = head + "; " + std::to_string(found.size()) + (found.size() == 1 ? " line" : " lines") + range + " "
-                        + finder.verb(found.size()) + " " + finder.quoted() + (anyCase ? " (in another case)" : "") + " ("
-                        + someNumbers(found, shownCount) + "), with " + std::to_string(kContext) + " lines around each:\n";
-        if (!aroundEach(lines, found, shownCount, out))
-            return out + "(cut here: give find " + finder.narrower() + ", or from and lines)\n";
-        if (found.size() > shownCount)
-            out += "(and " + std::to_string(found.size() - shownCount) + " more lines " + finder.verb(2) + " it: give find "
-                 + finder.narrower() + ")\n";
+                        + finder.verb(found.size()) + " " + finder.quoted() + (anyCase ? " (in another case)" : "");
+        const auto withStop = [&](std::string text) { return stopped.empty() ? text : text + "(" + stopped + ")\n"; };
+        if (reading.count)
+            return withStop(out + ".\n");
+        if (reading.skip >= found.size())
+            return withStop(out + ": skip=" + std::to_string(reading.skip) + " passes over " + (found.size() == 1 ? "it" : "all of them") + ".\n");
+        const std::size_t first = reading.skip, shownCount = std::min(found.size() - first, kMaxFound);
+        out += " (" + someNumbers(found, first, shownCount) + ")" + aroundWords(reading.context)
+             + (first > 0 ? ", after the first " + std::to_string(first) : std::string()) + ":\n";
+        int longCut = 0;
+        const std::size_t written = aroundEach(lines, found, first, shownCount, reading.context, out, longCut);
+        if (longCut > 0)
+            return withStop(out + longReadOn(found, first, longCut, reading.context, 0, found.size()));
+        if (written < shownCount)
+            return out + "(cut here: call again with skip=" + std::to_string(first + written) + ", or give find " + finder.narrower()
+                 + ", or from and lines)\n";
+        if (found.size() > first + shownCount)
+            out += readOn(first + shownCount, found.size(), finder.narrower());
         if (!stopped.empty())
             out += "(" + stopped + ")\n";
         return out;
+    }
+
+    // The text changed since `version` (the file's lines that changed, against the kept text), refused: the user's edit,
+    // unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after it gave `version`:
+    // the caller's own when the same side gave it (the plugin's chat, or Claude Desktop), else the other Claude's.
+    // A text Claude saw before `version`, which the user's undo brought back, is the user's; so is one only a refusal
+    // showed (this one keeps it, as given as it was: a second refusal says the same).
+    std::string ChatAgent::changedSinceText(const std::string& file, const std::string& version, const std::string& now, bool many)
+    {
+        std::shared_ptr<const std::string> then;
+        std::string nowVersion;
+        bool known = false, other = false;                   // given by this side's calls, or by the other Claude's
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            const std::string current = versionOf(now);
+            uint64_t thenGiven = 0;
+            const FileVersion* is = nullptr;
+            for (const FileVersion& v : fileVersions_)
+            {
+                if (v.name == file && v.version == version)
+                {
+                    then = v.text;
+                    thenGiven = v.given;
+                }
+                if (v.name == file && v.version == current)
+                    is = &v;
+            }
+            const bool claude = is != nullptr && is->asked && is->given > thenGiven;
+            known = claude && is->desktop == mcpWorking_.load();
+            other = claude && !known;
+            nowVersion = keepVersion(file, now, true);
+        }
+        const std::string whose = mcpWorking_.load() ? "a call of the plugin's own chat" : "a call of Claude Desktop's";
+        std::string out = file + " changed since version " + version
+                        + (known   ? " (now version " + nowVersion + ", which one of your own calls gave)"
+                           : other ? " (now version " + nowVersion + ", which " + whose + " gave)"
+                                   : " (the user's edit, which is kept)")
+                        + ": nothing was written" + (many ? " to any file. " : ". ");
+        if (!then)
+            return out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").";
+        const textdiff::Unified u = textdiff::unified(*then, now, 2, kChangedLines);
+        return out + "Its lines changed since (+" + std::to_string(u.added) + " -" + std::to_string(u.removed) + "):\n" + u.text
+             + (u.cut ? "(cut here: read_file shows the rest)\n" : "") + "Its version now: " + nowVersion + ". Edit again from this text.";
     }
 
     std::string ChatAgent::editFileText(const juce::var& input, bool& isError)
@@ -892,6 +1065,8 @@ namespace playground
             isError = true;
             return why;
         };
+        if (input.hasProperty("find"))
+            return replaceText(input, isError);
         // The files and their edits: one file (name, and old_text and new_text or edits, and expected), or several
         // (files: a list of those, or a unified diff), all or none.
         std::vector<FileEdits> files;
@@ -969,41 +1144,8 @@ namespace playground
                                                  : ", " + what + " " + std::to_string(i + 1) + " of " + std::to_string(f.edits.size()) + place + ": ");
         };
 
-        // The text changed since `version` (the file's lines that changed, against the kept text), refused: the
-        // user's edit, unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after
-        // it gave `version`. A text Claude saw before `version`, which the user's undo brought back, is the user's; so
-        // is one only a refusal showed (this one keeps it, as given as it was: a second refusal says the same).
         const auto changedSince = [&](const std::string& file, const std::string& version, const std::string& now) {
-            std::shared_ptr<const std::string> then;
-            std::string nowVersion;
-            bool known = false;
-            {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                const std::string current = versionOf(now);
-                uint64_t thenGiven = 0;
-                const FileVersion* is = nullptr;
-                for (const FileVersion& v : fileVersions_)
-                {
-                    if (v.name == file && v.version == version)
-                    {
-                        then = v.text;
-                        thenGiven = v.given;
-                    }
-                    if (v.name == file && v.version == current)
-                        is = &v;
-                }
-                known = is != nullptr && is->asked && is->given > thenGiven;
-                nowVersion = keepVersion(file, now, true);
-            }
-            std::string out = file + " changed since version " + version
-                            + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")
-                            + ": nothing was written" + (many ? " to any file. " : ". ");
-            if (!then)
-                return fail(out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").");
-            const textdiff::Unified u = textdiff::unified(*then, now, 2, kChangedLines);
-            return fail(out + "Its lines changed since (+" + std::to_string(u.added) + " -" + std::to_string(u.removed) + "):\n" + u.text
-                        + (u.cut ? "(cut here: read_file shows the rest)\n" : "") + "Its version now: " + nowVersion
-                        + ". Edit again from this text.");
+            return fail(changedSinceText(file, version, now, many));
         };
 
         // One file's edits on its text, in order, each on the text the ones before it left: "" and the text changed, or
@@ -1089,12 +1231,13 @@ namespace playground
                 if (!files[k].expected.empty() && versionOf(read[k].text) != files[k].expected)
                     return changedSince(files[k].name, files[k].expected, read[k].text);
             // All or none: every file's edits on a copy first.
-            std::vector<std::string> after;
+            std::vector<std::string> after, held;
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 after.push_back(read[k].text);
                 if (const std::string why = apply(files[k], after.back()); !why.empty())
                     return fail(why);
+                held.push_back(asEditorHolds(after.back()));     // as the editor holds it (ChatAgent.h)
             }
             for (SourceFile& s : d.files)
                 for (std::size_t k = 0; k < files.size(); ++k)
@@ -1140,17 +1283,361 @@ namespace playground
             };
             if (!many)
                 return "Edited " + names[0] + (total > 1 ? ": " + std::to_string(total) + " edits, one step the user can undo" : "") + "; now "
-                     + lines(0) + ", version " + versions[0] + ".";
+                     + lines(0) + ", version " + versions[0] + (held[0].empty() ? "" : "; " + held[0]) + ".";
             std::string out = "Edited " + std::to_string(files.size()) + (files.size() == 1 ? " file" : " files")
                             + ", one step the user can undo:\n";
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 const std::size_t n = files[k].edits.size();
                 const std::string what = files[k].edits.front().hunk ? (n == 1 ? " hunk" : " hunks") : (n == 1 ? " edit" : " edits");
-                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k] + "\n";
+                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k]
+                     + (held[k].empty() ? "" : "; " + held[k]) + "\n";
             }
             return out;
         }
         return fail(joinedAnd(names) + " changed while editing (the user's typing, which is kept): try again.");
     }
+
+    namespace
+    {
+        // ---- find in edit_file: every match replaced -------------------------------------------------------------------
+        constexpr std::size_t kMaxReplaced = 2000;           // matches replaced a call at most
+        constexpr std::size_t kChangedShown = 20;            // the result's changed lines shown at most
+
+        // One file's text with every match replaced: the text after, how many, and where (each changed line's first line
+        // in the new text and how many lines it became: new_text may hold line ends).
+        struct Replacing
+        {
+            std::string text;
+            std::size_t count = 0;
+            std::vector<std::pair<int, int>> changed;
+            int stoppedAt = 0;                               // the line where a pattern's steps ran out (0: they did not)
+        };
+
+        // Every match of `want` (or of the pattern `re`), line by line in its own case, replaced by `with` (as it is), the
+        // matches apart and left to right; a match of nothing passed over; a netlist's *@ lines (`circuit`) left as they
+        // are. It stops once the count passes `limit`, or the steps run out (stoppedAt).
+        Replacing replaceIn(const std::string& t, bool circuit, const std::string& want, regex::Regex* re, const std::string& with,
+                            std::uint64_t& steps, std::size_t limit)
+        {
+            Replacing r;
+            int withLines = 0;                                   // its line breaks as the editor reads them: CR LF, CR or LF
+            for (std::size_t k = 0; k < with.size(); ++k)
+                if (with[k] == '\n' || (with[k] == '\r' && (k + 1 == with.size() || with[k + 1] != '\n')))
+                    ++withLines;
+            int line = 0, newLine = 1;                           // this line's number, before and after
+            for (std::size_t at = 0; at < t.size();)
+            {
+                ++line;
+                const std::size_t nl = t.find('\n', at);
+                const std::size_t endAll = nl == std::string::npos ? t.size() : nl + 1;
+                std::size_t endText = nl == std::string::npos ? t.size() : nl;
+                if (endText > at && t[endText - 1] == '\r')
+                    --endText;
+                const std::string_view l(t.data() + at, endText - at);
+                std::string out;
+                std::size_t n = 0;
+                if (!(circuit && cir::isLayoutLine(l)))
+                {
+                    std::size_t p = 0, copied = 0;
+                    while (p <= l.size())
+                    {
+                        std::size_t b = 0, e = 0;
+                        if (re != nullptr)
+                        {
+                            const regex::Found f = re->find(l, p, steps, b, e);
+                            if (f == regex::Found::spent)
+                            {
+                                r.stoppedAt = line;
+                                return r;
+                            }
+                            if (f == regex::Found::no)
+                                break;
+                        }
+                        else
+                        {
+                            b = l.find(want, p);
+                            if (b == std::string_view::npos)
+                                break;
+                            e = b + want.size();
+                        }
+                        if (e == b)
+                        {
+                            // A match of nothing: on past the character there.
+                            p = b + 1;
+                            while (p < l.size() && (static_cast<unsigned char>(l[p]) & 0xC0) == 0x80)
+                                ++p;
+                            continue;
+                        }
+                        out.append(l.substr(copied, b - copied)).append(with);
+                        copied = p = e;
+                        if (r.count + ++n > limit)
+                        {
+                            r.count += n;
+                            return r;
+                        }
+                    }
+                    if (n > 0)
+                        out.append(l.substr(copied));
+                }
+                if (n > 0)
+                {
+                    r.text += out;
+                    r.text.append(t, endText, endAll - endText);
+                    r.count += n;
+                    r.changed.push_back({ newLine, 1 + static_cast<int>(n) * withLines });
+                }
+                else
+                    r.text.append(t, at, endAll - at);
+                newLine += 1 + static_cast<int>(n) * withLines;
+                at = endAll;
+            }
+            return r;
+        }
+    }
+
+    std::string ChatAgent::replaceText(const juce::var& input, bool& isError)
+    {
+        const auto fail = [&](std::string why) {
+            isError = true;
+            return why;
+        };
+        for (const char* k : { "old_text", "edits", "files" })
+            if (input.hasProperty(k))
+                return fail(std::string("Give find and new_text (every match replaced), or old_text and new_text, edits or files: not find with ") + k
+                            + ". Nothing was changed.");
+        const juce::var findVar = input.getProperty("find", juce::var()), newVar = input.getProperty("new_text", juce::var()),
+                        nameVar = input.getProperty("name", juce::var()), expectedVar = input.getProperty("expected", juce::var());
+        if (!findVar.isString() || findVar.toString().isEmpty())
+            return fail("find is the text (with regex, the pattern) whose every match new_text replaces");
+        if (!newVar.isString())
+            return fail("find needs new_text: what replaces each match, taken as it is (no $1: nothing is captured)");
+        Finder finder;                                       // its words, and a match in another case for a miss's note
+        finder.want = findVar.toString().toStdString();
+        finder.pattern = static_cast<bool>(input.getProperty("regex", false));
+        const std::string with = newVar.toString().toStdString();
+        regex::Regex re;
+        if (finder.pattern)
+        {
+            re = regex::Regex::compile(finder.want);
+            if (!re.ok())
+                return fail("find " + finder.quoted() + " is not a regex this search takes: " + re.error()
+                            + ". (Without regex, find looks for its text as it is.) Nothing was changed.");
+            finder.exact = re;
+            finder.anyCase = regex::Regex::compile(finder.want, true);
+        }
+        else if (finder.want.find('\n') != std::string::npos)
+            return fail("find matches within a line: give one line's text, or old_text for a passage of several lines. Nothing was changed.");
+        const bool named = nameVar.isString() && nameVar.toString().isNotEmpty();
+        if (!named && !nameVar.isVoid() && !nameVar.isUndefined() && !(nameVar.isString()))
+            return fail("name is a file's name (or none, to replace in every file)");
+        std::string expected = expectedVar.isString() ? expectedVar.toString().trim().toStdString() : std::string();
+        if (!expectedVar.isVoid() && !expectedVar.isUndefined() && expected.empty())
+            return fail("expected is the version read_file gave (8 hex digits)");
+        if (!expected.empty() && !named)
+            return fail("expected holds for a named file: give its name too, or leave expected out. Nothing was changed.");
+        const std::string name = named ? nameVar.toString().toStdString() : std::string();
+        setActivity(named ? "Replacing in " + name : std::string("Replacing in the files"));
+
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            Draft d = host_.chatDraft();
+            Sources read;                                    // every file it reads, as it read them
+            if (named)
+            {
+                const SourceFile* f = findFile(d.files, name);
+                if (f == nullptr)
+                {
+                    std::string names;
+                    for (const SourceFile& g : d.files)
+                        names += (names.empty() ? "" : ", ") + g.name;
+                    return fail("There is no file " + name + ". The files: " + names);
+                }
+                read.push_back(*f);
+                if (!expected.empty() && versionOf(f->text) != expected)
+                    return fail(changedSinceText(name, expected, f->text, false));
+            }
+            else
+                read = d.files;
+            if (read.empty())
+                return fail("There is no file to replace in");
+
+            std::uint64_t steps = kSearchSteps;
+            std::size_t total = 0;
+            std::vector<Replacing> done;
+            for (const SourceFile& f : read)
+            {
+                done.push_back(replaceIn(f.text, isCircuitFile(f.name), finder.want, finder.pattern ? &re : nullptr, with, steps,
+                                         kMaxReplaced - total));
+                if (done.back().stoppedAt > 0)
+                    return fail("Nothing was changed: " + finder.stoppedNote(f.name + "'s line " + std::to_string(done.back().stoppedAt), named)
+                                + " (read_file with this pattern counts its matches).");
+                total += done.back().count;
+                if (total > kMaxReplaced)
+                    return fail("find " + finder.quoted() + " matches more than " + std::to_string(kMaxReplaced) + " times"
+                                + (named ? " in " + name : std::string()) + ": give " + finder.narrower()
+                                + (named ? std::string() : ", or a file's name") + ". Nothing was changed.");
+            }
+            if (total == 0)
+            {
+                // None in its own case: the lines that hold it in another, and for a text the passage closest to it.
+                std::string out = (named ? "No line of " + name : "No line of the " + std::to_string(read.size()) + (read.size() == 1 ? " file" : " files"))
+                                + " " + finder.verb(1) + " " + finder.quoted() + " (find replaces in its own case).";
+                std::string other;
+                for (const SourceFile& f : read)
+                {
+                    std::vector<int> found;
+                    const std::vector<std::string_view> lines = linesOf(f.text);
+                    for (int n = 1; n <= static_cast<int>(lines.size()) && !finder.stopped; ++n)
+                        if (!(isCircuitFile(f.name) && cir::isLayoutLine(lines[static_cast<std::size_t>(n - 1)]))
+                            && finder.holds(lines[static_cast<std::size_t>(n - 1)], true))
+                            found.push_back(n);
+                    if (!found.empty())
+                        other += (other.empty() ? "" : "; ") + f.name + (found.size() == 1 ? " line " : " lines ")
+                               + someNumbers(found, 0, found.size());
+                }
+                if (!other.empty())
+                    out += " In another case: " + other + " (give find as they write it).";
+                if (!finder.pattern)
+                {
+                    double best = -1.0;
+                    std::string near, in;
+                    for (const SourceFile& f : read)
+                    {
+                        double score = 0.0;
+                        const std::string c = closest(f.text, finder.want, &score);
+                        if (!c.empty() && score > best)
+                        {
+                            best = score;
+                            near = c;
+                            in = f.name;
+                        }
+                    }
+                    // closest() speaks of old_text: here it is find.
+                    for (std::size_t p = near.find("old_text"); p != std::string::npos; p = near.find("old_text", p + 4))
+                        near.replace(p, 8, "find");
+                    if (!near.empty())
+                        out += "\n" + (named ? std::string() : in + ": ") + near;
+                    else
+                        out += other.empty() ? " Nothing is close: read_file shows the text.\n" : "\n";
+                }
+                else
+                    out += "\n";
+                return fail(out + "Nothing was changed.");
+            }
+
+            // One write of every file it read (those with no match as they were), each changed one as the editor
+            // holds it (ChatAgent.h).
+            std::vector<std::string> held(read.size());
+            for (std::size_t k = 0; k < read.size(); ++k)
+                if (done[k].count > 0)
+                    held[k] = asEditorHolds(done[k].text);
+            int active = -1;
+            for (std::size_t k = 0; k < read.size(); ++k)
+                if (done[k].count > 0)
+                    for (std::size_t i = 0; i < d.files.size(); ++i)
+                        if (d.files[i].name == read[k].name)
+                        {
+                            d.files[i].text = done[k].text;
+                            if (active < 0)
+                                active = static_cast<int>(i);
+                        }
+            d.active = active;
+            if (fileWriteHook_)
+                fileWriteHook_(attempt);
+            if (!host_.chatSetDraftIf(d, read))
+            {
+                // The user typed meanwhile: their text stays. With expected that is said at once; else the replacement
+                // runs once more on the new text.
+                const Draft now = host_.chatDraft();
+                if (named && !expected.empty())
+                    if (const SourceFile* g = findFile(now.files, name); g != nullptr && g->text != read.front().text)
+                        return fail(changedSinceText(name, expected, g->text, false));
+                if (attempt == 1)
+                    return fail((named ? name : std::string("The files")) + " changed while replacing (the user's typing, which is kept): try again. "
+                                "Nothing was changed.");
+                continue;
+            }
+
+            std::vector<std::string> names, versions;
+            std::vector<std::size_t> changedFiles;
+            for (std::size_t k = 0; k < read.size(); ++k)
+                if (done[k].count > 0)
+                {
+                    changedFiles.push_back(k);
+                    names.push_back(read[k].name);
+                }
+            const auto matches = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " match" : " matches"); };
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                for (const std::size_t k : changedFiles)
+                {
+                    carrySeen(read[k].name, read[k].text, done[k].text);   // seen only if what it edited was
+                    versions.push_back(keepVersion(read[k].name, done[k].text));
+                }
+                addEntry(ChatEntry::Kind::tool, "replaced " + matches(total) + " of " + finder.quoted() + " in " + joinedAnd(names));
+            }
+            const auto lineList = [&](std::size_t k) {
+                std::vector<int> firsts;
+                for (const auto& [first, span] : done[k].changed)
+                    firsts.push_back(first);
+                return (firsts.size() == 1 ? "line " : "lines ") + someNumbers(firsts, 0, firsts.size());
+            };
+            const auto linesNow = [&](std::size_t k) {
+                const std::size_t n = linesOf(done[k].text).size();
+                return std::to_string(n) + (n == 1 ? " line" : " lines");
+            };
+            std::string out;
+            if (named)
+                out = "Replaced " + matches(total) + " of " + finder.quoted() + " in " + name + " (" + lineList(0)
+                    + "), one step the user can undo; now " + linesNow(0) + ", version " + versions[0]
+                    + (held[0].empty() ? "" : "; " + held[0]) + ".\n";
+            else
+            {
+                out = "Replaced " + matches(total) + " of " + finder.quoted() + " in " + std::to_string(changedFiles.size())
+                    + (changedFiles.size() == 1 ? " file" : " files") + ", one step the user can undo:\n";
+                for (std::size_t j = 0; j < changedFiles.size(); ++j)
+                {
+                    const std::size_t k = changedFiles[j];
+                    out += "- " + read[k].name + ": " + std::to_string(done[k].count) + " (" + lineList(k) + "); now " + linesNow(k)
+                         + ", version " + versions[j] + (held[k].empty() ? "" : "; " + held[k]) + "\n";
+                }
+            }
+            // The lines changed, as they are now: the first kChangedShown of them, numbered.
+            std::size_t all = 0;
+            for (const std::size_t k : changedFiles)
+                for (const auto& [first, span] : done[k].changed)
+                    all += static_cast<std::size_t>(span);
+            out += all > kChangedShown ? "The first " + std::to_string(kChangedShown) + " of the " + std::to_string(all) + " lines changed:\n"
+                                       : std::string(all == 1 ? "The line changed:\n" : "The lines changed:\n");
+            std::size_t shownLines = 0;
+            for (const std::size_t k : changedFiles)
+            {
+                if (shownLines >= kChangedShown)
+                    break;
+                if (!named)
+                    out += read[k].name + ":\n";
+                const std::vector<std::string_view> lines = linesOf(done[k].text);
+                int last = 0;
+                for (const auto& [first, span] : done[k].changed)
+                {
+                    if (shownLines >= kChangedShown)
+                        break;
+                    if (last > 0 && first > last + 1)
+                        out += "--\n";
+                    for (int n = first; n < first + span && shownLines < kChangedShown && n <= static_cast<int>(lines.size()); ++n, ++shownLines)
+                    {
+                        const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
+                        if (out.size() + l.size() > kMaxOutput)
+                            return out + "(cut here: read_file shows the rest)\n";
+                        out += l;
+                        last = n;
+                    }
+                }
+            }
+            return out;
+        }
+        return fail("The files changed while replacing (the user's typing, which is kept): try again. Nothing was changed.");
+    }
 }
+

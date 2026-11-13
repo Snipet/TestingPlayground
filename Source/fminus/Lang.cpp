@@ -21,6 +21,8 @@
 
 namespace playground::lang
 {
+    std::string_view hostText() { return Patch::hostSource(); }
+
     namespace
     {
         constexpr std::array<std::string_view, 20> kKeywords = { "break",  "case",     "const",    "continue", "default",

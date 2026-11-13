@@ -38,6 +38,8 @@
 //           listen counts no field under a display (their indices are other fields there); after it, the displays'
 //           own (mark 0.75, the meter's gain 1)
 //   OPEN    a project version opened whose files differ from what plays only in panel.gui compiles (as it was saved)
+//   STRAY   an edit that puts a stray { in the .gui (one around the row's elements, one the file ends inside) returns, a
+//           panel's edit with the reader's notes on them, the switch still the row's; the program plays on as its twin
 //   AB      a RUN of the panel's files alone while an A/B is on compiles. Not covered: a held refine, a stopped
 //           program and a .sc that FMinus #includes, which also compile (Compiler::editPanel's first checks)
 #include "Probe.h"
@@ -102,7 +104,7 @@ namespace
         knob gain label="GAIN"
         switch mode "OFF" "ON"
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -114,7 +116,7 @@ namespace
         switch mode "OFF" "ON"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -125,7 +127,7 @@ namespace
         switch mode "OFF" "ON"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -136,7 +138,7 @@ namespace
         switch mode "LOW" "HIGH"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -654,5 +656,37 @@ PROBE(plugin, reload)
         pg::projectstore::setDirectoryForTests({});
         temp.deleteRecursively();
     }
+    // ---- STRAY: a { where an element's name should be, in a panel's edit ------------------------------------------------
+    {
+        Host h, ht;
+        const pg::CompileStatus s0 = h.run(first);
+        ht.run(first);
+        h.blocks(4);
+        ht.blocks(4);
+        // A { alone after `row {` (one after a knob would be the knob's block, as a { on the next line is) and one
+        // the file ends inside.
+        const std::string wrapped = relabelled(kGui, "    row {\n", "    row {\n    {\n");
+        const std::string stray = relabelled(wrapped, "    }\n}\n", "    }\n    }\n}\n") + "{\n";
+        const pg::CompileStatus s = h.run(filesOf(program(), stray, kGlow));
+        std::printf("STRAY: ok %d panelOnly %d program %llu (before %llu)\nerrors:\n%snotes:\n%s", s.ok ? 1 : 0, s.panelOnly ? 1 : 0,
+                    static_cast<unsigned long long>(s.program), static_cast<unsigned long long>(s0.program), s.errors.c_str(), s.notes.c_str());
+        P.eq("stray.panel_only", s.ok && s.panelOnly && s.program == s0.program ? 1 : 0, 1);
+        P.eq("stray.noted", has(s.notes, "panel.gui:3:5: note: a { with no element before it")
+                                && has(s.notes, "panel.gui:11:1: note: this { has no }") ? 1 : 0, 1);
+        const pg::GuiTree& t = h.p.editorPort().panel().gui;
+        int row = -1, sw = -1;
+        for (std::size_t i = 0; i < t.nodes.size(); ++i)
+        {
+            if (t.nodes[i].kind == pg::GuiKind::row && row < 0)
+                row = static_cast<int>(i);
+            if (t.nodes[i].kind == pg::GuiKind::toggle && sw < 0)
+                sw = static_cast<int>(i);
+        }
+        P.eq("stray.switch_kept", row >= 0 && sw >= 0 && t.nodes[static_cast<std::size_t>(sw)].parent == row ? 1 : 0, 1);
+        h.blocks(4);
+        ht.blocks(4);
+        P.eq("stray.plays_on", same(h.out, ht.out, 0) ? 1 : 0, 1);
+    }
+
     return P.finish();
 }

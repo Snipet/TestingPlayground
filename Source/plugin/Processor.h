@@ -156,6 +156,7 @@ namespace playground
         std::span<funkgui::ParamPort* const> ports() const noexcept { return ports_; }   // P1 to P32, then the panel's
         EditorPort& editorPort() noexcept { return *this; }
         ChatAgent& chatAgent() noexcept { return chat_; }        // probes: its transport, its turns
+        ChatHost& chatHost() noexcept { return *this; }          // probes: what Claude's tools act on
         // The editor's size (logical px) as the user left it, kept in the session; 0 x 0: the Panel's default.
         int editorWidth() const noexcept { return editorW_.load(); }
         int editorHeight() const noexcept { return editorH_.load(); }
@@ -173,8 +174,13 @@ namespace playground
         };
         void setWindowHooks(WindowHooks hooks);
         // The app's Settings... (Cmd-,): the editor opens its settings card at its next frame (EditorPort::settingsAsked
-        // moves). Message thread.
-        void showSettings() noexcept { ++settingsAsked_; }
+        // moves), at `page` (a page's id, SettingsPages.h: the Audio and MIDI page's "audio" as the app asks; "" the
+        // card's own choice). Message thread.
+        void showSettings(std::string page = "audio")
+        {
+            settingsPage_ = std::move(page);
+            ++settingsAsked_;
+        }
         Engine& engine() noexcept { return engine_; }
         Compiler& compiler() noexcept { return compiler_; }   // for the probes
         // The folder (EditorPort::folder): its sync (the probes pass it at a clock of their own), and what opens it in
@@ -390,6 +396,15 @@ namespace playground
         void dragWindow(int clicks) override;
         DevicePort* devices() override { return windowHooks_.devices; }
         uint64_t settingsAsked() const override { return settingsAsked_; }
+
+        // ---- Settings: the Debug page, a folder shown (ProcessorDebug.cpp; EditorPort's "Settings") --------------------
+        std::string settingsPage() const override { return settingsPage_; }
+        void addDebugViewer() override { ++debugViewers_; }
+        void removeDebugViewer() override { debugViewers_ = std::max(0, debugViewers_ - 1); }
+        int debugViewers() const override { return debugViewers_; }
+        std::vector<DebugSection> debugRows() const override;
+        uint64_t debugGathers() const override { return debugGathers_; }
+        bool showPath(const std::string& path, std::string& why) override;
         bool midiLearnable() const override;
         midilearn::View midi() const override { return learn_.view(); }
         uint64_t midiRevision() const override { return learn_.revision(); }
@@ -416,13 +431,13 @@ namespace playground
 
         // ChatHost: Claude's tools (ChatAgent.h), from the agent's worker thread.
         Draft chatDraft() const override;
-        void chatSetDraft(const Draft& draft) override;
+        void chatSetDraft(const Draft& draft, const Draft& read) override;
         bool chatSetDraftIf(const Draft& draft, const Sources& read) override;
         std::string chatSchematicPins(const std::string& file) const override;
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
-        Sources chatPlaying(Assets& samples) const override;
+        Sources chatPlaying(Assets& samples, CircuitPins* pins = nullptr) const override;
         Sources chatPrevious(Assets& samples) const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
@@ -481,6 +496,7 @@ namespace playground
         Assets runningAssets_, previousAssets_;                  // the samples each compiled with (CompileStatus::
                                                                  // assets)
         std::vector<std::pair<std::string, std::string>> runningSamples_;   // those running_'s lines read
+        CircuitPins runningPins_;                                // the configuration its netlists play with (chatPlaying)
         // Whether `s`, a compile's status, plays another program than running_: its files (a netlist's drawing aside),
         // or the samples its lines read (programMutex_).
         bool changesProgram(const CompileStatus& s) const;
@@ -846,6 +862,11 @@ namespace playground
         std::map<std::string, std::string> schematicPins_;
         WindowHooks windowHooks_;                                // the Standalone's window (message thread)
         uint64_t settingsAsked_ = 0;                             // showSettings()'s count (message thread)
+        // Settings (ProcessorDebug.cpp; message thread): the page the app's latest request names, the Debug pages open,
+        // and how many times debugRows() gathered (the probes: nothing while none is open).
+        std::string settingsPage_;
+        int debugViewers_ = 0;
+        mutable uint64_t debugGathers_ = 0;
         int irViewers_ = 0;                                      // the editors' IR views open (message thread)
         std::atomic<int> codeWindows_{ 0 };                      // the editors whose code is in a code window now
                                                                  // (set on the message thread, read by chatPanelFit

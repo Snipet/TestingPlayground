@@ -7,10 +7,17 @@
 
 #include "Product.h"
 
+#include <funkgui/gpu/BgfxContext.h>
+#include <funkgui/gpu/BgfxSink.h>
+#include <funkgui/gpu/FramePump.h>
+
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace playground::ui
 {
@@ -18,6 +25,44 @@ namespace playground::ui
     {
         constexpr int kTickHz = 4;                       // the session followed, the host's activity watched
         constexpr int kGap = 12;                         // between the editor's window and the code window beside it
+    }
+
+    // The settings' Debug page's graphics rows for an editor on the GPU (Panel::setHostDebug): what FunkGui's
+    // EditorHost, its frame pump, the bgfx context and the sink say at the pin. The renderer's own name, the GPU's and its
+    // limits wait for FunkGui's gpuInfo(); the last frame's draw calls, vertices and bytes are the sink's, which the
+    // EditorHost keeps to itself.
+    namespace
+    {
+    std::vector<DebugRow> hostDebugRows(const funkgui::EditorHost& host)
+    {
+        std::vector<DebugRow> rows;
+        const funkgui::EditorHost::Diagnostics d = host.diagnostics();
+        char b[160];
+#if defined(_WIN32)
+        rows.push_back({ "Host", "the GPU: bgfx on Direct3D 11" });
+#elif defined(__APPLE__)
+        rows.push_back({ "Host", "the GPU: bgfx on Metal" });
+#else
+        rows.push_back({ "Host", "the GPU: bgfx on Vulkan" });
+#endif
+        rows.push_back({ "Surface", host.showingFallback() ? "the fallback (the GPU did not start)"
+                                    : host.surfaceAttached() ? "attached" : "not attached" });
+        const funkgui::FramePump& pump = funkgui::FramePump::get();
+        std::snprintf(b, sizeof b, "%.1f a second (%s)", static_cast<double>(d.fps),
+                      pump.isDisplayLinked() ? "display-linked" : "the timer");
+        rows.push_back({ "Frames", b });
+        std::snprintf(b, sizeof b, "%u drawn, %u skipped, %u unchanged; the pump %llu", d.frames, d.skipped, d.unchanged,
+                      static_cast<unsigned long long>(pump.framesRun()));
+        rows.push_back({ "Frames counted", b });
+        const funkgui::BgfxContext& ctx = funkgui::BgfxContext::get();
+        std::snprintf(b, sizeof b, "%u KB, %u frames dropped (full)", ctx.transientVbBytes() / 1024u, d.overflows);
+        rows.push_back({ "Transient buffer", b });
+        rows.push_back({ "Instancing", ctx.transientVbBytes() == 0 ? "not started" : ctx.instancing() ? "on" : "off (vertices)" });
+        rows.push_back({ "Image textures", std::to_string(funkgui::BgfxSink::imageTextureCount()) });
+        std::snprintf(b, sizeof b, "%.2f, zoom %d %%, %u failed attaches", d.scale, d.zoomPercent, d.attachFailures);
+        rows.push_back({ "Scale", b });
+        return rows;
+    }
     }
 
     funkgui::EditorConfig editorConfig()
@@ -53,7 +98,9 @@ namespace playground::ui
                 cw.height = h;
                 port_.setCodeWindow(cw);
             };
+            Panel* shown = panel.get();
             host_ = new funkgui::EditorHost(processor, std::move(config), std::move(panel));
+            shown->setHostDebug([host = host_] { return hostDebugRows(*host); });
             constrainer_.setEditor(host_);
             setContentOwned(host_, true);
             setResizable(true, false);
@@ -148,6 +195,7 @@ namespace playground::ui
         hooks.out = [this](bool) { followLater(); };
         hooks.raise = [this] { raiseCode(); };
         panel_.setWindowHooks(std::move(hooks));
+        panel_.setHostDebug([this] { return hostDebugRows(*this); });
         timer_.startTimerHz(kTickHz);
     }
 
@@ -157,6 +205,7 @@ namespace playground::ui
         // The code window goes first, with the editor it has (the session keeps it out: the next editor opens it).
         window_.reset();
         panel_.setWindowHooks({});
+        panel_.setHostDebug({});
     }
 
     void Editor::followLater()

@@ -24,6 +24,12 @@
 //             a } that closes nothing, a "text" without its ", a colour that is none, a number with a unit, tabs
 //             holding no page, a page outside tabs, a label without text, a log taper from 0, decimals out of range;
 //             a second .gui file, and #pragma panel lines beside a .gui file, are notes too
+//   STRAY     a { where an element's name should be (the whole file {, {{{, not a panel {{{, a { inside a row) is read
+//             as if its braces were not there: one note at it, its } taken with it, its elements its holder's; one
+//             the file ends inside is "this { has no }"; every such file compiles and plays, and the reader returns
+//             on every file of up to six tokens of row, knob, cutoff, {, }, =, a line end and a "text", with notes a
+//             few a token; a file of thousands of broken tokens says at most a page of notes and a line that the rest
+//             were left out; containers nested 100,000 deep return, with one note at the first past the limit
 //   PRAGMAS   without a .gui file the #pragma panel lines still make the panel (no tree)
 //   LIMITS    each at its edge and one past it: 64 dials (a knob of the 33rd and the 64th, the panel's own dials:
 //             isPanelDial, at their slots; the 65th parameter none, a note), 32 displays (number f1 to f32, each its
@@ -33,6 +39,13 @@
 //             the defaults'); every look and style property lands in its node (tabs, sections, boxes, rows that wrap,
 //             knobs, sliders, labels, dividers, the panel's gradient, an instrument's keyboard); live= taps its field
 //             once for every control that names it; a mistake in them is a note on its line and column
+//   POINTER   area and the pointer's properties (x=, y=, down=, wheel=, hover=, drag=, release=, cursor=) on an
+//             area, a box, a label, a display and a shader, each its slot; the pointer's words among a shader's inputs
+//             (and read so before the compile); a param a pointer writes may have a knob too, and one with none comes in
+//             no section of the rest; the notes (an int under x=, no such param, a host parameter under hover=, a knob
+//             that takes presses, a bool under wheel=, drag= without x= or y=, an empty area, a cursor alone, a word
+//             drag= does not take, a text), each on its line, the property left out; the 17th pointer element a note;
+//             the pointer's words counted among a shader's 16 inputs
 //   ELEMENTS  a double field's display, an array's element's (number bands[1], live=bands[2]), and a field's attributes as
 //             what a display leaves out: ui::label and fminus::range (a meter's label, min and max), ui::unit and
 //             ui::decimals (a number's), each beaten by the display's own (unit="" says none); no note; a label and a
@@ -359,6 +372,113 @@ panel background=#1d1b19 accent=orange {
         P.eq("notes.rest_stands", find(c.panel.gui, pg::GuiKind::knob, "", level) >= 0 && find(c.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
     }
 
+    // ---- STRAY ---------------------------------------------------------------------------------------------------------
+    {
+        // Each of these returns (the reader moved on), with its notes and its tree.
+        {
+            const Compiled c = withGui("{");
+            std::printf("STRAY {:\n%s", c.notes.c_str());
+            P.eq("stray.brace_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.brace_noted", has(c.notes, "panel.gui:1:1: note: a { with no element before it: what it holds is read as if "
+                                                   "the braces were not there") ? 1 : 0, 1);
+            P.eq("stray.brace_unclosed", has(c.notes, "panel.gui:1:1: note: this { has no } (the file ends inside it)") ? 1 : 0, 1);
+            P.eq("stray.brace_rest", find(c.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
+            P.le("stray.brace_notes", countLines(c.notes), 3);
+        }
+        {
+            const Compiled c = withGui("{{{");
+            P.eq("stray.three_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.three_noted", has(c.notes, "panel.gui:1:1: note: a { with no element") && has(c.notes, "panel.gui:1:2: note: a { with no element")
+                                          && has(c.notes, "panel.gui:1:3: note: a { with no element") ? 1 : 0, 1);
+            P.eq("stray.three_unclosed", has(c.notes, "panel.gui:1:3: note: this { has no }") ? 1 : 0, 1);
+            P.le("stray.three_notes", countLines(c.notes), 7);
+        }
+        {
+            const Compiled c = withGui("not a panel {{{");
+            std::printf("STRAY not a panel {{{:\n%s", c.notes.c_str());
+            P.eq("stray.after_name_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.after_name_unknown", has(c.notes, "panel.gui:1:1: note: unknown element 'not'") ? 1 : 0, 1);
+            P.eq("stray.after_name_noted", has(c.notes, "panel.gui:1:14: note: a { with no element") && has(c.notes, "panel.gui:1:15: note: a { with no element")
+                                               && has(c.notes, "panel.gui:1:13: note: this { has no }") ? 1 : 0, 1);
+            P.le("stray.after_name_notes", countLines(c.notes), 8);
+        }
+        {
+            const Compiled c = withGui("row {\n    {\n        knob cutoff\n    }\n}\nknob resonance\n");
+            std::printf("STRAY in a row:\n%s", c.notes.c_str());
+            const pg::GuiTree& t = c.panel.gui;
+            const int row = find(t, pg::GuiKind::row), knob = find(t, pg::GuiKind::knob, "", cutoff);
+            P.eq("stray.inner_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.inner_noted", has(c.notes, "panel.gui:2:5: note: a { with no element before it") ? 1 : 0, 1);
+            P.eq("stray.inner_child_kept", row >= 0 && knob >= 0 && at(t, knob).parent == row && at(t, row).children.size() == 1 ? 1 : 0, 1);
+            P.eq("stray.inner_after", find(t, pg::GuiKind::knob, "", resonance) >= 0
+                                          && at(t, find(t, pg::GuiKind::knob, "", resonance)).parent == at(t, row).parent ? 1 : 0, 1);
+            P.eq("stray.inner_closed", has(c.notes, "closes nothing") || has(c.notes, "has no }") ? 0 : 1, 1);
+            P.eq("stray.inner_one_note", has(c.notes, "a { with no element") && countLines(c.notes) == 2 ? 1 : 0, 1);   // and REST's
+        }
+
+        // The reader alone (readGuiSpec, as compile() calls it) over every file of up to six of these tokens.
+        const Compiled base = withGui("knob cutoff\n");
+        const std::vector<pg::PanelField> noFields;
+        const std::vector<std::string> names{ pg::kProgramName, "panel.gui" };
+        const auto read = [&](const std::string& text) {
+            pg::Controls controls = base.controls;
+            std::string notes;
+            (void) pg::readGuiSpec({ "panel.gui", text }, controls, noFields, kInstrument, names, notes);
+            return notes;
+        };
+        const char* const words[] = { "row", "knob", "cutoff", "{", "}", "=", "\n", "\"T\"" };
+        constexpr int kWords = 8;
+        const double start = probe::threadMs();
+        long files = 0;
+        int worst = 0;                                   // the most note lines, less 3 a token
+        std::string worstFile;
+        for (int n = 1; n <= 6; ++n)
+        {
+            std::vector<int> pick(static_cast<std::size_t>(n), 0);
+            for (;;)
+            {
+                std::string text;
+                for (const int w : pick)
+                    text += std::string(words[w]) + " ";
+                const int over = countLines(read(text)) - 3 * n;
+                if (over > worst)
+                {
+                    worst = over;
+                    worstFile = text;
+                }
+                ++files;
+                std::size_t k = 0;
+                while (k < pick.size() && ++pick[k] == kWords)
+                    pick[k++] = 0;
+                if (k == pick.size())
+                    break;
+            }
+        }
+        const double ms = probe::threadMs() - start;
+        std::printf("STRAY: %ld files read in %.0f ms (thread), the most notes past 3 a token %d: %s\n", files, ms, worst, worstFile.c_str());
+        P.eq("stray.every_file_read", files, 8L + 64 + 512 + 4096 + 32768 + 262144);
+        P.le("stray.notes_few_a_token", worst, 0);   // at most 3 note lines a token
+        P.le("stray.every_file_ms", ms, 120000.0);
+
+        // However broken the file, a page of notes: each part says 100 at most, then that the rest were left out.
+        std::string broken;
+        for (int k = 0; k < 20000; ++k)
+            broken += k % 2 == 0 ? "{ @ " : "= \"T\" } ";
+        const std::string many = read(broken);
+        std::printf("STRAY broken: %zu bytes of notes, %d lines\n", many.size(), countLines(many));
+        P.le("stray.capped_lines", countLines(many), 3 * 101 + 1);
+        P.eq("stray.capped_said", has(many, "panel.gui: note: more than 100 notes: the rest are left out") ? 1 : 0, 1);
+
+        // Nested far past the limit: one note there, and no stack spent on what is left out.
+        std::string deep;
+        for (int k = 0; k < 100000; ++k)
+            deep += "row {";
+        const std::string deepNotes = read(deep);
+        std::printf("STRAY deep: %d lines\n", countLines(deepNotes));
+        P.eq("stray.deep_noted", has(deepNotes, "panel.gui:1:" + std::to_string(5 * pg::kMaxGuiDepth + 5) + ": note: containers nest") ? 1 : 0, 1);
+        P.le("stray.deep_lines", countLines(deepNotes), 3 * 101 + 1);
+    }
+
     // ---- two .gui files, pragmas beside one, and PRAGMAS alone -------------------------------------------------------
     {
         const std::string pragmas = "#pragma panel section \"F\" cutoff resonance\n";
@@ -679,6 +799,130 @@ panel background=#1d1b19 accent=orange {
         P.eq("limits.shader_inputs_most", sixteen ? 1 : 0, 1);
         P.eq("limits.shader_input_past_noted", has(c.notes, "a shader takes " + std::to_string(pg::kMaxShaderInputs) + " inputs at most: p"
                                                                 + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
+    }
+
+    // ---- POINTER -------------------------------------------------------------------------------------------------------
+    {
+        // px, py (floats), gate (a bool), steps (an int), then floats to the 32nd; lit (a bool) and glow (a float) after
+        // it, the panel's own; a field env.
+        std::string params = "    param float px [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                             "    param float py [[fminus::range(20, 20000)]] [[fminus::default(1000)]];\n"
+                             "    param bool gate [[fminus::default(0)]];\n"
+                             "    param int steps [[fminus::range(0, 7)]] [[fminus::default(0)]];\n";
+        for (int k = 5; k <= pg::kHostControls; ++k)
+            params += "    param float f" + std::to_string(k) + " [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n";
+        params += "    param bool lit [[fminus::default(0)]];\n"
+                  "    param float glow [[fminus::range(0, 1)]] [[fminus::default(0)]];\n"
+                  "    float env;\n";
+        const std::string source = kInstrument
+            ? "module Voice\n{\n" + params + "    void start(float n, float v) {}\n"
+                  "    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+            : "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
+        const int px = 0, py = 1, gate = 2, steps = 3, lit = pg::kHostControls, glow = pg::kHostControls + 1;
+        const std::string shaderCode = "void main() { gl_FragColor = vec4(in_pointer_x, in_pointer_y, in_pointer_down, in_pointer_hover); }\n";
+        const auto build = [&](const std::string& gui) {
+            return compile({ { pg::kProgramName, source }, { "panel.gui", gui }, { "d.sc", shaderCode } });
+        };
+        const std::string gui = "area x=px y=py down=gate wheel=steps hover=lit drag=relative release=spring cursor=cross width=200 height=100\n"
+                                "box down=gate {\n"
+                                "    knob px\n"
+                                "}\n"
+                                "label \"HI\" hover=glow\n"
+                                "meter env x=px\n"
+                                "shader \"d.sc\" inputs=\"px pointer.x pointer.y pointer.down pointer.hover\" y=py cursor=updown\n";
+        const Compiled c = build(gui);
+        std::printf("POINTER notes:\n%s", c.notes.c_str());
+        P.eq("pointer.compiles", c.ok ? 1 : 0, 1);
+        P.eq("pointer.no_line_notes", has(c.notes, "panel.gui:1:") || has(c.notes, "panel.gui:2:") || has(c.notes, "panel.gui:5:")
+                                              || has(c.notes, "panel.gui:6:") || has(c.notes, "panel.gui:7:") ? 0 : 1, 1);
+        const pg::GuiTree& t = c.panel.gui;
+        const pg::GuiNode& area = at(t, find(t, pg::GuiKind::area));
+        P.eq("pointer.area", area.kind == pg::GuiKind::area ? 1 : 0, 1);
+        P.eq("pointer.area_slots", area.pointer.x == px && area.pointer.y == py && area.pointer.down == gate
+                                       && area.pointer.wheel == steps && area.pointer.hover == lit ? 1 : 0, 1);
+        P.eq("pointer.area_shape", area.pointer.drag == pg::PanelPointer::Drag::relative
+                                       && area.pointer.release == pg::PanelPointer::Release::spring
+                                       && area.pointer.cursor == pg::PanelPointer::Cursor::cross ? 1 : 0, 1);
+        P.eq("pointer.area_size", area.width == 200.0f && area.height == 100.0f ? 1 : 0, 1);
+        const pg::GuiNode& box = at(t, find(t, pg::GuiKind::box));
+        P.eq("pointer.box", box.pointer.down == gate && box.pointer.x < 0 && box.pointer.drag == pg::PanelPointer::Drag::absolute ? 1 : 0, 1);
+        P.eq("pointer.knob_too", find(t, pg::GuiKind::knob, "", px) >= 0 ? 1 : 0, 1);   // a param a pointer writes takes a control too
+        P.eq("pointer.label_hover", at(t, find(t, pg::GuiKind::label, "HI")).pointer.hover == glow ? 1 : 0, 1);
+        P.eq("pointer.display", at(t, find(t, pg::GuiKind::display)).pointer.x == px ? 1 : 0, 1);
+        const int sh = find(t, pg::GuiKind::shader);
+        const pg::GuiNode& shader = at(t, sh);
+        P.eq("pointer.shader_inputs", shader.inputs[0] == "param:" + std::to_string(px) && shader.inputs[1] == "pointer.x"
+                                          && shader.inputs[2] == "pointer.y" && shader.inputs[3] == "pointer.down"
+                                          && shader.inputs[4] == "pointer.hover" && shader.inputs[5].empty() ? 1 : 0, 1);
+        P.eq("pointer.shader_names", c.panel.shaders.size() == 1 && c.panel.shaders[0].inputs.size() == 5
+                                         && c.panel.shaders[0].inputs[1] == "pointer.x" && c.panel.shaders[0].inputs[4] == "pointer.hover" ? 1 : 0, 1);
+        P.eq("pointer.shader_props", shader.pointer.y == py && shader.pointer.cursor == pg::PanelPointer::Cursor::updown ? 1 : 0, 1);
+        P.eq("pointer.words", pg::pointerInput("pointer.x") == 0 && pg::pointerInput("pointer.hover") == 3
+                                  && pg::pointerInput("pointer.z") < 0 ? 1 : 0, 1);
+        // Read before the program compiles (readGuiShaders): the pointer's words as they are.
+        const std::vector<pg::PanelShader> early = pg::readGuiShaders({ "panel.gui", gui }, kInstrument);
+        P.eq("pointer.early_shaders", early.size() == 1 && early[0].inputs.size() == 5 && early[0].inputs[2] == "pointer.y" ? 1 : 0, 1);
+        // A parameter only a pointer writes comes in no section of the rest (gate, steps, lit, glow, py); f5 does.
+        P.eq("pointer.rest", has(c.notes, "f5") && !has(c.notes, "gate") && !has(c.notes, "steps") && !has(c.notes, "lit,")
+                                 && !has(c.notes, "glow") ? 1 : 0, 1);
+
+        // The notes, each on its line, the property left out.
+        const std::string bad = "area x=steps\n"                       // 1 an int
+                                "area x=nope\n"                        // 2 none
+                                "area hover=gate\n"                    // 3 a host parameter
+                                "knob px x=py\n"                       // 4 a control that takes presses
+                                "area wheel=gate\n"                    // 5 a bool
+                                "area drag=relative down=gate\n"       // 6 drag= without x= or y=
+                                "area\n"                               // 7 nothing to write
+                                "label \"A\" cursor=hand\n"            // 8 a cursor alone
+                                "area x=px drag=sideways\n"            // 9 a word drag= does not take
+                                "area down=\"gate\"\n";                // 10 a text, not a name
+        const Compiled n = build(bad);
+        std::printf("POINTER bad notes:\n%s", n.notes.c_str());
+        const auto noted = [&](int line, const std::string& words) {
+            return has(n.notes, "panel.gui:" + std::to_string(line) + ":") && has(n.notes, words);
+        };
+        P.eq("pointer.note_int", noted(1, "x= moves a float: steps is an int") ? 1 : 0, 1);
+        P.eq("pointer.note_none", noted(2, "there is no parameter nope") ? 1 : 0, 1);
+        P.eq("pointer.note_hover_host", noted(3, "hover= needs a panel-only param: one after the program's 32nd") ? 1 : 0, 1);
+        P.eq("pointer.note_control", noted(4, "knob takes presses itself") ? 1 : 0, 1);
+        P.eq("pointer.note_wheel_bool", noted(5, "wheel= turns a float or an int: gate is a bool") ? 1 : 0, 1);
+        P.eq("pointer.note_shaping", noted(6, "drag= and release= shape x= and y=") ? 1 : 0, 1);
+        P.eq("pointer.note_empty", noted(7, "area writes what the pointer does there") ? 1 : 0, 1);
+        P.eq("pointer.note_cursor", noted(8, "cursor= is the pointer's shape") ? 1 : 0, 1);
+        P.eq("pointer.note_word", noted(9, "drag= takes absolute or relative") ? 1 : 0, 1);
+        P.eq("pointer.note_text", noted(10, "down= takes a parameter's name") ? 1 : 0, 1);
+        int areas = 0, refused = 0;
+        for (const pg::GuiNode& x : n.panel.gui.nodes)
+            if (x.kind == pg::GuiKind::area)
+            {
+                ++areas;
+                refused += x.pointer.any() ? 0 : 1;
+            }
+        P.eq("pointer.refused_left_out", areas == 8 && refused == 8 - 2 ? 1 : 0, 1);   // all but 6's down= and 9's x=
+        P.eq("pointer.control_unchanged", at(n.panel.gui, find(n.panel.gui, pg::GuiKind::knob, "", px)).pointer.any() ? 0 : 1, 1);
+
+        // The 17th element with pointer properties is a note, left out; the 16 before it kept.
+        std::string many;
+        for (int k = 0; k <= pg::kMaxPointers; ++k)
+            many += "area down=gate\n";
+        const Compiled m = build(many);
+        int with = 0;
+        for (const pg::GuiNode& x : m.panel.gui.nodes)
+            with += x.pointer.any() ? 1 : 0;
+        P.eq("pointer.most", with, pg::kMaxPointers);
+        P.eq("pointer.past_noted", has(m.notes, "panel.gui:" + std::to_string(pg::kMaxPointers + 1) + ":")
+                                       && has(m.notes, "a panel has " + std::to_string(pg::kMaxPointers) + " elements with pointer properties at most") ? 1 : 0, 1);
+
+        // The pointer's words count among a shader's 16 inputs: the 17th name is a note.
+        std::string inputs = "pointer.x pointer.y pointer.down pointer.hover";
+        for (int k = 5; k <= pg::kMaxShaderInputs + 1; ++k)
+            inputs += " f" + std::to_string(k);
+        const Compiled s = build("shader \"d.sc\" inputs=\"" + inputs + "\"\n");
+        const pg::GuiNode& full = at(s.panel.gui, find(s.panel.gui, pg::GuiKind::shader));
+        P.eq("pointer.inputs_cap", full.inputs[0] == "pointer.x" && full.inputs[3] == "pointer.hover"
+                                       && full.inputs[15] == "param:" + std::to_string(pg::kMaxShaderInputs - 1) ? 1 : 0, 1);
+        P.eq("pointer.inputs_past_noted", has(s.notes, "inputs at most: f" + std::to_string(pg::kMaxShaderInputs + 1) + " is left out") ? 1 : 0, 1);
     }
 
     // ---- an instrument has no input ------------------------------------------------------------------------------------

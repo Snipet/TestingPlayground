@@ -99,6 +99,16 @@ namespace playground::scenario
                 return num(o, key, where, 0.0, r.longest, out);
             }
 
+            // Where something that lasts ends (`what`, a note's at + len, a move's at + over): by the request's longest
+            // too, as each time is, so a Session never cuts it there.
+            bool ends(const std::string& where, const char* what, double end, const measure::Request& r, const char* item)
+            {
+                if (end > r.longest + 1e-9)
+                    return fail(where, std::string(what) + " is 0 to " + number(r.longest) + " s (" + item + " ends at "
+                                           + number(end) + " s)" + capWords(r));
+                return true;
+            }
+
         private:
             std::string& why_;
         };
@@ -122,7 +132,8 @@ namespace playground::scenario
                 double note = 48.0, at = 0.0, len = 0.5, vel = 0.8;
                 if (!in.keys(n, where, { "note", "at", "len", "vel" }) || !in.num(n, "note", where, 0, 127, note, true)
                     || !in.time(n, "at", where, r, at)
-                    || !in.num(n, "len", where, 0.0001, 3600.0, len) || !in.num(n, "vel", where, 0.0, 1.0, vel))
+                    || !in.num(n, "len", where, 0.0001, 3600.0, len) || !in.num(n, "vel", where, 0.0, 1.0, vel)
+                    || !in.ends(where, "at + len", at + len, r, "this note"))
                     return false;
                 r.phrase.push_back({ static_cast<int>(std::lround(note)), at, len, static_cast<float>(vel) });
             }
@@ -147,7 +158,7 @@ namespace playground::scenario
                 if (dial.empty())
                     return in.fail(where, "dial (a parameter's name) is needed");
                 if (!in.time(m, "at", where, r, at) || !in.num(m, "to", where, -1e9, 1e9, to, true)
-                    || !in.time(m, "over", where, r, over))
+                    || !in.time(m, "over", where, r, over) || !in.ends(where, "at + over", at + over, r, "this move"))
                     return false;
                 r.automate.push_back({ dial, at, static_cast<float>(to), over });
             }
@@ -214,22 +225,41 @@ namespace playground::scenario
 
     measure::Request renderOf(const juce::var& input, std::string* why, measure::Request req)
     {
+        // A setting given as another JSON type than its own (a number as a string, say) is refused in words, never
+        // dropped (the first such one; read without why, as it is: left out).
+        const auto refuse = [&](const std::string& words) {
+            if (why != nullptr && why->empty())
+                *why = words;
+        };
+        const auto given = [](const juce::var& v) { return !v.isVoid() && !v.isUndefined(); };
         const auto numberArg = [&](const char* k, float& out) {
             const juce::var v = input.getProperty(k, juce::var());
             if (isNumber(v))
                 out = static_cast<float>(static_cast<double>(v));
+            else if (given(v))
+                refuse(std::string(k) + " is a number");
         };
         const juce::var notes = input.getProperty("notes", juce::var());
         if (const auto* arr = notes.getArray())
-            for (const auto& n : *arr)
-                if (isNumber(n))
-                    req.notes.push_back(static_cast<int>(std::lround(static_cast<double>(n))));
+        {
+            for (int i = 0; i < arr->size(); ++i)
+                if (isNumber((*arr)[i]))
+                    req.notes.push_back(static_cast<int>(std::lround(static_cast<double>((*arr)[i]))));
+                else
+                    refuse("notes[" + std::to_string(i) + "] is a MIDI note, a number");
+        }
+        else if (given(notes))
+            refuse("notes is a list of MIDI notes, [57, 60]");
         // The times, refused past their caps (Measure.h, "How long a render may be"; read without why, a session's, as
         // they are: a render clamps them).
         const auto timeArg = [&](const char* k, float& out, double most, const std::string& words) {
             const juce::var v = input.getProperty(k, juce::var());
             if (!isNumber(v))
+            {
+                if (given(v))
+                    refuse(std::string(k) + " is a number of seconds");
                 return;
+            }
             if (static_cast<double>(v) > most + 1e-9 && why != nullptr)
                 *why = std::string(k) + " is at most " + number(most) + " s" + words;
             else
@@ -243,9 +273,15 @@ namespace playground::scenario
         numberArg("pitchbend", req.pitchbend);
         const juce::var dials = input.getProperty("dials", juce::var());
         if (const auto* o = dials.getDynamicObject())
+        {
             for (const auto& kv : o->getProperties())
                 if (isNumber(kv.value) || kv.value.isBool())
                     req.dials[kv.name.toString().toStdString()] = static_cast<float>(static_cast<double>(kv.value));
+                else
+                    refuse("dials." + kv.name.toString().toStdString() + " is a number (a bool's true or false)");
+        }
+        else if (given(dials))
+            refuse("dials is an object of dials' names and values, {\"cutoff\": 1200}");
         if (std::string bad; !readWindow(input, req.window, bad, req.endSeconds()) && why != nullptr)
             *why = bad;
         // off_order_db's base, an instrument's (an effect's orders are its sine's, 220 Hz).

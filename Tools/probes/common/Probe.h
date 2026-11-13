@@ -28,6 +28,7 @@
 
 #include <funkgui/test/Harness.h>
 
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -78,6 +79,12 @@ namespace probe
     // A probe's stand-in audio thread kept from a core this long between two blocks (ms) has been starved: under the 20
     // ms after which the Compiler takes the audio thread for stopped (Compiler.h, "A program that stops"), with room.
     inline constexpr double kStarvedMs = 15.0;
+
+    // How long, by the clock, a probe waits for work another thread does (a compile, the check while typing, a netlist
+    // generated, a frozen copy) before it takes the work for never coming. A wait ends as soon as the work is there, so
+    // the bound costs nothing when it comes; it is long because a loaded machine may keep that thread from a core for
+    // seconds, and a row that bounds how long such work takes is no wait's (threadMs, above).
+    inline constexpr std::chrono::seconds kWorkWait{ 30 };
 
     // The calling thread (a probe's stand-in audio thread) above the ones that compile, as a host's audio thread is:
     // macOS's user-interactive quality of service, Windows' time-critical priority; Linux's as it was (a higher one

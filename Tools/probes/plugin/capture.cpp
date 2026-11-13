@@ -30,8 +30,8 @@
 //             not counted; skipped under emulation: probe::emulated), the take its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
-//             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
-//             armed, and an unknown action, are errors
+//             25 lines, and say they are live; the tool is listed for MCP, destructive (not read-only: an arm changes
+//             what plays), titled in words; stop with nothing armed, and an unknown action, are errors
 //   PRIVACY   the processor's state holds nothing of a recording, nor the chat's session a picture of it (capture's,
 //             view_sound's or compare's of "capture")
 //   ANALYSIS  stop's report has the octave bands (in and out), the centroid, the correlation, the largest steps each
@@ -57,7 +57,9 @@
 //   CIRCUITS  a program playing a netlist's provisional configuration (AutoClipper.h's clipper, the self-test off),
 //             recorded (mode next); the self-test's answer stored after it: the take keeps the configuration its
 //             netlist played with (CompileStatus::circuits), and its replay (and trace's "capture") plays it bit for bit,
-//             where a compile of its files now would generate the answer's module and differ
+//             where a compile of its files now would generate the answer's module and differ; compare's and trace's
+//             "playing" render the configuration it plays with (the take against it the same bits; trace's render hash
+//             of it not the editor's, whose compile takes the answer)
 //   VOICES    an instrument's eighteen keys at once: the take's blocks hold the Engine's steals (Meters' counts), and
 //             stop's report says them
 //   NOTFRESH  LAST's take (it started mid-playing): the synth's replay differs, and the line says why; the effect's
@@ -520,14 +522,14 @@ PROBE(plugin, capture)
 {
     const funkgui::HeadlessGuiScope gui;
 
-    // ---- TOOL (part): listed for MCP, read-only, titled; stop with nothing armed and an unknown action -----------------
+    // ---- TOOL (part): listed for MCP, destructive, titled; stop with nothing armed and an unknown action ---------------
     {
         bool listed = false;
         const juce::var tools = pg::ChatAgent::mcpTools();
         if (const juce::Array<juce::var>* t = tools.getArray())
             for (const juce::var& x : *t)
                 if (x["name"].toString() == "capture")
-                    listed = static_cast<bool>(x["annotations"]["readOnlyHint"]) && x["title"].toString() == "Record what you play"
+                    listed = !x["annotations"].hasProperty("readOnlyHint") && static_cast<bool>(x["annotations"]["destructiveHint"]) && x["title"].toString() == "Record what you play"
                           && x["description"].toString().contains("Tell the user");
         P.eq("tool.listed", listed ? 1 : 0, 1);
         P.eq("tool.live", pg::ChatAgent::mcpLive("capture", object({ { "action", "stop" } }))
@@ -1236,6 +1238,22 @@ PROBE(plugin, capture)
             P.eq("circuits.store_would_differ", storeDiffers ? 1 : 0, 1);
             const pg::ChatAgent::McpResult tr = r.rec.chatAgent().mcpCall("trace", object({ { "source", "capture" } }));
             P.eq("circuits.trace_replays", !tr.isError && has(textOf(tr), "its replay matches what played bit for bit") ? 1 : 0, 1);
+            // "playing" renders the configuration the program plays with, not the store's answer: the take against it is
+            // the same bits, and the editor's files (compiled now, with the answer) another render.
+            const pg::ChatAgent::McpResult cp = r.rec.chatAgent().mcpCall("compare", object({ { "a", "capture" }, { "b", "playing" } }));
+            std::printf("circuits: compare capture, playing:\n%s", textOf(cp).c_str());
+            P.eq("circuits.compare_playing", !cp.isError && has(textOf(cp), "Identical bits") ? 1 : 0, 1);
+            const auto hashOf = [&](const char* source) {
+                const std::string text = textOf(r.rec.chatAgent().mcpCall("trace", object({ { "source", source } })));
+                const std::size_t at = text.find("Render hash: ");
+                return at == std::string::npos ? std::string() : text.substr(at + 13, 16);
+            };
+            pg::Draft same;
+            same.files = files;                                  // the editor holds what plays
+            r.rec.editorPort().setDraft(same);
+            const std::string playingHash = hashOf("playing"), editorHash = hashOf("editor");
+            std::printf("circuits: trace's render hash, playing %s, editor %s\n", playingHash.c_str(), editorHash.c_str());
+            P.eq("circuits.trace_playing_pinned", !playingHash.empty() && !editorHash.empty() && playingHash != editorHash ? 1 : 0, 1);
         }
         pg::circuits::answers().clearForTests();
     }

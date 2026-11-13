@@ -29,8 +29,11 @@
 //             refused in words: a path not whole, a file that is not there, a sample the program lacks, no program on
 //             either side, b_rate, try_edits on it; a path told from a sample's name alike on every platform (a
 //             Windows path, a drive's or a share's, is a path, never a sample looked up)
+//   CAPTURE   a recording of a program that reads a sample (the synth's player from its note-on, the effect's input
+//             with a frame of it added) replays bit for bit: the take's replay line compiles with the samples
 //   TOOLS     write_file's path adds one (its name tidied), get_status lists it (and which the program reads),
-//             rename_file and delete_file act on it, content for an audio file's name refused
+//             rename_file and delete_file act on it, content for an audio file's name refused; none of them a change
+//             its next result names (Claude Desktop's own)
 //   EXAMPLE   sample.fm's one-shot (readAt: the index and the fraction apart): the synth's voice plays the hit at note
 //             60 bit for bit and an octave up in half the time, and 3 s a semitone up ends after frames / step samples;
 //             the effect plays it over its input
@@ -747,14 +750,8 @@ PROBE(plugin, samples)
             const pg::ChatAgent::McpResult r = p.chatAgent().mcpCall("compare", in);
             return r.isError ? textOf(r) : std::string();
         };
-        // A whole path as this platform writes one (ChatCompare.cpp's kWholePath).
-#if defined(_WIN32)
-        const std::string whole = "whole (C:\\... or ~\\...)";
-#elif !defined(__APPLE__)
-        const std::string whole = "whole (/home/... or ~/...)";
-#else
-        const std::string whole = "whole (/Users/... or ~/...)";
-#endif
+        // A whole path as this platform writes one (EditorPort.h's kWholePath).
+        const std::string whole = "whole (" + std::string(pg::kWholePath) + ")";
         P.eq("target.refused_relative", has(refusal("wav:target/kick.wav", "editor"), whole) ? 1 : 0, 1);
         // A path or a sample's name, the same on every platform: a Windows path (a drive's, a share's, with either slash)
         // is a path, never looked up as a sample (on the Mac and Linux no whole path, and says so; on Windows a whole one,
@@ -780,6 +777,46 @@ PROBE(plugin, samples)
                                              "try_edits apply to b, which is the target sound") ? 1 : 0, 1);
     }
 
+    // ---- CAPTURE: a recording of a program that plays a sample ---------------------------------------------------------
+    {
+        pg::Processor p;
+        p.setRateAndBufferSizeDetails(48000.0, kBlock);
+        p.prepareToPlay(48000.0, kBlock);
+        (void)dir.getChildFile("capture").createDirectory();
+        const juce::File k48 = writeFile(dir.getChildFile("capture"), "kick.wav", floatWav(kick, 48000));
+        std::string why;
+        (void)p.editorPort().addAssets({ k48.getFullPathName().toStdString() }, why);
+        // The synth: the player (a fresh state at each note-on). The effect: its input with the sample's 100th frame
+        // added, which keeps no state, so that a take of it replays bit for bit wherever it starts.
+        const std::string program = kInstrument ? player("kick.wav")
+                                                : "#include \"sample.fm\"\n#pragma sample s \"kick.wav\"\nmodule Effect\n{\n    Sample s;\n"
+                                                  "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                                                  "            left[i] += s.at(0, 100);\n            right[i] += s.at(1, 100);\n"
+                                                  "        }\n    }\n};\n";
+        run(p, withLibrary(program));
+        const pg::ChatAgent::McpResult armed = p.chatAgent().mcpCall("capture", object({ { "action", "arm" }, { "mode", "next" }, { "seconds", 1 } }));
+        P.eq("capture.armed", armed.isError ? 0 : 1, 1);
+        for (int b = 0; b < 240; ++b)                           // 1.28 s: the take ends itself after its second
+        {
+            juce::AudioBuffer<float> buffer(2, kBlock);
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < kBlock; ++i)
+                    buffer.setSample(c, i, kInstrument ? 0.0f : 0.25f * static_cast<float>(std::sin(0.05 * (b * kBlock + i))));
+            juce::MidiBuffer midi;
+            if (kInstrument && b == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+            p.processBlock(buffer, midi);
+        }
+        p.poll();
+        (void)p.chatAgent().mcpCall("capture", object({ { "action", "stop" } }));
+        const std::string measured = textOf(p.chatAgent().mcpCall("measure_output", object({ { "scenario", object({ { kInstrument ? "phrase" : "input", "capture" } }) } })));
+        std::printf("measure_output of the recording:\n%s\n", measured.c_str());
+        P.eq("capture.replay_with_samples", has(measured, "its replay matches what played bit for bit") ? 1 : 0, 1);
+        const std::string status = textOf(p.chatAgent().mcpCall("capture", object({ { "action", "status" } })));
+        P.eq("capture.status_matches", has(status, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
+    }
+
     // ---- TOOLS -------------------------------------------------------------------------------------------------------
     {
         pg::Processor p;
@@ -801,6 +838,11 @@ PROBE(plugin, samples)
         P.eq("tools.renamed", has(renamed, "Renamed the sample Big-Kick.wav to boom.wav") && p.editorPort().assets()[0].name == "boom.wav" ? 1 : 0, 1);
         const std::string deleted = textOf(p.chatAgent().mcpCall("delete_file", object({ { "name", "boom.wav" } })));
         P.eq("tools.deleted", has(deleted, "Deleted the sample boom.wav") && p.editorPort().assets().size() == 1 ? 1 : 0, 1);
+        // Claude Desktop's own adds, renames and deletes are its own: its next result names none as a change.
+        const std::string next = textOf(p.chatAgent().mcpCall("read_file", object({ { "name", "program.fm" } })));
+        std::printf("the result after Claude Desktop's samples: %s\n", next.substr(0, next.find('\n')).c_str());
+        P.eq("tools.own_not_journalled", !has(named, "the plugin's own chat") && !has(deleted, "the plugin's own chat")
+                                             && !has(next, "the plugin's own chat") ? 1 : 0, 1);
         // A line a #pragma sample names that the samples lack.
         run(p, withLibrary(player("hat.wav")));
         const std::string lacking = textOf(p.chatAgent().mcpCall("get_status", juce::var(new juce::DynamicObject())));

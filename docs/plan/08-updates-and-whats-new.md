@@ -110,11 +110,14 @@ own thread joined with the last, nothing in a constructor, `prepareToPlay` or th
 - **The changelog by release.** A release gets a heading of its own above the days it holds:
   `## Version 0.2.0 (2026-11-20)`. Everything under it, to the next such heading, is that version's. The days
   before the first one are 0.1.0's (one heading added once, at the right place). `## Unreleased` stays on top and
-  becomes the next version's heading at release. `release.yml` refuses a tag whose version has no heading.
-- **Compiled in:** CMake reads CHANGELOG.md into a generated `Changelog.h` (cut into literals under 64 KB),
-  `CMAKE_CONFIGURE_DEPENDS` on it. `Source/plugin/Changelog.h/.cpp` (JUCE-free): `changelog::versions()` gives
-  each version's number, date and text; `changelog::since(seen, current)` what the card shows. A development
-  build whose version has no heading shows Unreleased.
+  becomes the next version's heading at release, once `scripts/changelog.py fold` has moved the entries waiting
+  in `docs/changelog/` under it. `release.yml` refuses a tag whose version has no heading, and one while an entry
+  file is left there (any file in `docs/changelog/` but its README).
+- **Compiled in:** CMake reads CHANGELOG.md (never `docs/changelog/`: a release folds the entries first) into a
+  generated `Changelog.h` (cut into literals under 64 KB), `CMAKE_CONFIGURE_DEPENDS` on it.
+  `Source/plugin/Changelog.h/.cpp` (JUCE-free): `changelog::versions()` gives each version's number, date and
+  text; `changelog::since(seen, current)` what the card shows. A development build whose version has no heading
+  shows Unreleased.
 - **The card:** "What's new in 0.2.0", a scrolling page of the markdown (`ChatView`'s `layoutMarkdown` moved to
   `Source/editor/Markdown.h/.cpp` and used by both; a link is shown as its text and opens only an `https://`
   address of this repository's or the website's), Close. When several versions were skipped, each under its own

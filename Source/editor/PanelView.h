@@ -76,6 +76,8 @@ namespace playground::sandbox
         // A render's values for fields (gui_sandbox's values, by tap: in place of the demo's) and the audio's levels
         // (linear, peak and RMS; < 0: the demo's), from the next frame on.
         void setShown(std::vector<std::pair<int, float>> taps, float inLevel, float outLevel);
+        // A render's pointer over every shader (pointer.x, .y, .down, .hover; NaN for none: GuiView::showPointer).
+        void showPointer(const std::array<float, 4>& pointer) noexcept { view_.showPointer(pointer); }
 
         // funkgui::Panel
         void attach(funkgui::HostServices& host) override { host_ = &host; }

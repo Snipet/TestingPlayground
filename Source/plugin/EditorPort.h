@@ -144,7 +144,9 @@
 //   chat()            the chat with Claude (ChatPort.h)
 //   windowButtons()   the Standalone's own window: its buttons over the top bar, their place, its drag (below)
 //   devices()         the Standalone's audio and MIDI devices (DevicePort.h), for the settings card; null in a host
-//   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,)
+//   settingsAsked()   bumps each time the Standalone asks for the settings card (its menu's Settings..., Cmd-,), at
+//                     settingsPage(); debugRows() the Debug page's sections, gathered only while addDebugViewer()
+//                     counts a viewer; showPath() a folder in the file manager
 //   midi()            MIDI learn (MidiLearn.h): each dial's MIDI control, the dial learning and learning's note
 //                     (midiRevision() moves when any changes); learnMidi() a dial learns the next control moved,
 //                     cancelMidiLearn(), forgetMidi() a dial's control, forgetAllMidi() every one. The instrument's
@@ -187,6 +189,15 @@ namespace playground
     inline constexpr const char* kThisMachine = "this Mac";
 #else
     inline constexpr const char* kThisMachine = "this computer";
+#endif
+
+    // A whole path as the user's machine writes one (a tool's refusal of a path that is none).
+#if defined(_WIN32)
+    inline constexpr const char* kWholePath = "C:\\... or ~\\...";
+#elif defined(__APPLE__)
+    inline constexpr const char* kWholePath = "/Users/... or ~/...";
+#else
+    inline constexpr const char* kWholePath = "/home/... or ~/...";
 #endif
 
     // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows and Linux, whose editor
@@ -522,6 +533,19 @@ namespace playground
     // Where a folder opens (EditorPort::openFolder).
     enum class FolderApp : uint8_t { files, vscode };   // the Finder (Windows' Explorer), or VS Code
 
+    // The settings' Debug page (EditorPort::debugRows): a section's rows of `name  value`. A row whose `path` is set is a
+    // folder (the value its path), which the page offers to show (EditorPort::showPath).
+    struct DebugRow
+    {
+        std::string name, value;
+        bool path = false;
+    };
+    struct DebugSection
+    {
+        std::string title;                       // "Versions", "Graphics (FunkGui)", ...
+        std::vector<DebugRow> rows;
+    };
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -565,6 +589,8 @@ namespace playground
         bool created = false;                    // a new project
         std::string name;                        // the project saved into (a factory project's copy: its own new name)
         bool copied = false;                     // the user's own copy of a factory project
+        int dropped = 0, droppedFrom = 0, droppedTo = 0;   // the oldest versions the save let go (a project keeps its
+                                                           // newest projectstore::kMaxVersions): how many, their numbers
     };
 
     // A save of the editor's off the message thread (startSave(), saving()): the one in flight, and the last one's
@@ -890,16 +916,39 @@ namespace playground
         virtual void placeWindowButtons(float x, float middle) { (void)x; (void)middle; }
         virtual void dragWindow(int clicks) { (void)clicks; }
 
-        // The Standalone's audio and MIDI settings, a card of the editor's own (editor/SettingsCard.h) in place of JUCE's
-        // dialog. In a host's window there are none: devices() is null (no card, no muted notice) and settingsAsked()
-        // never moves.
+        // The Standalone's audio and MIDI devices, the settings card's Audio and MIDI page (editor/SettingsCard.h,
+        // SettingsPages.h) in place of JUCE's dialog. In a host's window there are none: devices() is null (no such page,
+        // no muted notice) and settingsAsked() never moves; the card itself opens in every host, from the top bar's gear.
         //   devices()        the devices, the choices and the actions (DevicePort.h); the window hands it over with its
         //                    buttons (Processor::WindowHooks), so ask again rather than keep it
         //   settingsAsked()  a count the app raises each time it asks for the card (Settings... in its menu, Cmd-,): the
         //                    editor opens the card when the count moves (a Panel polls it, starting from the count it
-        //                    found when it was made)
+        //                    found when it was made), at settingsPage()
         virtual DevicePort* devices() { return nullptr; }
         virtual uint64_t settingsAsked() const { return 0; }
+
+        // ---- Settings: the asked page, the Debug page, a folder shown (package 07) --------------------------------------
+        //   settingsPage()     the page settingsAsked()'s latest request names (a page's id: "audio"; "" the card's own
+        //                      choice, the page it showed last)
+        //   addDebugViewer()   the Debug pages open (a card's while it shows that page), as addIrViewer counts the IR's
+        //   debugRows()        the processor's sections of the Debug page (versions, program, audio, shaders, stores,
+        //                      Claude Desktop, environment), gathered on the message thread from getters that exist, and
+        //                      only while a viewer is counted (none: empty, nothing gathered; debugGathers() counts the
+        //                      gatherings, for the probes). Never a key, a chat's word, a file's text or the user's audio
+        //   showPath()         a folder of the user's shown in the system's file manager (the Finder, Explorer, xdg-open
+        //                      through plugin/Launch.h); false, with why, when it cannot (under a probe: nothing opens)
+        virtual std::string settingsPage() const { return {}; }
+        virtual void addDebugViewer() {}
+        virtual void removeDebugViewer() {}
+        virtual int debugViewers() const { return 0; }
+        virtual std::vector<DebugSection> debugRows() const { return {}; }
+        virtual uint64_t debugGathers() const { return 0; }
+        virtual bool showPath(const std::string& path, std::string& why)
+        {
+            (void)path;
+            why = "nothing opens here";
+            return false;
+        }
 
         // MIDI learn (above; plugin/MidiLearn.h). learnMidi: false when the slot has no dial (or nothing learns here);
         // forgetMidi: false when the dial had no control; forgetAllMidi: how many went.

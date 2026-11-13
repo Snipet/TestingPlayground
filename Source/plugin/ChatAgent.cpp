@@ -7,6 +7,7 @@
 
 #include "plugin/ChatStore.h"
 #include "plugin/Providers.h"
+#include "plugin/Usage.h"
 
 #include "dsp/Goals.h"
 #include "dsp/Measure.h"
@@ -82,11 +83,11 @@ namespace playground
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
         // Before /v1/models answers (or without a key): the current models, which all take adaptive thinking and
-        // every effort level; Claude Opus 5.5 takes fast mode too.
+        // every effort level; Claude Opus 5.5 and Claude Fable 5.2 take fast mode too.
         std::vector<ChatModel> builtInModels()
         {
             return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
-                     { "claude-fable-5-1", "Claude Fable 5.1", kAllEfforts, 128000, true },
+                     { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
                      { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
                      { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
         }
@@ -94,17 +95,19 @@ namespace playground
         // The models that take "fallbacks": "default" (a classifier's refusal retried on another model).
         bool takesDefaultFallbacks(const std::string& id)
         {
-            return id == "claude-fable-5-1" || id == "claude-opus-5-5" || id == "claude-opus-5"
-                || id == "claude-sonnet-5-5";
+            return id == "claude-fable-5-2" || id == "claude-mythos-5-2" || id == "claude-fable-5-1" || id == "claude-opus-5-5"
+                || id == "claude-opus-5" || id == "claude-sonnet-5-5";
         }
 
-        // Fast mode (the fast-mode docs; /v1/models does not list it): Claude Opus 5.5, and in research preview
-        // Claude Opus 5 and Opus 4.8, whose fast requests need the beta header (without it they get a 400).
+        // Fast mode (the fast-mode docs; /v1/models does not list it): Claude Opus 5.5, Claude Fable 5.2 and Claude
+        // Mythos 5.2, and in research preview Claude Opus 5 and Opus 4.8, whose fast requests need the beta header
+        // (without it they get a 400).
         constexpr const char* kFastBeta = "fast-mode-2026-02-01";
 
         bool takesFast(const std::string& id)
         {
-            return id == "claude-opus-5-5" || id == "claude-opus-5" || id == "claude-opus-4-8";
+            return id == "claude-opus-5-5" || id == "claude-fable-5-2" || id == "claude-mythos-5-2" || id == "claude-opus-5"
+                || id == "claude-opus-4-8";
         }
 
         bool fastNeedsBeta(const std::string& id) { return id == "claude-opus-5" || id == "claude-opus-4-8"; }
@@ -171,6 +174,8 @@ namespace playground
             std::size_t cut = t.rfind('\n', kMaxToolOutput);
             if (cut == std::string::npos || cut < kMaxToolOutput / 2)
                 cut = kMaxToolOutput;
+            while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0) == 0x80)
+                --cut;                             // never inside a character
             const int lines = static_cast<int>(std::count(t.begin() + static_cast<std::ptrdiff_t>(cut), t.end(), '\n'));
             return t.substr(0, cut) + "\n(" + std::to_string(lines) + " more lines left out: fix these first)\n";
         }
@@ -296,11 +301,19 @@ namespace playground
                    "and the hard decisions, then write the code once, straight into its files, a few files to a reply.)";
         }
 
+        // The limit a reply cut off reached, as Claude is told it: its size when the request or the model's list gave
+        // one (0: another provider's server cut it at a limit of its own, which no request named).
+        std::string reachedLimit(int maxTokens)
+        {
+            return maxTokens > 0 ? "its limit of about " + thousands(maxTokens) + " tokens, your thinking included"
+                                 : std::string("the length limit of the model's server");
+        }
+
         // After a reply cut off at max_tokens with no tool call: what the turn goes on with.
         std::string cutOffNote(int maxTokens)
         {
-            return "(From the plugin: your reply reached its limit of about " + thousands(maxTokens)
-                 + " tokens, your thinking included, and was cut off. Go on from where it stopped: write what you have "
+            return "(From the plugin: your reply reached " + reachedLimit(maxTokens)
+                 + ", and was cut off. Go on from where it stopped: write what you have "
                    "worked out into its files now, then do what remains a step at a time.)";
         }
 
@@ -943,6 +956,11 @@ namespace playground
                 why = "there is no check " + number(n) + " (" + std::to_string(checks.size()) + " are set)";
                 return -2;
             }
+            if (!index.isVoid() && !index.isUndefined())     // given, but no number: never read as the label's
+            {
+                why = "index is a whole number, the check's place in the list (1 up)";
+                return -2;
+            }
             if (label.isEmpty())
                 return -1;
             int at = -1, count = 0;
@@ -1078,6 +1096,22 @@ namespace playground
         constexpr int kAskMaxQuestions = 4, kAskMinOptions = 2, kAskMaxOptions = 6;
         constexpr std::size_t kAskMaxQuestionText = 400, kAskMaxLabel = 60, kAskMaxDescription = 200, kAskMaxHeader = 16;
 
+        // A text's length in characters (UTF-8: every byte but a continuation byte starts one), as ask_user's schema
+        // and its refusals count, and the text cut to its first `n` characters, never inside one.
+        std::size_t characters(const std::string& t)
+        {
+            const auto starts = [](char c) { return (static_cast<unsigned char>(c) & 0xC0) != 0x80; };
+            return static_cast<std::size_t>(std::count_if(t.begin(), t.end(), starts));
+        }
+        std::string firstCharacters(const std::string& t, std::size_t n)
+        {
+            std::size_t at = 0;
+            for (std::size_t seen = 0; at < t.size(); ++at)
+                if ((static_cast<unsigned char>(t[at]) & 0xC0) != 0x80 && seen++ == n)
+                    break;
+            return t.substr(0, at);
+        }
+
         // ask_user's input, checked: false, with why, for one the chat cannot show.
         bool parseQuestions(const juce::var& input, std::vector<ChatQuestion>& out, std::string& why)
         {
@@ -1094,13 +1128,12 @@ namespace playground
                 cq.question = juce::String(str(q, "question")).trim().toStdString();
                 cq.header = juce::String(str(q, "header")).trim().toStdString();
                 cq.multi = static_cast<bool>(q.getProperty("multi_select", false));
-                if (cq.question.empty() || cq.question.size() > kAskMaxQuestionText)
+                if (cq.question.empty() || characters(cq.question) > kAskMaxQuestionText)
                 {
                     why = "Each question needs its text (at most " + std::to_string(kAskMaxQuestionText) + " characters).";
                     return false;
                 }
-                if (cq.header.size() > kAskMaxHeader)
-                    cq.header = cq.header.substr(0, kAskMaxHeader);
+                cq.header = firstCharacters(cq.header, kAskMaxHeader);
                 const auto* os = q.getProperty("options", juce::var()).getArray();
                 if (os == nullptr || os->size() < kAskMinOptions || os->size() > kAskMaxOptions)
                 {
@@ -1113,7 +1146,7 @@ namespace playground
                     ChatOption co;
                     co.label = juce::String(str(o, "label")).trim().toStdString();
                     co.description = juce::String(str(o, "description")).trim().toStdString();
-                    if (co.label.empty() || co.label.size() > kAskMaxLabel)
+                    if (co.label.empty() || characters(co.label) > kAskMaxLabel)
                     {
                         why = "Each option needs a label of a few words (at most " + std::to_string(kAskMaxLabel) + " characters).";
                         return false;
@@ -1124,8 +1157,7 @@ namespace playground
                             why = "Two options of \"" + cq.question + "\" have the label \"" + co.label + "\".";
                             return false;
                         }
-                    if (co.description.size() > kAskMaxDescription)
-                        co.description = co.description.substr(0, kAskMaxDescription);
+                    co.description = firstCharacters(co.description, kAskMaxDescription);
                     cq.options.push_back(std::move(co));
                 }
                 out.push_back(std::move(cq));
@@ -1233,10 +1265,15 @@ namespace playground
             jobStop_ = true;                       // a job still queued is dropped
         }
         jobCv_.notify_all();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            attachCv_.notify_all();                // a message waiting for its pictures (takePending) goes now
+        }
         joinWorker();
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
+        usage::flush();                            // what the ledger has not written yet
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)
@@ -1293,12 +1330,6 @@ namespace playground
         jobCv_.wait(lock, [this] { return jobStop_ || (jobs_.empty() && !jobRunning_); });
     }
 
-    std::vector<std::string> ChatAgent::requestsSent() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return requests_;
-    }
-
     void ChatAgent::joinWorker()
     {
         if (worker_.joinable())
@@ -1339,6 +1370,7 @@ namespace playground
         s.attaching = attaching_;
         s.activity = activity_;
         s.entries = entries_;
+        s.conversation = conversation_;
         s.models = models_;
         s.model = model_;
         s.effort = effort_;
@@ -1476,6 +1508,7 @@ namespace playground
     void ChatAgent::attach(const std::vector<std::string>& paths)
     {
         std::vector<std::string> take;
+        std::vector<uint64_t> seqs;
         uint64_t epoch = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -1499,20 +1532,26 @@ namespace playground
                     take.push_back(p);
             }
             attaching_ += static_cast<int>(take.size());
+            for (std::size_t k = 0; k < take.size(); ++k)
+                seqs.push_back(++attachIssued_);
             epoch = attachEpoch_;
             touch();
         }
-        for (const std::string& p : take)
-            queueJob([this, p, epoch] {
+        for (std::size_t k = 0; k < take.size(); ++k)
+            queueJob([this, p = take[k], seq = seqs[k], epoch] {
+                if (pictureReadHook_)
+                    pictureReadHook_();
                 chatimages::Prepared r = chatimages::fromFile(p);
                 const std::lock_guard<std::mutex> lock(mutex_);
                 --attaching_;
+                attachDone_ = std::max(attachDone_, seq);   // read or refused: a message waiting for it goes on
+                attachCv_.notify_all();
                 if (epoch != attachEpoch_)
                     return;                        // a new chat since
                 if (!r.why.empty())
                     addEntry(ChatEntry::Kind::note, r.why);
                 else
-                    attached_.push_back({ std::move(r.picture), std::move(r.mediaType), std::move(r.data) });
+                    attached_.push_back({ std::move(r.picture), std::move(r.mediaType), std::move(r.data), seq });
                 touch();
             });
     }
@@ -1539,18 +1578,25 @@ namespace playground
         return n;
     }
 
-    void ChatAgent::send(const std::string& message)
+    bool ChatAgent::send(const std::string& message)
     {
         const std::string trimmed = juce::String(message).trim().toStdString();
+        const auto nothing = [&] { return trimmed.empty() && attached_.empty() && attaching_ == 0; };   // mutex held
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (busy_ || (trimmed.empty() && attached_.empty()))
-                return;
+            if (busy_ || nothing())
+                return false;
         }
         joinWorker();                              // a finished turn's thread
         const std::string context = contextBlock();
+        if (sendHook_)
+            sendHook_();
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            // Looked at again under the lock the message goes under: a call of Claude Desktop's (mcpCall) may have
+            // taken the chat while the last turn's thread was joined, and a turn never runs beside it.
+            if (busy_ || nothing())
+                return false;
             // An open question is answered in the user's own words: its result says so, and they follow.
             for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
                 if (it->kind == ChatEntry::Kind::question && it->open)
@@ -1558,33 +1604,113 @@ namespace playground
                     it->typed = true;
                     break;
                 }
-            juce::Array<juce::var> content =
-                missingResults("The user did not choose from the options: their own words follow in this message.");
-            // The pictures first, then the words (the vision docs' advice).
             ChatEntry entry;
             entry.kind = ChatEntry::Kind::user;
             entry.text = trimmed;
-            for (const Attached& a : attached_)
-            {
-                content.add(claude::object({ { "type", "image" },
-                                             { "source", claude::object({ { "type", "base64" },
-                                                                          { "media_type", juce::String(a.mediaType) },
-                                                                          { "data", juce::Base64::toBase64(a.data.data(), a.data.size()) } }) } }));
-                entry.pictures.push_back(a.picture);
-            }
-            attached_.clear();
-            entries_.push_back(std::move(entry));
-            touch();
-            if (!trimmed.empty())
-                content.add(text(trimmed));
-            if (!context.empty())
-                content.add(text(context));
-            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
-                content.add(text(limitNote(maxTokensFor(model_))));
             planNext_ = !planner_.empty();
-            deliver(std::move(content));
+            if (attaching_ > 0)
+            {
+                // Pictures still being read: the message shows now and goes with them once they are in (the turn's
+                // worker waits, takePending), so none is left behind for the next message.
+                pending_ = Pending{ trimmed, context, attachIssued_, entries_.size() };
+                entries_.push_back(std::move(entry));
+                busy_ = true;
+                activity_ = "Reading the pictures";
+                cancel_.store(false);
+                touch();
+            }
+            else
+            {
+                juce::Array<juce::var> content = userMessage(trimmed, context, attachIssued_, entry);
+                entries_.push_back(std::move(entry));
+                touch();
+                deliver(std::move(content));
+            }
         }
         startWorker();
+        return true;
+    }
+
+    // A message's blocks (mutex held): the results the last reply's calls lack, the pictures read up to `upTo` (they
+    // leave the box for `entry`), then the words (the vision docs' advice), the plugin's state and the limit's note.
+    juce::Array<juce::var> ChatAgent::userMessage(const std::string& words, const std::string& context, uint64_t upTo,
+                                                  ChatEntry& entry)
+    {
+        juce::Array<juce::var> content =
+            missingResults("The user did not choose from the options: their own words follow in this message.");
+        std::vector<Attached> later;
+        for (Attached& a : attached_)
+        {
+            if (a.seq > upTo)
+            {
+                later.push_back(std::move(a));     // added after the message was sent: the next one's
+                continue;
+            }
+            content.add(claude::object({ { "type", "image" },
+                                         { "source", claude::object({ { "type", "base64" },
+                                                                      { "media_type", juce::String(a.mediaType) },
+                                                                      { "data", juce::Base64::toBase64(a.data.data(), a.data.size()) } }) } }));
+            entry.pictures.push_back(a.picture);
+        }
+        attached_ = std::move(later);
+        if (!words.empty())
+            content.add(text(words));
+        if (!context.empty())
+            content.add(text(context));
+        if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
+            content.add(text(limitNote(maxTokensFor(model_))));
+        return content;
+    }
+
+    // The worker's first step when the message waits for its pictures (send): until every read asked for before it has
+    // ended (read or refused), Stop, or kPictureWaitSeconds; then the message goes with what is in. False when the turn
+    // ends here (stopped, or nothing left to send: no words, and every picture refused or taken back).
+    bool ChatAgent::takePending()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!pending_)
+            return true;
+        const uint64_t upTo = pending_->upTo;
+        const bool in = attachCv_.wait_for(lock, std::chrono::seconds(kPictureWaitSeconds),
+                                           [&] { return attachDone_ >= upTo || cancel_.load(); });
+        const Pending p = std::move(*pending_);
+        pending_.reset();
+        const bool pictures = std::any_of(attached_.begin(), attached_.end(), [&](const Attached& a) { return a.seq <= upTo; });
+        const bool shown = p.entry < entries_.size() && entries_[p.entry].kind == ChatEntry::Kind::user;
+        const auto end = [&] {
+            busy_ = false;
+            activity_.clear();
+            turnThread_.store(std::thread::id{});
+            touch();
+        };
+        if (p.words.empty() && !pictures)
+        {
+            if (shown)
+                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(p.entry));
+            end();
+            return false;
+        }
+        ChatEntry got;
+        juce::Array<juce::var> content = userMessage(p.words, p.context, upTo, got);
+        if (shown)
+            entries_[p.entry].pictures = std::move(got.pictures);
+        if (!in && !cancel_.load())
+            addEntry(ChatEntry::Kind::note, "Some pictures were still being read after " + std::to_string(kPictureWaitSeconds)
+                                                + " seconds: the message went without them, and they stay for the next one.");
+        addMessage(std::move(content));
+        mcpNoted_ = false;
+        if (cancel_.load())
+        {
+            // Stopped while it waited: the message stays in the history (the next one joins it), as after any stop.
+            addEntry(ChatEntry::Kind::note, "Stopped.");
+            end();
+            lock.unlock();
+            keep();
+            return false;
+        }
+        activity_ = "Thinking";
+        touch();
+        return true;
     }
 
     void ChatAgent::answer(const std::vector<std::string>& answers)
@@ -1668,6 +1794,17 @@ namespace playground
     // first, as the API asks.
     void ChatAgent::deliver(juce::Array<juce::var> content)
     {
+        addMessage(std::move(content));
+        busy_ = true;
+        mcpNoted_ = false;                         // Claude Desktop's next call says so again
+        activity_ = "Thinking";
+        cancel_.store(false);
+        touch();
+    }
+
+    // The history part of deliver (mutex held): the message joins a user message left last, or goes after the answer.
+    void ChatAgent::addMessage(juce::Array<juce::var> content)
+    {
         const int n = messages_.size();
         if (n > 0 && str(messages_[n - 1], "role") == "user")
         {
@@ -1689,11 +1826,6 @@ namespace playground
         }
         repairHistory();
         resendState_ = false;                      // the state (whole, after a summary) is in this message
-        busy_ = true;
-        mcpNoted_ = false;                         // Claude Desktop's next call says so again
-        activity_ = "Thinking";
-        cancel_.store(false);
-        touch();
     }
 
     void ChatAgent::stop()
@@ -1701,6 +1833,7 @@ namespace playground
         cancel_.store(true);
         listCancel_.store(true);                   // a models list the turn waits for (setProvider's job)
         const std::lock_guard<std::mutex> lock(mutex_);
+        attachCv_.notify_all();                    // a message waiting for its pictures (takePending)
         if (busy_)
         {
             activity_ = "Stopping";
@@ -1729,6 +1862,7 @@ namespace playground
     {
         messages_.clear();
         entries_.clear();
+        ++conversation_;
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
         usage_.clear();
@@ -1763,6 +1897,8 @@ namespace playground
                 o->setProperty("o", e.open);
                 o->setProperty("y", e.typed);
             }
+            if (e.failed)
+                entry.getDynamicObject()->setProperty("x", true);
             if (e.kind == ChatEntry::Kind::plan)
             {
                 entry.getDynamicObject()->setProperty("f", juce::String::fromUTF8(e.from.c_str()));
@@ -1912,6 +2048,7 @@ namespace playground
         const std::lock_guard<std::mutex> lock(mutex_);
         messages_.clear();
         entries_.clear();
+        ++conversation_;
         seen_.clear();
         lastSignature_ = 0;                        // the next message sends the files again
         busy_ = mcpWorking_.load();                // a call of Claude Desktop's keeps it busy until it ends (mcpCall)
@@ -1950,6 +2087,7 @@ namespace playground
                 entry.text = str(e, "t");
                 entry.from = str(e, "f");
                 entry.answer = static_cast<bool>(e.getProperty("n", false));
+                entry.failed = static_cast<bool>(e.getProperty("x", false));   // a chat kept before it: none
                 if (const auto* rows = e.getProperty("c", juce::var()).getArray())
                     for (const auto& r : *rows)
                         entry.checks.push_back({ str(r, "l"), str(r, "d"), static_cast<bool>(r.getProperty("m", false)),
@@ -2359,14 +2497,19 @@ namespace playground
                        "this before editing a file you "
                        "have not seen in its current form (the user may have typed in it since the last plugin_state). "
                        "Its first line gives the file's line count and version (edit_file's expected); a part (from, "
-                       "lines, find) comes with its lines numbered.",
+                       "lines, find) comes with its lines numbered. A regex takes RE2's syntax. find shows 40 of the lines found, context lines around "
+                       "each (2 unless said); its last line says how many more and the skip that reads on; count gives "
+                       "only how many in each file.",
                        // find with no name searches every file, so nothing is required (ChatFiles.cpp).
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "from", prop("integer", "The first line to read, from 1") },
                                         { "lines", prop("integer", "How many lines (default: to the end)") },
                                         { "find", prop("string", "A text: the lines that hold it, 2 around each (no name: in "
                                                                  "every file)") },
-                                        { "regex", prop("boolean", "find is a regex (RE2's syntax)") } }),
+                                        { "regex", prop("boolean", "find is a regex") },
+                                        { "context", prop("integer", "find: lines around each, 0 to 10") },
+                                        { "count", prop("boolean", "find: only how many") },
+                                        { "skip", prop("integer", "find: pass over that many lines found") } }),
                        {}));
         // path, files, from and to (ChatImport.cpp): a sample added by its path, several files as one change, a file
         // or folder of the user's brought in, the editor's files out to a folder; in place of name and content, so
@@ -2378,15 +2521,16 @@ namespace playground
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "content", prop("string", "The file's whole text") },
                                         { "path", prop("string", "In place of content: a WAV, AIFF or FLAC on this "
-                                                                 "computer, added as the sample name (delete_file and "
-                                                                 "rename_file take a sample too)") },
+                                                                 "computer, added as the sample name, replacing one of "
+                                                                 "that name (delete_file and rename_file take a sample too)") },
                                         { "files", claude::object({ { "type", "array" },
                                                                     { "description", "[{name, content}] in place of those two: "
                                                                                      "one change, all or none" } }) },
-                                        { "from", prop("string", "A file or folder on this Mac the user named: its program "
-                                                                 "files come in (text, 256 KB each at most)") },
-                                        { "to", prop("string", "A name: the editor's files go to a new folder of it on this "
-                                                               "Mac") } }),
+                                        { "from", prop("string", (std::string("A file or folder on ") + kThisMachine
+                                                                  + " the user named: its program files come in (text, 256 KB "
+                                                                    "each at most)").c_str()) },
+                                        { "to", prop("string", (std::string("A name: the editor's files go to a new folder of "
+                                                                            "it on ") + kThisMachine).c_str()) } }),
                        {}));
         {
             // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
@@ -2400,7 +2544,11 @@ namespace playground
                            "file, with the same whitespace; include enough surrounding lines to make it unique. Prefer "
                            "this to write_file for changes to part of a file. A passage that does not occur gets the "
                            "closest one back, numbered, and what differs. A diff's hunk goes where its old lines occur "
-                           "nearest its @@ line.",
+                           "nearest its @@ line. find (in place of old_text, edits and files) replaces every match in name, "
+                           "or with no name in every file, by new_text as it is (no $1: nothing is captured): a match "
+                           "within a line, in find's own case, never a netlist's *@ line, 2,000 at most; all or none, one "
+                           "step the user can undo; expected only with name. Its result gives each file's count and "
+                           "version and the first 20 lines changed.",
                            claude::object({ { "name", prop("string", "The file's name") },
                                             { "old_text", prop("string", "The passage as it is now, exactly") },
                                             { "new_text", prop("string", "What replaces it") },
@@ -2412,7 +2560,9 @@ namespace playground
                                             { "files", claude::object({ { "anyOf", juce::var(listOrDiff) },
                                                                         { "description", "[{name, edits, expected}] or a unified "
                                                                                          "diff, in place of name: all or none, one "
-                                                                                         "undo step" } }) } }),
+                                                                                         "undo step" } }) },
+                                            { "find", prop("string", "Every match replaced by new_text (no name: in every file)") },
+                                            { "regex", prop("boolean", "find is a regex") } }),
                            {}));
         }
         {
@@ -2574,11 +2724,15 @@ namespace playground
                                                                          "(\"Releases within two seconds\")"));
             addRenderProps(item);
             item.getDynamicObject()->setProperty("index", prop("integer", "merge, remove: its number (remove: its label must match)"));
+            // A check's own dials_from (the call's, described below, stands for it when it has none) and a snapshot's dials,
+            // as the listing gives them back. No label: its metric's name.
+            item.getDynamicObject()->setProperty(
+                "dials_from",
+                claude::object({ { "enum", juce::Array<juce::var>{ kDialsFrom[0], kDialsFrom[1], kDialsFrom[2] } } }));
+            item.getDynamicObject()->setProperty("snapshot", claude::object({ { "type", "object" } }));
             juce::var checks = claude::object({ { "type", "array" },
                                                 { "maxItems", kMaxChecks },
-                                                { "items", claude::object({ { "type", "object" },
-                                                                            { "properties", item },
-                                                                            { "required", juce::Array<juce::var>{ "label" } } }) },
+                                                { "items", claude::object({ { "type", "object" }, { "properties", item } }) },
                                                 { "description", "Each a metric with min, max or target, in a render "
                                                                  "of its own (measure_output's settings; defaults when "
                                                                  "left out). Empty: none; left out: lists them" } });
@@ -2764,7 +2918,11 @@ namespace playground
                                int& status, std::string& error, int& retryAfter)
     {
         if (otherTurn())
-            return streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
+        {
+            const bool ok = streamOther(body, builder, status, error, retryAfter);   // another provider (ChatProviderTurn.cpp)
+            countUsage(builder, true);             // the ledger: every request that reported usage (ChatUsage.cpp)
+            return ok;
+        }
         std::string key;
         claude::Transport* transport = nullptr;
         ensureKey();                               // a key saved again during the turn (read without the lock)
@@ -2780,9 +2938,6 @@ namespace playground
                 error = "The API key was removed. Add it again.";
                 return false;
             }
-            requests_.push_back(body);
-            if (requests_.size() > 64)
-                requests_.erase(requests_.begin());
         }
         claude::Headers headers = headersFor(key);
         headers.emplace_back("content-type", "application/json");
@@ -2797,6 +2952,7 @@ namespace playground
                                                          return !cancel_.load();
                                                      },
                                                      cancel_);
+        countUsage(builder, false);                // the ledger: every request that reported usage (ChatUsage.cpp)
         status = r.status;
         retryAfter = r.retryAfterSeconds;
         if (r.status != 200)
@@ -2838,7 +2994,13 @@ namespace playground
             return;
         }
         if (r.status != 200)
-            return;                                // the built-in list stays
+        {
+            // The built-in list stays for this turn, and the list is asked for again at the next (a 529, no
+            // connection, a Stop while it was asked); a refused key (above) waits for another key.
+            const std::lock_guard<std::mutex> lock(mutex_);
+            modelsFetched_ = false;
+            return;
+        }
         const juce::var v = claude::parseJson(r.body);
         std::vector<ChatModel> found;
         const juce::var models = v.getProperty("data", juce::var());
@@ -2888,6 +3050,12 @@ namespace playground
     void ChatAgent::runTurn()
     {
         turnThread_.store(std::this_thread::get_id());
+        if (!takePending())
+            return;                                // stopped while its pictures were read
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            turnCost_ = {};                        // the footer's cost is this turn's
+        }
         // The provider for the whole turn (startTurn, ChatProviderTurn.cpp): a change while it runs applies to the next
         // one. Another provider's turn has its key, its model and its options from there.
         int maxTokens = 0;                         // what one reply of this turn's model holds
@@ -2956,8 +3124,16 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             turnStart = entries_.size();
         }
-        for (int round = 0; round < kMaxRounds && !cancel_.load(); ++round)
+        for (int round = 0; round < kMaxRounds; ++round)
         {
+            if (cancel_.load())
+            {
+                // Stopped before this request went (in the models list's fetch, the planner, or between requests): the
+                // history ends as it is, valid (a user's message or results, or a paused reply), and the chat says so.
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::note, "Stopped.");
+                break;
+            }
             std::string beta;
             std::string body = requestBody(beta);  // Anthropic's as it was; another provider's translated
             int fastBusy = 0;                      // the fast requests the API turned away as busy, this round
@@ -3041,6 +3217,7 @@ namespace playground
                     const std::string what = str(block, "type").rfind("web_fetch", 0) == 0 ? "page" : "search";
                     const std::lock_guard<std::mutex> lock(mutex_);
                     addEntry(ChatEntry::Kind::tool, "The " + what + " failed with an error: " + str(c, "error_code"));
+                    entries_.back().failed = true;
                 };
                 cb.citation = [sources](const juce::var& c) {
                     const std::string url = str(c, "url");
@@ -3148,6 +3325,8 @@ namespace playground
                     for (int k = 0; k < 10 && !cancel_.load(); ++k)
                         std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
+                if (brokeOff && cancel_.load())
+                    builder.reset();               // stopped in the wait: what was taken back stays out of the history
             }
 
             const bool stopped = cancel_.load();
@@ -3194,7 +3373,8 @@ namespace playground
                        + (u.webSearches > 0 ? ", " + std::to_string(u.webSearches) + (u.webSearches == 1 ? " search" : " searches")
                                             : std::string())
                        + (u.compactions > 0 ? "; the conversation was summarized" : "")
-                       + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_);
+                       + (turnPlanUsage_.empty() ? std::string() : "; " + turnPlanUsage_)
+                       + turnCostText();         // the turn's cost so far, when every request has one
                 // A server here that took far fewer tokens than the request holds cut it to fit its context (Ollama
                 // does, with no error; a remote API refuses a request too long instead): said once a chat.
                 const int64_t took = u.input + u.cacheRead + u.cacheWrite;
@@ -3288,8 +3468,12 @@ namespace playground
             const bool endsHere = cutOff && cutOffs >= kMaxCutOffs;
             if (cutOff)
             {
-                const std::string limit = std::string(other ? "The model's reply" : "Claude's reply") + " reached its length limit (" + thousands(maxTokens)
-                                        + " tokens, its thinking included)";
+                const std::string limit =
+                    std::string(other ? "The model's reply" : "Claude's reply")
+                    + (maxTokens > 0
+                           ? " reached its length limit (" + thousands(maxTokens) + " tokens, its thinking included)"
+                           : std::string(" reached the length limit of its server (on a server of your own, the "
+                                         "model's context length in its settings)"));
                 const std::lock_guard<std::mutex> lock(mutex_);
                 addEntry(ChatEntry::Kind::note,
                          endsHere ? limit + " twice in a row, so the turn ends here. Send \"continue\" to let it go "
@@ -3326,9 +3510,13 @@ namespace playground
                             + (current ? " and dials as they are now" : " as they are now, each with the dials it takes")
                             + ".\n" + results
                             + "Fix what fails, or change a check with set_checks if it asks for the wrong thing, or say why "
-                              "it cannot pass. Your turn ends when you answer without a tool call"
-                            + (checkNudges == kMaxCheckNudges ? std::string(", and the plugin will not ask again this turn.)")
-                                                              : std::string(".)"));
+                              "it cannot pass. "
+                            + (checkNudges == kMaxCheckNudges
+                                   ? std::string("Your turn ends when you answer without a tool call, and the plugin "
+                                                 "will not ask again this turn.)")
+                                   : std::string("When you answer without a tool call, the plugin measures the checks "
+                                                 "again and, if one still fails, asks ")
+                                         + (checkNudges + 1 == kMaxCheckNudges ? "once more.)" : "again.)"));
                         const std::lock_guard<std::mutex> lock(mutex_);
                         messages_.add(claude::object({ { "role", "user" }, { "content", juce::Array<juce::var>{ text(line) } } }));
                         addEntry(ChatEntry::Kind::note, "A check fails, so Claude goes on (" + std::to_string(checkNudges) + " of "
@@ -3377,8 +3565,8 @@ namespace playground
                 if (cutOff || invalid || cancel_.load())
                 {
                     const std::string why = cutOff
-                                                ? "Your reply reached its limit of about " + thousands(maxTokens)
-                                                      + " tokens, your thinking included, and was cut off before this "
+                                                ? "Your reply reached " + reachedLimit(maxTokens)
+                                                      + ", and was cut off before this "
                                                         "call was complete, so it did not run. Do the work in smaller "
                                                         "steps (edit_file, or several files)."
                                             : invalid ? claude::toJson(claude::object({ { "INVALID_JSON",
@@ -3498,10 +3686,12 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             busy_ = false;
             activity_.clear();
+            turnThread_.store(std::thread::id{});   // under the lock that frees the chat: a call that takes it next
+                                                    // keeps its own
             touch();
         }
-        turnThread_.store(std::thread::id{});
         keep();                                    // the turn's work, on this Mac at once
+        usage::flush();                            // the turn's requests into usage.json (never under mutex_)
         applyPendingOwner();
     }
 
@@ -3630,8 +3820,11 @@ namespace playground
             if (why.empty())
                 why = "it wrote nothing";
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (at < entries_.size() && entries_[at].kind == ChatEntry::Kind::plan)
-                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(at));   // no empty card
+            // No empty card; a plan stopped as it streamed keeps what the user read (it never joins the history).
+            const bool begun = at < entries_.size() && cancel_.load()
+                            && entries_[at].text.find_first_not_of(" \t\n") != std::string::npos;
+            if (at < entries_.size() && entries_[at].kind == ChatEntry::Kind::plan && !begun)
+                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(at));
             touch();
         }
         return out;
@@ -3817,7 +4010,7 @@ namespace playground
             { "listen", "Listen live", true, false, "debugging" },
             { "compare", "Compare two sounds", true, false, "debugging" },
             { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
-            { "capture", "Record what you play", true, false, "debugging" },
+            { "capture", "Record what you play", false, true, "debugging" },   // an arm changes what plays; a take goes
             { "run_function", "Call a function", true, false, "debugging" },
             { "projects", "Projects and presets", false, true, "projects" },
         };
@@ -3876,7 +4069,8 @@ namespace playground
             "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
             "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
             "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
-            ".gui file or a program's folder the user named, its .fm, .gui, .sc and .sh files, read only, 256 KB a file), or text "
+            ".gui file or a program's folder the user named, its .fm, .cir, .gui, .sc and .sh files, program.fm first, read only, "
+            "256 KB a file), or text "
             "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
             "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
             "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "
@@ -4015,10 +4209,10 @@ namespace playground
     {
         if (call == 0)
             return;
-        mcpCancelled_.store(call);
         const std::lock_guard<std::mutex> lock(mutex_);
         if (mcpRunning_ == call)
         {
+            mcpRunningCancelled_ = true;                 // its own: a cancel of another call after it changes nothing
             cancel_.store(true);
             activity_ = "Stopping";
             touch();
@@ -4077,7 +4271,8 @@ namespace playground
                 const std::lock_guard<std::mutex> stopped(liveMutex_);
                 early = mcpStopped_.erase(call) != 0;
             }
-            cancel_.store(call != 0 && (early || mcpCancelled_.load() == call));   // a cancel that came before it started
+            mcpRunningCancelled_ = call != 0 && early;   // a cancel that came before it started
+            cancel_.store(mcpRunningCancelled_);
             if (!mcpNoted_)
             {
                 addEntry(ChatEntry::Kind::note, "Claude Desktop is working on the program through MCP: what it does shows here.");
@@ -4091,16 +4286,19 @@ namespace playground
         const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
         if (!live)
         {
+            // A project Claude Desktop opened shows its chat now, while the call still holds the chat (readState keeps
+            // it busy): no message of the user's lands in the chat it leaves, nor a turn starts under the switch.
+            applyPendingOwner();
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 busy_ = false;
                 mcpWorking_.store(false);
                 mcpRunning_ = 0;
+                mcpRunningCancelled_ = false;
                 activity_.clear();
+                turnThread_.store(std::thread::id{});   // as runTurn's end: before another turn or call can start
                 touch();
             }
-            turnThread_.store(std::thread::id{});
-            applyPendingOwner();
         }
         const juce::var content = block.getProperty("content", juce::var());
         juce::Array<juce::var> out;
@@ -4191,7 +4389,8 @@ namespace playground
         if (!(seconds > 0.0) || seconds > kMaxAt)
             return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
         Assets samples;                           // what it compiled with, not the plugin's samples as they are now
-        const Sources files = host_.chatPlaying(samples);
+        CircuitPins pins;                         // and the configuration its netlists play with
+        const Sources files = host_.chatPlaying(samples, &pins);
         if (files.empty())
             return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
         measure::ViewRequest vr;
@@ -4207,7 +4406,7 @@ namespace playground
         vr.render.assets = samples;
         defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
-        measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
+        measure::Session session(files, vr.render.rate, pins.empty() ? nullptr : &pins, vr.render.assets);
         if (!session.compiled())
             return "the program that plays did not compile for the render:\n" + capped(session.errors());
         // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
@@ -4237,6 +4436,26 @@ namespace playground
 
     // ---- the tools ----------------------------------------------------------------------------------------------------
     juce::var ChatAgent::runTool(const juce::var& use)
+    {
+        // The rows the tool added are drawn failed when its result is an error (the rows' words never decide it).
+        std::size_t before = 0;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            before = entries_.size();
+        }
+        const juce::var block = toolResult(use);
+        if (static_cast<bool>(block.getProperty("is_error", false)))
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (std::size_t i = before; i < entries_.size(); ++i)
+                if (entries_[i].kind == ChatEntry::Kind::tool)
+                    entries_[i].failed = true;
+            touch();
+        }
+        return block;
+    }
+
+    juce::var ChatAgent::toolResult(const juce::var& use)
     {
         const std::string name = str(use, "name");
         const juce::var input = use.getProperty("input", juce::var());
@@ -4333,11 +4552,22 @@ namespace playground
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 vr.render.current = currentDials();
             soundInput(input, vr);
+            // The close-up: both ends or neither (the default's few cycles), never one of them dropped without a word.
             const juce::var from = input.getProperty("from_seconds", juce::var()), to = input.getProperty("to_seconds", juce::var());
-            if (isNumber(from) && isNumber(to))
+            const bool hasFrom = !from.isVoid() && !from.isUndefined(), hasTo = !to.isVoid() && !to.isUndefined();
+            if (why.empty() && (hasFrom || hasTo))
             {
-                vr.from = static_cast<float>(static_cast<double>(from));
-                vr.to = static_cast<float>(static_cast<double>(to));
+                if (!hasFrom || !hasTo || !isNumber(from) || !isNumber(to))
+                    why = "from_seconds and to_seconds go together, two numbers: the close-up from one to the other (both left "
+                          "out: a few cycles of the held sound).";
+                else if (!(static_cast<double>(from) >= 0.0) || !(static_cast<double>(to) > static_cast<double>(from)))
+                    why = "to_seconds is after from_seconds, and from_seconds 0 or more (the close-up's seconds from the "
+                          "start).";
+                else
+                {
+                    vr.from = static_cast<float>(static_cast<double>(from));
+                    vr.to = static_cast<float>(static_cast<double>(to));
+                }
             }
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
@@ -4350,7 +4580,19 @@ namespace playground
                 block.getDynamicObject()->setProperty("is_error", true);
                 return block;
             }
-            const measure::View v = measure::view(files, vr);
+            // Cancelled as it renders (the stop button, Claude Desktop's cancel), as every render of the tools is.
+            measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
+            session.setCancel(renderCancel("Drawing the sound"));
+            const measure::View v = measure::view(session, vr);
+            if (v.compiled && session.cancelled())
+            {
+                const std::string said = scenario::trialLine(trials) + session.cancelWords() + " So nothing was drawn.";
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(said.c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::tool, "looked at the sound: stopped");
+                return block;
+            }
             if (!v.compiled)
             {
                 block.getDynamicObject()->setProperty(
@@ -4472,7 +4714,9 @@ namespace playground
                 const cir::Applied a = cir::apply(before, cir::reconcile(before, pins), ops, pins);
                 if (!a.error.empty())
                     return fail(a.error + ". Nothing was changed.");
-                d.files[static_cast<std::size_t>(i)].text = a.text;
+                std::string after = a.text;
+                const std::string held = asEditorHolds(after);   // a value or a name as the editor holds it (ChatAgent.h)
+                d.files[static_cast<std::size_t>(i)].text = after;
                 d.active = i;
                 if (circuitWriteHook_)
                     circuitWriteHook_(attempt);
@@ -4484,13 +4728,13 @@ namespace playground
                 std::string version;
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    version = keepVersion(file, a.text);
+                    version = keepVersion(file, after);
                 }
                 std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
-                                + ", one step the user can undo; version " + version + ".\n";
+                                + ", one step the user can undo" + (held.empty() ? "" : "; " + held) + "; version " + version + ".\n";
                 for (const std::string& said : a.said)
                     out += "- " + said + "\n";
-                const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
+                const std::string was = cir::stripLayout(before), now = cir::stripLayout(after);
                 const std::vector<std::string_view> la = textdiff::lines(was), lb = textdiff::lines(now);
                 std::string changed;
                 int shown = 0, more = 0;
@@ -4510,7 +4754,7 @@ namespace playground
                                        : "The netlist's lines changed (the drawing's *@ lines aside):\n" + changed
                                              + (more > 0 ? "(" + std::to_string(more) + " more)\n" : std::string());
                 {
-                    const Sources one{ { file, a.text } };
+                    const Sources one{ { file, after } };
                     circuits::Generator gen(one);
                     gen.module(file);
                     const std::string said = gen.errors() + gen.warnings();
@@ -4518,21 +4762,21 @@ namespace playground
                                         : "The circuit compiler on the new text:\n" + capped(said)
                                               + (said.back() == '\n' ? "" : "\n");
                 }
-                if (a.text.size() <= kCircuitTextBytes)
+                if (after.size() <= kCircuitTextBytes)
                 {
-                    out += "Its whole text now:\n" + a.text + (a.text.empty() || a.text.back() == '\n' ? "" : "\n");
+                    out += "Its whole text now:\n" + after + (after.empty() || after.back() == '\n' ? "" : "\n");
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    markSeen(file, a.text);
+                    markSeen(file, after);
                 }
                 else
                 {
-                    out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                    out += "(" + std::to_string(after.size()) + " bytes: read_file shows it whole.)\n";
                     // Every line it changed is listed above: seen as an edit_file is, only if the text it edited was
                     // (its drawing's *@ lines aside, which no state sends).
                     if (more == 0)
                     {
                         const std::lock_guard<std::mutex> lock(mutex_);
-                        carrySeen(file, before, a.text);
+                        carrySeen(file, before, after);
                     }
                 }
                 note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));
@@ -4545,7 +4789,8 @@ namespace playground
             std::string file, to;
             if (!stringArg("name", file) || !stringArg("new_name", to))
                 return fail("rename_file needs name and new_name");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             const int i = findFile(d, file);
             if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
             {
@@ -4562,7 +4807,7 @@ namespace playground
             if (findFile(d, to) >= 0)
                 return fail("There is a file " + to + " already");
             d.files[static_cast<std::size_t>(i)].name = to;
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 if (const auto it = seen_.find(file); it != seen_.end())
@@ -4580,7 +4825,8 @@ namespace playground
             std::string file;
             if (!stringArg("name", file))
                 return fail("delete_file needs a name");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             const int i = findFile(d, file);
             if (const Assets samples = host_.chatAssets(); i < 0 && samples != nullptr && samples->find(file) != nullptr)
             {
@@ -4596,7 +4842,7 @@ namespace playground
                 return fail("The first file is the program and cannot be deleted");
             d.files.erase(d.files.begin() + i);
             d.active = std::min(d.active, static_cast<int>(d.files.size()) - 1);
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 seen_.erase(file);
@@ -4620,7 +4866,8 @@ namespace playground
             const std::string text = lib->source;
             const int lines = lineCount(text);
             const std::string count = std::to_string(lines) + (lines == 1 ? " line" : " lines");
-            Draft d = host_.chatDraft();
+            const Draft read = host_.chatDraft();
+            Draft d = read;
             if (const int i = findFile(d, file); i >= 0)
             {
                 if (d.files[static_cast<std::size_t>(i)].text != text)
@@ -4637,7 +4884,7 @@ namespace playground
             setActivity("Adding " + file);
             d.files.push_back({ file, text });
             d.active = static_cast<int>(d.files.size()) - 1;
-            host_.chatSetDraft(d);
+            host_.chatSetDraft(d, read);
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
                 markSeen(file, text);
@@ -4762,9 +5009,15 @@ namespace playground
                 return fail(why);
             bool cut = false;
             const std::string report = measure::run(files, req, renderCancel("Measuring the sound"), &cut);
-            note(report.rfind("It did not compile", 0) == 0 ? "measured the sound: it did not compile"
-                 : cut                                     ? "measuring the sound was cut short"
-                                                           : "measured the sound");
+            const bool broken = report.rfind("It did not compile", 0) == 0;
+            note(broken ? "measured the sound: it did not compile"
+                 : cut  ? "measuring the sound was cut short"
+                        : "measured the sound");
+            if (broken)
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                entries_.back().failed = true;            // its result is the report, no error: nothing was measured
+            }
             return scenario::trialLine(trials) + scenario::dialsLine(defaults && !req.fromCapture) + report;
         }
         if (name == "set_checks")
@@ -5047,7 +5300,7 @@ namespace playground
             bool dropped = false;                        // Claude Desktop cancelled the call (mcpCancel)
             {
                 const std::lock_guard<std::mutex> lock(mutex_);
-                dropped = mcpRunning_ != 0 && mcpCancelled_.load() == mcpRunning_;
+                dropped = mcpRunning_ != 0 && mcpRunningCancelled_;
             }
             if (!t.error.empty())
             {
@@ -5070,13 +5323,47 @@ namespace playground
                        "values above).";
             else if (apply && t.bestScore < t.startScore)
             {
+                // It tuned the editor's files; the dials are the program's that plays: a dial it lacks (the files not run
+                // since one was added or renamed) is named, with its value, never counted as set.
                 const Controls controls = host_.chatDials();
+                std::string set, missing, valued;
+                int sets = 0, misses = 0;
                 for (const auto& [dial, v] : t.best)
-                    for (int c = 0; c < kMaxControls; ++c)
-                        if (controls[static_cast<std::size_t>(c)].used && dial == controls[static_cast<std::size_t>(c)].name)
-                            host_.chatSetDial(c, v);
-                out += t.timedOut ? "The dials are set to the best values found before the time limit (the user can move them)."
-                                  : "The dials are set to the best values (the user can move them).";
+                {
+                    bool found = false;
+                    for (int c = 0; c < kMaxControls && !found; ++c)
+                    {
+                        const Control& k = controls[static_cast<std::size_t>(c)];
+                        if (!k.used || dial != k.name)
+                            continue;
+                        float x = std::clamp(v, k.min, k.max);   // within the range the dial that plays has (set_dial's)
+                        if (k.type != ControlType::real)
+                            x = std::round(x);
+                        host_.chatSetDial(c, x);
+                        set += (set.empty() ? "" : ", ") + dial;
+                        ++sets;
+                        found = true;
+                    }
+                    if (!found)
+                    {
+                        missing += (missing.empty() ? "" : ", ") + dial;
+                        valued += (valued.empty() ? "" : ", ") + dial + " " + number(v);
+                        ++misses;
+                    }
+                }
+                const std::string found = t.timedOut ? " found before the time limit" : "";
+                if (misses == 0)
+                    out += "The dials are set to the best values" + found + " (the user can move them).";
+                else
+                {
+                    if (sets > 0)
+                        out += "Set " + set + " to the best value" + (sets == 1 ? "" : "s") + found + " (the user can move "
+                             + (sets == 1 ? "it" : "them") + "). ";
+                    else
+                        out += "No dial was set. ";
+                    out += "The program that plays has no dial " + missing + " (the editor's files tuned here are not what "
+                         "plays): run_program, then set_dial sets " + (misses == 1 ? "it" : "them") + " (" + valued + ").";
+                }
             }
             else if (apply)
                 out += "The dials are left as they were: nothing better was found.";

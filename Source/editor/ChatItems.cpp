@@ -84,7 +84,7 @@ namespace playground::ui
         constexpr float kBoxRadius = 14.0f;
         constexpr float kTile = 56.0f;               // an attached picture's square, above the text
         constexpr float kTileGap = 8.0f;
-        constexpr float kStrip = kTile + 10.0f;      // the row of them, with its gap to the text
+        constexpr float kStripGap = 10.0f;           // their rows' gap to the text (with the box's inset above)
         constexpr float kRemoveR = 9.0f;             // a tile's remove button (its corner)
 
         // The middle square of a w x h picture (in 0..1 of it): a tile shows the picture cropped to fill it.
@@ -124,7 +124,21 @@ namespace playground::ui
                  std::max(10.0f, box.h - barH - 2.0f * kBoxPad - strip) };
     }
 
-    float InputItem::stripHeight() const noexcept { return pictures_.empty() && pending_ == 0 ? 0.0f : kStrip; }
+    // The tiles a row of the box's width holds (each 6 px clear of its right edge), and the rows they take: a message's
+    // six wrap onto a second row at the least chat rather than go undrawn.
+    int InputItem::tilesPerRow() const noexcept
+    {
+        return std::max(1, static_cast<int>(std::floor((box_.w - 16.0f - kTile) / (kTile + kTileGap))) + 1);
+    }
+
+    float InputItem::stripHeight() const noexcept
+    {
+        const int n = static_cast<int>(pictures_.size()) + pending_;
+        if (n == 0)
+            return 0.0f;
+        const int rows = (n + tilesPerRow() - 1) / tilesPerRow();
+        return static_cast<float>(rows) * (kTile + kTileGap) - kTileGap + kStripGap;
+    }
 
     void InputItem::setPictures(std::vector<ChatPicturePtr> pictures, int pending)
     {
@@ -135,7 +149,9 @@ namespace playground::ui
 
     funkgui::Rect InputItem::pictureRect(int i) const
     {
-        return { box_.x + 10.0f + static_cast<float>(i) * (kTile + kTileGap), box_.y + 9.0f, kTile, kTile };
+        const int per = tilesPerRow();
+        return { box_.x + 10.0f + static_cast<float>(i % per) * (kTile + kTileGap),
+                 box_.y + 9.0f + static_cast<float>(i / per) * (kTile + kTileGap), kTile, kTile };
     }
 
     std::optional<funkgui::Point> InputItem::centreOfRemove(int i) const
@@ -248,7 +264,7 @@ namespace playground::ui
         {
             const funkgui::Rect r = pictureRect(i);
             if (r.right() > box_.right() - 6.0f)
-                break;                                   // no room (a message takes six)
+                break;                                   // a box narrower than one tile
             if (i >= count)
             {
                 c.rrect(r.x, r.y, r.w, r.h, 10.0f, p.raised, 1.0f, p.cardEdge);
@@ -348,6 +364,7 @@ namespace playground::ui
             .mix(bounds_.x).mix(bounds_.y).mix(bounds_.w).mix(bounds_.h)
             .mix(hovered_)
             .mix(focused_)
+            .mix(compact_)
             .mix(open());
         return k.h;
     }
@@ -416,9 +433,10 @@ namespace playground::ui
         if (ring && focused_)
             c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, radius + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
 
-        if (spec_.shape != Shape::pill)
+        if (spec_.shape != Shape::pill || (compact_ && icon != chat::Icon::none))
         {
-            chat::drawIcon(c, icon, r.centreX(), r.centreY(), spec_.shape == Shape::circle ? 13.0f : 14.0f, ink);
+            const float size = spec_.shape == Shape::circle ? 13.0f : spec_.shape == Shape::pill ? 12.0f : 14.0f;
+            chat::drawIcon(c, icon, r.centreX(), r.centreY(), size, ink);
             return;
         }
         float x = r.x + 12.0f;

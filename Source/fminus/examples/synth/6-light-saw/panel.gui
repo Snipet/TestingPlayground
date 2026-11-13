@@ -1,0 +1,20 @@
+// The brightness as a dial of light, a scope to hold (the swell) and drag across (the brightness), and the keys.
+column gap=10 {
+    row gap=16 align=center {
+        section "BRIGHT" layout=column align=center {
+            shader "dial.sc" inputs="bright pointer.hover pointer.down" y=bright drag=relative cursor=updown width=96 height=96
+            label "DRAG UP OR DOWN" size=small
+        }
+        section "SWELL" grow=1 {
+            box x=bright down=swell cursor=hand grow=1 {
+                scope out height=110
+            }
+        }
+        section "VOICE" {
+            knob resonance
+            knob release
+            knob level
+        }
+    }
+    keyboard from=48 keys=25
+}

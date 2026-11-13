@@ -1,4 +1,5 @@
-// Source/dsp/Regex.h: a regular expression that matches in linear time (JUCE-free), for read_file's search. RE2's
+// Source/dsp/Regex.h: a regular expression that matches in linear time (JUCE-free), for read_file's search and
+// edit_file's replacement of every match (`find`: where a match is, its start and end, never a group's). RE2's
 // syntax, the part of it a search of program text needs, compiled to a Thompson NFA and run over the text as a set of
 // states (Pike's simulation, without captures): a search costs at most (the text's length + 1) x (the program's size)
 // steps, whatever the pattern, since nothing backtracks. A pattern such as (a+)+$ that takes a backtracking engine
@@ -6,7 +7,8 @@
 // steps against a budget the caller gives, and stops with `spent` when it runs out, so a search across every file has
 // a bound in time too (the MCP link runs its calls on one worker). Compiling has one as well: a repetition of what
 // matches the empty string alone writes nothing, and a pattern whose repetitions written out make more than kMaxProgram
-// instructions, or take more than a few calls an instruction to write ((?:()()()a){1000}), is refused as too large.
+// instructions, or take more than about 4 x kMaxProgram calls in all to write ((?:(?:()()()()a){1000}){4}: 4,001
+// instructions, but its empty groups' calls past that), is refused as too large.
 //
 // The syntax: literals; . (any character but '\n', with s any); [abc], [^a-z], [[:alpha:]] (alnum, alpha, ascii, blank,
 // cntrl, digit, graph, lower, print, punct, space, upper, word, xdigit; [:^alpha:] its complement); \d \D \w \W \s \S;
@@ -57,6 +59,13 @@ namespace playground::regex
         // and each character it reads takes one off `steps`; at 0 it stops with `spent`.
         Found search(std::string_view text, std::uint64_t& steps);
 
+        // Where the first match at or after byte `from` of `text` is: the leftmost place one starts, and there the
+        // longest (POSIX's rule, not RE2's leftmost-first: `a|ab` takes all of "ab"), [begin, end). ^, $ and \b see
+        // the whole text, so a match after `from` never takes ^. A match of nothing is one (begin == end): the caller
+        // passes over it. The steps as search() counts them. Each thread keeps the byte it started at, nothing more:
+        // no group is captured.
+        Found find(std::string_view text, std::size_t from, std::uint64_t& steps, std::size_t& begin, std::size_t& end);
+
         enum class Op : uint8_t
         {
             ch,                                       // one code point, `a`, or its other case, `b`
@@ -83,6 +92,16 @@ namespace playground::regex
     private:
         // The closure of `pc` at byte `pos` of `text` added to list `l` (search()'s step): yes when it reaches match.
         Found close(std::size_t l, uint32_t pc, std::string_view text, std::size_t pos, std::uint64_t& steps);
+        // find()'s step: the same closure, each state added with the byte its thread started at (`start`), a match
+        // reached kept when it starts further left than the one kept, or at the same place and ends later (`kept`).
+        // spent, else no.
+        struct Kept
+        {
+            bool any = false;
+            std::size_t begin = 0, end = 0;
+        };
+        Found closeFrom(std::size_t l, uint32_t pc, std::string_view text, std::size_t pos, std::size_t start, std::uint64_t& steps,
+                        Kept& kept);
         void prepare();                               // the first bytes, and the states sized
 
         std::vector<Inst> prog_;
@@ -92,6 +111,7 @@ namespace playground::regex
         bool first_[256] = {};                        // the bytes a match may start with
         // search()'s states: two sparse sets over the program, and the closure's stack.
         std::vector<uint32_t> dense_[2], sparse_[2], stack_;
+        std::vector<std::size_t> start_[2];           // find(): each state's thread's first byte, by its place in dense_
         std::size_t count_[2] = {};
     };
 }

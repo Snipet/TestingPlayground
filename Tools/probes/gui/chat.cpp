@@ -18,6 +18,7 @@
 //                         Send answers
 //   gui.chat.answered.png the question answered: the choices marked, the rest muted
 //   gui.chat.pictures.png two pictures in the message box, each with its remove button
+//   gui.chat.six.png      six pictures in the message box at the least size, on two rows
 //   gui.chat.sent.png     a message sent with two pictures: their thumbnails above its bubble
 //   gui.chat.plan.png     a planning model's plan as a card above the builder's answer
 //   gui.chat.checks.png   Claude's checks card, every check passing, and the picture of the sound it looked at
@@ -31,8 +32,10 @@
 //            panel speaks of no sign-in), and suggestions
 //   KEY      a message sent with no key opens the key dialog and stays in the message box; Escape closes the dialog
 //            (the message stays, unsent); sent again, it waits for the key; while the dialog is open the pointer and
-//            the keys reach nothing else; a key that is not one is refused (the dialog says why; nothing is stored);
-//            Cmd-V pastes a key; nothing the panel speaks holds the key; SAVE stores it, closes the dialog and sends
+//            the keys reach nothing else; a key that is not one is refused (the dialog says why, to a screen reader
+//            too; nothing is stored);
+//            Cmd-V pastes a key, drawn masked (its public prefix, stars, its last four); nothing the panel speaks
+//            holds the key; SAVE stores it, closes the dialog and sends
 //            the waiting message to api.anthropic.com with the key; the header has no account, the line under the box
 //            no credit; KEY opens the dialog; REMOVE (shown once a key is stored) forgets it; Return in the dialog
 //            saves one
@@ -49,7 +52,10 @@
 //            Claude Opus 5.5, switches fast mode on and off (a switch to a screen reader, on or off), and is gone
 //            on a model that takes no fast mode
 //   WEB      web search's pill, after fast mode's: a switch (to a screen reader too), on and off
-//   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn
+//   STOP     while Claude works the line under the box says what it is doing and send is stop: a click ends the turn;
+//            a double-click on send sends once and stops nothing (its second press is the same click's), the turn
+//            running to its answer; a click on send leaves the caret in the message box, so Space and Return typed
+//            while Claude works go there and stop nothing; one press on stop ends the turn at once
 //   ASK      Claude's question (ask_user) as a card: the turn waits and the message box says so; each option a button
 //            (to a screen reader a radio button, or a toggle for several); a click marks it (another of one choice
 //            replaces it, several stay); Send answers waits until each question has a pick, then sends the labels and
@@ -57,9 +63,11 @@
 //            has no Send answers, and its click answers
 //   PICTURES the message box's picture button asks the host for files (several, pictures); the files chosen show as
 //            thumbnails in the box (drawn, none missing) and their remove buttons take one back; pictures dropped on
-//            the chat's card come too (the card says so while the drag is over the editor), not on the editor, and a
-//            text file is no drop the chat takes; sent, the pictures go before the words and show above the message;
-//            FunkGui holds each thumbnail while the chat does, and a new chat lets them go
+//            the chat's card come too (the card says so while pictures are dragged over the editor, not audio files),
+//            not on the editor, and a text file is no drop the chat takes; a picture alone may be sent with the
+//            send button; six at the least size wrap to a second row, each drawn and removable; sent, the pictures
+//            go before the words and show above the message; FunkGui holds each thumbnail while the chat does,
+//            and a new chat lets them go
 //   CHECKS   Claude's checks (set_checks) as a card, a row each (its label, its value against the goal), and the
 //            picture of the sound it looked at (view_sound) under its row, drawn; one fails, the turn goes on, a dial
 //            set and a run fix it: the card brought up to date (every check passing); a check that cannot pass shows
@@ -69,18 +77,31 @@
 //   CHATS    the header's pill names the chat shown (a combo box to a screen reader); its menu lists the chats, the
 //            newest first, the one shown dotted, then New chat, Rename and Delete; an older one chosen shows (its words
 //            back); Rename opens the dialog with its name, selected: typed over and Return, the chat has that name (the
-//            pill says it); Escape cancels; Delete asks first, then the chat is gone and the newest other one shows
+//            pill says it); a click in the name drops the selection and places the caret; Escape
+//            cancels; Delete asks first, then the chat is gone and the newest other one shows;
+//            another chat shown is another conversation to the view (ChatState::conversation)
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end; as
 //            the code scrolls (editor/Scroll.h): a notch three body lines, reversed set (a built WheelEvent: HeadlessHost
-//            cannot set it) the same way, its thumb dragged in proportion
+//            cannot set it) the same way, its thumb dragged in proportion; the message box keeps its keys, Shift-Tab
+//            reaches the conversation, where Page Up, Home and End scroll; a screen reader has every block, and its
+//            focus on one out of view scrolls it in
+//   VIEW     the conversation alone, over a made-up state: the user's words as typed (no markdown); a Copy copies the
+//            entry's own UTF-8; inline code in small text runs over no word; a tool row is drawn failed by its outcome,
+//            not its words; an answered question marks the option chosen alone; a thinking row opened stays open while
+//            the conversation is the same, and another one's starts closed
 //   COLLAPSE the header's chevron folds the chat into a rail (the processor keeps it, its state too): the editor takes
 //            the room, the chat's items go (the message box among them); an answer while folded lights the rail's dot;
-//            the rail's button opens the chat again, the dot gone, the answer in it, the editor as wide as before
+//            a Panel made while it is folded asks for no frame (but the safety net's) and no layout while idle (two
+//            seconds at the frame pump's cadence); the rail's button opens the chat again, the dot gone, the answer in it, the editor as
+//            wide as before, the message box at its height at once
 //   RESIZE   a size below the least is raised to it; at the least size (with sixteen files, the most, their tabs narrowed) and at
 //            a large one every item lies inside the panel, the chat's column right of the editor; the editor and the conversation grow with the height; the
-//            processor keeps the editor's size in the session
+//            processor keeps the editor's size in the session; at the least size the message box's bar (Claude Opus
+//            5.5: fast mode's and web search's pills shown) has no item over another or past it, none under send, and
+//            a click on stop's centre stops the turn and leaves web search as it was
 //   DRAW     an answer that lands with no input asks for a frame (Panel.h "Unchanged frames"), and the conversation
 //            settled, the panel asks for none
+#include "Cadence.h"
 #include "Probe.h"
 
 #include "../plugin/FakeClaude.h"
@@ -100,8 +121,11 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -109,6 +133,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 #include <juce_graphics/juce_graphics.h>
 
@@ -157,6 +182,48 @@ namespace
     }
 
     pg::ChatState chat(pg::Processor& p) { return p.chatAgent().chatState(); }
+
+    // The script's answers no request took (a row that failed left them): dropped, so the next turns get their own.
+    void dropUnplayed(fake::Script& script)
+    {
+        const std::lock_guard<std::mutex> lock(script.mutex);
+        script.posts.clear();
+    }
+
+    int count(const std::string& s, const std::string& part)
+    {
+        int n = 0;
+        for (std::size_t at = s.find(part); at != std::string::npos; at = s.find(part, at + part.size()))
+            ++n;
+        return n;
+    }
+
+    // The message box's bar: every item shown in it lies inside it, and none over another (so none under send).
+    bool barFits(const funkgui::HeadlessHost& host, const pg::ui::Panel& panel)
+    {
+        const funkgui::Rect bar = panel.chatInputItem().bar();
+        std::vector<funkgui::A11yItem> items;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            for (const char* t : { "Add pictures", "Model", "Thinking level", "Fast mode", "Web search", "Send or stop" })
+                if (a.title == t)
+                    items.push_back(a);
+        bool ok = items.size() >= 3;
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            const funkgui::Rect& a = items[i].bounds;
+            std::printf("bar: %s at %.1f to %.1f (the bar %.1f to %.1f)\n", items[i].title.c_str(), static_cast<double>(a.x),
+                        static_cast<double>(a.x + a.w), static_cast<double>(bar.x), static_cast<double>(bar.x + bar.w));
+            if (a.w <= 0.0f || a.x < bar.x - 0.5f || a.x + a.w > bar.x + bar.w + 0.5f || a.y < bar.y - 0.5f || a.y + a.h > bar.y + bar.h + 0.5f)
+                ok = false;
+            for (std::size_t j = i + 1; j < items.size(); ++j)
+            {
+                const funkgui::Rect& b = items[j].bounds;
+                if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)
+                    ok = false;
+            }
+        }
+        return ok;
+    }
 
     // Nothing the panel speaks holds the key, or any 12 characters of it.
     bool a11yHoldsKey(const funkgui::HeadlessHost& host, const std::string& key)
@@ -348,12 +415,26 @@ PROBE(gui, chat)
         P.eq("key.refused_stays_open", panel.keyDialogOpen() ? 1 : 0, 1);
         P.eq("key.refused_says_why", panel.keyDialogWhy().empty() ? 0 : 1, 1);
         P.eq("key.refused_not_stored", chat(processor).hasKey ? 1 : 0, 0);
+        P.eq("key.refused_announced", !host.log.announcements.empty() && host.log.announcements.back() == panel.keyDialogWhy() ? 1 : 0, 1);
+        const auto keyField = a11yTitled(host, "Key");
+        P.eq("key.refused_on_its_field", keyField && keyField->help == panel.keyDialogWhy() ? 1 : 0, 1);
 
         host.setClipboard(key + "\n");
         host.keys("cmd+a,cmd+v");
         host.settle();
         P.eq("key.pasted_clears_why", panel.keyDialogWhy().empty() ? 1 : 0, 1);
         P.eq("key.a11y_never_the_key", a11yHoldsKey(host, key) ? 1 : 0, 0);
+        {
+            // Drawn masked: Anthropic's public prefix, stars, the last four (of what was pasted: its line break a
+            // space, trimmed when it is saved); nothing else of it.
+            const std::string pasted = key + " ";
+            const std::string shown = panel.keyDialogShown();
+            std::string clear;
+            for (const char c : shown)
+                if (c != '*')
+                    clear += c;
+            P.eq("key.masked", clear == "sk-ant-" + pasted.substr(pasted.size() - 4) && shown.rfind("sk-ant-", 0) == 0 ? 1 : 0, 1);
+        }
         writePng(P, host, "gui.chat.key.png");
 
         script->add(fake::Response::ok(fake::Sse().start().text("Hello! What shall we build?").end()));
@@ -647,6 +728,54 @@ PROBE(gui, chat)
         settleChat(processor, host);
         P.eq("stop.ended", chat(processor).busy ? 1 : 0, 0);
         P.eq("stop.note", has(panel.transcript(), "- Stopped.") ? 1 : 0, 1);
+
+        // A double-click on send: its first press sends (send is stop under the pointer then), its second, the same
+        // double-click's, stops nothing: the turn runs to its answer.
+        {
+            const int posts = script->postCount();
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            script->add(fake::Response::ok(fake::Sse().start().text("Answered after a double-click.").end()));
+            clickInput(host, panel);
+            type(host, "twice");
+            const funkgui::Point s = panel.centreOfSend();
+            host.doubleClick(s.x, s.y);
+            settleChat(processor, host);
+            std::printf("double-click on send: %d requests, stopped %d times\n", script->postCount() - posts,
+                        count(panel.transcript(), "- Stopped.") - stopped);
+            P.eq("stop.double_click_sends_once", script->postCount() > posts && has(panel.transcript(), "Answered after a double-click.")
+                                                     && count(panel.transcript(), "- Stopped.") == stopped ? 1 : 0, 1);
+            dropUnplayed(*script);
+        }
+        // A click on send leaves the caret in the message box: Space, letters and Return typed while Claude works go
+        // there and stop nothing. Then one press on stop ends the turn at once, the caret still in the box.
+        {
+            script->add(stall);
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            clickInput(host, panel);
+            type(host, "click");
+            clickAt(host, panel.centreOfSend());
+            const auto t1 = std::chrono::steady_clock::now();
+            while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t1 < std::chrono::seconds(10))
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            host.tick(4);
+            P.eq("send.click_keeps_caret", panel.chatInput().focused() ? 1 : 0, 1);
+            host.keys("space");
+            type(host, "ok");
+            host.keys("return");
+            host.tick(4);
+            P.eq("send.keys_stop_nothing", chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped ? 1 : 0, 1);
+            P.eq("send.keys_in_the_box", panel.chatInput().text() == " ok" ? 1 : 0, 1);
+            clickAt(host, panel.centreOfSend());
+            const bool caret = panel.chatInput().focused();
+            if (chat(processor).busy)
+                processor.chatAgent().stop();
+            settleChat(processor, host);
+            dropUnplayed(*script);
+            P.eq("stop.one_press_stops", !chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped + 1 ? 1 : 0, 1);
+            P.eq("stop.click_keeps_caret", caret ? 1 : 0, 1);
+            panel.chatInput().setText("");
+            host.settle();
+        }
     }
 
     // ---- MARKDOWN ------------------------------------------------------------------------------------------------------
@@ -827,6 +956,11 @@ PROBE(gui, chat)
             clickAt(host, *x);
         settlePictures();
         P.eq("pictures.removed", box.pictureCount(), 1);
+        // A picture alone may be sent: by Return, and by the send button too.
+        panel.chatInput().setText("");
+        host.settle();
+        const auto sendButton = a11yTitled(host, "Send or stop");
+        P.eq("pictures.send_alone_enabled", sendButton && sendButton->enabled ? 1 : 0, 1);
         // A drop: on the chat's card it comes; on the editor it does not; a text file is no drop the chat takes.
         const funkgui::Point onChat = panel.centreOfSend();
         P.eq("pictures.text_refused", host.dropFiles({ notes.getFullPathName().toStdString() }, onChat.x, onChat.y) ? 0 : 1, 1);
@@ -837,6 +971,46 @@ PROBE(gui, chat)
         settlePictures();
         P.eq("pictures.not_on_the_editor", box.pictureCount(), 2);
         P.eq("pictures.drag_shown_done", panel.dropShown() ? 0 : 1, 1);
+        // The chat's overlay is for pictures: an audio file dragged over (ASSETS takes it) does not light it.
+        const std::string kick = dir.getChildFile("kick.wav").getFullPathName().toStdString();
+        panel.filesDragEnter({ kick }, onChat.x - 120.0f, onChat.y - 160.0f);
+        P.eq("pictures.drag_audio_no_overlay", panel.dropShown() ? 1 : 0, 0);
+        panel.filesDragExit();
+        panel.filesDragEnter({ kick, tall }, onChat.x - 120.0f, onChat.y - 160.0f);
+        P.eq("pictures.drag_picture_overlay", panel.dropShown() ? 1 : 0, 1);
+        panel.filesDragExit();
+        // Six at the least size: none hidden, each with its remove button in the box (the tiles wrap to a second row).
+        host.resize(500, 300);
+        host.settle();
+        clickAt(host, panel.centreOfAttach());
+        if (host.pendingFiles() != nullptr)
+            host.returnFiles({ third, picture("four.png", 200, 200, juce::Colours::maroon, juce::Colours::white),
+                               picture("five.png", 300, 200, juce::Colours::teal, juce::Colours::black),
+                               picture("six.png", 200, 300, juce::Colours::purple, juce::Colours::gold) });
+        settlePictures();
+        P.eq("pictures.six_attached", box.pictureCount(), 6);
+        bool inside = box.pictureCount() == 6;
+        for (int i = 0; i < box.pictureCount(); ++i)
+        {
+            const funkgui::Rect r = box.pictureRect(i);
+            const auto x = box.centreOfRemove(i);
+            inside = inside && x && box.contains(*x) && r.x >= box.box().x && r.right() <= box.box().right()
+                  && r.bottom() <= box.editor().bounds().y;
+        }
+        P.eq("pictures.six_inside", inside ? 1 : 0, 1);
+        P.ge("pictures.six_drawn", static_cast<double>(host.draw().images.size()), 6.0);
+        writePng(P, host, "gui.chat.six.png");
+        if (const auto x = box.centreOfRemove(5))
+            clickAt(host, *x);
+        settlePictures();
+        P.eq("pictures.sixth_removed", box.pictureCount(), 5);
+        for (int i = 4; i >= 2; --i)
+            if (const auto x = box.centreOfRemove(i))
+                clickAt(host, *x);
+        settlePictures();
+        P.eq("pictures.back_to_two", box.pictureCount(), 2);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+        host.settle();
         // Sent: before the words, and above the message.
         script->add(fake::Response::ok(fake::Sse().start().text("I see a panel and a knob.").end()));
         const int at = script->postCount();
@@ -1040,11 +1214,13 @@ PROBE(gui, chat)
                     ++commands;
             }
         P.eq("chats.menu", m != nullptr && radios >= 2 && commands == 3 && olderId > 0 ? 1 : 0, 1);
+        const uint64_t conversation = chat(processor).conversation;
         if (m != nullptr)
             host.chooseMenuItem(olderId > 0 ? olderId : 1);
         host.tick(2);
         host.settle();
         P.eq("chats.older_shown", chat(processor).title == before && !chat(processor).entries.empty() ? 1 : 0, 1);
+        P.eq("chats.conversation_moves", chat(processor).conversation != conversation ? 1 : 0, 1);   // the view's state goes
         const auto again = pill();
         P.eq("chats.pill_follows", again && again->value == before ? 1 : 0, 1);
         writePng(P, host, "gui.chat.chats.png");
@@ -1065,6 +1241,29 @@ PROBE(gui, chat)
         host.keys("escape");
         host.tick(2);
         P.eq("chats.rename_escape", !panel.renameDialogOpen() && chat(processor).title == before ? 1 : 0, 1);
+        // A click in the name drops its selection and puts the caret where it lands: past its end, a word added.
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        if (host.pendingMenu() != nullptr)
+            host.chooseMenuItem(kRename);
+        host.tick(2);
+        {
+            const funkgui::Point field = panel.centreOfKeyField();
+            clickAt(host, { field.x + 200.0f, field.y });
+            P.eq("chats.rename_click_caret_end", panel.keyDialogCaret(), static_cast<int64_t>(before.size()));
+            type(host, "x");
+            bool added = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                added = added || (a.title == "Name" && a.value == before + "x");
+            P.eq("chats.rename_click_keeps_name", added ? 1 : 0, 1);
+            const auto name = a11yTitled(host, "Name");
+            const float ab = funkgui::text::width(funkgui::FontService::get().atlas(), "ab", pg::ui::chat::kBody);
+            clickAt(host, { name ? name->bounds.x + 14.0f + ab + 1.0f : field.x, field.y });   // past two characters
+            P.eq("chats.rename_click_caret_placed", panel.keyDialogCaret(), 2);
+        }
+        host.keys("escape");
+        host.tick(2);
+        P.eq("chats.rename_click_cancelled", chat(processor).title == before ? 1 : 0, 1);
         clickAt(host, panel.centreOfChats());
         host.tick(1);
         if (host.pendingMenu() != nullptr)
@@ -1151,6 +1350,119 @@ PROBE(gui, chat)
             clickAt(host, *jump);
         host.settle();
         P.eq("scroll.jumped_to_end", view.atEnd() ? 1 : 0, 1);
+        // The keys: the message box keeps its own while it has the caret; Shift-Tab from it reaches the conversation (a
+        // Tab stop), where Page Up goes back a view less two lines, Home to the start and End to the end.
+        clickInput(host, panel);
+        host.keys("pageup");
+        host.settle();
+        P.eq("scroll.box_keeps_keys", view.atEnd() && panel.chatInput().focused() ? 1 : 0, 1);
+        host.keys("shift+tab");
+        host.keys("pageup");
+        host.settle();
+        const double most = std::max(0.0, static_cast<double>(view.contentHeight() - view.bounds().h));
+        const double page = std::max(static_cast<double>(pg::ui::chat::kBodyLine),
+                                     static_cast<double>(view.bounds().h) - 2.0 * pg::ui::chat::kBodyLine);
+        P.near("scroll.key_page_up", view.scroll(), std::max(0.0, most - page), 0.5);
+        host.keys("home");
+        host.settle();
+        P.near("scroll.key_home", view.scroll(), 0.0, 0.01);
+        host.keys("end");
+        host.settle();
+        P.eq("scroll.key_end", view.atEnd() ? 1 : 0, 1);
+        // A screen reader has every block, those out of view too, and its focus on one scrolls it into view.
+        {
+            const std::vector<funkgui::A11yItem> items = host.accessibility();
+            int blocks = 0;
+            uint32_t firstYou = 0;
+            for (const funkgui::A11yItem& a : items)
+                if (a.parent == 0x20000000u && a.role == funkgui::A11yRole::listItem)
+                {
+                    ++blocks;
+                    if (firstYou == 0 && a.title == "You")
+                        firstYou = a.id;
+                }
+            P.eq("scroll.a11y_every_block", blocks, view.blocks());
+            if (firstYou != 0)
+                panel.a11yAction(firstYou, funkgui::A11yAction::focus, 0.0);
+            host.settle();
+            bool inView = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                if (a.id == firstYou && firstYou != 0)
+                    inView = a.bounds.y >= vb.y - 0.5f && a.bounds.bottom() <= vb.bottom() + 0.5f;
+            P.eq("scroll.a11y_focus_reveals", inView && !view.atEnd() ? 1 : 0, 1);
+        }
+        host.keys("end");
+        host.settle();
+        clickInput(host, panel);
+    }
+
+    // ---- VIEW ----------------------------------------------------------------------------------------------------------
+    {
+        // The conversation alone (ChatView over a made-up state): what it draws and what Copy copies.
+        pg::ui::ChatView view(0x30000000u, {});
+        view.attach(&host);
+        funkgui::GestureController gestures(host);
+        view.setBounds({ 0.0f, 0.0f, 520.0f, 2400.0f });   // all of it in view
+        using K = pg::ChatEntry::Kind;
+        const auto entry = [](K k, std::string t) {
+            pg::ChatEntry e;
+            e.kind = k;
+            e.text = std::move(t);
+            return e;
+        };
+        const std::string answer = "Gr\xc3\xb6\xc3\x9f" "e: 5 \xc2\xb5s\n```\n// a \xe2\x80\x94 b \xc2\xb0\n```\n";
+        pg::ChatState st;
+        st.hasKey = true;
+        st.conversation = 7;
+        st.entries.push_back(entry(K::user, "make cutoff = 200*2 and rename `lp` to float* out"));
+        st.entries.push_back(entry(K::thinking, "The user wants `[[fminus::range(0, 2)]]` on the level dial and a `gain` too."));
+        st.entries.push_back(entry(K::assistant, answer));
+        st.entries.push_back(entry(K::tool, "wrote errors.fm (12 lines)"));
+        pg::ChatEntry q = entry(K::question, "Which?");
+        q.questions.push_back({ "", "Which?", { { "Yes", "" }, { "Yes, but quieter", "" }, { "No", "" } }, false });
+        q.answers.push_back("Yes, but quieter");
+        st.entries.push_back(q);
+        view.show(st, {});
+        const auto press = [&](const std::string& title) {
+            std::vector<funkgui::A11yItem> items;
+            view.accessibility(items);
+            for (const funkgui::A11yItem& a : items)
+                if (a.title == title)
+                {
+                    view.a11yAction(a.id, funkgui::A11yAction::press, 0.0, gestures);
+                    return true;
+                }
+            return false;
+        };
+        // The user's words as typed: no markdown read in them.
+        const std::string shown = view.shownText();
+        P.eq("view.user_as_typed", has(shown, "200*2") && has(shown, "`lp`") && has(shown, "float* out") ? 1 : 0, 1);
+        // Copy: the entry's own text (UTF-8), not what the font draws.
+        P.eq("view.code_copy_as_held", press("Copy the code") && host.log.lastCopy == "// a \xe2\x80\x94 b \xc2\xb0\n" ? 1 : 0, 1);
+        P.eq("view.answer_copy_as_held", press("Copy the answer") && host.log.lastCopy == answer ? 1 : 0, 1);
+        // Inline code in the opened thinking (small text) fills the cells it is laid out in: nothing runs over the next
+        // word.
+        press("Show Claude's thinking");
+        view.show(st, {});
+        P.eq("view.thinking_opened", view.thinkingOpen(0) ? 1 : 0, 1);
+        P.le("view.small_code_fits", static_cast<double>(view.overlap()), 0.5);
+        // A tool row is drawn as failed by its outcome, never by its words.
+        P.eq("view.named_error_not_failed", view.failedRows(), 0);
+        pg::ChatEntry stopped = entry(K::tool, "ran it: it stopped");
+        stopped.failed = true;
+        st.entries.insert(st.entries.begin() + 4, stopped);
+        view.show(st, {});
+        P.eq("view.stopped_failed", view.failedRows(), 1);
+        // An answered question marks the option chosen, not one whose label begins it.
+        P.eq("view.answer_marks_chosen", !view.chosen(0, 0) && view.chosen(0, 1) && !view.chosen(0, 2) ? 1 : 0, 1);
+        // Another conversation of as many entries: nothing opened in the last one shows opened.
+        view.show(st, {});
+        P.eq("view.same_conversation_keeps", view.thinkingOpen(0) ? 1 : 0, 1);
+        pg::ChatState other = st;
+        other.conversation = 8;
+        other.entries[1].text = "Another conversation's thinking.";
+        view.show(other, {});
+        P.eq("view.other_conversation_closed", view.thinkingOpen(0) ? 0 : 1, 1);
     }
 
     // ---- COLLAPSE ------------------------------------------------------------------------------------------------------
@@ -1180,6 +1492,38 @@ PROBE(gui, chat)
             pg::Processor second;
             second.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
             P.eq("collapse.in_session", second.editorPort().chatOpen() ? 0 : 1, 1);
+        }
+        {
+            // A Panel made while the chat is folded (an editor opened again): idle, it asks for no frame and lays
+            // nothing out, at the frame pump's cadence; unfolded, its message box has its height at once.
+            pg::ui::Panel again(processor.ports(), processor.editorPort());
+            funkgui::HeadlessHost h2(again, 0, 2.0f);
+            h2.settle();
+            probe::runCadence(h2, 120, [](int) {}, [&] {
+                if (again.needsDraw())
+                    h2.draw();
+                return again.wantsFullRate();
+            });
+            h2.draw();
+            const uint32_t rev = again.a11yRevision();
+            int asked = 0;
+            const probe::Cadence idle = probe::runCadence(h2, 120, [](int) {}, [&] {
+                if (again.needsDraw())
+                {
+                    ++asked;
+                    h2.draw();
+                }
+                return again.wantsFullRate();
+            });
+            std::printf("a Panel made folded: %d of %d calm frames asked to draw\n", asked, idle.frames);
+            P.le("collapse.made_folded_quiet", asked, 2.0);   // the safety net's, once a second at most
+            P.eq("collapse.made_folded_layout_rests", again.a11yRevision() == rev ? 1 : 0, 1);
+            clickAt(h2, again.centreOfChatToggle());
+            const pg::ui::InputItem& box = again.chatInputItem();
+            P.eq("collapse.made_folded_opens", again.chatOpen() ? 1 : 0, 1);
+            P.near("collapse.made_folded_box_height", static_cast<double>(box.box().h),
+                   static_cast<double>(box.desiredHeight(box.box().w, box.bar().h)), 0.5);
+            processor.editorPort().setChatOpen(false);   // the probe's panel folded still, as the session says
         }
         clickAt(host, panel.centreOfChatToggle());
         host.settle();
@@ -1219,6 +1563,36 @@ PROBE(gui, chat)
              static_cast<double>(panel.editor().bounds().right()));
         P.eq("resize.least_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
         writePng(P, host, "gui.chat.small.png");
+        // The message box's bar at the least size, on Claude Opus 5.5 (fast mode's and web search's pills shown): no
+        // item over another or past the bar, so none under send; stop's centre stops, web search as it was.
+        {
+            processor.chatAgent().setModel("claude-opus-5-5");
+            host.tick(4);
+            host.settle();
+            P.eq("resize.least_bar_switches", a11yTitled(host, "Fast mode") && a11yTitled(host, "Web search") ? 1 : 0, 1);
+            P.eq("resize.least_bar_fits", barFits(host, panel) ? 1 : 0, 1);
+            fake::Response stall = fake::Response::ok(fake::Sse().start().thinking("Considering", "sig-r"));
+            stall.stall = true;
+            script->add(stall);
+            const bool web = chat(processor).web;
+            clickInput(host, panel);
+            type(host, "small");
+            host.keys("return");
+            const auto t0 = std::chrono::steady_clock::now();
+            while (script->streaming.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            host.tick(4);
+            P.eq("resize.least_bar_fits_busy", barFits(host, panel) ? 1 : 0, 1);
+            const int stopped = count(panel.transcript(), "- Stopped.");
+            clickAt(host, panel.centreOfSend());
+            host.tick(2);
+            const bool webKept = chat(processor).web == web;
+            if (!webKept)
+                processor.chatAgent().stop();            // the click switched web search instead: ended here
+            settleChat(processor, host);
+            dropUnplayed(*script);
+            P.eq("resize.least_stop_stops", webKept && !chat(processor).busy && count(panel.transcript(), "- Stopped.") == stopped + 1 ? 1 : 0, 1);
+        }
         host.resize(1900, 1100);
         host.settle();
         P.eq("resize.large", panel.width() == 1900 && panel.height() == 1100 ? 1 : 0, 1);

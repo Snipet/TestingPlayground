@@ -1,8 +1,11 @@
 // Source/plugin/ClaudeApi.cpp: see ClaudeApi.h.
 #include "plugin/ClaudeApi.h"
 
+#include "fminus/Lang.h"
+
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <thread>
 
@@ -56,7 +59,7 @@ namespace playground::claude
     {
         std::string message = errorMessage(body);
         if (message.empty())
-            message = body.substr(0, 300);
+            message = std::string(lang::headOf(body, 300));   // never inside a character
         switch (status)
         {
             case 401: return "the API key was refused (" + message + "): add it again";
@@ -333,8 +336,76 @@ namespace playground::claude
                     else if (key.equalsIgnoreCase("location") && r.status >= 300 && r.status < 400)
                         r.location = responseHeaders[key].toStdString();
                 }
-                if (r.status == 200 && onChunk)
+                if (r.status == 200 && onChunk && post)
                 {
+                    // A streamed answer (server-sent events) a byte at a time: JUCE's read returns only once the count
+                    // asked for is there or the body has ended (macOS's waits for it; WinINet's InternetReadFile fills
+                    // it), so a larger read would hold the events back until that many bytes came. Each line goes to
+                    // onChunk as it ends (an event ends with an empty line), or a full buffer of a long one. A byte
+                    // read on macOS also moves what is still buffered to the front, so a backlog of N bytes (a burst
+                    // that came at once) would cost N * N / 2 bytes moved, about 50 s for 1 MB: reads that show one
+                    // read it in blocks, which the parsers take as any piece. Only on macOS: WinINet's reads move
+                    // nothing, so there a block would only wait to be filled, and they stay a byte at a time.
+                    using Clock = std::chrono::steady_clock;
+                    // Whether a read moves the backlog (macOS's NSMutableData): the only case blocks are read in.
+#if defined(__APPLE__)
+                    constexpr bool kReadMovesBacklog = true;
+#else
+                    constexpr bool kReadMovesBacklog = false;
+#endif
+                    // A read this slow moved a backlog of at least this time x the memory's bandwidth (3 GB/s: 15 KB).
+                    constexpr auto kSlowRead = std::chrono::microseconds(5);
+                    // One this slow or slower waited for data: no sign of a backlog.
+                    constexpr auto kWait = std::chrono::milliseconds(5);
+                    // Slow one-byte reads in a row before a block is read: not a stray one (the thread put aside).
+                    constexpr int kSlowReads = 32;
+                    // A block well under the backlog those reads show, so it is there and the read waits for nothing.
+                    constexpr int kBlock = 4096;
+                    const auto backlog = [&](Clock::time_point from) {
+                        const auto took = Clock::now() - from;
+                        return took >= kSlowRead && took < kWait;
+                    };
+                    char line[8192];
+                    std::size_t used = 0;
+                    int slow = 0;
+                    bool blocks = false;
+                    while (!cancel.load())
+                    {
+                        const Clock::time_point from = Clock::now();
+                        if (blocks)
+                        {
+                            const int n = stream.read(line, kBlock);
+                            if (n <= 0)
+                                break;
+                            blocks = backlog(from);       // a slow block moved a backlog too: the next one is there
+                            if (!onChunk(std::string_view(line, static_cast<std::size_t>(n))))
+                                break;
+                            continue;
+                        }
+                        if (stream.read(line + used, 1) <= 0)
+                            break;
+                        slow = kReadMovesBacklog && backlog(from) ? slow + 1 : 0;
+                        const char c = line[used++];
+                        if (slow >= kSlowReads)
+                        {
+                            blocks = true;                 // the line so far first, then the blocks
+                            slow = 0;
+                        }
+                        else if (c != '\n' && c != '\r' && used < sizeof line)
+                        {
+                            continue;
+                        }
+                        const bool more = onChunk(std::string_view(line, used));
+                        used = 0;
+                        if (!more)
+                            break;
+                    }
+                    if (used > 0 && !cancel.load())
+                        (void)onChunk(std::string_view(line, used));   // a last line the body ended without ending
+                }
+                else if (r.status == 200 && onChunk)
+                {
+                    // getLimited's 200 (a download read whole): block reads.
                     char buffer[8192];
                     while (!cancel.load())
                     {
@@ -425,6 +496,32 @@ namespace playground::claude
     }
 
     // ---- the message -------------------------------------------------------------------------------------------------
+    // What a usage object says beyond the counts the event reads itself: that it came, the cache writes by lifetime
+    // (usage.cache_creation; without it, all of cache_creation_input_tokens as five minutes'), a provider's own cost.
+    void MessageBuilder::readUsageExtras(const juce::var& u)
+    {
+        if (!u.isObject())
+            return;
+        usage_.reported = true;
+        const juce::var split = u.getProperty("cache_creation", juce::var());
+        if (split.isObject())
+        {
+            usage_.cacheWrite5m = static_cast<juce::int64>(split.getProperty("ephemeral_5m_input_tokens", 0));
+            usage_.cacheWrite1h = static_cast<juce::int64>(split.getProperty("ephemeral_1h_input_tokens", 0));
+        }
+        else if (u.hasProperty("cache_creation_input_tokens"))
+        {
+            usage_.cacheWrite5m = usage_.cacheWrite;
+            usage_.cacheWrite1h = 0;
+        }
+        if (const juce::var cost = u.getProperty("cost", juce::var()); cost.isDouble() || cost.isInt() || cost.isInt64())
+        {
+            const double usd = static_cast<double>(cost);
+            if (std::isfinite(usd) && usd >= 0 && usd < 1e6)
+                usage_.costMicroUsd = static_cast<int64_t>(std::llround(usd * 1e6));
+        }
+    }
+
     void MessageBuilder::event(const std::string& type, const std::string& data)
     {
         const juce::var v = parseJson(data);
@@ -443,6 +540,7 @@ namespace playground::claude
             usage_.output = static_cast<juce::int64>(u.getProperty("output_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
+            readUsageExtras(u);
         }
         else if (kind == "content_block_start")
         {
@@ -590,6 +688,7 @@ namespace playground::claude
                 usage_.cacheWrite = static_cast<juce::int64>(u.getProperty("cache_creation_input_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
+            readUsageExtras(u);
             const juce::var server = u.getProperty("server_tool_use", juce::var());
             if (server.isObject())
             {

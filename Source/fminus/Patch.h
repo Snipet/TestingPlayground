@@ -521,6 +521,16 @@ namespace playground
         bool host() const noexcept { return host_ != nullptr; }
         static std::string_view hostSource() noexcept;   // host.fm's text
 
+        // FMinus as this build links it (fminus/Config.h through fminus/FMinus.h), for the settings' Debug page: its
+        // version, the LLVM it was built against, that LLVM's mode ("system": FMinus's own install) and whether it has
+        // its assertions on, and FMinus's build type.
+        struct BuildInfo
+        {
+            std::string_view version, llvmVersion, llvmMode, buildType;
+            bool llvmAssertions = false;
+        };
+        static BuildInfo buildInfo() noexcept;
+
         // An instrument's voice i.
         void start(int i, float note, float velocity) noexcept;
         void stop(int i) noexcept;

@@ -8,6 +8,7 @@
 #include "editor/Items.h"
 #include "editor/Picture.h"
 #include "fminus/GuiSpec.h"
+#include "fminus/Lang.h"
 
 #include "Product.h"
 
@@ -18,13 +19,16 @@
 #include <funkgui/text/TextFit.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <sstream>
 
 #if !defined(_WIN32)
+#include <sys/stat.h>                                // stat (readPath: a regular file alone)
 #include <unistd.h>                                  // access (shaderc's place)
 #endif
 
@@ -289,6 +293,21 @@ namespace playground::sandbox
         return out;
     }
 
+    namespace
+    {
+        // Whether `file` is a regular file, a link followed (stat's S_ISREG): no FIFO, socket or device. Windows has
+        // none of those under a path a user names: existsAsFile says it there.
+        bool regularFile(const juce::File& file)
+        {
+#if defined(_WIN32)
+            return file.existsAsFile();
+#else
+            struct stat st{};
+            return stat(file.getFullPathName().toRawUTF8(), &st) == 0 && S_ISREG(st.st_mode);
+#endif
+        }
+    }
+
     bool Sandbox::readPath(const std::string& given, Sources& out, std::string& why) const
     {
         std::string path = juce::String(str(given)).trim().toStdString();
@@ -302,8 +321,10 @@ namespace playground::sandbox
         {
 #if defined(_WIN32)
             why = "path names a file the user named, whole (C:\\Users\\... or ~/...): '" + given + "' is not";
-#else
+#elif defined(__APPLE__)
             why = "path names a file the user named, whole (/Users/... or ~/...): '" + given + "' is not";
+#else
+            why = "path names a file the user named, whole (/home/... or ~/...): '" + given + "' is not";
 #endif
             return false;
         }
@@ -313,22 +334,33 @@ namespace playground::sandbox
             why = "there is no file or folder " + given;
             return false;
         }
+        const auto tooLarge = [&](const std::string& name, juce::int64 bytes) {
+            why = name + " is " + std::to_string(bytes / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
+                + " KB at most";
+            return false;
+        };
         const auto readOne = [&](const juce::File& file, const std::string& name) {
             if (!file.existsAsFile())
                 return false;
-            const juce::int64 bytes = file.getSize();
-            if (static_cast<std::size_t>(bytes) > kMaxFileBytes)
+            // A regular file alone (a link to one too): a FIFO would block the open, a device read without end.
+            if (!regularFile(file))
             {
-                why = name + " is " + std::to_string(bytes / 1024) + " KB: the sandbox reads files of " + std::to_string(kMaxFileBytes / 1024)
-                    + " KB at most";
+                why = name + " is not a regular file";
                 return false;
             }
+            const juce::int64 bytes = file.getSize();
+            if (static_cast<std::size_t>(bytes) > kMaxFileBytes)
+                return tooLarge(name, bytes);
+            juce::FileInputStream in(file);
             juce::MemoryBlock mb;
-            if (!file.loadFileAsData(mb))
+            if (!in.openedOk())
             {
                 why = "could not read " + name;
                 return false;
             }
+            in.readIntoMemoryBlock(mb, static_cast<juce::pointer_sized_int>(kMaxFileBytes + 1));   // never more, whatever it grew to
+            if (mb.getSize() > kMaxFileBytes)
+                return tooLarge(name, static_cast<juce::int64>(mb.getSize()));
             out.push_back({ name, std::string(static_cast<const char*>(mb.getData()), mb.getSize()) });
             return true;
         };
@@ -336,7 +368,7 @@ namespace playground::sandbox
         {
             if (!endsWith(path, ".gui"))
             {
-                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui, .sc and .sh files)";
+                why = given + " is not a .gui file: name a .gui file or a program's folder (its " + std::string(kProgramFileKinds) + " files)";
                 return false;
             }
             return readOne(named, named.getFileName().toStdString());
@@ -346,18 +378,30 @@ namespace playground::sandbox
             why = given + " is neither a file nor a folder";
             return false;
         }
+        // The editor's kinds of file (netlists too: a circuit's dials are the program's), program.fm first, as the
+        // plugin and the headless renderer read a folder; the folder sync's read-only copies (its manifest's, and a
+        // host.fm of the plugin's own text) are not the program's and count for nothing.
+        juce::MemoryBlock manifest;
+        if (const juce::File m = named.getChildFile(".fmsync");
+            m.existsAsFile() && regularFile(m) && m.getSize() <= static_cast<juce::int64>(kMaxTotalBytes))
+            (void)m.loadFileAsData(manifest);
+        const std::vector<std::string> copies = syncCopies(std::string_view(static_cast<const char*>(manifest.getData()), manifest.getSize()));
         std::vector<std::string> names;
         for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(named, false, "*", juce::File::findFiles))
         {
             const std::string n = e.getFile().getFileName().toStdString();
-            if (!n.empty() && n[0] != '.'
-                && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc") || endsWith(n, ".sh")))
-                names.push_back(n);
+            if (!validFileName(n) || !isProgramFile(juce::String(str(n)).toLowerCase().toStdString())
+                || std::find(copies.begin(), copies.end(), n) != copies.end())
+                continue;
+            if (n == "host.fm" && e.getFile().getSize() == static_cast<juce::int64>(lang::hostText().size())
+                && e.getFile().loadFileAsString().toStdString() == lang::hostText())
+                continue;
+            names.push_back(n);
         }
-        std::sort(names.begin(), names.end());
+        programFirst(names);
         if (names.empty())
         {
-            why = "the folder " + given + " has no .fm, .gui, .sc or .sh file";
+            why = "the folder " + given + " has no " + std::string(kProgramFileKinds) + " file";
             return false;
         }
         if (names.size() > kMaxFiles)
@@ -933,7 +977,9 @@ namespace playground::sandbox
             values[static_cast<std::size_t>(c)] = normOf(controls_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
         std::vector<std::pair<int, float>> taps;
         float inLevel = -1.0f, outLevel = -1.0f;
-        std::string fieldsShown;
+        std::array<float, 4> pointer;                    // pointer.x ... over every shader (NaN: none asked)
+        pointer.fill(std::numeric_limits<float>::quiet_NaN());
+        std::string fieldsShown, pointerShown;
         if (const juce::DynamicObject* o = r["values"].getDynamicObject())
             for (const auto& kv : o->getProperties())
             {
@@ -947,7 +993,13 @@ namespace playground::sandbox
                     if (num)
                         x = static_cast<double>(kv.value);
                     bool found = false;
-                    if (name == "out" || (name == "in" && !instrument_))
+                    if (const int which = pointerInput(name); which >= 0)
+                    {
+                        found = true;
+                        if (num && std::isfinite(x))
+                            pointer[static_cast<std::size_t>(which)] = std::clamp(static_cast<float>(x), 0.0f, 1.0f);
+                    }
+                    else if (name == "out" || (name == "in" && !instrument_))
                     {
                         found = true;
                         if (num && std::isfinite(x))
@@ -965,6 +1017,8 @@ namespace playground::sandbox
                         said += "There is no dial or field " + name + ". ";
                     else if (!num || !std::isfinite(x))
                         said += name + " takes a number. ";
+                    else if (pointerInput(name) >= 0)
+                        pointerShown += (pointerShown.empty() ? "" : ", ") + name;
                     else
                         fieldsShown += (fieldsShown.empty() ? "" : ", ") + name;
                     continue;
@@ -984,6 +1038,7 @@ namespace playground::sandbox
         View view(spec_, controls_, values, files_, notes_, w, h, page, instrument_);
         if (!taps.empty() || inLevel >= 0.0f || outLevel >= 0.0f)
             view.setShown(std::move(taps), inLevel, outLevel);
+        view.showPointer(pointer);
         funkgui::HeadlessHost host(view, themeIndex, kDpi);
         host.settle(120);
         const picture::Drawn drawn = picture::draw(host.draw());
@@ -1044,6 +1099,8 @@ namespace playground::sandbox
                   + " not built here, shown as placeholders (the notes say why)";
         else
             line += std::string("; drawn by the GPU as the plugin draws it") + (spec_.shaders.empty() ? "" : ", shaders included");
+        if (!pointerShown.empty())
+            line += "; the shaders drawn with the pointer at " + pointerShown;
         line += "; the displays show demo values" + (fieldsShown.empty() ? std::string() : " but " + fieldsShown + " (as asked)")
               + ". Sandbox #" + std::to_string(number_) + ".";
         // The area goes back with it: the server keeps it, so a helper started again lays the panel out as it was.

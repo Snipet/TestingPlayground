@@ -22,7 +22,8 @@
 //                    chatState().attached; one that cannot be read gets a note. detach() takes one back
 //   send()           a message from the user (and the pictures attached, which it takes; a message of pictures alone
 //                    goes too); Claude answers (and works) in the background. While Claude's question
-//                    waits (asking), the message answers it in the user's own words
+//                    waits (asking), the message answers it in the user's own words. False when it was not taken
+//                    (nothing to send, or the chat busy: a turn, or a call of Claude Desktop's): the box keeps it
 //   answer()         the user's answer to Claude's question (ask_user), one per question: the chosen options' labels;
 //                    Claude's turn goes on with it
 //   clearChecks()    forgets Claude's checks (set_checks): the plugin no longer measures them after a run
@@ -30,7 +31,8 @@
 //   newChat()        a new conversation; the one shown stays in the chat list
 //   chatList()       the chats kept on this Mac (ChatStore.h) for the project open, or for this plugin while none is
 //                    (a chat with no project stays with it): the newest first, the one shown marked
-//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there
+//   openChat()       another chat of the list shown (the one shown is kept); false when it is no longer there, or
+//                    cannot be read (the chat shown says why, and nothing stops)
 //   renameChat()     the chat shown named ("" for its first message's words again)
 //   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
 #pragma once
@@ -126,6 +128,8 @@ namespace playground
         std::vector<ChatCheck> checks;        // a checks entry's
         std::string from;                     // a plan's: the model that wrote it ("Claude Fable 5.1")
         bool answer = false;                  // a plan entry that answers ask_planner (else a request's plan)
+        bool failed = false;                  // a tool's: its result was an error (a run that did not compile or
+                                              // stopped, a refusal), drawn so
     };
 
     struct ChatModel
@@ -187,8 +191,14 @@ namespace playground
         { "openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-", "platform.openai.com (API keys)" },
         { "openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1", "sk-or-", "openrouter.ai (Keys)" },
         { "gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com", "AIza", "aistudio.google.com (Get API key)" },
+        // The servers on this machine, named in kThisMachine's words (EditorPort.h).
+#if defined(__APPLE__)
         { "ollama", "Ollama (this Mac)", "openai", "http://localhost:11434/v1", "", "" },
         { "lmstudio", "LM Studio (this Mac)", "openai", "http://localhost:1234/v1", "", "" },
+#else
+        { "ollama", "Ollama (this computer)", "openai", "http://localhost:11434/v1", "", "" },
+        { "lmstudio", "LM Studio (this computer)", "openai", "http://localhost:1234/v1", "", "" },
+#endif
         { "custom", "Other OpenAI-compatible server", "openai", "", "", "" },
     };
 
@@ -220,6 +230,8 @@ namespace playground
         int attaching = 0;                    // files still being read
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
+        uint64_t conversation = 0;            // moves when other words replace the conversation shown (another chat
+                                              // opened, a new chat, a session loaded)
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id (the builder's)
         std::string planner;                  // the planning model's id ("" for none)
@@ -260,7 +272,7 @@ namespace playground
 
         virtual void attach(const std::vector<std::string>& paths) = 0;
         virtual void detach(uint32_t id) = 0;
-        virtual void send(const std::string& text) = 0;
+        virtual bool send(const std::string& text) = 0;
         virtual void answer(const std::vector<std::string>& answers) = 0;
         virtual void clearChecks() = 0;
         virtual void stop() = 0;

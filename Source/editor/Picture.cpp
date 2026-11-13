@@ -165,6 +165,21 @@ namespace playground
             for (const PictureValue& v : state.values)
             {
                 const auto said = [&](const std::string& what) { r.drawn += (r.drawn.empty() ? "" : ", ") + v.name + " " + what; };
+                if (const int w = pointerInput(v.name); w >= 0)
+                {
+                    // The pointer over every shader that reads it (pointer.x ... 0 to 1; down and hover 0 or 1).
+                    if (v.isText || !std::isfinite(v.number))
+                    {
+                        r.refused += v.name + " takes a number. ";
+                        continue;
+                    }
+                    const bool read = std::any_of(spec.gui.nodes.begin(), spec.gui.nodes.end(), [&](const GuiNode& n) {
+                        return n.kind == GuiKind::shader && std::find(n.inputs.begin(), n.inputs.end(), v.name) != n.inputs.end();
+                    });
+                    r.shown.pointer[static_cast<std::size_t>(w)] = std::clamp(v.number, 0.0f, 1.0f);
+                    said(numberText(std::clamp(v.number, 0.0f, 1.0f)) + (read ? "" : " (no shader reads it)"));
+                    continue;
+                }
                 if (const int slot = slotNamed(v.name); slot >= 0)
                 {
                     const Control& c = cs[static_cast<std::size_t>(slot)];

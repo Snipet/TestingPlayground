@@ -47,6 +47,9 @@ namespace playground::standalone::native
                 case Command::copy:
                 case Command::paste:
                 case Command::selectAll:
+                case Command::find:
+                case Command::findReplace:
+                case Command::findInFiles:
                     return false;
             }
             return false;
@@ -84,10 +87,10 @@ namespace playground::standalone::native
                         else if (it.command == Command::loadState || it.command == Command::saveState
                                  || it.command == Command::resetState)
                             file.items.push_back(it);
-                        else if (it.command == Command::undo || it.command == Command::redo || it.command == Command::cut
-                                 || it.command == Command::copy || it.command == Command::paste
-                                 || it.command == Command::selectAll)
+                        else if (isEdit(it.command))
                             edit.items.push_back(it);
+                        else if (m.title == "Edit" && it.command == Command::separator && !edit.items.empty())
+                            edit.items.push_back(it);   // its lines (before the find items)
                     }
                 file.items.insert(file.items.begin() + (file.items.empty() ? 0 : 1), MenuItem{});   // after Settings...
                 file.items.push_back(MenuItem{});

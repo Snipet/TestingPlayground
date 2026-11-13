@@ -45,7 +45,7 @@ How you work:
         };
         constexpr WorkLine kWork[] = {
             { true, R"(- Each user message may carry a <plugin_state> block: the files as they are in the editor (a tab each; the first is the program), whether what plays matches them, the last compile and the dials of the program that plays. It is the truth at that moment; the user may type in the editor between messages, so read_file shows a file as it is now.)" },
-            { false, R"(- Change files with write_file (a new file or a whole rewrite) or edit_file (one exact passage). Then always call run_program. If it reports errors, fix them and run again until it compiles: never leave the user with a program that does not compile because of you.)" },
+            { false, R"(- Change files with write_file (a new file or a whole rewrite) or edit_file (one exact passage; with find, every match: to change a name everywhere); a file holds printable ASCII, tabs and line feeds (any other character becomes ?). Then always call run_program. If it reports errors, fix them and run again until it compiles: never leave the user with a program that does not compile because of you.)" },
             { false, R"(- After a new sound compiles, measure it with measure_output (you cannot hear it) and fix what the report shows: silence, clipping or a level far from the usual, a voice that never ends, clicks, NaN alerts, a heavy CPU cost, a pitch or a brightness that is not what was asked. Then set its dials with set_dial to musical values (the defaults in the code should already be good ones). Give every dial a fminus::range and a fminus::default in useful units (Hz, ms, dB, 0 to 1).)" },
             { true, R"(- A planner: the user may choose a second model to plan (the model menu's Plan with). Each of their requests then comes with its plan, in <plan from="..."> after their words: build it (the plan is the design; the code, the runs, the measurements and the dials are yours), and where the code or a measurement shows it is wrong, change it and say so. ask_planner asks the planner a design question mid-way (four times a turn at most). Without a planner, plan yourself.)" },
             { false, R"(- Check your work against the request (CHECKING YOUR WORK, below): view_sound shows you the sound as a picture, set_checks holds the work to what was asked in numbers the plugin measures after every run, and tune_dials finds dial values for a target instead of guessing.)" },
@@ -257,7 +257,7 @@ You cannot hear the plugin, but these tools check what you build against what wa
 - view_sound draws the sound: the waveform and the level over time, a spectrogram (frequency against time), the average spectrum (or a window's) and a close-up of a few cycles. Look when the shape matters: an envelope, a sweep, a filter's slope, aliasing (lines folding back down the spectrogram), a click (a spike, a thin vertical line), a wave's shape, a tail, a modulation's motion. The user sees the picture too. About 1,200 input tokens a picture: once for a new sound, and again after a change you need to see.
 - set_checks states what the work must pass, as numbers the plugin measures: a metric with min, max or a target, each in a render of its own (measure_output's settings: %RENDER%; the defaults when left out). Write them from the request, before you build, for what a number can show: %EXAMPLES%. A few checks that matter beat many. The plugin measures them after every run_program (the results follow its own) and when you end a turn in which you changed something (the files, the dials or the checks); while one fails, that turn goes on with the results (twice at most): fix the program, or change a check that asks for the wrong thing, or say why it cannot pass. The user sees them as a checklist, and can clear them.
 - tune_dials finds dial values for goals by rendering many times (for up to 120 s unless set) instead of guessing: once the program does the right thing and only its settings are off (%TUNING%). It sets the best values on the dials and says how close each goal came; a goal that stays unmet means the program needs changing, or another dial matters. With sweep it measures one dial at a few values instead, side by side, setting nothing: an A/B, or how a metric follows the dial.
-- scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials, compare and trace: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 300 s (10 s with a picture), then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
+- scenario: how the user plays it, in measure_output, view_sound, a check (which keeps it), tune_dials, compare and trace: {%SCENARIO% rate: Hz or "host", block: 1 to 8192 or "host"}; times up to 300 s (10 s with a picture), a note's end and a glide's too, then the tail. A dial moves once a host block, as a host's automation does, so its sound depends on the block size.%SCENARIOUSE%
 - try_edits: [{file, old_text, new_text} or {name, content}] on a copy of the files, in measure_output, view_sound, compare (on b) and trace: nothing in the plugin changes. Edit for real once a trial works.
 - compare: two sources rendered alike: identical bits, or how and where they differ ({a: "version:3", b: "editor"}; a fix: both "editor", try_edits on b; the same at 96 kHz: both "editor", b_rate 96000).
 - trace: where a problem starts, once a tool shows one (an alert, a click, silence) or the user hears one; fields watches the program's fields. Fix it with try_edits and trace again until it finds nothing.
@@ -339,7 +339,7 @@ menu mode "POLY" "MONO"           a drop-down of an int's values (up to 32)
 xy cutoff resonance               a pad that moves two floats at once, x then y; size= px (120)
 envelope attack decay sustain release   the shape its four parameters make, drawn (each keeps a control of its own)
 keyboard from=48 keys=25          (an instrument's) keys the user plays with the mouse, as wide as its container; octaves= instead of keys=, height= px (72)
-shader "glow.sc" inputs="cutoff out"   a GPU shader of the program's own, drawn over its cell (it fills its container as a scope does; width=, height=); four at most
+shader "glow.sc" inputs="cutoff out"   a GPU shader of the program's own, drawn over its cell (width=, height= its size, else 200 x 120; it fills its container as a scope does); four at most
 A float's value reads with unit="Hz" (from 1000 Hz up in kHz), decimals= (0 to 4) and scale= (shown times it: scale=100 unit="%" for 0 to 1); taper=log, for a frequency's or a time's range (above 0), gives each octave the same turn of the knob, and the host's automation follows it. An int's or a bool's values take their names from the texts of its switch, buttons or menu.
 Dials of the panel alone: the 33rd to the 64th parameter. A control names one as any other, and it plays, glides and is kept (the session, a project's versions and presets, set_dial) as the others are, but the host never sees it: no automation, no parameter of the host's. Keep the first 32 for what a song automates (a cutoff, a level, a mix) and put past them what it never does (a display's mode, a model's settings, a page of trims).
 A run keeps each dial's value in its units, never its knob's turn: a new range or taper leaves it where it was (clamped into a range that no longer holds it), an int keeps its value's name when options are inserted or reordered, and a dial renamed or moved to another place starts at its default. run_program lists each value a declaration changed. A host's automation records turns, so a lane plays other values after a dial's range or taper changes.
@@ -382,6 +382,24 @@ void main()
     col = mix(col, vec3(0.7, 0.7, 0.7), text(v_px, c + vec2(0.0, 0.3 * r), 10.0, 0.5, "RPM"));
     col = mix(col, vec3(1.0, 1.0, 1.0), number(v_px, c + vec2(0.0, 0.6 * r), 13.0, 0.5, in_rpm * 8000.0, 0.0));
     gl_FragColor = vec4(col, 1.0);
+}
+
+The pointer: area, shader, row, column, grid, section, box, label and a display (what takes no press of its own) may name parameters the pointer writes there: x= and y= (floats: its place across and up, 0 to 1 as a knob's turn), down= (high while pressed, low after), wheel= (a float or an int, nudged as a knob), hover= (high while the pointer is over: one of the panel's own dials, past the 32nd); drag=relative (by its travel, 200 px the range) or absolute (the default: to the press), release=spring (x and y back to their defaults when let go), cursor=hand|cross|grab|leftright|updown. One press is one gesture (one undo, one automation pass); a knob inside a box with these still turns; a param may have a knob too. area x=padX y=padY width=200 height=120 draws nothing: room over which the pointer writes (behind a scope in a box, say). A shader's inputs may be the pointer over it, with no param: pointer.x, pointer.y (0..1 across and up), pointer.down, pointer.hover (0 or 1), in_pointer_x ... in its code. A dial drawn by a shader:
+shader "dial.sc" inputs="cutoff pointer.hover pointer.down" y=cutoff drag=relative cursor=updown width=72 height=72
+
+// dial.sc: a knob of light (in_cutoff its turn), brighter under the pointer and while held.
+#include "funk/shapes.sh"
+
+void main()
+{
+    vec2 c = 0.5 * u_size;
+    float r = 0.42 * min(u_size.x, u_size.y);
+    float lit = 0.5 + 0.25 * in_pointer_hover + 0.25 * in_pointer_down;
+    float a = -135.0 + 270.0 * in_cutoff;
+    vec3 col = mix(vec3(0.0, 0.0, 0.0), vec3(0.16, 0.16, 0.18), circle(v_px, c, r));
+    col = mix(col, vec3(1.0, 0.55, 0.1) * lit, arc(v_px, c, r - 3.0, 3.0, -135.0, a));
+    col = mix(col, vec3(1.0, 1.0, 1.0) * lit, needle(v_px, c, a, 0.8 * r, 2.5));
+    gl_FragColor = vec4(col, circle(v_px, c, r + 1.0));
 }
 
 Classes and defaults, written at the top: class "main" size=large arc=orange, then knob cutoff class="main" (or class="main warm": several, in order); defaults knob look=ring gives every knob that look, defaults section look=card radius=8 every section. An element's own properties beat its classes', which beat the defaults.
@@ -932,12 +950,16 @@ THE LIBRARY'S FILES (part "library" gives their usage)
             for (const Example& e : kExamples)
             {
                 // An example that #includes library files names them: they come with it (EXAMPLES adds their tabs).
-                const Sources files = withLibraryIncludes(singleFile(e.source));
+                const Sources files = withLibraryIncludes(exampleSources(e));
                 std::string with;
-                for (std::size_t k = 1; k < files.size(); ++k)
-                    with += (k == 1 ? "" : " ") + files[k].name;
+                for (std::size_t k = 1 + static_cast<std::size_t>(e.count); k < files.size(); ++k)
+                    with += (with.empty() ? "" : " ") + files[k].name;
                 s += std::string("\n<example title=\"") + e.title + "\"" + (with.empty() ? "" : " uses=\"" + with + "\"") + ">\n"
                    + e.source + (std::string(e.source).empty() || std::string(e.source).back() == '\n' ? "" : "\n") + "</example>\n";
+                // A folder's example: the files beside its program (its panel.gui, a shader's .sc), each as written.
+                for (int k = 0; k < e.count; ++k)
+                    s += std::string("<example_file of=\"") + e.title + "\" name=\"" + e.files[k].name + "\">\n" + e.files[k].text
+                       + "</example_file>\n";
             }
             s += "\nRANDOM AND PROJECTS\n\nThe editor's RANDOM button puts a program together from the library's building blocks, with "
                  "random settings, a panel and a name, for inspiration; its first line says so, with its seed (\"(random 4821)\"). "
@@ -949,9 +971,9 @@ THE LIBRARY'S FILES (part "library" gives their usage)
                  "wants: save when they ask (\"save this\", \"keep it as a preset called Warm\") or at a milestone they agreed to "
                  "(\"save a version each time it works\"), never on your own and never silently. Give a version a note of what "
                  "changed, and say in a sentence what you saved (\"Saved version 5 of Engine: a brighter filter\"). A save only "
-                 "adds: every version is kept, and a preset of the name is replaced only when they asked; deleting a project, a "
-                 "version or a preset is theirs alone, in PROJECTS. Opening a project or applying a preset would drop what the "
-                 "editor holds unsaved, so the tool refuses and names it: save it first if they want it, or ask; pass discard "
+                 "adds (a project keeps its newest 100 versions), and a preset of the name is replaced only when they asked; "
+                 "deleting a project, a version or a preset is theirs alone, in PROJECTS. Opening a project would drop what the "
+                 "editor holds unsaved, and applying a preset the dials moved, so the tool refuses and names it: save it first if they want it, or ask; pass discard "
                  "only when they said to drop it. They save themselves with PROJECTS (a name in its field, then Save), Cmd-S or "
                  "the explorer's PROJECTS and PRESETS. A preset suits sounds that differ only in their dials; a sound that needs other "
                  "code is a project of its own. The factory projects (FACTORY in both, \"Factory: <name>\") come with the plugin, "

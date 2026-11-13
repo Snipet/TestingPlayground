@@ -19,7 +19,8 @@
 //              them back where they were
 //   KEYS       Cmd-J from the editor (its caret and text kept) hides and shows; with nothing focused too; a screen
 //              reader's press
-//   SIZES      the program's card at its least: the switch's icon alone at the line's right end, the line's other
+//   SIZES      the program's card at its least: the switch's icon alone at the line's right end (the text size's part
+//              giving way there at 24 px, the room kept; shown wide beside the switch's word), the line's other
 //              parts at their widest clear of the problems' count and Checking... (a click toggles); the least window;
 //              a wide one: its word again
 //   GUI        a program with a .gui file: the code's choice and the interface files' apart (each tab follows its own,
@@ -313,6 +314,14 @@ PROBE(gui, codepanel)
             const funkgui::Rect line = panel.codeAssist().statusRect();
             std::printf("status line %.0f px: its right parts %.0f px\n", static_cast<double>(line.w), static_cast<double>(right));
             P.ge("sizes.narrow_problems_room", static_cast<double>(line.w - 16.0f - right), 160.0);
+            // The text size at 24 px: its part gives way here, the problems' room kept.
+            pg::ui::codesize::write(240);
+            host.tick(2);
+            P.eq("sizes.narrow_text_size", panel.codeAssist().codeSize(), 240);
+            P.eq("sizes.narrow_size_gives_way", panel.codeAssist().sizeRect().w > 0.0f ? 1 : 0, 0);
+            P.eq("sizes.narrow_size_icon_only", !panel.panelSwitchLabelled() ? 1 : 0, 1);
+            pg::ui::codesize::write(pg::ui::codesize::kDefault);
+            host.tick(2);
         }
         click(host, panel.centreOfPanelSwitch());
         P.eq("sizes.narrow_click", panel.codePanelHidden() && dialsShown(panel) == 0 ? 1 : 0, 1);
@@ -329,6 +338,17 @@ PROBE(gui, codepanel)
         host.resize(1800, 1000);
         host.settle();
         P.eq("sizes.wide_labelled", panel.panelSwitchLabelled() && panel.codePanelHidden() && dialsShown(panel) == 0 ? 1 : 0, 1);
+        {
+            // Wide, at 24 px: the size beside the switch's word, both clear of the problems' room.
+            pg::ui::codesize::write(240);
+            host.tick(2);
+            const funkgui::Rect sz = panel.codeAssist().sizeRect();
+            const funkgui::Rect switchRect = panel.codeAssist().panelSwitchRect();
+            P.eq("sizes.wide_size_shown", sz.w > 0.0f && panel.panelSwitchLabelled() && sz.right() <= switchRect.x ? 1 : 0, 1);
+            P.ge("sizes.wide_size_room", static_cast<double>(sz.x - panel.codeAssist().statusRect().x), 160.0);
+            pg::ui::codesize::write(pg::ui::codesize::kDefault);
+            host.tick(2);
+        }
         writePng(P, host, "gui.codepanel.wide.png");
         {
             funkgui::UiPreferences::get().setTheme(1);

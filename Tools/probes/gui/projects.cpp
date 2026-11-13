@@ -965,7 +965,8 @@ PROBE(gui, projects)
         const juce::File bundleOut = folder.getChildFile("bulk");
         bundleOut.createDirectory();
         const auto waitLanded = [&](pg::ui::Panel& pn, funkgui::HeadlessHost& h) {
-            for (int k = 0; k < 2000 && (pn.exportCard().running() || port.exporting().busy); ++k)
+            for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+                 (pn.exportCard().running() || port.exporting().busy) && std::chrono::steady_clock::now() < by;)
             {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 processor.settle();

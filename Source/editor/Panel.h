@@ -57,27 +57,33 @@
 //   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
 //             own (Role::code, below), this window showing the panel full size meanwhile; the session keeps it
 //             (EditorPort::codeWindow)
-//   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
-//             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
-//             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
-//             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
-//             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
-//             else the last reply's tokens)
+//   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title,
+//             cut to leave the chats' pill its room; the chats' pill (a menu); a new chat (nothing asked), the API
+//             key and the fold), the conversation (ChatView.h: bubbles, light markdown, thinking rows, cards of what
+//             Claude did, code blocks with Copy, an empty chat's suggestions; a Tab stop whose keys scroll it), the
+//             message box that grows with its text (Return sends it, Shift-Return breaks the line) and with its
+//             pictures' rows, with the pictures' button, the model and thinking pills (menus), Fast and Web
+//             (switches) and the round send-or-stop button in its bar (ChatItems.h; send takes words or pictures
+//             alone), and the line under it (what Claude is doing, else the last reply's tokens); a drag of pictures
+//             over the editor lights the card
 //   key       a dialog over the panel for the model provider and its API key: the Provider pill at its title's right (a
 //             menu: Anthropic, the default, OpenAI, OpenRouter, Google Gemini, Ollama or LM Studio on this Mac, another
 //             OpenAI-compatible server), a masked key field (Cmd-V pastes), and for another provider its server's
-//             address (an OpenAI-compatible one's) and its model, Tab moving between them; Save, Cancel and, when a key
-//             is stored for that provider, Remove key. Anthropic's is as it always was. It opens from the header's
-//             key, the empty chat's button, and when a message is sent before the chat can send (the message goes
-//             once it is saved)
+//             address (an OpenAI-compatible one's) and its model; Save, Cancel and, when a key is stored for that
+//             provider, Remove key. Tab moves over the fields, Provider, Remove key, Cancel and Save, where Return or
+//             Space presses; a click places a plain field's caret (the masked key's stays at its end); a refusal is
+//             said to a screen reader and is its field's help. Anthropic's is as it always was. It opens from the
+//             header's key, the empty chat's button, and when a message is sent before the chat can send (the
+//             message goes once it is saved)
 //   settings  the Standalone's only (EditorPort::devices): SETTINGS, the audio and MIDI devices in a card over the panel
 //             (SettingsCard.h), opened by the app's Settings... (Cmd-,: EditorPort::settingsAsked, polled each frame)
 //             and by the muted notice's button; while an effect's input is muted (JUCE's guard against a feedback loop)
 //             the status bar says so at its right, beside that button
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
-// Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
-// transcript; Escape leaves each), to a tab's name while it is edited, and to the key dialog while it is open;
+// Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box; Escape leaves
+// each), to the conversation while it has the ring (it scrolls), to a tab's name while it is edited, and to the key
+// dialog while it is open;
 // otherwise Tab moves the focus ring over the controls, and the arrows, Page and Home/End adjust the focused dial.
 // Every parameter write goes through one funkgui::GestureController (begin/set/end gestures for the host).
 //
@@ -129,6 +135,7 @@
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
+#include "editor/TabStrip.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -151,9 +158,11 @@
 
 #include <funkgui/text/LineEdit.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -300,6 +309,8 @@ namespace playground::ui
         // For probes.
         funkgui::TextEditor& editor() noexcept;         // the shown file's
         CodeAssist& codeAssist() noexcept;               // its completion, hover, find bar, problems (CodeAssist.h)
+        funkgui::TextEditor& fileEditor(int i);          // file i's (shown or not)
+        int codeTextSize() const;                        // the text size its editors draw in, tenths of a px
         int fileCount() const;
         std::string fileName(int i) const;
         int activeFile() const;
@@ -343,7 +354,8 @@ namespace playground::ui
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
-        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
+        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader,
+                                                      // 5: a pointer's (GuiPointerItem)
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
         int layouts() const noexcept { return layouts_; }    // layout() calls so far (a scroll makes none)
@@ -420,6 +432,7 @@ namespace playground::ui
         // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
         bool mergeDraft();
         bool pushFiles();
+        void giveTyping();                               // pushFiles, in the event that typed (Panel::key)
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& chatPlaceholder() const;      // what it says while empty
@@ -464,7 +477,10 @@ namespace playground::ui
         funkgui::Point centreOfIrTab() const;
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
-        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab, as much as is in view (empty: scrolled out)
+        float fileTabWidth(int i) const;                 // its whole width (its name's)
+        bool fileTabEdited(int i) const;                 // its dot: its text is not what plays
+        TabStrip tabStrip() const;                       // the strip's places and scroll, as laid out now (TabStrip.h)
         // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
         // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
         // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
@@ -497,6 +513,9 @@ namespace playground::ui
             std::vector<float> scopeIn, scopeOut;
             std::vector<std::pair<int, float>> taps;
             float inLevel = -1.0f, outLevel = -1.0f;
+            // The pointer over the shaders (pointer.x, .y, .down, .hover: GuiView::showPointer), NaN for none.
+            static constexpr float kNone = std::numeric_limits<float>::quiet_NaN();
+            std::array<float, 4> pointer{ kNone, kNone, kNone, kNone };
         };
         void showState(ShownState state);
         void playShown() noexcept { shownPlaying_ = true; }
@@ -539,11 +558,30 @@ namespace playground::ui
         std::optional<funkgui::Point> centreOfKeyModel() const;
         int keyDialogPreset() const noexcept { return dialogPreset_; }
         int keyDialogField() const noexcept { return dialogField_; }
+        // What the dialog shows now: the key's field as drawn (masked), its hint while empty, and its lines (the server
+        // the key is for and sent to): the server's address typed, never the preset's when it differs.
+        std::string keyDialogShown() const { return keyEdit_.buffer.empty() ? std::string() : maskedKey(); }
+        std::string keyDialogHint() const;
+        std::vector<std::string> keyDialogLines() const;
         void chooseKeyPreset(int preset);
-        // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
-        // while another card is open); the notice while an effect's input is muted, and its Settings... button.
-        bool openSettings();
+        // The control the keys go to (0 a field, 1 Provider, 2 Remove key, 3 Cancel, 4 Save), the caret of the field
+        // with the keys, how far the plain field with the keys is drawn scrolled (px), the refusal's lines as drawn.
+        int keyDialogControl() const noexcept { return dialogControl_; }
+        int keyDialogCaret() const;
+        float keyDialogScroll() const;
+        std::vector<std::string> keyDialogWhyLines() const;
+        std::string chatTitleShown() const;              // the chat's title as the header draws it (fitted)
+        // SETTINGS (SettingsCard.h): the card of pages, in every host, opened by the top bar's gear (at the page it showed
+        // last), the Standalone's Settings... (at EditorPort::settingsPage) and the muted notice (at Audio and MIDI): at
+        // `page` (a page's id, "" the last; false while another card is open); the notice while an effect's input is
+        // muted, and its Settings... button.
+        bool openSettings(const std::string& page = {});
         SettingsCard& settingsCard() noexcept { return settings_; }
+        funkgui::Point centreOfSettings() const;         // the gear
+        // The Debug page's graphics rows from the host the Panel runs in (gpu/CodeWindow.cpp's EditorHost,
+        // nogpu/SoftEditorHost): its frames, the surface, the renderer's counts. None: the Panel's own rows alone (a
+        // headless Panel's). Message thread.
+        void setHostDebug(std::function<std::vector<DebugRow>()> rows) { hostDebug_ = std::move(rows); }
 
         // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
         // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
@@ -620,9 +658,10 @@ namespace playground::ui
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
         bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
                                                          // double-click is none of the panel's
-        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
-                                                         // the rest of its click (a double-click's second press,
-                                                         // its doubleClick) reaches nothing under it
+        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done),
+                                                         // or sent the message (send is stop under it now): the
+                                                         // rest of its click (a double-click's second press, its
+                                                         // doubleClick) reaches nothing under it
         // A press on the card on top (pointerDown, "A card's press"): the card takes it (`press`), then the Panel's
         // after-hook for it (`after`: its notice, the focus back). When the card that took it is no longer open, the
         // press closed it (a click outside its box, its Close, Done or Cancel): the press goes no further, and
@@ -632,6 +671,7 @@ namespace playground::ui
         // SettingsCard); a new card is one more pressCard line in pointerDown, nothing copied.
         void pressCard(const std::function<bool()>& isOpen, const std::function<void()>& press, const std::function<void()>& after);
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
+        uint32_t sends_ = 0;                             // messages sent from the box (a press's: did it send?)
         bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
@@ -666,7 +706,7 @@ namespace playground::ui
         // The chat.
         void refreshChat(double nowSec);
         void reshowChat();                               // the conversation laid out again (a row opened, ...)
-        void sendChat();                                 // the message box's text, to Claude
+        bool sendChat();                                 // the message box's text, to Claude (true: it went)
         void suggest(const std::string& text);           // a suggestion into the message box
         void openModels();
         void openThinking();
@@ -705,6 +745,13 @@ namespace playground::ui
         void removeKeyFromDialog();
         bool keyDialogKey(const funkgui::KeyEvent&);
         void keyDialogPointerDown(funkgui::Point);
+        std::vector<int> dialogStops() const;            // its Tab order: 10 + a field, or a button (dialogControl_)
+        void moveDialogFocus(int dir);
+        void pressDialogControl();
+        void refuseInDialog(const std::string& why);
+        std::vector<std::string> whyLines(float maxW) const;
+        static float fieldScroll(const funkgui::text::LineEdit&, float maxW);
+        static void placeFieldCaret(funkgui::text::LineEdit&, const funkgui::Rect& field, float px);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
         std::string maskedKey() const;
         // The provider in the dialog (ChatPort::setProvider): its preset, whether it is Anthropic's and the chat's now
@@ -715,6 +762,10 @@ namespace playground::ui
         bool dialogAsBefore() const;
         ChatProvider dialogProvider() const;
         bool dialogHasKey() const;
+        bool dialogInfoNow() const;                      // dialogInfo_ is the address typed's (read when it rests)
+        void readDialogInfo();
+        std::string dialogTitle() const;                 // the preset's name, else the server typed's host
+        bool dialogPresetServer() const;                 // the address typed is the preset's own (or it has none)
         void openProviders();
         funkgui::text::LineEdit& dialogEdit();
         int dialogFields() const;                        // the fields shown, as a mask of 1 << field
@@ -881,9 +932,15 @@ namespace playground::ui
         SettingsCard settings_{ port_ };
         uint64_t seenSettingsAsk_ = 0;
         uint32_t seenSettingsRev_ = 0;
+        uint32_t seenPrefsRev_ = ~0u;
+        int filesPlaying_ = 0;                           // the tabs were given what plays (FilesItem::setPlaying)                    // UiPreferences' revision the text size was read at
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;
+        int gearItem_ = -1;                              // the top bar's gear
+        bool keyAfterSettings_ = false;                  // the card closed for the key dialog (the AI page)
+        std::function<std::vector<DebugRow>()> hostDebug_;   // setHostDebug's
+        SettingsCard::Hooks settingsHooks();             // what the card reads of the Panel (the chat's provider, ...)
         void syncSettings();                             // refresh(): the devices, the app's request, the notice
         void afterSettings(bool wasOpen);                // the card closed: the focus back
         void placeMutedNotice();                         // its button, left of the zoom in the status bar
@@ -960,7 +1017,11 @@ namespace playground::ui
         int dialogPreset_ = 0;                           // the provider shown (kChatPresets), the server's address and
         funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
         int dialogField_ = 0;
+        int dialogControl_ = 0;                          // the dialog's button with the keys (Tab), 0 while a field has them
+        int keyWhyField_ = 0;                            // the field the refusal is about (dialogField_'s numbers)
         ChatProviderInfo dialogInfo_;
+        std::string dialogInfoBase_;                     // the address dialogInfo_ was read for
+        double baseTypedAt_ = 0.0;                       // when the address was last typed in (read once it rests)
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

@@ -125,4 +125,7 @@ namespace playground::measure
                  const ViewRequest& shape = {}, double cycleHz = 0.0, bool harmonics = false, bool fromStart = false);
 
     View view(const Sources& files, const ViewRequest& request);
+    // The same in a Session of the caller's (one it may cancel: Session::setCancel; a cancelled render's View is analysed
+    // all the same, so the caller asks session.cancelled() first).
+    View view(Session& session, const ViewRequest& request);
 }

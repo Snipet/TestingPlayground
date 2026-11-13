@@ -16,6 +16,7 @@
 #include "editor/Items.h"
 #include "editor/LogoMark.h"
 #include "editor/SchematicView.h"
+#include "editor/TabStrip.h"
 
 #include "editor/Theme.h"
 
@@ -40,6 +41,9 @@
 #include <funkgui/core/Theme.h>
 #include <funkgui/core/TypeScale.h>
 #include <funkgui/gpu/ShaderLibrary.h>
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+#include <funkgui/gpu/GpuPicture.h>
+#endif
 #include <funkgui/panel/HostServices.h>
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/text/FontService.h>
@@ -240,6 +244,7 @@ namespace playground::ui
         constexpr float kCardPad = 10.0f;                // inside the chat's card
         constexpr float kCardRadius = 14.0f;
         constexpr float kIconButton = 28.0f;             // the header's new chat and key
+        constexpr float kGearGap = 4.0f;                 // the top bar's gear, left of the theme
         constexpr float kBarH = 36.0f;                   // the message box's bottom bar (the pills, send)
         constexpr float kPillH = 26.0f;
         constexpr float kSendD = 28.0f;
@@ -791,23 +796,22 @@ namespace playground::ui
         constexpr float kTabH = 26.0f;
         constexpr float kTabPad = 12.0f;                 // before a tab's name, and after it
         constexpr float kTabCloseW = 14.0f;              // a closable tab's close box, after its name
-        constexpr float kTabMinW = 64.0f;
-        constexpr float kTabNarrowW = 26.0f;             // the least a tab narrows to when many do not fit (kMaxFiles,
-                                                         // sixteen, fit a program's card of kProgramMinW, the IR tab
-                                                         // open and a netlist's pills too: it takes no more than they
-                                                         // leave); a letter of its name, and its close box beside it
-                                                         // while it shows or is under the pointer
-        constexpr float kTabMaxW = 150.0f;
+        constexpr float kTabMinW = 64.0f;                // a tab is as wide as its name, within these, never narrowed:
+        constexpr float kTabMaxW = 150.0f;               // the strip scrolls instead (TabStrip.h)
+        constexpr float kIrNarrowW = 26.0f;              // the IR tab beside a netlist's pills in a narrow bar: its chip
+        constexpr float kStripLeast = 5.0f * kTabMinW;   // the strip's room the pills' labels and the IR tab's name leave
         constexpr float kTabGap = 4.0f;
         constexpr float kNewTabW = 24.0f;
         constexpr uint64_t kStructureStep = uint64_t{ 1 } << 40;   // FilesItem::revision: a change of the tabs
         constexpr float kIrIconW = 16.0f;                // the IR tab's icon, before its name
         // A .cir tab's Netlist / Schematic pills, at the bar's right end (left of the IR tab): icon-only when their
-        // labels would narrow the files' tabs below kTabNarrowW.
+        // labels would leave the strip of files less than kStripLeast (and its tabs do not all fit).
         constexpr float kPillIconW = 28.0f;
         constexpr float kPillTrack = 3.0f;               // the track around the pair
         constexpr uint32_t kPillsA11y = 40;              // FilesItem's ids: the group, then Netlist and Schematic
         constexpr uint32_t kPanelSwitchA11y = 44;        // ... the status line's Panel switch
+        constexpr uint32_t kFindButtonA11y = 45;         // ... and its magnifier (find and replace)
+        constexpr uint32_t kFilesMenuA11y = 37;          // ... the files dropdown (while the tabs overflow)
     }
 
     // Not in the unnamed namespace: Panel.h names it.
@@ -829,7 +833,9 @@ namespace playground::ui
                   [this](const std::string& text) {
                       if (notice_)
                           notice_(text);
-                  } }),
+                  },
+                  [this](int i) { showText(i); },
+                  [this](std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits) { return editAcross(std::move(edits)); } }),
               schematic_(SchematicView::Hooks{
                   [this](int line, int col) { showNetlistAt(line, col); },
                   [this] { return assist_.diagnosticsOf(active_); },
@@ -841,6 +847,8 @@ namespace playground::ui
                   [this](bool redo) { return undoStep(redo); } })
         {
             assist_.setArea(editor);
+            assist_.setCodeSize(size_);
+            assist_.setSizeHook([this](int tenths) { setCodeSize(tenths); });
             assist_.setStatusWords([this] { return schematicShown() ? schematic_.statusWords() : std::string(); });
             assist_.setStatusProblems([this](bool back) { schematic_.stepProblem(back ? -1 : 1); });
             schematic_.setArea(assist_.editorRect());
@@ -858,7 +866,11 @@ namespace playground::ui
             close_ = std::move(close);
         }
         // ... and its menuOpenAt, which the Schematic view's triggers (More, the probe chip) draw open by.
-        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open) { schematic_.setMenuOpen(std::move(open)); }
+        void setMenuOpen(std::function<bool(const funkgui::Rect&)> open)
+        {
+            menuOpen_ = open;                            // the files dropdown's too
+            schematic_.setMenuOpen(std::move(open));
+        }
         // The Schematic view's circuit dials and Play this circuit (SchematicView.h): the program that plays's circuit
         // fields, a dial's port and control, and RUN (the Panel's).
         void setCircuitHooks(std::function<const std::vector<lang::CircuitBinding>&()> bindings,
@@ -1123,6 +1135,32 @@ namespace playground::ui
                     e->setPalette(codePalette(th));
         }
 
+        // The text size (CodeAssist.h's codesize, this machine's preference) on every file tab and IR view, each keeping
+        // its place: the line at its top before stays at its top (setStyle clamps the scroll in px), the caret where it
+        // was. The code window holds this same item, so it follows too.
+        void setCodeSize(int tenths)
+        {
+            tenths = std::clamp(tenths, codesize::kLeast, codesize::kMost);
+            if (tenths == size_)
+                return;
+            const float ratio = static_cast<float>(tenths) / static_cast<float>(size_);
+            size_ = tenths;
+            assist_.setCodeSize(tenths);
+            const funkgui::TextStyle st = codesize::style(tenths);
+            const auto restyle = [&](funkgui::TextEditor& e) {
+                const int top = e.visibleLineRange().first;
+                const float x = e.scroll().x * ratio;
+                e.setStyle(st);
+                e.setScroll(x, static_cast<float>(e.rowOf({ top, 0 })) * e.rowHeight());
+            };
+            for (Tab& t : tabs_)
+                restyle(*t.editor);
+            for (const std::unique_ptr<funkgui::TextEditor>& e : ir_.editors)
+                if (e)
+                    restyle(*e);
+        }
+        int codeSize() const noexcept { return size_; }
+
         // File i's tab shown (from the IR tab too).
         void select(int i)
         {
@@ -1159,7 +1197,7 @@ namespace playground::ui
             if (!e)
             {
                 e = std::make_unique<funkgui::TextEditor>(id_);
-                irview::configure(*e, irTheme_);
+                irview::configure(*e, irTheme_, codesize::style(size_));
                 e->setBounds(assist_.editorRect());
                 e->attach(host_);
             }
@@ -1338,51 +1376,71 @@ namespace playground::ui
             }
         }
 
-        // ---- geometry (logical px): the tabs from the bar's left, each as wide as its name -------------------
-        funkgui::Rect tabRect(int i) const
+        // ---- geometry (logical px): the strip of tabs from the bar's left (TabStrip.h), each as wide as its name;
+        // the + box, the files dropdown, the pills and the IR tab at its right, which never scroll ------------------
+        // The strip laid out for the bar as it is now; the tab that became active (or is renamed) brought into view.
+        const TabStrip& strip() const
         {
-            float x = bar_.x;
-            for (int k = 0; k < i; ++k)
-                x += tabWidth(k) + kTabGap;
-            return { x, bar_.y, tabWidth(i), kTabH };
+            std::vector<float> w;
+            w.reserve(tabs_.size());
+            for (int k = 0; k < count(); ++k)
+                w.push_back(naturalWidth(k));
+            const float fixed = (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f) + pillsReserve();
+            strip_.layout(bar_, w, fixed, canAdd() ? kNewTabW : 0.0f, kTabGap, editorBounds_.y);
+            const int want = renaming_ >= 0 ? renaming_ : active_;
+            if (want != revealed_ || count() != revealedCount_ || bar_.w != revealedW_)
+            {
+                strip_.reveal(want);
+                revealed_ = want;
+                revealedCount_ = count();
+                revealedW_ = bar_.w;
+            }
+            return strip_;
+        }
+        funkgui::Rect tabRect(int i) const { return strip().tab(i); }             // scrolled, maybe out of view
+        funkgui::Rect shownTabRect(int i) const { return strip().shown(i); }      // in view (empty when out)
+        float tabWidth(int i) const { return naturalWidth(i); }
+        void revealTab(int i) const                      // (the strip's scroll is no part of the files: mutable)
+        {
+            strip();
+            strip_.reveal(i);
         }
         funkgui::Rect closeRect(int i) const
         {
             const funkgui::Rect t = tabRect(i);
-            const float right = t.right() - tabPad(i) + 4.0f;
-            // A narrowed tab's box keeps clear of its middle, so that a click there shows its file (at kTabNarrowW).
-            const float x = narrow(i) ? std::max(right - kTabCloseW, t.centreX() + 1.0f) : right - kTabCloseW;
-            return { x, t.y + 4.0f, right - x, kTabH - 8.0f };
+            const float right = t.right() - kTabPad + 4.0f;
+            return { right - kTabCloseW, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
         }
-        // A tab narrowed to fit: less padding, and its close box only while it is shown (not under the IR tab) or under
-        // the pointer.
-        bool narrow(int i) const { return tabWidth(i) < naturalWidth(i) - 0.5f; }
-        float tabPad(int i) const { return narrow(i) ? 6.0f : kTabPad; }
+        // Its close box shows on the tab shown, and on one under the pointer (the program's has none); its room is
+        // always kept, so a tab does not change width as the pointer moves.
         bool closeShown(int i) const
         {
-            return i > 0 && (!narrow(i) || (i == active_ && !irShown()) || tabRect(i).contains(pointer_));
+            if (i <= 0)
+                return false;
+            const funkgui::Rect r = shownTabRect(i);
+            return !r.isEmpty() && closeRect(i).right() <= r.right() + 0.5f && closeRect(i).x >= r.x - 0.5f
+                && ((i == active_ && !irShown()) || (r.contains(pointer_) && strip().tabAt(pointer_) == i));
         }
-        funkgui::Rect newTabRect() const
-        {
-            const funkgui::Rect last = tabRect(count() - 1);
-            return { last.right() + kTabGap, bar_.y, kNewTabW, kTabH };
-        }
+        funkgui::Rect newTabRect() const { return strip().newTab(); }
+        funkgui::Rect filesMenuRect() const { return strip().menu(); }
         bool canAdd() const noexcept { return tabs_.size() < kMaxFiles; }
         // The IR tab, apart from the files' at the bar's right end: its icon, its name, its close box. As wide as its
-        // name (up to 40% of the bar), but never wider than the files' tabs leave at their narrowest (kTabNarrowW each,
-        // and the new-file box), so that they never run under it: its name is cut first.
+        // name, up to 40% of the bar; beside a netlist's pills in a bar too narrow for both and a strip of
+        // kStripLeast, its chip alone (kIrNarrowW: while it is not shown).
+        float irNaturalWidth() const
+        {
+            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
+            return std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW, std::max(kTabMinW, bar_.w * 0.4f));
+        }
         float irTabWidth() const
         {
             if (!ir_.open)
                 return 0.0f;
-            const float w = funkgui::text::width(funkgui::FontService::get().atlas(), irName().c_str(), chat::kSmall);
-            const float natural = std::clamp(w + 2.0f * kTabPad + kIrIconW + kTabCloseW + 2.0f, kTabMinW,
-                                             std::max(kTabMinW, bar_.w * 0.4f));
-            const int n = count();
-            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
-                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + 3.0f * kTabGap + pillsReserve();
-            // Beside a netlist's pills it narrows further, to kTabNarrowW (its icon; its box under the pointer).
-            return std::max(pillsShown() ? kTabNarrowW : kTabMinW, std::min(natural, bar_.w - files));
+            const float natural = irNaturalWidth();
+            if (pillsShown() && !irShown()
+                && bar_.w - natural - 3.0f * kTabGap - pillsWidth(false) - 2.0f * kTabGap - stripExtras() < kStripLeast)
+                return kIrNarrowW;
+            return natural;
         }
         bool irNarrow() const { return irTabWidth() < kTabMinW - 0.5f; }
         funkgui::Rect irTabRect() const
@@ -1394,6 +1452,74 @@ namespace playground::ui
         {
             const funkgui::Rect t = irTabRect();
             return { t.right() - kTabPad - kTabCloseW + 4.0f, t.y + 4.0f, kTabCloseW, kTabH - 8.0f };
+        }
+        // The + box and the files dropdown with their gaps: what the strip's controls take beside its view.
+        float stripExtras() const { return (canAdd() ? kNewTabW + kTabGap : 0.0f) + TabStrip::kMenuW + kTabGap; }
+        // The strip's area: the bar and the gap under it down to the editor (the strip's scroll bar is in that gap).
+        funkgui::Rect stripArea() const { return { bar_.x, bar_.y, bar_.w, std::max(bar_.h, editorBounds_.y - bar_.y) }; }
+        // The files dropdown's menu: every file, the one shown checked; a choice shows it (brought into view).
+        void openFilesMenu(funkgui::HostServices& h)
+        {
+            funkgui::MenuRequest request;
+            for (int i = 0; i < count(); ++i)
+                request.items.push_back(dropdown::choice(i + 1, name(i), i == active_ && !irShown()));
+            dropdown::dropdownMenu(request, filesMenuRect(), irShown() ? 0 : active_ + 1);
+            request.minWidth = std::max(request.minWidth, 160.0f);
+            const int at = count();
+            h.showMenu(request, [this, at](int chosen) {
+                if (chosen >= 1 && chosen <= at && chosen <= count())
+                    select(chosen - 1);
+            });
+        }
+        // Ctrl-Tab and Ctrl-Shift-Tab: the next file's tab, or the one before, wrapping (the files only: from the IR
+        // tab, the file under it is the start).
+        void stepTab(int dir)
+        {
+            const int n = count();
+            if (n <= 1 && !irShown())
+                return;
+            endRename();
+            const int from = active_;
+            const int to = irShown() && n == 1 ? 0 : ((from + dir) % n + n) % n;
+            if (irShown() && to == from)
+            {
+                ir_.shown = false;
+                editor().setFocused(false);
+                show();
+                assist_.tabShown();
+                structure_ += kStructureStep;
+                syncSchematic();
+                return;
+            }
+            select(to);
+        }
+        // A tab's text differs from what plays (a netlist but for its drawing's *@ lines: cir::sameProgram), so its tab
+        // has a dot before its name; the Panel gives what plays (setPlaying) when the files or the status change.
+        void setPlaying(const Sources& playing)
+        {
+            playing_ = playing;
+            ++playingRev_;
+        }
+        bool edited(int i) const
+        {
+            const uint64_t r = revision();
+            if (r != editedRev_ || playingRev_ != editedPlaying_ || edited_.size() != tabs_.size())
+            {
+                editedRev_ = r;
+                editedPlaying_ = playingRev_;
+                edited_.assign(tabs_.size(), false);
+                for (int k = 0; k < count(); ++k)
+                {
+                    const SourceFile* was = nullptr;
+                    for (const SourceFile& f : playing_)
+                        if (f.name == name(k))
+                            was = &f;
+                    const std::string now = tabs_[static_cast<std::size_t>(k)].editor->text();
+                    edited_[static_cast<std::size_t>(k)]
+                        = was == nullptr || !cir::sameProgram(Sources{ SourceFile{ name(k), now } }, Sources{ *was });
+                }
+            }
+            return i >= 0 && i < static_cast<int>(edited_.size()) && edited_[static_cast<std::size_t>(i)];
         }
 
         // ---- Item --------------------------------------------------------------------------------------------
@@ -1420,8 +1546,10 @@ namespace playground::ui
             DrawKey k;
             k.mix(revision()).mix(active_).mix(tabs_.size()).mix(problems_->size()).mix(pointer_).mix(focused_).mix(hidden_);
             k.mix(ir_.open).mix(ir_.shown).mix(ir_.view).mix(renaming_).mix(edit_.buffer).mix(edit_.caret).mix(edit_.allSelected)
-                .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_);
-            k.mix(editor()).mix(assist_.drawKey());
+                .mix(why_).mix(playOn_).mix(bar_).mix(editorBounds_).mix(size_);
+            k.mix(editor()).mix(assist_.drawKey()).mix(strip().key()).mix(playingRev_).mix(pressedStripBar_);
+            if (menuOpen_)
+                k.mix(menuOpen_(filesMenuRect()));
             if (schematicShown())
                 k.mix(schematic_.drawKey());
             return k.h;
@@ -1438,51 +1566,115 @@ namespace playground::ui
                 ed.draw(c, th, ring);
             assist_.drawInEditor(c, th);
 
-            // The tabs: pills, the shown one raised, a file the last run's errors name marked before its name.
+            // The tabs: a strip joined to the editor. The tab shown has the editor's ground, its top corners rounded,
+            // and runs down into the editor; the others are their names on the card's ground, a divider between
+            // neighbours, a tint under the pointer; a hairline under the rest. A file the last run's errors name has a
+            // red disc before its name, else one whose text differs from what plays a dot there.
             const funkgui::Canvas::Scope s(c, kTabTag, false);
             const chat::Palette p = chat::palette(th);
             const funkgui::TextStyle& st = chat::kSmall;
+            const TabStrip& sp = strip();
+            const funkgui::Rect view = sp.view();
+            const float joinY = editorBounds_.y;                       // the editor's top
+            const funkgui::Col ground = codeGround(th);
+            const int shownTab = irShown() ? -1 : active_;
+            const funkgui::Rect activeR = shownTab >= 0 ? sp.shown(shownTab) : funkgui::Rect{};
+            // the hairline under the strip, but under the tab shown
+            {
+                const float l = bar_.x, r = sp.overflows() ? view.right() : bar_.right();
+                if (activeR.isEmpty())
+                    c.hairlineH(l, joinY - 1.0f, r - l, p.cardEdge);
+                else
+                {
+                    if (activeR.x > l)
+                        c.hairlineH(l, joinY - 1.0f, activeR.x - l, p.cardEdge);
+                    if (r > activeR.right())
+                        c.hairlineH(activeR.right(), joinY - 1.0f, r - activeR.right(), p.cardEdge);
+                }
+            }
+            c.pushClip({ view.x, view.y, view.w, joinY + 1.0f - view.y });
+            const int hoverTab = sp.tabAt(pointer_);
             for (int i = 0; i < count(); ++i)
             {
                 const funkgui::Rect r = tabRect(i);
-                const bool shown = i == active_ && !irShown();   // the IR tab's over it
-                const bool hover = r.contains(pointer_);
+                if (r.right() < view.x || r.x > view.right())
+                    continue;                                          // scrolled out
+                const bool shown = i == shownTab;
+                const bool hover = i == hoverTab;
                 if (shown)
-                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.composer, 1.0f, p.composerEdge);
+                {
+                    // outlined but at its foot, where it opens into the editor
+                    c.rrect4(r.x, r.y, r.w, joinY + 1.0f - r.y, 7.0f, 7.0f, 0.0f, 0.0f, ground, 1.0f, p.cardEdge);
+                    c.rrect(r.x + 1.0f, joinY - 1.5f, r.w - 2.0f, 3.0f, 0.0f, ground);
+                }
                 else if (hover)
-                    c.rrect(r.x, r.y, r.w, r.h, 8.0f, p.hover);
+                    c.rrect(r.x + 2.0f, r.y + 2.0f, r.w - 4.0f, r.h - 4.0f, 6.0f, p.hover);
+                // a divider between two tabs that are neither shown nor under the pointer
+                // (none under an edge's chevron and fade: it would show through as a stray mark)
+                const bool underFade = (!sp.chevron(false).isEmpty() && r.right() < view.x + TabStrip::kChevronW + TabStrip::kFadeW)
+                                    || (!sp.chevron(true).isEmpty() && r.right() > view.right() - TabStrip::kChevronW - TabStrip::kFadeW);
+                if (i + 1 < count() && !shown && !hover && i + 1 != shownTab && i + 1 != hoverTab && !underFade)
+                    c.hairlineV(r.right(), r.y + 7.0f, r.h - 14.0f, p.cardEdge);
                 const float textTop = c.capCentreTop(r.centreY(), st);
                 if (hasErrors(name(i)))
                     c.disc(r.x + 6.0f, r.centreY(), 2.5f, p.danger);
-                const float pad = tabPad(i);
-                const float nameW = r.w - 2.0f * pad - (closeShown(i) ? kTabCloseW : 0.0f);
+                else if (edited(i))
+                    c.disc(r.x + 6.0f, r.centreY(), 2.0f, shown || hover ? p.text : p.soft);
+                const float nameW = r.w - 2.0f * kTabPad - (i > 0 ? kTabCloseW : 0.0f);
                 if (i == renaming_)
                 {
                     // The name being edited: its text, the selection (all of it, until a key), the caret.
                     const std::string& b = edit_.buffer;
                     const float w = c.textWidth(b.c_str(), st);
                     if (edit_.allSelected && !b.empty())
-                        c.rrect(r.x + pad - 1.0f, r.y + 5.0f, std::min(w, nameW) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
-                    c.text(fitText(c, b, st, nameW).c_str(), r.x + pad, textTop, st, why_.empty() ? p.text : p.danger);
+                        c.rrect(r.x + kTabPad - 1.0f, r.y + 5.0f, std::min(w, nameW) + 2.0f, r.h - 10.0f, 2.0f, th.accentDim);
+                    c.text(fitText(c, b, st, nameW).c_str(), r.x + kTabPad, textTop, st, why_.empty() ? p.text : p.danger);
                     const std::string head = b.substr(0, static_cast<std::size_t>(std::clamp(
                                                              edit_.caret, 0, static_cast<int>(b.size()))));
-                    const float cx = r.x + pad + std::min(c.textWidth(head.c_str(), st), nameW);
+                    const float cx = r.x + kTabPad + std::min(c.textWidth(head.c_str(), st), nameW);
                     c.rrect(cx, r.y + 5.0f, 1.5f, r.h - 10.0f, 0.0f, p.accent);
                 }
                 else
-                {
-                    const funkgui::Col ink = shown || hover ? p.text : p.soft;
-                    // A narrowed tab keeps the name's first letters, without an ellipsis (the footer has it whole).
-                    std::string label = name(i);
-                    if (narrow(i))
-                        while (label.size() > 1 && c.textWidth(label.c_str(), st) > nameW)
-                            label.pop_back();
-                    else
-                        label = fitText(c, label, st, nameW);
-                    c.text(label.c_str(), r.x + pad, textTop, st, ink);
-                }
+                    c.text(fitText(c, name(i), st, nameW).c_str(), r.x + kTabPad, textTop, st, shown || hover ? p.text : p.soft);
                 if (closeShown(i))
                     drawCross(c, closeRect(i), 3.0f, closeRect(i).contains(pointer_) ? p.text : p.faint);
+            }
+            // An edge that hides tabs fades into the card, its chevron over the fade.
+            for (const bool right : { false, true })
+            {
+                const funkgui::Rect ch = sp.chevron(right);
+                if (ch.isEmpty())
+                    continue;
+                // the chevron on the card's ground, then the tabs fading in beyond it
+                const funkgui::Col card = p.card;
+                const float h = joinY - 1.0f - view.y;
+                c.rrect(ch.x, view.y, ch.w, h, 0.0f, card);
+                constexpr int kSteps = 7;
+                const float stepW = TabStrip::kFadeW / static_cast<float>(kSteps);
+                for (int k = 0; k < kSteps; ++k)
+                {
+                    const float a = 1.0f - static_cast<float>(k + 1) / static_cast<float>(kSteps + 1);
+                    const float x = right ? ch.x - static_cast<float>(k + 1) * stepW : ch.right() + static_cast<float>(k) * stepW;
+                    c.rrect(x, view.y, stepW + 0.5f, h, 0.0f, card.withAlpha(a));
+                }
+                const bool hot = ch.contains(pointer_);
+                chat::drawIcon(c, right ? chat::Icon::chevronRight : chat::Icon::chevronLeft, ch.centreX(), ch.centreY(), 9.0f,
+                               hot ? p.text : p.soft);
+            }
+            c.popClip();
+            // The strip's scroll bar, in the gap under it, while the pointer is over the strip or it is dragged.
+            if (sp.barShown(stripArea().contains(pointer_) && !assist_.over(pointer_)))
+            {
+                const funkgui::Rect t = sp.barThumb();
+                c.rrect(t.x, t.y, t.w, t.h, 0.5f * t.h, sp.dragging() ? th.ink52 : th.ink32);
+            }
+            // The files dropdown: every file, for a jump to one scrolled out.
+            if (const funkgui::Rect m = filesMenuRect(); !m.isEmpty())
+            {
+                dropdown::State ds;
+                ds.hover = m.contains(pointer_);
+                ds.open = menuOpen_ && menuOpen_(m);
+                (void)dropdown::drawTrigger(c, p, m.reduced(1.0f), dropdown::Base::ghost, ds);
             }
             if (canAdd())
             {
@@ -1547,29 +1739,33 @@ namespace playground::ui
             }
         }
 
-        bool contains(funkgui::Point p) const override { return bar_.contains(p) || editor().contains(p) || overlayAt(p); }
+        bool contains(funkgui::Point p) const override { return stripArea().contains(p) || editor().contains(p) || overlayAt(p); }
         // Over what the code editor draws over everything (the completion list, the find and go-to bars, the status
         // line): the window bounds the list, not the program's card, so it may lie over a column's edge.
         bool overlayAt(funkgui::Point p) const { return !hidden_ && assist_.over(p); }
         funkgui::Cursor cursorAt(funkgui::Point p) const override
         {
-            if (schematicShown() && !bar_.contains(p) && !assist_.statusRect().contains(p))
+            if (schematicShown() && !stripArea().contains(p) && !assist_.statusRect().contains(p))
                 return schematic_.cursorAt(p);
             if (const std::optional<funkgui::Cursor> own = assist_.cursorAt(p))
                 return *own;
-            if (bar_.contains(p))
+            if (stripArea().contains(p))
                 return tabAt(p) >= 0 || (canAdd() && newTabRect().contains(p)) || (ir_.open && irTabRect().contains(p))
                                || (pillsShown() && (pillRect(0).contains(p) || pillRect(1).contains(p)))
+                               || filesMenuRect().contains(p) || strip().chevron(false).contains(p)
+                               || strip().chevron(true).contains(p) || strip().barHits(p)
                            ? funkgui::Cursor::pointingHand
                            : funkgui::Cursor::normal;
             return editor().cursorAt(p);
         }
-        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices& h) override
         {
             const funkgui::Point p{ e.x, e.y };
             pressedSchematic_ = false;
+            pressedStripBar_ = false;
+            pressedAssist_ = false;
             schematic_.setGestures(&g);                  // a circuit dial's knob writes through it
-            if (!bar_.contains(p))
+            if (!stripArea().contains(p))
             {
                 endRename();
                 if (schematicShown() && !assist_.statusRect().contains(p))
@@ -1579,9 +1775,12 @@ namespace playground::ui
                     schematic_.pointerDown(e);
                     return;
                 }
+                if (schematicShown() && assist_.findButtonRect().contains(p) && !e.popup)
+                    setSchematic(false);                 // the find bar is the text's: the Netlist view first
                 if (assist_.pointerDown(e))
                 {
                     pressedEditor_ = false;
+                    pressedAssist_ = true;               // the results list's bar may be dragged
                     return;
                 }
                 pressedEditor_ = true;
@@ -1589,6 +1788,27 @@ namespace playground::ui
                 return;
             }
             pressedEditor_ = false;
+            // The strip's scroll bar (in the gap under the tabs), its chevrons and its files dropdown.
+            if (!e.popup && strip_.press(p))
+            {
+                pressedStripBar_ = true;
+                return;
+            }
+            for (const bool right : { false, true })
+                if (strip().chevron(right).contains(p))
+                {
+                    endRename();
+                    strip_.step(right);
+                    return;
+                }
+            if (filesMenuRect().contains(p))
+            {
+                endRename();
+                openFilesMenu(h);
+                return;
+            }
+            if (!bar_.contains(p))
+                return;                                  // the gap under the tabs
             if (pillsShown())
                 for (int k = 0; k < 2; ++k)
                     if (pillRect(k).contains(p))
@@ -1638,7 +1858,11 @@ namespace playground::ui
         void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             schematic_.setGestures(&g);
-            if (pressedSchematic_)
+            if (pressedStripBar_)
+                strip_.drag({ e.x, e.y });
+            else if (pressedAssist_)
+                assist_.pointerDrag({ e.x, e.y });
+            else if (pressedSchematic_)
                 schematic_.pointerDrag(e);
             else if (pressedEditor_)
                 editor().pointerDrag(e);
@@ -1646,18 +1870,24 @@ namespace playground::ui
         void pointerUp(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             schematic_.setGestures(&g);
-            if (pressedSchematic_)
+            if (pressedStripBar_)
+                strip_.release();
+            else if (pressedAssist_)
+                assist_.pointerUp();
+            else if (pressedSchematic_)
                 schematic_.pointerUp(e);
             else if (pressedEditor_)
                 editor().pointerUp(e);
+            pressedAssist_ = false;
             pressedEditor_ = false;
             pressedSchematic_ = false;
+            pressedStripBar_ = false;
         }
         void doubleClick(const funkgui::PointerEvent& e, funkgui::GestureController& g) override
         {
             const funkgui::Point p{ e.x, e.y };
             schematic_.setGestures(&g);
-            if (!bar_.contains(p))
+            if (!stripArea().contains(p))
             {
                 if (schematicShown())
                 {
@@ -1674,14 +1904,23 @@ namespace playground::ui
         }
         bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double nowSec) override
         {
-            if (bar_.contains({ e.x, e.y }))
-                return false;
+            if (stripArea().contains({ e.x, e.y }))
+            {
+                strip();                                 // laid out for the bar as it is
+                return strip_.wheel(e);                  // the strip scrolls sideways (nothing when every tab fits)
+            }
             if (schematicShown())
                 return schematic_.wheel(e, nowSec);
             return assist_.wheel(e) || editor().wheel(e);
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
         {
+            // Ctrl-Tab, Ctrl-Shift-Tab: the next file's tab, the one before (in the drawing too, not while renaming).
+            if (renaming_ < 0 && e.key == funkgui::Key::tab && e.mods.ctrl && !e.mods.alt)
+            {
+                stepTab(e.mods.shift ? -1 : 1);
+                return true;
+            }
             if (renaming_ < 0 && schematicShown())
             {
                 recount();
@@ -1741,7 +1980,7 @@ namespace playground::ui
                 tab.id = id_ + 2 + static_cast<uint32_t>(i);
                 tab.parent = group.id;
                 tab.role = funkgui::A11yRole::radioButton;
-                tab.bounds = tabRect(i);
+                tab.bounds = shownTabRect(i);           // empty while scrolled out (a press still shows it)
                 tab.title = name(i);
                 tab.checkable = true;
                 tab.checked = i == active_ && !irShown();
@@ -1752,10 +1991,21 @@ namespace playground::ui
                     funkgui::A11yItem close;
                     close.id = id_ + 2 + static_cast<uint32_t>(kMaxFiles) + static_cast<uint32_t>(i);
                     close.role = funkgui::A11yRole::button;
-                    close.bounds = closeRect(i);
+                    close.bounds = shownTabRect(i).isEmpty() ? funkgui::Rect{} : closeRect(i);
                     close.title = "Close " + name(i);
                     out.push_back(std::move(close));
                 }
+            }
+            if (const funkgui::Rect m = filesMenuRect(); !m.isEmpty())
+            {
+                funkgui::A11yItem menu;
+                menu.id = id_ + kFilesMenuA11y;
+                menu.role = funkgui::A11yRole::comboBox;
+                menu.bounds = m;
+                menu.title = "Files";
+                menu.value = irShown() ? irName() : name(active_);
+                menu.help = "every file: a choice shows it";
+                out.push_back(std::move(menu));
             }
             if (canAdd())
             {
@@ -1821,6 +2071,19 @@ namespace playground::ui
                 sw.help = "the program's dials or interface under the editor (Command J)";
                 out.push_back(std::move(sw));
             }
+            {
+                funkgui::A11yItem find;
+                find.id = id_ + kFindButtonA11y;
+                find.role = funkgui::A11yRole::button;
+                find.bounds = assist_.findButtonRect();
+                find.title = "Find and replace";
+#if defined(__APPLE__)
+                find.help = "Command F finds, Command Option F replaces, Command Shift F finds in all files";
+#else
+                find.help = "Control F finds, Control H replaces, Control Shift F finds in all files";
+#endif
+                out.push_back(std::move(find));
+            }
             if (schematicShown())
             {
                 schematic_.accessibility(out);
@@ -1842,9 +2105,20 @@ namespace playground::ui
             }
             if (id == id_ + kPillsA11y)
                 return true;
+            if (id == id_ + kFilesMenuA11y)
+            {
+                if (host_ != nullptr && !filesMenuRect().isEmpty())
+                    openFilesMenu(*host_);
+                return true;
+            }
             if (id == id_ + kPanelSwitchA11y && assist_.hasPanelSwitch())
             {
                 assist_.togglePanelSwitch();
+                return true;
+            }
+            if (id == id_ + kFindButtonA11y)
+            {
+                openFind(true, std::nullopt);
                 return true;
             }
             if (schematicShown())
@@ -1902,6 +2176,10 @@ namespace playground::ui
                                   upper(irName()).c_str(), upper(irview::word(static_cast<irview::View>(ir_.view))).c_str());
                 else if (canAdd() && newTabRect().contains(pointer_))
                     std::snprintf(out, n, "NEW FILE   ONE THE PROGRAM CAN #INCLUDE BY ITS NAME");
+                else if (filesMenuRect().contains(pointer_))
+                    std::snprintf(out, n, "%s", upper(shortcutText("Files   every one, a click shows it   Ctrl-Tab the next")).c_str());
+                else if (strip().chevron(false).contains(pointer_) || strip().chevron(true).contains(pointer_))
+                    std::snprintf(out, n, "MORE FILES   A CLICK SHOWS THE NEXT TAB THAT WAY   THE WHEEL SCROLLS THE TABS");
                 else if (const int i = tabAt(pointer_); i == 0)
                     std::snprintf(out, n, "%s   THE PROGRAM   DOUBLE-CLICK RENAMES IT", upper(name(0)).c_str());
                 else if (i > 0)
@@ -1950,6 +2228,72 @@ namespace playground::ui
             if (schematicShown() && renaming_ < 0)
                 return focused_;
             return editor().focused() || renaming_ >= 0 || assist_.takesKeys();
+        }
+
+        // ---- find (CodeAssist's bar) -----------------------------------------------------------------------------
+        // The find bar opened from outside the text (the Panel's keys, the Standalone's Edit menu, the magnifier's
+        // screen-reader action): a netlist shown as a schematic goes to its Netlist view first, as the bar is the text's.
+        void openFind(bool replace, std::optional<bool> allFiles)
+        {
+            if (schematicShown())
+                setSchematic(false);
+            assist_.openFind(replace, allFiles);
+        }
+
+        // Tab i shown as text, as a click on its tab shows it (the strip brings it into view): a netlist shown as a
+        // schematic in its Netlist view, switched before the tab shows so that the find bar stays (find in all files).
+        void showText(int i)
+        {
+            if (i < 0 || i >= count())
+                return;
+            if (fileKindOf(name(i)) == FileKind::Circuit)
+                if (const auto v = views_.find(name(i)); v != views_.end() && v->second.schematic)
+                {
+                    if (i == active_ && !irShown())
+                    {
+                        setSchematic(false);
+                        return;
+                    }
+                    schematic_.endField();
+                    v->second.schematic = false;
+                    v->second.stored = true;
+                    if (persist_)
+                        persist_();
+                }
+            select(i);
+        }
+
+        // Edits in several tabs (find's Replace all in every file): one applyEdits a tab, each a counted step, tied into
+        // one undo step across them (groups_) as a merge's are, so Cmd-Z in any of them undoes them all. A read-only
+        // editor is never written. True when a text changed.
+        bool editAcross(std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits)
+        {
+            recount();
+            UndoGroup changed;
+            for (auto& [i, list] : edits)
+            {
+                if (i < 0 || i >= count() || list.empty())
+                    continue;
+                Tab& t = tabs_[static_cast<std::size_t>(i)];
+                if (t.editor->options().readOnly)
+                    continue;
+                recount(t);
+                const uint32_t was = t.editor->revision();
+                if (!t.editor->applyEdits(std::move(list)) || t.editor->revision() == was)
+                    continue;
+                leaveGroups([&](const UndoGroup::Member& m) { return m.tab == t.serial && m.step > t.step; });
+                ++t.step;
+                t.counted = t.editor->revision();
+                changed.members.push_back({ t.serial, t.step });
+            }
+            const bool any = !changed.members.empty();
+            if (changed.members.size() > 1)
+            {
+                groups_.push_back(std::move(changed));
+                if (groups_.size() > kMaxUndoGroups)
+                    groups_.erase(groups_.begin());
+            }
+            return any;
         }
 
         // ---- a netlist's two views: Netlist (the text) and Schematic (SchematicView.h) -----------------------------
@@ -2026,14 +2370,17 @@ namespace playground::ui
                 persist_();
         }
         void toggleSchematic() { setSchematic(!schematicShown()); }
-        // Which of the pills shows: the labelled pair, unless it would narrow the files' tabs below kTabNarrowW.
+        // Which of the pills shows: the labelled pair, unless the files' tabs do not all fit beside it and it would
+        // leave their strip less than kStripLeast (the IR tab at its name's width).
         bool pillsShown() const { return circuitShown(); }
         bool pillsLabelled() const
         {
-            const int n = count();
-            const float files = kTabNarrowW * static_cast<float>(n) + kTabGap * static_cast<float>(n - 1)
-                              + (canAdd() ? kNewTabW + kTabGap : 0.0f) + (ir_.open ? kTabMinW + 3.0f * kTabGap : 0.0f);
-            return files + pillsWidth(true) + 2.0f * kTabGap <= bar_.w;
+            float files = 0.0f;
+            for (int k = 0; k < count(); ++k)
+                files += naturalWidth(k);
+            const float others = (canAdd() ? kNewTabW + kTabGap : 0.0f) + (ir_.open ? irNaturalWidth() + 3.0f * kTabGap : 0.0f)
+                               + pillsWidth(true) + 2.0f * kTabGap;
+            return files + others <= bar_.w || bar_.w - others - TabStrip::kMenuW - kTabGap >= kStripLeast;
         }
         float pillWidth(int k, bool labelled) const
         {
@@ -2274,7 +2621,7 @@ namespace playground::ui
         {
             Tab t{ std::string(n), std::make_unique<funkgui::TextEditor>(id_), ++serials_ };
             funkgui::TextEditorOptions o;
-            o.style = funkgui::editorFont(funkgui::EditorFont::code);
+            o.style = codesize::style(size_);
             o.softTabs = true;
             o.tabWidth = 4;
             o.a11yTitle = "File";
@@ -2391,10 +2738,7 @@ namespace playground::ui
             ed.setScroll(scroll.x, scroll.y);
         }
 
-        // A tab as wide as its name (kTabMinW to kTabMaxW), all narrowed alike, down to kTabNarrowW, when they do not
-        // fit the bar.
-        float tabWidth(int i) const { return std::min(naturalWidth(i), widthCap()); }
-
+        // A tab as wide as its name, kTabMinW to kTabMaxW (its close box's room kept on every tab but the program's).
         float naturalWidth(int i) const
         {
             const float w = funkgui::text::width(funkgui::FontService::get().atlas(), name(i).c_str(), chat::kSmall);
@@ -2402,40 +2746,7 @@ namespace playground::ui
             return std::clamp(w + 2.0f * kTabPad + (i > 0 ? kTabCloseW : 0.0f) + 2.0f, kTabMinW, kTabMaxW);
         }
 
-        float widthCap() const
-        {
-            const int n = count();
-            const float room = bar_.w - (canAdd() ? kNewTabW + kTabGap : 0.0f) - kTabGap * static_cast<float>(n - 1)
-                             - (ir_.open ? irTabWidth() + 3.0f * kTabGap : 0.0f) - pillsReserve();
-            std::vector<float> w;
-            float sum = 0.0f;
-            for (int k = 0; k < n; ++k)
-            {
-                w.push_back(naturalWidth(k));
-                sum += w.back();
-            }
-            if (sum <= room)
-                return kTabMaxW;
-            // The widest narrowed first: the cap that makes them fit.
-            std::sort(w.begin(), w.end());
-            float left = room;
-            for (int k = 0; k < n; ++k)
-            {
-                const float cap = left / static_cast<float>(n - k);
-                if (w[static_cast<std::size_t>(k)] >= cap)
-                    return std::max(cap, kTabNarrowW);
-                left -= w[static_cast<std::size_t>(k)];
-            }
-            return kTabMaxW;
-        }
-
-        int tabAt(funkgui::Point p) const
-        {
-            for (int i = 0; i < count(); ++i)
-                if (tabRect(i).contains(p))
-                    return i;
-            return -1;
-        }
+        int tabAt(funkgui::Point p) const { return strip().tabAt(p); }
 
         bool hasErrors(const std::string& file) const
         {
@@ -2453,6 +2764,16 @@ namespace playground::ui
         }
 
         funkgui::Rect bar_, editorBounds_;
+        mutable TabStrip strip_;                         // the files' tabs' places and scroll (strip())
+        mutable int revealed_ = -1, revealedCount_ = 0;  // the tab last brought into view, at that count and width
+        mutable float revealedW_ = -1.0f;
+        bool pressedStripBar_ = false;                   // a press on the strip's scroll bar drags it
+        bool pressedAssist_ = false;                     // ... on what the code assist draws (the results list's bar)
+        std::function<bool(const funkgui::Rect&)> menuOpen_;   // the Panel's menuOpenAt: the files dropdown drawn open
+        Sources playing_;                                // what plays (setPlaying): the tabs' edited dots
+        uint64_t playingRev_ = 0;
+        mutable std::vector<bool> edited_;
+        mutable uint64_t editedRev_ = ~uint64_t{ 0 }, editedPlaying_ = ~uint64_t{ 0 };
         uint32_t id_;
         const std::vector<Problem>* problems_;       // the Panel's
         Close close_;
@@ -2485,6 +2806,7 @@ namespace playground::ui
             std::array<int, irview::kViews> body{};
         };
         IrTab ir_;
+        int size_ = codesize::read();                    // the text size, tenths of a px (setCodeSize)
         funkgui::Theme irTheme_ = funkgui::Theme::graphite();
         bool irThemed_ = false, irDark_ = true;
         bool pressedSchematic_ = false;
@@ -3235,7 +3557,9 @@ namespace playground::ui
             idFor(), spec(B::Shape::circle, [this] { return chat_.busy ? chat::Icon::stop : chat::Icon::arrowUp; }, {},
                           false, [] { return B::Look::primary; },
                           [this] {
-                              return chat_.busy || inputItem().editor().text().find_first_not_of(" \t\n") != std::string::npos;
+                              // As sendChat() takes it: words, or pictures alone (attached or still being read).
+                              return chat_.busy || !chat_.attached.empty() || chat_.attaching > 0
+                                  || inputItem().editor().text().find_first_not_of(" \t\n") != std::string::npos;
                           },
                           [this] {
                               if (chat_.busy)
@@ -3307,7 +3631,7 @@ namespace playground::ui
             sp.label = [] { return std::string("Settings..."); };
             sp.look = [] { return TB::Look::outlined; };
             sp.shown = [this] { return mutedShown_; };
-            sp.act = [this] { openSettings(); };
+            sp.act = [this] { openSettings("audio"); };
             sp.a11yTitle = "Settings: the audio input is muted, to avoid a feedback loop";
             sp.spec = "INPUT MUTED   A LOOP THROUGH THE SPEAKERS WOULD FEED BACK: UNMUTE IT IN SETTINGS, WITH HEADPHONES ON";
             mutedItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
@@ -3353,6 +3677,18 @@ namespace playground::ui
             mark.specNow = footer;
             desktopMarkItem_ = add(std::make_unique<B>(idFor(), std::move(mark)));
         }
+
+        // SETTINGS' gear (the top bar, left of the theme): the card of pages, in every host (SettingsCard.h).
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::square;
+            sp.icon = [] { return chat::Icon::gear; };
+            sp.act = [this] { openSettings(); };
+            sp.a11yTitle = "Settings";
+            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, DEBUG";
+            gearItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
+        settings_.setHooks(settingsHooks());
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
         // card's width (last of the items: hit by itemAt before the cards' items, drawn over the cards' edges).
@@ -3527,7 +3863,8 @@ namespace playground::ui
         const float barMid = kTopBarY + 0.5f * kTopBarH;
         const float right = W - kMargin;
         at(themeItem_).setBounds({ right - 8.0f - kIconButton, barMid - 0.5f * kIconButton, kIconButton, kIconButton });
-        const float segRight = right - 8.0f - kIconButton - 92.0f;        // the load's text between them
+        at(gearItem_).setBounds({ right - 8.0f - 2.0f * kIconButton - kGearGap, barMid - 0.5f * kIconButton, kIconButton, kIconButton });
+        const float segRight = right - 8.0f - 2.0f * kIconButton - kGearGap - 92.0f;   // the load's text between them
         at(panelViewItem_).setBounds({ segRight - 3.0f - kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         at(viewItem_).setBounds({ segRight - 3.0f - 2.0f * kSegmentW, barMid - 0.5f * (kTopButtonH - 6.0f), kSegmentW, kTopButtonH - 6.0f });
         // The window button left of the switch's track, while there is a code window to have.
@@ -3792,7 +4129,7 @@ namespace playground::ui
     void Panel::placeMeter()
     {
         const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+        const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(gearItem_)]).bounds();   // the gear, left of the theme
         const MeterPlaces m = meterPlaces(theme.x, funkgui::text::width(atlas, meterLoad_.c_str(), chat::kSmall), frozenShown_,
                                           funkgui::text::width(atlas, "   ", chat::kSmall));
         auto& flake = static_cast<FrozenItem&>(*items_[static_cast<std::size_t>(frozenItem_)]);
@@ -3858,7 +4195,10 @@ namespace playground::ui
     }
 
     // The pills in the message box's bar: as wide as their labels (fast mode's after the thinking one, on a model that
-    // takes it), the thinking one narrowed first when they do not fit, then the model's.
+    // takes it), up to send, which none of them ever reaches. When they do not fit, the thinking one narrows first,
+    // then the model's (to kNarrowPill); then fast mode's and web search's show their icons alone (and the room comes
+    // back to the other two); then those two narrow to kLeastPill (a chevron and a few letters). At the least chat (its
+    // kChatMinW) that is room enough: past it, the last pills narrow further rather than run under send.
     void Panel::placeChatBar()
     {
         const funkgui::Rect bar = inputItem().bar();
@@ -3877,14 +4217,41 @@ namespace playground::ui
         fast.setBounds({ x0, y, kPillH, kPillH });
         web.setBounds({ x0, y, kPillH, kPillH });
         const bool withFast = chatTakesFast(), withWeb = chatTakesWeb(), withThinking = chatTakesThinking();
-        const float fw = withFast ? fast.preferredWidth() + 4.0f : 0.0f;
-        const float ww = withWeb ? web.preferredWidth() + 4.0f : 0.0f;
-        const float room = bar.right() - 6.0f - kSendD - 8.0f - fw - ww - x0;
-        float mw = model.preferredWidth(), tw = withThinking ? thinking.preferredWidth() : -4.0f;
-        if (withThinking && mw + 4.0f + tw > room)
-            tw = std::max(64.0f, room - 4.0f - mw);
-        if (mw + 4.0f + tw > room)
-            mw = std::max(64.0f, room - 4.0f - tw);
+        constexpr float kNarrowPill = 64.0f, kLeastPill = 44.0f, kIconPill = kPillH + 4.0f;
+        const float end = bar.right() - 6.0f - kSendD - 8.0f;   // send's left, less a gap
+        float mw = 0.0f, tw = 0.0f, fw = 0.0f, ww = 0.0f;
+        // The model's and the thinking pills in what the switches leave, narrowed in turn down to `least`: whether they
+        // fit.
+        const auto fit = [&](bool compact, float least) {
+            fw = withFast ? (compact ? kIconPill : fast.preferredWidth()) + 4.0f : 0.0f;
+            ww = withWeb ? (compact ? kIconPill : web.preferredWidth()) + 4.0f : 0.0f;
+            const float room = end - fw - ww - x0;
+            mw = model.preferredWidth();
+            tw = withThinking ? thinking.preferredWidth() : -4.0f;
+            if (withThinking && mw + 4.0f + tw > room)
+                tw = std::max(least, room - 4.0f - mw);
+            if (mw + 4.0f + tw > room)
+                mw = std::max(least, room - 4.0f - tw);
+            return mw + 4.0f + tw <= room;
+        };
+        bool compact = false;
+        bool fits = fit(false, kNarrowPill);
+        if (!fits && (withFast || withWeb))
+            fits = fit(compact = true, kNarrowPill);
+        if (!fits)
+            fits = fit(compact, kLeastPill);
+        if (!fits)
+        {
+            // Narrower than any chat the columns make: the thinking pill, then the model's, give up the rest, so that
+            // nothing runs under send.
+            const float room = std::max(0.0f, end - fw - ww - x0);
+            if (withThinking && mw + 4.0f + tw > room)
+                tw = std::max(0.0f, room - 4.0f - mw);
+            if (mw + 4.0f + tw > room)
+                mw = std::max(0.0f, room - (withThinking ? 4.0f + tw : 0.0f));
+        }
+        fast.setCompact(compact);
+        web.setCompact(compact);
         model.setBounds({ x0, y, mw, kPillH });
         thinking.setBounds({ x0 + mw + 4.0f, y, std::max(0.0f, tw), kPillH });
         fast.setBounds({ x0 + mw + 4.0f + tw + 4.0f, y, withFast ? fw - 4.0f : 0.0f, kPillH });
@@ -4255,10 +4622,12 @@ namespace playground::ui
         dirty_ = true;
     }
 
-    void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
+    // The chat's overlay is for pictures alone: a drag of project or audio files (taken anywhere on the panel) keeps
+    // where it is over the card (filesDropped reads it) but claims nothing for Claude.
+    void Panel::filesDragEnter(const std::vector<std::string>& paths, float x, float y)
     {
         noteInput();
-        dropActive_ = true;
+        dropActive_ = std::any_of(paths.begin(), paths.end(), [](const std::string& p) { return isPictureName(p); });
         dropHover_ = card_.contains({ x, y });
         dirty_ = true;
     }
@@ -5255,14 +5624,18 @@ namespace playground::ui
     }
     funkgui::TextEditor& Panel::editor() noexcept { return files().editor(); }
     CodeAssist& Panel::codeAssist() noexcept { return files().assist(); }
+    funkgui::TextEditor& Panel::fileEditor(int i) { return files().editorOf(std::clamp(i, 0, files().count() - 1)); }
+    int Panel::codeTextSize() const { return files().codeSize(); }
     int Panel::fileCount() const { return files().count(); }
     std::string Panel::fileName(int i) const { return i >= 0 && i < files().count() ? files().name(i) : std::string(); }
     int Panel::activeFile() const { return files().active(); }
     bool Panel::renamingFile() const { return files().renaming(); }
+    // A tab scrolled out is brought into view first, as a user would scroll to it.
     funkgui::Point Panel::centreOfTab(int i) const
     {
+        files().revealTab(i);
         const funkgui::Rect r = files().tabRect(i);
-        return { std::min(r.x + kTabPad + 4.0f, r.centreX() - 1.0f), r.centreY() };   // a narrowed tab's: left of its box
+        return { std::min(r.x + kTabPad + 4.0f, r.centreX() - 1.0f), r.centreY() };   // left of its close box
     }
     funkgui::Point Panel::centreOfNewTab() const
     {
@@ -5271,6 +5644,7 @@ namespace playground::ui
     }
     funkgui::Point Panel::centreOfCloseTab(int i) const
     {
+        files().revealTab(i);
         const funkgui::Rect r = files().closeRect(i);
         return { r.centreX(), r.centreY() };
     }
@@ -5291,7 +5665,10 @@ namespace playground::ui
         return { r.centreX(), r.centreY() };
     }
     funkgui::Rect Panel::irTabRect() const { return files().irOpen() ? files().irTabRect() : funkgui::Rect{}; }
-    funkgui::Rect Panel::fileTabRect(int i) const { return files().tabRect(i); }
+    funkgui::Rect Panel::fileTabRect(int i) const { return files().shownTabRect(i); }
+    float Panel::fileTabWidth(int i) const { return i >= 0 && i < files().count() ? files().tabWidth(i) : 0.0f; }
+    TabStrip Panel::tabStrip() const { return files().strip(); }
+    bool Panel::fileTabEdited(int i) const { return files().edited(i); }
 
     // ---- a netlist's Schematic view (SchematicView.h) -----------------------------------------------------------------
     bool Panel::schematicShown() const { return !full() && files().schematicShown(); }
@@ -5401,6 +5778,7 @@ namespace playground::ui
         Draft d = port_.draft();
         const Draft remote = d;
         bool kept = false;
+        std::string crossed;                             // a file typed in that the draft changed too
         if (files().revision() != syncedFiles_)          // typed since the editor last gave its files
         {
             const Draft now = files().draft();
@@ -5433,6 +5811,9 @@ namespace playground::ui
                     f.text = t->text;                    // the draft left it: the typing stays, and goes to the port
                     kept = true;
                 }
+                else if (g != nullptr && t != nullptr && t->text != g->text && f.text != g->text && f.text != t->text
+                         && crossed.empty())
+                    crossed = f.name;                    // both changed it: the draft's shows, the typing an undo away
             // A tab closed since that the draft carries as it was given: it stays closed. One the draft changed stays
             // (neither side's change is lost). The tab the draft shows stays shown, by name.
             const std::string drafted = d.files.empty() ? std::string()
@@ -5468,9 +5849,21 @@ namespace playground::ui
         files().merge(d);
         given_ = remote;
         dirty_ = true;
+        // Typing crossed a write in its own event (Panel::key gives it at once, so only within that event): said, never
+        // silent; the merge is one undo step, so Cmd-Z gives the typed text back.
+        if (!crossed.empty())
+            notice(upper(shortcutText("The tab took a change to " + crossed
+                                      + " over what was just typed there: Cmd-Z gives it back")));
         // what was kept is the port's still to have: no revision of the tabs' is ~0, so the next push gives it
         syncedFiles_ = kept ? ~uint64_t{ 0 } : files().revision();
         return true;
+    }
+
+    // What was typed, to the processor now (Panel::key): no later than its event, so a guarded write sees it.
+    void Panel::giveTyping()
+    {
+        if (!out_ && files().revision() != syncedFiles_ && pushFiles())
+            pushedFiles_ = true;
     }
 
     bool Panel::pushFiles()
@@ -5554,6 +5947,16 @@ namespace playground::ui
         }
         syncColumnWidths();
         syncCodePanel();
+        // The text size: this machine's preference, which another editor's keys or wheel may have moved (CodeAssist.h).
+        if (const uint32_t r = funkgui::UiPreferences::get().revision(); r != seenPrefsRev_)
+        {
+            seenPrefsRev_ = r;
+            if (const int size = codesize::read(); size != files().codeSize())
+            {
+                files().setCodeSize(size);
+                dirty_ = true;
+            }
+        }
         keepStepDefaults(nowSec, false);
         syncFolder();
         syncMidi();
@@ -5683,6 +6086,11 @@ namespace playground::ui
             edited_ = peer_->edited_;                    // the editor's, in the code window (this Panel's copy is hidden)
         else if (textChanged || statusChanged)
             edited_ = !cir::sameProgram(files().draft().files, running_);   // a netlist's *@ lines are no edit
+        if (statusChanged || filesPlaying_ == 0)
+        {
+            files().setPlaying(running_);                // the tabs' dots: each file against what plays
+            filesPlaying_ = 1;
+        }
         syncIr();
         const std::string statusBefore = status_;
 
@@ -6035,7 +6443,7 @@ namespace playground::ui
     float Panel::chatsPillX() const
     {
         const float tx = card_.x + kCardPad + 4.0f;
-        return std::round(tx + 15.0f + funkgui::text::width(funkgui::FontService::get().atlas(), chatTitle().c_str(), chat::kTitle) + 8.0f);
+        return std::round(tx + 15.0f + funkgui::text::width(funkgui::FontService::get().atlas(), chatTitleShown().c_str(), chat::kTitle) + 8.0f);
     }
 
     std::optional<funkgui::Point> Panel::centreOfDesktopBadge() const
@@ -6153,23 +6561,28 @@ namespace playground::ui
         });
     }
 
-    void Panel::sendChat()
+    bool Panel::sendChat()
     {
         funkgui::TextEditor& in = inputItem().editor();
         const std::string text = in.text();
-        if ((text.find_first_not_of(" \t\n") == std::string::npos && chat_.attached.empty()) || chat_.busy)
-            return;
+        // Pictures still being read go with the message (the agent waits for them): pictures alone may be sent so too.
+        const bool blank = text.find_first_not_of(" \t\n") == std::string::npos;
+        if ((blank && chat_.attached.empty() && chat_.attaching == 0) || chat_.busy)
+            return false;
         if (!chat_.ready())
         {
             pendingSend_ = text;                         // it goes once a key is saved
             openKeyDialog();
-            return;
+            return false;
         }
-        port_.chat().send(text);
+        if (!port_.chat().send(text))
+            return false;                                // not taken (Claude Desktop began a call): the box keeps it
         in.setText("");
+        ++sends_;
         chatAt_ = -1.0;                                  // the user's message, shown at once
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
         dirty_ = true;
+        return true;
     }
 
     void Panel::openModels()
@@ -6307,7 +6720,10 @@ namespace playground::ui
         const int fields = renaming_ ? 1 : dialogFields();
         const int rows = (fields & 1) + ((fields >> 1) & 1) + ((fields >> 2) & 1);
         const bool other = !renaming_ && !dialogAnthropic();
-        const float h = renaming_ ? kRenameDialogH : other ? kProviderRowsTop + kProviderRowPitch * static_cast<float>(rows) + 76.0f : kKeyDialogH;
+        // A refusal of more than one line (the longest address's) takes the room it needs above the buttons.
+        const float more = 16.0f * static_cast<float>(std::max<std::size_t>(1, whyLines(w - 48.0f).size()) - 1);
+        const float h = more + (renaming_ ? kRenameDialogH : other ? kProviderRowsTop + kProviderRowPitch * static_cast<float>(rows) + 76.0f
+                                                                   : kKeyDialogH);
         d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
         if (!renaming_)
             d.provider = { d.box.right() - 24.0f - kProviderPillW, d.box.y + 22.0f, kProviderPillW, 30.0f };
@@ -6361,7 +6777,73 @@ namespace playground::ui
         return p;
     }
 
-    bool Panel::dialogHasKey() const { return dialogAsBefore() ? chat_.hasKey : dialogInfo_.hasKey; }
+    bool Panel::dialogHasKey() const { return dialogAsBefore() ? chat_.hasKey : dialogInfoNow() && dialogInfo_.hasKey; }
+
+    namespace
+    {
+        // An address as typed, without the spaces around it and the slashes at its end.
+        std::string_view trimmedBase(std::string_view b)
+        {
+            while (!b.empty() && (b.front() == ' ' || b.front() == '\t'))
+                b.remove_prefix(1);
+            while (!b.empty() && (b.back() == ' ' || b.back() == '\t' || b.back() == '\n' || b.back() == '/'))
+                b.remove_suffix(1);
+            return b;
+        }
+
+        // The server an address typed names (its host, and port), as the dialog words it: "" while it is none yet (no
+        // https:// or http://, no host, a space, a user, a query: what ChatPort::setProvider would refuse).
+        std::string typedHost(std::string_view base)
+        {
+            const std::string_view b = trimmedBase(base);
+            std::string_view rest;
+            if (b.rfind("https://", 0) == 0)
+                rest = b.substr(8);
+            else if (b.rfind("http://", 0) == 0)
+                rest = b.substr(7);
+            else
+                return {};
+            const std::string_view host = rest.substr(0, rest.find('/'));
+            if (host.empty() || std::any_of(b.begin(), b.end(), [](char c) {
+                    const auto u = static_cast<unsigned char>(c);
+                    return u <= ' ' || u >= 127 || c == '@' || c == '?' || c == '#';
+                }))
+                return {};
+            return std::string(host);
+        }
+    }
+
+    // What the dialog has read for the provider (a key stored, none needed) is the address typed's: it is read again
+    // once the address rests (tick), not at each key, as a keyring may be asked.
+    bool Panel::dialogInfoNow() const
+    {
+        return std::string_view(dialogPresetRef().kind) != "openai" || dialogInfoBase_ == baseEdit_.buffer;
+    }
+
+    void Panel::readDialogInfo()
+    {
+        dialogInfo_ = port_.chat().providerInfo(dialogProvider());
+        dialogInfoBase_ = baseEdit_.buffer;
+        dirty_ = true;
+    }
+
+    bool Panel::dialogPresetServer() const
+    {
+        const ChatPreset& p = dialogPresetRef();
+        return std::string_view(p.kind) != "openai"
+            || (!std::string_view(p.base).empty() && trimmedBase(baseEdit_.buffer) == trimmedBase(p.base));
+    }
+
+    std::string Panel::dialogTitle() const
+    {
+        if (dialogAnthropic())
+            return "Anthropic API key";
+        const ChatPreset& p = dialogPresetRef();
+        if (dialogPresetServer() || std::string_view(p.id) == "custom")
+            return p.name;
+        const std::string host = typedHost(baseEdit_.buffer);
+        return host.empty() ? std::string("Another server") : host;
+    }
 
     funkgui::text::LineEdit& Panel::dialogEdit() { return dialogField_ == 1 ? baseEdit_ : dialogField_ == 2 ? modelEdit_ : keyEdit_; }
 
@@ -6387,6 +6869,7 @@ namespace playground::ui
         asked.kind = p.kind;
         asked.base = base;
         dialogInfo_ = port_.chat().providerInfo(asked);
+        dialogInfoBase_ = base;
         modelEdit_.set(current && !custom ? chat_.model : dialogInfo_.model, kMaxModelLength);
         modelEdit_.allSelected = false;
         keyEdit_.set("", kMaxKeyLength);
@@ -6436,6 +6919,7 @@ namespace playground::ui
         chooseKeyPreset(preset);
         keyEdit_.set("", kMaxKeyLength);
         keyWhy_.clear();
+        dialogControl_ = 0;
         focusBeforeKey_ = focus_;
         setFocus(-1);
         ring_ = false;
@@ -6451,6 +6935,7 @@ namespace playground::ui
         renaming_ = true;
         keyEdit_.set(chatsLabel(), static_cast<int>(kMaxChatTitle));
         keyWhy_.clear();
+        dialogControl_ = 0;
         focusBeforeKey_ = focus_;
         setFocus(-1);
         ring_ = false;
@@ -6471,6 +6956,7 @@ namespace playground::ui
         renaming_ = false;
         keyEdit_.set("", kMaxKeyLength);                 // nothing of the key stays in the panel
         keyWhy_.clear();
+        dialogControl_ = 0;
         pendingSend_.clear();
         if (focusBeforeKey_ >= 0)
             setFocus(focusBeforeKey_);
@@ -6495,16 +6981,14 @@ namespace playground::ui
         // Another provider: its settings and its key (none typed keeps the one stored; a server here needs none).
         if (typed.empty() && dialogAnthropic() && (dialogAsBefore() || !dialogInfo_.hasKey))
         {
-            keyWhy_ = shortcutText("Paste a key first (Cmd-V).");
-            dirty_ = true;
+            refuseInDialog(shortcutText("Paste a key first (Cmd-V)."));
             return;
         }
         std::string why;
         const bool ok = dialogAsBefore() ? port_.chat().saveKey(typed, why) : port_.chat().setProvider(dialogProvider(), typed, why);
         if (!ok)
         {
-            keyWhy_ = asciiText(why);
-            dirty_ = true;
+            refuseInDialog(why);
             return;
         }
         const std::string pending = pendingSend_;
@@ -6529,11 +7013,29 @@ namespace playground::ui
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
     }
 
-    // Every key is the dialog's while it is open: Return saves, Escape cancels, Cmd-V pastes; the caret stays at the end
-    // (the key is masked, so there is nothing to move it over).
+    // Every key is the dialog's while it is open: Escape cancels; Tab moves over its fields and buttons (dialogStops);
+    // on a button Return or Space presses it and no other key does anything (none types into a field); in a field
+    // Return saves, Cmd-V pastes, and the key's caret stays at its end (it is masked: nothing to move it over).
     bool Panel::keyDialogKey(const funkgui::KeyEvent& e)
     {
         using funkgui::Key;
+        dirty_ = true;
+        if (e.key == Key::escape)
+        {
+            closeKeyDialog();
+            return true;
+        }
+        if (e.key == Key::tab)
+        {
+            moveDialogFocus(e.mods.shift ? -1 : 1);
+            return true;
+        }
+        if (dialogControl_ != 0)
+        {
+            if ((e.key == Key::enter || e.key == Key::space) && !e.mods.cmd && !e.mods.ctrl && !e.mods.alt)
+                pressDialogControl();
+            return true;
+        }
         if (renaming_)
         {
             // A name: the field's own keys (the caret moves), Return renames, Escape cancels, Cmd-V pastes.
@@ -6556,27 +7058,6 @@ namespace playground::ui
         }
         if (e.key == Key::enter)
             saveKeyFromDialog();
-        else if (e.key == Key::escape)
-            closeKeyDialog();
-        else if (e.key == Key::tab && !dialogAnthropic())
-        {
-            // The next field shown (Shift: the one before): the address, the key, the model.
-            const int fields = dialogFields();
-            const int order[3] = { 1, 0, 2 };
-            int at = 0;
-            for (int i = 0; i < 3; ++i)
-                if (order[i] == dialogField_)
-                    at = i;
-            for (int step = 1; step <= 3; ++step)
-            {
-                const int next = order[(at + (e.mods.shift ? 3 - step : step)) % 3];
-                if ((fields & (1 << next)) != 0)
-                {
-                    dialogField_ = next;
-                    break;
-                }
-            }
-        }
         else if (dialogField_ != 0)
         {
             // The address or the model: a plain field (the caret moves; the text is no secret).
@@ -6591,6 +7072,8 @@ namespace playground::ui
                 edit.allSelected = !edit.buffer.empty();
             else if (e.key != Key::up && e.key != Key::down && edit.key(e, most))
                 keyWhy_.clear();
+            if (dialogField_ == 1)
+                baseTypedAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;   // what is kept for it: read at rest
             dirty_ = true;
             return true;
         }
@@ -6612,9 +7095,14 @@ namespace playground::ui
         return true;
     }
 
+    // A click: a button acts; in a field the keys go there, the selection dropped and, in a plain field, the caret
+    // where the pointer is. The key's field takes no caret position: it is drawn masked (a prefix, stars, its last
+    // four), so a place in the stars names no character, and its caret stays at its end. The keys leave a button for
+    // the field.
     void Panel::keyDialogPointerDown(funkgui::Point p)
     {
         const KeyDialog d = keyDialog();
+        dialogControl_ = 0;
         if (d.save.contains(p))
             saveKeyFromDialog();
         else if (d.cancel.contains(p))
@@ -6623,24 +7111,263 @@ namespace playground::ui
             removeKeyFromDialog();
         else if (!renaming_ && d.provider.contains(p))
             openProviders();
+        else if (renaming_ && d.field.contains(p))
+            placeFieldCaret(keyEdit_, d.field, p.x);
         else if (!renaming_ && d.base.contains(p))
+        {
             dialogField_ = 1;
+            placeFieldCaret(baseEdit_, d.base, p.x);
+        }
         else if (!renaming_ && d.model.contains(p))
+        {
             dialogField_ = 2;
+            placeFieldCaret(modelEdit_, d.model, p.x);
+        }
         else if (!renaming_ && d.field.contains(p))
+        {
             dialogField_ = 0;
+            keyEdit_.allSelected = false;
+        }
         dirty_ = true;
     }
 
-    // The key as the field shows it: its first characters ("sk-ant-"), then a star for each of the others (at most 40),
-    // then its last four.
+    int Panel::keyDialogCaret() const
+    {
+        const funkgui::text::LineEdit& e = renaming_ || dialogField_ == 0 ? keyEdit_ : dialogField_ == 1 ? baseEdit_ : modelEdit_;
+        return e.caret;
+    }
+
+    float Panel::keyDialogScroll() const
+    {
+        if (dialogControl_ != 0 || (!renaming_ && dialogField_ == 0))
+            return 0.0f;                                 // the key is drawn masked, from its start
+        const KeyDialog d = keyDialog();
+        const funkgui::Rect& f = renaming_ ? d.field : dialogField_ == 1 ? d.base : d.model;
+        return fieldScroll(renaming_ ? keyEdit_ : dialogField_ == 1 ? baseEdit_ : modelEdit_, f.w - 28.0f);
+    }
+
+    std::vector<std::string> Panel::keyDialogWhyLines() const
+    {
+        return whyLines(std::min(kKeyDialogW, width_ - 2.0f * kMargin) - 48.0f);
+    }
+
+    // The refusal in lines of at most maxW px (kSmall), broken where a space is (the space dropped), a word longer than
+    // a line cut where it must.
+    std::vector<std::string> Panel::whyLines(float maxW) const
+    {
+        std::vector<std::string> lines;
+        const auto& atlas = funkgui::FontService::get().atlas();
+        std::string rest = asciiText(keyWhy_);
+        while (!rest.empty() && lines.size() < 4)
+        {
+            if (funkgui::text::width(atlas, rest.c_str(), chat::kSmall) <= maxW)
+            {
+                lines.push_back(rest);
+                break;
+            }
+            std::size_t cut = rest.size();
+            while (cut > 1 && funkgui::text::width(atlas, rest.substr(0, cut).c_str(), chat::kSmall) > maxW)
+                --cut;
+            const std::size_t space = rest.rfind(' ', cut);
+            const std::size_t at = space != std::string::npos && space > 0 ? space : cut;
+            lines.push_back(rest.substr(0, at));
+            rest.erase(0, space != std::string::npos && space > 0 ? at + 1 : at);
+        }
+        return lines;
+    }
+
+    // How far a plain field is drawn scrolled: none while its text fits (or is all selected, drawn from its start),
+    // else just enough that the caret stays inside (the text's head goes out of view as the caret reaches the end).
+    float Panel::fieldScroll(const funkgui::text::LineEdit& e, float maxW)
+    {
+        const auto& atlas = funkgui::FontService::get().atlas();
+        if (e.allSelected || funkgui::text::width(atlas, e.buffer.c_str(), chat::kBody) <= maxW)
+            return 0.0f;
+        const std::string before = e.buffer.substr(0, static_cast<std::size_t>(std::clamp(e.caret, 0, static_cast<int>(e.buffer.size()))));
+        return std::max(0.0f, funkgui::text::width(atlas, before.c_str(), chat::kBody) - (maxW - 2.0f));
+    }
+
+    // A press in a plain field: the selection dropped, the caret at the character boundary nearest the pointer, as the
+    // field is drawn (scrolled) now.
+    void Panel::placeFieldCaret(funkgui::text::LineEdit& e, const funkgui::Rect& f, float px)
+    {
+        const auto& atlas = funkgui::FontService::get().atlas();
+        const float local = px - (f.x + 14.0f) + fieldScroll(e, f.w - 28.0f);
+        int best = 0;
+        float bestD = std::fabs(local);
+        for (std::size_t i = 1; i <= e.buffer.size(); ++i)
+        {
+            const float d = std::fabs(funkgui::text::width(atlas, e.buffer.substr(0, i).c_str(), chat::kBody) - local);
+            if (d < bestD)
+            {
+                bestD = d;
+                best = static_cast<int>(i);
+            }
+        }
+        e.allSelected = false;
+        e.caret = best;
+    }
+
+    // The dialog's Tab order: its fields as shown (the address, the key, the model; a name), then the Provider pill,
+    // Remove key (while a key is stored), Cancel and Save. A field is 10 + its number, a button dialogControl_'s.
+    std::vector<int> Panel::dialogStops() const
+    {
+        std::vector<int> stops;
+        if (renaming_)
+            stops = { 10, 3, 4 };
+        else
+        {
+            const int fields = dialogFields();
+            for (const int f : { 1, 0, 2 })
+                if ((fields & (1 << f)) != 0)
+                    stops.push_back(10 + f);
+            stops.push_back(1);
+            if (dialogHasKey())
+                stops.push_back(2);
+            stops.push_back(3);
+            stops.push_back(4);
+        }
+        return stops;
+    }
+
+    void Panel::moveDialogFocus(int dir)
+    {
+        const std::vector<int> stops = dialogStops();
+        const int now = dialogControl_ != 0 ? dialogControl_ : 10 + (renaming_ ? 0 : dialogField_);
+        const auto it = std::find(stops.begin(), stops.end(), now);
+        const int n = static_cast<int>(stops.size());
+        const int at = it == stops.end() ? (dir > 0 ? -1 : 0) : static_cast<int>(it - stops.begin());
+        const int next = stops[static_cast<std::size_t>((at + dir + n) % n)];
+        if (next >= 10)
+        {
+            dialogControl_ = 0;
+            if (!renaming_)
+                dialogField_ = next - 10;
+        }
+        else
+            dialogControl_ = next;
+    }
+
+    // Return or Space on the dialog's button with the keys: as its click.
+    void Panel::pressDialogControl()
+    {
+        switch (dialogControl_)
+        {
+            case 1: if (!renaming_) openProviders(); break;
+            case 2: if (!renaming_ && dialogHasKey()) removeKeyFromDialog(); break;
+            case 3: closeKeyDialog(); break;
+            case 4: saveKeyFromDialog(); break;
+            default: break;
+        }
+    }
+
+    // A refused Save: the reason under the fields, on the field it is about (a screen reader's help there), and said.
+    // The field from the refusal's words (ChatAgent::setProvider: the address first, then the model, then the key).
+    void Panel::refuseInDialog(const std::string& why)
+    {
+        keyWhy_ = asciiText(why);
+        keyWhyField_ = keyWhy_.find("address") != std::string::npos || keyWhy_.rfind("http://", 0) == 0 ? 1
+                     : keyWhy_.find("model's name") != std::string::npos                         ? 2
+                                                                                                  : 0;
+        if ((dialogFields() & (1 << keyWhyField_)) == 0)
+            keyWhyField_ = 0;
+        if (host_ != nullptr)
+            host_->announce(keyWhy_, funkgui::HostServices::Announce::high);
+        dirty_ = true;
+    }
+
+    // The title as the header draws it: cut ("...") to leave the chats' pill its least room before the header's buttons
+    // (another provider's name may be a long server's host).
+    std::string Panel::chatTitleShown() const
+    {
+        std::string s = chatTitle();
+        if (newChatItem_ < 0)
+            return s;
+        const float tx = card_.x + kCardPad + 4.0f;
+        const float newChat = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds().x;
+        const float room = newChat - 6.0f - kChatsPillLeast - 8.0f - (tx + 15.0f);
+        const auto& atlas = funkgui::FontService::get().atlas();
+        if (funkgui::text::width(atlas, s.c_str(), chat::kTitle) <= room)
+            return s;
+        while (!s.empty() && funkgui::text::width(atlas, (s + "...").c_str(), chat::kTitle) > room)
+            s.pop_back();
+        return s + "...";
+    }
+
+    // The key as the field shows it, typed or pasted: the provider's public prefix ("sk-ant-", "sk-or-": the preset's
+    // own, at its own server) when it starts with it, a star for each other character (at most 40), and the last four
+    // only of a key long enough (kKeyTailFrom) that they give nothing away. Nothing else of it is drawn.
     std::string Panel::maskedKey() const
     {
+        constexpr std::size_t kKeyTailFrom = 20;
         const std::string& b = keyEdit_.buffer;
-        const std::size_t head = std::min<std::size_t>(7, b.size());
-        const std::size_t tail = b.size() > head + 4 ? 4 : 0;
+        const std::string_view prefix = dialogPresetServer() ? std::string_view(dialogPresetRef().key)
+                                                             : std::string_view();
+        const std::size_t head = !prefix.empty() && b.rfind(prefix, 0) == 0 ? prefix.size() : 0;
+        const std::size_t tail = b.size() >= kKeyTailFrom && b.size() >= head + 4 ? 4 : 0;
         const std::size_t hidden = b.size() - head - tail;
         return b.substr(0, head) + std::string(std::min<std::size_t>(hidden, 40), '*') + b.substr(b.size() - tail);
+    }
+
+    // The field's hint while it is empty: what a key of this provider starts with, or that one is stored or not needed.
+    std::string Panel::keyDialogHint() const
+    {
+        const ChatPreset& preset = dialogPresetRef();
+        std::string hint;
+        if (dialogAnthropic())
+            hint = "sk-ant-...   (Cmd-V pastes it)";
+        else if (dialogInfoNow() && dialogInfo_.keyless)
+            hint = "None needed";
+        else if (dialogHasKey())
+            hint = "Stored: empty keeps it   (Cmd-V pastes another)";
+        else if (dialogPresetServer() && *preset.key != '\0')
+            hint = std::string(preset.key) + "...   (Cmd-V pastes it)";
+        else
+            hint = "Its key, if it needs one   (Cmd-V pastes it)";
+        return shortcutText(hint);
+    }
+
+    // The lines under the title: what the key is, the server it is stored for and sent to (the address typed: never the
+    // preset's once another is typed, nor a promise while it is no address yet), and whether one is stored; or what a
+    // chat's name is.
+    std::vector<std::string> Panel::keyDialogLines() const
+    {
+        const ChatPreset& preset = dialogPresetRef();
+        if (renaming_)
+            return { "Its name in the chat list (empty: its first message's words).",
+                     std::string("The chats stay on ") + kThisMachine
+                         + (chat_.owner.empty() ? ", with this plugin (no project is open)." : ", with the project.") };
+        if (dialogAnthropic())
+            return { "Claude runs on your own key, from console.anthropic.com (API keys).",
+                     std::string("It is stored encrypted on ") + kThisMachine + ", for both playground plugins,",
+                     "and sent only to api.anthropic.com. Requests are billed to it.",
+                     dialogHasKey() ? std::string("A key is stored, and the chat uses it.") : std::string() };
+        const std::string stored = dialogHasKey() ? std::string("A key is stored: leave the field empty to keep it.")
+                                                  : std::string();
+        if (!dialogPresetServer())
+        {
+            const std::string host = typedHost(baseEdit_.buffer);
+            if (host.empty())
+                return { "Any server that speaks OpenAI's Chat Completions, by its base URL:",
+                         std::string("https://, or http:// for one on ") + kThisMachine + " or the local network. Its",
+                         "key, if it needs one, is stored encrypted and sent only to that server." };
+            if (dialogInfoNow() && dialogInfo_.keyless)
+                return { "A server that speaks OpenAI's Chat Completions, at " + host + ",",
+                         std::string("on ") + kThisMachine + " or the local network: it needs no key.",
+                         "Give its model a context of 32K tokens or more, and one that calls tools." };
+            return { "A server that speaks OpenAI's Chat Completions, at " + host + ".",
+                     std::string("Its key, if it needs one, is stored encrypted on ") + kThisMachine + ",",
+                     "and sent only to " + host + ".", stored };
+        }
+        const std::string host = std::string(preset.base).substr(std::string(preset.base).find("://") + 3);
+        const std::string server = host.substr(0, host.find('/'));
+        if (*preset.key == '\0')
+            return { std::string("A model server on ") + kThisMachine + ": no key, and nothing leaves " + kThisMachine + ".",
+                     "Give its model a context of 32K tokens or more, and one that calls tools.",
+                     std::string("Start it first") + (std::string_view(preset.id) == "ollama" ? " (ollama serve)." : " (its Developer tab: Start Server).") };
+        return { "Chat through " + std::string(preset.name) + " on your own key, from " + preset.keys + ".",
+                 std::string("It is stored encrypted on ") + kThisMachine + " and sent only to " + server + ".",
+                 !stored.empty() ? stored : std::string("Requests are billed to it.") };
     }
 
     void Panel::drawKeyDialog(funkgui::Canvas& c, const funkgui::Theme& th) const
@@ -6658,41 +7385,15 @@ namespace playground::ui
         c.rrect(d.box.x, d.box.y, d.box.w, d.box.h, 16.0f, p.card, 1.0f, p.cardEdge);
 
         const float x = d.box.x + 24.0f;
-        const ChatPreset& preset = dialogPresetRef();
         const bool other = !renaming_ && !dialogAnthropic();
         c.rrect(x, d.box.y + 22.0f, 30.0f, 30.0f, 9.0f, p.accent.withAlpha(0.16f));
         chat::drawIcon(c, renaming_ ? chat::Icon::pencil : chat::Icon::key, x + 15.0f, d.box.y + 37.0f, 15.0f, p.accent);
-        const std::string title = renaming_ ? std::string("Rename this chat") : other ? std::string(preset.name) : std::string("Anthropic API key");
+        const std::string title = renaming_ ? std::string("Rename this chat") : dialogTitle();
         const float titleW = renaming_ ? d.box.w - 48.0f - 42.0f : d.provider.x - 12.0f - (x + 42.0f);
         c.text(fitText(c, title, chat::kH2, titleW).c_str(), x + 42.0f,
                c.capCentreTop(d.box.y + 37.0f, chat::kH2), chat::kH2, p.text);
 
-        // The lines under the title: what the key is, where it goes, and whether one is stored; or what a chat's name is.
-        std::vector<std::string> lines;
-        const std::string host = std::string(preset.base).empty() ? std::string() : std::string(preset.base).substr(std::string(preset.base).find("://") + 3);
-        const std::string server = host.substr(0, host.find('/'));
-        if (renaming_)
-            lines = { "Its name in the chat list (empty: its first message's words).",
-                      std::string("The chats stay on ") + kThisMachine
-                          + (chat_.owner.empty() ? ", with this plugin (no project is open)." : ", with the project.") };
-        else if (!other)
-            lines = { "Claude runs on your own key, from console.anthropic.com (API keys).",
-                      std::string("It is stored encrypted on ") + kThisMachine + ", for both playground plugins,",
-                      "and sent only to api.anthropic.com. Requests are billed to it.",
-                      dialogHasKey() ? std::string("A key is stored, and the chat uses it.") : std::string() };
-        else if (std::string_view(preset.id) == "custom")
-            lines = { "Any server that speaks OpenAI's Chat Completions, by its base URL:",
-                      std::string("https://, or http:// for one on ") + kThisMachine + " or the local network. Its",
-                      "key, if it needs one, is stored encrypted and sent only to that server." };
-        else if (std::string(preset.key).empty())
-            lines = { std::string("A model server on ") + kThisMachine + ": no key, and nothing leaves " + kThisMachine + ".",
-                      "Give its model a context of 32K tokens or more, and one that calls tools.",
-                      std::string("Start it first") + (std::string_view(preset.id) == "ollama" ? " (ollama serve)." : " (its Developer tab: Start Server).") };
-        else
-            lines = { "Chat through " + std::string(preset.name) + " on your own key, from " + preset.keys + ".",
-                      std::string("It is stored encrypted on ") + kThisMachine + " and sent only to " + server + ".",
-                      dialogHasKey() ? std::string("A key is stored: leave the field empty to keep it.")
-                                     : std::string("Requests are billed to it.") };
+        const std::vector<std::string> lines = keyDialogLines();
         float y = d.box.y + 66.0f;
         for (const std::string& line : lines)
         {
@@ -6708,6 +7409,7 @@ namespace playground::ui
             dropdown::State st;
             st.hover = hasPointer_ && r.contains(pointer_);
             st.open = menuOpenAt(r);
+            st.focus = dialogControl_ == 1;
             const funkgui::Col ink = dropdown::drawTrigger(c, p, r, dropdown::Base::outlined, st);
             c.text(fitText(c, "Provider", chat::kSmall, dropdown::labelRoom(r, r.x + 14.0f)).c_str(), r.x + 14.0f,
                    c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, ink);
@@ -6719,23 +7421,31 @@ namespace playground::ui
                                     : keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger;
             c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f, edge);
         };
-        // A plain field (a name, an address, a model): the text, the selection, the caret where it is.
+        // A plain field (a name, an address, a model): the text, the selection, the caret where it is; with the keys, a
+        // text longer than the field drawn scrolled so that the caret stays in view (fieldScroll), else cut with "...".
         const auto plain = [&](const funkgui::Rect& f, const funkgui::text::LineEdit& edit, const std::string& hint, bool focused) {
             const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
             const float maxW = f.w - 28.0f;
             const std::string& b = edit.buffer;
             const std::string shownText = asciiText(b);
+            const float scroll = focused ? fieldScroll(edit, maxW) : 0.0f;
             if (focused && edit.allSelected && !b.empty())
                 c.rrect(f.x + 12.0f, f.y + 8.0f, std::min(c.textWidth(shownText.c_str(), chat::kBody), maxW) + 4.0f, f.h - 16.0f,
                         3.0f, th.accentDim);
             if (b.empty())
                 c.text(fitText(c, hint, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+            else if (scroll > 0.0f)
+            {
+                c.pushClip({ f.x + 12.0f, f.y + 2.0f, maxW + 4.0f, f.h - 4.0f });
+                c.text(shownText.c_str(), f.x + 14.0f - scroll, textTop, chat::kBody, p.text);
+                c.popClip();
+            }
             else
                 c.text(fitText(c, shownText, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
             if (!focused)
                 return;
             const std::string before = asciiText(b.substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(b.size())))));
-            const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody), maxW);
+            const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody) - scroll, maxW);
             c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
         };
         const auto label = [&](const funkgui::Rect& f, const char* text) {
@@ -6743,23 +7453,19 @@ namespace playground::ui
         };
 
         const funkgui::Rect f = d.field;
-        const bool keyFocused = renaming_ || !other || dialogField_ == 0;
+        const bool fieldKeys = dialogControl_ == 0;     // a field has the keys (else a button: its ring)
+        const bool keyFocused = fieldKeys && (renaming_ || !other || dialogField_ == 0);
         box(f, keyFocused);
         const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
         if (renaming_)
-            plain(f, keyEdit_, "A name for this chat", true);
+            plain(f, keyEdit_, "A name for this chat", keyFocused);
         else
         {
             // The key masked (its first and last characters shown), the caret at its end.
             const std::string shown = keyEdit_.buffer.empty() ? std::string() : maskedKey();
             const float maxW = f.w - 28.0f;
-            const std::string hint = !other                   ? std::string("sk-ant-...   (Cmd-V pastes it)")
-                                   : dialogInfo_.keyless       ? std::string("None needed")
-                                   : dialogHasKey()            ? std::string("Stored: empty keeps it   (Cmd-V pastes another)")
-                                   : std::string(preset.key).empty() ? std::string("Its key, if it needs one   (Cmd-V pastes it)")
-                                                             : std::string(preset.key) + "...   (Cmd-V pastes it)";
             if (shown.empty())
-                c.text(fitText(c, shortcutText(hint), chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+                c.text(fitText(c, keyDialogHint(), chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
             else
             {
                 const float w = std::min(c.textWidth(shown.c_str(), chat::kBody), maxW);
@@ -6778,27 +7484,32 @@ namespace playground::ui
             label(f, "Key");
             if (d.base.w > 0.0f)
             {
-                box(d.base, dialogField_ == 1);
-                plain(d.base, baseEdit_, "https://host/v1", dialogField_ == 1);
+                box(d.base, fieldKeys && dialogField_ == 1);
+                plain(d.base, baseEdit_, "https://host/v1", fieldKeys && dialogField_ == 1);
                 label(d.base, "Server");
             }
             if (d.model.w > 0.0f)
             {
-                box(d.model, dialogField_ == 2);
+                box(d.model, fieldKeys && dialogField_ == 2);
                 plain(d.model, modelEdit_, dialogInfo_.picksFirst ? "Empty: the first it lists (then the model menu)"
                                                                   : "Empty: choose it in the model menu after Save",
-                      dialogField_ == 2);
+                      fieldKeys && dialogField_ == 2);
                 label(d.model, "Model");
             }
         }
         const funkgui::Rect last = d.model.w > 0.0f ? d.model : f;
-        if (!keyWhy_.empty())
-            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, d.box.w - 48.0f).c_str(), other ? x : f.x + 2.0f,
-                   c.capCentreTop(last.bottom() + 14.0f, chat::kSmall), chat::kSmall, p.danger);
+        float wy = last.bottom() + 14.0f;                // the refusal, on as many lines as it takes (the box grew)
+        for (const std::string& line : whyLines(d.box.w - 48.0f))
+        {
+            c.text(line.c_str(), other ? x : f.x + 2.0f, c.capCentreTop(wy, chat::kSmall), chat::kSmall, p.danger);
+            wy += 16.0f;
+        }
 
         // The buttons: pills.
-        const auto button = [&](const funkgui::Rect& r, const char* text, int look) {   // 0 primary, 1 outlined, 2 quiet
+        const auto button = [&](const funkgui::Rect& r, const char* text, int look, int control) {   // 0 primary, 1 outlined, 2 quiet
             const bool hover = hasPointer_ && r.contains(pointer_);
+            if (dialogControl_ == control)               // the keys' button: the focus ring
+                c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, r.h * 0.5f + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
             {
@@ -6817,10 +7528,10 @@ namespace playground::ui
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
             c.text(text, r.centreX(), c.capCentreTop(r.centreY(), st), st, ink, funkgui::Align::centre);
         };
-        button(d.save, renaming_ ? "Rename" : "Save", 0);
-        button(d.cancel, "Cancel", 1);
+        button(d.save, renaming_ ? "Rename" : "Save", 0, 4);
+        button(d.cancel, "Cancel", 1, 3);
         if (dialogHasKey() && !renaming_)
-            button(d.remove, "Remove key", 2);
+            button(d.remove, "Remove key", 2, 2);
     }
 
     void Panel::openExamples()
@@ -6842,7 +7553,7 @@ namespace playground::ui
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
         const Example& e = kExamples[static_cast<std::size_t>(i)];
-        startAfresh(withLibraryIncludes(singleFile(e.source)), "the example \"" + std::string(e.title) + "\"",
+        startAfresh(withLibraryIncludes(exampleSources(e)), "the example \"" + std::string(e.title) + "\"",
                     std::string("Load ") + e.title);
     }
 
@@ -7273,17 +7984,19 @@ namespace playground::ui
             && std::abs(a.w - anchor.w) < 0.5f && std::abs(a.h - anchor.h) < 0.5f;
     }
 
-    bool Panel::openSettings()
+    bool Panel::openSettings(const std::string& page)
     {
         if (picker_.isOpen())                            // the app's Settings... over the presets' list: it goes
         {
             picker_.close();
             afterPicker(true);
         }
-        if (dialogOpen() || port_.devices() == nullptr)
+        if (dialogOpen())
             return false;
         files().endRename();
-        if (!settings_.open())
+        settings_.setHooks(settingsHooks());
+        settings_.sync(host_);                           // the host the pages lay out with (the theme, the zoom)
+        if (!settings_.open(page))
             return false;
         focusBeforeSettings_ = focus_;
         setFocus(-1);
@@ -7299,6 +8012,8 @@ namespace playground::ui
             const int back = focusBeforeSettings_;
             setFocus(back >= 0 && items_[static_cast<std::size_t>(back)]->shown() ? back : editorItem_);
             focusBeforeSettings_ = -1;
+            if (std::exchange(keyAfterSettings_, false) && hasChat())
+                openKeyDialog();                         // the AI page's Provider and key...
         }
         dirty_ = true;
     }
@@ -7308,13 +8023,13 @@ namespace playground::ui
     void Panel::syncSettings()
     {
         const bool wasOpen = settings_.isOpen();
-        settings_.sync();
+        settings_.sync(host_);
         if (wasOpen && !settings_.isOpen())
-            afterSettings(true);                         // the window let go of its devices
+            afterSettings(true);                         // the window let go of its devices, and the card showed them
         if (const uint64_t asked = port_.settingsAsked(); asked != seenSettingsAsk_)
         {
             seenSettingsAsk_ = asked;
-            openSettings();
+            openSettings(port_.settingsPage());
         }
         if (settings_.revision() != seenSettingsRev_)
         {
@@ -7349,6 +8064,53 @@ namespace playground::ui
     }
 
     funkgui::Point Panel::centreOfMutedSettings() const { return centreOf(mutedItem_); }
+    funkgui::Point Panel::centreOfSettings() const { return centreOf(gearItem_); }
+
+    // What the card reads of the Panel: the chat's provider, model and key as the Panel holds them (never the chat's
+    // words), its key dialog, and the Debug page's graphics rows (the host's, then the editor's own).
+    SettingsCard::Hooks Panel::settingsHooks()
+    {
+        SettingsCard::Hooks h;
+        h.ai = [this] {
+            SettingsCard::Ai ai;
+            ai.provider = chat_.providerName;
+            for (const ChatModel& m : chat_.models)
+                if (m.id == chat_.model)
+                    ai.model = m.name;
+            if (ai.model.empty())
+                ai.model = chat_.model;
+            ai.hasKey = chat_.hasKey;
+            ai.keyless = chat_.keyless;
+            ai.keyProblem = chat_.keyProblem;
+            return ai;
+        };
+        h.keyDialog = [this] { keyAfterSettings_ = true; };   // afterSettings opens it, the focus given back first
+        h.graphics = [this] {
+            DebugSection g{ "Graphics (FunkGui)", {} };
+            if (hostDebug_)
+                g.rows = hostDebug_();
+            else
+                g.rows.push_back({ "Host", "headless (a picture or a probe: no window)" });
+            const funkgui::shaders::Target t = funkgui::shaders::target();
+            g.rows.push_back({ "Shader target", t.platform.empty() ? std::string("none yet (the renderer has not started)")
+                                                                   : t.platform + ", " + t.profile });
+#if defined(FUNKGUI_HAS_BGFX) && FUNKGUI_HAS_BGFX
+            g.rows.push_back({ "GPU pictures", funkgui::gpuPicturesSupported() ? "supported" : "not on this platform (drawn on the CPU)" });
+#else
+            g.rows.push_back({ "GPU pictures", "none in this build (drawn on the CPU)" });
+#endif
+            if (host_ != nullptr)
+                g.rows.push_back({ "Zoom", std::to_string(host_->zoomPercent()) + " %" });
+            char size[48];
+            std::snprintf(size, sizeof size, "%d x %d", static_cast<int>(width_), static_cast<int>(height_));
+            g.rows.push_back({ "Editor size", size });
+            g.rows.push_back({ "Layouts", std::to_string(layouts_) + " by this editor" });
+            const juce::File prefs = funkgui::UiPreferences::get().file();
+            g.rows.push_back({ "Preferences file", prefs == juce::File() ? std::string("in memory") : prefs.getFullPathName().toStdString() });
+            return g;
+        };
+        return h;
+    }
 
     // ---- the recorder: REC in the status bar while the capture tool records for Claude, and the user's marks ----------
     std::string Panel::recordText() const
@@ -7568,6 +8330,7 @@ namespace playground::ui
     void Panel::showState(ShownState state)
     {
         shown_ = std::move(state);
+        guiView_->showPointer(shown_.pointer);           // a picture's pointer over its shaders
         showing_ = true;
         shownPlaying_ = false;
         shownAt_ = 0;
@@ -7747,7 +8510,8 @@ namespace playground::ui
                                      : kind == 1 ? guiView_->envelopes()
                                      : kind == 2 ? guiView_->tabs()
                                      : kind == 3 ? guiView_->keyboards()
-                                                 : guiView_->shaders();
+                                     : kind == 4 ? guiView_->shaders()
+                                                 : guiView_->pointers();
         return *items_[static_cast<std::size_t>(pool[static_cast<std::size_t>(std::clamp(k, 0, static_cast<int>(pool.size()) - 1))])];
     }
 
@@ -7933,12 +8697,19 @@ namespace playground::ui
             reading_ = true;
         }
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        // The key dialog's address typed: what is kept for that server (a key, none needed), read once it rests a
+        // moment or the keys go to another field; until then the dialog promises nothing of a key stored.
+        if (keyOpen_ && !renaming_ && !dialogInfoNow()
+            && (dialogField_ != 1 || (host_ != nullptr ? host_->nowSeconds() : 0.0) - baseTypedAt_ >= 0.3))
+            readDialogInfo();
         if (layoutStale())
             layout();                                    // a netlist's view came or went, or the panel under the code
         syncWindowButtons();
         syncExplorer();
-        // The message box follows its text, one row to eight: the conversation gives it the room.
-        if (std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
+        // The message box follows its text, one row to eight: the conversation gives it the room. Folded (or no chat:
+        // the code window) it has no height to follow, and asks for no layout: layoutChat() sets it when it opens.
+        if (chatOpen_ && hasChat()
+            && std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
             layoutChat();
         // The displays: what the Engine published since the last frame, and the scopes' samples.
         {
@@ -8035,6 +8806,7 @@ namespace playground::ui
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
             .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
+            .mix(dialogField_).mix(dialogControl_).mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
@@ -8160,7 +8932,7 @@ namespace playground::ui
             c.rrect(code.x - 3.0f, code.y - 3.0f, panel.right() - code.x + 6.0f, code.h + 6.0f, 0.5f * (code.h + 6.0f), pal.raised,
                     1.0f, pal.cardEdge);
             // The load, the snowflake left of it while the dials are frozen (an item: FrozenItem), the alerts left of that.
-            const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(themeItem_)]).bounds();
+            const funkgui::Rect theme = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(gearItem_)]).bounds();   // the gear, left of the theme
             const bool alarm = port_.alerts() != 0;
             const funkgui::Col ink = alarm ? pal.danger : pal.faint;
             const MeterPlaces m = meterPlaces(theme.x, c.textWidth(meterLoad_.c_str(), chat::kSmall), frozenShown_,
@@ -8225,7 +8997,7 @@ namespace playground::ui
             const float ty = headerY_ + kIconButton * 0.5f;
             const float tx = card_.x + kCardPad + 4.0f;
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
-            c.text(chatTitle().c_str(), tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
+            c.text(chatTitleShown().c_str(), tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             // After the chats' pill, while Claude Desktop acts on or talks to this instance: what it does, its name for it.
             const funkgui::Rect pill = triggerRect(chatsItem_);
             const float sub = pill.right() + 8.0f;
@@ -8299,10 +9071,11 @@ namespace playground::ui
         if (settings_.isOpen())
             std::snprintf(line, sizeof line, "SETTINGS   TAB THE NEXT CONTROL   RETURN OR SPACE CHOOSES   ESCAPE OR DONE CLOSES");
         else if (keyOpen_ && renaming_)
-            std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   TAB THE BUTTONS   ESCAPE CANCELS");
         else if (keyOpen_)
-            std::snprintf(line, sizeof line, "%s", dialogAnthropic() ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
-                                                                     : "PROVIDER   TAB THE NEXT FIELD   CMD-V PASTES   RETURN SAVES   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, dialogAnthropic() ? "API KEY   %s PASTES IT   RETURN SAVES IT   TAB THE PROVIDER AND THE BUTTONS   ESCAPE CANCELS"
+                                                               : "PROVIDER   TAB THE NEXT FIELD OR BUTTON   %s PASTES   RETURN SAVES   ESCAPE CANCELS",
+                          upper(shortcutText("Cmd-V")).c_str());
         else if (export_.isOpen() && export_.bulk())
             std::snprintf(line, sizeof line, export_.running() ? "EXPORT   CANCEL STOPS IT, NO FILE LEFT   ESCAPE CLOSES (IT GOES ON)"
                                                                : "EXPORT   ONE .ZIP OF THEIR EXPORTS   ESCAPE CLOSES");
@@ -8536,16 +9309,28 @@ namespace playground::ui
             return;
         }
         pressed_ = itemAt(pointer_);
-        if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
-            setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
+        // Send (or Stop) clicked leaves the caret in the message box: the button with the focus and no ring would take
+        // the next Space or Return as a press (a stop), and the next letters would go to the host. Tabbed to, it keeps
+        // the focus (and its ring): the keyboard's way.
+        if (pressed_ == sendItem_)
+            setFocus(inputItem_);
+        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_)
+                 && pressed_ != chatViewItem_)
+            setFocus(pressed_);                          // an edge's drag, or a click in the conversation (a Copy, a
+                                                         // thinking row), leaves the focus (the caret) where it was
         else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
         {
             touched_ = pressed_;
+            const uint32_t sent = sends_;
             items_[static_cast<std::size_t>(pressed_)]->pointerDown(e, *gestures_, *host_);
             if (pressed_ == chatViewItem_)
                 reshowChat();                            // a thinking row opened or closed
+            // The press that sent made the button Stop under the pointer: the rest of its click (a double-click's
+            // second press) stops nothing. A later click of its own (one click) stops at once.
+            if (pressed_ == sendItem_ && sends_ != sent)
+                closingPress_ = true;
         }
         dirty_ = true;
         // The Standalone's window has no title bar: a press on the top bar where nothing is drags it instead.
@@ -8679,8 +9464,8 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen())
-            return true;
+        if (export_.isOpen() || name_.isOpen() || keyOpen_)
+            return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
             compare_.wheel(e, width_, height_);
@@ -8838,12 +9623,51 @@ namespace playground::ui
             setFocus(editorItem_);
             return true;
         }
+        // Find: Cmd-F, Cmd-Alt-F (and Ctrl-H off the Mac: Windows' and Linux's key), Shift-Cmd-F (in all files), from
+        // anywhere in the panel while the code shows, as the Standalone's Edit menu sends them; while the editor has the
+        // keys they are its own (CodeAssist), its find field's too.
+        if (e.key == funkgui::Key::character && focus_ != editorItem_ && !full() && !out_)
+        {
+            const char32_t c = e.ch >= U'A' && e.ch <= U'Z' ? e.ch - U'A' + U'a' : e.ch;
+            int find = -1;                               // 0 find, 1 find and replace, 2 in all files
+            if (e.mods.cmd && (c == U'f' || c == U'\u0192' || c == U'\u00cf'))   // Alt-F, Shift-Alt-F on a Mac
+                find = e.mods.alt ? 1 : e.mods.shift ? 2 : 0;
+#if !defined(__APPLE__)
+            else if ((e.mods.cmd || e.mods.ctrl) && !e.mods.alt && !e.mods.shift && c == U'h')
+                find = 1;
+#endif
+            if (find >= 0 && !files().renaming())
+            {
+                files().openFind(find == 1, find == 2);
+                setFocus(editorItem_);
+                dirty_ = true;
+                return true;
+            }
+        }
+        // Ctrl-Tab and Ctrl-Shift-Tab: the next file's tab and the one before, wherever the keys are, while the code
+        // shows (the files' item takes them itself when it has the keys).
+        if (e.key == funkgui::Key::tab && e.mods.ctrl && !e.mods.alt && !full() && !out_ && !files().renaming())
+        {
+            files().stepTab(e.mods.shift ? -1 : 1);
+            dirty_ = true;
+            return true;
+        }
         // A text field, while it has the caret: every key is its own (Tab indents in the editor), but Escape, which
         // leaves it, and a Tab it does not use, which moves on.
         if (const int t = textItem(); t >= 0)
         {
+            // Typing in the editor reaches the processor in the key's own event, as a schematic gesture does: a draft
+            // not merged yet (Claude's write, a host's load) merges first, so the key lands on it, and the tabs then go
+            // at once, so that a guarded write of Claude's (edit_file, edit_circuit) sees the key and runs again on it.
+            const bool editing = t == editorItem_ && !out_;
+            if (editing)
+                (void)mergeDraft();
             if (gestures_ && items_[static_cast<std::size_t>(t)]->key(e, *gestures_))
+            {
+                if (editing)
+                    giveTyping();
                 return true;
+            }
             if (e.key == funkgui::Key::escape)
             {
                 setFocus(-1);
@@ -8931,9 +9755,11 @@ namespace playground::ui
             box.id = kKeyDialogId;
             box.role = funkgui::a11yrole::group;
             box.bounds = d.box;
-            box.title = renaming_ ? "Rename this chat" : dialogAnthropic() ? "Anthropic API key" : std::string(dialogPresetRef().name);
-            box.description = renaming_ ? std::string("Its name in the chat list, on ") + kThisMachine
-                                        : std::string("Stored encrypted on ") + kThisMachine + ", for both playground plugins";
+            box.title = renaming_ ? std::string("Rename this chat") : dialogTitle();
+            // What the dialog's lines say: the server the key is stored for and sent to.
+            for (const std::string& line : keyDialogLines())
+                if (!line.empty())
+                    box.description += (box.description.empty() ? "" : " ") + line;
             out.push_back(box);
             const auto plainField = [&](uint32_t id, const funkgui::Rect& r, const char* title, const funkgui::text::LineEdit& e) {
                 funkgui::A11yItem f;
@@ -8943,6 +9769,8 @@ namespace playground::ui
                 f.bounds = r;
                 f.title = title;
                 f.value = e.buffer.empty() ? "empty" : asciiText(e.buffer);
+                if (!keyWhy_.empty() && keyWhyField_ == (id == kKeyBaseId ? 1 : 2))
+                    f.help = keyWhy_;                    // the refusal is about this field
                 out.push_back(std::move(f));
             };
             if (!renaming_ && keyDialog().base.w > 0.0f)
@@ -8955,7 +9783,7 @@ namespace playground::ui
             field.title = renaming_ ? "Name" : "Key";
             field.value = renaming_ ? asciiText(keyEdit_.buffer)
                         : keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
-            field.help = !keyWhy_.empty() ? keyWhy_ : renaming_ ? "Return renames it" : "Command V pastes it";
+            field.help = !keyWhy_.empty() && keyWhyField_ == 0 ? keyWhy_ : renaming_ ? "Return renames it" : "Command V pastes it";
             out.push_back(std::move(field));
             if (!renaming_ && keyDialog().model.w > 0.0f)
                 plainField(kKeyModelId, keyDialog().model, "Model", modelEdit_);
@@ -9032,7 +9860,9 @@ namespace playground::ui
                 dials |= slotBit(c);
         r ^= static_cast<uint32_t>(dials) * 0x27D4EB2Fu ^ static_cast<uint32_t>(dials >> 32) * 0x165667B1u;
         r |= (keyOpen_ ? 1u : 0u) << 17;
-        r ^= keyOpen_ ? static_cast<uint32_t>(dialogPreset_ + 1) * 0x2545F491u ^ (dialogHasKey() ? 0x61C88647u : 0u) : 0u;
+        r ^= keyOpen_ ? static_cast<uint32_t>(dialogPreset_ + 1) * 0x2545F491u ^ (dialogHasKey() ? 0x61C88647u : 0u)
+                            ^ static_cast<uint32_t>(std::hash<std::string>{}(renaming_ ? std::string() : dialogTitle()))
+                      : 0u;
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
@@ -9056,6 +9886,8 @@ namespace playground::ui
         // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
         r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;
         r ^= (dialsBar_ ? 0x5BD1E995u : 0u) ^ (dialsFolded_ ? 0x1B56C4E9u : 0u);
+        // The conversation's scroll, however it moved (the wheel, its keys, its bar, a block revealed): its items move.
+        r ^= std::bit_cast<uint32_t>(chatView().scroll()) * 0x4CF5AD43u;
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
              ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
              ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text

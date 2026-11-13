@@ -424,7 +424,7 @@ namespace playground::standalone
             if (isEdit(c))
             {
                 // To the focused component of the key window, as if typed there (the editor's text fields take it).
-                const juce::KeyPress key = keyPressOf(shortcutOf(c));
+                const juce::KeyPress key = keyPressOf(editorKeyOf(c));   // a find item's: the editor's key
                 for (int i = juce::ComponentPeer::getNumPeers(); --i >= 0;)
                     if (auto* peer = juce::ComponentPeer::getPeer(i); peer != nullptr && peer->isFocused())
                     {
@@ -468,6 +468,9 @@ namespace playground::standalone
                 case Command::copy:
                 case Command::paste:
                 case Command::selectAll:
+                case Command::find:
+                case Command::findReplace:
+                case Command::findInFiles:
                 case Command::minimize:
                 case Command::zoom:
                 case Command::bringAllToFront:

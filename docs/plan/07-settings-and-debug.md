@@ -99,8 +99,12 @@ Never a key, a chat's word, a file's text or the user's audio. Folders are shown
 - The graphics rows are the host's: `gpu/CreateEditorGpu.cpp` and `gpu/CodeWindow.cpp` give the Panel a hook
   (`Panel::setHostDebug(std::function<std::vector<DebugRow>()>)`) that reads `EditorHost::diagnostics()` and the
   rest; `nogpu/SoftEditorHost` gives its own (the CPU host, frames, zoom). No bgfx header outside FunkGui's.
-- `cmake/Product.h.in` gains `kFMinusCommit` (`FP_FMINUS_SHA`), `kBuildType` and `kCommit` (`git describe
-  --always --dirty` at configure, "unknown" outside a checkout).
+- `cmake/Product.h.in` gains `kFMinusCommit` (`FP_FMINUS_SHA`) and `kBuildType`: both change only with the pin or
+  the preset. The checkout's own commit (`git describe --always --dirty` at configure, "unknown" outside a
+  checkout) does not go there: almost every source includes `Product.h`, so a constant that changes with each
+  commit would compile the whole tree again after each one, and would give CI's compiler cache a miss on every
+  file. It goes in a generated file of its own (`generated/<key>/BuildCommit.h`, `kCommit`), which one `.cpp`
+  includes and hands on through a function.
 - After F1: `funkgui::gpuInfo()` fills the GPU's name and limits (package 10).
 
 ## 3. Work
@@ -108,7 +112,8 @@ Never a key, a chat's word, a file's text or the user's audio. Folders are shown
 1. The page table and the card's rail; the devices' code as the Audio and MIDI page; `gui.settings` green again.
 2. The gear; the card opening in a host; General, Editor (Format on Run; the size when 06 part D is in), Projects,
    AI, About.
-3. Debug: the rows, the viewer count, the host's hook, Copy all, the three new `Product.h` constants.
+3. Debug: the rows, the viewer count, the host's hook, Copy all, the two new `Product.h` constants and the
+   commit's own file.
 4. Network, Usage and the Git rows arrive with their packages.
 
 ## 4. Tests
