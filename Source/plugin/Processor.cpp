@@ -3557,9 +3557,18 @@ namespace playground
         return true;
     }
 
+    // Where FunkGui's save chooser starts (the Documents folder: HostServicesJuce, SoftEditorHost), so the free name the
+    // editor suggests is free where the chooser looks; a probe's sandbox's exports/ under CTest, never the user's folder.
     std::string Processor::exportFolder() const
     {
-        return juce::File::getSpecialLocation(juce::File::userDesktopDirectory).getFullPathName().toStdString();
+        const std::string sandbox = std::string(product::kEnvPrefix) + "PREFS_DIR";
+        if (const char* dir = std::getenv(sandbox.c_str()); dir != nullptr && *dir != '\0')
+        {
+            const juce::File exports = juce::File(juce::String::fromUTF8(dir)).getChildFile("exports");
+            (void)exports.createDirectory();
+            return exports.getFullPathName().toStdString();
+        }
+        return juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getFullPathName().toStdString();
     }
 
     // ---- ChatHost (the agent's thread) -----------------------------------------------------------------------------------

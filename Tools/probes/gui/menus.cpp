@@ -5,8 +5,8 @@
 // pressed and, over it, the menu FunkGui's MenuLook draws for the Panel's request (JUCE's popup menu, shown in a
 // component as fg.menulook shows its own), cut to the two, at 2x, to <build>/probe-out/:
 //   gui.menus.<menu>.png and gui.menus.<menu>.paper.png, for examples, library, projects (a project's context menu in
-//   PROJECTS), projects_tag (PROJECTS' tag filter), model, thinking, thinking_openrouter (the thinking level of a model
-//   OpenRouter's list says reasons, against a scripted server), zoom, chats (the chat card's list of the project's
+//   PROJECTS), projects_tag (PROJECTS' tag filter), projects_sort (PROJECTS' order), model, thinking,
+//   thinking_openrouter (the thinking level of a model OpenRouter's list says reasons, against a scripted server), zoom, chats (the chat card's list of the project's
 //   chats), provider (the key dialog's Provider pill), settings (the output's select), panel (a .gui file's menu
 //   control) and schematic (a netlist's canvas menu); on Linux with no X display, skipped, saying so (noDisplay)
 // and checks:
@@ -686,6 +686,21 @@ PROBE(gui, menus)
                     }
                     else
                         R.eq("rows.projects_tag.menu", 0, 1);
+                    host.settle();
+                    // The order: four keys as choices, the current one checked, then Reversed under a separator.
+                    const funkgui::Rect sort = b.places(W, H).sort;
+                    host.click(sort.centreX(), sort.centreY());
+                    host.settle();
+                    if (const funkgui::MenuRequest* m = host.pendingMenu())
+                    {
+                        R.eq("rows.projects_sort.keys", m->items.size() == 6 && m->items[0].radio && m->items[0].label == "Last modified"
+                                                            && m->items[3].label == "Name" && m->items[4].separator
+                                                            && m->items[5].label == "Reversed" && !m->items[5].radio ? 1 : 0, 1);
+                        picture(P, pics, host, panel, *m, "projects_sort", t);
+                        host.cancelMenu();
+                    }
+                    else
+                        R.eq("rows.projects_sort.menu", 0, 1);
                     host.settle();
                 }
                 host.keys("escape");

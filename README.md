@@ -1028,8 +1028,13 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   Cmd-click chooses more than one (Shift-click a run of them), and the menu or a drag then sets all of theirs. A
   factory project's category stays its own. Above the lists, the **search** (Cmd-F: each word you type in a project's
   name, description or tags; while it filters, every group with a match shows it; Escape clears it), the **tag**
-  filter (a project with that tag, the menu saying how many have each) and the **order** (by name, or the newest save
-  first). The stars, the groups folded, the search, the tag and the order are this Mac's: every instance and the
+  filter (a project with that tag, the menu saying how many have each) and the **order**: **Last modified** (the
+  newest save first), **Date created** (the newest project first), **Size** (the largest file first) or **Name** (A
+  to Z, the default), each within its group, and **Reversed** under them to turn it around (an arrow beside the
+  order's name says so); a row's right-hand column shows what the list is sorted by (the date it was saved or made,
+  or its file's size), and projects that tie go by name. The explorer's Projects stays newest saved first. A click
+  outside the card closes it as **Close** does (nothing saved or opened, a question it was asking withdrawn), and the
+  click goes no further. The stars, the groups folded, the search, the tag and the order are this Mac's: every instance and the
   explorer show the same, kept in a hidden file in the projects' folder (`.projects-view.json`) as they change (the search as the card
   closes; what another instance changed meanwhile stays).
   Categories stay in each project's file (no folders on disk: a project's name is its file's, unique in the one
@@ -1114,9 +1119,20 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   samples' files in `samples/`, as they were added),
   and **Export package (.fmpack)**, everything in one compressed file for another playground (xz, by macOS's own
   Compression framework: a project of 30 versions, 33 KB of text, is a 1.3 KB package; the header is 20 bytes and the
-  rest a plain .xz stream). Every version goes, or the newest only. **Import...** in PROJECTS, or a .zip or a .fmpack
-  dropped on the editor, adds one as a project of its own ("<name> 2" when the name is taken); a synth's export does
-  not open in the effect, nor an effect's in the synth.
+  rest a plain .xz stream). Every version goes, or the newest only. With several projects chosen in PROJECTS
+  (Cmd-click, Shift-click), **Export...** (or the context menu's **Export N projects...**) exports them all as one
+  **bundle**: a .zip holding each project's own export, a .zip or a .fmpack as you choose, so unzipped by hand it is a
+  folder of ordinary exports, each importable alone (256 projects and 2 GB of project files at most). The card shows
+  how far it has come while it writes (the status line too: EXPORTING 3 OF 12), and **Cancel** stops it, leaving no
+  file; closing the card lets it finish, the status line saying how it went. Every export, one project's too, is
+  read and written on a thread of its own, so the editor never waits for a large project. **An export never replaces a
+  file**: the save chooser starts with a name no file there has (a number after it when the plain one is taken), and a
+  file there already, even one the chooser's own "Replace?" was told yes for, is refused with the card asking for
+  another name; the file there is left as it is. **Import...** in PROJECTS, or a .zip or a .fmpack dropped on the
+  editor, adds one as a project of its own ("<name> 2" when the name is taken), and a bundle every project in it; the
+  status line says how many came in and names each it refused. A synth's export does not open in the effect, nor an
+  effect's in the synth (inside a bundle, those are refused one by one and the rest come in). A click outside EXPORT
+  closes it as **Done** does.
 - **Factory projects** come with the plugin: its own sounds, each a project of one version (its files and its dials)
   with its presets and its info (its category and tags too), read-only. PROJECTS lists them in a group of their own on
   top, **FACTORY** (each with its presets counted; starred, in Favourites too), and the explorer in its **Factory**

@@ -3,8 +3,11 @@
 // poll()), each a program and its dials kept as versions, with presets (dial settings for it).
 //
 //   the top     the search field (Cmd-F: the name, the description and the tags, each word; Escape clears it), the
-//               tag filter (a dropdown: any tag, or one of those the projects have) and the order (by name, or the
-//               newest save first): ProjectGroups.h
+//               tag filter (a dropdown: any tag, or one of those the projects have) and the order (a dropdown: Last
+//               modified, the newest save first; Date created, the newest first; Size, the largest file first; Name,
+//               A to Z; and Reversed, checked while it turns the order around; the trigger names it, an arrow when
+//               reversed): ProjectGroups.h, within each group. A row's right-hand column shows what it is sorted by:
+//               the date saved (Last modified and Name), the date made, or the file's size
 //   PROJECTS    in groups that fold (a click on a group's header; ProjectGroups.h): FAVOURITES (the projects starred,
 //               pinned at the top), FACTORY (the factory projects, EditorPort::factoryProjects: read-only, nothing of
 //               them deleted, their category theirs), one a category (the user's projects' info's), UNCATEGORISED
@@ -35,8 +38,10 @@
 //               opened first when it is not the one open). When the editor's files have changes no version holds, a
 //               second click: Open anyway
 //   Delete      the chosen project, version or preset (a second click: Delete it)
-//   Import...   a .zip or a .fmpack another playground exported (the Panel's chooser), a project of its own here
-//   Export...   the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h)
+//   Import...   a .zip or a .fmpack another playground exported, a bundle too (the Panel's chooser), each project of
+//               it a project of its own here
+//   Export...   the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h); with several chosen,
+//               every one of them as one bundle (the context menu's Export too)
 //   A/B...      the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
 //               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
 //   Compare...  what changed between two of the chosen project's versions, or a version and the editor (the Panel's
@@ -44,7 +49,9 @@
 //               it (the first version: against the editor); the project open with the editor's changes, the chosen
 //               version (the one open) against the editor. A version row's menu (a right-click): Compare with the version
 //               before, Compare with the editor
-//   Close       or Escape. Return saves when a name was typed, else opens (applies); Up and Down choose in the list
+//   Close       or Escape, or a press outside the card (the press goes no further; nothing saved or opened, a
+//               confirmation asked for withdrawn; a drag that began inside and ends outside closes nothing). Return
+//               saves when a name was typed, else opens (applies); Up and Down choose in the list
 //               chosen from, Tab moves to the next list
 // Each list scrolls as the code does (Scroll.h: the wheel over it, its thumb dragged, a press on its track), by px:
 // a row at its edge shows in part.
@@ -153,7 +160,7 @@ namespace playground::ui
         // What the Panel does next, once: Import's chooser; EXPORT for that project ("" for none); A/B for that project
         // and version (0: its newest; the project "" for none).
         bool takeImport();
-        std::string takeExport();
+        std::vector<std::string> takeExport();           // every project to export (several: a bundle); none: {}
         std::pair<std::string, int> takeAb();
         std::tuple<std::string, int, int> takeCompare(); // COMPARE of that project's sides (left, right; 0 the editor)
         void chooseProjectNamed(const std::string& name, float width, float height);
@@ -192,6 +199,10 @@ namespace playground::ui
         const std::string& name() const noexcept { return name_.buffer; }
         const std::string& why() const noexcept { return why_; }
         std::string saveLabel() const;
+        std::string orderLabel() const;                  // the order's trigger: "Last modified", "Size" (an arrow drawn
+                                                         // after it while reversed: view().reversed)
+        std::string rowFacts(const ProjectEntry& e) const;   // a row's right-hand column: its version and what the list is
+                                                         // sorted by (the date saved or made, the size)
         std::string openLabel() const;
         std::string removeLabel() const;
         funkgui::Point centreOfRow(List l, int i, float width, float height) const;   // a row wholly shown, else far away
@@ -279,7 +290,7 @@ namespace playground::ui
         std::string why_;                                // the line under the field
         std::string notice_;
         bool import_ = false;
-        std::string export_;
+        std::vector<std::string> export_;
         std::pair<std::string, int> ab_;
         std::tuple<std::string, int, int> compare_{ "", 0, 0 };
         // Compare...'s sides for the chosen project: `how` 0 as the button does (DiffCard.h), 1 a version row's "with

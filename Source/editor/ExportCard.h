@@ -16,6 +16,15 @@
 // edit, nothing kept (the store refuses its info), its exports as they are; a copy saved as the user's own changes it.
 // It reads the store's cache alone (EditorPort::projectPolled): a project the cache lacks shows "Reading the project...",
 // its fields taking nothing, until the store's Reader has read it (poll()).
+//
+// Several projects (open() with more than one, PROJECTS' Export... or its context menu's with several chosen): no info
+// fields (they are one project's), the count and the first names ("and 8 more"), the versions' switch and the two
+// exports, each one .zip, the bundle, holding every project's own export of that format (ProjectExport.h).
+// Every export runs off the message thread (EditorPort::startExport): while one runs the card shows how far it has
+// come and Done is Cancel (takeCancel); the Panel calls progress() and exported() as the job moves and ends. An export
+// never replaces a file: one there already is refused in the refusal's words, the card asking for another name.
+// A press outside the card closes it as Done does (the Panel then drops the press); an export under way goes on, its
+// outcome in the status line.
 #pragma once
 
 #include "plugin/EditorPort.h"
@@ -57,6 +66,7 @@ namespace playground::ui
 
         bool isOpen() const noexcept { return open_; }
         void open(const std::string& project);           // its info and versions read (the store's cache)
+        void open(const std::vector<std::string>& projects);   // one: open(project); more: the bulk card
         void close();                                    // the info kept when it changed
         // While open, each frame: once the store's Reader has read a file (EditorPort::projectsRead), the info again from
         // the cache: a project it lacked when the card opened is filled in, one another process changed shows as it is
@@ -67,6 +77,7 @@ namespace playground::ui
         struct Places
         {
             funkgui::Rect box, description, author, tags, versions, done, source, package;
+            funkgui::Rect names;                         // the bulk card's: the projects' names
             std::vector<funkgui::Rect> categories, genres;
             int descriptionLines = 4;
         };
@@ -84,9 +95,18 @@ namespace playground::ui
         // An export asked for (the info kept first): the Panel asks where, writes it, and calls exported().
         Want takeWant();
         void exported(bool ok, const std::string& line);  // the line under the fields ("Exported to ~/Desktop/...")
+        // The export job (EditorPort::startExport) under way: started() as it starts, progress() as projects are done.
+        void started(const std::string& line);
+        void progress(int done, int total);
+        bool running() const noexcept { return running_; }
+        int doneCount() const noexcept { return done_; }
+        bool takeCancel();                                // Cancel pressed while it runs (the Panel cancels the job)
         std::string takeNotice();                         // for the status line, once
 
-        const std::string& project() const noexcept { return project_; }
+        const std::string& project() const noexcept { return project_; }   // the first of several
+        const std::vector<std::string>& projects() const noexcept { return projects_; }
+        bool bulk() const noexcept { return projects_.size() > 1; }
+        static std::string countText(int n) { return std::to_string(n) + (n == 1 ? " project" : " projects"); }
         bool readOnly() const noexcept { return readOnly_; }   // a factory project's: its info as it is
         bool allVersions() const noexcept { return allVersions_; }
         ProjectInfo info() const;                         // as the fields have it now
@@ -100,13 +120,18 @@ namespace playground::ui
         const funkgui::text::LineEdit& field(Field f) const;
         void focusOn(Field f);
         void read();                                      // its info and counts, from the store's cache
-        bool locked() const noexcept { return readOnly_ || reading_; }   // no field takes an edit
+        bool locked() const noexcept { return readOnly_ || reading_ || bulk(); }   // no field takes an edit
         bool keepInfo();                                  // setProjectInfo when it changed; false, with why_, on failure
         void ask(Want w);
 
         EditorPort& port_;
         bool open_ = false;
         std::string project_;
+        std::vector<std::string> projects_;               // every project it exports (one, or the bulk card's)
+        int64_t bytes_ = 0;                               // the bulk card's: their files' sizes, in all
+        bool running_ = false;                            // an export under way
+        int done_ = 0, total_ = 0;                        // how far it has come
+        bool cancel_ = false;                             // takeCancel
         bool readOnly_ = false;
         bool reading_ = false;                            // its file not read yet (the store's Reader reads it)
         uint64_t readSeen_ = 0;                           // EditorPort::projectsRead when it read the cache
