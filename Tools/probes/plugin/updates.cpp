@@ -405,7 +405,8 @@ PROBE(plugin, updates)
             P.eq(std::string("refuse.") + label + ".one_request", site->count() - before, 1);
         };
         refused("redirect", release("0.9.0"), 301, "follows no redirect");
-        P.eq("refuse.redirect.not_followed", std::none_of(site->paths().begin(), site->paths().end(),
+        const std::vector<std::string> asked = site->paths();   // one copy: begin and end of the same vector
+        P.eq("refuse.redirect.not_followed", std::none_of(asked.begin(), asked.end(),
                                                           [](const std::string& p) { return p.find("elsewhere") != std::string::npos; })
                                                  ? 1 : 0, 1);
         refused("large", release("0.9.0", ",\"pad\":\"" + std::string(70 * 1024, 'x') + "\""), 200, "larger than 64 KB");
@@ -691,7 +692,8 @@ PROBE(plugin, updates)
             P.eq("offer.allow.updates_yes", u1.updatesOn && u1.updatesAnswered ? 1 : 0, 1);
             P.eq("offer.allow.factory_no", u1.factory, 2);
             P.eq("offer.allow.not_due_again", u1.offer ? 1 : 0, 0);
-            P.eq("offer.allow.factory_json", h.getChildFile("factory.json").loadFileAsString().contains("\"no\"") ? 1 : 0, 1);
+            // Written on the factory store's own thread: waited for (kWorkWait), as any other thread's work.
+            P.eq("offer.allow.factory_json", waitFor([&] { return h.getChildFile("factory.json").loadFileAsString().contains("\"no\""); }) ? 1 : 0, 1);
             P.eq("two.one_request_for_two_editors", s->count(), 1);
             P.eq("two.newer", u1.newer && u1.latest == "0.9.0" ? 1 : 0, 1);
             P.eq("two.announced_once", pa.announceUpdate("0.9.0") && !pb.announceUpdate("0.9.0") ? 1 : 0, 1);
