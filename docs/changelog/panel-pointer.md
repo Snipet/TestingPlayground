@@ -1,4 +1,4 @@
-Claude Desktop extension: **0.19.0** (was 0.18.0).
+Claude Desktop extension: **0.20.0** (was 0.19.0).
 
 ### The pointer drives a panel
 
