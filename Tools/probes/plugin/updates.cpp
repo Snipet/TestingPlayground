@@ -29,6 +29,13 @@
 //             its date; a check whose reply carries a later asOf and another price for that model: the view read again
 //             at once (taking a table moves usage::revision) with the new date and the row's estimate at the new
 //             price; a reply with an earlier asOf changes neither, and asks for no read
+//   HELD      a store's file renamed over while another process reads it (plugin/FileReplace.h): a reader holding the
+//             file open (a std::ifstream, as every reader of these files) through the write and letting go within the
+//             helper's window, and the write lands: the helper itself, usage.json's flush and Reset (usage::Ledger),
+//             app.json (an answer, and What's new's seen) and factory.json (an answer); a reader that never lets go:
+//             the write fails as before, nothing lost (the ledger's counts kept and said failed, app.json's answer
+//             written by the next write). On POSIX a rename over an open file always lands, so the never-lets-go rows
+//             are Windows' alone (skipped, saying so); the others pass there by nature and are Windows' test
 //   TWO       two processors share one check: one request for two editors' opens
 //   JOIN      a processor (the last holder) going while a check is in flight returns promptly, the thread joined
 //   OFFER     the processor's offer: due with neither answered; Allow with the factory unticked: updates yes, the factory
@@ -43,6 +50,7 @@
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FactoryStore.h"
+#include "plugin/FileReplace.h"
 #include "plugin/Processor.h"
 #include "plugin/UpdateCheck.h"
 #include "plugin/Usage.h"
@@ -59,6 +67,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -243,6 +253,42 @@ namespace
         std::string name_;
         std::optional<std::string> old_;
     };
+
+    // A reader of `path` as another process's would be: a std::ifstream (the C runtime's share mode on Windows, which
+    // shares reading and writing, not deletion) held open for `holdMs` on a thread of its own, from open() on.
+    class Reader
+    {
+    public:
+        explicit Reader(std::filesystem::path path) : path_(std::move(path)) {}
+        ~Reader() { close(); }
+        bool open(int holdMs)
+        {
+            thread_ = std::thread([this, holdMs] {
+                std::ifstream in(path_, std::ios::binary);
+                opened_.store(static_cast<bool>(in) ? 1 : -1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(holdMs));
+            });
+            while (opened_.load() == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return opened_.load() > 0;
+        }
+        void close()
+        {
+            if (thread_.joinable())
+                thread_.join();
+        }
+
+    private:
+        std::filesystem::path path_;
+        std::thread thread_;
+        std::atomic<int> opened_{ 0 };
+    };
+
+    std::string textOf(const std::filesystem::path& p)
+    {
+        std::ifstream in(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
 
     // Polls `done` until it holds, kWorkWait at most.
     template <typename F>
@@ -661,6 +707,208 @@ PROBE(plugin, updates)
         pg::factorystore::setDirectoryForTests(juce::File());
         pg::chatstore::setDirectoryForTests(juce::File());
         us::resetPricesForTests();
+    }
+
+    // ---- HELD: a store's file renamed over while another process reads it --------------------------------------------
+    {
+        namespace fs = std::filesystem;
+        namespace us = pg::usage;
+#if defined(_WIN32)
+        constexpr bool kPosix = false;
+#else
+        constexpr bool kPosix = true;
+#endif
+        const char* const kPosixWhy = "a rename over an open file always lands on POSIX: the reader that never lets go is Windows' case";
+        const int kLetGo = pg::files::kWaitMs / 5;       // a reader that lets go well within the helper's window
+        const int kNever = pg::files::kWaitMs * 3;       // one that outlasts it
+        const juce::File h = freshHome();
+        const fs::path dir(h.getFullPathName().toStdString());
+        const auto writeText = [](const fs::path& p, const std::string& t) {
+            std::ofstream out(p, std::ios::binary | std::ios::trunc);
+            out << t;
+        };
+
+        // The helper itself.
+        {
+            const fs::path to = dir / "held.txt", from = dir / "held.txt.tmp";
+            writeText(to, "old");
+            writeText(from, "new");
+            Reader r(to);
+            P.eq("held.replace.reader_open", r.open(kLetGo) ? 1 : 0, 1);
+            std::error_code ec;
+            const bool ok = pg::files::replace(from, to, ec);
+            r.close();
+            P.eq("held.replace.lands", ok && textOf(to) == "new" && !fs::exists(from) ? 1 : 0, 1);
+            writeText(from, "newer");
+            if (kPosix)
+                probe::skip(P, "held.replace.never", kPosixWhy);
+            else
+            {
+                Reader never(to);
+                (void)never.open(kNever);
+                std::error_code e2;
+                const bool moved = pg::files::replace(from, to, e2);
+                P.eq("held.replace.never", !moved && e2 && textOf(to) == "new" && fs::exists(from) ? 1 : 0, 1);
+                never.close();
+            }
+        }
+
+        // usage.json: a flush and a Reset.
+        {
+            const fs::path file = dir / "usage.json";
+            us::Ledger ledger(file);
+            us::Counts one;
+            one.requests = 1;
+            one.input = 1000;
+            const us::Key key{ us::today(), "anthropic", "claude-haiku-4-5", false };
+            ledger.add(key, one);
+            P.eq("held.usage.first_flush", ledger.flush() ? 1 : 0, 1);
+            ledger.add(key, one);
+            Reader r(file);
+            (void)r.open(kLetGo);
+            const bool flushed = ledger.flush();
+            r.close();
+            const std::vector<us::Row> rows = us::read(file);
+            P.eq("held.usage.flush_lands", flushed && rows.size() == 1 && rows[0].counts.requests == 2 ? 1 : 0, 1);
+            // What it wrote is gone from its rows: a second flush with nothing added counts nothing again.
+            const bool again = ledger.flush();
+            const std::vector<us::Row> rows2 = us::read(file);
+            P.eq("held.usage.flush_lands.counted_once", again && !ledger.pending() && rows2.size() == 1
+                                                            && rows2[0].counts.requests == 2 ? 1 : 0, 1);
+            ledger.requestReset();
+            Reader r2(file);
+            (void)r2.open(kLetGo);
+            const bool reset = ledger.reset();
+            r2.close();
+            P.eq("held.usage.reset_lands", reset && !ledger.lastResetFailed() && us::read(file).empty() ? 1 : 0, 1);
+            // The cut's rows went with the file: nothing waits, and the next flush brings no count back.
+            const bool after = ledger.flush();
+            P.eq("held.usage.reset_lands.stays_empty", after && !ledger.pending() && !ledger.resetOwed()
+                                                           && us::read(file).empty() ? 1 : 0, 1);
+            if (kPosix)
+            {
+                probe::skip(P, "held.usage.flush_never", kPosixWhy);
+                probe::skip(P, "held.usage.reset_never", kPosixWhy);
+            }
+            else
+            {
+                ledger.add(key, one);
+                {
+                    Reader never(file);
+                    (void)never.open(kNever);
+                    const bool f = ledger.flush();
+                    never.close();
+                    P.eq("held.usage.flush_never.fails", f ? 0 : 1, 1);
+                }
+                P.eq("held.usage.flush_never.kept", ledger.pending() && ledger.flush() && us::read(file).size() == 1 ? 1 : 0, 1);
+                ledger.add(key, one);                    // counted before the cut: the reset owes it, and keeps it on failing
+                const std::string before = textOf(file);
+                ledger.requestReset();
+                {
+                    Reader never(file);
+                    (void)never.open(kNever);
+                    const bool f = ledger.reset();
+                    never.close();
+                    P.eq("held.usage.reset_never.fails", !f && ledger.lastResetFailed() ? 1 : 0, 1);
+                }
+                P.eq("held.usage.reset_never.nothing_lost", textOf(file) == before && ledger.pending() ? 1 : 0, 1);
+            }
+        }
+
+        // app.json: an answer.
+        {
+            auto heldSite = std::make_shared<Site>();
+            const fs::path app = dir / "app.json";
+            writeText(app, "{\"seen\":\"0.1.0\"}\n");
+            up::Config cfg = configOf(h, heldSite);
+            up::Check c(cfg);
+            c.start();
+            (void)settle(c);
+            {
+                Reader r(app);
+                (void)r.open(kLetGo);
+                c.setAnswer(up::Answer::no);
+                (void)settle(c);
+                r.close();
+            }
+            P.eq("held.app.lands", appJson(h)["updates"].toString() == "no" && appJson(h)["seen"].toString() == "0.1.0" ? 1 : 0, 1);
+            P.eq("held.app.lands.written", c.written() ? 1 : 0, 1);   // the check's own answer, not the file's alone
+            {
+                // What's new's seen, as skipped: written over a reader that lets go, the answer kept.
+                Reader r(app);
+                (void)r.open(kLetGo);
+                c.setSeen("0.2.0");
+                (void)settle(c);
+                r.close();
+            }
+            P.eq("held.app.seen_lands",
+                 appJson(h)["seen"].toString() == "0.2.0" && appJson(h)["updates"].toString() == "no" ? 1 : 0, 1);
+            P.eq("held.app.seen_lands.written", c.written() ? 1 : 0, 1);
+            if (kPosix)
+                probe::skip(P, "held.app.never", kPosixWhy);
+            else
+            {
+                {
+                    Reader never(app);
+                    (void)never.open(kNever);
+                    c.setAnswer(up::Answer::later);
+                    c.setSeen("0.3.0");
+                    (void)settle(c);
+                    P.eq("held.app.never.unchanged", appJson(h)["updates"].toString() == "no"
+                                                         && appJson(h)["seen"].toString() == "0.2.0" ? 1 : 0, 1);
+                    P.eq("held.app.never.not_written", c.written() ? 0 : 1, 1);
+                    never.close();
+                }
+                c.skip("0.9.0");                         // the next write takes the answer that waited with it
+                (void)settle(c);
+                P.eq("held.app.never.nothing_lost", appJson(h)["updates"].toString() == "later"
+                                                        && appJson(h)["skipped"].toString() == "0.9.0"
+                                                        && appJson(h)["seen"].toString() == "0.3.0" ? 1 : 0, 1);
+                P.eq("held.app.never.written_after", c.written() ? 1 : 0, 1);
+            }
+        }
+
+        // factory.json: an answer (the factory store's own thread writes it).
+        {
+            const fs::path answerFile = dir / "factory.json";
+            writeText(answerFile, "{}\n");
+            pg::factorystore::Config fc = pg::factorystore::processConfig();
+            fc.folder = (dir / "Factory" / pg::product::kKey).string();
+            fc.answerFile = answerFile.string();
+            fc.transport = std::make_shared<Site>();
+            fc.off = true;                               // nothing fetched: the answer's file alone
+            pg::factorystore::Store store(fc);
+            store.start();
+            const auto idle = [&] { return waitFor([&] { return store.idle(); }); };
+            (void)idle();
+            {
+                Reader r(answerFile);
+                (void)r.open(kLetGo);
+                store.setAnswer(pg::factorystore::Answer::yes);
+                (void)idle();
+                r.close();
+            }
+            P.eq("held.factory.lands", textOf(answerFile).find("\"yes\"") != std::string::npos ? 1 : 0, 1);
+            P.eq("held.factory.lands.written", store.answerWritten() ? 1 : 0, 1);   // the store's own answer
+            if (kPosix)
+                probe::skip(P, "held.factory.never", kPosixWhy);
+            else
+            {
+                Reader never(answerFile);
+                (void)never.open(kNever);
+                store.setAnswer(pg::factorystore::Answer::no);
+                (void)idle();
+                // As before this change: the file as it was, the answer kept in the store (its next write takes it).
+                P.eq("held.factory.never", textOf(answerFile).find("\"yes\"") != std::string::npos
+                                               && store.answer() == pg::factorystore::Answer::no ? 1 : 0, 1);
+                P.eq("held.factory.never.not_written", store.answerWritten() ? 0 : 1, 1);
+                never.close();
+                store.setAnswer(pg::factorystore::Answer::no);   // the next write takes it
+                (void)idle();
+                P.eq("held.factory.never.written_after", store.answerWritten()
+                                                             && textOf(answerFile).find("\"no\"") != std::string::npos ? 1 : 0, 1);
+            }
+        }
     }
 
     // ---- TWO, OFFER, SKIP (the processor's), DOWNLOAD ------------------------------------------------------------------

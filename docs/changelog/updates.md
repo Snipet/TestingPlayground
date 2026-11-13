@@ -14,3 +14,8 @@
 **Changed**
 - Besides the chat, the plugin now reaches testingplayground.seanfunk.xyz, only after a yes and only once an editor has
   opened: never while a host scans its plugins or a session plays with no editor open.
+
+**Fixed**
+- On Windows, with both plugins open (or two instances in two hosts), Settings' Reset of the usage record could say it
+  failed, and a count or an answer to the website's offer could go unwritten, when the other was reading the same file
+  at that moment. The write now waits for the reader, half a second at most.

@@ -21,6 +21,8 @@
 //             then key-change (signed with the next key) taken
 //   NEWER     needs-newer: the entry that needs 99.0.0 left out, its file never asked for (the synth's fixture)
 //   OFFLINE   no connection with no set (failed, "no connection") and with one (the set kept, ready)
+//   THROWN    a pass that throws (fminus/Failure.h's seam): failed, its reason in words, nothing fetching; the next
+//             pass fetches the set
 //   RESUME    a fetch cut short by a file's request failing leaves no set and the files that passed; the next asks
 //             only for the rest
 //   CORRUPT   a file on disk changed between runs: the set on disk refused (step file), then fetched afresh, that file
@@ -36,6 +38,7 @@
 //             last processor gone takes it back
 #include "Probe.h"
 
+#include "fminus/Failure.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Factory.h"
@@ -769,6 +772,51 @@ PROBE(plugin, factorystore)
         say("offline", st);
         P.eq("offline.no_set", st.status == fsx::Status::failed && st.failure == fsx::Failure::connection
                                    && st.reason.find("no connection") != std::string::npos && s->set() == nullptr ? 1 : 0, 1);
+    }
+
+    // ---- THROWN: a pass that throws (fminus/Failure.h's seam) --------------------------------------------------------
+    {
+        auto site = std::make_shared<Site>(fixtures().getChildFile("good-1"));
+        const std::unique_ptr<fsx::Store> s = storeOf(me, freshHome(), site);
+        pg::failure::plant("factory", pg::failure::Kind::badAlloc);
+        s->refreshNow();
+        const bool settled = settle(*s);
+        const int fired = pg::failure::fired();
+        pg::failure::unplant();
+        const fsx::State st = s->state();
+        say("thrown", st);
+        P.eq("thrown.in_words", settled && fired == 1 && st.status == fsx::Status::failed && st.failure == fsx::Failure::check
+                                    && st.reason == "the plugin itself failed while reading the factory projects: out of memory; this "
+                                                    "is not a fault in your program" && !st.fetching ? 1 : 0, 1);
+        s->refreshNow();
+        const bool again = settle(*s);
+        P.eq("thrown.next", again && s->state().status == fsx::Status::ready && ownNames(s->set()) == namesOf(good1) ? 1 : 0, 1);
+    }
+
+    // A pass that throws with an answer to write (the seam fires before the write): the answer kept as one whose write
+    // failed, the file as it was and never read back over it, no pass after it (the seam would throw again at each).
+    {
+        const juce::File home = freshHome();
+        auto site = std::make_shared<Site>(fixtures().getChildFile("good-1"));
+        const std::unique_ptr<fsx::Store> s = storeOf(me, home, site);
+        const juce::File answerFile = home.getChildFile("factory.json");
+        const std::string before = answerFile.loadFileAsString().toStdString();
+        const int requests = s->requests();
+        pg::failure::plant("factory", pg::failure::Kind::badAlloc, 5);
+        s->setAnswer(fsx::Answer::no);
+        const bool settled = settle(*s);
+        const int fired = pg::failure::fired();
+        pg::failure::unplant();
+        P.eq("thrown.answer.once", settled && fired == 1 ? 1 : 0, 1);
+        P.eq("thrown.answer.kept", s->answer() == fsx::Answer::no && !s->answerWritten()
+                                       && answerFile.loadFileAsString().toStdString() == before ? 1 : 0, 1);
+        s->refreshNow();                                 // a pass that reads the answer: the file's is not taken over it
+        const bool again = settle(*s);
+        P.eq("thrown.answer.not_read_back", again && s->answer() == fsx::Answer::no && s->requests() == requests ? 1 : 0, 1);
+        s->setAnswer(fsx::Answer::no);                   // the next answer's write takes it
+        const bool written = settle(*s);
+        P.eq("thrown.answer.written_after", written && s->answerWritten()
+                                                && answerFile.loadFileAsString().contains("\"no\"") ? 1 : 0, 1);
     }
 
     // ---- RESUME ----------------------------------------------------------------------------------------------------------

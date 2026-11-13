@@ -1,5 +1,6 @@
 // The chat's usage ledger (Usage.h).
 #include "plugin/Usage.h"
+#include "plugin/FileReplace.h"
 
 #include "plugin/ChatStore.h"
 
@@ -344,7 +345,7 @@ namespace playground::usage
             fs::create_directories(p.parent_path(), ec);
             const std::string tag = juce::Uuid().toString().substring(0, 12).toStdString();
             const fs::path temp = p.parent_path() / (p.filename().string() + "." + tag + ".tmp");
-            bool written = false;
+            bool written = false, moved = false;
             {
                 std::ofstream out(temp, std::ios::binary | std::ios::trunc);
                 out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -354,10 +355,9 @@ namespace playground::usage
             if (written)
             {
                 fs::permissions(temp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
-                ec.clear();
-                fs::rename(temp, p, ec);
+                moved = files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
             }
-            if (!written || ec)
+            if (!written || !moved)                  // the helper's answer: ec may say a try's error it waited out
             {
                 std::error_code e;
                 fs::remove(temp, e);

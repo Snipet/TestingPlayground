@@ -1,6 +1,9 @@
 // Source/plugin/UpdateCheck.cpp: see UpdateCheck.h.
 #include "plugin/UpdateCheck.h"
 
+#include "fminus/Failure.h"
+#include "plugin/FileReplace.h"
+
 #include "plugin/ClaudeApi.h"
 #include "plugin/FactoryStore.h"
 #include "plugin/Usage.h"
@@ -80,9 +83,8 @@ namespace playground::updates
                 out.close();
                 written = static_cast<bool>(out);
             }
-            if (written)
-                fs::rename(temp, p, ec);
-            if (!written || ec)
+            const bool moved = written && files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
+            if (!written || !moved)                  // the helper's answer, never ec
             {
                 std::error_code e;
                 fs::remove(temp, e);
@@ -704,13 +706,17 @@ namespace playground::updates
                     if (doCheck && !cancel.load())
                         considerCheck(doForce);
                 }
-                catch (const std::exception& e)
-                {
-                    fail(std::string("the check stopped: ") + e.what());
-                }
                 catch (...)
                 {
-                    fail("the check stopped on an error");
+                    std::string reason;
+                    try
+                    {
+                        reason = failure::sentence("checking for a new version");   // fminus/Failure.h's words
+                    }
+                    catch (...)
+                    {
+                    }
+                    fail(std::move(reason));
                 }
                 // A write that failed (the lock not taken, the disk) leaves its fields dirty: they go with the next
                 // request's write, never retried in a loop here.
@@ -871,6 +877,12 @@ namespace playground::updates
     {
         const std::lock_guard<std::mutex> lock(s_->m);
         return !s_->busy && !s_->loadWanted && !s_->checkWanted && !s_->writeWanted && !s_->seenWanted;
+    }
+
+    bool Check::written() const
+    {
+        const std::lock_guard<std::mutex> lock(s_->m);
+        return !s_->answerDirty && !s_->skippedDirty && !s_->resultDirty && !s_->seenDirty;
     }
 
     int Check::requests() const noexcept { return s_->requests.load(); }
