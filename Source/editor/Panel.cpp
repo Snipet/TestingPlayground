@@ -9124,9 +9124,15 @@ namespace playground::ui
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
         else if (git_.isOpen())
-            std::snprintf(line, sizeof line, git_.running() ? "GIT   CANCEL STOPS GIT   ESCAPE CLOSES (IT GOES ON)"
-                                                            : "GIT   TAB THE NEXT FIELD   %s PASTES   RETURN %s   ESCAPE CLOSES",
-                          upper(shortcutText("Cmd-V")).c_str(), git_.mode() == GitCard::Mode::add ? "ADDS" : git_.link().linked ? "PUSHES" : "CONNECTS");
+        {
+            if (git_.running())
+                std::snprintf(line, sizeof line, "GIT   CANCEL STOPS GIT   ESCAPE CLOSES (IT GOES ON)");
+            else if (git_.mode() == GitCard::Mode::project && git_.link().linked)
+                std::snprintf(line, sizeof line, "GIT   RETURN PUSHES   DISCONNECT ASKS TWICE   ESCAPE CLOSES");
+            else
+                std::snprintf(line, sizeof line, "GIT   TAB THE NEXT FIELD   %s PASTES   RETURN %s   ESCAPE CLOSES",
+                              upper(shortcutText("Cmd-V")).c_str(), git_.mode() == GitCard::Mode::add ? "ADDS" : "CONNECTS");
+        }
         else if (compare_.isOpen())
             std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
                                              "ESCAPE OR A CLICK OUTSIDE CLOSES");

@@ -183,7 +183,7 @@ namespace playground::ui
                     notice_ = upper(line.substr(0, std::min(line.find(". "), line.size())));
                 }
                 else
-                    notice_ = what + " FAILED: SEE GIT...";
+                    notice_ = what + " FAILED: THE GIT CARD SAYS WHY";
                 if (open_)
                     read();
                 changed = true;
@@ -211,12 +211,16 @@ namespace playground::ui
     void GitCard::setRemote(const std::string& s)
     {
         remote_.set(s, kRemoteLength);
+        remote_.allSelected = false;
+        remote_.caret = static_cast<int>(remote_.buffer.size());
         ++revision_;
     }
 
     void GitCard::setBranch(const std::string& s)
     {
         branch_.set(s, kBranchLength);
+        branch_.allSelected = false;
+        branch_.caret = static_cast<int>(branch_.buffer.size());
         ++revision_;
     }
 
@@ -292,7 +296,7 @@ namespace playground::ui
         else if (link_.linked)
         {
             // The facts' rows (remote, state, folder: three rows), then the commits.
-            y += 3.0f * kRowH + kGap + kCaption;
+            y += 14.0f + 3.0f * kRowH + kGap + kCaption;
             at.log = { x0, y, inner, std::max(0.0f, at.outcome.y - kGap - y) };
         }
         return at;
@@ -505,7 +509,7 @@ namespace playground::ui
         else if (link_.linked)
         {
             // Its facts, then its newest commits.
-            float y = box.y + 98.0f;
+            float y = box.y + 112.0f;
             const auto fact = [&](const char* name, const std::string& value, funkgui::Col ink) {
                 c.text(name, x, c.capCentreTop(y, chat::kSmallStrong), chat::kSmallStrong, p.faint);
                 c.text(fitText(c, value, chat::kBody, inner - 90.0f).c_str(), x + 90.0f, c.capCentreTop(y, chat::kBody), chat::kBody, ink);
@@ -599,7 +603,7 @@ namespace playground::ui
             state.id = kStateId;
             state.parent = kBoxId;
             state.role = funkgui::A11yRole::staticText;
-            state.bounds = { at.box.x + kPad, at.box.y + 88.0f, at.box.w - 2.0f * kPad, 3.0f * kRowH };
+            state.bounds = { at.box.x + kPad, at.box.y + 100.0f, at.box.w - 2.0f * kPad, 3.0f * kRowH };
             state.title = "Linked to " + link_.shortRemote + ", branch " + link_.branch;
             state.value = stateLine(link_);
             state.help = "Working folder: " + link_.folder;

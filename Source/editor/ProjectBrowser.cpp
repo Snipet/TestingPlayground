@@ -1012,11 +1012,12 @@ namespace playground::ui
         at.open = { at.save.x - 8.0f - openW, by, openW, kButtonH };
         at.close = { at.open.x - 8.0f - 84.0f, by, 84.0f, kButtonH };
         at.remove = { at.box.x + kPad, by, pillW(removeLabel()), kButtonH };
-        at.importIt = { at.remove.right() + 8.0f, by, 88.0f, kButtonH };
-        at.exportIt = { at.importIt.right() + 8.0f, by, 88.0f, kButtonH };
-        at.git = { at.exportIt.right() + 8.0f, by, 64.0f, kButtonH };   // package 05: Git... (GitCard.h)
-        at.ab = { at.git.right() + 8.0f, by, 64.0f, kButtonH };
-        at.compare = { at.ab.right() + 8.0f, by, 92.0f, kButtonH };
+        at.importIt = { at.remove.right() + 8.0f, by, 84.0f, kButtonH };
+        at.exportIt = { at.importIt.right() + 8.0f, by, 84.0f, kButtonH };
+        at.git = { at.exportIt.right() + 8.0f, by, 58.0f, kButtonH };   // package 05: Git... (GitCard.h)
+        at.ab = { at.git.right() + 8.0f, by, 58.0f, kButtonH };
+        // Compare... keeps clear of Close, whatever Save's label makes Close's place ("Save version" is the widest).
+        at.compare = { at.ab.right() + 8.0f, by, std::clamp(at.close.x - 8.0f - (at.ab.right() + 8.0f), 72.0f, 92.0f), kButtonH };
         // The top: the search field after the title, then the tag's dropdown and the order's at the right.
         const float ty = at.box.y + 21.0f;
         at.sort = { at.box.right() - kPad - kSortW, ty, kSortW, kTopH };
