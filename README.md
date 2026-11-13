@@ -1152,7 +1152,16 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   and, when only the remote moved, reads the remote's project from its commit (one that is not a project of this
   playground is refused, the folder left as it was), moves the folder to it and saves it as a new version ("Pulled
   1a2b3c4: ..."); when that project is open and you have changed nothing, the new version opens, else it waits in the
-  versions list. When both sides moved it says so and changes nothing (both are kept). **Check** fetches and counts.
+  versions list. When both sides moved, the versions not yet committed are committed and the two sides merged
+  in git itself, the folder untouched until it is done: when they changed different files, or different lines of one,
+  the merge is saved as a new version ("Merged with 1a2b3c4") for you to push. When both changed the same lines git
+  cannot merge them, and the card offers three ways, none of which loses anything: **Keep mine** (their side saved as a
+  version, yours again on top of it, and a merge commit of yours), **Take theirs** (their side saved as the newest
+  version, yours the one before) and **Compare...**, the Compare card with your newest version against theirs, read
+  from the remote's commit and shown from memory (no Open or A/B for it): nothing is written until you choose. A merge
+  you left under way in the folder yourself is never touched: finish or abort it there first. Each version's
+  `project.json` keeps one item a line and no version number, time or note, so two sides that changed different dials
+  or files merge cleanly. **Check** fetches and counts.
   **Show folder** shows the working folder, **Disconnect** (asked first) removes the link and leaves the project and the
   folder. **Add from Git...** (the card's other face, or Git... with no project chosen) clones a repository into a new
   folder and adds its newest commit as a new project, linked. A linked project has a small branch mark after its name
