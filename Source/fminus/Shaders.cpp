@@ -1,5 +1,6 @@
 // Source/fminus/Shaders.cpp: see Shaders.h.
 #include "fminus/Shaders.h"
+#include "fminus/Failure.h"
 #include "fminus/PanelSpec.h"
 #include "fminus/ShaderLib.h"
 #include "fminus/Xdg.h"
@@ -1222,17 +1223,28 @@ namespace playground
     std::vector<ShaderBuild> ShaderCache::buildAll(const std::vector<ShaderJob>& jobs, const ShaderTools& tools)
     {
         std::vector<ShaderBuild> out(jobs.size());
+        // An exception (of any kind: fminus/Failure.h) fails that shader alone, in words; on its own thread it would
+        // take the host down.
         const auto one = [&](std::size_t k) {
             try
             {
+                failure::at("shader");
                 ShaderBuild b = build(jobs[k].file, jobs[k].body, jobs[k].inputs, tools, jobs[k].headers);
                 if (b.ok() && tools.check)
                     b.refused = !tools.check(b.binary, b.refusal);
                 out[k] = std::move(b);
             }
-            catch (const std::exception& e)
+            catch (...)
             {
-                out[k].error = jobs[k].file + ":1:1: note: the shader cannot be built: " + e.what() + "\n";
+                try
+                {
+                    out[k] = ShaderBuild{};
+                    out[k].error = jobs[k].file + ":1:1: note: the shader cannot be built: "
+                                 + failure::sentence("building it") + "\n";
+                }
+                catch (...)
+                {
+                }                                      // (out of memory: no binary and no words)
             }
         };
         std::vector<std::thread> threads;
@@ -1242,9 +1254,9 @@ namespace playground
             {
                 threads.emplace_back(one, k);
             }
-            catch (const std::system_error&)
+            catch (...)
             {
-                one(k);                                // no thread to be had: here, in turn
+                one(k);                                // no thread to be had (or no room for one): here, in turn
             }
         }
         if (!jobs.empty())

@@ -311,11 +311,18 @@ namespace playground
                                             ShaderCache& cache, bool keepIr, const CircuitPins* pins, const Assets& assets);
 
         void run();
+        void pass(std::unique_lock<std::mutex>& lock);   // one of run()'s passes, mutex_ held on entry and on return
         void freezer();                        // the freezer's thread
-        bool freeze(const DialState& d);       // compiles and offers the copy (the recipe under mutex_)
+        bool freeze(const DialState& d);       // compiles and offers the copy (the recipe under mutex_); an exception
+                                               // there, none (fminus/Failure.h)
+        bool freezeOnce(const DialState& d);
         // A compile's status published (its revision the next; a failed one's `program` the one that plays on), and
         // the status as stored.
         CompileStatus finish(CompileStatus s);
+        // Inside a catch: request `id`'s compile failed inside the plugin (an exception, fminus/Failure.h), published as
+        // a failed compile whose error says so, at `program`'s first line, while `doing`; the program that played plays
+        // on. A default status, nothing published, should even that fail.
+        CompileStatus failed(uint64_t id, const std::string& program, const char* doing) noexcept;
         // A compile the caller ran (compileNow's, a RUN's: its patch offered here when it compiled, with its carry
         // when `carry`), published. `watch` (a RUN's): offered revertible, and its first blocks waited for (above, "A
         // program that stops"); firstBlocks() is the wait, false when the Engine went back from it.
