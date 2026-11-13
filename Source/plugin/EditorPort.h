@@ -570,6 +570,13 @@ namespace playground
         std::string factoryWords;
         // The offer (editor/OfferCard.h): due when both are read, neither question answered, and envOff is false.
         bool offer = false;
+        // What's new (editor/UpdateCards.h, plugin/Changelog.h): the version whose card was last shown, both products'
+        // ("" never); due once an editor opened and app.json was read again since, when seen is not this version, the
+        // changelog has something to show, and <ENV_PREFIX>WHATSNEW is not "off" (the probes' environment sets it).
+        std::string seen;
+        bool whatsNewOff = false;
+        bool whatsNewReady = false;              // app.json read, and read again since an editor last opened
+        bool whatsNewDue = false;
         uint64_t revision = 0;
     };
 
@@ -990,6 +997,10 @@ namespace playground
         //   announceUpdate()   true the first time this process asks for `version`: the status line's notice, once
         //   openDownloadPage() the site's fixed download page in the browser (updates::kDownloadPath: never an address
         //                      from the site), through the processor's hook under a probe; false with why
+        //   whatsNewShown()    What's new was shown (by itself or from Settings): app.json's seen is this version
+        //   openLink()         a link of What's new in the browser: only an https:// address of the repository or the
+        //                      website (changelog::linkAllowed), through the same hook as the download page; false
+        //                      with why (refused, or nothing opens under a probe)
         virtual UpdateState updateState() const { return {}; }
         virtual uint64_t updateRevision() const { return 0; }
         virtual void editorOpened() {}
@@ -1010,6 +1021,13 @@ namespace playground
         }
         virtual bool openDownloadPage(std::string& why)
         {
+            why = "nothing opens here";
+            return false;
+        }
+        virtual void whatsNewShown() {}
+        virtual bool openLink(const std::string& url, std::string& why)
+        {
+            (void)url;
             why = "nothing opens here";
             return false;
         }

@@ -218,12 +218,24 @@ namespace playground::ui::settings
                     b.ctrlX, b.ctrlW);
             b.heading("VERSION");
             b.row("Version", std::string(product::kName) + " " + product::kVersion);
+            b.y += 6.0f;
+            const std::string word = "What's new";
+            b.button(kWhatsNew, { b.ctrlX, b.y, Builder::pillW(word, false, false), kRowH }, word,
+                     "What's new: the changes in this version");
+            b.y += kRowStep;
         }
 
         void actGeneral(const Control& c, Context& ctx)
         {
             if (c.act != Act::item)
                 return;
+            if (c.index == kWhatsNew)
+            {
+                ctx.card.close();                        // the card over the panel, never two at once
+                if (ctx.card.hooks().whatsNew)
+                    ctx.card.hooks().whatsNew();
+                return;
+            }
             if (c.index == kTheme)
                 menu(c, ctx, { kThemes[0], kThemes[1] }, std::clamp(themeNow(ctx), 0, 1), {},
                      [](int i) { funkgui::UiPreferences::get().setTheme(i); });

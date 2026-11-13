@@ -240,6 +240,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
     inline constexpr funkgui::Tag kOfferTag = funkgui::tags::firstProduct + 44;       // the website's offer (UpdateCards.h)
     inline constexpr funkgui::Tag kUpdateTag = funkgui::tags::firstProduct + 45;      // the update card (UpdateCards.h)
+    inline constexpr funkgui::Tag kWhatsNewTag = funkgui::tags::firstProduct + 46;    // What's new (UpdateCards.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -380,6 +381,8 @@ namespace playground::ui
         ExportCard& exportCard() noexcept { return export_; }
         NameCard& nameCard() noexcept { return name_; }
         OfferCard& offerCard() noexcept { return offer_; }      // the website's offer (UpdateCards.h), for the probes
+        WhatsNewCard& whatsNewCard() noexcept { return whatsNew_; }   // What's new (UpdateCards.h), for the probes
+        void openWhatsNew();                             // What's new now (Settings, General's button), seen set
         UpdateCard& updateCard() noexcept { return update_; }
         std::optional<funkgui::Point> centreOfUpdatePill() const;   // nullopt while it does not show
         // Claude Desktop as this Panel shows it (probes): the chat header's subtitle and badge ("" for none), and where
@@ -893,7 +896,7 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen() || compare_.isOpen() || update_.isOpen();
+                || picker_.isOpen() || compare_.isOpen() || update_.isOpen() || whatsNew_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -1030,6 +1033,12 @@ namespace playground::ui
         bool updatePill_ = false;                        // the pill shows (its place laid out)
         void syncUpdates();
         void afterUpdateCards();                         // their notices to the status, the focus kept
+        // What's new (UpdateCards.h): opened by itself once per version, after the offer is decided and answered, when
+        // no card is open (an editor's Panel alone); and from Settings, General (after the card has closed).
+        WhatsNewCard whatsNew_{ port_ };
+        bool whatsNewDecided_ = false;                   // shown, or found not due, once
+        bool whatsNewAfterSettings_ = false;             // the General page's What's new: afterSettings opens it
+        void decideWhatsNew();
         int focusBeforeName_ = -1;
         void afterName(bool wasOpen);                    // its notice to the status, the focus back once it closed
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change

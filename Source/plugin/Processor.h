@@ -190,8 +190,9 @@ namespace playground
         FolderSync& folderSync() noexcept { return folder_; }
         using FolderLauncher = std::function<bool(FolderApp app, const std::string& path, std::string& why)>;
         void setFolderLauncher(FolderLauncher launcher) { folderLauncher_ = std::move(launcher); }
-        // What opens the website's download page (EditorPort::openDownloadPage, ProcessorUpdates.cpp): the probes' records
-        // the address and opens nothing; the default opens nothing under a probe's sandbox either. Message thread.
+        // What opens the website's download page and What's new's links (EditorPort::openDownloadPage, openLink;
+        // ProcessorUpdates.cpp): the probes' records the address and opens nothing; the default opens nothing under a
+        // probe's sandbox either. Message thread.
         using PageLauncher = std::function<bool(const std::string& url, std::string& why)>;
         void setPageLauncher(PageLauncher launcher) { pageLauncher_ = std::move(launcher); }
         capture::Recorder& recorder() noexcept { return capture_; }   // the capture tool's recorder (the probes)
@@ -422,6 +423,9 @@ namespace playground
         void skipUpdate(const std::string& version) override;
         bool announceUpdate(const std::string& version) override;
         bool openDownloadPage(std::string& why) override;
+        void whatsNewShown() override;
+        bool openLink(const std::string& url, std::string& why) override;
+        bool openPage(const std::string& url, std::string& why);   // the browser, through pageLauncher_ (or nothing)
 
         bool midiLearnable() const override;
         midilearn::View midi() const override { return learn_.view(); }

@@ -153,6 +153,7 @@ namespace playground::ui
         {
             std::function<Ai()> ai;
             std::function<void()> keyDialog;     // after the card has closed
+            std::function<void()> whatsNew;      // What's new (UpdateCards.h), after the card has closed
             std::function<DebugSection()> graphics;
         };
 

@@ -13,7 +13,19 @@
 // version this is, the release's one-line summary, then Download (the site's fixed download page in the browser:
 // EditorPort::openDownloadPage), Skip this version (EditorPort::skipUpdate: the pill goes), Later (or Escape, or a press
 // outside the card). Modal while open, as the other cards are.
+//
+// WhatsNewCard: "What's new in 0.2.0", the changelog compiled in (plugin/Changelog.h) for this version, or every
+// version since the one last seen, newest first, each under its own heading; a development build whose version has no
+// heading shows Unreleased. A scrolling page of the editor's light markdown (Markdown.h), its links shown as their text
+// in the accent, a click opening only an https:// address of the repository or the website, through the processor's
+// launcher (EditorPort::openLink: a probe's hook catches it; never a shell). Close, Escape, Return or a press outside
+// close it. Opened by the Panel once per version (app.json's seen, both products'), after the offer is answered, never
+// over another card nor in a picture's Panel; and again from Settings, General. Opening it, either way, sets seen
+// (EditorPort::whatsNewShown). Modal while open.
 #pragma once
+
+#include "editor/Markdown.h"
+#include "editor/Scroll.h"
 
 #include "plugin/EditorPort.h"
 
@@ -25,8 +37,14 @@
 #include <funkgui/panel/Input.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
+
+namespace playground::changelog
+{
+    struct Version;
+}
 
 namespace playground::ui
 {
@@ -105,6 +123,67 @@ namespace playground::ui
         EditorPort& port_;
         bool open_ = false;
         std::string version_, current_, date_, summary_;
+        std::string notice_;
+        uint32_t revision_ = 0;
+    };
+
+    class WhatsNewCard
+    {
+    public:
+        static constexpr uint32_t kA11yBase = 0x7FF40000u;
+
+        explicit WhatsNewCard(EditorPort& port) : port_(port) {}
+
+        bool isOpen() const noexcept { return open_; }
+        // What the changelog has since `seen` ("" never: this version's alone) for this version, at the top; the port
+        // told it was shown.
+        void open(const std::string& seen);
+        // These versions (changelog::since's, newest first) for this version: what open() shows, and the probes' own.
+        void openFor(const std::vector<changelog::Version>& shown);
+        void close();
+
+        struct Places
+        {
+            funkgui::Rect box, body, close;
+        };
+        Places places(float width, float height) const;
+
+        void pointerDown(funkgui::Point p, float width, float height);
+        void pointerDrag(funkgui::Point p, float width, float height);
+        void pointerUp();
+        void wheel(const funkgui::WheelEvent& e, float width, float height);
+        void key(const funkgui::KeyEvent& e, float width, float height);
+        funkgui::Cursor cursor(funkgui::Point p, float width, float height) const;
+        void draw(funkgui::Canvas& c, const funkgui::Theme& th, float width, float height, funkgui::Point pointer,
+                  bool hasPointer) const;
+        void accessibility(std::vector<funkgui::A11yItem>& out, float width, float height) const;
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, float width, float height);
+        uint32_t revision() const noexcept { return revision_; }
+        uint64_t key() const noexcept;                   // the scroll, for the Panel's drawKey
+
+        std::string takeNotice();
+        // For the probes: the title, the markdown shown, the page's scroll, and each link's centre in the panel (when
+        // it is in view) with its address.
+        const std::string& title() const noexcept { return title_; }
+        const std::string& text() const noexcept { return raw_; }
+        Scroll scroller(float width, float height) const;
+        int linkCount(float width, float height) const;
+        std::optional<funkgui::Point> centreOfLink(int i, float width, float height) const;
+        std::string linkUrl(int i, float width, float height) const;
+
+    private:
+        const markdown::Layout& laidOut(float bodyW) const;
+        int linkAt(funkgui::Point p, const Places& at) const;   // -1 none
+        void openLink(const std::string& url);
+        void scrollBy(float dy, float width, float height);
+
+        EditorPort& port_;
+        bool open_ = false;
+        std::string title_, raw_, shown_;                // the markdown as written, and as drawn (asciiText)
+        markdown::Metrics metrics_;
+        mutable markdown::Layout layout_;
+        mutable float laidW_ = -1.0f, contentH_ = 0.0f;
+        Scroll scroll_;
         std::string notice_;
         uint32_t revision_ = 0;
     };

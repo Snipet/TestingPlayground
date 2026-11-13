@@ -15,8 +15,8 @@
 //
 // app.json, in the folder both products share (factorystore::directory(): Funk/Playground/, beside factory.json; a
 // probe's sandbox's factory/), holds {"updates": "yes" | "no" | "later", "skipped": "0.3.0", "checkedMs": ms since 1970
-// of the site's last answer, "latest": {version, tag, date, summary}, "prices": the last table taken}; other fields
-// (What's new's "seen", package 08's next step) are kept as they are. Every write reads the file again under the
+// of the site's last answer, "latest": {version, tag, date, summary}, "prices": the last table taken, "seen": the
+// version whose What's new the user last saw (setSeen; plugin/Changelog.h)}; other fields are kept as they are. Every write reads the file again under the
 // folder's lock (.lock) and sets only the fields this process changed, then writes beside and renames over: two
 // processes (two products) never lose each other's answer. "later" is the offer's Not now: the update check off, and
 // the offer not made again by itself.
@@ -76,6 +76,8 @@ namespace playground::updates
         bool newer = false;                        // latest.version is above this plugin's
         std::string current;                       // this plugin's version
         std::string skipped;                       // the version the user skipped ("" none)
+        std::string seen;                          // the version whose What's new was last shown ("" never)
+        bool seenFresh = false;                    // seen read again from app.json since an editor last opened
         int64_t checkedMs = 0;                     // the site's last answer (ms since 1970); 0: never
         std::string why;                           // the last check's failure, in words ("" none)
         uint64_t revision = 0;                     // moves whenever any of the above does
@@ -138,7 +140,11 @@ namespace playground::updates
         // opened (or one was asked for) and the last is a day old.
         void setAnswer(Answer a);
         void skip(const std::string& version);     // the pill and the card no longer show this version
-        void editorOpened();                       // an editor of this process opened: a check, when one is due
+        // What's new was shown for `version` (by itself or by hand): kept at once, written to app.json on the thread,
+        // whatever the answer and <ENV_PREFIX>UPDATES (What's new reaches no network). Shared by both products.
+        void setSeen(const std::string& version);
+        // An editor of this process opened: a check, when one is due; What's new's seen read again (State::seenFresh).
+        void editorOpened();
         void checkNow();                           // a check now, when the answer is yes, however recent the last
         // The status line's "VERSION 0.2.0 IS OUT", once a process: true the first time it is asked for `version`.
         bool announce(const std::string& version);

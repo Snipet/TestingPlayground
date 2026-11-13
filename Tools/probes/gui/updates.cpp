@@ -17,15 +17,33 @@
 //            site's /download to the processor's hook and closes; Skip this version takes the pill away
 //   NETWORK  the Network page: unanswered, on with a newer version, failed (the reason in words), off; Check now asks the
 //            site again; its words say what is sent
+// What's new (<ENV_PREFIX>WHATSNEW turned on for these rows alone: plugin/Changelog.h, the card in UpdateCards.h):
+//   WHATSNEW_OFF   with <ENV_PREFIX>WHATSNEW=off (every other probe's), no card, the offer answered or not
+//   WHATSNEW_AFTER a first install: the offer first and alone; once it is answered, What's new by itself, this
+//            version's ("What's new in <version>"), drawn, modal, inside the window; app.json's seen this version; a
+//            second editor and a new processor over the same folder show none (once per version)
+//   WHATSNEW_PAGE  it scrolls: the wheel, End to its end, Home back; a link in view is drawn and named to a screen
+//            reader, a click on it gives its address (the repository's) to the processor's hook, nothing opened else,
+//            the card still open and the status saying so; an address that is not the repository's or the website's
+//            is refused by the processor, the hook never called; Escape closes it; it fits the least window
+//   WHATSNEW_CARD  never over another card: an editor whose Settings card is open when What's new is due waits, and
+//            shows it once the card closes
+//   WHATSNEW_SETTINGS  (Paper) Settings, General's What's new closes the Settings card and opens it (seen already)
+//   WHATSNEW_SEVERAL   (Paper) several versions skipped (made-up versions through openFor): each under its own heading,
+//            the newest first; the title the newest's
+//   WHATSNEW_PICTURE   a picture's Panel never shows it
 // PNGs (probe-out/<key>/): gui.updates.offer.png, .offer.unticked.png, .offer.least.png, .offer.paper.png, .pill.png,
 // .pill.paper.png, .card.png, .card.paper.png, .card.least.png, .network.unanswered.png, .network.on.png,
-// .network.failed.png, .network.off.png, .network.least.png, .network.later.paper.png
+// .network.failed.png, .network.off.png, .network.least.png, .network.later.paper.png, .whatsnew.png,
+// .whatsnew.scrolled.png, .whatsnew.link.png, .whatsnew.least.png, .whatsnew.settings.paper.png,
+// .whatsnew.several.paper.png, .whatsnew.several.scrolled.paper.png
 #include "Probe.h"
 
 #include "editor/Panel.h"
 #include "editor/SettingsCard.h"
 #include "editor/SettingsPages.h"
 #include "editor/UpdateCards.h"
+#include "plugin/Changelog.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FactoryStore.h"
@@ -49,6 +67,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace pg = playground;
@@ -184,6 +203,37 @@ namespace
             pg::factorystore::setDirectoryForTests(juce::File());
         }
     };
+
+    // <ENV_PREFIX>WHATSNEW as a scope sets it, put back after (What's new's rows turn it on for themselves).
+    class WhatsNewEnv
+    {
+    public:
+        explicit WhatsNewEnv(const char* value) : name_(std::string(pg::product::kEnvPrefix) + "WHATSNEW")
+        {
+            if (const char* v = std::getenv(name_.c_str()))
+                old_ = std::string(v);
+            ::setenv(name_.c_str(), value, 1);
+        }
+        ~WhatsNewEnv()
+        {
+            if (old_)
+                ::setenv(name_.c_str(), old_->c_str(), 1);
+            else
+                ::unsetenv(name_.c_str());
+        }
+        WhatsNewEnv(const WhatsNewEnv&) = delete;
+        WhatsNewEnv& operator=(const WhatsNewEnv&) = delete;
+
+    private:
+        std::string name_;
+        std::optional<std::string> old_;
+    };
+
+    std::string seenIn(const juce::File& dir)
+    {
+        const juce::var v = juce::JSON::parse(dir.getChildFile("app.json").loadFileAsString());
+        return v.isObject() ? v["seen"].toString().toStdString() : std::string();
+    }
 
     // Ticks the host until `done`, kWorkWait at most (another thread's work: the check's).
     template <typename F>
@@ -516,6 +566,271 @@ PROBE(gui, updates)
         host.tick(5);
         P.eq("picture.no_offer", picture.offerCard().isOpen() ? 1 : 0, 0);
         P.eq("picture.offer_due_still", port.updateState().offer ? 1 : 0, 1);
+    }
+
+    // ---- What's new ----------------------------------------------------------------------------------------------------
+    const std::string version = pg::product::kVersion;
+    const std::string title = "What's new in " + version;
+    {
+        // WHATSNEW_OFF: the environment's off (every other probe's): an answered offer, no card.
+        WhatsNewEnv env("off");
+        Home home(base.getChildFile("whatsnew-off"));
+        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"later\"}\n");
+        pg::Processor processor;
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        (void)tickUntil(host, [&] { return processor.editorPort().updateState().whatsNewReady; });
+        host.tick(5);
+        P.eq("whatsnew.off.said", processor.editorPort().updateState().whatsNewOff ? 1 : 0, 1);
+        P.eq("whatsnew.off.no_card", panel.whatsNewCard().isOpen() ? 1 : 0, 0);
+        P.eq("whatsnew.off.seen_untouched", seenIn(home.dir).empty() ? 1 : 0, 1);
+    }
+    {
+        WhatsNewEnv env("on");
+        Home home(base.getChildFile("whatsnew"));
+        pg::Processor processor;
+        pg::EditorPort& port = processor.editorPort();
+        std::vector<std::string> opened;
+        processor.setPageLauncher([&](const std::string& url, std::string&) {
+            opened.push_back(url);
+            return true;
+        });
+        {
+            pg::ui::Panel panel(processor.ports(), port);
+            funkgui::HeadlessHost host(panel, 0, 2.0f);
+            const auto W = [&] { return static_cast<float>(panel.width()); };
+            const auto H = [&] { return static_cast<float>(panel.height()); };
+            const auto settle = [&] {
+                host.tick(2);
+                host.settle();
+            };
+            pg::ui::OfferCard& offer = panel.offerCard();
+            pg::ui::WhatsNewCard& card = panel.whatsNewCard();
+
+            // WHATSNEW_AFTER: a first install: the offer first, alone.
+            P.eq("whatsnew.after.offer_first", tickUntil(host, [&] { return offer.isOpen(); }) ? 1 : 0, 1);
+            (void)tickUntil(host, [&] { return port.updateState().whatsNewReady; });
+            host.tick(5);
+            P.eq("whatsnew.after.due", port.updateState().whatsNewDue ? 1 : 0, 1);
+            P.eq("whatsnew.after.not_with_the_offer", card.isOpen() ? 1 : 0, 0);
+            P.eq("whatsnew.after.seen_untouched", seenIn(home.dir).empty() ? 1 : 0, 1);
+            {
+                const pg::ui::OfferCard::Places at = offer.places(W(), H());
+                host.click(at.notNow.centreX(), at.notNow.centreY());
+            }
+            P.eq("whatsnew.after.shown", tickUntil(host, [&] { return card.isOpen(); }) ? 1 : 0, 1);
+            settle();
+            P.eq("whatsnew.after.offer_gone", offer.isOpen() ? 1 : 0, 0);
+            P.eq("whatsnew.after.title", card.title() == title ? 1 : 0, 1);
+            P.eq("whatsnew.after.this_version",
+                 card.text() == pg::changelog::markdown(pg::changelog::since("", version)) ? 1 : 0, 1);
+            P.eq("whatsnew.after.drawn", countTag(host.draw(), pg::ui::kWhatsNewTag) > 0 ? 1 : 0, 1);
+            P.eq("whatsnew.after.inside", inside(card.places(W(), H()).box, W(), H()) ? 1 : 0, 1);
+            P.eq("whatsnew.after.seen_written", tickUntil(host, [&] { return seenIn(home.dir) == version; }) ? 1 : 0, 1);
+            P.eq("whatsnew.after.seen_state", port.updateState().seen == version ? 1 : 0, 1);
+            P.eq("whatsnew.after.nothing_asked", home.site->count(), 0);
+            {
+                bool named = false;
+                for (const funkgui::A11yItem& a : host.accessibility())
+                    named = named || a.title == title;
+                P.eq("whatsnew.after.a11y", named ? 1 : 0, 1);
+            }
+            writePng(P, host, "gui.updates.whatsnew.png");
+            // Modal: the gear behind it is not pressed.
+            {
+                const funkgui::Point gear = panel.centreOfSettings();
+                const pg::ui::WhatsNewCard::Places at = card.places(W(), H());
+                if (at.box.contains(gear))
+                    P.harnessError("the gear under the card");
+                host.click(gear.x, gear.y);
+                settle();
+                P.eq("whatsnew.page.click_outside_closes", !card.isOpen() && !panel.settingsCard().isOpen() ? 1 : 0, 1);
+                panel.openWhatsNew();
+                settle();
+                P.eq("whatsnew.page.open_again", card.isOpen() ? 1 : 0, 1);
+            }
+
+            // WHATSNEW_PAGE: it scrolls.
+            const pg::ui::WhatsNewCard::Places at = card.places(W(), H());
+            P.ge("whatsnew.page.overflows", card.scroller(W(), H()).max(), 100.0);
+            host.wheel(at.body.centreX(), at.body.centreY(), -3.0f);
+            settle();
+            const float wheeled = card.scroller(W(), H()).offset;
+            P.ge("whatsnew.page.wheel", wheeled, 10.0);
+            writePng(P, host, "gui.updates.whatsnew.scrolled.png");
+            host.keys("end");
+            settle();
+            P.near("whatsnew.page.end", card.scroller(W(), H()).offset, card.scroller(W(), H()).max(), 0.5);
+            host.keys("home");
+            settle();
+            P.near("whatsnew.page.home", card.scroller(W(), H()).offset, 0.0, 0.5);
+            P.eq("whatsnew.page.keys_keep_it_open", card.isOpen() ? 1 : 0, 1);
+
+            // A link: the first in view (the page scrolled until one is).
+            int link = -1;
+            for (int step = 0; step < 400 && link < 0; ++step)
+            {
+                for (int i = 0; i < card.linkCount(W(), H()) && link < 0; ++i)
+                    if (card.centreOfLink(i, W(), H()))
+                        link = i;
+                if (link < 0)
+                {
+                    host.keys("down");
+                    settle();
+                }
+            }
+            P.ge("whatsnew.link.found", link, 0);
+            if (link >= 0)
+            {
+                const std::string url = card.linkUrl(link, W(), H());
+                const funkgui::Point c = *card.centreOfLink(link, W(), H());
+                P.eq("whatsnew.link.allowed", pg::changelog::linkAllowed(url) ? 1 : 0, 1);
+                P.eq("whatsnew.link.repository", url.rfind(pg::changelog::repository(), 0) == 0 ? 1 : 0, 1);
+                bool spoken = false;
+                for (const funkgui::A11yItem& a : host.accessibility())
+                    spoken = spoken || a.title == "Link: " + url;
+                P.eq("whatsnew.link.a11y", spoken ? 1 : 0, 1);
+                host.move(c.x, c.y);
+                settle();
+                P.eq("whatsnew.link.hand", panel.cursor() == funkgui::Cursor::pointingHand ? 1 : 0, 1);
+                writePng(P, host, "gui.updates.whatsnew.link.png");
+                host.click(c.x, c.y);
+                host.tick(2);
+                P.eq("whatsnew.link.hook", opened.size() == 1 && opened.back() == url ? 1 : 0, 1);
+                P.eq("whatsnew.link.stays_open", card.isOpen() ? 1 : 0, 1);
+                P.eq("whatsnew.link.said", panel.statusText().find("IN THE BROWSER") != std::string::npos ? 1 : 0, 1);
+            }
+            {
+                std::string why;
+                P.eq("whatsnew.link.other_refused", port.openLink("https://example.com/", why) ? 1 : 0, 0);
+                P.eq("whatsnew.link.other_said", why.empty() ? 0 : 1, 1);
+                P.eq("whatsnew.link.http_refused", port.openLink("http://testingplayground.seanfunk.xyz/", why) ? 1 : 0, 0);
+                P.eq("whatsnew.link.hook_once", static_cast<int64_t>(opened.size()), link >= 0 ? 1 : 0);
+            }
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            settle();
+            P.eq("whatsnew.least.inside", inside(card.places(W(), H()).box, W(), H()) && card.places(W(), H()).body.h > 200.0f ? 1 : 0, 1);
+            writePng(P, host, "gui.updates.whatsnew.least.png");
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            settle();
+            host.keys("escape");
+            settle();
+            P.eq("whatsnew.page.escape_closes", card.isOpen() ? 1 : 0, 0);
+            P.eq("whatsnew.page.not_drawn_closed", countTag(host.draw(), pg::ui::kWhatsNewTag), 0);
+        }
+        {
+            // Once per version: a second editor of this processor, and a new processor over the same folder, none.
+            pg::ui::Panel second(processor.ports(), port);
+            funkgui::HeadlessHost host(second, 0, 2.0f);
+            (void)tickUntil(host, [&] { return port.updateState().whatsNewReady; });
+            host.tick(5);
+            P.eq("whatsnew.once.second_editor", second.whatsNewCard().isOpen() ? 1 : 0, 0);
+        }
+    }
+    {
+        WhatsNewEnv env("on");
+        Home home(base.getChildFile("whatsnew"));       // the folder above: seen is this version
+        pg::Processor processor;
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        (void)tickUntil(host, [&] { return processor.editorPort().updateState().whatsNewReady; });
+        host.tick(5);
+        P.eq("whatsnew.once.new_processor", panel.whatsNewCard().isOpen() ? 1 : 0, 0);
+        P.eq("whatsnew.once.not_due", processor.editorPort().updateState().whatsNewDue ? 1 : 0, 0);
+    }
+    {
+        // WHATSNEW_CARD: an older version seen, the offer answered, the Settings card open as it is due: it waits.
+        WhatsNewEnv env("on");
+        Home home(base.getChildFile("whatsnew-card"));
+        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"later\",\"seen\":\"0.0.1\"}\n");
+        pg::Processor processor;
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        panel.openSettings("general");
+        host.tick(1);
+        (void)tickUntil(host, [&] { return processor.editorPort().updateState().whatsNewReady; });
+        host.tick(5);
+        P.eq("whatsnew.card.due", processor.editorPort().updateState().whatsNewDue ? 1 : 0, 1);
+        P.eq("whatsnew.card.waits", panel.whatsNewCard().isOpen() || !panel.settingsCard().isOpen() ? 1 : 0, 0);
+        P.eq("whatsnew.card.not_drawn", countTag(host.draw(), pg::ui::kWhatsNewTag), 0);
+        host.keys("escape");
+        P.eq("whatsnew.card.after", tickUntil(host, [&] { return panel.whatsNewCard().isOpen(); }) ? 1 : 0, 1);
+        P.eq("whatsnew.card.title", panel.whatsNewCard().title() == title ? 1 : 0, 1);
+    }
+    {
+        // WHATSNEW_SETTINGS and WHATSNEW_SEVERAL, Paper.
+        funkgui::UiPreferences::get().setTheme(1);
+        WhatsNewEnv env("on");
+        Home home(base.getChildFile("whatsnew-paper"));
+        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"later\",\"seen\":\"" + version + "\"}\n");
+        pg::Processor processor;
+        processor.setPageLauncher([](const std::string&, std::string&) { return true; });
+        pg::ui::Panel panel(processor.ports(), processor.editorPort());
+        funkgui::HeadlessHost host(panel, 1, 2.0f);
+        const auto W = [&] { return static_cast<float>(panel.width()); };
+        const auto H = [&] { return static_cast<float>(panel.height()); };
+        const auto settle = [&] {
+            host.tick(2);
+            host.settle();
+        };
+        pg::ui::WhatsNewCard& card = panel.whatsNewCard();
+        (void)tickUntil(host, [&] { return processor.editorPort().updateState().whatsNewReady; });
+        host.tick(5);
+        P.eq("whatsnew.settings.not_by_itself", card.isOpen() ? 1 : 0, 0);
+        panel.openSettings("general");
+        settle();
+        pg::ui::SettingsCard& settings = panel.settingsCard();
+        const std::optional<funkgui::Point> button = settings.centreOf(Act::item, st::kWhatsNew, W(), H());
+        P.eq("whatsnew.settings.button", button ? 1 : 0, 1);
+        if (button)
+            host.click(button->x, button->y);
+        settle();
+        P.eq("whatsnew.settings.opens", card.isOpen() && !settings.isOpen() ? 1 : 0, 1);
+        P.eq("whatsnew.settings.title", card.title() == title ? 1 : 0, 1);
+        writePng(P, host, "gui.updates.whatsnew.settings.paper.png");
+        host.keys("escape");
+        settle();
+
+        // Several versions skipped: each under its own heading, newest first (made-up versions; the card's own path).
+        const std::vector<pg::changelog::Version> made = pg::changelog::since(
+            pg::changelog::parse("## Unreleased\n\n## Version 0.4.0 (2026-12-20)\n\n## 2026-12-19\n\n### Samples in the "
+                                 "panel ([#90](" + std::string(pg::changelog::repository()) + "/pull/90))\n\n**Added**\n"
+                                 "- A `.gui` file's **sample** element, and its waveform.\n- Drop a WAV on it.\n\n"
+                                 "## Version 0.3.0 (2026-12-01)\n\n## 2026-11-30\n\n### A faster schematic\n\n**Fixed**\n"
+                                 "- Wires route in half the time.\n  A long line that wraps onto a second one, and more words "
+                                 "so that it does wrap.\n\n**Changed**\n1. The probes' cards.\n2. Their keys.\n\n"
+                                 "## Version 0.2.0 (2026-11-20)\n\n## 2026-11-20\n\n### The update check\n\n**Added**\n"
+                                 "- Read [the download page](https://testingplayground.seanfunk.xyz/download).\n\n"
+                                 "```\nint x = 1;\n```\n"),
+            "0.1.0", "0.4.0");
+        card.openFor(made);
+        settle();
+        P.eq("whatsnew.several.versions", static_cast<int64_t>(made.size()), 3);
+        P.eq("whatsnew.several.title", card.title() == "What's new in 0.4.0" ? 1 : 0, 1);
+        const std::string& md = card.text();
+        const std::size_t a = md.find("# Version 0.4.0"), b = md.find("# Version 0.3.0"), c = md.find("# Version 0.2.0");
+        P.eq("whatsnew.several.newest_first", a != std::string::npos && a < b && b < c && c != std::string::npos ? 1 : 0, 1);
+        P.ge("whatsnew.several.links", card.linkCount(W(), H()), 2);
+        writePng(P, host, "gui.updates.whatsnew.several.paper.png");
+        host.keys("end");
+        settle();
+        writePng(P, host, "gui.updates.whatsnew.several.scrolled.paper.png");
+        host.keys("escape");
+        settle();
+        funkgui::UiPreferences::get().setTheme(0);
+    }
+    {
+        // WHATSNEW_PICTURE: a picture's Panel never shows it (nor tells the processor an editor opened).
+        WhatsNewEnv env("on");
+        Home home(base.getChildFile("whatsnew-picture"));
+        (void)home.dir.getChildFile("app.json").replaceWithText("{\"updates\":\"later\"}\n");
+        pg::Processor processor;
+        pg::ui::Panel picture(processor.ports(), processor.editorPort(), true);
+        funkgui::HeadlessHost host(picture, 0, 2.0f);
+        for (int i = 0; i < 30; ++i)
+            host.tick(1);
+        P.eq("whatsnew.picture.none", picture.whatsNewCard().isOpen() ? 1 : 0, 0);
+        P.eq("whatsnew.picture.seen_untouched", seenIn(home.dir).empty() ? 1 : 0, 1);
     }
 
     base.deleteRecursively();

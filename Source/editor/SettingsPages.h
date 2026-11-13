@@ -103,7 +103,7 @@ namespace playground::ui::settings
     // The Debug page's own codes (Act::item): Copy all; a folder's row's Show button (kShowPath + its row's number).
     constexpr int kCopyAll = 0, kShowPath = 100;
     // The other pages' codes (Act::item), for the probes.
-    constexpr int kTheme = 0, kZoom = 1;                     // General
+    constexpr int kTheme = 0, kZoom = 1, kWhatsNew = 2;      // General
     constexpr int kFormatOnRun = 0;                          // Editor
     constexpr int kShowProjects = 0;                         // Projects
     constexpr int kProviderKey = 0;                          // AI
