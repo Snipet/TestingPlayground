@@ -11,7 +11,8 @@
 //   gui.settings.error.png  a device's error under its section
 //   gui.settings.muted.png  the effect's notice in the status bar (the synth has none)
 //   gui.settings.host.png   the card in a host (the gear's): General, no Audio and MIDI page
-//   gui.settings.<page>.png, .<page>.paper.png   each page (general, editor, projects, ai, debug, about) in both themes
+//   gui.settings.<page>.png, .<page>.paper.png   each page (general, editor, projects, ai, network, debug, about) in
+//                                                both themes
 //   gui.settings.debug.small.png                 the Debug page at the least size
 // and checks:
 //   HOST     no devices (a host's window): the gear in the top bar opens the card at General, its rail without Audio
@@ -373,7 +374,7 @@ namespace
             for (const std::string& o : order)
                 joined += o + " ";
             std::printf("rail: %s\n", joined.c_str());
-            P.eq("pages.rail_order", joined == "general editor projects ai debug about " ? 1 : 0, 1);
+            P.eq("pages.rail_order", joined == "general editor projects ai network debug about " ? 1 : 0, 1);
         }
         P.eq("pages.click_editor", click(Act::page, pageIndex("editor")) && card.pageId() == "editor" ? 1 : 0, 1);
         {
@@ -582,7 +583,7 @@ namespace
         }
 
         // ---- each page in both themes, and at the least size -----------------------------------------------------------
-        for (const char* id : { "general", "editor", "projects", "ai", "debug", "about" })
+        for (const char* id : { "general", "editor", "projects", "ai", "network", "debug", "about" })
         {
             card.showPage(id);
             settle();
@@ -604,7 +605,7 @@ namespace
             funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
             paperHost.setZoom({ 100, 125, 150, 200 }, 100);
             paperHost.settle();
-            for (const char* id : { "general", "editor", "projects", "ai", "debug", "about" })
+            for (const char* id : { "general", "editor", "projects", "ai", "network", "debug", "about" })
             {
                 paper.openSettings(id);
                 paperHost.tick(2);

@@ -88,12 +88,13 @@ namespace playground::ui::settings
         uint64_t (*key)(const Context&);         // what it reads that changes with no input (null: nothing)
     };
 
-    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Debug, About.
+    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Network, Debug, About.
     std::span<const Page> pages();
 
     // The pages in files of their own (the table names them).
     extern const Page kAudioPage;                // SettingsDevices.cpp
     extern const Page kDebugPage;                // SettingsDebug.cpp
+    extern const Page kNetworkPage;              // SettingsNetwork.cpp
 
     // The Debug page's own codes (Act::item): Copy all; a folder's row's Show button (kShowPath + its row's number).
     constexpr int kCopyAll = 0, kShowPath = 100;
@@ -102,6 +103,7 @@ namespace playground::ui::settings
     constexpr int kFormatOnRun = 0;                          // Editor
     constexpr int kShowProjects = 0;                         // Projects
     constexpr int kProviderKey = 0;                          // AI
+    constexpr int kCheckUpdates = 0, kFactoryProjects = 1, kCheckNow = 2;   // Network
 
     // What a folder's button says on this platform: Show in Finder, Explorer, File Manager.
     const char* showFolderWord();
