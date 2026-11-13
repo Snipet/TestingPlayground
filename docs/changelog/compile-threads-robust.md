@@ -10,3 +10,5 @@
 - An unexpected failure inside the plugin while Claude works (a turn of the chat, a tool, a call from Claude Desktop),
   while a project is read, saved, exported or previewed, or while A/B listening matches the loudness, now ends that
   piece of work with a message instead of crashing the host; the chat, the projects and Claude Desktop's link carry on.
+- Moving quickly through many projects in the Projects card, or closing and reopening it, while a panel's preview was
+  still being prepared could crash the plugin; it no longer does.
