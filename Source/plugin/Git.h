@@ -46,6 +46,7 @@ namespace playground::git
         const std::atomic<bool>* cancel = nullptr;     // set: the running git is killed
         bool allowFile = false;                        // GIT_ALLOW_PROTOCOL gains file (the probes' file:// remotes)
         int localMs = kLocalMs, networkMs = kNetworkMs;
+        std::size_t outLimit = std::size_t{ 1 } << 20; // git's stdout kept (show() reads a sample's bytes through it)
     };
 
     struct Outcome
@@ -56,6 +57,7 @@ namespace playground::git
         run::Ended ended = run::Ended::notStarted;
         int code = -1;
         bool behind = false;      // push: refused because the remote has commits this one has not (pull first)
+        bool outCut = false;      // git wrote more than Context::outLimit: `out` holds its first bytes
     };
 
     // The remote's address: https://..., ssh://... or user@host:path (and file://... when `allowFile`). "" when it may
@@ -120,6 +122,18 @@ namespace playground::git
         std::int64_t timeMs = 0;    // its author's date
     };
     Outcome log(const Context& c, int n, std::vector<Commit>& commits);
+    // The same over `range` ("HEAD..refs/remotes/origin/main", a commit): newest first; none (and ok) when it is empty.
+    Outcome log(const Context& c, int n, std::vector<Commit>& commits, const std::string& range);
+
+    // A file's bytes as `rev` has it (`git cat-file blob <rev>:<path>`), whatever the working folder holds: refused when
+    // it is larger than Context::outLimit. The files `rev` holds (`git ls-tree -r`), as paths with '/'.
+    Outcome show(const Context& c, const std::string& rev, const std::string& path, std::string& bytes);
+    Outcome files(const Context& c, const std::string& rev, std::vector<std::string>& paths);
+
+    // `rev`'s commit ("" when it names none here).
+    std::string resolve(const Context& c, const std::string& rev);
+    // The branch HEAD is on ("" detached or none).
+    std::string currentBranch(const Context& c);
 
     // HEAD's commit ("" none yet).
     Outcome head(const Context& c, std::string& sha);

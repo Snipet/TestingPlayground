@@ -95,6 +95,7 @@ namespace playground::git
             o.ended = r.ended;
             o.code = r.code;
             o.out = r.out;
+            o.outCut = r.outCut;
             o.ok = r.ok();
             if (o.ok)
                 return o;
@@ -156,6 +157,7 @@ namespace playground::git
             }
             r.timeoutMs = network ? c.networkMs : c.localMs;
             r.cancel = c.cancel;
+            r.outLimit = c.outLimit;
             return outcomeOf(run::run(r), args.empty() ? std::string() : args.front(), r.timeoutMs);
         }
 
@@ -545,7 +547,15 @@ namespace playground::git
             Outcome none = call(c, { "rev-parse", "--git-dir" });   // a repository with no commit yet: ok, nothing
             return none;
         }
-        Outcome o = call(c, { "log", "-n", std::to_string(std::max(1, n)), "--format=%H%x1f%at%x1f%s%x1e", "HEAD", "--" });
+        return log(c, n, commits, "HEAD");
+    }
+
+    Outcome log(const Context& c, int n, std::vector<Commit>& commits, const std::string& range)
+    {
+        commits.clear();
+        if (range.empty() || range.front() == '-')
+            return refused("A log needs a range.");
+        Outcome o = call(c, { "log", "-n", std::to_string(std::max(1, n)), "--format=%H%x1f%at%x1f%s%x1e", range, "--" });
         if (!o.ok)
             return o;
         std::size_t from = 0;
@@ -567,6 +577,60 @@ namespace playground::git
             commits.push_back(std::move(commit));
         }
         return o;
+    }
+
+    Outcome show(const Context& c, const std::string& rev, const std::string& path, std::string& bytes)
+    {
+        bytes.clear();
+        if (rev.empty() || rev.front() == '-' || path.empty() || path.front() == '-' || path.find(':') != std::string::npos)
+            return refused("A file \"" + path + "\" at \"" + rev + "\" cannot be read.");
+        Outcome o = call(c, { "cat-file", "blob", rev + ":" + path });
+        if (o.ok && o.outCut)
+        {
+            o.ok = false;
+            o.why = path + " is larger than " + std::to_string(c.outLimit >> 20) + " MB.";
+            return o;
+        }
+        if (o.ok)
+            bytes = std::move(o.out);
+        o.out.clear();
+        return o;
+    }
+
+    Outcome files(const Context& c, const std::string& rev, std::vector<std::string>& paths)
+    {
+        paths.clear();
+        if (rev.empty() || rev.front() == '-')
+            return refused("A tree needs a commit.");
+        Outcome o = call(c, { "ls-tree", "-r", "-z", "--name-only", rev, "--" });
+        if (!o.ok)
+            return o;
+        std::size_t from = 0;
+        while (from < o.out.size())
+        {
+            const std::size_t end = o.out.find('\0', from);
+            const std::string path = o.out.substr(from, (end == std::string::npos ? o.out.size() : end) - from);
+            if (!path.empty())
+                paths.push_back(path);
+            if (end == std::string::npos)
+                break;
+            from = end + 1;
+        }
+        return o;
+    }
+
+    std::string resolve(const Context& c, const std::string& rev)
+    {
+        std::string sha;
+        if (rev.empty() || rev.front() == '-' || !resolves(c, rev, &sha))
+            return {};
+        return sha;
+    }
+
+    std::string currentBranch(const Context& c)
+    {
+        const Outcome o = call(c, { "symbolic-ref", "-q", "--short", "HEAD" });
+        return o.ok ? trimmed(o.out) : std::string();
     }
 
     Outcome head(const Context& c, std::string& sha)
