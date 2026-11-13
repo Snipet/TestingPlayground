@@ -12,7 +12,8 @@ the top of its Unreleased section). Subcommands:
   release       cut (when anything is under Unreleased), then give the days since the last release their version's
                 heading, `## Version X.Y.Z (YYYY-MM-DD)`, under `## Unreleased`.
   check-release Refuse a release tag (vX.Y.Z) whose version has no heading, and any tag while an entry file is left in
-                docs/changelog/ (release.yml runs it on a pushed tag). A pre-release's tag (vX.Y.Z-rc.1) needs no heading.
+                docs/changelog/ (release.yml runs it on a pushed tag). A pre-release's tag (vX.Y.Z-rc.1) needs no
+                heading.
   selftest      Run this script's own tests in a temporary git repository of made-up entries (no build needed).
 
 By example:
@@ -593,8 +594,8 @@ def cmd_check_release(args: argparse.Namespace) -> int:
         print(f"changelog.py: {args.tag}: {p}", file=sys.stderr)
     if problems:
         return 1
-    print(f"changelog.py: {args.tag}: " + ("a pre-release, " if m.group(2) else f"Version {m.group(1)} has its heading, ")
-          + f"no entry left in {ENTRIES_DIR.as_posix()}/")
+    said = "a pre-release, " if m.group(2) else f"Version {m.group(1)} has its heading, "
+    print(f"changelog.py: {args.tag}: {said}no entry left in {ENTRIES_DIR.as_posix()}/")
     return 0
 
 
@@ -869,14 +870,16 @@ def selftest(_: argparse.Namespace) -> int:
             r = run(rel, "check")
             expect(r.returncode == 1 and words in r.stdout and r.stdout.startswith("CHANGELOG.md:"),
                    f"check: `{line}` refused ({words})")
-        (rel / CHANGELOG).write_text(cutted.replace("## 2026-01-05\n", "## Version 0.2.0 (2026-01-05)\n\n## 2026-01-05\n"))
+        def above_day(line: str) -> str:
+            return cutted.replace("## 2026-01-05\n", line + "\n\n## 2026-01-05\n")
+        (rel / CHANGELOG).write_text(above_day("## Version 0.2.0 (2026-01-05)"))
         r = run(rel, "check")
         expect(r.returncode == 0 and "2 releases' headings" in r.stdout, "check: releases newest first pass")
-        (rel / CHANGELOG).write_text(cutted.replace("## 2026-01-05\n", "## Version 0.0.5 (2026-01-05)\n\n## 2026-01-05\n")
+        (rel / CHANGELOG).write_text(above_day("## Version 0.0.5 (2026-01-05)")
                                      .replace("## Unreleased\n", "## Version 0.0.6 (2026-01-06)\n\n## Unreleased\n"))
         r = run(rel, "check")
         expect(r.returncode == 1 and "above `## Unreleased`" in r.stdout, "check: a release above Unreleased refused")
-        (rel / CHANGELOG).write_text(cutted.replace("## 2026-01-05\n", "## Version 0.0.3 (2026-01-05)\n\n## 2026-01-05\n"))
+        (rel / CHANGELOG).write_text(above_day("## Version 0.0.3 (2026-01-05)"))
         r = run(rel, "check")
         expect(r.returncode == 1 and "the newest release first" in r.stdout, "check: releases out of order refused")
         (rel / CHANGELOG).write_text(cutted)
@@ -900,14 +903,15 @@ def selftest(_: argparse.Namespace) -> int:
         r = run(rel, "check")
         expect(r.returncode == 0 and "2 releases' headings" in r.stdout, "check: passes after the release")
         r = run(rel, "release", "--version", "0.3.0", "--date", "2026-01-10")
-        expect(r.returncode == 1 and "nothing since the last release" in r.stderr and (rel / CHANGELOG).read_text() == rel1,
-               "release: refused with nothing since the last release")
+        expect(r.returncode == 1 and "nothing since the last release" in r.stderr
+               and (rel / CHANGELOG).read_text() == rel1, "release: refused with nothing since the last release")
         # entries waiting: folded, cut into the day, then the heading
         (rel / ENTRIES_DIR / "next.md").write_text(entry_text("Next"))
         r = run(rel, "release", "--version", "0.3.0", "--date", "2026-01-12")
         rel2 = (rel / CHANGELOG).read_text()
-        expect(r.returncode == 0 and rel2 == rel1.replace("## Unreleased\n\n", "## Unreleased\n\n## Version 0.3.0 "
-                                                          "(2026-01-12)\n\n## 2026-01-12\n\n" + entry_text("Next") + "\n"),
+        expect(r.returncode == 0 and rel2 == rel1.replace(
+                   "## Unreleased\n\n",
+                   "## Unreleased\n\n## Version 0.3.0 (2026-01-12)\n\n## 2026-01-12\n\n" + entry_text("Next") + "\n"),
                "release: the entries folded, cut into the day, the day under the version's heading")
         expect(not (rel / ENTRIES_DIR / "next.md").exists(), "release: the entry file gone")
         r = run(rel, "check-release", "--tag", "v0.3.0")
