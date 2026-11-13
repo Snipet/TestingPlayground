@@ -25,6 +25,7 @@
 
 #include "plugin/Changelog.h"
 #include "plugin/FactoryStore.h"
+#include "plugin/UpdateCheck.h"
 
 #include "Product.h"
 
