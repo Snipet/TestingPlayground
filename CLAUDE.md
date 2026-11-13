@@ -596,7 +596,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   notes keeps the configuration each of its netlists was generated with (`CompileStatus::circuits`, Sources.h's
   `CircuitPins`, from `Patch::Recipe::pins`), and its replay and trace's "capture" compile with them
   (`Patch::compile`'s and `measure::Session`'s `pins`), so a provisional take replays provisional after the answer
-  lands. A probe that wants no test in the background turns them off
+  lands; so does a render of what plays (compare's, trace's and view_panel's at "playing", run_function's `on: playing`:
+  `ChatHost::chatPlaying`'s `pins`). A probe that wants no test in the background turns them off
   (`Compiler::setSelfTesting(false)`) and runs them with `selfTestNow` (the jobs waiting, then the refine); a probe's
   netlists whose configuration is open are `Tools/probes/common/AutoClipper.h`'s.
 - The schematic's live probes (Engine.h's "Probes", Patch.h's, Circuits.h's): every netlist is generated with FMinus's
@@ -1226,7 +1227,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   (`claude::kApiVersion`), adaptive thinking with `output_config.effort`, no sampling parameters, the system prompt
   cached for an hour and the automatic breakpoint, tools with `eager_input_streaming` whose input is parsed strictly
   here (`INVALID_JSON` results), `"fallbacks": "default"` with its beta on the models that take it, fast mode
-  (`"speed": "fast"`, chosen with the Fast pill, on Claude Opus 5.5 without a beta and on Opus 5 and 4.8 with
+  (`"speed": "fast"`, chosen with the Fast pill, on Claude Opus 5.5, Fable 5.2 and Mythos 5.2 without a beta and on
+  Opus 5 and 4.8 with
   `fast-mode-2026-02-01`; such a request goes without `fallbacks`, a 429 or 529 twice runs the turn on at standard
   speed, a refusal about the speed turns it off), and an append-only history (preserved thinking: nothing sent before
   is changed, except as the fallback rule says). Check the reference before changing a request; `plugin.chat` checks
@@ -1555,8 +1557,9 @@ place (its `products/<key>.cmake`, and its names in the docs).
   Music folder's `<Company>/<Name>/Renders`, under CTest the probe's sandbox's `renders/`; each file is written through
   a temporary beside it and moved into place. The files are the user's: an export only adds files, never replacing or
   deleting one: a name given (`name`, tidied), else the time, names them, with a number after it while a file it would
-  write is there (an effect's input file's name among them). So trace is no read-only tool to MCP, nor a destructive
-  one (`kFaces`: its `destructiveHint` false); keep it so. An export that would take the folder past
+  write is there (an effect's input file's name among them), each moved in from a temporary by `projectexport::place`
+  (which refuses a file there; one made meanwhile: the next number). So trace is no read-only tool to MCP,
+  nor a destructive one (`kFaces`: its `destructiveHint` false); keep it so. An export that would take the folder past
   `kMaxFolderBytes` (2 GB) or leave the disk under `kKeepFree` (1 GB) is refused in words, and a trace cancelled (the
   stop button, Desktop's cancel: `cancel_`, in either pass) writes nothing. The WAV and the CSV say "up to where trace
   stopped" only when pass 1 stopped (`TraceResult::stoppedFirst`; a stop in pass 2 leaves its render whole). Never of
@@ -1843,7 +1846,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   most 400 renders) is spent, its time limit passes (`seconds`: 120, at most 170, under the MCP server's deadline)
   or the stop button cancels, each also within a render (`TuneRequest::cancelled`, the render cut left out);
   deterministic but for the time limit. The best values go on the dials through
-  `chatSetDial`, unless Claude Desktop cancelled the call (`mcpCancel`): then the dials stay exactly as they were.
+  `chatSetDial` (a dial the program that plays lacks, the editor's files not run, named with its value, never said
+  set), unless Claude Desktop cancelled the call (`mcpCancel`): then the dials stay exactly as they were.
   Its `sweep` (`TuneRequest::sweep`, at most `kMaxSweep`, 32) searches nothing and sets nothing: the one dial named
   (of any type; a value outside its range, or an int's or a bool's not whole, refused) at each value in turn, the
   goals' metrics at each in a table, a row a value; a sweep's goal may be a metric alone (`invalid`'s `bare`,
@@ -1960,7 +1964,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   the audio thread's calls (setLoopBudget is the Program's), so the tool compiles a Patch of its own on its thread (the
   worker, or the link's), whose call runs within `kInitBudget` (about a second) with the bounds checks, in
   flush-to-zero; a call that stops (`callStopped_`) leaves its Patch calling no end. A method runs on instance 0 of that
-  compile (the main module's: init run at the host's rate, the dials set by name as they are), on Shared's, on a field
+  compile (the main module's: init run at the host's rate, the dials set by name as they are, Shared's dial params and
+  the circuits' set() too, as the Engine's first calls set them), on Shared's, on a field
   the main module holds by value, by its path (`filter.tick`, `osc[2].env.next`, `shared->x.f`), or on an instance of
   its own (`Svf::tick`: zeroed, its params at their defaults). `on: playing` compiles the program that plays with its
   pins (`CompileStatus::circuits`, of one status read: its `program`, and its `revision` read again after the files)

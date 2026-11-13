@@ -47,6 +47,7 @@ namespace playground::measure
         Request request;                          // the render: one scenario for both, the dials the side's own
         const std::vector<float>* recordedL = nullptr;   // a recording in place of a render, at the request's rate
         const std::vector<float>* recordedR = nullptr;
+        CircuitPins pins;                         // its netlists' configurations (Sources.h; none: the self-test's store)
     };
 
     struct Comparison

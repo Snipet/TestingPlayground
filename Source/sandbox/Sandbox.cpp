@@ -303,8 +303,10 @@ namespace playground::sandbox
         {
 #if defined(_WIN32)
             why = "path names a file the user named, whole (C:\\Users\\... or ~/...): '" + given + "' is not";
-#else
+#elif defined(__APPLE__)
             why = "path names a file the user named, whole (/Users/... or ~/...): '" + given + "' is not";
+#else
+            why = "path names a file the user named, whole (/home/... or ~/...): '" + given + "' is not";
 #endif
             return false;
         }

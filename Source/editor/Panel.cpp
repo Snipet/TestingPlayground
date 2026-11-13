@@ -8295,8 +8295,9 @@ namespace playground::ui
         else if (keyOpen_ && renaming_)
             std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   ESCAPE CANCELS");
         else if (keyOpen_)
-            std::snprintf(line, sizeof line, "%s", dialogAnthropic() ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
-                                                                     : "PROVIDER   TAB THE NEXT FIELD   CMD-V PASTES   RETURN SAVES   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, dialogAnthropic() ? "API KEY   %s PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
+                                                               : "PROVIDER   TAB THE NEXT FIELD   %s PASTES   RETURN SAVES   ESCAPE CANCELS",
+                          upper(shortcutText("Cmd-V")).c_str());
         else if (export_.isOpen() && export_.readOnly())
             std::snprintf(line, sizeof line, "EXPORT   A FACTORY PROJECT: ITS INFO AS IT IS   ESCAPE CLOSES");
         else if (export_.isOpen())

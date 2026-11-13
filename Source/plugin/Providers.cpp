@@ -1,6 +1,8 @@
 // Source/plugin/Providers.cpp: see Providers.h.
 #include "plugin/Providers.h"
 
+#include "plugin/EditorPort.h"
+
 #include "fminus/Lang.h"
 
 #include <algorithm>
@@ -200,7 +202,8 @@ namespace playground::providers
         Url u;
         if (base.empty() || !split(base, u) || (u.scheme != "https" && u.scheme != "http"))
         {
-            why = "the server's address must start with https:// (or http:// for a server on this Mac or the local network)";
+            why = std::string("the server's address must start with https:// (or http:// for a server on ") + kThisMachine
+                + " or the local network)";
             return {};
         }
         if (u.authority.empty() || contains(u.authority, "@") || !plainAuthority(u.authority) || contains(base, "?")
@@ -216,9 +219,9 @@ namespace playground::providers
             // An address of numbers alone that is not read as local: a leading zero or another form the system reads
             // otherwise (010 is octal 8 there) is said, so the user writes it plainly.
             const bool numbers = !host.empty() && host.find_first_not_of("0123456789.") == std::string::npos;
-            why = numbers ? "http:// is only for a server on this Mac or the local network, its address four plain "
+            why = numbers ? std::string("http:// is only for a server on ") + kThisMachine + " or the local network, its address four plain "
                             "numbers (192.168.1.20: no leading zeros), else use https://"
-                          : "http:// is only for a server on this Mac or the local network: use https://";
+                          : std::string("http:// is only for a server on ") + kThisMachine + " or the local network: use https://";
             return {};
         }
         std::string path = u.path;

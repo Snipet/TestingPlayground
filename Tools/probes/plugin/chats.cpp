@@ -838,12 +838,12 @@ PROBE(plugin, chats)
             turn(k1, *w, "PHRASE-K2 after the delete", "Plan K2.", "sig-k2", "Answer K2.");
             const std::string note = lastOf(k1.chatAgent().chatState(), pg::ChatEntry::Kind::note);
             std::printf("INFO     gone: %s\n", note.c_str());
-            P.eq("gone.not_written_back", !cs::hasOwner(e) && has(note, "could not be kept on this Mac") && has(note, "deleted") ? 1 : 0, 1);
+            P.eq("gone.not_written_back", !cs::hasOwner(e) && has(note, std::string("could not be kept on ") + pg::kThisMachine) && has(note, "deleted") ? 1 : 0, 1);
             pg::SavedVersion sv;
             P.eq("gone.saved_as", k1.editorPort().saveVersion("Elsewhere Again", sv, why) ? 1 : 0, 1);
             const std::string e2 = idInFile("Elsewhere Again");
             P.eq("gone.goes_on_with_it", k1.chatAgent().chatOwner() == e2 && storeHolds(e2, "PHRASE-K2") && !cs::hasOwner(e)
-                                             && has(lastOf(k1.chatAgent().chatState(), pg::ChatEntry::Kind::note), "kept on this Mac again") ? 1 : 0, 1);
+                                             && has(lastOf(k1.chatAgent().chatState(), pg::ChatEntry::Kind::note), std::string("kept on ") + pg::kThisMachine + " again") ? 1 : 0, 1);
         }
 
         // ---- PICTURES (a chat's panel pictures kept with it: opened again, it keeps its thinking) --------------------
@@ -914,14 +914,14 @@ PROBE(plugin, chats)
             (void)stateOf(f);                                  // a session's save: tried again, said no more
             int notes = 0;
             for (const pg::ChatEntry& e : f.chatAgent().chatState().entries)
-                notes += e.kind == pg::ChatEntry::Kind::note && has(e.text, "could not be kept on this Mac") ? 1 : 0;
+                notes += e.kind == pg::ChatEntry::Kind::note && has(e.text, std::string("could not be kept on ") + pg::kThisMachine) ? 1 : 0;
             std::printf("INFO     keepfail: %s\n", lastOf(f.chatAgent().chatState(), pg::ChatEntry::Kind::note).c_str());
             P.eq("keepfail.said_once", notes, 1);
             P.eq("keepfail.nothing_kept", cs::chatsOf(owner).empty() ? 1 : 0, 1);
             P.eq("keepfail.unblocked", blocker.deleteFile() ? 1 : 0, 1);
             (void)stateOf(f);                                  // the next save keeps it
             P.eq("keepfail.kept_after", storeHolds(owner, "PHRASE-F")
-                                            && has(lastOf(f.chatAgent().chatState(), pg::ChatEntry::Kind::note), "kept on this Mac again") ? 1 : 0, 1);
+                                            && has(lastOf(f.chatAgent().chatState(), pg::ChatEntry::Kind::note), std::string("kept on ") + pg::kThisMachine + " again") ? 1 : 0, 1);
         }
 
         // ---- CLOSE (a change not kept yet is kept when the plugin closes) -------------------------------------------

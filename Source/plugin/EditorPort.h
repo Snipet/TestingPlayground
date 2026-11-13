@@ -187,6 +187,15 @@ namespace playground
     inline constexpr const char* kThisMachine = "this computer";
 #endif
 
+    // A whole path as the user's machine writes one (a tool's refusal of a path that is none).
+#if defined(_WIN32)
+    inline constexpr const char* kWholePath = "C:\\... or ~\\...";
+#elif defined(__APPLE__)
+    inline constexpr const char* kWholePath = "/Users/... or ~/...";
+#else
+    inline constexpr const char* kWholePath = "/home/... or ~/...";
+#endif
+
     // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows and Linux, whose editor
     // hosts give Ctrl the editor's Cmd (JUCE's command key there; editor/nogpu/SoftEditorHost.h).
     inline std::string shortcutText(std::string_view macText)

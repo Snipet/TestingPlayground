@@ -29,6 +29,15 @@ namespace playground
     {
         constexpr std::size_t kMaxImportBytes = 256 * 1024;   // a file brought in at most
         constexpr std::size_t kMaxFolderName = 64;            // an export's folder name at most
+        // The disk that takes two names differing only in case as one (an export refuses such a pair everywhere, so that
+        // the folder copies whole to any disk).
+#if defined(__APPLE__)
+        constexpr const char* kCaseBlindDisk = "this Mac's disk";
+#elif defined(_WIN32)
+        constexpr const char* kCaseBlindDisk = "this computer's disk";
+#else
+        constexpr const char* kCaseBlindDisk = "a disk that ignores case (macOS's and Windows' do)";
+#endif
 
         int lineCount(const std::string& t)
         {
@@ -165,10 +174,11 @@ namespace playground
         std::string readFrom(const std::string& given, std::vector<Incoming>& out, std::vector<std::string>& left, std::string& where)
         {
             std::string path = juce::String(given).trim().toStdString();
-            if (path.rfind("~/", 0) == 0 || path == "~")
+            if (path == "~" || path.rfind("~/", 0) == 0 || path.rfind("~\\", 0) == 0)   // as kWholePath shows it
                 path = juce::File::getSpecialLocation(juce::File::userHomeDirectory).getFullPathName().toStdString() + path.substr(1);
             if (path.empty() || !juce::File::isAbsolutePath(juce::String::fromUTF8(path.c_str())))
-                return "from names a file or a folder on this Mac, whole (/Users/... or ~/...): '" + given + "' is not one";
+                return std::string("from names a file or a folder on ") + kThisMachine + ", whole (" + kWholePath + "): '" + given
+                     + "' is not one";
             const juce::File named(juce::String::fromUTF8(path.c_str()));
             where = named.getFullPathName().toStdString();
             std::vector<juce::File> files;
@@ -318,7 +328,8 @@ namespace playground
         {
             const juce::var p = input.getProperty("path", juce::var()), n = input.getProperty("name", juce::var());
             if (!p.isString() || p.toString().trim().isEmpty() || (!n.isVoid() && !n.isString()))
-                return fail("path is an audio file on this Mac (WAV, AIFF or FLAC), and name, if given, the sample's name");
+                return fail(std::string("path is an audio file on ") + kThisMachine
+                            + " (WAV, AIFF or FLAC), and name, if given, the sample's name");
             std::string done, why;
             setActivity("Adding a sample");
             if (!host_.chatAddAsset(p.toString().toStdString(), n.isString() ? n.toString().toStdString() : std::string(), done, why))
@@ -340,7 +351,7 @@ namespace playground
             if (!good)
                 return fail("to is the export's folder name: letters, digits, spaces, _, - and ., not starting with '.', at most "
                             + std::to_string(kMaxFolderName) + " characters (a name, not a path: it goes in the plugin's "
-                              "Programs folder on this Mac)");
+                              "Programs folder on " + kThisMachine + ")");
             const Draft d = host_.chatDraft();
             if (d.files.empty())
                 return fail("The editor has no file to export.");
@@ -366,8 +377,8 @@ namespace playground
                 std::map<std::string, std::string> seen;
                 for (const Out& f : outs)
                     if (const auto [it, added] = seen.emplace(lowered(f.name), f.name); !added)
-                        return fail(it->second + " and " + f.name + " differ only in case, which this Mac's disk takes as one "
-                                    "name: rename one (rename_file) and export again. Nothing was exported.");
+                        return fail(it->second + " and " + f.name + " differ only in case, which " + kCaseBlindDisk
+                                    + " takes as one name: rename one (rename_file) and export again. Nothing was exported.");
             }
             const juce::File base = exportsFolder();
             if (!base.isDirectory() && !base.createDirectory().wasOk())
@@ -401,7 +412,7 @@ namespace playground
             note("exported the files to " + stem);
             return "Exported the editor's " + std::to_string(d.files.size()) + (d.files.size() == 1 ? " file" : " files")
                  + (sampled == 0 ? std::string() : " and the program's " + std::to_string(sampled) + (sampled == 1 ? " sample" : " samples"))
-                 + " as they are now, on this Mac (the user can open them), to " + dir.getFullPathName().toStdString()
+                 + " as they are now, on " + kThisMachine + " (the user can open them), to " + dir.getFullPathName().toStdString()
                  + (stem != to ? " (\"" + to + "\" was taken, and nothing is replaced)" : std::string()) + ":" + listed
                  + "\nIt changed nothing in the plugin.";
         }
@@ -417,7 +428,7 @@ namespace playground
             {
                 const juce::var f = input.getProperty("from", juce::var());
                 if (!f.isString())
-                    return fail("from is a path: a file or a folder on this Mac that the user named");
+                    return fail(std::string("from is a path: a file or a folder on ") + kThisMachine + " that the user named");
                 if (const std::string why = readFrom(f.toString().toStdString(), incoming, left, where); !why.empty())
                     return fail(where.empty() ? "Nothing was brought in: " + why : "From " + where + ": " + why);
             }

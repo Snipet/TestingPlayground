@@ -1157,6 +1157,7 @@ namespace playground
                 running_ = s.restored;
                 runningAssets_ = s.assets;
                 runningSamples_ = s.samples;
+                runningPins_ = s.circuits;
             }
             learn_.bind(s.controls);                             // MIDI learn's mappings follow the dials by name
             if (run)
@@ -1177,6 +1178,7 @@ namespace playground
                     return;
                 program_ = s.program;
                 files = running_;
+                runningPins_ = s.circuits;
                 controls = controls_;
                 options = panel_.options;
             }
@@ -1210,6 +1212,7 @@ namespace playground
             running_ = s.sources;
             runningAssets_ = s.assets;
             runningSamples_ = s.samples;
+            runningPins_ = s.circuits;
         }
         learn_.bind(s.controls);
         if (run)
@@ -3675,16 +3678,20 @@ namespace playground
         return running_;
     }
 
-    Sources Processor::chatPlaying(Assets& samples) const
+    Sources Processor::chatPlaying(Assets& samples, CircuitPins* pins) const
     {
         const CompileStatus s = compiler_.status();
         if (s.ok)
         {
             samples = s.assets;
+            if (pins != nullptr)
+                *pins = s.circuits;
             return s.sources;                                    // as chatRunning
         }
         const std::lock_guard<std::mutex> lock(programMutex_);
         samples = runningAssets_;
+        if (pins != nullptr)
+            *pins = runningPins_;
         return running_;
     }
 

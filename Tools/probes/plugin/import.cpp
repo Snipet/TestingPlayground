@@ -245,7 +245,7 @@ PROBE(plugin, import)
         write(src.getChildFile("my song.fm"), "// x\n");
         refused("from.bad_name", src.getFullPathName(), "'my song.fm' cannot name a file in the editor");
         src.getChildFile("my song.fm").deleteFile();
-        refused("from.relative", "song/program.fm", "whole (/Users/... or ~/...)");
+        refused("from.relative", "song/program.fm", "whole (" + std::string(pg::kWholePath) + ")");
         refused("from.not_program", src.getChildFile("README.md").getFullPathName(), "README.md is not a program file");
         refused("from.nowhere", src.getChildFile("missing").getFullPathName(), "there is no file or folder");
         const juce::File empty = tmp.getChildFile("empty");

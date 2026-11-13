@@ -395,7 +395,7 @@ namespace playground
         CompileStatus chatRun(const Sources& files) override;
         CompileStatus chatLastStatus() const override;
         Sources chatRunning() const override;
-        Sources chatPlaying(Assets& samples) const override;
+        Sources chatPlaying(Assets& samples, CircuitPins* pins = nullptr) const override;
         Sources chatPrevious(Assets& samples) const override;
         Controls chatDials() const override;
         float chatDialValue(int slot) const override;
@@ -454,6 +454,7 @@ namespace playground
         Assets runningAssets_, previousAssets_;                  // the samples each compiled with (CompileStatus::
                                                                  // assets)
         std::vector<std::pair<std::string, std::string>> runningSamples_;   // those running_'s lines read
+        CircuitPins runningPins_;                                // the configuration its netlists play with (chatPlaying)
         // Whether `s`, a compile's status, plays another program than running_: its files (a netlist's drawing aside),
         // or the samples its lines read (programMutex_).
         bool changesProgram(const CompileStatus& s) const;

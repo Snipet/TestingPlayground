@@ -1847,7 +1847,8 @@ answer stays in front of you; one Claude Desktop opens is as if you had opened i
 - **The message box** grows with its text (up to eight lines). Return sends, Shift-Return breaks the line. In its bar:
   **the model** (a menu of the models your key can use that think adaptively), **Thinking** (low to max:
   how much Claude thinks before it answers, and how hard it works; with another provider, its model's own levels:
-  "Other model providers" below), on Claude Opus 5.5 **Fast** (the API's fast
+  "Other model providers" below), on Claude Opus 5.5 and Fable 5.2 (and Mythos 5.2, Opus 5 and Opus 4.8 when
+  your key lists them) **Fast** (the API's fast
   mode: the same model writing its answers up to 2.5 times as fast, at twice the price), and **Web** (web search:
   Claude searches the web and reads pages and PDFs, a part's data sheet, a paper, a manual; the API runs both, five
   searches and five pages a request at most, $10 a thousand searches; what it searched and read shows as rows, and

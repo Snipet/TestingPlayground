@@ -1065,13 +1065,13 @@ PROBE(dsp, tune)
         r.tailSeconds = 0.5f;
         if constexpr (kInstrument)
             r.notes = { 57 };
-        const ms::CompareSide a{ prog, r, nullptr, nullptr };
+        const ms::CompareSide a{ prog, r, nullptr, nullptr, {} };
         const ms::Comparison self = ms::compare(a, a);
         if (!self.error.empty())
             std::printf("%s\n", self.error.c_str());
         P.eq("compare.compiles", self.error.empty() ? 1 : 0, 1);
         P.eq("compare.self_identical", self.identical ? 1 : 0, 1);
-        const ms::CompareSide recording{ {}, r, &self.a.l, &self.a.r };
+        const ms::CompareSide recording{ {}, r, &self.a.l, &self.a.r, {} };
         const ms::Comparison recorded = ms::compare(recording, a);
         P.eq("compare.recording_identical", recorded.identical ? 1 : 0, 1);
         ms::CompareSide quieter = a;
@@ -1123,7 +1123,7 @@ PROBE(dsp, tune)
         P.eq("compare.detail_parts", static_cast<int64_t>(ms::compare(a, quieter, detail).envelopeDb.size()), 32);
         // A recording shorter than the render: the program renders as long, so the same bits are identical.
         const std::vector<float> shortL(self.a.l.begin(), self.a.l.begin() + 30000), shortR(self.a.r.begin(), self.a.r.begin() + 30000);
-        const ms::CompareSide shortRecording{ {}, r, &shortL, &shortR };
+        const ms::CompareSide shortRecording{ {}, r, &shortL, &shortR, {} };
         P.eq("compare.recording_length", ms::compare(a, shortRecording).identical ? 1 : 0, 1);
         // A delay of a note still sounding where the correlation's 2^17 samples end: its lag, not a period's alias.
         ms::CompareSide held = a;
@@ -1159,7 +1159,7 @@ PROBE(dsp, tune)
         r.tailSeconds = kInstrument ? 0.4f : 1.0f;      // the voice still sounds at the end (no part where one has ended)
         if constexpr (kInstrument)
             r.dials = { { "wave", 1.0f } };
-        const ms::CompareSide a{ files(), r, nullptr, nullptr };
+        const ms::CompareSide a{ files(), r, nullptr, nullptr, {} };
         ms::CompareSide a96 = a;
         a96.request.rate = 96000.0;
         ms::CompareOptions detail;
@@ -1208,7 +1208,7 @@ PROBE(dsp, tune)
             rc.notes = { 57 };
         else
             rc.dials = { { "delay", 64.0f } };
-        const ms::CompareSide c48{ pg::singleFile(kInstrument ? kCompareVoice : kCompareEffect), rc, nullptr, nullptr };
+        const ms::CompareSide c48{ pg::singleFile(kInstrument ? kCompareVoice : kCompareEffect), rc, nullptr, nullptr, {} };
         ms::CompareSide c96 = c48;
         c96.request.rate = 96000.0;
         const ms::Comparison differs = ms::compare(c48, c96);

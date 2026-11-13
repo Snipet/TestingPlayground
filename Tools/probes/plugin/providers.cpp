@@ -319,7 +319,7 @@ PROBE(plugin, providers)
         P.eq("url.local", pr::isLocal("http://localhost:1234/v1") && pr::isLocal("http://studio.local:1234/v1")
                               && pr::isLocal("http://10.0.0.5/v1") && !pr::isLocal("https://openrouter.ai/api/v1") ? 1 : 0, 1);
         pg::ChatProvider ollama{ "openai", "http://localhost:11434/v1/", "" }, custom{ "openai", "https://llm.example.org/v1", "" };
-        P.eq("url.preset_names", pr::nameOf(ollama) == "Ollama (this Mac)" && pr::nameOf(custom) == "llm.example.org"
+        P.eq("url.preset_names", pr::nameOf(ollama) == "Ollama (" + std::string(pg::kThisMachine) + ")" && pr::nameOf(custom) == "llm.example.org"
                                      && pr::nameOf({ "gemini", "", "" }) == "Google Gemini" && pr::nameOf({}) == "Anthropic" ? 1 : 0, 1);
         P.eq("url.keyless", pr::keyless(ollama) && !pr::keyless(custom) && !pr::keyless({ "gemini", "", "" }) ? 1 : 0, 1);
 
@@ -575,7 +575,7 @@ PROBE(plugin, providers)
         P.eq("local.set_without_key", agent.setProvider({ "openai", "http://localhost:11434/v1", "" }, "", why) ? 1 : 0, 1);
         agent.waitIdle();
         const pg::ChatState s = agent.chatState();
-        P.eq("local.ready", s.ready() && s.keyless && !s.hasKey && s.providerName == "Ollama (this Mac)" ? 1 : 0, 1);
+        P.eq("local.ready", s.ready() && s.keyless && !s.hasKey && s.providerName == "Ollama (" + std::string(pg::kThisMachine) + ")" ? 1 : 0, 1);
         P.eq("local.models", s.models.size() == 2 && s.model == "qwen-probe:32b" ? 1 : 0, 1);
         P.eq("local.no_levels", s.effort.empty()
                                     && std::none_of(s.models.begin(), s.models.end(), [](const pg::ChatModel& m) { return !m.efforts.empty(); })
@@ -946,7 +946,7 @@ PROBE(plugin, providers)
         P.eq("errors.quota", has(pr::errorText(openai, 429, body), "rate limiting") ? 1 : 0, 1);
         const std::string ctx = claude::toJson(input({ { "error", input({ { "message", "This model's maximum context length is 8192 tokens" } }) } }));
         P.eq("errors.context", has(pr::errorText(ollama, 400, ctx), "longer context in the server's settings") ? 1 : 0, 1);
-        P.eq("errors.not_running", has(pr::connectionText(ollama, "no connection"), "is the server (Ollama (this Mac)) running?") ? 1 : 0, 1);
+        P.eq("errors.not_running", has(pr::connectionText(ollama, "no connection"), "is the server (Ollama (" + std::string(pg::kThisMachine) + ")) running?") ? 1 : 0, 1);
         P.eq("errors.string_error", has(pr::errorText(ollama, 404, "{\"error\":\"model 'x' not found\"}"), "model 'x' not found") ? 1 : 0, 1);
 
         // A page that is no JSON (a proxy's), cut short: never inside a character. A two-byte character across each cut.
@@ -988,8 +988,8 @@ PROBE(plugin, providers)
         agent.send("hello");
         agent.waitIdle();
         P.eq("servers.not_running", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error),
-                                        "Could not read LM Studio (this Mac)'s models: no connection to localhost:1234: is the "
-                                        "server (LM Studio (this Mac)) running?")
+                                        "Could not read LM Studio (" + std::string(pg::kThisMachine) + ")'s models: no connection to "
+                                        "localhost:1234: is the server (LM Studio (" + pg::kThisMachine + ")) running?")
                                         && script->postCount() == before && !agent.chatState().busy ? 1 : 0, 1);
 
         // Another server whose list refuses the key, no model chosen: the key's problem, nothing sent.

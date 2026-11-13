@@ -38,15 +38,6 @@ namespace playground
     {
         constexpr std::size_t kMaxOutput = 12000;
 
-        // A whole path as the user's machine writes one (wav:'s refusals).
-#if defined(_WIN32)
-        constexpr const char* kWholePath = "C:\\... or ~\\...";
-#elif !defined(__APPLE__)
-        constexpr const char* kWholePath = "/home/... or ~/...";
-#else
-        constexpr const char* kWholePath = "/Users/... or ~/...";
-#endif
-
         std::string number(double v)
         {
             char buf[32];
@@ -70,6 +61,7 @@ namespace playground
             // as they are now (scenario::resolve's): `own`.
             Assets samples;
             bool own = false;
+            CircuitPins pins;                     // what plays: the configuration its netlists play with (none: the store's)
         };
 
         // The project's kept versions, the newest first (at most twelve), for an error.
@@ -125,7 +117,7 @@ namespace playground
             }
             if (s == "playing")
             {
-                out.files = host.chatPlaying(out.samples);
+                out.files = host.chatPlaying(out.samples, &out.pins);   // with the configuration its netlists play
                 out.own = true;
                 out.playing = true;
                 out.words = "the program that plays";
@@ -317,14 +309,14 @@ namespace playground
         return claude::object(
             { { "name", "compare" },
               { "description",
-                "Compare two versions of the sound rendered offline alike: identical bits, or how and where they differ "
+                juce::String("Compare two versions of the sound rendered offline alike: identical bits, or how and where they differ "
                 "in level, delay, bands, metrics and code.\n\n"
                 "It changes nothing. "
                 "a, b: playing is the running program's own code (not the frozen copy it plays once its dials hold still); "
                 "previous_run what played before the last run that changed it ({a: \"previous_run\", b: \"playing\"}: "
                 "what that run changed); version:N is the open project's (one not kept lists those kept); project:Name@N, "
                 "@N left out its newest; preset:Name and {dials: {...}} lay dials over the editor's files; capture is the "
-                "user's recording; wav:path is a target sound, a WAV, AIFF or FLAC on this Mac by its whole path (one the user "
+                "user's recording; wav:path is a target sound, a WAV, AIFF or FLAC on ") + kThisMachine + " by its whole path (one the user "
                 "named or gave you; nothing else is read, and nothing of it is kept) or one of the program's samples by its "
                 "name: the other side renders as long as it is (60 s at most, a picture's 10), at the render's rate (the file "
                 "resampled), and the levels, the gain and lag that fit, the octave bands and both spectra's centroid say how "
@@ -367,6 +359,12 @@ namespace playground
         if (input.hasProperty("window"))
             return done("compare takes no window: it compares the whole renders (measure_output, view_sound, a check and "
                         "tune_dials measure one).", true);
+        // The other tools' render settings, which compare does not read: refused, never ignored.
+        for (const char* k : { "notes", "velocity", "hold_seconds", "tail_seconds", "bpm", "modwheel", "pitchbend", "base_hz",
+                               "dials_from", "spectrum", "profile" })
+            if (input.hasProperty(k))
+                return done("compare takes no " + std::string(k) + ": both sides render its scenario (an instrument's "
+                            "phrase, the moves, the host, the rate), and dials is own, current or defaults.", true);
         // Its numbers alone render up to 300 s; with the picture, a picture's 10 s (Measure.h, "How long a render may be").
         const bool picture = static_cast<bool>(input.getProperty("picture", false));
         measure::Request req = picture ? measure::Request{} : scenario::forNumbers();
@@ -439,6 +437,7 @@ namespace playground
         for (const auto& [side, from] : { std::pair<measure::CompareSide*, Side*>{ &A, &a }, { &B, &b } })
         {
             side->files = from->files;
+            side->pins = from->pins;
             side->request = req;
             if (from->own)
                 side->request.assets = from->samples;

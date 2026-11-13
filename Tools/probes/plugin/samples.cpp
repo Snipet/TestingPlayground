@@ -749,14 +749,8 @@ PROBE(plugin, samples)
             const pg::ChatAgent::McpResult r = p.chatAgent().mcpCall("compare", in);
             return r.isError ? textOf(r) : std::string();
         };
-        // A whole path as this platform writes one (ChatCompare.cpp's kWholePath).
-#if defined(_WIN32)
-        const std::string whole = "whole (C:\\... or ~\\...)";
-#elif !defined(__APPLE__)
-        const std::string whole = "whole (/home/... or ~/...)";
-#else
-        const std::string whole = "whole (/Users/... or ~/...)";
-#endif
+        // A whole path as this platform writes one (EditorPort.h's kWholePath).
+        const std::string whole = "whole (" + std::string(pg::kWholePath) + ")";
         P.eq("target.refused_relative", has(refusal("wav:target/kick.wav", "editor"), whole) ? 1 : 0, 1);
         // A path or a sample's name, the same on every platform: a Windows path (a drive's, a share's, with either slash)
         // is a path, never looked up as a sample (on the Mac and Linux no whole path, and says so; on Windows a whole one,

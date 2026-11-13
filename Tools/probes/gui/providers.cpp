@@ -179,11 +179,11 @@ namespace
     }
 
     // Opens the Provider pill's menu and chooses `name` in it.
-    bool choose(funkgui::HeadlessHost& host, pg::ui::Panel& panel, const char* name)
+    bool choose(funkgui::HeadlessHost& host, pg::ui::Panel& panel, const std::string& name)
     {
         clickAt(host, panel.centreOfKeyProvider());
         host.settle();
-        const bool chosen = host.pendingMenu() != nullptr && host.chooseMenuItem(name);
+        const bool chosen = host.pendingMenu() != nullptr && host.chooseMenuItem(name.c_str());
         host.settle();
         return chosen;
     }
@@ -382,13 +382,13 @@ PROBE(gui, providers)
         clickAt(host, panel.centreOfKey());
         host.settle();
         P.eq("local.opens_on_current", panel.keyDialogPreset() == presetIndex("openrouter") ? 1 : 0, 1);
-        P.eq("local.choose", choose(host, panel, "Ollama (this Mac)") ? 1 : 0, 1);
+        P.eq("local.choose", choose(host, panel, "Ollama (" + std::string(pg::kThisMachine) + ")") ? 1 : 0, 1);
         P.eq("local.no_remove", panel.centreOfKeyRemove() ? 1 : 0, 0);
         writePng(P, host, "gui.providers.ollama.png");
         clickAt(host, panel.centreOfKeySave());
         settleChat(processor, host);
         const pg::ChatState s = chat(processor);
-        P.eq("local.saved", !panel.keyDialogOpen() && s.providerName == "Ollama (this Mac)" && s.ready() && s.model == "qwen-probe:32b" ? 1 : 0, 1);
+        P.eq("local.saved", !panel.keyDialogOpen() && s.providerName == "Ollama (" + std::string(pg::kThisMachine) + ")" && s.ready() && s.model == "qwen-probe:32b" ? 1 : 0, 1);
     }
 
     // ---- GEMINI ------------------------------------------------------------------------------------------------------------
@@ -468,7 +468,7 @@ PROBE(gui, providers)
         // Ollama's with a remote address typed: no "nothing leaves".
         clickAt(host, panel.centreOfKey());
         host.settle();
-        P.eq("edited.ollama", choose(host, panel, "Ollama (this Mac)") ? 1 : 0, 1);
+        P.eq("edited.ollama", choose(host, panel, "Ollama (" + std::string(pg::kThisMachine) + ")") ? 1 : 0, 1);
         const auto local = dialogGroup(host);
         P.eq("edited.ollama_local", local && has(local->description, "nothing leaves") ? 1 : 0, 1);
         typeBase("https://llm.example.test/v1");

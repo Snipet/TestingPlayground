@@ -215,7 +215,8 @@ namespace playground
             if (!keepFailed_)
             {
                 keepFailed_ = true;
-                addEntry(ChatEntry::Kind::note, "This chat could not be kept on this Mac (" + (why.empty() ? std::string("the write failed") : why)
+                addEntry(ChatEntry::Kind::note, std::string("This chat could not be kept on ") + kThisMachine + " ("
+                                                    + (why.empty() ? std::string("the write failed") : why)
                                                     + "). It is tried again after each answer and each save of the session; "
                                                       "until it is kept, closing the plugin loses it.");
                 touch();
@@ -229,7 +230,7 @@ namespace playground
         if (keepFailed_)
         {
             keepFailed_ = false;
-            addEntry(ChatEntry::Kind::note, "This chat is kept on this Mac again.");
+            addEntry(ChatEntry::Kind::note, std::string("This chat is kept on ") + kThisMachine + " again.");
             touch();                                   // written at the next keep
         }
     }

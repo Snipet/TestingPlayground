@@ -28,7 +28,8 @@
 //            "fallbacks" or their beta (and without fast mode's beta on Opus 5.5), the choice is stored, and the footer
 //            says "fast" when the usage does; busy (a 429, again after one wait) the turn goes on at standard speed with
 //            a note, fast mode still chosen; refused (a 400 about the speed) the turn goes on at standard speed and fast
-//            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta
+//            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta;
+//            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   LIMIT    a reply cut off at max_tokens with no tool call: a note, the reply in the history as it came (its thinking
 //            and signature), and the turn goes on with a line that tells Claude; a second cut off in a row ends the
@@ -193,7 +194,10 @@
 //            whose at + len does (view_sound's 14 s), naming it; a glide and a note that end at 10 s taken (the phrase
 //            described over 10.00 s); Claude
 //            Desktop's cancel mid-render (the activity counting the seconds first): what it reached, nothing measured,
-//            back within 2 s, the next call free (its numbers measured)
+//            back within 2 s, the next call free (its numbers measured); view_sound cancelled before it began draws
+//            nothing and says so, the next free. MISTYPED: hold_seconds, velocity, a dial's value, dials, notes and
+//            set_checks' index of the wrong JSON type refused in words; compare's hold_seconds refused; view_sound's
+//            from_seconds alone and a close-up backwards refused, both ends taken
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
@@ -203,7 +207,8 @@
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
-//            set (measured afterwards, it gives the goal); an unknown dial an error result; a sweep of two values, its
+//            set (measured afterwards, it gives the goal); the editor's files with a dial the program that plays has
+//            not: the one it has set, the other named as not set; an unknown dial an error result; a sweep of two values, its
 //            table, the dial left as it was; a sweep that is no list refused
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
@@ -1040,6 +1045,35 @@ PROBE(plugin, chat)
         agent.waitIdle();
         P.eq("fast.preview_speed", str(lastBody(), "speed") == "fast" ? 1 : 0, 1);
         P.eq("fast.preview_beta", has(lastBeta(), "fast-mode-2026-02-01") && !has(lastBeta(), "server-side-fallback") ? 1 : 0, 1);
+
+        // Claude Fable 5.2, listed: fast mode without a beta, and "fallbacks" at standard speed.
+        script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
+                                            { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" }, 64000, false },
+                                            { "claude-opus-4-8", "Claude Opus 4.8", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-old-4", "Claude Old 4", false, {} } });
+        agent.setModel("claude-opus-5-5");
+        agent.setTransport(std::make_unique<fake::Transport>(script));
+        script->add(fake::Response::ok(fake::Sse().start().text("Listed.").end("end_turn", 321, "fast")));
+        agent.send("list them again");
+        agent.waitIdle();
+        bool fableFast = false;
+        for (const pg::ChatModel& m : agent.chatState().models)
+            fableFast = fableFast || (m.id == "claude-fable-5-2" && m.fast);
+        P.eq("fast.fable_listed", fableFast ? 1 : 0, 1);
+        agent.setModel("claude-fable-5-2");
+        script->add(fake::Response::ok(fake::Sse().start("claude-fable-5-2").text("Fast.").end("end_turn", 321, "fast")));
+        agent.send("on fable, fast");
+        agent.waitIdle();
+        P.eq("fast.fable_no_beta", str(lastBody(), "speed") == "fast" && !has(lastBeta(), "fast-mode-2026-02-01")
+                                       && !lastBody().hasProperty("fallbacks") ? 1 : 0, 1);
+        agent.setFast(false);
+        script->add(fake::Response::ok(fake::Sse().start("claude-fable-5-2").text("Standard.").end()));
+        agent.send("on fable, standard");
+        agent.waitIdle();
+        P.eq("fast.fable_fallbacks", str(lastBody(), "fallbacks") == "default" && has(lastBeta(), "server-side-fallback-2026-07-01")
+                                         ? 1 : 0, 1);
 
         agent.setFast(false);
         agent.setModel("claude-opus-5-5");
@@ -3781,6 +3815,34 @@ PROBE(plugin, chat)
                 P.le("long.cancel_at_once", back, 2.0);
                 const pg::ChatAgent::McpResult next = sa.mcpCall("measure_output", held(1.0));
                 P.eq("long.cancel_then_free", !next.isError && has(allText(next), "Metrics: ") && !has(allText(next), "Cancelled") ? 1 : 0, 1);
+                // view_sound's render is cancelled as the others are: a cancel that came before the call starts it
+                // cancelled, so it draws nothing and says so.
+                sa.mcpCancel(4545);
+                const pg::ChatAgent::McpResult drawn = sa.mcpCall("view_sound", held(2.0), 4545);
+                std::printf("view_sound cancelled before it began:\n%s\n", allText(drawn).c_str());
+                P.eq("long.view_sound_cancelled", drawn.isError && has(allText(drawn), "Cancelled ") && has(allText(drawn), "nothing was drawn")
+                                                      ? 1 : 0, 1);
+                P.eq("long.view_sound_then_free", sa.mcpCall("view_sound", held(1.0)).isError ? 0 : 1, 1);
+
+                // MISTYPED: a render setting of the wrong JSON type is refused in words, never dropped; compare refuses
+                // the render settings it does not take; view_sound's close-up takes both its ends or neither.
+                P.eq("mistyped.hold", refused("measure_output", with(held(1.0), "hold_seconds", "5"), "hold_seconds is a number of seconds"), 1);
+                P.eq("mistyped.velocity", refused("measure_output", with(held(1.0), "velocity", "loud"), "velocity is a number"), 1);
+                P.eq("mistyped.dial", refused("measure_output", with(held(1.0), "dials", input({ { levelDial, "2000" } })),
+                                              std::string("dials.") + levelDial + " is a number"), 1);
+                P.eq("mistyped.dials_object", refused("measure_output", with(held(1.0), "dials", "loud"), "dials is an object"), 1);
+                P.eq("mistyped.notes", refused("measure_output", with(held(1.0), "notes", "57"), "notes is a list of MIDI notes"), 1);
+                P.eq("mistyped.check_index",
+                     refused("set_checks", input({ { "mode", "merge" },
+                                                   { "checks", juce::Array<juce::var>{ input({ { "index", "2" }, { "label", "Level" },
+                                                                                               { "metric", level }, { "max", 0.0 } }) } } }),
+                             "index is a whole number"), 1);
+                P.eq("mistyped.compare_hold", refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "hold_seconds", 1.0 } }),
+                                                      "compare takes no hold_seconds"), 1);
+                P.eq("closeup.from_alone", refused("view_sound", with(held(1.0), "from_seconds", 0.5), "from_seconds and to_seconds go together"), 1);
+                P.eq("closeup.backwards", refused("view_sound", with(with(held(1.0), "from_seconds", 0.5), "to_seconds", 0.4),
+                                                  "to_seconds is after from_seconds"), 1);
+                P.eq("closeup.both_taken", sa.mcpCall("view_sound", with(with(held(1.0), "from_seconds", 0.5), "to_seconds", 0.52)).isError ? 0 : 1, 1);
             }
 
             // ---- SPECTRUM ----------------------------------------------------------------------------------------------
@@ -4109,6 +4171,31 @@ PROBE(plugin, chat)
             const double got = session.measure(r).values[metric];
             std::printf("tune_dials: %s %.2f, %s %.2f\n", levelDial, static_cast<double>(plain), metric, got);
             P.near("tune.dial_measures", got, goal, 0.25);
+            // The editor's files tuned with a dial the program that plays has not (added, not run yet): the dial it has is
+            // set, the other is named as not set (with its value and how to set it), never "the dials are set".
+            {
+                const pg::Draft played = sp.editorPort().draft();
+                pg::Draft added = played;
+                std::string& text = added.files[0].text;
+                const std::size_t at = text.find("{\n    param float ");
+                text.insert(at + 2, "    param float spare [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n");
+                sp.editorPort().setDraft(added);
+                juce::var both = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial), "spare" } },
+                                         { "goals", juce::Array<juce::var>{ input({ { "metric", metric }, { "target", goal + 6.0 },
+                                                                                    { "tolerance", 0.2 } }) } } });
+                if constexpr (pg::product::kIsInstrument)
+                    both.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                const float levelBefore = sp.getParameters()[dialSlot]->getValue();
+                const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", both);
+                const std::string said = allText(tuned);
+                sp.poll();
+                std::printf("tune_dials with a dial only the editor's files have:\n%s\n", said.c_str());
+                P.eq("tune.missing_dial_said", !tuned.isError && !has(said, "The dials are set to the best values")
+                                                   && has(said, "The program that plays has no dial spare") && has(said, "run_program") ? 1 : 0, 1);
+                P.eq("tune.missing_dial_others_set", has(said, "Set " + std::string(levelDial) + " to the best value")
+                                                         && sp.getParameters()[dialSlot]->getValue() != levelBefore ? 1 : 0, 1);
+                sp.editorPort().setDraft(played);
+            }
             // An int or an unknown dial: an error result.
             ss->add(fake::Response::ok(fake::Sse()
                                                .start()
@@ -4488,7 +4575,7 @@ PROBE(plugin, chat)
             const pg::ChatAgent::McpResult ex = sa.mcpCall("trace", ask);
             const std::string exported = toolText(ex);
             std::printf("trace with export:\n%s\n", exported.c_str());
-            const std::string lead = "Exported on this Mac (the user can open these) to ";
+            const std::string lead = std::string("Exported on ") + pg::kThisMachine + " (the user can open these) to ";
             const std::size_t d0 = exported.find(lead);
             const std::string dir = d0 == std::string::npos ? std::string() : exported.substr(d0 + lead.size(), exported.find(":\n", d0) - d0 - lead.size());
             const juce::File folder(juce::String::fromUTF8(dir.c_str()));
@@ -4567,7 +4654,7 @@ PROBE(plugin, chat)
                 const juce::File pairInput = folder.getChildFile("probe pair input.wav");
                 const bool made = !sa.mcpCall("trace", first).isError && pairInput.existsAsFile() && pairInput.setLastModificationTime(old);
                 const std::string said = toolText(sa.mcpCall("trace", second));
-                const std::size_t e0 = said.find("Exported on this Mac");
+                const std::size_t e0 = said.find(std::string("Exported on ") + pg::kThisMachine);
                 std::printf("export: \"probe pair\" after \"probe pair input\": %s\n",
                             e0 == std::string::npos ? said.c_str() : said.substr(e0, said.find("\n- ", said.find("\n- ", e0) + 3) - e0).c_str());
                 P.eq("export.names_kept_apart", made && pairInput.getLastModificationTime() == old
@@ -4629,7 +4716,7 @@ PROBE(plugin, chat)
                 const std::string said = toolText(cut);
                 std::printf("export cancelled (%s):\n%s\n", early ? "while it rendered" : "after it ended", said.c_str());
                 P.eq("export.cancel_writes_nothing", tracing && early && has(said, "Cancelled, so nothing was exported: no file was written.")
-                                                         && has(said, "cancelled") && !has(said, "Exported on this Mac")
+                                                         && has(said, "cancelled") && !has(said, std::string("Exported on ") + pg::kThisMachine)
                                                          && !folder.getChildFile("probe cancelled.wav").exists()
                                                          && folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
             }
@@ -5993,11 +6080,11 @@ PROBE(plugin, chat)
     // ---- MODELS: a models list that did not come is asked for again, once a turn ------------------------------------
     {
         const pg::chatstore::Choice chosen = pg::chatstore::loadChoice();
-        pg::chatstore::saveChoice({ "claude-fable-5-2", "high", false, false, "" });   // a model the built-in list lacks
+        pg::chatstore::saveChoice({ "claude-mythos-5-2", "high", false, false, "" });   // a model the built-in list lacks
         pg::Processor fresh;
         pg::ChatAgent& a = fresh.chatAgent();
         auto s2 = std::make_shared<fake::Script>();
-        s2->models = fake::modelsBody({ { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high" }, 100000, true } });
+        s2->models = fake::modelsBody({ { "claude-mythos-5-2", "Claude Mythos 5.2", true, { "low", "medium", "high" }, 100000, true } });
         a.setTransport(std::make_unique<fake::Transport>(s2));
         const std::string gets = "GET /v1/models?limit=100";
         const auto turnOf = [&](const std::string& words) {
@@ -6038,7 +6125,7 @@ PROBE(plugin, chat)
         P.eq("models.own_values", ownValues(lastBody()) ? 1 : 0, 1);
         bool listed = false;
         for (const pg::ChatModel& m : a.chatState().models)
-            listed = listed || m.id == "claude-fable-5-2";
+            listed = listed || m.id == "claude-mythos-5-2";
         P.eq("models.menu", listed ? 1 : 0, 1);
         // Listed: not asked again.
         turnOf("five");

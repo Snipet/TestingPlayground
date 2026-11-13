@@ -33,3 +33,28 @@ Claude Desktop extension: **0.20.0** (was 0.19.0).
   every version is kept; the projects tool and the guide say a project keeps its newest 100 versions, and that applying
   a preset is refused over moved dials (your files stay). A factory project saved by its name with no project open is
   named in the reply.
+- Stopping the chat (or Claude Desktop cancelling) while Claude looks at the sound (view_sound) stops its render at
+  once, as it stops the other renders, instead of waiting for the whole picture.
+- tune_dials on files not run yet, with a dial the program that plays has not, no longer says every dial was set: it
+  names the dial it could not set, with its best value, and says to run the program and set it.
+- trace's export never replaces a file another instance exports under the same name at the same moment (the later
+  one takes the next number), and an export that fails part way names the files it wrote.
+- A render setting of the wrong kind (a number written as text, `hold_seconds: "5"`, a dial's value as a word) is
+  refused in words instead of being dropped silently, and so is a check's index given as text; compare refuses the
+  settings it does not read (notes, hold_seconds, ...) instead of ignoring them; view_sound's close-up with only one
+  of its two ends, or with its end before its start, is refused instead of showing the default close-up.
+- run_function on a fresh instance sets every dial as it is, an instrument's Shared dials and a circuit's pots and
+  switches too, as its words say.
+- compare's, trace's and view_panel's "playing" render the circuit configuration the program plays with, not a newer
+  self-test answer it has not taken yet.
+- On Windows and Linux the chat, its notes and Claude's tools say "this computer" where they said "this Mac" (the
+  providers "Ollama (this computer)" and "LM Studio (this computer)", the chats kept, the exports), a path's
+  example is that system's, and the key dialog's footer says Ctrl-V.
+- set_checks describes a check's own dials_from and snapshot, as its listing gives them back, and no longer asks for
+  a label (a check without one is named by its metric).
+- write_file's sample path says it replaces a sample of the same name.
+
+**Changed**
+- Claude Fable 5.2 is in the model list before your key's list arrives (in place of Fable 5.1), and Fable 5.2 and
+  Mythos 5.2 offer **Fast** and are rerouted by the API's fallbacks when a classifier declines a request, as Opus 5.5
+  is.

@@ -235,11 +235,14 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
-        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets), from one
-        // look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
-        virtual Sources chatPlaying(Assets& samples) const
+        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets) and in `pins`
+        // (when given) the configuration its netlists play with (CompileStatus::circuits, not the self-test's store), from
+        // one look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
+        virtual Sources chatPlaying(Assets& samples, CircuitPins* pins = nullptr) const
         {
             samples = chatAssets();
+            if (pins != nullptr)
+                pins->clear();
             return chatRunning();
         }
         // What played before the last run that changed what plays (its files, a netlist's drawing aside, or the samples

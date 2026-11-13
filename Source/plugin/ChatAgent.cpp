@@ -82,11 +82,11 @@ namespace playground
         const std::vector<std::string> kAllEfforts{ "low", "medium", "high", "xhigh", "max" };
 
         // Before /v1/models answers (or without a key): the current models, which all take adaptive thinking and
-        // every effort level; Claude Opus 5.5 takes fast mode too.
+        // every effort level; Claude Opus 5.5 and Claude Fable 5.2 take fast mode too.
         std::vector<ChatModel> builtInModels()
         {
             return { { "claude-opus-5-5", "Claude Opus 5.5", kAllEfforts, 128000, true, true },
-                     { "claude-fable-5-1", "Claude Fable 5.1", kAllEfforts, 128000, true },
+                     { "claude-fable-5-2", "Claude Fable 5.2", kAllEfforts, 128000, true, true },
                      { "claude-sonnet-5-5", "Claude Sonnet 5.5", kAllEfforts, 128000, true },
                      { "claude-haiku-5-5", "Claude Haiku 5.5", kAllEfforts, 128000, true } };
         }
@@ -94,17 +94,19 @@ namespace playground
         // The models that take "fallbacks": "default" (a classifier's refusal retried on another model).
         bool takesDefaultFallbacks(const std::string& id)
         {
-            return id == "claude-fable-5-1" || id == "claude-opus-5-5" || id == "claude-opus-5"
-                || id == "claude-sonnet-5-5";
+            return id == "claude-fable-5-2" || id == "claude-mythos-5-2" || id == "claude-fable-5-1" || id == "claude-opus-5-5"
+                || id == "claude-opus-5" || id == "claude-sonnet-5-5";
         }
 
-        // Fast mode (the fast-mode docs; /v1/models does not list it): Claude Opus 5.5, and in research preview
-        // Claude Opus 5 and Opus 4.8, whose fast requests need the beta header (without it they get a 400).
+        // Fast mode (the fast-mode docs; /v1/models does not list it): Claude Opus 5.5, Claude Fable 5.2 and Claude
+        // Mythos 5.2, and in research preview Claude Opus 5 and Opus 4.8, whose fast requests need the beta header
+        // (without it they get a 400).
         constexpr const char* kFastBeta = "fast-mode-2026-02-01";
 
         bool takesFast(const std::string& id)
         {
-            return id == "claude-opus-5-5" || id == "claude-opus-5" || id == "claude-opus-4-8";
+            return id == "claude-opus-5-5" || id == "claude-fable-5-2" || id == "claude-mythos-5-2" || id == "claude-opus-5"
+                || id == "claude-opus-4-8";
         }
 
         bool fastNeedsBeta(const std::string& id) { return id == "claude-opus-5" || id == "claude-opus-4-8"; }
@@ -951,6 +953,11 @@ namespace playground
                 if (n >= 1.0 && n <= static_cast<double>(checks.size()) && n == std::floor(n))
                     return static_cast<int>(n) - 1;
                 why = "there is no check " + number(n) + " (" + std::to_string(checks.size()) + " are set)";
+                return -2;
+            }
+            if (!index.isVoid() && !index.isUndefined())     // given, but no number: never read as the label's
+            {
+                why = "index is a whole number, the check's place in the list (1 up)";
                 return -2;
             }
             if (label.isEmpty())
@@ -2506,15 +2513,16 @@ namespace playground
                        claude::object({ { "name", prop("string", "The file's name, such as program.fm") },
                                         { "content", prop("string", "The file's whole text") },
                                         { "path", prop("string", "In place of content: a WAV, AIFF or FLAC on this "
-                                                                 "computer, added as the sample name (delete_file and "
-                                                                 "rename_file take a sample too)") },
+                                                                 "computer, added as the sample name, replacing one of "
+                                                                 "that name (delete_file and rename_file take a sample too)") },
                                         { "files", claude::object({ { "type", "array" },
                                                                     { "description", "[{name, content}] in place of those two: "
                                                                                      "one change, all or none" } }) },
-                                        { "from", prop("string", "A file or folder on this Mac the user named: its program "
-                                                                 "files come in (text, 256 KB each at most)") },
-                                        { "to", prop("string", "A name: the editor's files go to a new folder of it on this "
-                                                               "Mac") } }),
+                                        { "from", prop("string", (std::string("A file or folder on ") + kThisMachine
+                                                                  + " the user named: its program files come in (text, 256 KB "
+                                                                    "each at most)").c_str()) },
+                                        { "to", prop("string", (std::string("A name: the editor's files go to a new folder of "
+                                                                            "it on ") + kThisMachine).c_str()) } }),
                        {}));
         {
             // files: several files' edits as one change (each entry as the tool's own name, edits and expected), or a
@@ -2708,11 +2716,15 @@ namespace playground
                                                                          "(\"Releases within two seconds\")"));
             addRenderProps(item);
             item.getDynamicObject()->setProperty("index", prop("integer", "merge, remove: its number (remove: its label must match)"));
+            // A check's own dials_from (the call's, described below, stands for it when it has none) and a snapshot's dials,
+            // as the listing gives them back. No label: its metric's name.
+            item.getDynamicObject()->setProperty(
+                "dials_from",
+                claude::object({ { "enum", juce::Array<juce::var>{ kDialsFrom[0], kDialsFrom[1], kDialsFrom[2] } } }));
+            item.getDynamicObject()->setProperty("snapshot", claude::object({ { "type", "object" } }));
             juce::var checks = claude::object({ { "type", "array" },
                                                 { "maxItems", kMaxChecks },
-                                                { "items", claude::object({ { "type", "object" },
-                                                                            { "properties", item },
-                                                                            { "required", juce::Array<juce::var>{ "label" } } }) },
+                                                { "items", claude::object({ { "type", "object" }, { "properties", item } }) },
                                                 { "description", "Each a metric with min, max or target, in a render "
                                                                  "of its own (measure_output's settings; defaults when "
                                                                  "left out). Empty: none; left out: lists them" } });
@@ -4355,7 +4367,8 @@ namespace playground
         if (!(seconds > 0.0) || seconds > kMaxAt)
             return "at needs seconds: the moment to draw, from the render's start, more than 0 and at most 20.";
         Assets samples;                           // what it compiled with, not the plugin's samples as they are now
-        const Sources files = host_.chatPlaying(samples);
+        CircuitPins pins;                         // and the configuration its netlists play with
+        const Sources files = host_.chatPlaying(samples, &pins);
         if (files.empty())
             return "Nothing plays yet: at renders the program that plays (run_program plays the editor's files).";
         measure::ViewRequest vr;
@@ -4371,7 +4384,7 @@ namespace playground
         vr.render.assets = samples;
         defaults = defaults && !vr.render.fromCapture;   // a recording plays its own dials (view_sound's line)
         setActivity("Rendering the program to its moment");
-        measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
+        measure::Session session(files, vr.render.rate, pins.empty() ? nullptr : &pins, vr.render.assets);
         if (!session.compiled())
             return "the program that plays did not compile for the render:\n" + capped(session.errors());
         // As view_sound renders it (its words say so), and on past its end, silent, to a later moment.
@@ -4497,11 +4510,22 @@ namespace playground
             if (why.empty() && scenario::dialsFrom(input, defaults, why) && !defaults)
                 vr.render.current = currentDials();
             soundInput(input, vr);
+            // The close-up: both ends or neither (the default's few cycles), never one of them dropped without a word.
             const juce::var from = input.getProperty("from_seconds", juce::var()), to = input.getProperty("to_seconds", juce::var());
-            if (isNumber(from) && isNumber(to))
+            const bool hasFrom = !from.isVoid() && !from.isUndefined(), hasTo = !to.isVoid() && !to.isUndefined();
+            if (why.empty() && (hasFrom || hasTo))
             {
-                vr.from = static_cast<float>(static_cast<double>(from));
-                vr.to = static_cast<float>(static_cast<double>(to));
+                if (!hasFrom || !hasTo || !isNumber(from) || !isNumber(to))
+                    why = "from_seconds and to_seconds go together, two numbers: the close-up from one to the other (both left "
+                          "out: a few cycles of the held sound).";
+                else if (!(static_cast<double>(from) >= 0.0) || !(static_cast<double>(to) > static_cast<double>(from)))
+                    why = "to_seconds is after from_seconds, and from_seconds 0 or more (the close-up's seconds from the "
+                          "start).";
+                else
+                {
+                    vr.from = static_cast<float>(static_cast<double>(from));
+                    vr.to = static_cast<float>(static_cast<double>(to));
+                }
             }
             Sources files = host_.chatDraft().files;   // a copy: the trial edits (ChatScenario.h) go there
             int trials = 0;
@@ -4514,7 +4538,19 @@ namespace playground
                 block.getDynamicObject()->setProperty("is_error", true);
                 return block;
             }
-            const measure::View v = measure::view(files, vr);
+            // Cancelled as it renders (the stop button, Claude Desktop's cancel), as every render of the tools is.
+            measure::Session session(files, vr.render.rate, nullptr, vr.render.assets);
+            session.setCancel(renderCancel("Drawing the sound"));
+            const measure::View v = measure::view(session, vr);
+            if (v.compiled && session.cancelled())
+            {
+                const std::string said = scenario::trialLine(trials) + session.cancelWords() + " So nothing was drawn.";
+                block.getDynamicObject()->setProperty("content", juce::String::fromUTF8(said.c_str()));
+                block.getDynamicObject()->setProperty("is_error", true);
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::tool, "looked at the sound: stopped");
+                return block;
+            }
             if (!v.compiled)
             {
                 block.getDynamicObject()->setProperty(
@@ -5239,13 +5275,47 @@ namespace playground
                        "values above).";
             else if (apply && t.bestScore < t.startScore)
             {
+                // It tuned the editor's files; the dials are the program's that plays: a dial it lacks (the files not run
+                // since one was added or renamed) is named, with its value, never counted as set.
                 const Controls controls = host_.chatDials();
+                std::string set, missing, valued;
+                int sets = 0, misses = 0;
                 for (const auto& [dial, v] : t.best)
-                    for (int c = 0; c < kMaxControls; ++c)
-                        if (controls[static_cast<std::size_t>(c)].used && dial == controls[static_cast<std::size_t>(c)].name)
-                            host_.chatSetDial(c, v);
-                out += t.timedOut ? "The dials are set to the best values found before the time limit (the user can move them)."
-                                  : "The dials are set to the best values (the user can move them).";
+                {
+                    bool found = false;
+                    for (int c = 0; c < kMaxControls && !found; ++c)
+                    {
+                        const Control& k = controls[static_cast<std::size_t>(c)];
+                        if (!k.used || dial != k.name)
+                            continue;
+                        float x = std::clamp(v, k.min, k.max);   // within the range the dial that plays has (set_dial's)
+                        if (k.type != ControlType::real)
+                            x = std::round(x);
+                        host_.chatSetDial(c, x);
+                        set += (set.empty() ? "" : ", ") + dial;
+                        ++sets;
+                        found = true;
+                    }
+                    if (!found)
+                    {
+                        missing += (missing.empty() ? "" : ", ") + dial;
+                        valued += (valued.empty() ? "" : ", ") + dial + " " + number(v);
+                        ++misses;
+                    }
+                }
+                const std::string found = t.timedOut ? " found before the time limit" : "";
+                if (misses == 0)
+                    out += "The dials are set to the best values" + found + " (the user can move them).";
+                else
+                {
+                    if (sets > 0)
+                        out += "Set " + set + " to the best value" + (sets == 1 ? "" : "s") + found + " (the user can move "
+                             + (sets == 1 ? "it" : "them") + "). ";
+                    else
+                        out += "No dial was set. ";
+                    out += "The program that plays has no dial " + missing + " (the editor's files tuned here are not what "
+                         "plays): run_program, then set_dial sets " + (misses == 1 ? "it" : "them") + " (" + valued + ").";
+                }
             }
             else if (apply)
                 out += "The dials are left as they were: nothing better was found.";

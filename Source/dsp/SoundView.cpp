@@ -408,7 +408,13 @@ namespace playground::measure
 
     View view(const Sources& files, const ViewRequest& request)
     {
-        Sound s = renderSound(files, request);
+        Session session(files, request.render.rate, nullptr, request.render.assets);
+        return view(session, request);
+    }
+
+    View view(Session& session, const ViewRequest& request)
+    {
+        Sound s = renderSound(session, request);
         if (!s.compiled)
         {
             View v;

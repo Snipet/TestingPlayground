@@ -7,7 +7,8 @@
 //            full descriptions for comparison, and compact), a setting's description given once (view_sound's render
 //            settings, set_checks' goals: not again in a check's or tune_dials'); tune_dials' metric a plain string,
 //            set_checks' the metrics' names, its dials_from (current, snapshot, defaults), its mode (replace, merge,
-//            remove) and a check's index, nothing required (without checks it lists them); measure_output's,
+//            remove) and a check's index, own dials_from and snapshot, nothing required (without checks it lists
+//            them; a check's label its metric's by default); measure_output's,
 //            view_sound's and trace's (current, defaults), described once, in no check's nor tune_dials'; the render
 //            settings' window described on measure_output alone (view_sound, a check, tune_dials), not trace's;
 //            measure_output's spectrum (octave, third, semitone), described, on no other tool; an instrument's base_hz
@@ -618,17 +619,21 @@ PROBE(plugin, mcp)
                                         && editFile["properties"].hasProperty("expected")
                                         && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
         }
-        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described); its
-        // mode (replace, merge, remove); nothing required (without checks it lists them).
+        // set_checks' dials_from: where a check takes the dials it does not name (its three words, described), and on
+        // each item its own (the three words) and its snapshot, as the listing gives them back; its mode (replace, merge,
+        // remove); nothing required (without checks it lists them; an item's label defaults to its metric).
         const juce::var dialsFrom = setChecks["inputSchema"]["properties"]["dials_from"];
         const juce::var checksMode = setChecks["inputSchema"]["properties"]["mode"];
         P.eq("link.checks_dials_from", dialsFrom["enum"].size() == 3 && dialsFrom["enum"][1].toString() == "snapshot"
                                            && dialsFrom.hasProperty("description")
                                            && checksMode["enum"].size() == 3 && checksMode["enum"][1].toString() == "merge"
                                            && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("index")
+                                           && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["dials_from"]["enum"].size() == 3
+                                           && setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("snapshot")
+                                           && !setChecks["inputSchema"]["properties"]["checks"]["items"].hasProperty("required")
                                            && !setChecks["inputSchema"].hasProperty("required") ? 1 : 0, 1);
         // The one-shot renders' dials_from (current or defaults): described on measure_output alone, in no check's
-        // render settings (set_checks has its own) and not in tune_dials (it tunes from the dials as they are).
+        // render settings (set_checks' own three words there) and not in tune_dials (it tunes from the dials as they are).
         {
             juce::var measureOutput, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -646,7 +651,7 @@ PROBE(plugin, mcp)
             P.eq("link.render_dials_from", twoWords(measureOutput) && twoWords(seen) && twoWords(trace)
                                                && measureOutput.hasProperty("description") && !seen.hasProperty("description")
                                                && !trace.hasProperty("description")
-                                               && !setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"].hasProperty("dials_from")
+                                               && !twoWords(setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["dials_from"])
                                                && !tuneDials["inputSchema"]["properties"].hasProperty("dials_from") ? 1 : 0, 1);
         }
         // The render settings' window: described on measure_output, the first that has it, and in view_sound, a check's

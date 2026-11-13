@@ -189,8 +189,14 @@ namespace playground
         { "openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-", "platform.openai.com (API keys)" },
         { "openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1", "sk-or-", "openrouter.ai (Keys)" },
         { "gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com", "AIza", "aistudio.google.com (Get API key)" },
+        // The servers on this machine, named in kThisMachine's words (EditorPort.h).
+#if defined(__APPLE__)
         { "ollama", "Ollama (this Mac)", "openai", "http://localhost:11434/v1", "", "" },
         { "lmstudio", "LM Studio (this Mac)", "openai", "http://localhost:1234/v1", "", "" },
+#else
+        { "ollama", "Ollama (this computer)", "openai", "http://localhost:11434/v1", "", "" },
+        { "lmstudio", "LM Studio (this computer)", "openai", "http://localhost:1234/v1", "", "" },
+#endif
         { "custom", "Other OpenAI-compatible server", "openai", "", "", "" },
     };
 
