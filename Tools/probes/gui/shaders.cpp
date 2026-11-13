@@ -64,6 +64,9 @@
 //             busy machine one at most now and then); a shaderc that does not run (no permission to execute)
 //             leaves a note and nothing kept, in memory or on disk, so that once it runs the same cache builds it; a
 //             shader that does not compile is kept in memory (no second shaderc) and never written to disk
+//   THROW     the renderer's check throwing (an exception of no std:: kind, then std::bad_alloc) on the shaders'
+//             threads: a note on each shader's line ("it failed inside the plugin", "the plugin ran out of memory"),
+//             the program plays, and the next compile builds all four
 //   SIXTEEN   a shader of 16 inputs (kMaxShaderInputs: FunkGui's u_params, 4 vec4s), the program's 17 dials named in
 //             its inputs=: the 17th a note, the shader built with no note of its own, reading in15 and in_p16; the
 //             Panel's item has the 16 inputs, the first and the 16th the dials' turns
@@ -71,6 +74,9 @@
 //             bake, every glyph in its cell, ShaderLib.h's numbers the bake's; the pre-pass (a string a vec4 of its
 //             codes, a longer one a mat4, the escapes; one too long, a character the font lacks, one with no end and a
 //             wrong escape each a note at its line and column; comments and #include lines left alone, line for line);
+//             DEEP: vec2( nested 100,000 deep returns, cast at every level (no recursion a file's depth drives), unclosed
+//             cast nowhere, with strings and comments between the same, twenty thousand broken strings one note, and four times
+//             the text about four times the time on this thread's clock (twelve at most: the walk is no square);
 //             the includes (the library's and the program's .sh files, in turn theirs, each once; a missing one a note at
 //             its line, in the shader or in the .sh; a clock read in an included .sh animates the shader, the library
 //             reads none); a panel of text.sc (text, numbers, a mat4 string from ink.sh, a .sh of the program's own that
@@ -126,6 +132,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <mutex>
+#include <new>
 #include <set>
 #include <string>
 #include <thread>
@@ -1525,6 +1532,38 @@ PROBE(gui, shaders)
         std::error_code ec;
         std::filesystem::remove_all(disk, ec);
     }
+    // ---- THROW ---------------------------------------------------------------------------------------------------------
+    // A shader's thread that meets an exception (the renderer's check throwing, as an exception of no std:: kind, then
+    // out of memory) keeps it: a note on the shader's line, the program plays, the next compile builds as ever. Before,
+    // an exception of no std:: kind left the build's thread and ended the process.
+    {
+        pg::Engine engine;
+        engine.prepare(48000.0, 256);
+        pg::Compiler compiler(engine);
+        compiler.setFreezing(false);
+        compiler.setSelfTesting(false);
+        const pg::Sources tf = timedFiles(30, true, false);  // TIME's salts are never 30 more than a multiple of 32
+        pg::ShaderTools x = tools();
+        x.check = [](const std::vector<uint8_t>&, std::string&) -> bool { throw 42; };
+        compiler.setShaderTools(x);
+        const pg::CompileStatus unknown = compiler.compileNow(tf);
+        std::printf("THROW notes:\n%s", unknown.notes.c_str());
+        P.eq("throw.plays", unknown.ok ? 1 : 0, 1);
+        P.eq("throw.unknown_noted", has(unknown.notes, "glow.sc:1:1: note: the shader cannot be built: it failed inside the plugin\n")
+                                        && has(unknown.notes, "sky.sc:1:1: note: the shader cannot be built: it failed inside the plugin\n")
+                                        ? 1 : 0, 1);
+        x.check = [](const std::vector<uint8_t>&, std::string&) -> bool { throw std::bad_alloc(); };
+        compiler.setShaderTools(x);
+        const pg::CompileStatus memory = compiler.compileNow(tf);
+        P.eq("throw.memory_noted", memory.ok && has(memory.notes, "rings.sc:1:1: note: the shader cannot be built: the plugin ran out "
+                                                                  "of memory\n") ? 1 : 0, 1);
+        compiler.setShaderTools(tools());
+        const pg::CompileStatus after = compiler.compileNow(tf);
+        bool four = after.ok && after.panel.shaders.size() == 4;
+        for (const pg::PanelShader& sh : after.panel.shaders)
+            four = four && !sh.binary.empty();
+        P.eq("throw.next_builds", four && !has(after.notes, "cannot be built") ? 1 : 0, 1);
+    }
     // ---- SIXTEEN -------------------------------------------------------------------------------------------------------
     {
         std::string params, names;
@@ -1627,6 +1666,72 @@ PROBE(gui, shaders)
                      "myvec3(x); vec3 g(vec3 p) { return ((vec2)(((vec4)(vec4(16961.0, 0.0, 0.0, 0.0))))).xyy; }\n"
                      "/* vec2(y) */ bvec4 m = ((bvec4)(\n  t));\n"
                  && err.empty() ? 1 : 0, 1);
+
+        // DEEP: a file's depth drives no recursion, and its length no square: vec2( nested 100,000 deep returns, cast at
+        // every level; unclosed, nothing is cast; with strings and comments between, the same; many broken strings are
+        // one note; and twice the text takes about twice the time (the least of five, on this thread's clock).
+        {
+            const auto nested = [](int depth, const std::string& inner) {
+                std::string u = "vec4 c = ";
+                for (int k = 0; k < depth; ++k)
+                    u += "vec2(";
+                u += inner;
+                u.append(static_cast<std::size_t>(depth), ')');
+                return u + ";\n";
+            };
+            const auto count = [](const std::string& txt, const std::string& sub) {
+                long n = 0;
+                for (std::size_t at = txt.find(sub); at != std::string::npos; at = txt.find(sub, at + sub.size()))
+                    ++n;
+                return n;
+            };
+            constexpr int kDeep = 100000;
+            const std::string deep = pg::shaderText("t.sc", nested(kDeep, "x"), err);
+            P.eq("deep.nested_returns", err.empty() ? 1 : 0, 1);
+            P.eq("deep.nested_cast", count(deep, "((vec2)(") == kDeep && count(deep, "))") >= kDeep
+                                         && deep.size() == nested(kDeep, "x").size() + 4u * kDeep ? 1 : 0, 1);
+            std::string open = "vec4 c = ";
+            for (int k = 0; k < kDeep; ++k)
+                open += "vec2(";
+            open += "x;\n";
+            const std::string unclosed = pg::shaderText("t.sc", open, err);
+            P.eq("deep.unclosed_left", unclosed == open && err.empty() ? 1 : 0, 1);
+            std::string mixed = "vec4 c = ";
+            constexpr int kMixed = 20000;
+            for (int k = 0; k < kMixed; ++k)
+                mixed += "vec2( /* ) */ \"AB\" // )\n";
+            mixed += "x";
+            mixed.append(static_cast<std::size_t>(kMixed), ')');
+            mixed += ";\n";
+            const std::string mixedOut = pg::shaderText("t.sc", mixed, err);
+            P.eq("deep.mixed_returns", err.empty() && count(mixedOut, "\n") == count(mixed, "\n") ? 1 : 0, 1);
+            P.eq("deep.mixed_cast", count(mixedOut, "((vec2)(") == kMixed && count(mixedOut, "vec4(16961.0, 0.0, 0.0, 0.0)") == kMixed
+                                        && count(mixedOut, "/* ) */") == kMixed && count(mixedOut, "// )") == kMixed ? 1 : 0, 1);
+            std::string broken;
+            for (int k = 0; k < kMixed; ++k)
+                broken += "vec2(\"\\q\" ";
+            broken += "x\n";
+            (void)pg::shaderText("t.sc", broken, err);
+            P.eq("deep.one_note", count(err, "\n") == 1 && has(err, "t.sc:1:6: note: the shader does not compile") ? 1 : 0, 1);
+            const std::string animates = nested(kDeep, "u_time");
+            P.eq("deep.animates", pg::shaderAnimates(animates) ? 1 : 0, 1);
+            const auto least = [&](const std::string& text) {
+                double best = 1e300;
+                for (int k = 0; k < 5; ++k)
+                {
+                    std::string e;
+                    const double t0 = probe::threadMs();
+                    const std::string out = pg::shaderText("t.sc", text, e);
+                    best = std::min(best, probe::threadMs() - t0 + (out.empty() ? 1.0 : 0.0));
+                }
+                return std::max(best, 1e-3);
+            };
+            const std::string small = nested(kDeep, "x") + mixed, large = nested(4 * kDeep, "x") + mixed + mixed + mixed + mixed;
+            const double tSmall = least(small), tLarge = least(large);
+            std::printf("DEEP: %zu bytes in %.2f ms, %zu bytes in %.2f ms (%.2fx)\n", small.size(), tSmall, large.size(), tLarge,
+                        tLarge / tSmall);
+            P.le("deep.linear_ratio", tLarge / tSmall, 4.0 * 3.0);   // four times the text: a square would be sixteen
+        }
 
         // The includes: the library's and the program's .sh files, in turn theirs, each once; one there is none of a note.
         const pg::Sources headers{ { "b.sh", "#include \"funk/text.sh\"\n#include \"c.sh\"\n" }, { "c.sh", "float c1() { return 1.0; }\n" },

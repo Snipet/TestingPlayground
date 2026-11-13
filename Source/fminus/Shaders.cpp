@@ -19,11 +19,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 #if defined(_WIN32)
 #include <random>
@@ -861,57 +864,88 @@ namespace playground
             return std::min(end, to);
         }
 
-        // The ')' that closes the '(' at `open`, before `to`; npos when none does.
-        std::size_t closing(const std::string& t, std::size_t open, std::size_t to)
+        // Each '(' of `t` outside a comment, read once from the left: the ')' that closes it (npos when none does), and
+        // whether what lies between them is one value (something, and no comma outside a nested ( ), [ ] or { }). One
+        // pass, with a stack of the parentheses open, so neither a file's depth nor its length costs more than its size.
+        struct Parens
         {
-            int depth = 0;
-            for (std::size_t i = open; i < to;)
-            {
-                if (const std::size_t past = pastComment(t, i, to); past != i)
-                {
-                    i = past;
-                    continue;
-                }
-                if (t[i] == '(')
-                    ++depth;
-                else if (t[i] == ')' && --depth == 0)
-                    return i;
-                ++i;
-            }
-            return std::string::npos;
-        }
+            std::vector<std::size_t> close;          // by the '(''s place; npos for none (and for any other character)
+            std::vector<char> one;                   // by the '(''s place: one value
+        };
 
-        // Whether the arguments between the '(' at `open` and its ')' at `close` are one value: something, and no comma
-        // outside a nested ( ), [ ] or { }.
-        bool oneValue(const std::string& t, std::size_t open, std::size_t close)
+        Parens parensOf(const std::string& t)
         {
-            int depth = 0;
-            bool something = false;
-            for (std::size_t i = open + 1; i < close;)
+            const std::size_t n = t.size();
+            Parens p;
+            p.close.assign(n, std::string::npos);
+            p.one.assign(n, 0);
+            struct Open
             {
-                if (const std::size_t past = pastComment(t, i, close); past != i)
+                std::size_t at;
+                long depth;                          // the brackets' depth inside it
+            };
+            std::vector<Open> open;
+            // The depth of every bracket (( [ { against ) ] }) before a place, as the ones inside a '(' count it from 0;
+            // and, by that depth, the last comma, and the last character that is no blank.
+            long depth = 0;
+            std::unordered_map<long, std::size_t> lastComma;
+            std::size_t lastSomething = std::string::npos;
+            for (std::size_t i = 0; i < n;)
+            {
+                if (const std::size_t past = pastComment(t, i, n); past != i)
                 {
                     i = past;
                     continue;
                 }
-                const char c = t[i++];
+                const char c = t[i];
+                if (c == ')' && !open.empty())
+                {
+                    const Open o = open.back();
+                    open.pop_back();
+                    p.close[o.at] = i;
+                    const auto comma = lastComma.find(o.depth);
+                    const bool something = lastSomething != std::string::npos && lastSomething > o.at;
+                    p.one[o.at] = something && (comma == lastComma.end() || comma->second < o.at) ? 1 : 0;
+                }
                 if (c == '(' || c == '[' || c == '{')
                     ++depth;
                 else if (c == ')' || c == ']' || c == '}')
                     --depth;
-                else if (c == ',' && depth == 0)
-                    return false;
-                something = something || (c != ' ' && c != '\t' && c != '\r' && c != '\n');
+                else if (c == ',')
+                    lastComma[depth] = i;
+                if (c == '(')
+                    open.push_back({ i, depth });
+                if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
+                    lastSomething = i;
+                ++i;
             }
-            return something;
+            return p;
         }
 
-        // t[from, to) with each vector of one value a cast, onto `out`.
-        void castOnes(const std::string& t, std::size_t from, std::size_t to, std::string& out)
+        // `t` with each vector of one value a cast. A walk from the left, never a recursion: the vectors open at a
+        // place are a stack of the ')' that closes each.
+        std::string castOnes(const std::string& t)
         {
-            std::size_t i = from;
+            std::string out;
+            out.reserve(t.size() + t.size() / 16);
+            const Parens parens = parensOf(t);
+            struct Vector
+            {
+                std::size_t close;
+                bool one;
+            };
+            std::vector<Vector> vectors;
+            const std::size_t to = t.size();
+            std::size_t i = 0;
             while (i < to)
             {
+                if (!vectors.empty() && i == vectors.back().close)
+                {
+                    out += vectors.back().one ? "))" : ")";
+                    vectors.pop_back();
+                    ++i;
+                    continue;
+                }
                 if (const std::size_t past = pastComment(t, i, to); past != i)
                 {
                     out.append(t, i, past - i);
@@ -931,30 +965,22 @@ namespace playground
                 while (open < to && (t[open] == ' ' || t[open] == '\t' || t[open] == '\r' || t[open] == '\n'))
                     ++open;
                 const std::size_t close =
-                    vectorType(word) && open < to && t[open] == '(' ? closing(t, open, to) : std::string::npos;
+                    vectorType(word) && open < to && t[open] == '(' ? parens.close[open] : std::string::npos;
                 if (close == std::string::npos)
                 {
                     out.append(word);
                     i = e;
                     continue;
                 }
-                const bool one = oneValue(t, open, close);
+                const bool one = parens.one[open] != 0;
                 out += one ? "((" : "";
                 out.append(word);
                 out += one ? ")" : "";
                 out.append(t, e, open - e);          // what lay between the type and its '('
                 out += '(';
-                castOnes(t, open + 1, close, out);
-                out += one ? "))" : ")";
-                i = close + 1;
+                vectors.push_back({ close, one });
+                i = open + 1;
             }
-        }
-
-        std::string castOnes(const std::string& t)
-        {
-            std::string out;
-            out.reserve(t.size() + t.size() / 16);
-            castOnes(t, 0, t.size(), out);
             return out;
         }
 
@@ -1193,9 +1219,18 @@ namespace playground
                     b.refused = !tools.check(b.binary, b.refusal);
                 out[k] = std::move(b);
             }
+            catch (const std::bad_alloc&)
+            {
+                out[k].error = jobs[k].file + ":1:1: note: the shader cannot be built: the plugin ran out of memory\n";
+            }
             catch (const std::exception& e)
             {
                 out[k].error = jobs[k].file + ":1:1: note: the shader cannot be built: " + e.what() + "\n";
+            }
+            catch (...)
+            {
+                // Nothing a shader's thread meets leaves it: an exception there would end the host (std::terminate).
+                out[k].error = jobs[k].file + ":1:1: note: the shader cannot be built: it failed inside the plugin\n";
             }
         };
         std::vector<std::thread> threads;
@@ -1205,9 +1240,9 @@ namespace playground
             {
                 threads.emplace_back(one, k);
             }
-            catch (const std::system_error&)
+            catch (...)
             {
-                one(k);                                // no thread to be had: here, in turn
+                one(k);                                // no thread to be had (or no room for one): here, in turn
             }
         }
         if (!jobs.empty())
