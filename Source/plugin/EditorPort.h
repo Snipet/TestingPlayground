@@ -351,6 +351,10 @@ namespace playground
         int64_t savedMs = 0;                     // its latest version's save, ms since 1970 (the newest first: by it)
         int64_t createdMs = 0;                   // when the project was made (ProjectStore.h's "created"), ms since 1970
         int64_t bytes = 0;                       // its file's size (a factory project's: 0)
+        // Its git link (gitLink(); plugin/GitProjects.h), from the store's links file: the listing reads no repository.
+        bool git = false;
+        std::string remote = {};                 // its remote's address, shortened ("github.com/me/pad")
+        int ahead = -1, behind = -1;             // versions to push and commits to pull, as last known (-1: unknown)
         friend bool operator==(const ProjectEntry&, const ProjectEntry&) = default;
     };
 
@@ -453,6 +457,62 @@ namespace playground
         ProjectOrder order = ProjectOrder::name;
         bool reversed = false;
         friend bool operator==(const ProjectsView&, const ProjectsView&) = default;
+    };
+
+    // ---- Git (plugin/GitProjects.h, plugin/ProcessorGit.cpp, editor/GitCard.h) -------------------------------------------
+    // A project's git link as the card shows it (gitLink()): from the store's links file and its cache, no repository
+    // read. A job (startGit()) runs git on a thread of the processor's own, one at a time, only when the user presses
+    // (Connect, Push, Pull, Check, Add from Git, Disconnect; Settings' Find git): never by itself.
+    struct GitCommitEntry
+    {
+        std::string sha;                         // 7 hex
+        std::string subject;
+        std::string when;                        // "2026-10-25 14:02" (local time)
+        friend bool operator==(const GitCommitEntry&, const GitCommitEntry&) = default;
+    };
+    struct GitLinkView
+    {
+        bool linked = false;
+        std::string remote;                      // as given
+        std::string shortRemote;                 // "github.com/me/pad"
+        std::string branch;
+        std::string folder;                      // its working folder
+        int toPush = 0;                          // versions saved since the last commit, and commits the remote lacked
+                                                 // at the last fetch
+        int behind = -1;                         // commits to pull at the last fetch (-1: never fetched)
+        std::string checked;                     // the last fetch, "2026-10-25 14:02" ("" never)
+        std::vector<GitCommitEntry> log;         // the newest commits, newest first (at most 8)
+        friend bool operator==(const GitLinkView&, const GitLinkView&) = default;
+    };
+    enum class GitKind : uint8_t { find, connect, push, pull, check, clone, disconnect };
+    struct GitJob
+    {
+        GitKind kind = GitKind::find;
+        std::string project;                     // connect, push, pull, check, disconnect
+        std::string remote;                      // connect, clone: the address
+        std::string branch;                      // connect ("" main), clone ("" the remote's own)
+    };
+    // The job in flight, else the last one's outcome (gitState()).
+    struct GitState
+    {
+        bool busy = false;
+        bool finished = false;                   // the last one has ended
+        uint64_t ended = 0;                      // how many have ended: a new outcome when it moves
+        GitKind kind = GitKind::find;
+        std::string project;                     // the job's (a clone's: the project it made)
+        std::string step;                        // what it does now, in words
+        bool ok = false;
+        bool cancelled = false;
+        bool behind = false;                     // a push refused: the remote moved (pull first)
+        bool diverged = false;                   // a pull refused: both sides changed
+        bool nothing = false;                    // a pull that found nothing new
+        int version = 0;                         // a pull's (or a clone's) new version
+        bool opened = false;                     // ... opened in the editor (the project open had no unsaved change)
+        std::string line;                        // ok: what was done, in words
+        std::string why;                         // !ok: why, git's own words where it said something
+        // git as the last job found it (looked: one has looked).
+        bool looked = false;
+        std::string gitPath, gitVersion, gitWhy;
     };
 
     // A file's name a project export's (ProjectExport.h): what Import offers and a drop on the panel imports.
@@ -956,6 +1016,34 @@ namespace playground
         {
             (void)name;
             why = "no samples here";
+            return false;
+        }
+
+        // ---- Git (above: GitLinkView, GitJob, GitState) ----------------------------------------------------------------
+        //   gitLink()      a project's link, from the store's links file and its cache (a project the cache lacks: none
+        //                  until the Reader has read it; projectsRead() moves then)
+        //   startGit()     a job on the processor's git thread; false, with why, when one runs already or it cannot start
+        //   gitState()     the job in flight, else the last one's outcome; cancelGit() kills the git it runs
+        //   gitPathSet()   the git the user chose in Settings ("" none: the platform's places); setGitPath() keeps it
+        //                  (ProjectStore.h's links file), "" going back to the places
+        virtual GitLinkView gitLink(const std::string& project) const
+        {
+            (void)project;
+            return {};
+        }
+        virtual bool startGit(const GitJob& job, std::string& why)
+        {
+            (void)job;
+            why = "git is not available here";
+            return false;
+        }
+        virtual GitState gitState() const { return {}; }
+        virtual void cancelGit() {}
+        virtual std::string gitPathSet() const { return {}; }
+        virtual bool setGitPath(const std::string& path, std::string& why)
+        {
+            (void)path;
+            why = "git is not available here";
             return false;
         }
 

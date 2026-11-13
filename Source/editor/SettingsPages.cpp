@@ -288,6 +288,7 @@ namespace playground::ui::settings
             b.notes(std::string("Each project is a file there, its versions and presets in it. ") + product::kName
                         + " keeps its own folder; nothing in it leaves " + kThisMachine + ".",
                     b.ctrlX, b.ctrlW);
+            buildGitRows(b);                             // package 05: SettingsGit.cpp
         }
 
         void actProjects(const Control& c, Context& ctx)
@@ -295,9 +296,10 @@ namespace playground::ui::settings
             std::string why;
             if (c.act == Act::item && c.index == kShowProjects)
                 ctx.port.showPath(ctx.port.projectFolder(), why);
+            actGitRows(c, ctx);
         }
 
-        uint64_t keyProjects(const Context& ctx) { return mix(0, ctx.port.projectFolder()); }
+        uint64_t keyProjects(const Context& ctx) { return mix(keyGitRows(ctx), ctx.port.projectFolder()); }
 
         // ---- AI: the provider, its model, its key, in words -------------------------------------------------------------
         SettingsCard::Ai aiOf(const Context& ctx)

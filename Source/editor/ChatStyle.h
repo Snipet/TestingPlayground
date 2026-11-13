@@ -74,7 +74,7 @@ namespace playground::ui::chat
     {
         none, plus, key, chevronDown, chevronRight, chevronUp, arrowUp, stop, copy, check, file, play, dial, wave, alert,
         pencil, bolt, chevronLeft, bubble, dice, blocks, list, sun, moon, code, book, question, globe, image, cross,
-        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag
+        snowflake, gear, chip, circuit, probe, window, folder, star, starFilled, search, flag, branch
     };
 
     // A convex polygon filled (its vertices in order): cut at its vertices' x into the canvas's trapezoids.
@@ -491,6 +491,22 @@ namespace playground::ui::chat
                 const float xs[3] = { cx - s * 0.55f, cx + s * 0.75f, cx - s * 0.55f };
                 const float ys[3] = { cy - s * 0.85f, cy - s * 0.4f, cy + s * 0.05f };
                 fillConvex(c, xs, ys, 3, ink);
+                break;
+            }
+            case Icon::branch:
+            {
+                // A git branch: a trunk with two commits, and a branch leaving it for a third (a project linked to a
+                // repository: editor/GitCard.h's mark).
+                const float r = s * 0.24f;
+                const float lx = cx - s * 0.38f, rx = cx + s * 0.42f;
+                const float top = cy - s * 0.62f, bottom = cy + s * 0.62f;
+                c.segment(lx, top + r, lx, bottom - r, w, ink);
+                const float xs[3] = { rx, rx, lx };
+                const float ys[3] = { top + r, cy - s * 0.02f, cy + s * 0.34f };
+                c.polyline(xs, ys, 3, w, ink);
+                c.disc(lx, top, r, ink.withAlpha(0.0f), w, ink);
+                c.disc(lx, bottom, r, ink.withAlpha(0.0f), w, ink);
+                c.disc(rx, top, r, ink.withAlpha(0.0f), w, ink);
                 break;
             }
         }

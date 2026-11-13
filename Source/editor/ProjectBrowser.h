@@ -42,6 +42,8 @@
 //               it a project of its own here
 //   Export...   the chosen project's info and its export (the Panel's EXPORT card, ExportCard.h); with several chosen,
 //               every one of them as one bundle (the context menu's Export too)
+//   Git...      the chosen project kept in a git repository (the Panel's GIT card, GitCard.h); none chosen: Add from
+//               Git. A linked project's row shows the mark after its name (GitMark.h)
 //   A/B...      the editor's files against the chosen version (the newest, unless one is chosen), played in turn while
 //               the host plays, with what changed between them (the Panel's A/B card, AbCard.h)
 //   Compare...  what changed between two of the chosen project's versions, or a version and the editor (the Panel's
@@ -131,6 +133,7 @@ namespace playground::ui
         {
             funkgui::Rect box, projects, versions, presets, mode, field, save, open, remove, close, importIt, exportIt, ab;
             funkgui::Rect compare;                       // Compare..., after A/B...
+            funkgui::Rect git;                           // Git..., after Export... (package 05: GitCard.h)
             funkgui::Rect search, clear, tag, sort;      // the top's: the search field, its clear (x), the tag, the order
             float rowH = 28.0f;
             std::array<int, 3> rows{};                   // how many rows each list shows
@@ -161,6 +164,8 @@ namespace playground::ui
         // and version (0: its newest; the project "" for none).
         bool takeImport();
         std::vector<std::string> takeExport();           // every project to export (several: a bundle); none: {}
+        // Git... pressed (package 05: the Panel opens GitCard.h): the chosen project ("": none, Add from Git).
+        std::pair<bool, std::string> takeGit();
         std::pair<std::string, int> takeAb();
         std::tuple<std::string, int, int> takeCompare(); // COMPARE of that project's sides (left, right; 0 the editor)
         void chooseProjectNamed(const std::string& name, float width, float height);
@@ -291,6 +296,8 @@ namespace playground::ui
         std::string notice_;
         bool import_ = false;
         std::vector<std::string> export_;
+        bool git_ = false;                               // package 05: takeGit
+        std::string gitProject_;
         std::pair<std::string, int> ab_;
         std::tuple<std::string, int, int> compare_{ "", 0, 0 };
         // Compare...'s sides for the chosen project: `how` 0 as the button does (DiffCard.h), 1 a version row's "with

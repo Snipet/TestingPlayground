@@ -4,6 +4,7 @@
 #include "plugin/ChatStore.h"
 #include "plugin/Factory.h"
 #include "plugin/Launch.h"
+#include "plugin/GitProjects.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/WheelMap.h"
@@ -524,6 +525,7 @@ namespace playground
     Processor::~Processor()
     {
         finishExport();                                          // an export in flight cancelled, its thread joined
+        finishGit();                                             // a git job in flight cancelled (its git killed), joined
         finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
@@ -1430,6 +1432,7 @@ namespace playground
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         pollSave();                                              // the editor's save, its file written: it lands
         pollExport();                                            // an export that ended: its thread joined
+        pollGit();                                               // a git job that ended: joined, its outcome out
         journalPoll();                                           // what moved since the last poll (ProcessorLive.cpp)
         abSessionLoaded();                                       // a session loaded since ends the A/B (ProcessorAb.cpp)
         if (compiler_.revision() != seen_)
@@ -2384,7 +2387,10 @@ namespace playground
 
     // The factory set's generation is added in, so that what reads the lists again when this moves (PROJECTS, EXPORT)
     // does so when a set arrives too: both only ever go up, so the sum moves when either does.
-    uint64_t Processor::projectsRead() const { return reader_->revision() + factory::generation(); }
+    uint64_t Processor::projectsRead() const
+    {
+        return reader_->revision() + factory::generation() + gitLanded_.load(std::memory_order_acquire);
+    }
     uint64_t Processor::factoryGeneration() const { return factory::generation(); }
 
     std::vector<ProjectEntry> Processor::entriesOf(const std::vector<projectstore::Entry>& list) const
@@ -2392,7 +2398,8 @@ namespace playground
         std::vector<ProjectEntry> out;
         for (const projectstore::Entry& e : list)
             out.push_back({ e.name, whenOf(e.savedMs), e.latest, e.versions, static_cast<int>(e.presets.size()), false,
-                            e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes });
+                            e.category, e.tags, e.description, e.savedMs, e.createdMs, e.bytes, e.git,
+                            e.git ? gitprojects::shortRemote(e.remote) : std::string(), e.ahead, e.behind });
         const std::lock_guard<std::mutex> lock(programMutex_);
         for (const projectstore::Entry& e : list)
             if (projectstore::sameName(e.name, projectName_))

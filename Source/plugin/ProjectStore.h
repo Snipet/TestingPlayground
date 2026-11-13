@@ -231,6 +231,13 @@ namespace playground::projectstore
         int64_t createdMs = 0;                           // Project::createdMs (worked out for an older file)
         int64_t bytes = 0;                               // its file's size, as the cache's look found it (a factory
                                                          // project's: 0)
+        std::string id = {};                             // Project::id ("" for one from before ids, a factory one's)
+        // Its git link (links() below, joined by id: the listing reads no repository): linked, the remote's address,
+        // how far ahead (the commits the remote lacked at the last fetch, and the versions saved since the last commit)
+        // and behind (at the last fetch) it is (-1 unknown).
+        bool git = false;
+        std::string remote = {};
+        int ahead = -1, behind = -1;
     };
 
     // `name` as a project or a preset may have it: printable ASCII but / \ : * ? " < > | and a leading '.', its spaces
@@ -453,6 +460,57 @@ namespace playground::projectstore
     std::string idOf(const Project& p, std::string* why = nullptr);     // the same, of a project read already (load())
     bool validProjectId(std::string_view id);
     std::string nameOfId(std::string_view id);
+
+    // ---- Git links (plugin/GitProjects.h) --------------------------------------------------------------------------
+    // Which project has which git working folder, remote and branch, and what was last synced: one small hidden file in
+    // the folder, kLinksFile (never listed), written whole (beside, then moved over) by the store's one writer, and read
+    // again only when its time or its size changes, as the view's. Keyed by the project's id, so a rename keeps the link
+    // and a project's file never holds a remote's address (an export carries none). `git` is the path of git the user
+    // chose in Settings ("" none: plugin/Git.h's find() looks in the platform's places). The format: { "format":
+    // "funk-playground-git-links", "version": 1, "git": "...", "links": [ { "id", "folder", "remote", "branch",
+    // "committed", "commit", "syncedMs", "ahead", "behind", "checkedMs", "log": [ { "sha", "subject", "ms" } ] } ] }.
+    inline constexpr const char* kLinksFile = ".git-links.json";
+    inline constexpr std::size_t kMaxLog = 8;            // a link's commits kept for the card
+    struct GitCommit
+    {
+        std::string sha;
+        std::string subject;
+        int64_t ms = 0;
+        friend bool operator==(const GitCommit&, const GitCommit&) = default;
+    };
+    struct Link
+    {
+        std::string id;                                  // the project's (Project::id)
+        std::string folder;                              // its working folder, a full path
+        std::string remote;                              // the remote's address, as given
+        std::string branch = "main";
+        int committed = 0;                               // the version last made a commit (0: none)
+        std::string commit;                              // HEAD's commit after the last job
+        int64_t syncedMs = 0;                            // the last push or pull that reached the remote
+        int ahead = -1, behind = -1;                     // as of the last fetch (-1: unknown; ahead counts the versions
+                                                         // not yet committed too)
+        int64_t checkedMs = 0;                           // that fetch
+        std::vector<GitCommit> log;                      // the newest commits, newest first, at most kMaxLog
+        friend bool operator==(const Link&, const Link&) = default;
+    };
+    struct Links
+    {
+        std::string git;
+        std::vector<Link> links;
+        friend bool operator==(const Links&, const Links&) = default;
+    };
+    Links links();
+    // The link of the project of that id (none: not linked).
+    std::optional<Link> linkOf(std::string_view id);
+    // The link of the project named so, its id from the listing's cache alone (no file read: a project the cache does
+    // not hold yet has none until the Reader has read it).
+    // `latest`: the cached project's latest version's number.
+    std::optional<Link> linkCached(std::string_view name, int* latest = nullptr);
+    // The link put in (in place of one of its id) or taken out; git's path set. False, with why, when the file cannot
+    // be written.
+    bool setLink(const Link& link, std::string* why = nullptr);
+    bool removeLink(std::string_view id, std::string* why = nullptr);
+    bool setGitPath(std::string_view path, std::string* why = nullptr);
 
     // A project as the JSON of its file, and back (`name` the project's when the JSON is a file's; nothing, with why, when
     // it is not a project of this plugin's or it is damaged). For ProjectExport, which clears the id first.

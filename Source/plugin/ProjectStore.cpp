@@ -585,6 +585,7 @@ namespace playground::projectstore
             c.entry.description = p.info.description;
             c.entry.createdMs = p.createdMs;
             c.entry.bytes = static_cast<int64_t>(size);
+            c.entry.id = p.id;
             for (const Version& v : p.versions)
                 c.versions.push_back({ v.number, v.savedMs, v.note });
             c.info = p.info;
@@ -973,6 +974,8 @@ namespace playground::projectstore
         // listing that reads a large file holds up no other caller) and kept; else not read, but listed as the cache
         // last held it (a file never read: not listed) and its path added to `unread`. The cache then forgets the
         // files that are gone. A broken file is not listed, nor read again while it stays as it is.
+        void joinLinks(std::vector<Entry>& entries);   // the git links (below), by id
+
         std::vector<Entry> listing(std::vector<std::string>* unread)
         {
             listed.fetch_add(1, std::memory_order_relaxed);
@@ -1027,6 +1030,7 @@ namespace playground::projectstore
                 const int c = str(a.name).compareIgnoreCase(str(b.name));
                 return c != 0 ? c < 0 : a.name < b.name;
             });
+            joinLinks(out);
             return out;
         }
 
@@ -1748,6 +1752,231 @@ namespace playground::projectstore
     Order orderOf(std::string_view word) noexcept
     {
         return word == "saved" ? Order::saved : word == "created" ? Order::created : word == "size" ? Order::size : Order::name;
+    }
+
+    // ---- Git links ------------------------------------------------------------------------------------------------------
+    namespace
+    {
+        constexpr const char* kLinksFormat = "funk-playground-git-links";
+        std::mutex linksMutex;
+        struct LinksCache
+        {
+            std::string path;
+            juce::int64 modified = -1, size = -1;
+            Links links;
+        };
+        LinksCache linksCache;
+
+        juce::File linksFile() { return directory().getChildFile(kLinksFile); }
+
+        Links linksOf(const juce::var& root)
+        {
+            Links out;
+            if (!root.isObject() || root["format"].toString() != kLinksFormat)
+                return out;
+            out.git = root["git"].toString().toStdString();
+            if (const juce::Array<juce::var>* links = root["links"].getArray())
+                for (const juce::var& l : *links)
+                {
+                    Link k;
+                    k.id = l["id"].toString().toStdString();
+                    if (!validProjectId(k.id))
+                        continue;
+                    k.folder = l["folder"].toString().toStdString();
+                    k.remote = l["remote"].toString().toStdString();
+                    k.branch = l["branch"].toString().toStdString();
+                    if (k.branch.empty())
+                        k.branch = "main";
+                    k.committed = static_cast<int>(l["committed"]);
+                    k.commit = l["commit"].toString().toStdString();
+                    k.syncedMs = static_cast<juce::int64>(l["syncedMs"]);
+                    k.ahead = l.hasProperty("ahead") ? static_cast<int>(l["ahead"]) : -1;
+                    k.behind = l.hasProperty("behind") ? static_cast<int>(l["behind"]) : -1;
+                    k.checkedMs = static_cast<juce::int64>(l["checkedMs"]);
+                    if (const juce::Array<juce::var>* log = l["log"].getArray())
+                        for (const juce::var& c : *log)
+                            if (k.log.size() < kMaxLog)
+                                k.log.push_back({ c["sha"].toString().toStdString(), c["subject"].toString().toStdString(),
+                                                  static_cast<juce::int64>(c["ms"]) });
+                    if (std::none_of(out.links.begin(), out.links.end(), [&](const Link& o) { return o.id == k.id; }))
+                        out.links.push_back(std::move(k));
+                }
+            return out;
+        }
+
+        bool writeLinks(const Links& l, std::string* why)
+        {
+            const juce::File dir = directory();
+            if (!dir.isDirectory() && !dir.createDirectory())
+            {
+                fail(why, "cannot make the folder " + dir.getFullPathName().toStdString());
+                return false;
+            }
+            auto* root = new juce::DynamicObject();
+            root->setProperty("format", kLinksFormat);
+            root->setProperty("version", 1);
+            if (!l.git.empty())
+                root->setProperty("git", str(l.git));
+            juce::Array<juce::var> links;
+            for (const Link& k : l.links)
+            {
+                auto* o = new juce::DynamicObject();
+                o->setProperty("id", str(k.id));
+                o->setProperty("folder", str(k.folder));
+                o->setProperty("remote", str(k.remote));
+                o->setProperty("branch", str(k.branch));
+                o->setProperty("committed", k.committed);
+                o->setProperty("commit", str(k.commit));
+                o->setProperty("syncedMs", static_cast<juce::int64>(k.syncedMs));
+                o->setProperty("ahead", k.ahead);
+                o->setProperty("behind", k.behind);
+                o->setProperty("checkedMs", static_cast<juce::int64>(k.checkedMs));
+                juce::Array<juce::var> log;
+                for (const GitCommit& c : k.log)
+                {
+                    auto* e = new juce::DynamicObject();
+                    e->setProperty("sha", str(c.sha));
+                    e->setProperty("subject", str(c.subject));
+                    e->setProperty("ms", static_cast<juce::int64>(c.ms));
+                    log.add(juce::var(e));
+                }
+                o->setProperty("log", log);
+                links.add(juce::var(o));
+            }
+            root->setProperty("links", links);
+            const juce::File target = linksFile();
+            const juce::File temp = dir.getChildFile(juce::String(kLinksFile) + ".saving");
+            if (!temp.replaceWithText(juce::JSON::toString(juce::var(root)), false, false, "\n") || !temp.moveFileTo(target))
+            {
+                temp.deleteFile();
+                fail(why, "cannot write " + target.getFullPathName().toStdString());
+                return false;
+            }
+            const std::lock_guard<std::mutex> lock(linksMutex);
+            linksCache = { target.getFullPathName().toStdString(), target.getLastModificationTime().toMilliseconds(), target.getSize(), l };
+            return true;
+        }
+
+        void joinLinks(std::vector<Entry>& entries)
+        {
+            const Links l = links();
+            if (l.links.empty())
+                return;
+            for (Entry& e : entries)
+                for (const Link& k : l.links)
+                    if (!e.id.empty() && k.id == e.id)
+                    {
+                        // Ahead: the commits the remote lacked at the last fetch, and every version saved since the
+                        // last commit (known at once: no fetch needed for those).
+                        const int fresh = std::max(0, e.latest - k.committed);
+                        e.git = true;
+                        e.remote = k.remote;
+                        e.ahead = k.ahead >= 0 ? k.ahead + fresh : fresh > 0 ? fresh : -1;
+                        e.behind = k.behind;
+                    }
+        }
+    }
+
+    Links links()
+    {
+        const juce::File f = linksFile();
+        const std::string path = f.getFullPathName().toStdString();
+        const bool there = f.existsAsFile();
+        const juce::int64 modified = there ? f.getLastModificationTime().toMilliseconds() : 0, size = there ? f.getSize() : 0;
+        {
+            const std::lock_guard<std::mutex> lock(linksMutex);
+            if (linksCache.path == path && linksCache.modified == modified && linksCache.size == size)
+                return linksCache.links;
+        }
+        Links l;
+        if (there && size < 4 * 1024 * 1024)
+            l = linksOf(juce::JSON::parse(f.loadFileAsString()));
+        const std::lock_guard<std::mutex> lock(linksMutex);
+        linksCache = { path, modified, size, l };
+        return l;
+    }
+
+    std::optional<Link> linkOf(std::string_view id)
+    {
+        if (id.empty())
+            return std::nullopt;
+        for (const Link& k : links().links)
+            if (k.id == id)
+                return k;
+        return std::nullopt;
+    }
+
+    std::optional<Link> linkCached(std::string_view name, int* latest)
+    {
+        if (isFactoryName(name))
+            return std::nullopt;
+        const std::string tidy = tidyName(name);
+        if (tidy.empty())
+            return std::nullopt;
+        const std::string path = directory().getChildFile(str(tidy) + kExtension).getFullPathName().toStdString();
+        std::string id;
+        {
+            const std::lock_guard<std::mutex> lock(cacheMutex);
+            const Cached* held = nullptr;
+            if (const auto it = cache.find(path); it != cache.end())
+                held = &it->second;
+            else
+                for (const auto& [key, c] : cache)
+                    if (sameName(c.entry.name, tidy))
+                        held = &c;
+            if (held != nullptr && !held->broken)
+            {
+                id = held->project;
+                if (latest != nullptr)
+                    *latest = held->entry.latest;
+            }
+        }
+        return linkOf(id);
+    }
+
+    bool setLink(const Link& link, std::string* why)
+    {
+        if (!validProjectId(link.id))
+        {
+            fail(why, "the project has no id");
+            return false;
+        }
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+        Links l = links();
+        Link k = link;
+        if (k.log.size() > kMaxLog)
+            k.log.resize(kMaxLog);
+        const auto it = std::find_if(l.links.begin(), l.links.end(), [&](const Link& o) { return o.id == k.id; });
+        if (it != l.links.end())
+        {
+            if (*it == k)
+                return true;
+            *it = std::move(k);
+        }
+        else
+            l.links.push_back(std::move(k));
+        return writeLinks(l, why);
+    }
+
+    bool removeLink(std::string_view id, std::string* why)
+    {
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+        Links l = links();
+        const auto it = std::find_if(l.links.begin(), l.links.end(), [&](const Link& o) { return o.id == id; });
+        if (it == l.links.end())
+            return true;
+        l.links.erase(it);
+        return writeLinks(l, why);
+    }
+
+    bool setGitPath(std::string_view path, std::string* why)
+    {
+        const std::lock_guard<std::recursive_mutex> writing(writeMutex);
+        Links l = links();
+        if (l.git == path)
+            return true;
+        l.git = std::string(path);
+        return writeLinks(l, why);
     }
 
     std::string toJson(const Project& p)

@@ -198,6 +198,10 @@ namespace playground
         // For the probes: the export in flight (startExport) waits before its store's work while shut (a cancel lets it
         // go, to end at once), so that what the message thread does meanwhile can be counted.
         void setExportGate(bool shut);
+        // For the probes: the git job in flight waits before it runs git while shut (a cancel lets it go); file://
+        // remotes taken (git::Context::allowFile: the probes' bare repositories), never outside the probes.
+        void setGitGate(bool shut);
+        void setGitFileRemotesForTests(bool on) noexcept { gitFiles_ = on; }
         // For the probes: a job of Claude's projects tool waits for poll() (ProcessorSaves.cpp), and how long one waits
         // before it is withdrawn (kClaudeJobSeconds; set before a call, from the message thread).
         bool claudeJobWaiting() const;
@@ -329,6 +333,13 @@ namespace playground
         ExportState exporting() const override;
         void cancelExport() override;
         std::string exportFolder() const override;
+        // ---- Package 05: git (ProcessorGit.cpp; EditorPort.h's Git block) -------------------------------------------
+        GitLinkView gitLink(const std::string& project) const override;
+        bool startGit(const GitJob& job, std::string& why) override;
+        GitState gitState() const override;
+        void cancelGit() override;
+        std::string gitPathSet() const override;
+        bool setGitPath(const std::string& path, std::string& why) override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
         bool startAb(const std::string& project, int a, int b, std::string& why) override;
@@ -619,6 +630,22 @@ namespace playground
         std::atomic<bool> exportCancel_{ false };
         bool exportGateShut_ = false;                            // under exportMutex_ (setExportGate)
         std::condition_variable exportGateOpen_;
+        // ---- Package 05: the git job (ProcessorGit.cpp): one at a time on gitter_, its state under gitMutex_; the thread
+        // runs git (plugin/GitProjects.h) and leaves its result in gitResult_; poll() (pollGit) joins it, opens a pulled
+        // version in an editor with no unsaved change, then publishes the outcome (gitState_.ended moves); the
+        // destructor cancels and joins it (finishGit).
+        void runGit(const GitJob& job);
+        void pollGit();
+        void finishGit();
+        std::thread gitter_;
+        mutable std::mutex gitMutex_;
+        GitState gitState_;                                      // under gitMutex_
+        std::atomic<bool> gitCancel_{ false };
+        bool gitDone_ = false;                                   // under gitMutex_: the thread has ended (pollGit lands it)
+        bool gitGateShut_ = false;                               // under gitMutex_ (setGitGate)
+        std::condition_variable gitGateOpen_;
+        std::atomic<uint64_t> gitLanded_{ 0 };                   // jobs landed: projectsRead() moves with them
+        bool gitFiles_ = false;                                  // setGitFileRemotesForTests
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

@@ -44,6 +44,7 @@
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
 #include "editor/Scroll.h"
+#include "plugin/EditorPort.h"
 
 #include <array>
 #include <functional>
@@ -72,6 +73,8 @@ namespace playground::ui
             bool closable = false;                    // a cross under the pointer
             int index = -1;                           // what the Panel acts on: a tab, a library file, an example, an IR view
             std::string key;                          // a preset's or a project's name
+            ProjectEntry git;                         // a project's row: its git mark after its label when git.git
+                                                      // (GitMark.h; package 05)
             std::string help;                         // to a screen reader ("": the section's)
             std::string spec;                         // the status line's under the pointer ("": the section's; a
                                                       // caption with one says it under the pointer, a caption without

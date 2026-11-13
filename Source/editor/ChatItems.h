@@ -135,6 +135,7 @@ namespace playground::ui
         void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
         void setMenu(std::function<void()> menu) { spec_.menu = std::move(menu); }
+        void setIcon(std::function<chat::Icon()> icon) { spec_.icon = std::move(icon); }
         float preferredWidth() const;                 // a pill's, for its label now
         // A pill with an icon drawn as its icon alone (no label), where the bar has no room for its words: its
         // accessibility title and its footer's line stay.

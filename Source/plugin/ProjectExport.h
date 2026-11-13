@@ -130,6 +130,25 @@ namespace playground::projectexport
     };
     std::optional<std::vector<Item>> readAll(const juce::File& from, std::string* why = nullptr);
 
+    // ---- One version as a git repository's tree (plugin/GitProjects.h; format "funk-playground-git", version 1) -------
+    // The source export's layout without versions/ (git's history is the versions):
+    //   project.json      the format, plugin, kind, name; the info; the version's number, save time, note, tab, files'
+    //                     order (names only), dials (with their labels), circuits' answers, MIDI map and samples (by name
+    //                     and hash); the presets; each sample file as {hash, file}. Never the project's id (a clone is a
+    //                     project of its own on that machine), never a remote's address
+    //   <file>            the version's files, as named
+    //   samples/<file>    each sample's file as it was added
+    //   README.md         written when there is none, never rewritten (the user's to change)
+    //   .gitattributes    "* text=auto eol=lf" and "samples/* binary", written when there is none
+    // writeTree takes away first only what the tree there wrote (the files and samples its project.json names), so a
+    // file the user added to the repository by hand stays. Each file is written beside and moved over. readTree reads
+    // it back as a project of that one version (the other kind's, or no project.json: refused, with why).
+    inline constexpr const char* kTreeFormat = "funk-playground-git";
+    inline constexpr int kTreeVersion = 1;
+    inline constexpr const char* kTreeManifest = "project.json";
+    bool writeTree(const projectstore::Project& p, int number, const juce::File& folder, std::string* why = nullptr);
+    std::optional<projectstore::Project> readTree(const juce::File& folder, std::string* why = nullptr);
+
     // The package's body, for probes: the bytes after the header, and back.
     std::vector<uint8_t> compress(const std::string& raw, Method& method);
     std::optional<std::string> decompress(const uint8_t* data, std::size_t size, Method method, std::size_t rawSize,

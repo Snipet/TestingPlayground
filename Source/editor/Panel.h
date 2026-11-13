@@ -131,6 +131,7 @@
 #include "editor/AbCard.h"
 #include "editor/DiffCard.h"
 #include "editor/ExportCard.h"
+#include "editor/GitCard.h"
 #include "editor/NameCard.h"
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
@@ -237,6 +238,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
     inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
     inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
+    inline constexpr funkgui::Tag kGitTag = funkgui::tags::firstProduct + 41;         // GIT's card (GitCard.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -392,6 +394,10 @@ namespace playground::ui
         void openCompare(const std::string& project, int left, int right);
         DiffCard& compareCard() noexcept { return compare_; }
         void projectMenu();
+        // GIT (GitCard.h; package 05): a project kept in a git repository of the user's (`project` ""): Add from Git.
+        // Its ways in: PROJECTS' Git..., the top bar's project pill's menu.
+        void openGit(const std::string& project);
+        GitCard& gitCard() noexcept { return git_; }
         // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
         // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
         void stepPresets(int step);
@@ -878,9 +884,10 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen() || compare_.isOpen();
+                || picker_.isOpen() || compare_.isOpen() || git_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
+        const ProjectEntry* openEntry() const;           // the project open in the polled listing (its git mark), or none
         bool unread_ = false;                            // folded, and the conversation grew since
         // Pictures: the ids this Panel has in FunkGui's registry (images::set, counted across Panels: Picture.cpp
         // makes one too), and a drag of pictures over the editor (over the chat's card).
@@ -916,6 +923,8 @@ namespace playground::ui
         AbCard ab_{ port_ };
         DiffCard compare_{ port_ };
         void afterCompare(bool wasOpen);                 // its notice, its A/B asked for, the focus back once it closed
+        GitCard git_{ port_ };                           // package 05
+        void afterGit(bool wasOpen);                     // its notice, the focus back once it closed
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
         uint64_t saveSeen_ = 0;                          // EditorPort::saving().done this Panel last said

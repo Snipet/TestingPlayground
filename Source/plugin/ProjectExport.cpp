@@ -874,4 +874,201 @@ namespace playground::projectexport
         }
         return items;
     }
+
+    // ---- A version as a git repository's tree (ProjectExport.h) ----------------------------------------------------------
+    namespace
+    {
+        // A name a tree may hold at its top or under samples/: no folder in it, nothing hidden, no "..".
+        bool treeName(const std::string& n)
+        {
+            return !n.empty() && n.size() <= 255 && n.find('/') == std::string::npos && n.find('\\') == std::string::npos
+                && n[0] != '.' && n.find('\0') == std::string::npos && n != "project.json";
+        }
+
+        constexpr juce::int64 kMaxTreeText = 8 * 1024 * 1024;   // a program's file in a tree, at most
+
+        // What the tree in `folder` wrote last: its project.json's files and samples (to take away before a new one).
+        std::vector<juce::File> treeWritten(const juce::File& folder)
+        {
+            std::vector<juce::File> out;
+            const juce::File manifest = folder.getChildFile(kTreeManifest);
+            if (!manifest.existsAsFile() || manifest.getSize() > kMaxTreeText)
+                return out;
+            const juce::var m = juce::JSON::parse(manifest.loadFileAsString());
+            if (!m.isObject() || m["format"].toString() != kTreeFormat)
+                return out;
+            if (const juce::Array<juce::var>* versions = m["versions"].getArray())
+                for (const juce::var& v : *versions)
+                    if (const juce::Array<juce::var>* files = v["files"].getArray())
+                        for (const juce::var& f : *files)
+                            if (const std::string n = f["name"].toString().toStdString(); treeName(n))
+                                out.push_back(folder.getChildFile(str(n)));
+            if (const juce::Array<juce::var>* files = m["sampleFiles"].getArray())
+                for (const juce::var& f : *files)
+                {
+                    const std::string file = f["file"].toString().toStdString();
+                    if (file.rfind("samples/", 0) == 0 && treeName(file.substr(8)))
+                        out.push_back(folder.getChildFile("samples").getChildFile(str(file.substr(8))));
+                }
+            return out;
+        }
+
+        std::string treeReadme(const projectstore::Project& p)
+        {
+            std::string s = "# " + p.name + "\n\n";
+            if (!p.info.description.empty())
+                s += p.info.description + "\n\n";
+            s += "A project of " + std::string(product::kName) + ", kept with git: each commit is a version of it. `project.json` "
+                 "describes the version (its dials, presets and info), and its files are beside it; its samples are in "
+                 "`samples/`.\n\nIn " + std::string(product::kName) + ": PROJECTS, Add from Git..., and give this repository's "
+                 "address.\n";
+            return s;
+        }
+    }
+
+    bool writeTree(const projectstore::Project& p, int number, const juce::File& folder, std::string* why)
+    {
+        const projectstore::Version* v = p.version(number);
+        if (v == nullptr)
+        {
+            fail(why, "\"" + p.name + "\" keeps no version " + std::to_string(number));
+            return false;
+        }
+        for (const SourceFile& f : v->files)
+            if (!treeName(f.name))
+            {
+                fail(why, "a file's name cannot go into a repository: " + f.name);
+                return false;
+            }
+        if (!folder.isDirectory() && !folder.createDirectory())
+        {
+            fail(why, "cannot make the folder " + folder.getFullPathName().toStdString());
+            return false;
+        }
+        projectstore::Project q;
+        q.name = p.name;
+        q.info = p.info;
+        q.presets = p.presets;
+        q.createdMs = p.createdMs;
+        q.versions = { *v };
+        // Its samples, each once, under its name (two names for one file: the first's), and only those it names.
+        std::vector<std::pair<std::string, std::string>> sampleFiles;   // hash, path
+        for (const projectstore::SampleRef& r : v->samples)
+            if (p.sample(r.hash) != nullptr && treeName(r.name)
+                && std::none_of(sampleFiles.begin(), sampleFiles.end(), [&](const auto& e) { return e.first == r.hash; }))
+            {
+                q.samples.push_back(*p.sample(r.hash));
+                sampleFiles.emplace_back(r.hash, "samples/" + r.name);
+            }
+        juce::var manifest = juce::JSON::parse(str(projectstore::toJson(q)));
+        juce::DynamicObject* m = manifest.getDynamicObject();
+        if (m == nullptr)
+        {
+            fail(why, "cannot describe the project");
+            return false;
+        }
+        m->setProperty("format", kTreeFormat);
+        m->setProperty("version", kTreeVersion);
+        m->removeProperty("id");
+        if (juce::Array<juce::var>* versions = manifest["versions"].getArray())
+            for (juce::var& ver : *versions)
+                if (juce::Array<juce::var>* files = ver["files"].getArray())
+                    for (juce::var& f : *files)
+                        f.getDynamicObject()->removeProperty("text");
+        if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
+            for (juce::var& f : *files)
+            {
+                f.getDynamicObject()->removeProperty("data");
+                for (const auto& [hash, path] : sampleFiles)
+                    if (f["hash"].toString().toStdString() == hash)
+                        f.getDynamicObject()->setProperty("file", str(path));
+            }
+        // What the tree there wrote goes first (a file renamed or removed since must not stay), nothing else.
+        for (const juce::File& old : treeWritten(folder))
+            old.deleteFile();
+        const auto put = [&](const juce::File& to, const std::string& bytes) {
+            return writeFile(to, bytes.data(), bytes.size(), why, true);
+        };
+        for (const SourceFile& f : v->files)
+            if (!put(folder.getChildFile(str(f.name)), f.text))
+                return false;
+        for (const auto& [hash, path] : sampleFiles)
+            if (!put(folder.getChildFile(str(path)), p.sample(hash)->bytes))
+                return false;
+        if (!put(folder.getChildFile(kTreeManifest), (juce::JSON::toString(manifest, false) + "\n").toStdString()))
+            return false;
+        if (const juce::File r = folder.getChildFile("README.md"); !r.exists() && !put(r, treeReadme(p)))
+            return false;
+        if (const juce::File a = folder.getChildFile(".gitattributes"); !a.exists() && !put(a, "* text=auto eol=lf\nsamples/* binary\n"))
+            return false;
+        return true;
+    }
+
+    std::optional<projectstore::Project> readTree(const juce::File& folder, std::string* why)
+    {
+        const juce::File manifestFile = folder.getChildFile(kTreeManifest);
+        if (!manifestFile.existsAsFile())
+        {
+            fail(why, "it holds no project (no project.json)");
+            return std::nullopt;
+        }
+        if (manifestFile.getSize() > kMaxTreeText)
+        {
+            fail(why, "its project.json is too large to be a project's");
+            return std::nullopt;
+        }
+        juce::var manifest = juce::JSON::parse(manifestFile.loadFileAsString());
+        if (!manifest.isObject() || manifest["format"].toString() != kTreeFormat)
+        {
+            fail(why, "its project.json is not a project's (or it is damaged)");
+            return std::nullopt;
+        }
+        if (static_cast<int>(manifest["version"]) > kTreeVersion)
+        {
+            fail(why, "it is from a newer version of the plugin");
+            return std::nullopt;
+        }
+        const juce::Array<juce::var>* versions = manifest["versions"].getArray();
+        if (versions == nullptr || versions->size() != 1)
+        {
+            fail(why, "its project.json holds no version");
+            return std::nullopt;
+        }
+        if (juce::Array<juce::var>* files = (*versions)[0]["files"].getArray())
+            for (juce::var& f : *files)
+            {
+                const std::string n = f["name"].toString().toStdString();
+                const juce::File file = folder.getChildFile(str(n));
+                if (!treeName(n) || !file.existsAsFile())
+                {
+                    fail(why, "it lacks " + n);
+                    return std::nullopt;
+                }
+                if (file.getSize() > kMaxTreeText)
+                {
+                    fail(why, n + " is too large to be a program's file");
+                    return std::nullopt;
+                }
+                f.getDynamicObject()->setProperty("text", file.loadFileAsString());
+            }
+        if (juce::Array<juce::var>* files = manifest["sampleFiles"].getArray())
+            for (juce::var& f : *files)
+            {
+                const std::string path = f["file"].toString().toStdString();
+                const juce::File file = path.rfind("samples/", 0) == 0 && treeName(path.substr(8))
+                                          ? folder.getChildFile("samples").getChildFile(str(path.substr(8)))
+                                          : juce::File();
+                juce::MemoryBlock data;
+                if (file != juce::File() && file.existsAsFile() && file.getSize() <= kMaxFile)
+                    file.loadFileAsData(data);
+                f.getDynamicObject()->setProperty("data", juce::Base64::toBase64(data.getData(), data.getSize()));
+                f.getDynamicObject()->removeProperty("file");
+            }
+        manifest.getDynamicObject()->setProperty("format", kProjectFormat);
+        manifest.getDynamicObject()->setProperty("version", 1);
+        manifest.getDynamicObject()->removeProperty("id");
+        const std::string name = manifest["name"].toString().toStdString();
+        return projectstore::fromJson((juce::JSON::toString(manifest, false) + "\n").toStdString(),
+                                      name.empty() ? folder.getFileName().toStdString() : name, why);
+    }
 }

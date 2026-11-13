@@ -2,6 +2,7 @@
 #include "editor/Explorer.h"
 
 #include "editor/ChatItems.h"                        // asciiText
+#include "editor/GitMark.h"
 
 #include <algorithm>
 #include <cmath>
@@ -315,12 +316,14 @@ namespace playground::ui
                     const float detailW = detail.empty() ? 0.0f : c.textWidth(detail.c_str(), chat::kSmall);
                     const float labelRoom = right - labelX - (detail.empty() ? 0.0f : 10.0f);
                     const std::string label = asciiText(row.label);
-                    const float labelW = c.textWidth(label.c_str(), chat::kBody);
+                    const float markW = gitmark::width(c, row.git, chat::kSmall);   // a project linked to git
+                    const float labelW = c.textWidth(label.c_str(), chat::kBody) + markW;
                     // The detail only where the label leaves it room; the label is cut before the detail goes.
                     const bool detailShown = !detail.empty() && labelW + 10.0f + detailW <= right - labelX;
-                    const std::string shown = fitText(c, label, chat::kBody, detailShown ? labelRoom - detailW : right - labelX);
+                    const std::string shown = fitText(c, label, chat::kBody, (detailShown ? labelRoom - detailW : right - labelX) - markW);
                     c.text(shown.c_str(), labelX, c.capCentreTop(r.centreY(), chat::kBody), chat::kBody,
                            row.active ? p.text : (hovered ? p.text : p.soft));
+                    gitmark::draw(c, row.git, labelX + c.textWidth(shown.c_str(), chat::kBody), r.centreY(), chat::kSmall, p.soft, p.accent);
                     if (detailShown)
                         c.text(detail.c_str(), right, c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, p.faint,
                                funkgui::Align::right);
@@ -468,7 +471,7 @@ namespace playground::ui
                             : row.heading   ? funkgui::A11yRole::staticText
                                             : funkgui::A11yRole::button;
                     it.title = asciiText(row.label);
-                    it.value = asciiText(row.detail);
+                    it.value = asciiText(row.detail) + (row.git.git ? ", " + gitmark::title(row.git) : std::string());
                     it.checkable = row.active || row.marked || row.fold != 0;
                     it.checked = row.active || row.marked || row.fold == 1;
                     it.help = !row.help.empty()                ? row.help

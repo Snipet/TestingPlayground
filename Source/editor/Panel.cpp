@@ -8,6 +8,7 @@
 #include "editor/DialLayout.h"
 #include "editor/DisplayItem.h"
 #include "editor/Dropdown.h"
+#include "editor/GitMark.h"
 #include "editor/GuiItems.h"
 #include "editor/GuiView.h"
 #include "editor/IrView.h"
@@ -3267,6 +3268,16 @@ namespace playground::ui
                                [] { return TB::Look::outlined; }, [this] { openProjects(); }, "Projects",
                                "PROJECTS   SAVE THE PROGRAM ON THIS MAC, A VERSION EACH SAVE (CMD-S); OPEN AN OLDER ONE; ITS PRESETS");
         static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setMenu([this] { projectMenu(); });
+        // Package 05: the project open linked to a git repository shows the branch in place of the list (GitMark.h).
+        static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setIcon([this] {
+            const ProjectEntry* e = openEntry();
+            return e != nullptr && e->git ? chat::Icon::branch : chat::Icon::list;
+        });
+        static_cast<TB*>(items_[static_cast<std::size_t>(projectsItem_)].get())->setSpecNow([this] {
+            const ProjectEntry* e = openEntry();
+            return std::string("PROJECTS   SAVE THE PROGRAM ON ") + upper(kThisMachine) + ", A VERSION EACH SAVE (" + upper(shortcutText("Cmd-S"))
+                 + "); OPEN AN OLDER ONE; ITS PRESETS" + (e != nullptr && e->git ? "   " + upper(gitmark::title(*e)) : std::string());
+        });
         // The project open's presets, right of the pill: the one before, its name (a click: their list), the next.
         {
             const auto any = [this] { return !cycle_.presets.empty(); };
@@ -5227,6 +5238,7 @@ namespace playground::ui
                     r.icon = chat::Icon::list;
                     r.active = e.name == st.name;
                     r.key = e.name;
+                    r.git = e;                           // package 05: its git mark (GitMark.h)
                     g.rows.push_back(std::move(r));
                 }
             }
@@ -5933,6 +5945,16 @@ namespace playground::ui
             dirty_ = true;
         if (export_.poll())
             dirty_ = true;
+        // GIT: the job its card started, followed whether the card is open or not (its outcome to the status once).
+        if (git_.poll())
+            dirty_ = true;
+        if (const std::string n = git_.takeNotice(); !n.empty())
+            notice(n);
+        if (git_.takeLanded())
+        {
+            projectsAt_ = -100.0;                        // the explorer's marks and a pulled version read again
+            projects_.reread(ProjectBrowser::Because::elsewhere);
+        }
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -7653,7 +7675,8 @@ namespace playground::ui
         const std::vector<std::string> exportIt = projects_.takeExport();
         const std::pair<std::string, int> abIt = projects_.takeAb();
         const auto [compareIt, compareLeft, compareRight] = projects_.takeCompare();
-        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty())
+        const auto [gitIt, gitProject] = projects_.takeGit();   // package 05: Git...
+        if (wasOpen && !projects_.isOpen() && exportIt.empty() && abIt.first.empty() && compareIt.empty() && !gitIt)
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
@@ -7678,6 +7701,14 @@ namespace playground::ui
         }
         if (!compareIt.empty())
             openCompare(compareIt, compareLeft, compareRight);
+        if (gitIt)
+        {
+            if (gitProject.empty())
+                git_.openAdd();
+            else
+                git_.open(gitProject);
+            setFocus(-1);
+        }
         dirty_ = true;
     }
 
@@ -7755,6 +7786,33 @@ namespace playground::ui
         dirty_ = true;
     }
 
+    // ---- GIT (GitCard.h; package 05) -------------------------------------------------------------------------------------
+    void Panel::openGit(const std::string& project)
+    {
+        if (dialogOpen())
+            return;
+        files().endRename();
+        if (focusBeforeProjects_ < 0)
+            focusBeforeProjects_ = focus_;
+        if (project.empty())
+            git_.openAdd();
+        else
+            git_.open(project);
+        setFocus(-1);
+        ring_ = false;
+        dirty_ = true;
+    }
+
+    void Panel::afterGit(bool wasOpen)
+    {
+        if (wasOpen && !git_.isOpen())
+        {
+            setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
+            focusBeforeProjects_ = -1;
+        }
+        dirty_ = true;
+    }
+
     // The top bar's project pill's menu (a right-click on it): PROJECTS, and, while the editor's files have changes the
     // version open does not hold, Compare with the saved version (that version against the editor's).
     void Panel::projectMenu()
@@ -7769,6 +7827,7 @@ namespace playground::ui
             request.items.push_back(dropdown::header(ownName(st.name)));
         request.items.push_back({ 1, "Projects..." });
         request.items.push_back({ 2, "Compare with the saved version", compare });
+        request.items.push_back({ 3, st.name.empty() ? std::string("Add from Git...") : std::string("Git...") });   // package 05
         request.anchor = triggerRect(projectsItem_);
         request.theme = productTheme(funkgui::Theme::byIndex(host_->themeIndex()));
         host_->showMenu(request, [this, st](int chosen) {
@@ -7776,6 +7835,8 @@ namespace playground::ui
                 openProjects();
             else if (chosen == 2)
                 openCompare(st.name, st.version, DiffCard::kEditor);
+            else if (chosen == 3)
+                openGit(st.name);
             dirty_ = true;
         });
     }
@@ -8505,7 +8566,22 @@ namespace playground::ui
             label += " (edited)";
         if (!st.preset.empty() && !presetsShown())       // the presets right of it name it, and its dot
             label += "  -  " + asciiText(st.preset) + (st.dialsEdited ? " (edited)" : "");
+        // Package 05: a linked project's versions to push and commits to pull, as last known (GitMark.h).
+        if (const ProjectEntry* e = openEntry(); e != nullptr && e->git && (e->ahead > 0 || e->behind > 0))
+            label += "  (" + (e->ahead > 0 ? std::to_string(e->ahead) + " to push" : std::string())
+                   + (e->ahead > 0 && e->behind > 0 ? ", " : "") + (e->behind > 0 ? std::to_string(e->behind) + " to pull" : std::string()) + ")";
         return label;
+    }
+
+    const ProjectEntry* Panel::openEntry() const
+    {
+        const std::string& open = presetsOf_;           // the project open as the explorer's poll last saw it
+        if (open.empty())
+            return nullptr;
+        for (const ProjectEntry& e : projectList_)
+            if (e.name == open)
+                return &e;
+        return nullptr;
     }
 
     std::string Panel::presetLabel() const
@@ -8770,6 +8846,7 @@ namespace playground::ui
             .mix(dialogField_).mix(dialogControl_).mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
+            .mix(git_.isOpen()).mix(git_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
             .mix(layoutRevision_).mix(buttonsRoom_);
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
@@ -9046,6 +9123,10 @@ namespace playground::ui
             std::snprintf(line, sizeof line, "EXPORT   TAB THE NEXT FIELD   A PILL TOGGLES   ESCAPE KEEPS THE INFO AND CLOSES");
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
+        else if (git_.isOpen())
+            std::snprintf(line, sizeof line, git_.running() ? "GIT   CANCEL STOPS GIT   ESCAPE CLOSES (IT GOES ON)"
+                                                            : "GIT   TAB THE NEXT FIELD   %s PASTES   RETURN %s   ESCAPE CLOSES",
+                          upper(shortcutText("Cmd-V")).c_str(), git_.mode() == GitCard::Mode::add ? "ADDS" : git_.link().linked ? "PUSHES" : "CONNECTS");
         else if (compare_.isOpen())
             std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
                                              "ESCAPE OR A CLICK OUTSIDE CLOSES");
@@ -9149,6 +9230,11 @@ namespace playground::ui
             const funkgui::Canvas::Scope s(c, kCompareTag, false);
             compare_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
+        if (git_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kGitTag, false);
+            git_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
         if (ab_.isOpen())
         {
             const funkgui::Canvas::Scope s(c, kAbTag, false);
@@ -9247,6 +9333,8 @@ namespace playground::ui
             else if (compare_.isOpen())
                 pressCard([this] { return compare_.isOpen(); }, [this] { compare_.pointerDown(pointer_, host_, width_, height_); },
                           [this] { afterCompare(true); });
+            else if (git_.isOpen())
+                pressCard([this] { return git_.isOpen(); }, [this] { git_.pointerDown(pointer_, width_, height_); }, [this] { afterGit(true); });
             else if (ab_.isOpen())
                 pressCard([this] { return ab_.isOpen(); }, [this] { ab_.pointerDown(pointer_, width_, height_); }, [this] { afterAb(true); });
             else if (picker_.isOpen())
@@ -9399,7 +9487,7 @@ namespace playground::ui
             return;
         if (keyOpen_ || settings_.isOpen())
             return;
-        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen())
+        if (export_.isOpen() || ab_.isOpen() || name_.isOpen() || compare_.isOpen() || git_.isOpen())
             return;
         if (projects_.isOpen())
         {
@@ -9425,7 +9513,7 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen() || keyOpen_)
+        if (export_.isOpen() || name_.isOpen() || keyOpen_ || git_.isOpen())
             return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
@@ -9512,6 +9600,12 @@ namespace playground::ui
         {
             name_.key(e, host_, width_, height_);
             afterName(true);
+            return true;
+        }
+        if (git_.isOpen())
+        {
+            git_.key(e, host_, width_, height_);
+            afterGit(true);
             return true;
         }
         if (compare_.isOpen())
@@ -9681,6 +9775,8 @@ namespace playground::ui
             return name_.cursor(pointer_, width_, height_);
         if (compare_.isOpen())
             return compare_.cursor(pointer_, width_, height_);
+        if (git_.isOpen())
+            return git_.cursor(pointer_, width_, height_);
         if (ab_.isOpen())
             return ab_.cursor(pointer_, width_, height_);
         if (projects_.isOpen())
@@ -9790,6 +9886,11 @@ namespace playground::ui
             compare_.accessibility(out, width_, height_);
             return;
         }
+        if (git_.isOpen())
+        {
+            git_.accessibility(out, width_, height_);
+            return;
+        }
         if (ab_.isOpen())
         {
             ab_.accessibility(out, width_, height_);
@@ -9830,6 +9931,7 @@ namespace playground::ui
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (compare_.isOpen() ? 0x3C6EF372u : 0u) ^ (compare_.revision() * 0xA54FF53Bu);
+        r ^= (git_.isOpen() ? 0x510E527Fu : 0u) ^ (git_.revision() * 0x9B05688Cu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
         r |= (chat_.ready() ? 1u : 0u) << 18;
         static_assert(kMaxDisplays <= 32, "the displays' mask");
@@ -9900,6 +10002,12 @@ namespace playground::ui
         {
             compare_.a11yAction(id, a, host_, width_, height_);
             afterCompare(true);
+            return;
+        }
+        if (git_.isOpen())
+        {
+            git_.a11yAction(id, a, width_, height_);
+            afterGit(true);
             return;
         }
         if (ab_.isOpen())

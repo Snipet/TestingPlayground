@@ -103,6 +103,14 @@ namespace playground::ui::settings
     constexpr int kShowProjects = 0;                         // Projects
     constexpr int kProviderKey = 0;                          // AI
 
+    // The Projects page's Git rows (SettingsGit.cpp; package 05): which git the projects' git uses, found by a press
+    // (Find git: the processor's git job, never by itself), chosen (Choose git...: a native chooser) or the usual places
+    // again; how git signs in. Their codes (Act::item) from kGitFind.
+    constexpr int kGitFind = 40, kGitChoose = 41, kGitDefault = 42;
+    void buildGitRows(Builder& b);
+    void actGitRows(const Control& c, Context& ctx);
+    uint64_t keyGitRows(const Context& ctx);
+
     // What a folder's button says on this platform: Show in Finder, Explorer, File Manager.
     const char* showFolderWord();
 }
