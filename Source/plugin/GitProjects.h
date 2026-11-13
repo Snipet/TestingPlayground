@@ -6,8 +6,9 @@
 //   connect     a project given a remote and a branch (main unless said): its working folder made
 //               (<projects folder>/Git/<name>-<8 hex of its id>/), `git init`, a commit for each kept version from the
 //               oldest (its tree, ProjectExport.h's writeTree; "Version N: <note>", its save's time, the trailer
-//               Playground-Version: N), the remote added, and pushed (-u). A remote whose branch has commits already is
-//               refused before anything is committed, and the folder made for it taken away again (it held nothing else)
+//               Playground-Version: N), the remote added, and pushed (-u). The remote is asked first, by its address and
+//               with no repository: one whose branch has commits already (or that cannot be reached) is refused before
+//               any folder is made. The folder is always a new one; a later failure leaves it, the words saying where
 //   push        a commit for each version newer than the last committed, then `git push`: never forced; a remote that
 //               moved refuses it ("behind": pull first), and nothing else changes
 //   pull        `git fetch`, then nothing new; a fast-forward (no version here since the last commit): the tree read and
@@ -16,13 +17,14 @@
 //   check       `git fetch` and the counts: how far ahead and behind
 //   clone       Add from Git: `git clone` into a new folder, its tree read and added as a new project (projectstore::add:
 //               "<name> 2" when the name is taken), linked. The other kind's project, or a repository that holds none, is
-//               refused and the clone taken away again
+//               refused, its clone left where the words say (a failed clone git takes away itself)
 //   disconnect  the link removed; the working folder stays where it is, and the outcome says where
 //
 // Each returns a Result: ok, or why in words (git's own last lines as they are when git said something, with a line on
 // what a sandboxed host or an SSH key with a passphrase needs when that is what it looks like). Nothing is ever forced,
-// and nothing of the user's is deleted: a version removed in the store stays a commit in the repository, and the only
-// folders taken away are the ones the same call made and filled with nothing but its own work.
+// and nothing is deleted: a version removed in the store stays a commit in the repository, and no folder is ever taken
+// away by this code (writeTree removes only the regular files the tree before it wrote: ProjectExport.h). The projects'
+// Git folder that is a link (or a file) is refused, nothing made or changed.
 #pragma once
 
 #include "plugin/Git.h"
@@ -73,6 +75,8 @@ namespace playground::gitprojects
     // The folder a project's repository is made in: <projects folder>/Git/<name>-<8 hex of its id>, a number after it
     // when that is taken.
     juce::File folderFor(const std::string& project, const std::string& id);
+    // The projects' Git folder, made when missing; none, with why, when it is a link or a file.
+    std::optional<juce::File> gitRoot(std::string& why);
     // A remote's address shortened for the card and the mark's title: "github.com/me/pad" for
     // https://github.com/me/pad.git, git@github.com:me/pad.git and ssh://git@github.com/me/pad.
     std::string shortRemote(const std::string& address);

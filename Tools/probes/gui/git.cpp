@@ -189,7 +189,8 @@ PROBE(gui, git)
             probe::skip(P, row, "no git on this machine (" + prefix + "GIT): " + found.why);
         for (const char* png : { "gui.git.linked.png", "gui.git.linked.paper.png", "gui.git.running.png", "gui.git.confirm.png",
                                  "gui.git.least.png", "gui.git.settings.png", "gui.git.mark.png", "gui.git.mark.paper.png",
-                                 "gui.git.not_linked.paper.png", "gui.git.add.paper.png" })
+                                 "gui.git.not_linked.paper.png", "gui.git.add.paper.png", "gui.git.confirm.paper.png",
+                                 "gui.git.running.paper.png", "gui.git.least.paper.png" })
             probe::skip(P, std::string(png) + ".written", "no git (" + prefix + "GIT)");
         return P.finish();
     }
@@ -354,6 +355,23 @@ PROBE(gui, git)
         paper.projectBrowser().chooseProjectNamed(project, W, H);
         paperHost.settle();
         writePng(P, paperHost, "gui.git.mark.paper.png");
+        paperHost.keys("escape");
+        paperHost.settle();
+        // Disconnect pressed once (it asks again), a job under way (the gate held), the least window.
+        paper.openGit(project);
+        paperHost.settle();
+        paper.gitCard().press(GC::Button::disconnect);
+        paperHost.settle();
+        writePng(P, paperHost, "gui.git.confirm.paper.png");
+        processor.setGitGate(true);
+        paper.gitCard().press(GC::Button::check);
+        pump(processor, paperHost, 3.0, [&] { return paper.gitCard().running(); });
+        writePng(P, paperHost, "gui.git.running.paper.png");
+        processor.setGitGate(false);
+        pump(processor, paperHost, 20.0, [&] { return !paper.gitCard().running(); });
+        paperHost.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+        paperHost.settle();
+        writePng(P, paperHost, "gui.git.least.paper.png");
         funkgui::UiPreferences::get().setTheme(0);
     }
 

@@ -7,7 +7,8 @@
   (the newest opened when the editor has no unsaved change), and **Check** says how far ahead and behind you are. A
   linked project shows a small branch mark after its name, in the Projects card, the explorer and the top bar's pill,
   with the versions to push and the commits to pull when they are known.
-- **Add from Git...** in the Projects card makes a new project here from a repository another machine pushed to.
+- **Add from Git** makes a new project here from a repository another machine pushed to: the Projects card's **Git...**
+  with no project chosen, or the top bar's project pill's right-click menu while no project is open.
 - **Disconnect** removes the link; the working folder stays where it is (nothing is deleted), and **Show folder** opens
   it.
 - The Settings card's Projects page says which git the projects' git uses: **Find git** looks for it, **Choose git...**

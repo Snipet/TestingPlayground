@@ -231,6 +231,28 @@ namespace playground::gitprojects
         return a;
     }
 
+    std::optional<juce::File> gitRoot(std::string& why)
+    {
+        const juce::File root = projectstore::directory().getChildFile(kGitFolder);
+        if (root.isSymbolicLink())
+        {
+            why = root.getFullPathName().toStdString() + " is a link: the working folders go only into a real folder there. "
+                  "Nothing was made or changed.";
+            return std::nullopt;
+        }
+        if (root.existsAsFile())
+        {
+            why = root.getFullPathName().toStdString() + " is a file, not a folder. Nothing was made or changed.";
+            return std::nullopt;
+        }
+        if (!root.isDirectory() && !root.createDirectory())
+        {
+            why = "Cannot make the folder " + root.getFullPathName().toStdString();
+            return std::nullopt;
+        }
+        return root;
+    }
+
     juce::File folderFor(const std::string& project, const std::string& id)
     {
         const juce::File root = projectstore::directory().getChildFile(kGitFolder);
@@ -257,41 +279,38 @@ namespace playground::gitprojects
             return failed(why);
         if (l->link)
             return failed("\"" + l->project.name + "\" is linked to " + shortRemote(l->link->remote) + " already: Disconnect it first.");
+        // Nothing is made before the remote is known to be empty: it is asked by its address, from the projects' own
+        // folder, with no repository. The working folder is made only then, always a new one (never a folder that was
+        // there), and nothing of it is ever deleted: a later failure leaves it, and the words say where.
+        const std::optional<juce::File> root = gitRoot(why);
+        if (!root)
+            return failed(why);
+        say(s, "Looking at " + shortRemote(remote));
+        {
+            const git::Context here = contextOf(s, root->getFullPathName().toStdString());
+            const git::Outcome o = git::call(here, { "ls-remote", "--heads", "--", remote, "refs/heads/" + branch }, true);
+            if (!o.ok)
+                return gitFailed(o, "The remote could not be reached. Nothing was made");
+            if (o.out.find_first_not_of(" \t\r\n") != std::string::npos)
+                return failed("This repository is not empty (its branch " + branch + " has commits). Use Add from Git to make a "
+                              "project of it, or give an empty repository. Nothing was made.");
+        }
         const juce::File folder = folderFor(l->project.name, l->id);
+        if (folder.exists() || folder.isSymbolicLink() || !folder.createDirectory())
+            return failed("Cannot make the folder " + folder.getFullPathName().toStdString() + ". Nothing was made.");
         const git::Context c = contextOf(s, folder.getFullPathName().toStdString());
-        // The folder this call makes, and takes away again when the remote refuses (it holds nothing but its own work).
-        const auto undo = [&folder] { folder.deleteRecursively(); };
-        if (!folder.getParentDirectory().isDirectory() && !folder.getParentDirectory().createDirectory())
-            return failed("Cannot make the folder " + folder.getParentDirectory().getFullPathName().toStdString());
+        const std::string left = " The folder " + folder.getFullPathName().toStdString()
+                               + " was made for it and is left as it is (Connect again makes a new one).";
         say(s, "Making the repository");
         if (const git::Outcome o = git::init(c, branch); !o.ok)
-        {
-            undo();
-            return gitFailed(o, "The repository was not made");
-        }
+            return gitFailed(o, "The repository was not made." + left);
         if (const git::Outcome o = git::addRemote(c, "origin", remote); !o.ok)
-        {
-            undo();
-            return gitFailed(o, "The remote was not added");
-        }
-        say(s, "Looking at " + shortRemote(remote));
-        bool there = false;
-        if (const git::Outcome o = git::remoteHas(c, "origin", branch, there); !o.ok)
-        {
-            undo();
-            return gitFailed(o, "The remote could not be reached");
-        }
-        if (there)
-        {
-            undo();
-            return failed("This repository is not empty (its branch " + branch + " has commits). Use Add from Git to make a "
-                          "project of it, or give an empty repository.");
-        }
+            return gitFailed(o, "The remote was not added." + left);
         int committed = 0, made = 0;
         Result r;
         if (!commitVersions(s, c, l->project, committed, made, r))
         {
-            undo();
+            r.why += left;
             return r;
         }
         projectstore::Link k;
@@ -484,33 +503,29 @@ namespace playground::gitprojects
         if (!branch.empty())
             if (const std::string w = git::branchRefusal(branch); !w.empty())
                 return failed("That branch's name cannot be used: " + w);
-        const juce::File root = projectstore::directory().getChildFile(kGitFolder);
-        if (!root.isDirectory() && !root.createDirectory())
-            return failed("Cannot make the folder " + root.getFullPathName().toStdString());
-        const juce::File temp = root.getNonexistentChildFile(".cloning", "", false);
+        std::string why;
+        const std::optional<juce::File> root = gitRoot(why);
+        if (!root)
+            return failed(why);
+        // A new folder (git clone makes it, and takes it away itself when the clone fails); nothing here deletes it.
+        std::string base = shortRemote(remote).substr(shortRemote(remote).rfind('/') + 1);
+        if (projectstore::tidyName(base).empty())
+            base = "Repository";
+        const juce::File temp = root->getNonexistentChildFile(str(projectstore::tidyName(base) + " (cloning)"), "", false);
         const git::Context c = contextOf(s, temp.getFullPathName().toStdString());
         say(s, "Cloning " + shortRemote(remote));
         if (const git::Outcome o = git::clone(c, remote, temp.getFullPathName().toStdString(), branch); !o.ok)
-        {
-            temp.deleteRecursively();                     // what the clone made, if anything
             return gitFailed(o, "Nothing was added");
-        }
-        std::string why;
         std::optional<projectstore::Project> tree = projectexport::readTree(temp, &why);
         if (!tree)
-        {
-            temp.deleteRecursively();
-            return failed("Nothing was added: the repository does not hold a project of this plugin's (" + why + ").");
-        }
+            return failed("Nothing was added: the repository does not hold a project of this plugin's (" + why + "). Its clone is "
+                          "left at " + temp.getFullPathName().toStdString() + ".");
         if (tree->name.empty())
             tree->name = shortRemote(remote).substr(shortRemote(remote).rfind('/') + 1);
         say(s, "Adding the project");
         const std::optional<std::string> name = projectstore::add(*tree, &why);
         if (!name)
-        {
-            temp.deleteRecursively();
-            return failed("Nothing was added: " + why);
-        }
+            return failed("Nothing was added: " + why + " Its clone is left at " + temp.getFullPathName().toStdString() + ".");
         const std::string id = projectstore::idOf(*name, &why);
         const juce::File folder = folderFor(*name, id.empty() ? std::string("00000000") : id);
         projectstore::Link k;

@@ -33,13 +33,18 @@
 //   TREE     a version written as a repository's tree and read back the same (files, tab, dials with their labels,
 //            circuits' answers, MIDI map, samples, presets, info); its layout (project.json without id or texts, README,
 //            .gitattributes, samples/); a file the user added and an edited README kept, a file the version dropped gone;
-//            a file missing: refused
-//   CONNECT  a remote with commits refused (no folder, no link); an ext:: address refused; a commit a version, oldest
+//            a file missing: refused; no record (or not a tree's): nothing removed; a record naming .., an absolute path,
+//            a hidden name or a sample's ..: none touched; a record naming a link: the link and its target stay; a link
+//            at samples/ or at a program file's place: refused, nothing written through it
+//   CONNECT  a remote with commits refused (no folder, no link); an ext:: address refused; a remote that cannot be
+//            reached: nothing made; the projects' Git folder a link: refused, nothing made where it points; a folder
+//            there already where the working folder would go: left with its file, another used; a commit that fails
+//            once the folder is made: the folder left and named, no link; a commit a version, oldest
 //            first, with its note, its save's date and its trailer; linked, listed with its remote; twice refused
 //   PUSH     a version saved since: listed one ahead; only it pushed; nothing new fine; a remote that moved: refused as
 //            behind, the remote's branch as it was (never forced)
 //   CLONE    (B) a project of its own (another id), linked; a taken name numbered; the other kind's refused, nothing
-//            added, no clone left
+//            added, its clone left where the words say; a clone that fails: nothing left, nothing added
 //   PULL     a fast-forward: a new version ("Pulled ..."), the link's commit moved; nothing new; not committed again;
 //            both sides moved: refused as diverged, nothing changed
 //   CHECK    the counts, as the listing shows them
@@ -194,6 +199,57 @@ namespace
                                           ? 1 : 0, 1);
             fs::remove_all(tree / "program.fm", ec);
             P.eq("tree.missing_file_refused", !pg::projectexport::readTree(juce::File(juce::String(tree.string())), &why) && !why.empty() ? 1 : 0, 1);
+
+            // The record (the previous project.json) alone says what is taken away, and only by a plain name.
+            const auto folderOf = [](const fs::path& f) { return juce::File(juce::String(f.string())); };
+            const fs::path noRecord = root / "tree-no-record";
+            fs::create_directories(noRecord, ec);
+            writeFile(noRecord / "other.fm", "// someone's\n");
+            writeFile(noRecord / "project.json", "{ \"format\": \"something-else\", \"versions\": [ { \"files\": [ { \"name\": \"other.fm\" } ] } ] }\n");
+            const bool w1 = pg::projectexport::writeTree(*p, 1, folderOf(noRecord), &why);
+            P.eq("tree.no_record_nothing_removed", w1 && readFile(noRecord / "other.fm") == "// someone's\n" ? 1 : 0, 1);
+            // A record naming paths outside the folder (.., an absolute path, a hidden name, a sample's ..): none touched.
+            const fs::path outside = root / "tree-outside";
+            fs::create_directories(outside / "samples", ec);
+            writeFile(root / "victim.fm", "victim\n");
+            writeFile(root / "victim-abs.fm", "victim\n");
+            writeFile(outside / ".hidden.fm", "hidden\n");
+            const std::string abs = (root / "victim-abs.fm").generic_string();
+            writeFile(outside / "project.json",
+                      "{ \"format\": \"funk-playground-git\", \"version\": 1, \"versions\": [ { \"files\": [ { \"name\": \"../victim.fm\" }, "
+                      "{ \"name\": \"" + abs + "\" }, { \"name\": \".hidden.fm\" }, { \"name\": \"..\" } ] } ], \"sampleFiles\": [ { \"hash\": \"0\", "
+                      "\"file\": \"samples/../../victim.fm\" } ] }\n");
+            pg::projectexport::writeTree(*p, 1, folderOf(outside), &why);
+            P.eq("tree.record_outside_untouched", readFile(root / "victim.fm") == "victim\n" && readFile(root / "victim-abs.fm") == "victim\n"
+                                                      && readFile(outside / ".hidden.fm") == "hidden\n" ? 1 : 0, 1);
+#if !defined(_WIN32)
+            // A record naming a link: the link and what it points to both stay.
+            const fs::path linked = root / "tree-linked";
+            fs::create_directories(linked, ec);
+            writeFile(root / "link-target.fm", "target\n");
+            fs::create_symlink(root / "link-target.fm", linked / "linked.fm", ec);
+            writeFile(linked / "project.json", "{ \"format\": \"funk-playground-git\", \"version\": 1, \"versions\": [ { \"files\": "
+                                               "[ { \"name\": \"linked.fm\" } ] } ] }\n");
+            pg::projectexport::writeTree(*p, 1, folderOf(linked), &why);
+            P.eq("tree.record_link_left", fs::is_symlink(linked / "linked.fm", ec) && readFile(root / "link-target.fm") == "target\n" ? 1 : 0, 1);
+            // A link where the tree would write (samples/, a program's file): refused, nothing written through it.
+            const fs::path linkedSamples = root / "tree-samples-link";
+            fs::create_directories(linkedSamples, ec);
+            fs::create_directories(root / "elsewhere", ec);
+            fs::create_symlink(root / "elsewhere", linkedSamples / "samples", ec);
+            const bool w2 = pg::projectexport::writeTree(*p, 1, folderOf(linkedSamples), &why);
+            std::printf("tree: samples a link says \"%s\"\n", why.c_str());
+            P.eq("tree.samples_link_refused", !w2 && fs::is_empty(root / "elsewhere", ec) && !there(linkedSamples / "program.fm") ? 1 : 0, 1);
+            const fs::path linkedFile = root / "tree-file-link";
+            fs::create_directories(linkedFile, ec);
+            writeFile(root / "program-target.fm", "theirs\n");
+            fs::create_symlink(root / "program-target.fm", linkedFile / "program.fm", ec);
+            const bool w3 = pg::projectexport::writeTree(*p, 1, folderOf(linkedFile), &why);
+            P.eq("tree.file_link_refused", !w3 && readFile(root / "program-target.fm") == "theirs\n" ? 1 : 0, 1);
+#else
+            for (const char* row : { "tree.record_link_left", "tree.samples_link_refused", "tree.file_link_refused" })
+                probe::skip(P, row, "the rows make symbolic links (POSIX)");
+#endif
         }
 
         // ---- CONNECT ---------------------------------------------------------------------------------------------------
@@ -222,11 +278,55 @@ namespace
                                                   && ps::links().links.empty() ? 1 : 0, 1);
             const gp::Result bad = gp::connect(setup, "Pad", "ext::sh -c touch% /tmp/x", "main");
             P.eq("connect.address_refused", !bad.ok && ps::links().links.empty() ? 1 : 0, 1);
+            const auto foldersIn = [&](const fs::path& d) {
+                std::size_t n = 0;
+                for (const auto& e : fs::directory_iterator(d, ec))
+                    n += e.is_directory() ? 1 : 0;
+                return n;
+            };
+            // A remote that cannot be reached: refused, nothing made.
+            const gp::Result unreachable = gp::connect(setup, "Pad", fileUrl(root / "remotes" / "no-such.git"), "main");
+            P.eq("connect.unreachable_nothing_made", !unreachable.ok && foldersIn(machineA / "Git") == 0 && ps::links().links.empty() ? 1 : 0, 1);
+#if !defined(_WIN32)
+            // The projects' Git folder a link: refused, nothing made where it points.
+            fs::remove(machineA / "Git", ec);
+            fs::create_directories(root / "git-elsewhere", ec);
+            fs::create_symlink(root / "git-elsewhere", machineA / "Git", ec);
+            const gp::Result viaLink = gp::connect(setup, "Pad", url, "main");
+            std::printf("connect: Git a link says \"%s\"\n", viaLink.why.c_str());
+            P.eq("connect.git_folder_link_refused", !viaLink.ok && viaLink.why.find("is a link") != std::string::npos
+                                                        && fs::is_empty(root / "git-elsewhere", ec) && ps::links().links.empty() ? 1 : 0, 1);
+            fs::remove(machineA / "Git", ec);            // the link, not where it points
+#else
+            probe::skip(P, "connect.git_folder_link_refused", "the row makes a symbolic link (POSIX)");
+#endif
+            // A folder there already where the working folder would go, holding a file: left as it is, another used.
+            const std::string padId = ps::idOf("Pad");
+            const juce::File taken = gp::folderFor("Pad", padId);
+            const fs::path takenPath = taken.getFullPathName().toStdString();
+            writeFile(takenPath / "mine.txt", "mine\n");
+            // A commit that fails once the folder is made (no identity): the folder left, said, no link.
+            for (const char* v : { "GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL" })
+                unsetenv(v);
+            const gp::Result noIdentity = gp::connect(setup, "Pad", url, "main");
+            setenv("GIT_AUTHOR_NAME", "Probe", 1);
+            setenv("GIT_COMMITTER_NAME", "Probe", 1);
+            setenv("GIT_AUTHOR_EMAIL", "probe@example.invalid", 1);
+            setenv("GIT_COMMITTER_EMAIL", "probe@example.invalid", 1);
+            std::printf("connect: no identity says \"%s\"\n", noIdentity.why.c_str());
+            const std::size_t leftAt = noIdentity.why.find(" was made for it and is left as it is");
+            const std::size_t folderAt = noIdentity.why.rfind("The folder ", leftAt);
+            const fs::path leftFolder = leftAt != std::string::npos && folderAt != std::string::npos
+                                            ? fs::path(noIdentity.why.substr(folderAt + 11, leftAt - folderAt - 11)) : fs::path();
+            P.eq("connect.failure_folder_left", !noIdentity.ok && !leftFolder.empty() && there(leftFolder / ".git") && leftFolder != takenPath
+                                                    && ps::links().links.empty() && remoteCount() == 0 ? 1 : 0, 1);
 
             const gp::Result r = gp::connect(setup, "Pad", url, "main");
             std::printf("connect: ok %d \"%s\" (%s)\n", r.ok ? 1 : 0, r.line.c_str(), r.why.c_str());
             const std::optional<ps::Project> p = ps::load("Pad");
             const std::optional<ps::Link> k = p ? ps::linkOf(p->id) : std::nullopt;
+            P.eq("connect.existing_folder_kept", k && fs::path(k->folder) != takenPath && readFile(takenPath / "mine.txt") == "mine\n"
+                                                     && !there(takenPath / ".git") ? 1 : 0, 1);
             P.eq("connect.linked", r.ok && k && k->committed == 3 && k->branch == "main" && k->ahead == 0 && k->behind == 0
                                        && k->log.size() == 3 && remoteCount() == 3 ? 1 : 0, 1);
             const std::string log = sh(found, remote, { "log", "--reverse", "--format=%s%x01%at%x01%(trailers:key=Playground-Version,valueonly)%x02", "main" });
@@ -302,10 +402,18 @@ namespace
             const std::size_t before = ps::list().size();
             const gp::Result refused = gp::clone(setup, otherUrl, "main");
             std::printf("clone: other kind says \"%s\"\n", refused.why.c_str());
-            bool leftover = false;
+            const std::size_t leftAt = refused.why.find("Its clone is left at ");
+            const std::string left = leftAt == std::string::npos ? std::string() : refused.why.substr(leftAt + 21, refused.why.size() - leftAt - 22);
+            P.eq("clone.other_kind_refused", !refused.ok && ps::list().size() == before && !left.empty() && there(fs::path(left) / "project.json")
+                                                 ? 1 : 0, 1);
+            // A clone that fails: git takes away what it made; nothing is added.
+            std::size_t gitBefore = 0, gitAfter = 0;
             for (const auto& e : fs::directory_iterator(machineB / "Git", ec))
-                leftover = leftover || e.path().filename().string().rfind(".cloning", 0) == 0;
-            P.eq("clone.other_kind_refused", !refused.ok && ps::list().size() == before && !leftover ? 1 : 0, 1);
+                gitBefore += e.is_directory() ? 1 : 0;
+            const gp::Result failedClone = gp::clone(setup, fileUrl(root / "remotes" / "no-such.git"), "");
+            for (const auto& e : fs::directory_iterator(machineB / "Git", ec))
+                gitAfter += e.is_directory() ? 1 : 0;
+            P.eq("clone.failed_nothing_left", !failedClone.ok && gitAfter == gitBefore && ps::list().size() == before ? 1 : 0, 1);
         }
 
         // ---- PULL --------------------------------------------------------------------------------------------------------
