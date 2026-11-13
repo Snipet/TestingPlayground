@@ -37,6 +37,8 @@
 //   deleteChat()     the chat shown deleted from this Mac: the newest other one shows, else a new chat
 #pragma once
 
+#include "plugin/Usage.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -213,6 +215,17 @@ namespace playground
         bool current = false;                 // the one shown
     };
 
+    // The usage ledger as the settings card's Usage page reads it (ChatPort::usage): a snapshot of a range, read off the
+    // message thread, and the price table's date in use. Counts and names only (Usage.h): nothing of a chat.
+    struct UsageView
+    {
+        uint64_t revision = 0;                   // moves with each read
+        usage::Range range = usage::Range::month;
+        usage::Snapshot snapshot;
+        std::string pricesAsOf;                  // the table in use (usage::pricesInUse().asOf)
+        bool reset = false, resetFailed = false; // the last Reset asked was done (or failed: the file as it was)
+    };
+
     struct ChatList
     {
         std::string owner;                    // the project the chats are kept with ("" for none: this plugin's own)
@@ -281,5 +294,16 @@ namespace playground
         virtual bool openChat(const std::string& id) = 0;
         virtual void renameChat(const std::string& title) = 0;
         virtual void deleteChat() = 0;
+
+        // The usage page's (UsagePage.h). usage() never waits: the last snapshot read (null before the first), and a
+        // read of `range` asked for, on a thread of the processor's own, when it is of another range, the ledger moved
+        // (usage::revision) or the file may have (a few seconds on); the page asks each frame it shows and draws again
+        // when the revision moves. resetUsage() empties the ledger, on that thread, then reads it again.
+        virtual std::shared_ptr<const UsageView> usage(usage::Range range)
+        {
+            (void)range;
+            return nullptr;
+        }
+        virtual void resetUsage() {}
     };
 }

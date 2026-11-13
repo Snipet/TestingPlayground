@@ -159,7 +159,8 @@ To install, `cmake --workflow --preset linux-release-build`, then `scripts/packa
   provider), then describe a sound: "a tape delay with wow and flutter", "a warm detuned pad".
 - **Or use Claude Desktop.** Open the product's `.mcpb` (from the build, or the copy the installer puts in place) and
   Claude Desktop offers to add it; then, with the plugin open, ask Claude Desktop for an effect or a sound.
-- **Settings**, the top bar's gear: the theme, the zoom, the editor, the projects' folder, the AI and a Debug page. In
+- **Settings**, the top bar's gear: the theme, the zoom, the editor, the projects' folder, the AI, what the chat
+  has used (**Usage**) and a Debug page. In
   the effect's Standalone, its **Audio and MIDI** page (also **Settings…**, Cmd-, on macOS) picks the audio input,
   which starts muted: unmute it with headphones on.
 
@@ -1975,8 +1976,14 @@ answer stays in front of you; one Claude Desktop opens is as if you had opened i
   (checked against Anthropic's pricing page on 2026-11-12; Claude Haiku 5.5 at its rate for prompts up to 100K
   tokens), an OpenRouter model from the prices its models list gives; a model with no known price (OpenAI's, Gemini's,
   a server's here) shows tokens and no cost, never a guess. An estimate is not an invoice (batch discounts, a
-  provider's rounding, a price changed since the table's date): your provider's invoice is the record. The page that
-  shows it all, with a chart, comes in a later version; `Source/plugin/Usage.h`.
+  provider's rounding, a price changed since the table's date): your provider's invoice is the record.
+- **The Usage page** (**Settings**, the gear, **Usage**): what the chat has used and cost, from that file. Choose a
+  range (**7 days**, **30 days**, **12 months**, **All**) and **Tokens** or **Cost**; a chart stacks a bar a day (a
+  month in the longer ranges) by model, the busiest models a colour each and the rest **Other**, and the bar under the
+  pointer (or picked with the arrow keys) is read out below it. A table lists a row a model (its provider, requests,
+  tokens in, cached, out, cost and share) and a total. A cost with **~** is an estimate at the prices named in the
+  footnote (dated as the table is); one without is the provider's own figure; **no price known** where there is none.
+  **Reset…** forgets every request counted (asked first); nothing of a chat is shown.
 - **The header**: the **>** folds the chat into its rail; the pill after **Claude** (or the provider's name, below)
   names the chat you are in and opens the **chat list** (below); the pencil starts a **new chat** (the one before stays
   in the list); the key opens the **API key** dialog: paste your key (from console.anthropic.com, API keys) with Cmd-V

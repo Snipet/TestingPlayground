@@ -149,6 +149,9 @@ namespace playground::usage
         // the write failed. A file that is not a ledger is kept beside as usage.json.bad, never added to.
         bool flush(std::string_view today);
         bool flush() { return flush(usage::today()); }
+        // Every count gone: the file emptied (written beside and renamed, under the folder's .lock) and what was not
+        // written yet dropped. False when the lock or the write failed (the file as it was).
+        bool reset(std::string_view today);
         Snapshot snapshot(Range range, std::string_view today) const;
         Snapshot snapshot(Range range) const { return snapshot(range, usage::today()); }
         bool pending() const;
@@ -167,7 +170,11 @@ namespace playground::usage
     void add(const Key& key, const Counts& counts);
     bool flush();
     Snapshot snapshot(Range range);
+    bool reset();                                // the usage page's Reset (asked first): Ledger::reset
     std::filesystem::path processFile();
+    // Moves when this process's ledger changes (a count added, a flush, a reset): what a reader of snapshot() follows,
+    // besides the file another process may write (read again now and then).
+    uint64_t revision();
 
     // The file's rows (none when it is missing or no ledger), and the JSON a set of rows is written as.
     std::vector<Row> read(const std::filesystem::path& file, bool* damaged = nullptr);

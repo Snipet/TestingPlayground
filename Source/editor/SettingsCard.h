@@ -20,6 +20,9 @@
 //                   numbers follow the devices while it shows: read again whenever DevicePort::serial moves
 //   Projects        the projects folder, with Show in Finder (Explorer, File Manager: EditorPort::showPath)
 //   AI              the chat's provider, model and key in words; Provider and key... opens the chat's key dialog
+//   Usage           the chat's tokens and costs by day and model (UsagePage.h): a range, Tokens or Cost, a chart of
+//                   stacked bars, a table a model, the price table's date, Reset (asked first); read off the message
+//                   thread (ChatPort::usage) while it shows
 //   Debug           sections of `name  value` rows (EditorPort::debugRows, and the Panel's graphics rows), read once a
 //                   second while the page shows and only then (EditorPort::addDebugViewer); Copy all
 //   About           the name, the version, the company, the website, where the licences are
@@ -46,6 +49,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,6 +80,7 @@ namespace playground::ui
             bool on = false;                     // a switch's state; a rail's entry: its page shows
             bool enabled = true;
             chat::Icon icon = chat::Icon::none;  // a button's icon before its label (Test's play)
+            bool own = false;                    // drawn and named by its page (SettingsPages.h: paint, a11y)
             uint32_t id = 0;                     // its accessibility id
         };
 
@@ -168,6 +174,16 @@ namespace playground::ui
 
         // For the pages (SettingsPages.cpp): after an action, what changed read at once; whether a select's menu is open.
         void changed();
+        // A page's view state (a choice of its own that is no setting: a range, the bar picked), kept while the card
+        // lives, made on first use.
+        template <typename T>
+        T& viewState(const char* pageId) const
+        {
+            std::shared_ptr<void>& s = states_[pageId];
+            if (!s)
+                s = std::make_shared<T>();
+            return *static_cast<T*>(s.get());
+        }
         bool menuOpenAt(const funkgui::Rect& r) const { return menuOpen_ && menuOpen_(r); }
         EditorPort& port() noexcept { return port_; }
 
@@ -201,6 +217,7 @@ namespace playground::ui
         uint32_t revision_ = 0;
         // The Debug page: its viewer counted (EditorPort::addDebugViewer), its sections, when they were read.
         bool viewer_ = false;
+        mutable std::map<std::string, std::shared_ptr<void>> states_;   // the pages' view states (viewState)
         std::vector<DebugSection> debug_;
         double debugAt_ = -1.0;                  // the host's clock at the last read (-1: read, the clock not taken)
     };

@@ -489,6 +489,19 @@ namespace playground::ui
             ++revision_;
             return;
         }
+        if (i >= 0 && at.controls[static_cast<std::size_t>(i)].own)
+        {
+            // An own control focused: the keys the card does not use go to its page (a chart's Left and Right).
+            const auto all = settings::pages();
+            const settings::Page& p = all[static_cast<std::size_t>(at.page)];
+            settings::Context ctx{ port_, host, *this };
+            if (p.keyed != nullptr && p.keyed(e, at.controls[static_cast<std::size_t>(i)], ctx))
+            {
+                ring_ = true;
+                ++revision_;
+                return;
+            }
+        }
         if ((e.key == Key::enter || e.key == Key::space) && i >= 0)
         {
             ring_ = true;
@@ -594,8 +607,8 @@ namespace playground::ui
             for (std::size_t i = 0; i + 1 < at.controls.size(); ++i)   // Done, the last, is outside the body
             {
                 const Control& k = at.controls[i];
-                if (k.act == Act::page)
-                    continue;
+                if (k.act == Act::page || k.own)
+                    continue;                            // a page draws its own (paint, below)
                 const funkgui::Rect& r = k.r;
                 const bool hover = hovered(k);
                 if (k.menu)
@@ -637,6 +650,14 @@ namespace playground::ui
                     if (static_cast<int>(i) == focus)
                         ring(k, r.h * 0.5f);
                 }
+            }
+            if (page.paint != nullptr)
+            {
+                // What the page draws itself; an own control's focus ring after it, as the card's controls have theirs.
+                settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
+                page.paint(c, th, at, ctx, pointer, hasPointer);
+                if (focus >= 0 && at.controls[static_cast<std::size_t>(focus)].own)
+                    ring(at.controls[static_cast<std::size_t>(focus)], 6.0f);
             }
         }
         // The body's scroll bar, when the window is too short for the page.
@@ -689,6 +710,8 @@ namespace playground::ui
         }
         for (const Control& c : at.controls)
         {
+            if (c.own)
+                continue;                                // its page names it (a11y, below)
             funkgui::A11yItem it;
             it.id = c.id;
             it.parent = kA11yBase;
@@ -718,6 +741,11 @@ namespace playground::ui
             else
                 it.role = funkgui::A11yRole::button;
             out.push_back(std::move(it));
+        }
+        if (const settings::Page& p = all[static_cast<std::size_t>(at.page)]; p.a11y != nullptr)
+        {
+            settings::Context ctx{ port_, host_, const_cast<SettingsCard&>(*this) };
+            p.a11y(out, at, ctx);
         }
     }
 

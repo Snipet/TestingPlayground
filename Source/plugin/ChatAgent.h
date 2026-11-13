@@ -378,6 +378,8 @@ namespace playground
         bool openChat(const std::string& id) override;
         void renameChat(const std::string& title) override;
         void deleteChat() override;
+        std::shared_ptr<const UsageView> usage(usage::Range range) override;   // ChatUsage.cpp
+        void resetUsage() override;
 
         // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
         // saved half-done: its user message and what came back so far are. The panel's pictures (view_panel's,
@@ -768,7 +770,15 @@ namespace playground
             bool unknown = false;                                   // one had no price: no cost said
             bool estimate = false;                                  // one was an estimate
         };
-        TurnCost turnCost_;                                         // this turn's requests' cost (countUsage)
+        TurnCost turnCost_;
+        // The usage page's reads (ChatUsage.cpp), on the job thread: the last one, what it was of, one at a time.
+        mutable std::mutex usageMutex_;
+        std::shared_ptr<const UsageView> usageView_;
+        uint64_t usageSeen_ = 0;                                    // usage::revision() it was read at
+        double usageAt_ = 0.0;                                      // when (seconds, steady)
+        bool usageReading_ = false, usageResetAsked_ = false;
+        uint64_t usageReads_ = 0;
+        void readUsage(usage::Range range, bool resetFirst);                                         // this turn's requests' cost (countUsage)
         bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {

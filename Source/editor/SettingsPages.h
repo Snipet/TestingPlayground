@@ -8,6 +8,12 @@
 // the Audio and MIDI page's devices' acts) when they are pressed, with the card open and the host there. A setting is
 // read where it lives each time the card lays out; key() returns what the page reads that can change with no input of
 // the card's (a revision, a hash), so the card draws again when it moves.
+//
+// A page that shows more than texts and controls (the Usage page's chart, UsagePage.h) draws it itself: a Control it
+// marks `own` (the card draws nothing of it, and focuses, hits and names it as any other), its paint() over the body
+// after the card's own drawing, keyed() for the keys the card leaves to a focused own control (Left, Right, Home, End),
+// a11y() for what it shows to a screen reader; its view state (a choice that is no setting) kept by the card
+// (SettingsCard::viewState). Each is optional: a page without them is as before.
 #pragma once
 
 #include "editor/SettingsCard.h"
@@ -86,14 +92,23 @@ namespace playground::ui::settings
         void (*build)(Builder&);
         void (*act)(const Control&, Context&);   // its controls pressed (null: none)
         uint64_t (*key)(const Context&);         // what it reads that changes with no input (null: nothing)
+        // What the page draws itself (null: none), in the body's clip, after the card's lines and controls; `at` as the
+        // card placed it (the body scrolled). The pointer is the card's.
+        void (*paint)(funkgui::Canvas&, const funkgui::Theme&, const SettingsCard::Places& at, Context&, funkgui::Point pointer,
+                      bool hasPointer) = nullptr;
+        // A key the card does not use itself, with an `own` control of the page focused: true when the page took it.
+        bool (*keyed)(const funkgui::KeyEvent&, const Control& focused, Context&) = nullptr;
+        // Its own accessibility items (an `own` control's, and what it holds), after the card's.
+        void (*a11y)(std::vector<funkgui::A11yItem>&, const SettingsCard::Places& at, Context&) = nullptr;
     };
 
-    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Debug, About.
+    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Usage, Debug, About.
     std::span<const Page> pages();
 
     // The pages in files of their own (the table names them).
     extern const Page kAudioPage;                // SettingsDevices.cpp
     extern const Page kDebugPage;                // SettingsDebug.cpp
+    extern const Page kUsagePage;                // UsagePage.cpp
 
     // The Debug page's own codes (Act::item): Copy all; a folder's row's Show button (kShowPath + its row's number).
     constexpr int kCopyAll = 0, kShowPath = 100;

@@ -542,6 +542,21 @@ namespace playground::usage
         return ok;
     }
 
+    bool Ledger::reset(std::string_view todayDay)
+    {
+        const std::lock_guard<std::mutex> one(flushMutex_);
+        fs::path file;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            pending_.clear();
+            file = file_;
+        }
+        if (file.empty())
+            return true;
+        const FolderLock lock(file.parent_path());
+        return lock.held() && writeFile(file, write(tidy({}, todayDay)));
+    }
+
     Snapshot Ledger::snapshot(Range range, std::string_view todayDay) const
     {
         fs::path file;
@@ -592,14 +607,22 @@ namespace playground::usage
             static Ledger ledger;
             return ledger;
         }
+
+        std::atomic<uint64_t> processRevision{ 1 };
     }
+
+    uint64_t revision() { return processRevision.load(std::memory_order_acquire); }
 
     fs::path processFile()
     {
         return fs::path(chatstore::directory().getChildFile("usage.json").getFullPathName().toStdString());
     }
 
-    void add(const Key& key, const Counts& counts) { processLedger().add(key, counts); }
+    void add(const Key& key, const Counts& counts)
+    {
+        processLedger().add(key, counts);
+        processRevision.fetch_add(1, std::memory_order_acq_rel);
+    }
 
     bool flush()
     {
@@ -607,7 +630,18 @@ namespace playground::usage
         if (!l.pending())
             return true;
         l.setFile(processFile());
-        return l.flush();
+        const bool ok = l.flush();
+        processRevision.fetch_add(1, std::memory_order_acq_rel);
+        return ok;
+    }
+
+    bool reset()
+    {
+        Ledger& l = processLedger();
+        l.setFile(processFile());
+        const bool ok = l.reset(today());
+        processRevision.fetch_add(1, std::memory_order_acq_rel);
+        return ok;
     }
 
     Snapshot snapshot(Range range)
