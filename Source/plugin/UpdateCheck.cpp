@@ -1,5 +1,7 @@
 // Source/plugin/UpdateCheck.cpp: see UpdateCheck.h.
 #include "plugin/UpdateCheck.h"
+
+#include "fminus/Failure.h"
 #include "plugin/FileReplace.h"
 
 #include "plugin/ClaudeApi.h"
@@ -676,13 +678,17 @@ namespace playground::updates
                     if (doCheck && !cancel.load())
                         considerCheck(doForce);
                 }
-                catch (const std::exception& e)
-                {
-                    fail(std::string("the check stopped: ") + e.what());
-                }
                 catch (...)
                 {
-                    fail("the check stopped on an error");
+                    std::string reason;
+                    try
+                    {
+                        reason = failure::sentence("checking for a new version");   // fminus/Failure.h's words
+                    }
+                    catch (...)
+                    {
+                    }
+                    fail(std::move(reason));
                 }
                 // A write that failed (the lock not taken, the disk) leaves its fields dirty: they go with the next
                 // request's write, never retried in a loop here.

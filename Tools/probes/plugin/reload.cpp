@@ -40,6 +40,12 @@
 //   OPEN    a project version opened whose files differ from what plays only in panel.gui compiles (as it was saved)
 //   STRAY   an edit that puts a stray { in the .gui (one around the row's elements, one the file ends inside) returns, a
 //           panel's edit with the reader's notes on them, the switch still the row's; the program plays on as its twin
+//   THROWN  an exception inside the plugin (fminus/Failure.h's seam): a RUN whose compile throws fails in words (the
+//           plugin's failure, not the program's; out of memory as such, one with no words or of no std::exception an
+//           unknown error), the program before playing on as its twin, and the next RUN compiles; a check that throws
+//           gives no messages and the next its own; compileNow throws nothing; one past the offer plays, its status
+//           ok with the failure as a note; a shader build that throws is that
+//           shader's note, the program playing; a frozen copy that throws is none and is not tried again
 //   AB      a RUN of the panel's files alone while an A/B is on compiles. Not covered: a held refine, a stopped
 //           program and a .sc that FMinus #includes, which also compile (Compiler::editPanel's first checks)
 #include "Probe.h"
@@ -49,6 +55,7 @@
 #include "plugin/Processor.h"
 #include "plugin/ProjectStore.h"
 #include "editor/Panel.h"
+#include "fminus/Failure.h"
 
 #include "Product.h"
 
@@ -686,6 +693,130 @@ PROBE(plugin, reload)
         h.blocks(4);
         ht.blocks(4);
         P.eq("stray.plays_on", same(h.out, ht.out, 0) ? 1 : 0, 1);
+    }
+
+    // ---- THROWN: an exception inside the plugin (fminus/Failure.h's seam) ---------------------------------------------
+    {
+        Host h, ht;
+        const pg::CompileStatus s0 = h.run(first);
+        ht.run(first);
+        h.blocks(4);
+        ht.blocks(4);
+        const std::string tail = "; this is not a fault in your program";
+        // A RUN whose compile throws: a failed compile in words, the program that played plays on, as its twin.
+        pg::failure::plant("compile", pg::failure::Kind::runtime);
+        const pg::CompileStatus r = h.run(filesOf(program("    // changed\n"), kGui, kGlow));
+        pg::failure::unplant();
+        std::printf("THROWN run: ok %d program %llu (before %llu)\nerrors: %s", r.ok ? 1 : 0, static_cast<unsigned long long>(r.program),
+                    static_cast<unsigned long long>(s0.program), r.errors.c_str());
+        P.eq("thrown.run_fails_in_words", !r.ok && r.program == s0.program
+                                              && has(r.errors, "program.fm:1:1: error: the plugin itself failed while compiling: a "
+                                                               "planted failure" + tail) ? 1 : 0, 1);
+        h.blocks(4);
+        ht.blocks(4);
+        P.eq("thrown.run_plays_on", same(h.out, ht.out, 0) ? 1 : 0, 1);
+        // Out of memory said as such; an exception with no words, or of no std::exception, an unknown error.
+        const std::pair<pg::failure::Kind, const char*> kinds[] = { { pg::failure::Kind::badAlloc, "out of memory" },
+                                                                    { pg::failure::Kind::empty, "an unknown error" },
+                                                                    { pg::failure::Kind::other, "an unknown error" } };
+        int worded = 0;
+        for (const auto& [kind, words] : kinds)
+        {
+            pg::failure::plant("compile", kind);
+            const pg::CompileStatus k = h.run(filesOf(program("    // changed again\n"), kGui, kGlow));
+            pg::failure::unplant();
+            worded += !k.ok && has(k.errors, std::string("failed while compiling: ") + words + tail) ? 1 : 0;
+        }
+        P.eq("thrown.run_kinds", worded, 3);
+        // The next RUN compiles and plays, the thread alive.
+        const pg::CompileStatus next = h.run(filesOf(program("    // next\n"), kGui, kGlow));
+        P.eq("thrown.next_run", next.ok && next.program != s0.program && next.errors.empty() ? 1 : 0, 1);
+
+        // A check that throws: no messages for it; the next check gives its own.
+        const auto checked = [&](const pg::Sources& files) {
+            const uint64_t was = h.p.compiler().checkStatus().revision;
+            h.p.compiler().check(files);
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+            while (h.p.compiler().checkStatus().revision == was && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            return h.p.compiler().checkStatus();
+        };
+        const pg::Sources broken = filesOf(program() + "nonsense here\n", kGui, kGlow);
+        pg::failure::plant("check", pg::failure::Kind::badAlloc);
+        const pg::CheckStatus c1 = checked(broken);
+        const int checkFired = pg::failure::fired();
+        pg::failure::unplant();
+        const pg::CheckStatus c2 = checked(broken);
+        P.eq("thrown.check_no_messages", checkFired == 1 && c1.errors.empty() && c1.sources == broken ? 1 : 0, 1);
+        P.eq("thrown.check_next", c2.revision == c1.revision + 1 && has(c2.errors, "error:") ? 1 : 0, 1);
+
+        // compileNow (a host's state load): the exception never leaves it; the program that played plays on.
+        bool escaped = false;
+        pg::CompileStatus now;
+        pg::failure::plant("compile", pg::failure::Kind::other);
+        try
+        {
+            now = h.p.compiler().compileNow(filesOf(program("    // loaded\n"), kGui, kGlow));
+        }
+        catch (...)
+        {
+            escaped = true;
+        }
+        pg::failure::unplant();
+        P.eq("thrown.compile_now", !escaped && !now.ok && now.program == next.program
+                                       && has(now.errors, "failed while compiling: an unknown error" + tail) ? 1 : 0, 1);
+
+        // An exception once the program is offered (Compiler.h: past the offer): it plays, and its status says so, the
+        // plugin's failure a note; the editor's program is it.
+        pg::failure::plant("offered", pg::failure::Kind::runtime);
+        const pg::CompileStatus offered = h.run(filesOf(program("    // offered\n"), kGui, kGlow));
+        const int offeredFired = pg::failure::fired();
+        pg::failure::unplant();
+        h.blocks(2);
+        std::printf("THROWN offered: fired %d ok %d program %llu notes: %s", offeredFired, offered.ok ? 1 : 0,
+                    static_cast<unsigned long long>(offered.program), offered.notes.c_str());
+        P.eq("thrown.offered_plays", offeredFired == 1 && offered.ok && offered.errors.empty() && offered.program == offered.request
+                                         && offered.program != next.program && h.meters().program == offered.program ? 1 : 0, 1);
+        P.eq("thrown.offered_noted", has(offered.notes, "program.fm:1:1: note: the plugin itself failed while starting the program: a "
+                                                        "planted failure" + tail)
+                                         && !has(offered.notes, "lost track") ? 1 : 0, 1);
+
+        // A shader build that throws (the compile's early thread, then its own): that shader's note in words, the
+        // program compiled and playing.
+        pg::failure::plant("shader", pg::failure::Kind::runtime, 100);
+        const pg::CompileStatus sh = h.run(filesOf(program("    // shaded\n"), kGui, kGlowEdited));
+        const int shaderFired = pg::failure::fired();
+        pg::failure::unplant();
+        std::printf("THROWN shader: fired %d, ok %d, notes: %s", shaderFired, sh.ok ? 1 : 0, sh.notes.c_str());
+        P.eq("thrown.shader_noted", sh.ok && shaderFired >= 1
+                                        && has(sh.notes, "glow.sc:1:1: note: the shader cannot be built: the plugin itself failed "
+                                                         "while building it: a planted failure" + tail) ? 1 : 0, 1);
+
+        // The freezer: a copy that throws is none, and not tried again while the dials stand still (it fires once).
+        pg::failure::plant("freeze", pg::failure::Kind::badAlloc, 1000);
+        h.p.compiler().setFreezing(true, 0.0);
+        const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
+        while (pg::failure::fired() == 0 && std::chrono::steady_clock::now() < until)
+        {
+            h.blocks(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        for (int k = 0; k < 100; ++k)                    // a second more of the freezer's passes, the dials still
+        {
+            h.blocks(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        const int freezeFired = pg::failure::fired();
+        pg::failure::unplant();
+        h.p.compiler().setFreezing(false);
+        std::printf("THROWN freeze: fired %d, copies %d\n", freezeFired, h.p.compiler().freezes());
+        P.eq("thrown.freeze_once", freezeFired, 1);
+        P.eq("thrown.freeze_none", h.p.compiler().freezes(), 0);
+        pg::failure::plant("freeze", pg::failure::Kind::runtime);
+        const bool frozeNow = h.p.compiler().freezeNow();
+        const int nowFired = pg::failure::fired();
+        pg::failure::unplant();
+        P.eq("thrown.freeze_now", !frozeNow && nowFired == 1 && h.p.compiler().freezes() == 0 ? 1 : 0, 1);
     }
 
     return P.finish();

@@ -9,6 +9,7 @@
 #include "plugin/Verify.h"
 
 #include "dsp/Sources.h"
+#include "fminus/Failure.h"
 
 #if !defined(_WIN32) && !defined(__APPLE__)
 #include "fminus/Xdg.h"
@@ -1173,26 +1174,53 @@ namespace playground::factorystore
                     a = answer;
                     busy = true;
                 }
-                if (doAnswer)
+                // An exception (fminus/Failure.h) fails this pass in words, as a refusal does (the reason, its step
+                // none), the set as it was: never the process.
+                try
                 {
-                    const std::string word = answerWord(a);
-                    const bool wrote = writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
-                    const std::lock_guard<std::mutex> lock(m);
-                    if (answer == a)
+                    failure::at("factory");
+                    if (doAnswer)
                     {
-                        answerDirty = false;             // the loop waits on it: a failed write is kept apart, below
-                        answerUnwritten = !wrote;        // the file as it was; the next answer's write takes this one
+                        const std::string word = answerWord(a);
+                        const bool wrote = writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
+                        const std::lock_guard<std::mutex> lock(m);
+                        if (answer == a)
+                        {
+                            answerDirty = false;         // the loop waits on it: a failed write is kept apart, below
+                            answerUnwritten = !wrote;    // the file as it was; the next answer's write takes this one
+                        }
+                    }
+                    bool loaded = false;
+                    {
+                        const std::lock_guard<std::mutex> lock(m);
+                        loaded = state.loaded;
+                    }
+                    if (doLoad || (doFetch && !loaded))
+                        load();
+                    if (doFetch && !cancel.load())
+                        considerFetch(doForce);
+                }
+                catch (...)
+                {
+                    Refusal r;
+                    try
+                    {
+                        r.reason = failure::sentence("reading the factory projects");
+                    }
+                    catch (...)
+                    {
+                    }
+                    fail(Failure::check, r);
+                    const std::lock_guard<std::mutex> lock(m);
+                    state.fetching = false;
+                    // An answer this pass took and did not write is one whose write failed: kept, never read back over
+                    // from the file, and no pass after it spins on it (the next answer's write takes it).
+                    if (doAnswer && answerDirty && answer == a)
+                    {
+                        answerDirty = false;
+                        answerUnwritten = true;
                     }
                 }
-                bool loaded = false;
-                {
-                    const std::lock_guard<std::mutex> lock(m);
-                    loaded = state.loaded;
-                }
-                if (doLoad || (doFetch && !loaded))
-                    load();
-                if (doFetch && !cancel.load())
-                    considerFetch(doForce);
                 const std::lock_guard<std::mutex> lock(m);
                 busy = false;
                 cancel.store(false);

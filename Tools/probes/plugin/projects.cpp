@@ -75,7 +75,11 @@
 //            asks the Reader again for the first); a file another rewrote is read again; a factory project's at once;
 //            the editor's own content (editorContent) its draft, its dials, with no read
 //   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
-//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread
+//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread;
+//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered; one held in
+//            flight (the probes' gate) counts as waiting and not prepared, and lands once let go; a read of
+//            the Reader's that throws leaves that file unlisted until it changes, and a save that throws fails in words,
+//            the file as it was, the next save taken
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -98,6 +102,7 @@
 
 #include "dsp/Compiler.h"
 #include "fminus/Circuits.h"
+#include "fminus/Failure.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -537,6 +542,30 @@ PROBE(plugin, projects)
             const std::vector<ps::Entry> second = ps::listCached(unread);
             P.eq("cached.new_listed", presetsOfEntry(second, "Newcomer") >= 0 && unread.empty() ? 1 : 0, 1);
             newcomer.deleteFile();
+            // A read that throws on the Reader's thread (fminus/Failure.h's seam): the file taken as one it cannot read
+            // (not listed, not read again while it stays as it is), the thread alive; changed, it is read and listed.
+            const juce::File thrower = dir.getChildFile("Thrower.fmproject");
+            dir.getChildFile("Glass Bloom.fmproject").copyFileTo(thrower);
+            unread.clear();
+            (void)ps::listCached(unread);
+            pg::failure::plant("reader", pg::failure::Kind::badAlloc);
+            reader->request(unread);
+            const bool thrownDone = waitReader();
+            const int readerFired = pg::failure::fired();
+            pg::failure::unplant();
+            unread.clear();
+            const std::vector<ps::Entry> afterThrow = ps::listCached(unread);
+            P.eq("cached.thrown_unlisted", thrownDone && readerFired == 1 && presetsOfEntry(afterThrow, "Thrower") < 0 && unread.empty()
+                                               ? 1 : 0, 1);
+            rewrite(dir, "Thrower", "Thrower", addPreset("After"));
+            unread.clear();
+            (void)ps::listCached(unread);
+            reader->request(unread);
+            const bool readAgain = waitReader();
+            unread.clear();
+            const std::vector<ps::Entry> thrownNext = ps::listCached(unread);
+            P.eq("cached.thrown_next", readAgain && presetsOfEntry(thrownNext, "Thrower") >= 0 && unread.empty() ? 1 : 0, 1);
+            thrower.deleteFile();
             P.eq("cached.tidy", ps::removePreset("Glass Bloom", "Other") ? 1 : 0, 1);
         }
         // Back as it was (the presets above as saved): Zed and Zz go.
@@ -1135,6 +1164,56 @@ PROBE(plugin, projects)
             P.eq("preview.answered", then.status != pg::PreviewState::Status::reading
                                          && (last.status == pg::PreviewState::Status::ready || last.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
             P.eq("preview.none_here", there(), 0);
+            // A preview whose preparing throws (fminus/Failure.h's seam) fails in words, never left waiting; the next is
+            // answered.
+            const auto settled = [&](int number, int theme) {
+                pg::PreviewState got = pd.previewPolled("Diffs", number, theme);
+                for (int k = 0; k < 2000 && got.status == pg::PreviewState::Status::reading; ++k)
+                {
+                    (void)waitReader();
+                    (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+                    got = pd.previewPolled("Diffs", number, theme);
+                }
+                (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+                return pd.previewPolled("Diffs", number, theme);
+            };
+            pg::failure::plant("preview", pg::failure::Kind::other);
+            const pg::PreviewState thrown = settled(2, 1);
+            const int fired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::PreviewState next = settled(1, 1);
+            std::printf("preview thrown: fired %d, status %d, why: %s; the next: status %d\n", fired, static_cast<int>(thrown.status),
+                        thrown.why.c_str(), static_cast<int>(next.status));
+            P.eq("preview.thrown_fails", fired == 1 && thrown.status == pg::PreviewState::Status::failed
+                                             && thrown.why == "the plugin itself failed while preparing it: an unknown error; this is "
+                                                              "not a fault in your program" ? 1 : 0, 1);
+            P.eq("preview.thrown_next", next.status == last.status ? 1 : 0, 1);
+            // A job in flight (taken by the preview thread, not prepared yet: held there by the probes' gate) counts
+            // as waiting and as not prepared, so previewsSettle waits for it; let go, it is prepared and drawn.
+            d.setPreviewGate(true);
+            pg::PreviewState held = pd.previewPolled("Diffs", 2, 0);
+            for (int k = 0; k < 2000 && held.status == pg::PreviewState::Status::reading; ++k)
+            {
+                (void)waitReader();
+                d.poll();
+                held = pd.previewPolled("Diffs", 2, 0);
+            }
+            const auto gateUntil = std::chrono::steady_clock::now() + probe::kWorkWait;
+            while (!d.previewGateHeld() && std::chrono::steady_clock::now() < gateUntil)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            const bool inFlight = d.previewGateHeld();
+            const bool waitingHeld = d.previewsWaiting();
+            const std::size_t queuedHeld = d.previewsQueued(), toDrawHeld = d.previewsToDraw();
+            const bool settledHeld = d.previewsSettle(0.2);
+            std::printf("preview in flight: held %d, waiting %d, queued %zu, to draw %zu, settled %d\n", inFlight ? 1 : 0,
+                        waitingHeld ? 1 : 0, queuedHeld, toDrawHeld, settledHeld ? 1 : 0);
+            P.eq("preview.in_flight_counted", inFlight && waitingHeld && queuedHeld == 1 && toDrawHeld == 0 && !settledHeld ? 1 : 0, 1);
+            d.setPreviewGate(false);
+            const bool settledAfter = d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+            const pg::PreviewState landed = pd.previewPolled("Diffs", 2, 0);
+            P.eq("preview.in_flight_lands", settledAfter && !d.previewsWaiting() && d.previewsQueued() == 0
+                                                && (landed.status == pg::PreviewState::Status::ready
+                                                    || landed.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
         }
         P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }
@@ -1294,6 +1373,32 @@ PROBE(plugin, projects)
                          && tb3->versions[2].files[0].text.find("// seven") != std::string::npos
                          && tb3->versions[2].files[0].text.find("// eight") == std::string::npos;
         P.eq("async.close_saves_both", closed ? 1 : 0, 1);
+        // A save that throws on the saver's thread (fminus/Failure.h's seam): it fails in words, the project's file as it
+        // was (nothing half-written), and the next save is taken as any.
+        {
+            const juce::File twinAFile = dir.getChildFile("Twin A.fmproject");
+            juce::MemoryBlock fileBefore;
+            (void)twinAFile.loadFileAsData(fileBefore);
+            edit("// thrown\n");
+            pg::failure::plant("save", pg::failure::Kind::runtime);
+            const bool thrownStarted = port.startSave("Twin A", w);
+            s.settle();
+            const int saveFired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::SaveState failed = port.saving();
+            juce::MemoryBlock fileAfter;
+            (void)twinAFile.loadFileAsData(fileAfter);
+            std::printf("async: a save that throws: %s\n", failed.why.c_str());
+            P.eq("async.thrown_in_words", thrownStarted && saveFired == 1 && !failed.busy && !failed.ok
+                                              && failed.why == "the plugin itself failed while saving the project: a planted failure; this is "
+                                                               "not a fault in your program" ? 1 : 0, 1);
+            P.eq("async.thrown_file_kept", fileAfter == fileBefore ? 1 : 0, 1);
+            const bool nextStarted = port.startSave("Twin A", w);
+            s.settle();
+            const std::optional<ps::Project> ta3 = ps::load("Twin A");
+            P.eq("async.thrown_next", nextStarted && port.saving().ok && ta3 && ta3->versions.size() == 3
+                                          && ta3->latest().files[0].text.find("// thrown") != std::string::npos ? 1 : 0, 1);
+        }
         for (const char* n : { "Large", "Twin A", "Twin B" })
             (void)port.deleteProject(n, w);
     }
