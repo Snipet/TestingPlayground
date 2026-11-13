@@ -102,8 +102,12 @@ namespace playground::ui::usagepage
             case usage::Cost::Kind::estimate:
                 microUsd += r.cost.microUsd;
                 estimate = true;
+                priced = true;
                 break;
-            case usage::Cost::Kind::reported: microUsd += r.cost.microUsd; break;
+            case usage::Cost::Kind::reported:
+                microUsd += r.cost.microUsd;
+                priced = true;
+                break;
         }
     }
 
@@ -113,6 +117,7 @@ namespace playground::ui::usagepage
         microUsd += s.microUsd;
         estimate = estimate || s.estimate;
         unpriced = unpriced || s.unpriced;
+        priced = priced || s.priced;
     }
 
     Chart chartOf(const UsageView& view)
@@ -251,8 +256,8 @@ namespace playground::ui::usagepage
     Geometry geometryOf(const funkgui::Rect& r, const Chart& chart, Measure m)
     {
         Geometry g;
-        g.legend = { r.x + 14.0f, r.y + 10.0f, r.w - 28.0f, 14.0f };
-        const float left = r.x + 56.0f, top = r.y + 36.0f;
+        g.legend = { r.x + 14.0f, r.y + 8.0f, r.w - 28.0f, 32.0f };
+        const float left = r.x + 56.0f, top = r.y + 56.0f;
         g.plot = { left, top, r.right() - 14.0f - left, r.bottom() - 26.0f - top };
         double most = 0.0;
         for (const Bar& b : chart.bars)
@@ -323,12 +328,12 @@ namespace playground::ui::usagepage
     {
         if (s.counts.requests == 0)
             return "$0";
-        if (s.unpriced)
+        if (s.unpriced && !s.priced)
             return "no price known";
         usage::Cost c;
         c.kind = s.estimate ? usage::Cost::Kind::estimate : usage::Cost::Kind::reported;
         c.microUsd = s.microUsd;
-        return usage::costText(c);
+        return usage::costText(c) + (s.unpriced ? " + no price for some" : "");
     }
 
     std::string axisText(double v, Measure m)
@@ -680,15 +685,25 @@ namespace playground::ui::settings
             if (focused)
                 c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, 14.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
             {
-                float x = g.legend.x;
+                // Every series named, on two lines: a name cut to what is left of the second rather than left out.
+                float x = g.legend.x, mid = g.legend.y + 8.0f;
                 for (std::size_t i = 0; i < chart.seriesNames.size(); ++i)
                 {
-                    const std::string name = fitText(c, chart.seriesNames[i], chat::kSmall, 150.0f);
-                    const float w = 14.0f + c.textWidth(name.c_str(), chat::kSmall);
+                    const int k = std::min(static_cast<int>(i), kNamedSeries);   // Other's index is kNamedSeries
+                    std::string name = fitText(c, chart.seriesNames[i], chat::kSmall, 200.0f);
+                    float w = 14.0f + c.textWidth(name.c_str(), chat::kSmall);
+                    if (x + w > g.legend.right() && x > g.legend.x && mid < g.legend.y + 16.0f)
+                    {
+                        x = g.legend.x;                  // the second line
+                        mid += 16.0f;
+                    }
                     if (x + w > g.legend.right())
-                        break;
-                    c.rrect(x, g.legend.centreY() - 4.0f, 8.0f, 8.0f, 2.0f, chat::seriesInk(d.th, static_cast<int>(i)));
-                    c.text(name.c_str(), x + 13.0f, c.capCentreTop(g.legend.centreY(), chat::kSmall), chat::kSmall, p.soft);
+                    {
+                        name = fitText(c, name, chat::kSmall, std::max(10.0f, g.legend.right() - x - 14.0f));
+                        w = 14.0f + c.textWidth(name.c_str(), chat::kSmall);
+                    }
+                    c.rrect(x, mid - 4.0f, 8.0f, 8.0f, 2.0f, chat::seriesInk(d.th, k));
+                    c.text(name.c_str(), x + 13.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.soft);
                     x += w + 16.0f;
                 }
             }

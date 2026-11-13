@@ -614,6 +614,7 @@ PROBE(gui, usage)
         };
         host.move(5.0f, 5.0f);
         P.eq("readout.none_is_range", has(readoutText(), "Last 7 days: ") ? 1 : 0, 1);
+        P.eq("readout.partly_priced_total", has(readoutText(), " + no price for some, ") ? 1 : 0, 1);
         bool pointer = true;
         for (int i = 0; i < n; ++i)
         {
@@ -780,15 +781,16 @@ PROBE(gui, usage)
 
     // ---- the year, focused; the least window ---------------------------------------------------------------------------
     {
-        const uint64_t before = view()->serial;
-        choose(up::kRange, "Last 12 months");
-        waitView(before);
-        settle();
         for (int i = 0; i < 60 && card.places(W(), H()).scroll > 0.0f; ++i)
         {
             host.wheel(10.0f + card.places(W(), H()).body.x, card.places(W(), H()).body.centreY(), 1.0f);
             settle();
         }
+        P.eq("year.scrolled_to_top", card.places(W(), H()).scroll <= 0.0f ? 1 : 0, 1);
+        const uint64_t before = view()->serial;
+        P.eq("year.chosen", choose(up::kRange, "Last 12 months") && state().range == usage::Range::year ? 1 : 0, 1);
+        P.eq("year.read", waitView(before) ? 1 : 0, 1);
+        settle();
         focusOn(Act::item, up::kChart);
         host.keys("end");
         settle();
@@ -806,8 +808,7 @@ PROBE(gui, usage)
         host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
         settle();
         const uint64_t again = view()->serial;
-        choose(up::kRange, "Last 7 days");
-        waitView(again);
+        P.eq("least.back_to_week", choose(up::kRange, "Last 7 days") && waitView(again) ? 1 : 0, 1);
         settle();
     }
 

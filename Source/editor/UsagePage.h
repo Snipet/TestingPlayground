@@ -68,6 +68,7 @@ namespace playground::ui::usagepage
         int64_t microUsd = 0;                    // the rows priced
         bool estimate = false;                   // one of them is an estimate
         bool unpriced = false;                   // one of them has no price known
+        bool priced = false;                     // one of them has a price (or a reported figure)
         int64_t tokens() const noexcept { return counts.tokensIn() + counts.output; }
         void add(const UsageRow& r);
         void add(const Sum& s);
@@ -107,7 +108,7 @@ namespace playground::ui::usagepage
     // Where the chart's parts are in its control's rect.
     struct Geometry
     {
-        funkgui::Rect legend;                    // the series' chips and names
+        funkgui::Rect legend;                    // the series' chips and names, on two lines at most
         funkgui::Rect plot;                      // the bars' area, the y axis at its left
         std::vector<funkgui::Rect> slots;        // each bar's column (a pointer in it is over the bar)
         std::vector<funkgui::Rect> bars;         // each bar's stack, as tall as the plot (its pieces inside)
@@ -123,7 +124,8 @@ namespace playground::ui::usagepage
     // A measure of a sum, and its words.
     double valueOf(const Sum& s, Measure m);
     std::string tokensText(int64_t tokens);                         // "850", "12.3K", "1.25M"
-    std::string costWords(const Sum& s);                            // "$0.12", "~$0.12", "no price known"
+    // "$0.12", "~$0.12", "no price known"; a sum partly priced: "~$0.12 + no price for some".
+    std::string costWords(const Sum& s);
     std::string axisText(double value, Measure m);                  // "2M", "$5", "$0.50"
     // A bar's words (its accessibility title): its title, tokens and cost.
     std::string barWords(const Bar& b);
