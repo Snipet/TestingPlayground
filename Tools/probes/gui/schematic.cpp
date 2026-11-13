@@ -206,25 +206,28 @@ namespace
             return inc + "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
     }
 
-    // Ticks (and lets the compiler's thread work) until `done`, a second and a half at most (by default).
-    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done, int tries = 300)
+    // Ticks (and lets the compiler's thread work) until `done`, probe::kWorkWait at most by the clock: what it waits
+    // for (the check while typing, a compile) is the compiler thread's, which a loaded machine keeps from a core for
+    // seconds.
+    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done)
     {
-        for (int k = 0; k < tries; ++k)
+        const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+        do
         {
             host.tick(1);
             if (done())
                 return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+        } while (std::chrono::steady_clock::now() < by);
         return false;
     }
 
     // The check while typing over: none due, none on the compiler's thread, its outcome landed and the frame settled
-    // after it, so the status line has no "Checking..." and a picture taken now is the same run after run (ten seconds
-    // at most: the machine may be busy).
+    // after it, so the status line has no "Checking..." and a picture taken now is the same run after run (waitFor's
+    // bound: the machine may be busy).
     bool checkSettled(funkgui::HeadlessHost& host, pg::ui::CodeAssist& code)
     {
-        const bool done = waitFor(host, [&] { return !code.checking() && code.settled(); }, 2000);
+        const bool done = waitFor(host, [&] { return !code.checking() && code.settled(); });
         host.settle();
         return done && !code.checking();
     }

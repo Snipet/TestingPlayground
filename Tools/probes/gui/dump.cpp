@@ -576,7 +576,8 @@ PROBE(gui, dump)
         host.settle();
         constexpr float kCalm = 1.0f / 12.0f;        // a calm editor's cadence
         // The editor's first check while typing lands (its status line changes then): a change, not idleness.
-        for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+        for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+             (panel.codeAssist().checking() || port.compiling()) && std::chrono::steady_clock::now() < by;)
         {
             host.tick(1, kCalm);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -608,7 +609,8 @@ PROBE(gui, dump)
         // settled, drawn, and a calm frame asks for nothing.
         const auto quiet = [&] {
             host.settle();
-            for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+            for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+                 (panel.codeAssist().checking() || port.compiling()) && std::chrono::steady_clock::now() < by;)
             {
                 host.tick(1, kCalm);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2001,7 +2003,8 @@ PROBE(gui, dump)
         processor.prepareToPlay(kRate, kBlock);
         juce::AudioBuffer<float> buffer(2, kBlock);
         double phase = 0.0;
-        for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
+        const auto frozenBy = std::chrono::steady_clock::now() + probe::kWorkWait;   // the freezer's compile
+        for (int k = 0; !processor.engine().frozen() && std::chrono::steady_clock::now() < frozenBy; ++k)
         {
             juce::MidiBuffer midi;
             if (kInstrument && k == 0)
@@ -2152,7 +2155,8 @@ PROBE(gui, dump)
         host.keys("cmd+return");
         settleRun(processor, host);
         juce::AudioBuffer<float> buffer(2, kBlock);
-        for (int k = 0; k < 400 && !(port.status().stopped && port.running() == before); ++k)
+        const auto stoppedBy = std::chrono::steady_clock::now() + probe::kWorkWait;   // the program before compiled
+        for (int k = 0; !(port.status().stopped && port.running() == before) && std::chrono::steady_clock::now() < stoppedBy; ++k)
         {
             juce::MidiBuffer midi;
             if (kInstrument && k == 0)
@@ -2188,8 +2192,10 @@ PROBE(gui, dump)
         host.keys("cmd+return");
         settleRun(processor, host);
         const uint64_t stoppedBefore = port.status().stoppedProgram;
-        for (int k = 0; k < 400 && !(port.status().stopped && port.status().stoppedProgram != stoppedBefore
-                                     && port.running() == before); ++k)
+        const auto againBy = std::chrono::steady_clock::now() + probe::kWorkWait;
+        for (int k = 0; !(port.status().stopped && port.status().stoppedProgram != stoppedBefore && port.running() == before)
+                        && std::chrono::steady_clock::now() < againBy;
+             ++k)
         {
             juce::MidiBuffer midi;
             if (kInstrument && k == 0)
