@@ -427,7 +427,7 @@ namespace playground::ui::usagepage
         l.chartY = settings::kRowStep + 4.0f;
         l.chartH = kChartH;
         l.readoutY = l.chartY + l.chartH + 10.0f;
-        l.readoutH = kReadoutLine * static_cast<float>(kReadoutRows + 2);
+        l.readoutH = chart.empty() ? 0.0f : kReadoutLine * static_cast<float>(kReadoutRows + 2);   // none to read out
         l.tableY = l.readoutY + l.readoutH + settings::kSectionGap;      // the heading's (its gap before it)
         l.headerY = l.tableY + settings::kHeadingH;
         l.rowH = kTableRow;
