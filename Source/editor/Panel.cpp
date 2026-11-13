@@ -810,6 +810,7 @@ namespace playground::ui
         constexpr float kPillTrack = 3.0f;               // the track around the pair
         constexpr uint32_t kPillsA11y = 40;              // FilesItem's ids: the group, then Netlist and Schematic
         constexpr uint32_t kPanelSwitchA11y = 44;        // ... the status line's Panel switch
+        constexpr uint32_t kFindButtonA11y = 45;         // ... and its magnifier (find and replace)
         constexpr uint32_t kFilesMenuA11y = 37;          // ... the files dropdown (while the tabs overflow)
     }
 
@@ -832,7 +833,9 @@ namespace playground::ui
                   [this](const std::string& text) {
                       if (notice_)
                           notice_(text);
-                  } }),
+                  },
+                  [this](int i) { showText(i); },
+                  [this](std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits) { return editAcross(std::move(edits)); } }),
               schematic_(SchematicView::Hooks{
                   [this](int line, int col) { showNetlistAt(line, col); },
                   [this] { return assist_.diagnosticsOf(active_); },
@@ -1760,6 +1763,7 @@ namespace playground::ui
             const funkgui::Point p{ e.x, e.y };
             pressedSchematic_ = false;
             pressedStripBar_ = false;
+            pressedAssist_ = false;
             schematic_.setGestures(&g);                  // a circuit dial's knob writes through it
             if (!stripArea().contains(p))
             {
@@ -1771,9 +1775,12 @@ namespace playground::ui
                     schematic_.pointerDown(e);
                     return;
                 }
+                if (schematicShown() && assist_.findButtonRect().contains(p) && !e.popup)
+                    setSchematic(false);                 // the find bar is the text's: the Netlist view first
                 if (assist_.pointerDown(e))
                 {
                     pressedEditor_ = false;
+                    pressedAssist_ = true;               // the results list's bar may be dragged
                     return;
                 }
                 pressedEditor_ = true;
@@ -1853,6 +1860,8 @@ namespace playground::ui
             schematic_.setGestures(&g);
             if (pressedStripBar_)
                 strip_.drag({ e.x, e.y });
+            else if (pressedAssist_)
+                assist_.pointerDrag({ e.x, e.y });
             else if (pressedSchematic_)
                 schematic_.pointerDrag(e);
             else if (pressedEditor_)
@@ -1863,10 +1872,13 @@ namespace playground::ui
             schematic_.setGestures(&g);
             if (pressedStripBar_)
                 strip_.release();
+            else if (pressedAssist_)
+                assist_.pointerUp();
             else if (pressedSchematic_)
                 schematic_.pointerUp(e);
             else if (pressedEditor_)
                 editor().pointerUp(e);
+            pressedAssist_ = false;
             pressedEditor_ = false;
             pressedSchematic_ = false;
             pressedStripBar_ = false;
@@ -2059,6 +2071,19 @@ namespace playground::ui
                 sw.help = "the program's dials or interface under the editor (Command J)";
                 out.push_back(std::move(sw));
             }
+            {
+                funkgui::A11yItem find;
+                find.id = id_ + kFindButtonA11y;
+                find.role = funkgui::A11yRole::button;
+                find.bounds = assist_.findButtonRect();
+                find.title = "Find and replace";
+#if defined(__APPLE__)
+                find.help = "Command F finds, Command Option F replaces, Command Shift F finds in all files";
+#else
+                find.help = "Control F finds, Control H replaces, Control Shift F finds in all files";
+#endif
+                out.push_back(std::move(find));
+            }
             if (schematicShown())
             {
                 schematic_.accessibility(out);
@@ -2089,6 +2114,11 @@ namespace playground::ui
             if (id == id_ + kPanelSwitchA11y && assist_.hasPanelSwitch())
             {
                 assist_.togglePanelSwitch();
+                return true;
+            }
+            if (id == id_ + kFindButtonA11y)
+            {
+                openFind(true, std::nullopt);
                 return true;
             }
             if (schematicShown())
@@ -2198,6 +2228,72 @@ namespace playground::ui
             if (schematicShown() && renaming_ < 0)
                 return focused_;
             return editor().focused() || renaming_ >= 0 || assist_.takesKeys();
+        }
+
+        // ---- find (CodeAssist's bar) -----------------------------------------------------------------------------
+        // The find bar opened from outside the text (the Panel's keys, the Standalone's Edit menu, the magnifier's
+        // screen-reader action): a netlist shown as a schematic goes to its Netlist view first, as the bar is the text's.
+        void openFind(bool replace, std::optional<bool> allFiles)
+        {
+            if (schematicShown())
+                setSchematic(false);
+            assist_.openFind(replace, allFiles);
+        }
+
+        // Tab i shown as text, as a click on its tab shows it (the strip brings it into view): a netlist shown as a
+        // schematic in its Netlist view, switched before the tab shows so that the find bar stays (find in all files).
+        void showText(int i)
+        {
+            if (i < 0 || i >= count())
+                return;
+            if (fileKindOf(name(i)) == FileKind::Circuit)
+                if (const auto v = views_.find(name(i)); v != views_.end() && v->second.schematic)
+                {
+                    if (i == active_ && !irShown())
+                    {
+                        setSchematic(false);
+                        return;
+                    }
+                    schematic_.endField();
+                    v->second.schematic = false;
+                    v->second.stored = true;
+                    if (persist_)
+                        persist_();
+                }
+            select(i);
+        }
+
+        // Edits in several tabs (find's Replace all in every file): one applyEdits a tab, each a counted step, tied into
+        // one undo step across them (groups_) as a merge's are, so Cmd-Z in any of them undoes them all. A read-only
+        // editor is never written. True when a text changed.
+        bool editAcross(std::vector<std::pair<int, std::vector<funkgui::TextEdit>>> edits)
+        {
+            recount();
+            UndoGroup changed;
+            for (auto& [i, list] : edits)
+            {
+                if (i < 0 || i >= count() || list.empty())
+                    continue;
+                Tab& t = tabs_[static_cast<std::size_t>(i)];
+                if (t.editor->options().readOnly)
+                    continue;
+                recount(t);
+                const uint32_t was = t.editor->revision();
+                if (!t.editor->applyEdits(std::move(list)) || t.editor->revision() == was)
+                    continue;
+                leaveGroups([&](const UndoGroup::Member& m) { return m.tab == t.serial && m.step > t.step; });
+                ++t.step;
+                t.counted = t.editor->revision();
+                changed.members.push_back({ t.serial, t.step });
+            }
+            const bool any = !changed.members.empty();
+            if (changed.members.size() > 1)
+            {
+                groups_.push_back(std::move(changed));
+                if (groups_.size() > kMaxUndoGroups)
+                    groups_.erase(groups_.begin());
+            }
+            return any;
         }
 
         // ---- a netlist's two views: Netlist (the text) and Schematic (SchematicView.h) -----------------------------
@@ -2672,6 +2768,7 @@ namespace playground::ui
         mutable int revealed_ = -1, revealedCount_ = 0;  // the tab last brought into view, at that count and width
         mutable float revealedW_ = -1.0f;
         bool pressedStripBar_ = false;                   // a press on the strip's scroll bar drags it
+        bool pressedAssist_ = false;                     // ... on what the code assist draws (the results list's bar)
         std::function<bool(const funkgui::Rect&)> menuOpen_;   // the Panel's menuOpenAt: the files dropdown drawn open
         Sources playing_;                                // what plays (setPlaying): the tabs' edited dots
         uint64_t playingRev_ = 0;
@@ -9194,6 +9291,27 @@ namespace playground::ui
             files().toggleSchematic();
             setFocus(editorItem_);
             return true;
+        }
+        // Find: Cmd-F, Cmd-Alt-F (and Ctrl-H off the Mac: Windows' and Linux's key), Shift-Cmd-F (in all files), from
+        // anywhere in the panel while the code shows, as the Standalone's Edit menu sends them; while the editor has the
+        // keys they are its own (CodeAssist), its find field's too.
+        if (e.key == funkgui::Key::character && focus_ != editorItem_ && !full() && !out_)
+        {
+            const char32_t c = e.ch >= U'A' && e.ch <= U'Z' ? e.ch - U'A' + U'a' : e.ch;
+            int find = -1;                               // 0 find, 1 find and replace, 2 in all files
+            if (e.mods.cmd && (c == U'f' || c == U'\u0192' || c == U'\u00cf'))   // Alt-F, Shift-Alt-F on a Mac
+                find = e.mods.alt ? 1 : e.mods.shift ? 2 : 0;
+#if !defined(__APPLE__)
+            else if ((e.mods.cmd || e.mods.ctrl) && !e.mods.alt && !e.mods.shift && c == U'h')
+                find = 1;
+#endif
+            if (find >= 0 && !files().renaming())
+            {
+                files().openFind(find == 1, find == 2);
+                setFocus(editorItem_);
+                dirty_ = true;
+                return true;
+            }
         }
         // Ctrl-Tab and Ctrl-Shift-Tab: the next file's tab and the one before, wherever the keys are, while the code
         // shows (the files' item takes them itself when it has the keys).

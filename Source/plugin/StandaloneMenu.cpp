@@ -32,7 +32,11 @@ namespace playground::standalone
                 { Command::cut, "Cut", { 'x' } },
                 { Command::copy, "Copy", { 'c' } },
                 { Command::paste, "Paste", { 'v' } },
-                { Command::selectAll, "Select All", { 'a' } } } },
+                { Command::selectAll, "Select All", { 'a' } },
+                line,
+                { Command::find, "Find\xe2\x80\xa6", {} },
+                { Command::findReplace, "Find and Replace\xe2\x80\xa6", {} },
+                { Command::findInFiles, "Find in All Files\xe2\x80\xa6", {} } } },
             { "Window",
               { { Command::minimize, "Minimize", { 'm' } },
                 { Command::zoom, "Zoom", {} },
@@ -51,6 +55,9 @@ namespace playground::standalone
             case Command::copy:
             case Command::paste:
             case Command::selectAll:
+            case Command::find:
+            case Command::findReplace:
+            case Command::findInFiles:
                 return true;
             case Command::separator:
             case Command::about:
@@ -78,6 +85,17 @@ namespace playground::standalone
                 if (it.command == command && command != Command::separator)
                     return it.shortcut;
         return {};
+    }
+
+    Shortcut editorKeyOf(Command command)
+    {
+        if (command == Command::find)
+            return { 'f' };
+        if (command == Command::findReplace)
+            return { 'f', false, true };
+        if (command == Command::findInFiles)
+            return { 'f', true };
+        return isEdit(command) ? shortcutOf(command) : Shortcut{};
     }
 
     std::string keysOf(const Shortcut& shortcut)
