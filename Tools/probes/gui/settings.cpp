@@ -373,7 +373,7 @@ namespace
             for (const std::string& o : order)
                 joined += o + " ";
             std::printf("rail: %s\n", joined.c_str());
-            P.eq("pages.rail_order", joined == "general editor projects ai debug about " ? 1 : 0, 1);
+            P.eq("pages.rail_order", joined == "general editor projects ai usage debug about " ? 1 : 0, 1);
         }
         P.eq("pages.click_editor", click(Act::page, pageIndex("editor")) && card.pageId() == "editor" ? 1 : 0, 1);
         {

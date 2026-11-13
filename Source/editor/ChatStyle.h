@@ -55,6 +55,27 @@ namespace playground::ui::chat
         return p;
     }
 
+    // The Usage page's series (UsagePage.h): the product's accent first, then four fixed inks that are neither accent
+    // (the effect's orange, the instrument's blue) nor the errors' colour (`signal`: the effect's cyan, the
+    // instrument's orange): an indigo, a green, a rose and a brown, each its own value in Graphite and in Paper, at
+    // least 3:1 against the card in both, and every pair (the accents too) apart under protanopia, deuteranopia and
+    // tritanopia (gui.usage SERIES), then "Other" in ink52. Never the only way a series is told apart: the stack's
+    // order, the legend and the readout name each.
+    inline constexpr int kSeriesInks = 5;          // the accent and the four; past them, Other
+    inline funkgui::Col seriesInk(const funkgui::Theme& th, int i)
+    {
+        const bool dark = th.ground.r < 128;
+        switch (i)
+        {
+            case 0: return th.accent;
+            case 1: return dark ? funkgui::Col{ 0x7C, 0x83, 0xF2 } : funkgui::Col{ 0x3B, 0x43, 0xB8 };   // indigo
+            case 2: return dark ? funkgui::Col{ 0x5D, 0xBB, 0x7A } : funkgui::Col{ 0x2F, 0x8A, 0x4E };   // green
+            case 3: return dark ? funkgui::Col{ 0xF2, 0xA0, 0xB8 } : funkgui::Col{ 0xA3, 0x37, 0x5E };   // rose
+            case 4: return dark ? funkgui::Col{ 0xC0, 0x8A, 0x5A } : funkgui::Col{ 0x7A, 0x4E, 0x28 };   // brown
+            default: return th.ink52;                                                                  // Other
+        }
+    }
+
     // The one typeface (JetBrains Mono) at a reading size; weight through the SDF threshold (~0.05 reads semibold).
     inline constexpr funkgui::TextStyle kBody{ 12.0f, 0.0f, 0.0f, false };
     inline constexpr funkgui::TextStyle kStrong{ 12.0f, 0.0f, 0.065f, false };
