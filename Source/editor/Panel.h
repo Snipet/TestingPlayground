@@ -57,27 +57,33 @@
 //   window    the button left of them (the plugin's editor only): the code editor and the explorer in a window of their
 //             own (Role::code, below), this window showing the panel full size meanwhile; the session keeps it
 //             (EditorPort::codeWindow)
-//   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title, a new
-//             chat (asking first), the API key), the conversation (ChatView.h: bubbles, light markdown, thinking rows,
-//             cards of what Claude did, code blocks with Copy, an empty chat's suggestions), the message box that grows
-//             with its text (Return sends it, Shift-Return breaks the line) with the model and thinking pills (menus)
-//             and the round send-or-stop button in its bar (ChatItems.h), and the line under it (what Claude is doing,
-//             else the last reply's tokens)
+//   chat      at the right, a rounded card set apart from the square panel (ChatStyle.h): its header (the title,
+//             cut to leave the chats' pill its room; the chats' pill (a menu); a new chat (nothing asked), the API
+//             key and the fold), the conversation (ChatView.h: bubbles, light markdown, thinking rows, cards of what
+//             Claude did, code blocks with Copy, an empty chat's suggestions; a Tab stop whose keys scroll it), the
+//             message box that grows with its text (Return sends it, Shift-Return breaks the line) and with its
+//             pictures' rows, with the pictures' button, the model and thinking pills (menus), Fast and Web
+//             (switches) and the round send-or-stop button in its bar (ChatItems.h; send takes words or pictures
+//             alone), and the line under it (what Claude is doing, else the last reply's tokens); a drag of pictures
+//             over the editor lights the card
 //   key       a dialog over the panel for the model provider and its API key: the Provider pill at its title's right (a
 //             menu: Anthropic, the default, OpenAI, OpenRouter, Google Gemini, Ollama or LM Studio on this Mac, another
 //             OpenAI-compatible server), a masked key field (Cmd-V pastes), and for another provider its server's
-//             address (an OpenAI-compatible one's) and its model, Tab moving between them; Save, Cancel and, when a key
-//             is stored for that provider, Remove key. Anthropic's is as it always was. It opens from the header's
-//             key, the empty chat's button, and when a message is sent before the chat can send (the message goes
-//             once it is saved)
+//             address (an OpenAI-compatible one's) and its model; Save, Cancel and, when a key is stored for that
+//             provider, Remove key. Tab moves over the fields, Provider, Remove key, Cancel and Save, where Return or
+//             Space presses; a click places a plain field's caret (the masked key's stays at its end); a refusal is
+//             said to a screen reader and is its field's help. Anthropic's is as it always was. It opens from the
+//             header's key, the empty chat's button, and when a message is sent before the chat can send (the
+//             message goes once it is saved)
 //   settings  the Standalone's only (EditorPort::devices): SETTINGS, the audio and MIDI devices in a card over the panel
 //             (SettingsCard.h), opened by the app's Settings... (Cmd-,: EditorPort::settingsAsked, polled each frame)
 //             and by the muted notice's button; while an effect's input is muted (JUCE's guard against a feedback loop)
 //             the status bar says so at its right, beside that button
 //   footer    the spec line of the control under the hand (or focused, or last touched), and the ZOOM cells
 //
-// Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box and its
-// transcript; Escape leaves each), to a tab's name while it is edited, and to the key dialog while it is open;
+// Keys go to a text field while it has the caret (the editor: Tab indents there; the chat's message box; Escape leaves
+// each), to the conversation while it has the ring (it scrolls), to a tab's name while it is edited, and to the key
+// dialog while it is open;
 // otherwise Tab moves the focus ring over the controls, and the arrows, Page and Home/End adjust the focused dial.
 // Every parameter write goes through one funkgui::GestureController (begin/set/end gestures for the host).
 //
@@ -539,6 +545,13 @@ namespace playground::ui
         std::string keyDialogHint() const;
         std::vector<std::string> keyDialogLines() const;
         void chooseKeyPreset(int preset);
+        // The control the keys go to (0 a field, 1 Provider, 2 Remove key, 3 Cancel, 4 Save), the caret of the field
+        // with the keys, how far the plain field with the keys is drawn scrolled (px), the refusal's lines as drawn.
+        int keyDialogControl() const noexcept { return dialogControl_; }
+        int keyDialogCaret() const;
+        float keyDialogScroll() const;
+        std::vector<std::string> keyDialogWhyLines() const;
+        std::string chatTitleShown() const;              // the chat's title as the header draws it (fitted)
         // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
         bool openSettings();
@@ -698,6 +711,13 @@ namespace playground::ui
         void removeKeyFromDialog();
         bool keyDialogKey(const funkgui::KeyEvent&);
         void keyDialogPointerDown(funkgui::Point);
+        std::vector<int> dialogStops() const;            // its Tab order: 10 + a field, or a button (dialogControl_)
+        void moveDialogFocus(int dir);
+        void pressDialogControl();
+        void refuseInDialog(const std::string& why);
+        std::vector<std::string> whyLines(float maxW) const;
+        static float fieldScroll(const funkgui::text::LineEdit&, float maxW);
+        static void placeFieldCaret(funkgui::text::LineEdit&, const funkgui::Rect& field, float px);
         void drawKeyDialog(funkgui::Canvas&, const funkgui::Theme&) const;
         std::string maskedKey() const;
         // The provider in the dialog (ChatPort::setProvider): its preset, whether it is Anthropic's and the chat's now
@@ -943,6 +963,8 @@ namespace playground::ui
         int dialogPreset_ = 0;                           // the provider shown (kChatPresets), the server's address and
         funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
         int dialogField_ = 0;
+        int dialogControl_ = 0;                          // the dialog's button with the keys (Tab), 0 while a field has them
+        int keyWhyField_ = 0;                            // the field the refusal is about (dialogField_'s numbers)
         ChatProviderInfo dialogInfo_;
         std::string dialogInfoBase_;                     // the address dialogInfo_ was read for
         double baseTypedAt_ = 0.0;                       // when the address was last typed in (read once it rests)

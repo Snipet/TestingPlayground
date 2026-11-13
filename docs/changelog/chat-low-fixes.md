@@ -86,6 +86,18 @@ Claude Desktop extension: **0.20.0** (was 0.19.0).
   but quieter").
 - The conversation scrolls from the keyboard: Shift-Tab from the message box reaches it, then the arrows, Page Up and
   Down, Home and End scroll it. A screen reader reaches every message, and moving to one out of view scrolls it in.
+- The send button sends a message of pictures alone, as Return does.
+- A long server's name as the chat's title is cut to leave the chat list its button, never drawn over the header's
+  buttons.
+- Pictures that do not fit one row of the message box wrap onto a second, so all six are shown and can be removed.
+- The key dialog works from the keyboard: Tab reaches the Provider pill, Remove key, Cancel and Save, and Return or
+  Space presses the one with the focus (the Provider pill opens its menu). The wheel no longer scrolls the panel behind
+  the dialog.
+- Dragging an audio or project file over the editor no longer lights the chat's "Drop pictures here" overlay.
+- A click in the key dialog's server address, model or a chat's new name places the caret there (and drops the
+  selection); an address or model longer than its field scrolls to show what is typed; a long refusal wraps onto a
+  second line instead of being cut.
+- A refused Save in the key dialog is said by a screen reader, and the reason is on the field it is about.
 
 **Changed**
 - Claude Fable 5.2 is in the model list before your key's list arrives (in place of Fable 5.1), and Fable 5.2 and

@@ -18,6 +18,7 @@
 //                         Send answers
 //   gui.chat.answered.png the question answered: the choices marked, the rest muted
 //   gui.chat.pictures.png two pictures in the message box, each with its remove button
+//   gui.chat.six.png      six pictures in the message box at the least size, on two rows
 //   gui.chat.sent.png     a message sent with two pictures: their thumbnails above its bubble
 //   gui.chat.plan.png     a planning model's plan as a card above the builder's answer
 //   gui.chat.checks.png   Claude's checks card, every check passing, and the picture of the sound it looked at
@@ -31,7 +32,8 @@
 //            panel speaks of no sign-in), and suggestions
 //   KEY      a message sent with no key opens the key dialog and stays in the message box; Escape closes the dialog
 //            (the message stays, unsent); sent again, it waits for the key; while the dialog is open the pointer and
-//            the keys reach nothing else; a key that is not one is refused (the dialog says why; nothing is stored);
+//            the keys reach nothing else; a key that is not one is refused (the dialog says why, to a screen reader
+//            too; nothing is stored);
 //            Cmd-V pastes a key, drawn masked (its public prefix, stars, its last four); nothing the panel speaks
 //            holds the key; SAVE stores it, closes the dialog and sends
 //            the waiting message to api.anthropic.com with the key; the header has no account, the line under the box
@@ -61,9 +63,11 @@
 //            has no Send answers, and its click answers
 //   PICTURES the message box's picture button asks the host for files (several, pictures); the files chosen show as
 //            thumbnails in the box (drawn, none missing) and their remove buttons take one back; pictures dropped on
-//            the chat's card come too (the card says so while the drag is over the editor), not on the editor, and a
-//            text file is no drop the chat takes; sent, the pictures go before the words and show above the message;
-//            FunkGui holds each thumbnail while the chat does, and a new chat lets them go
+//            the chat's card come too (the card says so while pictures are dragged over the editor, not audio files),
+//            not on the editor, and a text file is no drop the chat takes; a picture alone may be sent with the
+//            send button; six at the least size wrap to a second row, each drawn and removable; sent, the pictures
+//            go before the words and show above the message; FunkGui holds each thumbnail while the chat does,
+//            and a new chat lets them go
 //   CHECKS   Claude's checks (set_checks) as a card, a row each (its label, its value against the goal), and the
 //            picture of the sound it looked at (view_sound) under its row, drawn; one fails, the turn goes on, a dial
 //            set and a run fix it: the card brought up to date (every check passing); a check that cannot pass shows
@@ -73,7 +77,8 @@
 //   CHATS    the header's pill names the chat shown (a combo box to a screen reader); its menu lists the chats, the
 //            newest first, the one shown dotted, then New chat, Rename and Delete; an older one chosen shows (its words
 //            back); Rename opens the dialog with its name, selected: typed over and Return, the chat has that name (the
-//            pill says it); Escape cancels; Delete asks first, then the chat is gone and the newest other one shows;
+//            pill says it); a click in the name drops the selection and places the caret; Escape
+//            cancels; Delete asks first, then the chat is gone and the newest other one shows;
 //            another chat shown is another conversation to the view (ChatState::conversation)
 //   SCROLL   a conversation taller than the view scrolls with the wheel, and the round button jumps back to its end; as
 //            the code scrolls (editor/Scroll.h): a notch three body lines, reversed set (a built WheelEvent: HeadlessHost
@@ -116,6 +121,8 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
+#include <funkgui/text/FontService.h>
+#include <funkgui/text/TextFit.h>
 #include <funkgui/widgets/TextEditor.h>
 
 #include <algorithm>
@@ -408,6 +415,9 @@ PROBE(gui, chat)
         P.eq("key.refused_stays_open", panel.keyDialogOpen() ? 1 : 0, 1);
         P.eq("key.refused_says_why", panel.keyDialogWhy().empty() ? 0 : 1, 1);
         P.eq("key.refused_not_stored", chat(processor).hasKey ? 1 : 0, 0);
+        P.eq("key.refused_announced", !host.log.announcements.empty() && host.log.announcements.back() == panel.keyDialogWhy() ? 1 : 0, 1);
+        const auto keyField = a11yTitled(host, "Key");
+        P.eq("key.refused_on_its_field", keyField && keyField->help == panel.keyDialogWhy() ? 1 : 0, 1);
 
         host.setClipboard(key + "\n");
         host.keys("cmd+a,cmd+v");
@@ -946,6 +956,11 @@ PROBE(gui, chat)
             clickAt(host, *x);
         settlePictures();
         P.eq("pictures.removed", box.pictureCount(), 1);
+        // A picture alone may be sent: by Return, and by the send button too.
+        panel.chatInput().setText("");
+        host.settle();
+        const auto sendButton = a11yTitled(host, "Send or stop");
+        P.eq("pictures.send_alone_enabled", sendButton && sendButton->enabled ? 1 : 0, 1);
         // A drop: on the chat's card it comes; on the editor it does not; a text file is no drop the chat takes.
         const funkgui::Point onChat = panel.centreOfSend();
         P.eq("pictures.text_refused", host.dropFiles({ notes.getFullPathName().toStdString() }, onChat.x, onChat.y) ? 0 : 1, 1);
@@ -956,6 +971,46 @@ PROBE(gui, chat)
         settlePictures();
         P.eq("pictures.not_on_the_editor", box.pictureCount(), 2);
         P.eq("pictures.drag_shown_done", panel.dropShown() ? 0 : 1, 1);
+        // The chat's overlay is for pictures: an audio file dragged over (ASSETS takes it) does not light it.
+        const std::string kick = dir.getChildFile("kick.wav").getFullPathName().toStdString();
+        panel.filesDragEnter({ kick }, onChat.x - 120.0f, onChat.y - 160.0f);
+        P.eq("pictures.drag_audio_no_overlay", panel.dropShown() ? 1 : 0, 0);
+        panel.filesDragExit();
+        panel.filesDragEnter({ kick, tall }, onChat.x - 120.0f, onChat.y - 160.0f);
+        P.eq("pictures.drag_picture_overlay", panel.dropShown() ? 1 : 0, 1);
+        panel.filesDragExit();
+        // Six at the least size: none hidden, each with its remove button in the box (the tiles wrap to a second row).
+        host.resize(500, 300);
+        host.settle();
+        clickAt(host, panel.centreOfAttach());
+        if (host.pendingFiles() != nullptr)
+            host.returnFiles({ third, picture("four.png", 200, 200, juce::Colours::maroon, juce::Colours::white),
+                               picture("five.png", 300, 200, juce::Colours::teal, juce::Colours::black),
+                               picture("six.png", 200, 300, juce::Colours::purple, juce::Colours::gold) });
+        settlePictures();
+        P.eq("pictures.six_attached", box.pictureCount(), 6);
+        bool inside = box.pictureCount() == 6;
+        for (int i = 0; i < box.pictureCount(); ++i)
+        {
+            const funkgui::Rect r = box.pictureRect(i);
+            const auto x = box.centreOfRemove(i);
+            inside = inside && x && box.contains(*x) && r.x >= box.box().x && r.right() <= box.box().right()
+                  && r.bottom() <= box.editor().bounds().y;
+        }
+        P.eq("pictures.six_inside", inside ? 1 : 0, 1);
+        P.ge("pictures.six_drawn", static_cast<double>(host.draw().images.size()), 6.0);
+        writePng(P, host, "gui.chat.six.png");
+        if (const auto x = box.centreOfRemove(5))
+            clickAt(host, *x);
+        settlePictures();
+        P.eq("pictures.sixth_removed", box.pictureCount(), 5);
+        for (int i = 4; i >= 2; --i)
+            if (const auto x = box.centreOfRemove(i))
+                clickAt(host, *x);
+        settlePictures();
+        P.eq("pictures.back_to_two", box.pictureCount(), 2);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+        host.settle();
         // Sent: before the words, and above the message.
         script->add(fake::Response::ok(fake::Sse().start().text("I see a panel and a knob.").end()));
         const int at = script->postCount();
@@ -1186,6 +1241,29 @@ PROBE(gui, chat)
         host.keys("escape");
         host.tick(2);
         P.eq("chats.rename_escape", !panel.renameDialogOpen() && chat(processor).title == before ? 1 : 0, 1);
+        // A click in the name drops its selection and puts the caret where it lands: past its end, a word added.
+        clickAt(host, panel.centreOfChats());
+        host.tick(1);
+        if (host.pendingMenu() != nullptr)
+            host.chooseMenuItem(kRename);
+        host.tick(2);
+        {
+            const funkgui::Point field = panel.centreOfKeyField();
+            clickAt(host, { field.x + 200.0f, field.y });
+            P.eq("chats.rename_click_caret_end", panel.keyDialogCaret(), static_cast<int64_t>(before.size()));
+            type(host, "x");
+            bool added = false;
+            for (const funkgui::A11yItem& a : host.accessibility())
+                added = added || (a.title == "Name" && a.value == before + "x");
+            P.eq("chats.rename_click_keeps_name", added ? 1 : 0, 1);
+            const auto name = a11yTitled(host, "Name");
+            const float ab = funkgui::text::width(funkgui::FontService::get().atlas(), "ab", pg::ui::chat::kBody);
+            clickAt(host, { name ? name->bounds.x + 14.0f + ab + 1.0f : field.x, field.y });   // past two characters
+            P.eq("chats.rename_click_caret_placed", panel.keyDialogCaret(), 2);
+        }
+        host.keys("escape");
+        host.tick(2);
+        P.eq("chats.rename_click_cancelled", chat(processor).title == before ? 1 : 0, 1);
         clickAt(host, panel.centreOfChats());
         host.tick(1);
         if (host.pendingMenu() != nullptr)

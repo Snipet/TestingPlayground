@@ -18,7 +18,7 @@
 // End; it follows the end while it is at the end, and a round button jumps back to the end. A screen reader has every
 // block, and its focus on one out of view scrolls it in. Each block keeps its layout until its text, its width or its
 // state changes, so a long conversation costs only its streaming end. Text is drawn as printable ASCII (asciiText,
-// ChatItems.h); a Copy copies the entry's own text. The user's words are drawn as typed (no markdown).
+// Items.h); a Copy copies the entry's own text. The user's words are drawn as typed (no markdown).
 #pragma once
 
 #include "editor/ChatStyle.h"
