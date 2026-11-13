@@ -2072,57 +2072,61 @@ namespace playground::lang
                 joined += (k == 0 ? "" : "\n") + out[k];
             return joined;
         }
+    }
 
-        // The lines of a module's documentation that name `member` (`filter.lp`, `host->bpm`, `y = filter.tick(x);`)
-        // and the lines that continue them (indented deeper), as one text.
-        std::string memberDoc(const std::string& moduleDoc, std::string_view member)
+    // The lines of a module's documentation that name `member` (Lang.h).
+    std::string memberDoc(const std::string& moduleDoc, std::string_view member)
+    {
+        if (member.empty())
+            return {};                                   // a name of nothing: none (find("") would stand still)
+        const std::vector<std::string_view> lines = splitLines(moduleDoc);
+        for (std::size_t i = 0; i < lines.size(); ++i)
         {
-            const std::vector<std::string_view> lines = splitLines(moduleDoc);
-            for (std::size_t i = 0; i < lines.size(); ++i)
+            const std::string_view l = lines[i];
+            std::size_t at = 0;
+            bool found = false;
+            while ((at = l.find(member, at)) != std::string_view::npos)
             {
-                const std::string_view l = lines[i];
-                std::size_t at = 0;
-                bool found = false;
-                while ((at = l.find(member, at)) != std::string_view::npos)
+                const bool left = at >= 1 && (l[at - 1] == '.' || (at >= 2 && l[at - 1] == '>' && l[at - 2] == '-'));
+                const bool right = at + member.size() >= l.size() || !isIdentChar(l[at + member.size()]);
+                if (left && right)
                 {
-                    const bool left = at >= 1 && (l[at - 1] == '.' || (at >= 2 && l[at - 1] == '>' && l[at - 2] == '-'));
-                    const bool right = at + member.size() >= l.size() || !isIdentChar(l[at + member.size()]);
-                    if (left && right)
-                    {
-                        found = true;
-                        break;
-                    }
-                    at += member.size();
+                    found = true;
+                    break;
                 }
-                if (!found)
-                    continue;
-                const auto indent = [](std::string_view s) {
-                    std::size_t k = 0;
-                    while (k < s.size() && s[k] == ' ')
-                        ++k;
-                    return k;
-                };
-                // The usage (`y = filter.tick(x);`), then what it says (after a gap of three spaces or more, and the
-                // lines indented deeper that go on with it), as a paragraph.
-                std::string first = trimmed(l);
-                std::string usage = first, what;
-                if (const std::size_t gap = first.find("   "); gap != std::string::npos)
-                {
-                    usage = trimmed(first.substr(0, gap));
-                    what = trimmed(first.substr(gap));
-                }
-                const std::size_t base = indent(l);
-                for (std::size_t k = i + 1; k < lines.size(); ++k)
-                {
-                    if (trimmed(lines[k]).empty() || indent(lines[k]) <= base)
-                        break;
-                    what += (what.empty() ? "" : " ") + trimmed(lines[k]);
-                }
-                return what.empty() ? usage : usage + "\n" + what;
+                at += member.size();
             }
-            return {};
+            if (!found)
+                continue;
+            const auto indent = [](std::string_view s) {
+                std::size_t k = 0;
+                while (k < s.size() && s[k] == ' ')
+                    ++k;
+                return k;
+            };
+            // The usage (`y = filter.tick(x);`), then what it says (after a gap of three spaces or more, and the
+            // lines indented deeper that go on with it), as a paragraph.
+            std::string first = trimmed(l);
+            std::string usage = first, what;
+            if (const std::size_t gap = first.find("   "); gap != std::string::npos)
+            {
+                usage = trimmed(first.substr(0, gap));
+                what = trimmed(first.substr(gap));
+            }
+            const std::size_t base = indent(l);
+            for (std::size_t k = i + 1; k < lines.size(); ++k)
+            {
+                if (trimmed(lines[k]).empty() || indent(lines[k]) <= base)
+                    break;
+                what += (what.empty() ? "" : " ") + trimmed(lines[k]);
+            }
+            return what.empty() ? usage : usage + "\n" + what;
         }
+        return {};
+    }
 
+    namespace
+    {
         // How well `label` matches the typed `prefix`: 0 starts with it (its case), 1 starts with it, 2 holds its
         // letters in order from the first; -1 none.
         int matchScore(std::string_view label, std::string_view prefix)

@@ -124,6 +124,8 @@
 //             second under its parenthesis, that join back to it; one of forty on kHoverLines lines, the last cut with
 //             " ..."; an unfolded constant of a long expression one line cut with " ..."; a short one as it was; a cut
 //             never splits a UTF-8 character (lang::headOf; a field's attribute of "µ" cut inside one)
+//   MEMBERDOC a module header's lines for a member (lang::memberDoc, a hover's doc): an empty member returns none at
+//             once (it stood still before), a member's usage and what it says, a name that is only part of one none
 #include "Probe.h"
 
 #include "dsp/Measure.h"
@@ -2330,6 +2332,16 @@ PROBE(fminus, lang)
             kept += mu;
         P.eq("hovers.cut_utf8", lu.size() == 2 && fits(lu) && validUtf8(hu->code) && lu[0] == "float spans"
                                     && lu[1] == std::string(12, ' ') + "[[ui::label(\"" + kept + " ..." ? 1 : 0, 1);
+    }
+
+    // ---- MEMBERDOC -----------------------------------------------------------------------------------------------------
+    {
+        // A member's lines of a module's header (a hover's doc): an empty name returns none at once, never standing still.
+        const std::string doc = "svf.fm: a filter\n\n  filter.cutoff   in Hz\n  y = filter.tick(x);   one sample\n      through it\n";
+        P.eq("memberdoc.empty", lg::memberDoc(doc, "").empty() && lg::memberDoc("", "").empty() && lg::memberDoc(".", "").empty()
+                                    ? 1 : 0, 1);
+        P.eq("memberdoc.found", lg::memberDoc(doc, "tick") == "y = filter.tick(x);\none sample through it" ? 1 : 0, 1);
+        P.eq("memberdoc.none", lg::memberDoc(doc, "tic").empty() ? 1 : 0, 1);
     }
     return P.finish();
 }

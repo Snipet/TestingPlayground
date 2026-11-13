@@ -157,6 +157,10 @@ namespace playground::lang
     // A string literal's characters (a Tok::string's text, its quotes and all), its escapes resolved as C's (\n, \",
     // \\, octal and hex bytes, \u and \U as UTF-8); what it cannot read is kept as written.
     std::string stringValue(std::string_view literal);
+    // The lines of a module's documentation (its header comment) that name `member` (`filter.lp`, `host->bpm`,
+    // `y = filter.tick(x);`) and the lines that continue them (indented deeper), as one text: a hover's doc. "" when none
+    // does, or `member` is empty.
+    std::string memberDoc(const std::string& moduleDoc, std::string_view member);
 
     // ---- conditional compilation (LangConditionals.cpp) ---------------------------------------------------------------
     // FMinus's conditionals, as its scanner reads them (C's: its recipe 31): #if, #ifdef, #ifndef, #elif, #elifdef,
