@@ -491,6 +491,9 @@ namespace playground::projectstore
                                                          // not yet committed too)
         int64_t checkedMs = 0;                           // that fetch
         std::vector<GitCommit> log;                      // the newest commits, newest first, at most kMaxLog
+        bool diverged = false;                           // the last pull found both sides changed in ways git could
+                                                         // not join: Keep mine, Take theirs or Compare settles it
+                                                         // (written only when set)
         friend bool operator==(const Link&, const Link&) = default;
     };
     struct Links

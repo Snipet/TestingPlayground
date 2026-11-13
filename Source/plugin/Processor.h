@@ -339,6 +339,7 @@ namespace playground
         GitState gitState() const override;
         void cancelGit() override;
         std::string gitPathSet() const override;
+        VersionContent gitTheirs(const std::string& project) const override;
         bool setGitPath(const std::string& path, std::string& why) override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
@@ -646,6 +647,9 @@ namespace playground
         std::condition_variable gitGateOpen_;
         std::atomic<uint64_t> gitLanded_{ 0 };                   // jobs landed: projectsRead() moves with them
         bool gitFiles_ = false;                                  // setGitFileRemotesForTests
+        // Their side as the last `theirs` job read it (gitTheirs), under gitMutex_: the project, its commit, the version.
+        std::string gitTheirsOf_, gitTheirsSha_;
+        std::optional<projectstore::Version> gitTheirsVersion_;
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

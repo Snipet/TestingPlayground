@@ -514,6 +514,48 @@ namespace playground::git
         return call(c, { "merge", "-q", "--ff-only", trackingRef(remote, branch) });
     }
 
+    Outcome merge(const Context& c, const std::string& remote, const std::string& branch, bool& conflicts, bool ours)
+    {
+        conflicts = false;
+        if (const std::string why = remoteRefusal(remote); !why.empty())
+            return refused(why);
+        if (const std::string why = branchRefusal(branch); !why.empty())
+            return refused(why);
+        std::vector<std::string> args{ "merge", "-q", "--no-commit", "--no-ff" };
+        if (ours)
+        {
+            args.push_back("-s");
+            args.push_back("ours");
+        }
+        args.push_back(trackingRef(remote, branch));
+        Outcome o = call(c, args);
+        if (!o.ok && o.ended == run::Ended::exited)
+            conflicts = resolves(c, "MERGE_HEAD");
+        return o;
+    }
+
+    Outcome mergeAbort(const Context& c) { return call(c, { "merge", "--abort" }); }
+
+    Outcome checkoutInto(const Context& c, const std::string& remote, const std::string& branch, const std::string& folder)
+    {
+        if (const std::string why = remoteRefusal(remote); !why.empty())
+            return refused(why);
+        if (const std::string why = branchRefusal(branch); !why.empty())
+            return refused(why);
+        if (folder.empty() || folder[0] == '-')
+            return refused("A checkout needs a folder.");
+        return call(c, { "worktree", "add", "-q", "--detach", folder, trackingRef(remote, branch) });
+    }
+
+    Outcome worktreeRemove(const Context& c, const std::string& folder)
+    {
+        if (folder.empty() || folder[0] == '-')
+            return refused("No such checkout.");
+        Outcome o = call(c, { "worktree", "remove", "--force", folder });
+        call(c, { "worktree", "prune" });
+        return o;
+    }
+
     Outcome clone(const Context& c, const std::string& address, const std::string& folder, const std::string& branch)
     {
         if (const std::string why = addressRefusal(address, c.allowFile); !why.empty())

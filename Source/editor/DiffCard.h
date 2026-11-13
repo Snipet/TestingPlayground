@@ -43,6 +43,8 @@ namespace playground::ui
     public:
         static constexpr uint32_t kA11yBase = 0x7FF90000u;   // its accessibility ids, past every item's (and the other cards')
         static constexpr int kEditor = 0;                // a side that is the editor's (else a version's number)
+        static constexpr int kTheirs = -1;               // their side of a diverged git project (EditorPort::gitTheirs:
+                                                         // read by the GIT card's Compare; no version to open, no A/B)
 
         explicit DiffCard(EditorPort& port) : port_(port) {}
 
@@ -86,6 +88,7 @@ namespace playground::ui
         const std::string& project() const noexcept { return project_; }
         int side(int k) const noexcept { return sides_[static_cast<std::size_t>(k)]; }
         bool reading() const;                            // a side not read yet
+        bool abable() const noexcept { return sides_[0] != kTheirs && sides_[1] != kTheirs; }   // A/B takes versions
         const std::string& summary() const noexcept { return summary_; }   // "3 files, 2 dials", "The same", ...
         const std::string& why() const noexcept { return why_; }
         const DiffView& view() const noexcept { return view_; }

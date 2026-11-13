@@ -76,6 +76,9 @@ namespace playground::ui
             case Button::check: return "Check";
             case Button::folder: return "Show folder";
             case Button::disconnect: return confirm ? "Disconnect? Press again" : "Disconnect";
+            case Button::keepMine: return "Keep mine";
+            case Button::takeTheirs: return "Take theirs";
+            case Button::compare: return "Compare...";
             case Button::none: break;
         }
         return {};
@@ -90,6 +93,8 @@ namespace playground::ui
             s = plural(l.toPush, "version", "versions") + " to push";
         if (l.behind > 0)
             s += (s.empty() ? "" : ", ") + plural(l.behind, "commit", "commits") + " to pull";
+        if (l.diverged)
+            s = "Both sides changed" + (s.empty() ? std::string() : " (" + s + ")");
         if (s.empty())
             s = l.behind == 0 ? std::string("Up to date") : std::string("Not checked yet");
         if (!l.checked.empty())
@@ -163,6 +168,13 @@ namespace playground::ui
                 failed_ = !s.ok;
                 outcome_ = s.ok ? s.line : s.why;
                 step_.clear();
+                if (s.ok && kind_ == GitKind::theirs)
+                {
+                    // Their side read: the COMPARE card, this side's newest version against theirs; this card closes.
+                    const ProjectDetail d = port_.projectPolled(project_);
+                    compare_ = { project_, d.versions.empty() ? 0 : d.versions.front().number };
+                    open_ = false;
+                }
                 if (s.ok && kind_ == GitKind::clone && open_)
                 {
                     // The project it made: the card is its card now.
@@ -172,6 +184,7 @@ namespace playground::ui
                 }
                 const std::string what = kind_ == GitKind::connect ? "CONNECT" : kind_ == GitKind::push ? "PUSH" : kind_ == GitKind::pull ? "PULL"
                                        : kind_ == GitKind::check ? "CHECK" : kind_ == GitKind::clone ? "ADD FROM GIT" : kind_ == GitKind::disconnect ? "DISCONNECT"
+                                       : kind_ == GitKind::keepMine ? "KEEP MINE" : kind_ == GitKind::takeTheirs ? "TAKE THEIRS" : kind_ == GitKind::theirs ? "COMPARE"
                                                                                                                                             : "GIT";
                 if (s.cancelled)
                     notice_ = what + " CANCELLED";
@@ -206,6 +219,7 @@ namespace playground::ui
     }
 
     std::string GitCard::takeNotice() { return std::exchange(notice_, std::string()); }
+    std::pair<std::string, int> GitCard::takeCompare() { return std::exchange(compare_, std::pair<std::string, int>{ "", 0 }); }
     bool GitCard::takeLanded() { return std::exchange(landed_, false); }
 
     void GitCard::setRemote(const std::string& s)
@@ -239,7 +253,7 @@ namespace playground::ui
             return Button::add;
         if (factory_)
             return Button::close;
-        return link_.linked ? Button::push : Button::connect;
+        return !link_.linked ? Button::connect : link_.diverged ? Button::compare : Button::push;
     }
 
     bool GitCard::enabled(Button b) const
@@ -271,6 +285,8 @@ namespace playground::ui
             right = {};
         else if (!link_.linked)
             right = { Button::connect };
+        else if (link_.diverged)
+            right = { Button::disconnect, Button::takeTheirs, Button::keepMine, Button::compare };
         else
             right = { Button::disconnect, Button::folder, Button::check, Button::pull, Button::push };
         at.buttons.push_back({ Button::close, { x0, by, buttonW(running_ ? "Cancel" : "Close"), kButtonH } });
@@ -356,6 +372,9 @@ namespace playground::ui
                 }
                 break;
             }
+            case Button::keepMine: start(GitKind::keepMine); break;
+            case Button::takeTheirs: start(GitKind::takeTheirs); break;
+            case Button::compare: start(GitKind::theirs); break;
             case Button::disconnect:
                 if (!confirmDisconnect_)
                     confirmDisconnect_ = true;           // the second press confirms
@@ -469,6 +488,8 @@ namespace playground::ui
             mode_ == Mode::add ? std::string("A repository a project was pushed to becomes a new project here. What it holds will play when "
                                              "you open it: trust it as you would a file you import.")
             : factory_         ? std::string("A factory project cannot be kept in git: save your own copy of it first (PROJECTS, Save).")
+            : link_.diverged   ? std::string("Both this project and the remote changed, in ways git cannot join. Compare them, then keep "
+                                             "one side as the newest version: the other stays a version before it, nothing lost.")
             : link_.linked     ? "Each saved version is a commit. Pulls come from " + link_.shortRemote + ": the repository's owner decides "
                                  "what is in it."
                                : std::string("Give it an empty repository: each saved version becomes a commit, pushed. Git signs in its own "
@@ -640,6 +661,12 @@ namespace playground::ui
             it.enabled = enabled(b);
             if (b == Button::disconnect)
                 it.help = "The link goes; the working folder stays where it is";
+            else if (b == Button::keepMine)
+                it.help = "Their side kept as a version, then this side saved on top as the newest";
+            else if (b == Button::takeTheirs)
+                it.help = "Their side saved as the newest version; this side stays the version before";
+            else if (b == Button::compare)
+                it.help = "This side's newest version against theirs, in the Compare card";
             out.push_back(std::move(it));
         }
     }
@@ -654,7 +681,7 @@ namespace playground::ui
             focusOn(Field::remote);
         else if (id == kBranchId && fields())
             focusOn(Field::branch);
-        else if (id > kButtonId && id <= kButtonId + static_cast<uint32_t>(Button::disconnect))
+        else if (id > kButtonId && id <= kButtonId + static_cast<uint32_t>(Button::compare))
             press(static_cast<Button>(id - kButtonId));
         else
             return false;

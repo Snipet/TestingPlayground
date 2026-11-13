@@ -97,4 +97,41 @@ namespace playground
         out.note = "the editor's files and dials as they are now";
         return out;
     }
+
+    // Their side of a diverged project, as the git job read it (ProcessorGit.cpp): in memory, no file read here.
+    VersionContent Processor::gitTheirs(const std::string& project) const
+    {
+        VersionContent out;
+        out.read = true;
+        std::optional<projectstore::Version> v;
+        std::string sha;
+        {
+            const std::lock_guard<std::mutex> lock(gitMutex_);
+            if (projectstore::sameName(gitTheirsOf_, project))
+            {
+                v = gitTheirsVersion_;
+                sha = gitTheirsSha_;
+            }
+        }
+        if (!v)
+        {
+            out.missing = true;
+            return out;
+        }
+        Controls cs;
+        std::array<std::vector<std::string>, kMaxControls> options;
+        {
+            const std::lock_guard<std::mutex> lock(programMutex_);
+            cs = controls_;
+            options = panel_.options;
+        }
+        out.files = v->files;
+        out.dials = dialTexts(v->dials, cs, options);
+        for (const projectstore::SampleRef& s : v->samples)
+            out.samples.push_back({ s.name, s.hash });
+        out.note = "their side, " + sha.substr(0, 7) + ": " + v->note;
+        out.when = whenText(v->savedMs);
+        out.number = v->number;
+        return out;
+    }
 }

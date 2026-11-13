@@ -45,6 +45,10 @@
 //   CHECK    the counts, as the listing shows them
 //   LINKS    the file's format; written and read back the same; a rename in the file manager keeps the link; the listing
 //            reads no repository (the working folder moved away); a working folder gone: said; no address in the project
+//   MERGE    (05c) both sides moved: the pull's merge taken back whole (HEAD, the folder and the versions as they were),
+//            the link marked diverged; their side read for Compare with nothing written; Keep mine (theirs a version,
+//            mine on top, pushed: the remote's program mine), Take theirs (theirs the newest, mine the version before,
+//            a merge commit pushed); with nothing to settle, refused
 //   JOB      the Processor's git thread: a pull of the project open and unedited opens the new version; edited, it waits
 //            and the typing stays; a git path that is no git: said, nothing else changed; Disconnect: the link gone,
 //            the folder kept and named
@@ -378,6 +382,66 @@ namespace
             fs::rename(away, folder, ec);
             fs::rename(machineA / "Pad Renamed.fmproject", machineA / "Pad.fmproject", ec);
             P.eq("links.no_address_in_project", readFile(machineA / "Pad.fmproject").find(url) == std::string::npos ? 1 : 0, 1);
+        }
+
+        // ---- MERGE (package 05c): A and the remote both moved since they last met ---------------------------------------
+        {
+            // Both sides changed the program's file and the version's lines of project.json: git cannot join them.
+            const std::optional<ps::Project> before = ps::load("Pad");
+            const std::string headBefore = sh(found, ps::linkOf(before->id)->folder, { "rev-parse", "HEAD" });
+            const gp::Result conflict = gp::pull(setup, "Pad");
+            std::printf("merge: conflict says \"%s\"\n", conflict.why.c_str());
+            const fs::path aFolder = ps::linkOf(before->id)->folder;
+            P.eq("merge.conflict_aborted", !conflict.ok && conflict.diverged && !there(aFolder / ".git" / "MERGE_HEAD")
+                                               && sh(found, aFolder, { "rev-parse", "HEAD" }) == headBefore
+                                               && sh(found, aFolder, { "status", "--porcelain" }).empty()
+                                               && ps::load("Pad")->versions.size() == before->versions.size() ? 1 : 0, 1);
+            P.eq("merge.marked_diverged", ps::linkOf(before->id)->diverged ? 1 : 0, 1);
+            // Their side, read for the Compare card: B's newest program, nothing written to the store.
+            const gp::Result t = gp::theirs(setup, "Pad");
+            P.eq("merge.theirs_read", t.ok && t.theirsProject && t.theirsProject->latest().files == programOf("b again")
+                                          && ps::load("Pad")->versions.size() == before->versions.size()
+                                          && !there(aFolder.parent_path() / ".theirs") ? 1 : 0, 1);
+            // Keep mine: theirs a version, mine on top, the link settled; then pushed, and the remote's tree is mine.
+            const gp::Result keep = gp::keepMine(setup, "Pad");
+            std::printf("merge: keep mine \"%s\" (%s)\n", keep.line.c_str(), keep.why.c_str());
+            const std::optional<ps::Project> kept = ps::load("Pad");
+            const std::size_t n = kept->versions.size();
+            P.eq("merge.keep_mine_both_kept", keep.ok && n == before->versions.size() + 2
+                                                  && kept->versions[n - 2].files == programOf("b again")
+                                                  && kept->versions[n - 2].note.rfind("Theirs, ", 0) == 0
+                                                  && kept->latest().files == programOf("a again")
+                                                  && kept->latest().note.rfind("Kept mine over ", 0) == 0 ? 1 : 0, 1);
+            const gp::Result keepPush = gp::push(setup, "Pad");
+            P.eq("merge.keep_mine_pushed", keepPush.ok && !ps::linkOf(kept->id)->diverged
+                                               && sh(found, remote, { "show", "main:program.fm" }) == programOf("a again").front().text ? 1 : 0, 1);
+            // Take theirs: B moves on (a fast-forward of A's merge), A saves something else.
+            onB();
+            const gp::Result bPull = gp::pull(setup, "Pad");
+            ps::saveVersion("Pad", programOf("b third"), 0, dials);
+            gp::push(setup, "Pad");
+            onA();
+            ps::saveVersion("Pad", programOf("a third"), 0, dials);
+            const gp::Result conflict2 = gp::pull(setup, "Pad");
+            const int mineNumber = ps::load("Pad")->latest().number;
+            const gp::Result take = gp::takeTheirs(setup, "Pad");
+            std::printf("merge: take theirs \"%s\" (%s)\n", take.line.c_str(), take.why.c_str());
+            const std::optional<ps::Project> taken = ps::load("Pad");
+            const ps::Version* mine = taken->version(mineNumber);
+            P.eq("merge.take_theirs_both_kept", bPull.ok && conflict2.diverged && take.ok && taken->latest().files == programOf("b third")
+                                                    && taken->latest().note.rfind("Took theirs, ", 0) == 0 && mine != nullptr
+                                                    && mine->files == programOf("a third") ? 1 : 0, 1);
+            const gp::Result takePush = gp::push(setup, "Pad");
+            P.eq("merge.take_theirs_pushed", takePush.ok && sh(found, remote, { "show", "main:program.fm" }) == programOf("b third").front().text
+                                                 && sh(found, aFolder, { "show", "-s", "--format=%P", "HEAD~0" }).find(' ') != std::string::npos ? 1 : 0, 1);
+            // Nothing to settle: refused in words, nothing changed.
+            const std::size_t now = ps::load("Pad")->versions.size();
+            const gp::Result idle = gp::keepMine(setup, "Pad");
+            P.eq("merge.nothing_to_settle", !idle.ok && idle.why.find("nothing to settle") != std::string::npos
+                                                && ps::load("Pad")->versions.size() == now ? 1 : 0, 1);
+            onB();
+            gp::pull(setup, "Pad");
+            onA();
         }
 
         // ---- JOB (the Processor's git thread) ------------------------------------------------------------------------------

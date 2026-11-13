@@ -14,6 +14,16 @@
 //               saved as a new version ("Pulled <sha7>: <subject>", "and N more commits"), with its presets and info;
 //               or diverged (both sides have changes): nothing changed, said
 //   check       `git fetch` and the counts: how far ahead and behind
+//   diverged    a pull that finds both sides changed first commits the versions not yet committed, then merges the
+//               remote's branch with no commit: a clean merge whose tree reads as a project is committed and saved as a
+//               new version ("Merged with <sha7>"); anything else is taken back (`git merge --abort`, the folder as it
+//               was) and the link marked diverged, for the user to settle, each way leaving both sides as versions:
+//   keepMine    their tip saved as a version ("Theirs, <sha7>"), a merge commit that keeps this side's tree
+//               (`merge -s ours`), and this side saved on top again ("Kept mine over <sha7>")
+//   takeTheirs  a merge commit whose tree is theirs, saved as the newest version ("Took theirs, <sha7>"); this side
+//               stays the version before
+//   theirs      their tip read as a project (a checkout of the fetched commit beside the folder, taken away after),
+//               for the COMPARE card: no network, nothing written to the store
 //   clone       Add from Git: `git clone` into a new folder, its tree read and added as a new project (projectstore::add:
 //               "<name> 2" when the name is taken), linked. The other kind's project, or a repository that holds none, is
 //               refused and the clone taken away again
@@ -30,6 +40,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <string>
 
 namespace juce
@@ -61,6 +72,9 @@ namespace playground::gitprojects
         bool behind = false;                // a push refused: the remote moved (pull first)
         bool diverged = false;              // a pull refused: both sides changed
         bool cancelled = false;
+        bool merged = false;                // a pull that joined both sides cleanly
+        std::string theirs;                 // their tip's commit (diverged, keepMine, takeTheirs, theirs)
+        std::optional<projectstore::Project> theirsProject;   // theirs: their tip as a project
     };
 
     Result connect(const Setup& s, const std::string& project, const std::string& remote, const std::string& branch);
@@ -68,6 +82,9 @@ namespace playground::gitprojects
     Result pull(const Setup& s, const std::string& project);
     Result check(const Setup& s, const std::string& project);
     Result clone(const Setup& s, const std::string& remote, const std::string& branch);
+    Result keepMine(const Setup& s, const std::string& project);
+    Result takeTheirs(const Setup& s, const std::string& project);
+    Result theirs(const Setup& s, const std::string& project);
     Result disconnect(const std::string& project);
 
     // The folder a project's repository is made in: <projects folder>/Git/<name>-<8 hex of its id>, a number after it

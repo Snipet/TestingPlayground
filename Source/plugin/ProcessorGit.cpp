@@ -34,6 +34,7 @@ namespace playground
         v.toPush = std::max(0, k->ahead) + std::max(0, latest - k->committed);
         v.behind = k->behind;
         v.checked = k->checkedMs > 0 ? whenOf(k->checkedMs) : std::string();
+        v.diverged = k->diverged;
         for (const projectstore::GitCommit& c : k->log)
             v.log.push_back({ c.sha.substr(0, 7), c.subject, whenOf(c.ms) });
         return v;
@@ -163,6 +164,9 @@ namespace playground
                 case GitKind::check: r = gitprojects::check(setup, job.project); break;
                 case GitKind::clone: r = gitprojects::clone(setup, job.remote, job.branch); break;
                 case GitKind::disconnect: r = gitprojects::disconnect(job.project); break;
+                case GitKind::keepMine: r = gitprojects::keepMine(setup, job.project); break;
+                case GitKind::takeTheirs: r = gitprojects::takeTheirs(setup, job.project); break;
+                case GitKind::theirs: r = gitprojects::theirs(setup, job.project); break;
             }
         }
         const std::lock_guard<std::mutex> lock(gitMutex_);
@@ -171,6 +175,14 @@ namespace playground
         gitState_.behind = r.behind;
         gitState_.diverged = r.diverged;
         gitState_.nothing = r.nothing;
+        gitState_.merged = r.merged;
+        gitState_.theirs = r.theirs.substr(0, 7);
+        if (job.kind == GitKind::theirs && r.ok && r.theirsProject)
+        {
+            gitTheirsOf_ = r.project;
+            gitTheirsSha_ = r.theirs;
+            gitTheirsVersion_ = r.theirsProject->latest();
+        }
         gitState_.version = r.version;
         gitState_.line = r.ok ? r.line : std::string();
         gitState_.why = r.ok ? std::string() : r.why;
@@ -193,7 +205,7 @@ namespace playground
         }
         gitter_.join();
         GitState s = gitState();
-        if (s.kind == GitKind::pull && s.ok && s.version > 0)
+        if ((s.kind == GitKind::pull || s.kind == GitKind::keepMine || s.kind == GitKind::takeTheirs) && s.ok && s.version > 0)
         {
             const ProjectState open = project();
             if (!open.name.empty() && projectstore::sameName(open.name, s.project) && !open.changed && !open.dialsEdited

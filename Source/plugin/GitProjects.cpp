@@ -195,6 +195,107 @@ namespace playground::gitprojects
             return static_cast<int>(std::count_if(p.versions.begin(), p.versions.end(),
                                                   [&](const projectstore::Version& v) { return v.number > committed; }));
         }
+
+        // The remote's branch as last fetched: its commit.
+        std::string theirSha(const git::Context& c, const std::string& branch)
+        {
+            const git::Outcome o = git::call(c, { "rev-parse", "--verify", "-q", "refs/remotes/origin/" + branch });
+            std::string sha = o.ok ? o.out : std::string();
+            while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r'))
+                sha.pop_back();
+            return sha;
+        }
+
+        // Their tip (the remote's branch as last fetched) read as a project: checked out beside the working folder, read,
+        // and the checkout taken away again. None, with why, when it holds no project of this plugin's.
+        std::optional<projectstore::Project> readTheirs(const git::Context& c, const projectstore::Link& k, std::string& why)
+        {
+            const juce::File root = juce::File(str(k.folder)).getParentDirectory();
+            const juce::File there = root.getNonexistentChildFile(".theirs", "", false);
+            const git::Outcome o = git::checkoutInto(c, "origin", k.branch, there.getFullPathName().toStdString());
+            if (!o.ok)
+            {
+                why = wordsOf(o);
+                there.deleteRecursively();                // what the checkout made, if anything
+                return std::nullopt;
+            }
+            std::optional<projectstore::Project> p = projectexport::readTree(there, &why);
+            git::worktreeRemove(c, there.getFullPathName().toStdString());
+            there.deleteRecursively();
+            return p;
+        }
+
+        // A settled link: what git says now, HEAD's commits and the counts as last fetched, no longer diverged.
+        void settled(const git::Context& c, projectstore::Link& k, int committed)
+        {
+            k.committed = committed;
+            k.diverged = false;
+            readLog(c, k);
+            git::Counts n;
+            if (git::counts(c, "origin", k.branch, n).ok)
+            {
+                k.ahead = n.ahead;
+                k.behind = n.behind;
+            }
+            projectstore::setLink(k, nullptr);
+        }
+
+        // keepMine and takeTheirs: the remote fetched again, the versions not yet committed committed, their tip read.
+        struct Settle
+        {
+            Linked l;
+            projectstore::Link k;
+            git::Context c;
+            std::string sha;
+            projectstore::Project theirs;
+        };
+        std::optional<Settle> prepareSettle(const Setup& s, const std::string& project, Result& r)
+        {
+            std::string why;
+            std::optional<Linked> l = linked(project, why, true);
+            if (!l)
+            {
+                r = failed(why);
+                return std::nullopt;
+            }
+            Settle st{ std::move(*l), {}, {}, {}, {} };
+            st.k = *st.l.link;
+            st.c = contextOf(s, st.k.folder);
+            say(s, "Fetching from " + shortRemote(st.k.remote));
+            if (const git::Outcome o = git::fetch(st.c, "origin", st.k.branch); !o.ok)
+            {
+                r = gitFailed(o, "Nothing was changed");
+                return std::nullopt;
+            }
+            git::Counts n;
+            if (const git::Outcome o = git::counts(st.c, "origin", st.k.branch, n); !o.ok)
+            {
+                r = gitFailed(o, "Nothing was changed");
+                return std::nullopt;
+            }
+            if (n.behind == 0)
+            {
+                st.k.diverged = false;
+                projectstore::setLink(st.k, nullptr);
+                r = failed("There is nothing to settle: " + shortRemote(st.k.remote) + " has nothing this project lacks.");
+                return std::nullopt;
+            }
+            int made = 0;
+            if (!commitVersions(s, st.c, st.l.project, st.k.committed, made, r))
+                return std::nullopt;
+            if (made > 0)
+                projectstore::setLink(st.k, nullptr);
+            st.sha = theirSha(st.c, st.k.branch);
+            say(s, "Reading theirs (" + sha7(st.sha) + ")");
+            std::optional<projectstore::Project> t = readTheirs(st.c, st.k, why);
+            if (!t)
+            {
+                r = failed("Their side is not a project of this plugin's: " + why + " Nothing was changed.");
+                return std::nullopt;
+            }
+            st.theirs = std::move(*t);
+            return st;
+        }
     }
 
     std::string messageOf(int number, const std::string& note)
@@ -401,6 +502,7 @@ namespace playground::gitprojects
         r.project = l->project.name;
         if (n.behind == 0)
         {
+            k.diverged = false;
             projectstore::setLink(k, nullptr);
             r.ok = r.nothing = true;
             r.line = "Nothing new on " + shortRemote(k.remote) + "."
@@ -409,11 +511,57 @@ namespace playground::gitprojects
         }
         if (n.ahead > 0 || mine > 0)
         {
+            // Both sides moved: this side's versions committed first, then git's merge, kept only when it is clean and
+            // its tree reads as a project; else taken back whole, the link marked diverged for the user to settle.
+            int made = 0;
+            if (!commitVersions(s, c, l->project, k.committed, made, r))
+                return r;
+            if (git::Counts after; git::counts(c, "origin", k.branch, after).ok)
+            {
+                k.ahead = after.ahead;                    // the commits just made count too
+                k.behind = after.behind;
+            }
+            readLog(c, k);
             projectstore::setLink(k, nullptr);
-            r.diverged = true;
-            r.why = "Both sides have changed: " + shortRemote(k.remote) + " has " + plural(n.behind, "commit", "commits")
-                  + " this project lacks, and this project has " + plural(n.ahead + mine, "version", "versions")
-                  + " the remote lacks. Nothing was pulled.";
+            const std::string sha = theirSha(c, k.branch);
+            r.theirs = sha;
+            say(s, "Joining " + plural(n.behind, "commit", "commits") + " from " + shortRemote(k.remote));
+            bool conflicts = false;
+            const git::Outcome merged = git::merge(c, "origin", k.branch, conflicts);
+            if (!merged.ok && !conflicts)
+                return gitFailed(merged, "Nothing was pulled");
+            std::optional<projectstore::Project> tree;
+            if (merged.ok)
+                tree = projectexport::readTree(juce::File(str(k.folder)), &why);
+            if (!tree)
+            {
+                git::mergeAbort(c);
+                k.diverged = true;
+                readLog(c, k);
+                projectstore::setLink(k, nullptr);
+                r.diverged = true;
+                r.why = "Both sides have changed: " + shortRemote(k.remote) + " has " + plural(n.behind, "commit", "commits")
+                      + " this project lacks, and this project has " + plural(std::max(k.ahead, 0), "commit", "commits")
+                      + " the remote lacks, in ways git cannot join. Nothing was changed: Keep mine, Take theirs, or Compare "
+                        "them first (each way keeps both sides as versions).";
+                return r;
+            }
+            const std::string message = "Merged with " + sha7(sha);
+            if (const git::Outcome o = git::commitAll(c, message, 0, {}); !o.ok)
+            {
+                git::mergeAbort(c);
+                return gitFailed(o, "The merge was not committed; nothing was changed");
+            }
+            const std::optional<int> version = adopt(l->project.name, *tree, message, why);
+            if (!version)
+                return failed("Merged in " + k.folder + ", but the new version was not saved: " + why);
+            settled(c, k, *version);
+            k.syncedMs = k.checkedMs;
+            projectstore::setLink(k, nullptr);
+            r.ok = r.merged = true;
+            r.version = *version;
+            r.line = "Joined " + plural(n.behind, "commit", "commits") + " from " + shortRemote(k.remote) + " with this side's "
+                   + "changes as version " + std::to_string(*version) + ". Push to send it.";
             return r;
         }
         say(s, "Bringing in " + plural(n.behind, "commit", "commits"));
@@ -438,6 +586,7 @@ namespace playground::gitprojects
             return failed("Pulled into " + k.folder + ", but the new version was not saved: " + why);
         k.committed = *version;
         k.ahead = k.behind = 0;
+        k.diverged = false;
         k.syncedMs = k.checkedMs;
         projectstore::setLink(k, nullptr);
         r.ok = true;
@@ -542,6 +691,108 @@ namespace playground::gitprojects
         }
         r.ok = true;
         r.line = "Added \"" + *name + "\" from " + shortRemote(remote) + " (" + k.branch + ").";
+        return r;
+    }
+
+    Result keepMine(const Setup& s, const std::string& project)
+    {
+        Result r;
+        std::optional<Settle> st = prepareSettle(s, project, r);
+        if (!st)
+            return r;
+        std::string why;
+        const std::string name = st->l.project.name;
+        say(s, "Keeping theirs as a version");
+        const std::optional<int> theirs = adopt(name, st->theirs, "Theirs, " + sha7(st->sha), why);
+        if (!theirs)
+            return failed("Their side was not saved: " + why + " Nothing was changed.");
+        say(s, "Joining their history, keeping this side");
+        bool conflicts = false;
+        if (const git::Outcome o = git::merge(st->c, "origin", st->k.branch, conflicts, true); !o.ok)
+        {
+            git::mergeAbort(st->c);
+            return gitFailed(o, "Their side is version " + std::to_string(*theirs) + ", but the merge was not made");
+        }
+        const std::string message = "Kept mine over " + sha7(st->sha);
+        if (const git::Outcome o = git::commitAll(st->c, message, 0, {}); !o.ok)
+        {
+            git::mergeAbort(st->c);
+            return gitFailed(o, "Their side is version " + std::to_string(*theirs) + ", but the merge was not committed");
+        }
+        std::optional<projectstore::Project> mine = projectexport::readTree(juce::File(str(st->k.folder)), &why);
+        const std::optional<int> top = mine ? adopt(name, *mine, message, why) : std::nullopt;
+        if (!top)
+            return failed("Merged, but this side was not saved on top again: " + why);
+        settled(st->c, st->k, *top);
+        r = {};
+        r.ok = true;
+        r.project = name;
+        r.version = *top;
+        r.theirs = st->sha;
+        r.line = "Kept this side as version " + std::to_string(*top) + "; theirs is version " + std::to_string(*theirs)
+               + ". Push to send it.";
+        return r;
+    }
+
+    Result takeTheirs(const Setup& s, const std::string& project)
+    {
+        Result r;
+        std::optional<Settle> st = prepareSettle(s, project, r);
+        if (!st)
+            return r;
+        std::string why;
+        const std::string name = st->l.project.name;
+        const int mineVersion = st->l.project.latest().number;
+        say(s, "Joining their history, taking their side");
+        bool conflicts = false;
+        if (const git::Outcome o = git::merge(st->c, "origin", st->k.branch, conflicts, true); !o.ok)
+        {
+            git::mergeAbort(st->c);
+            return gitFailed(o, "Nothing was changed");
+        }
+        // The merge keeps this side's tree; their tree written over it (what this side's tree wrote taken away).
+        if (!projectexport::writeTree(st->theirs, st->theirs.latest().number, juce::File(str(st->k.folder)), &why))
+        {
+            git::mergeAbort(st->c);
+            return failed("Their side could not be written into " + st->k.folder + ": " + why + " Nothing was changed.");
+        }
+        const std::string message = "Took theirs, " + sha7(st->sha);
+        if (const git::Outcome o = git::commitAll(st->c, message, 0, {}); !o.ok)
+        {
+            git::mergeAbort(st->c);
+            return gitFailed(o, "The merge was not committed; nothing was changed");
+        }
+        const std::optional<int> version = adopt(name, st->theirs, message, why);
+        if (!version)
+            return failed("Merged, but their side was not saved as a version: " + why);
+        settled(st->c, st->k, *version);
+        r.ok = true;
+        r.project = name;
+        r.version = *version;
+        r.theirs = st->sha;
+        r.line = "Took their side as version " + std::to_string(*version) + "; this side stays version " + std::to_string(mineVersion)
+               + ". Push to send it.";
+        return r;
+    }
+
+    Result theirs(const Setup& s, const std::string& project)
+    {
+        std::string why;
+        std::optional<Linked> l = linked(project, why, true);
+        if (!l)
+            return failed(why);
+        const git::Context c = contextOf(s, l->link->folder);
+        Result r;
+        r.project = l->project.name;
+        r.theirs = theirSha(c, l->link->branch);
+        if (r.theirs.empty())
+            return failed("Nothing was fetched from " + shortRemote(l->link->remote) + " yet: press Check first.");
+        say(s, "Reading theirs (" + sha7(r.theirs) + ")");
+        r.theirsProject = readTheirs(c, *l->link, why);
+        if (!r.theirsProject)
+            return failed("Their side is not a project of this plugin's: " + why);
+        r.ok = true;
+        r.line = "Their side, " + sha7(r.theirs) + ", against this one.";
         return r;
     }
 

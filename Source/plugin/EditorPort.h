@@ -482,9 +482,13 @@ namespace playground
         int behind = -1;                         // commits to pull at the last fetch (-1: never fetched)
         std::string checked;                     // the last fetch, "2026-10-25 14:02" ("" never)
         std::vector<GitCommitEntry> log;         // the newest commits, newest first (at most 8)
+        bool diverged = false;                   // the last pull could not join both sides: Keep mine, Take theirs or
+                                                 // Compare settles it (package 05c)
         friend bool operator==(const GitLinkView&, const GitLinkView&) = default;
     };
-    enum class GitKind : uint8_t { find, connect, push, pull, check, clone, disconnect };
+    // keepMine, takeTheirs: a diverged project settled (both sides kept as versions); theirs: their side read for the
+    // COMPARE card (gitTheirs), no network, nothing written.
+    enum class GitKind : uint8_t { find, connect, push, pull, check, clone, disconnect, keepMine, takeTheirs, theirs };
     struct GitJob
     {
         GitKind kind = GitKind::find;
@@ -506,6 +510,8 @@ namespace playground
         bool behind = false;                     // a push refused: the remote moved (pull first)
         bool diverged = false;                   // a pull refused: both sides changed
         bool nothing = false;                    // a pull that found nothing new
+        bool merged = false;                     // a pull that joined both sides cleanly
+        std::string theirs;                      // their tip's commit, 7 hex (a diverged pull, a settle, theirs)
         int version = 0;                         // a pull's (or a clone's) new version
         bool opened = false;                     // ... opened in the editor (the project open had no unsaved change)
         std::string line;                        // ok: what was done, in words
@@ -1040,6 +1046,15 @@ namespace playground
         virtual GitState gitState() const { return {}; }
         virtual void cancelGit() {}
         virtual std::string gitPathSet() const { return {}; }
+        // Their side of a diverged project as the last `theirs` job read it (the COMPARE card's side DiffCard::kTheirs):
+        // held in memory, no file read; `missing` when none was read for that project.
+        virtual VersionContent gitTheirs(const std::string& project) const
+        {
+            (void)project;
+            VersionContent v;
+            v.read = v.missing = true;
+            return v;
+        }
         virtual bool setGitPath(const std::string& path, std::string& why)
         {
             (void)path;

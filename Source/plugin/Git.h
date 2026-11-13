@@ -107,6 +107,18 @@ namespace playground::git
     // HEAD fast-forwarded to the remote's branch as last fetched; refused (nothing changed) when it is no fast-forward.
     Outcome fastForward(const Context& c, const std::string& remote, const std::string& branch);
 
+    // The remote's branch (as last fetched) merged into HEAD without a commit (--no-commit --no-ff), so the caller looks
+    // at the tree before it commits it (commitAll then makes the merge commit) or takes it back (mergeAbort). `conflicts`:
+    // git stopped on conflicting changes (the merge is in progress, to be aborted). `ours`: git's "ours" strategy, a
+    // merge that keeps this side's tree whole (the other side's history joined, none of its changes taken).
+    Outcome merge(const Context& c, const std::string& remote, const std::string& branch, bool& conflicts, bool ours = false);
+    // A merge in progress taken back: the folder and the index as they were before it.
+    Outcome mergeAbort(const Context& c);
+    // The remote's branch (as last fetched) checked out, detached, into `folder` (a new folder: `git worktree add`), so
+    // its files can be read without touching the repository's own folder; worktreeRemove takes it away again.
+    Outcome checkoutInto(const Context& c, const std::string& remote, const std::string& branch, const std::string& folder);
+    Outcome worktreeRemove(const Context& c, const std::string& folder);
+
     // `git clone` of `address` into `folder` (its parent must exist; the folder must not, or be empty), its `branch`
     // when one is given. The Context's own folder is not used.
     Outcome clone(const Context& c, const std::string& address, const std::string& folder,

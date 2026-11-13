@@ -1793,6 +1793,7 @@ namespace playground::projectstore
                     k.ahead = l.hasProperty("ahead") ? static_cast<int>(l["ahead"]) : -1;
                     k.behind = l.hasProperty("behind") ? static_cast<int>(l["behind"]) : -1;
                     k.checkedMs = static_cast<juce::int64>(l["checkedMs"]);
+                    k.diverged = static_cast<bool>(l["diverged"]);
                     if (const juce::Array<juce::var>* log = l["log"].getArray())
                         for (const juce::var& c : *log)
                             if (k.log.size() < kMaxLog)
@@ -1831,6 +1832,8 @@ namespace playground::projectstore
                 o->setProperty("ahead", k.ahead);
                 o->setProperty("behind", k.behind);
                 o->setProperty("checkedMs", static_cast<juce::int64>(k.checkedMs));
+                if (k.diverged)
+                    o->setProperty("diverged", true);
                 juce::Array<juce::var> log;
                 for (const GitCommit& c : k.log)
                 {

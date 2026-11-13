@@ -14,6 +14,8 @@
 //   gui.git.least.png          the least window
 //   gui.git.settings.png       the Settings card's Projects page, its Git rows (git found)
 //   gui.git.mark.png           the top bar's pill, the explorer's PROJECTS and PROJECTS' rows: the branch mark
+//   gui.git.diverged.png       (05c) a pull git could not join: Compare..., Keep mine, Take theirs (and PAPER)
+//   gui.git.compare.png        the COMPARE card, this side's newest version against theirs
 //   gui.git.*.paper.png        PAPER
 // and checks:
 //   NOTLINKED  the card for a project with no link: its fields, Connect; a factory project: no fields, it says to copy
@@ -25,8 +27,12 @@
 //   SETTINGS   the Projects page's Git rows: Find git finds it; Choose git... and the usual places
 //   KEYS       Tab the fields, Return the main button, Escape closes (a job goes on)
 //   A11Y       the card's ids in a range of their own
+//   DIVERGED   (05c) a line on each side apart: joined, a version holding both, opened; the same line on both: the card
+//              offers Compare, Keep mine and Take theirs (no Push); Compare opens COMPARE on theirs (no A/B); Keep mine
+//              leaves both sides versions and the link settled
 #include "Probe.h"
 
+#include "editor/DiffCard.h"
 #include "editor/GitCard.h"
 #include "editor/GitMark.h"
 #include "editor/Panel.h"
@@ -185,11 +191,13 @@ PROBE(gui, git)
     if (!haveGit)
     {
         for (const char* row : { "link.connected", "link.state", "link.disconnect", "running.step", "running.cancelled",
-                                 "mark.projects", "mark.explorer", "mark.pill", "settings.found" })
+                                 "mark.projects", "mark.explorer", "mark.pill", "settings.found", "diverged.clean_merge",
+                                 "diverged.offered", "diverged.three_ways", "diverged.compare", "diverged.keep_mine" })
             probe::skip(P, row, "no git on this machine (" + prefix + "GIT): " + found.why);
         for (const char* png : { "gui.git.linked.png", "gui.git.linked.paper.png", "gui.git.running.png", "gui.git.confirm.png",
                                  "gui.git.least.png", "gui.git.settings.png", "gui.git.mark.png", "gui.git.mark.paper.png",
-                                 "gui.git.not_linked.paper.png", "gui.git.add.paper.png" })
+                                 "gui.git.not_linked.paper.png", "gui.git.add.paper.png", "gui.git.diverged.png",
+                                 "gui.git.diverged.paper.png", "gui.git.compare.png" })
             probe::skip(P, std::string(png) + ".written", "no git (" + prefix + "GIT)");
         return P.finish();
     }
@@ -355,6 +363,100 @@ PROBE(gui, git)
         paperHost.settle();
         writePng(P, paperHost, "gui.git.mark.paper.png");
         funkgui::UiPreferences::get().setTheme(0);
+    }
+
+    // ---- DIVERGED (package 05c): the remote moved from another clone while this side saved a version ----------------
+    {
+        const juce::File other = temp.getChildFile("other");
+        pg::git::Context oc;
+        oc.git = found.path;
+        oc.allowFile = true;
+        pg::git::clone(oc, fileUrl(bare2), other.getFullPathName().toStdString());
+        oc.folder = other.getFullPathName().toStdString();
+        const auto theirs = [&](const std::function<std::string(std::string)>& change) {
+            const juce::File f = other.getChildFile("program.fm");
+            f.replaceWithText(change(f.loadFileAsString().toStdString()), false, false, "\n");
+            pg::git::commitAll(oc, "Changed elsewhere", 0, {});
+            pg::git::call(oc, { "push", "-q", "origin", "HEAD:main" });
+        };
+        const auto mine = [&](const std::string& firstLine) {
+            pg::Draft d = port.draft();
+            std::string& t = d.files[0].text;
+            t = firstLine + t.substr(t.find('\n'));
+            port.setDraft(d);
+            port.run(d.files);
+            processor.settle();
+            port.saveVersion(project, saved, why);
+            processor.settle();
+        };
+        const auto pull = [&] {
+            panel.openGit(project);
+            host.settle();
+            card.press(GC::Button::pull);
+            pump(processor, host, 30.0, [&] { return !card.running(); });
+        };
+        // Apart: theirs a line at the end, mine the first line: git joins them, a version holding both, opened.
+        theirs([](std::string t) { return t + "// from elsewhere\n"; });
+        mine("// Git: a louder level");
+        pull();
+        processor.settle();
+        const std::string joined = port.draft().files.empty() ? std::string() : port.draft().files[0].text;
+        std::printf("diverged: clean says \"%s\"\n", card.outcome().c_str());
+        P.eq("diverged.clean_merge", !card.failed() && card.outcome().rfind("Joined ", 0) == 0 && joined.find("louder") != std::string::npos
+                                         && joined.find("from elsewhere") != std::string::npos && !card.link().diverged ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        // The same line on both sides: git cannot join them; the card offers its three ways.
+        theirs([](std::string t) { return "// Git: theirs" + t.substr(t.find('\n')); });
+        mine("// Git: mine");
+        pull();
+        std::printf("diverged: conflict says \"%s\"\n", card.outcome().c_str());
+        P.eq("diverged.offered", card.failed() && card.link().diverged && card.isOpen() ? 1 : 0, 1);
+        {
+            const GC::Places at = card.places(W, H);
+            bool keep = false, take = false, compare = false, push = false;
+            for (const auto& [b, r] : at.buttons)
+            {
+                keep = keep || b == GC::Button::keepMine;
+                take = take || b == GC::Button::takeTheirs;
+                compare = compare || b == GC::Button::compare;
+                push = push || b == GC::Button::push;
+            }
+            P.eq("diverged.three_ways", keep && take && compare && !push ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.git.diverged.png");
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.settle();
+            paper.openGit(project);
+            paperHost.settle();
+            writePng(P, paperHost, "gui.git.diverged.paper.png");
+            paper.gitCard().press(GC::Button::close);
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        // Compare...: their side read, the COMPARE card on this side's newest version against theirs.
+        card.press(GC::Button::compare);
+        pump(processor, host, 20.0, [&] { return panel.compareCard().isOpen() && !panel.compareCard().reading(); });
+        P.eq("diverged.compare", !card.isOpen() && panel.compareCard().isOpen() && panel.compareCard().side(1) == pg::ui::DiffCard::kTheirs
+                                     && panel.compareCard().sideLabel(1) == "Theirs" && !panel.compareCard().abable() ? 1 : 0, 1);
+        writePng(P, host, "gui.git.compare.png");
+        host.keys("escape");
+        host.settle();
+        // Keep mine: both sides versions, mine the newest, the link settled.
+        const int before = static_cast<int>(port.projectPolled(project).versions.size());
+        panel.openGit(project);
+        host.settle();
+        card.press(GC::Button::keepMine);
+        pump(processor, host, 30.0, [&] { return !card.running(); });
+        processor.settle();
+        pump(processor, host, 2.0, [&] { return false; });
+        std::printf("diverged: keep mine says \"%s\"\n", card.outcome().c_str());
+        P.eq("diverged.keep_mine", !card.failed() && !card.link().diverged
+                                       && static_cast<int>(port.projectPolled(project).versions.size()) == before + 2 ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
     }
 
     pg::projectstore::setDirectoryForTests(juce::File());

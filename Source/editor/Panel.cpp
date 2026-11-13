@@ -5950,6 +5950,8 @@ namespace playground::ui
             dirty_ = true;
         if (const std::string n = git_.takeNotice(); !n.empty())
             notice(n);
+        if (const auto [compareProject, mine] = git_.takeCompare(); !compareProject.empty())
+            openCompare(compareProject, mine, DiffCard::kTheirs);   // package 05c: their side against this one
         if (git_.takeLanded())
         {
             projectsAt_ = -100.0;                        // the explorer's marks and a pulled version read again
@@ -9127,6 +9129,8 @@ namespace playground::ui
         {
             if (git_.running())
                 std::snprintf(line, sizeof line, "GIT   CANCEL STOPS GIT   ESCAPE CLOSES (IT GOES ON)");
+            else if (git_.mode() == GitCard::Mode::project && git_.link().diverged)
+                std::snprintf(line, sizeof line, "GIT   BOTH SIDES CHANGED   RETURN COMPARES   EITHER WAY KEEPS BOTH AS VERSIONS   ESCAPE CLOSES");
             else if (git_.mode() == GitCard::Mode::project && git_.link().linked)
                 std::snprintf(line, sizeof line, "GIT   RETURN PUSHES   DISCONNECT ASKS TWICE   ESCAPE CLOSES");
             else

@@ -6,6 +6,9 @@
 //   linked        the remote (shortened: github.com/me/pad) and its branch, what is known ("3 versions to push",
 //                 "2 commits to pull", "Up to date, checked 14:02"), the working folder, the newest commits; Push,
 //                 Pull, Check, Show folder, Disconnect (pressed twice: the second press confirms; the folder stays)
+//   diverged      a pull git could not join (GitLinkView::diverged): Compare... (their side read, then the COMPARE
+//                 card, this side's newest version against theirs), Keep mine, Take theirs, Disconnect; each way keeps
+//                 both sides as versions
 //   add           Add from Git...: REMOTE and BRANCH (the remote's own unless said); Add: a new project made of it
 //   running       what git does now, and Cancel (which kills it); every other button waits
 //   after         the outcome in words, or git's own refusal as it said it (its last lines), with what to do when it
@@ -45,7 +48,7 @@ namespace playground::ui
         enum class Mode : uint8_t { project, add };
         enum class Field : uint8_t { remote, branch };
         // Its buttons, in the row's order from the right.
-        enum class Button : uint8_t { none, close, connect, add, push, pull, check, folder, disconnect };
+        enum class Button : uint8_t { none, close, connect, add, push, pull, check, folder, disconnect, keepMine, takeTheirs, compare };
 
         explicit GitCard(EditorPort& port) : port_(port) {}
 
@@ -78,6 +81,9 @@ namespace playground::ui
         // started ended (the Panel polls the projects again).
         std::string takeNotice();
         bool takeLanded();
+        // Compare... landed (their side read): the project and the version that is this side, for the Panel's COMPARE
+        // card (DiffCard::kTheirs the other side); the card has closed itself. {"", 0}: none.
+        std::pair<std::string, int> takeCompare();
 
         Mode mode() const noexcept { return mode_; }
         const std::string& project() const noexcept { return project_; }
@@ -127,6 +133,7 @@ namespace playground::ui
         bool confirmDisconnect_ = false;
         std::string notice_;
         bool landed_ = false;
+        std::pair<std::string, int> compare_{ "", 0 };
         uint32_t revision_ = 0;
     };
 }
