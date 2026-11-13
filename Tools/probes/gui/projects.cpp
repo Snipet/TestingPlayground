@@ -59,7 +59,8 @@
 //             again refused (an export never replaces a file), the file as it was; Cancel while it runs: no file; the
 //             context menu's Export takes every one chosen; Import... brings the bundle's three back, counted
 //   PREVIEW   the chosen version's panel in a pane over the versions (editor/Preview.h; gui.projects.preview.png and
-//             .paper.png; .none.png, a program with no panel.gui; .reading.png, the choice not at rest yet; .factory.png;
+//             .paper.png; .rows.png, a program with no panel.gui (its dials in rows); .none.png, a panel.gui of which
+//             nothing reads and no dials (none, saying why); .reading.png, the choice not at rest yet; .factory.png;
 //             .least.png, no pane): nothing asked until the choice rests (the keys through the list ask for none), then
 //             drawn and registered; a version's click shows that version's, the one before let go; one drawn a poll,
 //             none in a poll that drew Claude's view_panel; twelve kept; none read on the message thread; a factory
@@ -1171,7 +1172,11 @@ PROBE(gui, projects)
         const bool padSaved = save("Panel Pad", { { "program.fm", program() }, { "panel.gui", gui1 } })
                            && save("Panel Pad", { { "program.fm", program() }, { "panel.gui", gui2 } }) && saved.number == 2
                            && save("Panel Two", { { "program.fm", program() }, { "panel.gui", gui1 } })
-                           && save("Panel Three", { { "program.fm", program() }, { "panel.gui", gui2 } });
+                           && save("Panel Three", { { "program.fm", program() }, { "panel.gui", gui2 } })
+                           && save("Panel Broken", { { "program.fm", pg::product::kIsInstrument
+                                                                         ? "module Voice\n{\n    bool process(float* restrict left, float* restrict right, int n) { return false; }\n};\n"
+                                                                         : "module Effect\n{\n    void process(float* restrict left, float* restrict right, int n) {}\n};\n" },
+                                                     { "panel.gui", "not a panel\n" } });
         P.eq("preview.setup", padSaved ? 1 : 0, 1);
         using St = pg::PreviewState::Status;
         // The Panel's frames and the processor's polls (a frame a 60th of the Panel's clock), until `done`: a generous
@@ -1197,12 +1202,18 @@ PROBE(gui, projects)
                                  ? 1 : 0, 1);
         P.ge("preview.versions_rows", at.rows[1], 4);
         P.ge("preview.presets_rows", at.rows[2], 4);
-        // A program with no panel.gui: none, saying so.
+        // A program with no panel.gui: its dials in rows.
         const std::size_t kept0 = processor.previewsKept();
         b.chooseProjectNamed("Sketch 1", W, H);
         host.tick(2);
         P.eq("preview.rest_asks_nothing", shown().status == St::reading && processor.previewsKept() == kept0 ? 1 : 0, 1);
-        P.eq("preview.no_gui", pump(host, settled) && shown().status == St::failed && shown().why == "this program has no panel.gui" ? 1 : 0, 1);
+        P.eq("preview.rows", pump(host, settled) && shown().status == St::ready ? 1 : 0, 1);
+        writePng(P, host, "gui.projects.preview.rows.png");
+        // A panel.gui of which nothing reads, and no dials: none, saying why.
+        b.chooseProjectNamed("Panel Broken", W, H);
+        host.tick(1);
+        P.eq("preview.none", pump(host, settled) && shown().status == St::failed
+                                 && shown().why.rfind("panel.gui does not read", 0) == 0 ? 1 : 0, 1);
         writePng(P, host, "gui.projects.preview.none.png");
         // Panel Pad: its newest version, drawn and registered.
         b.chooseProjectNamed("Panel Pad", W, H);
@@ -1295,12 +1306,12 @@ PROBE(gui, projects)
         std::printf("previews: %llu drawn, %d file(s) read on the message thread\n",
                     static_cast<unsigned long long>(processor.previewsDrawn() - drawn0), onThread);
         P.eq("preview.none_read_on_the_message_thread", onThread, 0);
-        // A factory project's (the placeholders have no panel.gui: none, saying so; ready once one has).
+        // A factory project's (the placeholders have no panel.gui: their dials in rows).
         if (!f0.empty())
         {
             b.chooseProjectNamed(f0, W, H);
             host.tick(1);
-            P.eq("preview.factory", pump(host, settled) && b.previewWanted().first == f0 ? 1 : 0, 1);
+            P.eq("preview.factory", pump(host, settled) && b.previewWanted().first == f0 && shown().status == St::ready ? 1 : 0, 1);
             writePng(P, host, "gui.projects.preview.factory.png");
         }
         // Closed: nothing asked or drawn; the picture registered kPictureHoldSeconds more (of the Panel's clock).

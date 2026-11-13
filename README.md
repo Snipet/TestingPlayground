@@ -985,7 +985,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   version's panel (the newest until you choose one), without opening it or compiling anything: its dials at the
   version's values, its displays showing sample values (a steady tone, fields moving slowly), since nothing plays. It
   comes a moment after the choice rests ("Reading..." and "Drawing..." meanwhile, so the arrow keys through a list
-  draw nothing on the way), factory projects' too; a program with no `panel.gui` has none yet, and says so. A window
+  draw nothing on the way), factory projects' too. A program with no `panel.gui` shows its dials in rows, or in the
+  sections and displays its `#pragma panel` lines ask for, as the PANEL view does; a `panel.gui` of which nothing
+  reads, in a program with no dials, has none and says why. A window
   too short for it and four rows of each list leaves it out. The projects come in **groups** that fold (a click
   on a group's header; a right-click there folds or opens every group): **Favourites** on top (the projects you star, with the star at a row's right: each stays in
   its own group too), **Factory** (below), a group a **category** (the project's info's, as Export keeps it; "Pad"

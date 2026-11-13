@@ -11,7 +11,9 @@
 //               `notes`). The Processor runs it on a thread of its own (ProcessorPreviews.cpp)
 //   draw()      the message thread only (bgfx, as editor/Picture.h): the panel laid out and drawn by picture::draw (the
 //               GPU, else SoftRaster with each shader a striped placeholder), then scaled to `maxWidth`
-// A program with no .gui file has no preview yet: prepare() says so ("this program has no panel.gui").
+// A program with no .gui file is drawn as its plain rows or its #pragma panel lines' sections (drawRows,
+// PreviewRows.cpp: layoutDials, as the PANEL view lays them out, and a copy of Panel.cpp's drawing of them, which
+// gui.preview ROWS holds to view_panel's picture cell by cell).
 #pragma once
 
 #include "dsp/Controls.h"
@@ -20,6 +22,7 @@
 #include "fminus/Shaders.h"
 
 #include <funkgui/canvas/SoftRaster.h>
+#include <funkgui/core/Geometry.h>
 
 #include <array>
 #include <memory>
@@ -55,8 +58,9 @@ namespace playground::preview
         Controls controls{};
         std::array<float, kMaxControls> values01{};
         Sources files;
-        std::string notes;                       // readGuiSpec's and the shaders' builds'
+        std::string notes;                       // readGuiSpec's (readPanelSpec's) and the shaders' builds'
         bool instrument = false;
+        bool rows = false;                       // no .gui file: the dials' rows (drawRows)
     };
 
     // `tools` the shaders' (the Processor's, as its Compiler has them; a tools without shaderc leaves each a
@@ -72,4 +76,17 @@ namespace playground::preview
     // Message thread only. `theme` FunkGui's (0 graphite, 1 paper); `maxWidth` 0 keeps the picture whole (the probes
     // compare it with view_panel's).
     Picture draw(const Prepared& p, int theme, int maxWidth);
+
+    // The rows' picture (draw() calls it for a Prepared of `rows`), and where its cells are in the area (logical px
+    // from its top left; message thread only: the labels are measured with FunkGui's font).
+    Picture drawRows(const Prepared& p, int theme, int maxWidth);
+    struct RowsPlaces
+    {
+        std::array<funkgui::Rect, kMaxControls> dials{};       // a used slot's cell (w 0: none)
+        std::vector<funkgui::Rect> displays;
+    };
+    RowsPlaces rowsPlaces(const Prepared& p);
+
+    // The area's pixels of a frame (the frame may be a px wider or taller), scaled to `maxWidth` (0: whole).
+    funkgui::Image areaOf(const funkgui::Image& frame, int w, int h, int maxWidth);
 }

@@ -6,6 +6,7 @@
 //   gui.preview.example.view.png   view_panel's picture of it
 //   gui.preview.example.diff.png   where they differ (red), the displays masked (blue)
 //   gui.preview.values.png         VALUES' program at the version's values
+//   gui.preview.rows.*.png         ROWS' programs, previewed and (.view.png) as view_panel draws them
 // and checks:
 //   MATCH    the prompt's example (ChatAgent::promptExample): the preview at its defaults is view_panel's panel picture
 //            of the same files at the same size, pixel for pixel but the displays and live= marks (the sandbox's demo
@@ -17,9 +18,12 @@
 //            wave moved too in another
 //   SHADER   a .gui with a shader: built through the process's cache with the tools given (CTest's shaderc), or, with
 //            no shaderc, a note that it shows as a placeholder, the picture drawn all the same
-//   FAILS    no .gui file ("this program has no panel.gui"), a .gui of which nothing reads and a program of no dials
-//            (its first note; with dials, they are drawn as the PANEL view shows them), no files: no preview, saying
-//            why; draw() of one draws nothing
+//   ROWS     a program with no .gui, in plain rows and in #pragma panel sections (every dial style, a colour, a meter
+//            and a led): the preview's cells are the playing panel's in the PANEL view (the same names, sizes and
+//            places, one offset for all), and each dial's pixels view_panel's within a small bound (the displays
+//            aside: demo values against silence); gui.preview.rows.plain.png, .rows.sections.png and their .view.png
+//   FAILS    a .gui of which nothing reads and a program of no dials (its first note; with dials, they are drawn as the
+//            PANEL view shows them), no files: no preview, saying why; draw() of one draws nothing
 #include "Pictures.h"
 #include "Probe.h"
 
@@ -176,6 +180,34 @@ namespace
     const char* const kShaderGui = "panel {\n    row {\n        section \"GLOW\" { shader \"still.sc\" inputs=\"level\" width=160 height=90 }\n"
                                    "        section \"LEVEL\" { knob level }\n    }\n}\n";
 
+    // Two programs with no .gui: dials in plain rows, and #pragma panel lines' sections of every style and displays.
+    std::string rowsProgram(bool sections)
+    {
+        const std::string params = "    param float cutoff [[fminus::range(20, 20000)]] [[fminus::default(1000)]];\n"
+                                   "    param float resonance [[fminus::range(0, 1)]] [[fminus::default(0.3)]];\n"
+                                   "    param float drive [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n"
+                                   "    param float level [[fminus::range(0, 1)]] [[fminus::default(0.7)]];\n"
+                                   "    param int wave [[fminus::range(0, 2)]] [[fminus::default(1)]];\n"
+                                   "    param bool sync [[fminus::default(0)]];\n"
+                                   "    float env;\n";
+        const std::string pragmas = sections ? "#pragma panel section \"FILTER\" cutoff resonance env\n"
+                                               "#pragma panel section \"OSC\" wave sync drive\n"
+                                               "#pragma panel section \"OUT\" level out\n"
+                                               "#pragma panel style wave buttons\n#pragma panel style sync switch\n"
+                                               "#pragma panel style drive vintage\n#pragma panel style level fader\n"
+                                               "#pragma panel options wave \"SAW\" \"SQUARE\" \"TRI\"\n"
+                                               "#pragma panel color \"FILTER\" orange\n"
+                                               "#pragma panel meter out \"OUTPUT\"\n#pragma panel led env \"ENV\"\n"
+                                             : "";
+        return kInstrument
+            ? pragmas + "module Voice\n{\n" + params
+                  + "    bool held;\n    void start(float note, float v) { held = true; env = 1; }\n    void stop() { held = false; }\n"
+                    "    bool process(float* restrict left, float* restrict right, int n) { return held; }\n};\n"
+            : pragmas + "module Effect\n{\n" + params
+                  + "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                    "        for (int i = 0; i < n; ++i) { left[i] *= level[i]; right[i] *= level[i]; }\n        env = level[0];\n    }\n};\n";
+    }
+
     int slotOf(const pg::preview::Prepared& p, const std::string& name)
     {
         for (int c = 0; c < pg::kMaxControls; ++c)
@@ -266,6 +298,113 @@ PROBE(gui, preview)
     }
 
     pg::picture::forceSoftRasterForTests(true);
+    // ---- ROWS: a program with no .gui, previewed and as view_panel draws it playing ------------------------------------
+    for (const bool sections : { false, true })
+    {
+        const std::string key = sections ? "rows.sections" : "rows.plain";
+        pg::Processor processor;
+        processor.compiler().setFreezing(false);
+        pg::EditorPort& port = processor.editorPort();
+        const pg::Sources files = pg::singleFile(rowsProgram(sections));
+        port.setDraft({ files, 0 });
+        port.run(files);
+        processor.settle();
+        if (!port.status().ok)
+            std::printf("%s: %s\n", key.c_str(), port.status().errors.c_str());
+        P.eq(key + ".compiled", port.status().ok && port.panel().gui.empty() ? 1 : 0, 1);
+        // Every dial at its default as the version saved it (a slot the program before used may hold that one's value,
+        // which a bool's knob draws off its steps).
+        {
+            const pg::Controls cs = port.controls();
+            for (int c = 0; c < pg::kMaxControls && c < static_cast<int>(processor.getParameters().size()); ++c)
+                if (const pg::Control& k = cs[static_cast<std::size_t>(c)]; k.used)
+                    processor.getParameters()[c]->setValueNotifyingHost(pg::normOf(k, k.def));
+            processor.poll();
+        }
+        const pg::PanelPicture view = pg::picturePanel(processor.ports(), port, 0, 0, false, "");
+        // The playing panel's cells (a Panel of the probe's own, in the PANEL view), from its card's corner as the
+        // picture is cropped.
+        std::vector<std::pair<std::string, funkgui::Rect>> played;   // a dial's name (or "display N") and its cell
+        funkgui::Rect card;
+        {
+            pg::ui::Panel panel(processor.ports(), port);
+            funkgui::HeadlessHost host(panel, 0, pg::sandbox::kDpi);
+            host.settle(120);
+            panel.setPanelView(true);
+            host.settle(120);
+            card = panel.programCard();
+            const pg::ui::DialsLayout& l = panel.dialsLayout();
+            const pg::Controls cs = port.controls();
+            for (int c = 0; c < pg::kMaxControls; ++c)
+                if (cs[static_cast<std::size_t>(c)].used)
+                {
+                    const pg::ui::ItemPlace& at = l.dials[static_cast<std::size_t>(c)];
+                    played.push_back({ cs[static_cast<std::size_t>(c)].name, { at.x - card.x, at.top - card.y, at.w, at.h } });
+                }
+            for (std::size_t d = 0; d < port.panel().displays.size(); ++d)
+                played.push_back({ "display " + std::to_string(d),
+                                   { l.displays[d].x - card.x, l.displays[d].top - card.y, l.displays[d].w, l.displays[d].h } });
+            port.setPanelView(false);
+        }
+        pg::preview::Request request;
+        request.files = files;
+        request.instrument = kInstrument;
+        const pg::preview::Prepared prepared = pg::preview::prepare(request, tools(true));
+        P.eq(key + ".prepared", prepared.ok && prepared.rows ? 1 : 0, 1);
+        const pg::preview::RowsPlaces places = pg::preview::rowsPlaces(prepared);
+        std::vector<std::pair<std::string, funkgui::Rect>> mine;
+        for (int c = 0; c < pg::kMaxControls; ++c)
+            if (prepared.controls[static_cast<std::size_t>(c)].used)
+                mine.push_back({ prepared.controls[static_cast<std::size_t>(c)].name, places.dials[static_cast<std::size_t>(c)] });
+        for (std::size_t d = 0; d < places.displays.size(); ++d)
+            mine.push_back({ "display " + std::to_string(d), places.displays[d] });
+        // The same cells, the same sizes, one offset between the two pictures for all (the area's corner in the card).
+        bool same = played.size() == mine.size() && !mine.empty();
+        const float dx = same ? played[0].second.x - mine[0].second.x : 0.0f, dy = same ? played[0].second.y - mine[0].second.y : 0.0f;
+        for (std::size_t i = 0; same && i < mine.size(); ++i)
+        {
+            const funkgui::Rect& a = played[i].second;
+            const funkgui::Rect& b = mine[i].second;
+            same = played[i].first == mine[i].first && std::fabs(a.w - b.w) < 0.01f && std::fabs(a.h - b.h) < 0.01f
+                && std::fabs(a.x - b.x - dx) < 0.01f && std::fabs(a.y - b.y - dy) < 0.01f;
+        }
+        std::printf("%s: %zu cells, the area at %.1f, %.1f in the card\n", key.c_str(), mine.size(), dx, dy);
+        P.eq(key + ".same_cells", same ? 1 : 0, 1);
+        // Each dial's pixels against the playing panel's (the displays aside: demo values against silence).
+        const pg::preview::Picture pic = pg::preview::draw(prepared, 0, 0);
+        const juce::Image a = decode(view.png), b = imageOf(pic.image);
+        writeImage(b, ("gui.preview." + key + ".png").c_str());
+        {
+            juce::File out(juce::String(probe::outPath("gui.preview." + key + ".view.png")));
+            out.replaceWithData(view.png.data(), view.png.size());
+        }
+        int off = 0, total = 0, largest = 0;
+        const float k = pg::sandbox::kDpi;
+        for (std::size_t i = 0; same && i < mine.size(); ++i)
+        {
+            if (mine[i].first.rfind("display ", 0) == 0)
+                continue;
+            const funkgui::Rect& r = mine[i].second;
+            for (int y = static_cast<int>(std::ceil(r.y * k)); y < static_cast<int>(std::floor((r.y + r.h) * k)); ++y)
+                for (int x = static_cast<int>(std::ceil(r.x * k)); x < static_cast<int>(std::floor((r.x + r.w) * k)); ++x)
+                {
+                    const int ax = x + static_cast<int>(std::lround(dx * k)), ay = y + static_cast<int>(std::lround(dy * k));
+                    if (x < 0 || y < 0 || x >= b.getWidth() || y >= b.getHeight() || ax < 0 || ay < 0 || ax >= a.getWidth() || ay >= a.getHeight())
+                        continue;
+                    const juce::Colour ca = a.getPixelAt(ax, ay), cb = b.getPixelAt(x, y);
+                    const int d = std::max({ std::abs(ca.getRed() - cb.getRed()), std::abs(ca.getGreen() - cb.getGreen()),
+                                             std::abs(ca.getBlue() - cb.getBlue()) });
+                    ++total;
+                    off += d > 4 ? 1 : 0;
+                    largest = std::max(largest, d);
+                }
+        }
+        std::printf("%s: the dials' cells, %d of %d pixels differ by more than 4 (largest %d)\n", key.c_str(), off, total, largest);
+        P.ge(key + ".pixels_compared", total, 1000);
+        P.le(key + ".pixels_off", static_cast<double>(off), 0.01 * total);
+        P.le(key + ".largest", largest, 40);
+    }
+
     // ---- VALUES ------------------------------------------------------------------------------------------------------------
     {
         pg::preview::Request request;
@@ -350,10 +489,6 @@ PROBE(gui, preview)
         pg::preview::Request request;
         request.instrument = kInstrument;
         request.files = { { pg::kProgramName, valuesProgram() } };
-        const pg::preview::Prepared noGui = pg::preview::prepare(request, tools(true));
-        P.eq("fails.no_gui", !noGui.ok && noGui.why == "this program has no panel.gui" ? 1 : 0, 1);
-        const pg::preview::Picture nothing = pg::preview::draw(noGui, 0, pg::preview::kMaxWidth);
-        P.eq("fails.draws_nothing", nothing.image.w == 0 && nothing.why == noGui.why ? 1 : 0, 1);
         // A .gui of which nothing reads: with dials, they come in a section of their own as the PANEL view shows them;
         // with none, nothing to draw, its first note the why.
         request.files.push_back({ "panel.gui", "not a panel\n" });
@@ -364,6 +499,8 @@ PROBE(gui, preview)
         const pg::preview::Prepared broken = pg::preview::prepare(request, tools(true));
         std::printf("a .gui that does not read: %s\n", broken.why.c_str());
         P.eq("fails.unreadable", !broken.ok && broken.why.rfind("panel.gui does not read: unknown element 'not'", 0) == 0 ? 1 : 0, 1);
+        const pg::preview::Picture nothing = pg::preview::draw(broken, 0, pg::preview::kMaxWidth);
+        P.eq("fails.draws_nothing", nothing.image.w == 0 && nothing.why == broken.why ? 1 : 0, 1);
         request.files.clear();
         const pg::preview::Prepared empty = pg::preview::prepare(request, tools(true));
         P.eq("fails.no_files", !empty.ok && empty.why == "the version has no files" ? 1 : 0, 1);

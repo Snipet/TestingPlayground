@@ -645,7 +645,7 @@ namespace playground
     // A version's panel as a picture, drawn without compiling anything (EditorPort::previewPolled): `reading` while the
     // store's Reader reads the version, `drawing` while its shaders are built and the message thread has not drawn it
     // (one a poll, after a picture for Claude), `ready` with the picture (registered by the Panel under `image`, counted
-    // as the chat's pictures are: Panel::syncPreview), `failed` with why ("this program has no panel.gui").
+    // as the chat's pictures are: Panel::syncPreview), `failed` with why ("panel.gui does not read: ...").
     struct PreviewState
     {
         enum class Status : uint8_t { none, reading, drawing, ready, failed };

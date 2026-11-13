@@ -58,6 +58,31 @@ namespace playground::preview
             }
             return out;
         }
+
+        // The version's values by name (an int's or a bool's by its value's name when the panel has it), the rest at
+        // their defaults.
+        void setValues(Prepared& out, const Request& r)
+        {
+            for (int c = 0; c < kMaxControls; ++c)
+            {
+                const Control& k = out.controls[static_cast<std::size_t>(c)];
+                float plain = k.def;
+                if (k.used)
+                    for (const Dial& d : r.dials)
+                    {
+                        if (!sameName(d.name, k.name))
+                            continue;
+                        plain = d.value;
+                        const std::vector<std::string>& opts = out.spec.options[static_cast<std::size_t>(c)];
+                        if (!d.label.empty())
+                            for (std::size_t o = 0; o < opts.size(); ++o)
+                                if (sameName(opts[o], d.label))
+                                    plain = k.min + static_cast<float>(o);
+                        break;
+                    }
+                out.values01[static_cast<std::size_t>(c)] = normOf(k, plain);
+            }
+        }
     }
 
     Prepared prepare(const Request& r, const ShaderTools& tools)
@@ -76,7 +101,18 @@ namespace playground::preview
         }
         if (gui < 0)
         {
-            out.why = "this program has no panel.gui";
+            // No .gui: the dials in rows, or in the sections and displays its #pragma panel lines ask for, read from
+            // the program's FMinus files as the compile reads them.
+            const sandbox::Declared declared = sandbox::readProgram(out.files, r.instrument);
+            out.controls = sandbox::controlsOf(declared.dials);
+            std::vector<const SourceFile*> fm;
+            for (const SourceFile& f : out.files)
+                if (f.name.size() > 3 && f.name.compare(f.name.size() - 3, 3, ".fm") == 0)
+                    fm.push_back(&f);
+            out.spec = readPanelSpec(fm, out.controls, declared.fields, r.instrument, out.notes);
+            out.rows = true;
+            setValues(out, r);
+            out.ok = true;
             return out;
         }
         // The dials as the GUI sandbox reads them (never compiled), and the fields the displays may read: the program's,
@@ -110,27 +146,7 @@ namespace playground::preview
                     + (at == std::string::npos ? std::string() : ": " + first.substr(at + 8));
             return out;
         }
-        // The version's values by name (an int's or a bool's by its value's name when the panel has it), the rest at
-        // their defaults.
-        for (int c = 0; c < kMaxControls; ++c)
-        {
-            const Control& k = out.controls[static_cast<std::size_t>(c)];
-            float plain = k.def;
-            if (k.used)
-                for (const Dial& d : r.dials)
-                {
-                    if (!sameName(d.name, k.name))
-                        continue;
-                    plain = d.value;
-                    const std::vector<std::string>& opts = out.spec.options[static_cast<std::size_t>(c)];
-                    if (!d.label.empty())
-                        for (std::size_t o = 0; o < opts.size(); ++o)
-                            if (sameName(opts[o], d.label))
-                                plain = k.min + static_cast<float>(o);
-                    break;
-                }
-            out.values01[static_cast<std::size_t>(c)] = normOf(k, plain);
-        }
+        setValues(out, r);
         // The shaders, built here (the process's cache, in memory and on disk), as the sandbox builds them.
         std::vector<ShaderJob> jobs;
         std::vector<PanelShader*> built;
@@ -164,6 +180,23 @@ namespace playground::preview
         return out;
     }
 
+    funkgui::Image areaOf(const funkgui::Image& frame, int w, int h, int maxWidth)
+    {
+        funkgui::Image area;
+        area.w = std::min(w, frame.w);
+        area.h = std::min(h, frame.h);
+        area.rgba.resize(static_cast<std::size_t>(area.w) * static_cast<std::size_t>(area.h) * 4);
+        for (int y = 0; y < area.h; ++y)
+            std::copy_n(frame.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(frame.w) * 4,
+                        static_cast<std::size_t>(area.w) * 4, area.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(area.w) * 4);
+        if (maxWidth > 0 && area.w > maxWidth)
+        {
+            const int th = std::max(1, static_cast<int>(std::lround(static_cast<double>(area.h) * maxWidth / area.w)));
+            return scaled(area, maxWidth, th);
+        }
+        return area;
+    }
+
     Picture draw(const Prepared& p, int theme, int maxWidth)
     {
         Picture out;
@@ -172,6 +205,8 @@ namespace playground::preview
             out.why = p.why;
             return out;
         }
+        if (p.rows)
+            return drawRows(p, theme, maxWidth);
         sandbox::View view(p.spec, p.controls, p.values01, p.files, p.notes, kAreaWidth, kAreaHeight, "", p.instrument);
         funkgui::HeadlessHost host(view, theme == 1 ? 1 : 0, sandbox::kDpi);
         host.settle(120);
@@ -184,20 +219,7 @@ namespace playground::preview
             return out;
         }
         // The area's pixels (the frame may be one wider or taller: View::width()).
-        funkgui::Image area;
-        area.w = std::min(view.pictureWidth(), drawn.image.w);
-        area.h = std::min(view.pictureHeight(), drawn.image.h);
-        area.rgba.resize(static_cast<std::size_t>(area.w) * static_cast<std::size_t>(area.h) * 4);
-        for (int y = 0; y < area.h; ++y)
-            std::copy_n(drawn.image.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(drawn.image.w) * 4,
-                        static_cast<std::size_t>(area.w) * 4, area.rgba.data() + static_cast<std::size_t>(y) * static_cast<std::size_t>(area.w) * 4);
-        if (maxWidth > 0 && area.w > maxWidth)
-        {
-            const int th = std::max(1, static_cast<int>(std::lround(static_cast<double>(area.h) * maxWidth / area.w)));
-            out.image = scaled(area, maxWidth, th);
-        }
-        else
-            out.image = std::move(area);
+        out.image = areaOf(drawn.image, view.pictureWidth(), view.pictureHeight(), maxWidth);
         return out;
     }
 }

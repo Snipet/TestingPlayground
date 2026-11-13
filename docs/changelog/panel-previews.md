@@ -3,8 +3,8 @@
 **Added**
 - Choosing a project in the Projects card shows a picture of its panel above its versions, without opening it or
   compiling anything; choosing a version shows that version's. The dials are at the version's values and the displays
-  show sample values, since nothing plays. It works for every project there is, factory projects too. A program with
-  no panel.gui shows no preview yet and says so.
+  show sample values, since nothing plays. It works for every project there is, factory projects too, and for a
+  program with no panel.gui, whose dials show in rows or in its sections as the Panel view shows them.
 
 **Changed**
 - The Projects card is a little taller where the window allows, to make room for the preview; in a short window the
