@@ -572,6 +572,7 @@ namespace playground::usage
             addRows(cut_, r.key, r.counts);
         pending_.clear();
         owed_ = true;
+        failed_ = false;
         revision_.fetch_add(1, std::memory_order_acq_rel);
     }
 
@@ -579,6 +580,12 @@ namespace playground::usage
     {
         const std::lock_guard<std::mutex> lock(mutex_);
         return owed_;
+    }
+
+    bool Ledger::lastResetFailed() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return failed_;
     }
 
     bool Ledger::reset()
@@ -621,6 +628,7 @@ namespace playground::usage
                     addRows(pending_, r.key, r.counts);
             cut_.clear();
             owed_ = false;
+            failed_ = !ok;
         }
         revision_.fetch_add(1, std::memory_order_acq_rel);
         return ok;
@@ -707,6 +715,7 @@ namespace playground::usage
     }
 
     bool resetOwed() { return processLedger().resetOwed(); }
+    bool lastResetFailed() { return processLedger().lastResetFailed(); }
 
     uint64_t revision() noexcept { return processLedger().revision() + pricesChanged.load(std::memory_order_acquire); }
 

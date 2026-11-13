@@ -38,7 +38,8 @@
 //            with a read in flight (a flush meanwhile waits for it, a count after the confirmation kept); with the card
 //            closed at once; queued when the agent goes (its destructor runs it, then its flush: a count after the
 //            confirmation kept); with the folder's lock held from outside, and with the write refused: the file and
-//            the counts not written yet kept, said until the next Reset
+//            the counts not written yet kept, said until the next Reset; one confirmed in one instance and run by
+//            another's thread failing: both pages say so, and the next Reset clears both
 #include "Probe.h"
 
 #include "editor/ChatStyle.h"
@@ -161,7 +162,10 @@ namespace
         const auto f = [](double t) { return t > 0.008856 ? std::cbrt(t) : 7.787 * t + 16.0 / 116.0; };
         return { 116.0 * f(y) - 16.0, 500.0 * (f(x) - f(y)), 200.0 * (f(y) - f(z)) };
     }
-    double deltaE(const Lab& p, const Lab& q) { return std::sqrt((p.l - q.l) * (p.l - q.l) + (p.a - q.a) * (p.a - q.a) + (p.b - q.b) * (p.b - q.b)); }
+    double deltaE(const Lab& p, const Lab& q)
+    {
+        return std::sqrt((p.l - q.l) * (p.l - q.l) + (p.a - q.a) * (p.a - q.a) + (p.b - q.b) * (p.b - q.b));
+    }
 
     // The seeded ledger: rows on days counted back from today, and what each range must total.
     struct Seed
@@ -458,7 +462,8 @@ PROBE(gui, usage)
             if (r.range == usage::Range::all)
             {
                 const std::string today = usage::today(), old = dayBack(-1);
-                bars = (std::stoi(today.substr(0, 4)) * 12 + std::stoi(today.substr(5, 2))) - (std::stoi(old.substr(0, 4)) * 12 + std::stoi(old.substr(5, 2))) + 1;
+                const auto months = [](const std::string& d) { return std::stoi(d.substr(0, 4)) * 12 + std::stoi(d.substr(5, 2)); };
+                bars = months(today) - months(old) + 1;
             }
             P.eq(std::string("ranges.") + r.key + ".bars", static_cast<int64_t>(c.bars.size()), bars);
             int64_t barSum = 0;
@@ -481,7 +486,9 @@ PROBE(gui, usage)
             std::printf(" %s=%d", m.name.c_str(), m.series);
         std::printf("\n");
         P.eq("stack.models", static_cast<int64_t>(c.models.size()), 7);
-        P.eq("stack.first_most", c.models.size() >= 2 && c.models[0].name == "claude-opus-5-5" && c.models[1].name == "anthropic/claude-sonnet-4.6" ? 1 : 0, 1);
+        const bool firstMost = c.models.size() >= 2 && c.models[0].name == "claude-opus-5-5"
+                            && c.models[1].name == "anthropic/claude-sonnet-4.6";
+        P.eq("stack.first_most", firstMost ? 1 : 0, 1);
         P.eq("stack.other_named", !c.seriesNames.empty() && c.seriesNames.back() == "Other" ? 1 : 0, 1);
         const up::Geometry g = geometry();
         host.move(5.0f, 5.0f);                   // the pointer off the chart
@@ -555,7 +562,10 @@ PROBE(gui, usage)
         for (int kind = 0; kind < 4; ++kind)
             for (int i = 0; i < pg::ui::chat::kSeriesInks; ++i)
                 for (int j = i + 1; j < pg::ui::chat::kSeriesInks; ++j)
-                    leastSeen = std::min(leastSeen, deltaE(seen(pg::ui::chat::seriesInk(th, i), kind), seen(pg::ui::chat::seriesInk(th, j), kind)));
+                {
+                    const Lab a = seen(pg::ui::chat::seriesInk(th, i), kind), b = seen(pg::ui::chat::seriesInk(th, j), kind);
+                    leastSeen = std::min(leastSeen, deltaE(a, b));
+                }
         std::printf("%s: least distance between two series under any of the four visions: %.1f (CIE76)\n", t.c_str(), leastSeen);
         P.ge("series." + t + ".apart_for_every_vision", leastSeen, 10.0);
     }
@@ -595,7 +605,9 @@ PROBE(gui, usage)
             P.eq("table.reported_as_is", router[6] == usage::costText(reported) && !has(router[6], "~") ? 1 : 0, 1);
             P.eq("table.no_price", local[6] == "no price" ? 1 : 0, 1);
             P.eq("table.requests", opus[2] == "3" && router[2] == "2" ? 1 : 0, 1);
-            P.eq("table.in_cached_out", opus[3] == up::tokensText(26000) && opus[4] == up::tokensText(100000) && opus[5] == up::tokensText(5000) ? 1 : 0, 1);
+            const bool cells = opus[3] == up::tokensText(26000) && opus[4] == up::tokensText(100000)
+                            && opus[5] == up::tokensText(5000);
+            P.eq("table.in_cached_out", cells ? 1 : 0, 1);
             P.eq("table.provider", router[1] == "OpenRouter" && local[1] == "Local" ? 1 : 0, 1);
         }
         P.eq("table.unpriced_note", lineWith("no price known shows its tokens alone") ? 1 : 0, 1);
@@ -674,7 +686,8 @@ PROBE(gui, usage)
             titled = items[static_cast<std::size_t>(i)].title == up::barWords(ch.bars[static_cast<std::size_t>(i)])
                   && has(items[static_cast<std::size_t>(i)].title, ch.bars[static_cast<std::size_t>(i)].title);
         P.eq("a11y.bars", titled ? 1 : 0, 1);
-        P.eq("a11y.bar_total", n > 0 && has(items[static_cast<std::size_t>(n - 1)].title, up::tokensText(ch.bars.back().total.tokens()) + " tokens") ? 1 : 0, 1);
+        const std::string lastTotal = up::tokensText(ch.bars.back().total.tokens()) + " tokens";
+        P.eq("a11y.bar_total", n > 0 && has(items[static_cast<std::size_t>(n - 1)].title, lastTotal) ? 1 : 0, 1);
         P.eq("a11y.readout_words", !items.empty() && items.back().title == up::readoutWords(ch, 2) ? 1 : 0, 1);
         P.eq("a11y.chart_group", c && has(c->title, "Usage chart") ? 1 : 0, 1);
     }
@@ -1013,12 +1026,41 @@ PROBE(gui, usage)
         agent.setUsageRereadSecondsForTests(0.25);
         usage::setWritesFailForTests(false);
         port.chat().resetUsage();
-        P.eq("fail.next_reset_clears", waitFor([&] { return !view()->resetting && view()->resetError.empty() && view()->rows.empty(); }) ? 1 : 0, 1);
+        const bool cleared = waitFor([&] { return !view()->resetting && view()->resetError.empty() && view()->rows.empty(); });
+        P.eq("fail.next_reset_clears", cleared ? 1 : 0, 1);
         P.eq("fail.next_reset_emptied", emptied() ? 1 : 0, 1);
         usage::flush();
         P.eq("fail.waiting_gone_with_it", usage::read(file).empty() ? 1 : 0, 1);
         settle();
         P.eq("fail.unsaid", lineWith("could not be emptied") ? 0 : 1, 1);
+    }
+
+    // ---- RESET failing when another instance's thread runs it: every page says so ------------------------------------------
+    {
+        writeText(file, seedText());
+        waitFor([&] { return !view()->rows.empty(); });
+        auto other = std::make_unique<pg::Processor>();
+        pg::ChatAgent& b = other->chatAgent();
+        b.setUsageRereadSecondsForTests(0.0);
+        const auto bView = [&] { return b.usage(usage::Range::month); };
+        P.eq("two.b_read", waitFor([&] { return bView()->read; }) ? 1 : 0, 1);
+        agent.holdUsageReadsForTests(true);
+        agent.setUsageRereadSecondsForTests(0.0);
+        (void) port.chat().usage(usage::Range::all);   // A's job thread held in a read: A's reset job waits behind it
+        usage::setWritesFailForTests(true);
+        port.chat().resetUsage();                       // A confirms
+        const uint64_t bReads = b.usageReadsForTests();
+        P.eq("two.b_ran_it", waitFor([&] { return b.usageReadsForTests() > bReads && !usage::resetOwed(); }) ? 1 : 0, 1);
+        P.eq("two.b_says", waitFor([&] { return !bView()->resetError.empty() && !bView()->resetting; }) ? 1 : 0, 1);
+        agent.holdUsageReadsForTests(false);
+        P.eq("two.a_says", waitFor([&] { return !view()->resetError.empty() && !view()->resetting; }) ? 1 : 0, 1);
+        P.eq("two.file_kept", usage::read(file).empty() ? 0 : 1, 1);
+        usage::setWritesFailForTests(false);
+        port.chat().resetUsage();
+        P.eq("two.a_cleared", waitFor([&] { return view()->resetError.empty() && !view()->resetting && emptied(); }) ? 1 : 0, 1);
+        P.eq("two.b_cleared", waitFor([&] { return bView()->resetError.empty() && !bView()->resetting; }) ? 1 : 0, 1);
+        agent.setUsageRereadSecondsForTests(0.25);
+        other.reset();
     }
 
     host.keys("escape");

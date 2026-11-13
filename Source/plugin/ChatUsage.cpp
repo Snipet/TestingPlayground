@@ -73,6 +73,9 @@ namespace playground
                 && a.pricesAsOf == b.pricesAsOf && a.resetting == b.resetting && a.resetError == b.resetError;
         }
 
+        const char* const kResetFailed = "The usage record could not be emptied (its folder could not be locked or written). "
+                                         "Nothing was lost: try Reset again.";
+
         UsageView readView(usage::Range range)
         {
             UsageView v;
@@ -171,7 +174,7 @@ namespace playground
             usageReadRevision_ = revision;
             usageReadAt_ = std::chrono::steady_clock::now();
             v.resetting = usage::resetOwed();
-            v.resetError = usageView_->resetError;
+            v.resetError = usage::lastResetFailed() ? kResetFailed : "";   // the ledger's, whoever ran it
             publishUsage(std::move(v));
         }
         runUsageReset();                        // one confirmed meanwhile runs before this job lets go
@@ -181,7 +184,7 @@ namespace playground
     {
         while (usage::resetOwed())              // a reset confirmed while one ran is owed again: run it too
         {
-            const bool ok = usage::reset();
+            (void) usage::reset();               // its outcome is the ledger's (lastResetFailed), every page's
             const uint64_t revision = usage::revision();
             usage::Range range;
             {
@@ -193,9 +196,7 @@ namespace playground
             usageReadRevision_ = revision;
             usageReadAt_ = std::chrono::steady_clock::now();
             v.resetting = usage::resetOwed();
-            v.resetError = ok ? std::string()
-                              : std::string("The usage record could not be emptied (its folder could not be locked or "
-                                            "written). Nothing was lost: try Reset again.");
+            v.resetError = usage::lastResetFailed() ? kResetFailed : "";
             publishUsage(std::move(v));
         }
     }

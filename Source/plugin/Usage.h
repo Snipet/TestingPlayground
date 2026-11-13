@@ -21,7 +21,9 @@
 //                 as it was and the counts set aside go back with those added meanwhile; it is no longer owed (the
 //                 user asks again). A flush while one is owed writes nothing (its counts are after the cut and would
 //                 be emptied with the file): it waits for the reset, so the owner runs an owed reset before its last
-//                 flush. Another process's counts not yet written are its own: they reach the emptied file later
+//                 flush. Another process's counts not yet written are its own: they reach the emptied file later.
+//                 Its outcome is the ledger's (lastResetFailed: set by the reset, cleared by the next requestReset),
+//                 so every instance's page says a failure, whichever instance's thread ran the reset
 //   revision      moves whenever this process's ledger changes (a count added, a flush or a reset done), so a reader
 //                 of snapshots (ChatAgent::usage) knows when to read again; another process's write does not move it
 //   Price, costOf the price of a model (UsagePrices.cpp's table, a provider's listed price) and a row's cost: the
@@ -170,6 +172,7 @@ namespace playground::usage
         void requestReset();
         bool reset();
         bool resetOwed() const;
+        bool lastResetFailed() const;
         bool pending() const;
         uint64_t revision() const noexcept { return revision_.load(std::memory_order_acquire); }
         void setFile(std::filesystem::path file);
@@ -182,6 +185,7 @@ namespace playground::usage
         std::vector<Row> pending_;
         std::vector<Row> cut_;                 // what an owed reset will drop (requestReset)
         bool owed_ = false;
+        bool failed_ = false;                  // the last reset failed (until the next requestReset)
         std::atomic<uint64_t> revision_{ 0 };
     };
 
@@ -192,6 +196,7 @@ namespace playground::usage
     void requestReset();
     bool reset();
     bool resetOwed();
+    bool lastResetFailed();
     uint64_t revision() noexcept;                // moves with each count, reset and price table taken (offerPrices)
     Snapshot snapshot(Range range);
     std::filesystem::path processFile();

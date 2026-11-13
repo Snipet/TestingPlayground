@@ -394,8 +394,9 @@ namespace playground::ui::usagepage
             if (shown < kReadoutRows)
             {
                 const usage::Counts& c = s.counts;
-                out.push_back({ chart.models[m].name + ": " + tokensText(s.tokens()) + " tokens (" + tokensText(c.input + c.cacheWrite5m + c.cacheWrite1h)
-                                    + " in, " + tokensText(c.cacheRead) + " cached, " + tokensText(c.output) + " out), " + costWords(s),
+                const std::string in = tokensText(c.input + c.cacheWrite5m + c.cacheWrite1h);
+                out.push_back({ chart.models[m].name + ": " + tokensText(s.tokens()) + " tokens (" + in + " in, "
+                                    + tokensText(c.cacheRead) + " cached, " + tokensText(c.output) + " out), " + costWords(s),
                                 chart.models[m].series });
                 ++shown;
             }
@@ -511,7 +512,9 @@ namespace playground::ui::settings
             b.select(kMeasure, { 160.0f, b.y, 110.0f, kRowH }, kMeasures[measure], std::string("Show: ") + kMeasures[measure]);
 
             // The chart: the page draws it (PageHooks::draw), the card focuses and hits it.
-            const std::string what = !chart.read ? std::string("reading") : chart.empty() ? std::string("No requests yet.") : barWords(Bar{ "", "", chart.rangeTitle, {}, {}, chart.total });
+            std::string what = "reading";
+            if (chart.read)
+                what = chart.empty() ? std::string("No requests yet.") : barWords(Bar{ "", "", chart.rangeTitle, {}, {}, chart.total });
             Control& c = b.control(Act::item, kChart, { 0.0f, l.chartY, b.inner, l.chartH }, "",
                                    "Usage chart, " + std::string(kMeasures[measure]) + ": " + what
                                        + ". Left and Right move along the bars, Home and End to the first and the last.");
