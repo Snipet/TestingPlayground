@@ -450,7 +450,7 @@ panel background=#1d1b19 accent=orange {
         const double ms = probe::threadMs() - start;
         std::printf("STRAY: %ld files read in %.0f ms (thread), the most notes past 3 a token %d: %s\n", files, ms, worst, worstFile.c_str());
         P.eq("stray.every_file_read", files, 8L + 64 + 512 + 4096 + 32768 + 262144);
-        P.le("stray.notes_few_a_token", worst, 2);
+        P.le("stray.notes_few_a_token", worst, 0);   // at most 3 note lines a token
         P.le("stray.every_file_ms", ms, 120000.0);
 
         // However broken the file, a page of notes: each part says 100 at most, then that the rest were left out.

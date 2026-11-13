@@ -40,6 +40,8 @@
 //            MCP was told alone (the host's change still starts the next result)
 //   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; a dial
 //            the host moved since the last MCP call said first
+//   STRAY    a .gui with a { where an element's name should be (one around a knob, one the file ends inside) opens,
+//            the reader's notes on them in its report
 //   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
 //            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
@@ -937,6 +939,18 @@ PROBE(plugin, sandbox)
         const Result r = s.sandbox(object({ { "action", "open" }, { "text", "knob d33\n" }, { "dials", many } }));
         std::printf("33 dials:\n%s", r.text.c_str());
         P.eq("most.panel_own_said", !r.error && has(r.text, "The 33rd to the 64th are the panel's own (no host parameter).") ? 1 : 0, 1);
+        s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
+    }
+
+    // ---- STRAY: a .gui with a { where an element's name should be ---------------------------------------------------------
+    {
+        juce::Array<juce::var> one;
+        one.add(object({ { "name", "drive" }, { "range", juce::Array<juce::var>{ 0.0, 24.0 } }, { "default", 6.0 } }));
+        const Result r = s.sandbox(object({ { "action", "open" }, { "text", "row {\n    {\n        knob drive\n    }\n}\n{\n" }, { "dials", one } }));
+        std::printf("stray:\n%s", r.text.c_str());
+        P.eq("stray.opens", r.answered && !r.error && numberIn(r.text) > 0 ? 1 : 0, 1);
+        P.eq("stray.noted", has(r.text, "panel.gui:2:5: note: a { with no element before it")
+                                && has(r.text, "panel.gui:6:1: note: this { has no }") ? 1 : 0, 1);
         s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
     }
     s.stop();
