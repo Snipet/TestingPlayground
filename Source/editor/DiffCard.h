@@ -43,6 +43,10 @@ namespace playground::ui
     public:
         static constexpr uint32_t kA11yBase = 0x7FF90000u;   // its accessibility ids, past every item's (and the other cards')
         static constexpr int kEditor = 0;                // a side that is the editor's (else a version's number)
+        // Package 05: a side that is a diverged project's remote side (EditorPort::gitTheirs: read into memory by the git
+        // job, nothing written): no Open and no A/B while it shows.
+        static constexpr int kTheirs = -1;
+        bool theirsShown() const noexcept { return sides_[0] == kTheirs || sides_[1] == kTheirs; }
 
         explicit DiffCard(EditorPort& port) : port_(port) {}
 

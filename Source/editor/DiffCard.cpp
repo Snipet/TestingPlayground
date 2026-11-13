@@ -40,7 +40,8 @@ namespace playground::ui
         if (project.empty())
             return false;
         project_ = project;
-        sides_ = { std::max(0, left), std::max(0, right) };
+        const auto side = [](int v) { return v == kTheirs ? v : std::max(0, v); };   // package 05: their side kept
+        sides_ = { side(left), side(right) };
         content_ = {};
         ask_ = -1;
         open_ = true;
@@ -74,7 +75,9 @@ namespace playground::ui
     void DiffCard::readSide(int k)
     {
         const int v = sides_[static_cast<std::size_t>(k)];
-        content_[static_cast<std::size_t>(k)] = v == kEditor ? port_.editorContent() : port_.versionPolled(project_, v);
+        content_[static_cast<std::size_t>(k)] = v == kEditor   ? port_.editorContent()
+                                              : v == kTheirs ? port_.gitTheirs(project_)   // package 05: from memory
+                                                             : port_.versionPolled(project_, v);
     }
 
     bool DiffCard::reading() const { return !content_[0].read || !content_[1].read; }
@@ -82,7 +85,7 @@ namespace playground::ui
     std::string DiffCard::sideLabel(int k) const
     {
         const int v = sides_[static_cast<std::size_t>(k)];
-        return v == kEditor ? std::string("Editor") : "v" + std::to_string(v);
+        return v == kEditor ? std::string("Editor") : v == kTheirs ? std::string("Theirs") : "v" + std::to_string(v);
     }
 
     void DiffCard::remake()
@@ -145,7 +148,7 @@ namespace playground::ui
             const std::vector<VersionEntry> before = versions_;
             readVersions();
             for (int k = 0; k < 2; ++k)
-                if (sides_[static_cast<std::size_t>(k)] != kEditor)
+                if (sides_[static_cast<std::size_t>(k)] != kEditor && sides_[static_cast<std::size_t>(k)] != kTheirs)
                 {
                     const VersionContent was = content_[static_cast<std::size_t>(k)];
                     readSide(k);
@@ -310,14 +313,14 @@ namespace playground::ui
             swap();
         else if (at.close.contains(p))
             close();
-        else if (at.ab.contains(p))
+        else if (at.ab.contains(p) && !theirsShown())
         {
             ab_ = { project_, sides_[0], sides_[1] };
             close();
         }
-        else if (at.openLeft.contains(p) && sides_[0] != kEditor)
+        else if (at.openLeft.contains(p) && sides_[0] != kEditor && sides_[0] != kTheirs)
             openSide(0);
-        else if (at.openRight.contains(p) && sides_[1] != kEditor)
+        else if (at.openRight.contains(p) && sides_[1] != kEditor && sides_[1] != kTheirs)
             openSide(1);
         else if (!reading())
             (void)view_.pointerDown(p, at.view);
@@ -469,11 +472,11 @@ namespace playground::ui
         };
         for (int k = 0; k < 2; ++k)
         {
-            const bool editor = sides_[static_cast<std::size_t>(k)] == kEditor;
+            const bool editor = sides_[static_cast<std::size_t>(k)] == kEditor || sides_[static_cast<std::size_t>(k)] == kTheirs;
             button(k == 0 ? at.openLeft : at.openRight, askingOpen(k) ? std::string("Open anyway") : editor ? std::string("Open") : "Open " + sideLabel(k),
                    askingOpen(k), !editor);
         }
-        button(at.ab, "A/B...", false, true);
+        button(at.ab, "A/B...", false, !theirsShown());   // their side (package 05): from memory, nothing plays
         button(at.close, "Close", false, true);
     }
 
@@ -508,6 +511,8 @@ namespace playground::ui
             const int v = sides_[static_cast<std::size_t>(k)];
             if (v == kEditor)
                 note.value = "the editor's files, dials and samples as they are now";
+            else if (v == kTheirs)
+                note.value = "the other side, read from the remote's commit: " + content_[static_cast<std::size_t>(k)].note;
             else
                 for (const VersionEntry& e : versions_)
                     if (e.number == v)
@@ -537,11 +542,11 @@ namespace playground::ui
             view_.accessibility(out, at.view, kBoxId, kTabId, kDiffId, kChangeId);
         for (int k = 0; k < 2; ++k)
         {
-            const bool editor = sides_[static_cast<std::size_t>(k)] == kEditor;
+            const bool editor = sides_[static_cast<std::size_t>(k)] == kEditor || sides_[static_cast<std::size_t>(k)] == kTheirs;
             button(k == 0 ? kOpenLeftId : kOpenRightId, k == 0 ? at.openLeft : at.openRight,
                    askingOpen(k) ? std::string("Open anyway") : "Open " + sideLabel(k), !editor);
         }
-        button(kAbId, at.ab, "A/B");
+        button(kAbId, at.ab, "A/B", !theirsShown());
         button(kCloseId, at.close, "Close");
     }
 

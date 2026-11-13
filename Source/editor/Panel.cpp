@@ -7888,7 +7888,21 @@ namespace playground::ui
             projectsAt_ = -100.0;                        // the explorer's marks, a pulled version
             projects_.reread();
         }
-        if (wasOpen && !git_.isOpen())
+        if (const std::string theirs = git_.takeCompare(); !theirs.empty())
+        {
+            // Part 3: COMPARE, the project's newest version against their side (from memory: DiffCard::kTheirs).
+            int latest = 0;
+            for (const ProjectEntry& e : projectList_)
+                if (e.name == theirs)
+                    latest = e.latest;
+            if (latest == 0)
+                for (const ProjectEntry& e : port_.projectsPolled())
+                    if (e.name == theirs)
+                        latest = e.latest;
+            git_.close();
+            openCompare(theirs, latest, DiffCard::kTheirs);
+        }
+        if (wasOpen && !git_.isOpen() && !compare_.isOpen())
         {
             setFocus(focusBeforeProjects_ >= 0 ? focusBeforeProjects_ : editorItem_);
             focusBeforeProjects_ = -1;
