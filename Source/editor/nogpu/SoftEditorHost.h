@@ -11,9 +11,9 @@
 // Panel's least size (the logical size is the editor's divided by the zoom; EditorConfig::sizeChanged's callback), the
 // input (the pointer with its button, the wheel, the pinch, keys, file drags, the unbounded drag, the host's parameter
 // menu) converted to the Panel's structs by EditorHost's rules, and HostServices over JUCE: menus in FunkGui's
-// MenuLook, the native file chooser, the clipboard, announcements. What it leaves out: the accessibility mirror (FunkGui's A11yBridge is part of its GPU
-// layer: a screen reader hears announcements only) and the capture environment (CANVAS_DUMP, UI_KEYS: the probes'
-// HeadlessHost covers them).
+// MenuLook, the native file chooser, the clipboard, announcements. What it leaves out: the accessibility mirror
+// (FunkGui's A11yBridge is part of its GPU layer: a screen reader hears announcements only) and the capture
+// environment (CANVAS_DUMP, UI_KEYS: the probes' HeadlessHost covers them).
 //
 // The cost: a frame is recorded only when the Panel says something it draws changed (Panel::needsDraw, as EditorHost
 // since FunkGui v0.25.0: a still panel costs a tick), and rasterised only when its primitives differ from the last
