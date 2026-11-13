@@ -47,8 +47,11 @@
 //            changed
 //   JOB      through a Processor: the job connects, links and marks (projectsPolled, gitLink); the listing and the card's
 //            link run no git (a git that leaves a marker); a pull opens the new version when the project is open and
-//            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so
+//            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so; an
+//            exception planted in the job (fminus/Failure.h): failed in its words, and the next press runs
 #include "Probe.h"
+
+#include "fminus/Failure.h"
 
 #include "plugin/Git.h"
 #include "plugin/GitProjects.h"
@@ -518,6 +521,17 @@ namespace
             std::printf("job: no git \"%s\"\n", nogit.words.c_str());
             P.eq("job.nogit_said", !nogit.ok && (nogit.words.find("not git") != std::string::npos || nogit.words.find("could not be run") != std::string::npos) && port.gitLink("Live").linked ? 1 : 0, 1);
             port.setGitChosen({}, why);
+            // An exception in the job (fminus/Failure.h's seam): the job fails in its words, the thread ends cleanly and
+            // the next press runs as before.
+            pg::failure::plant("git", pg::failure::Kind::badAlloc);
+            port.startGit({ pg::GitOp::check, "Live", {}, {} }, why);
+            const pg::GitState thrown = wait();
+            pg::failure::unplant();
+            std::printf("job: thrown \"%s\"\n", thrown.words.c_str());
+            P.eq("job.thrown_said", !thrown.ok && !thrown.busy && thrown.words.find("The plugin itself failed while checking the remote: out of memory") == 0 ? 1 : 0, 1);
+            port.startGit({ pg::GitOp::check, "Live", {}, {} }, why);
+            const pg::GitState after = wait();
+            P.eq("job.thrown_then_runs", after.ok && port.gitLink("Live").linked ? 1 : 0, 1);
         }
         ps::setDirectoryForTests({});
     }

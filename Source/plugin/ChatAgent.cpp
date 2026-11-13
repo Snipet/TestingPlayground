@@ -16,6 +16,7 @@
 #include "dsp/TextDiff.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Circuits.h"
+#include "fminus/Failure.h"
 
 #include "plugin/SoundPicture.h"
 
@@ -1270,9 +1271,16 @@ namespace playground
             attachCv_.notify_all();                // a message waiting for its pictures (takePending) goes now
         }
         joinWorker();
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            usageStopping_ = true;                 // a usage read a probe held goes on (holdUsageReadsForTests)
+        }
+        usageCv_.notify_all();
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
+        runUsageReset();                           // a reset the user confirmed runs, though the job thread never
+                                                   // reached it (a queued job is dropped above): nothing if none waits
         usage::flush();                            // what the ledger has not written yet
     }
 
@@ -1316,8 +1324,20 @@ namespace playground
             jobs_.pop_front();
             jobRunning_ = true;
             lock.unlock();
-            job();
-            job = nullptr;                         // what it held goes now
+            try
+            {
+                job();
+            }
+            catch (...)
+            {
+            }                                      // (each job says its own failure: the pictures', the models' list's)
+            try
+            {
+                job = nullptr;                     // what it held goes now
+            }
+            catch (...)
+            {
+            }
             lock.lock();
             jobRunning_ = false;
             jobCv_.notify_all();
@@ -1541,7 +1561,22 @@ namespace playground
             queueJob([this, p = take[k], seq = seqs[k], epoch] {
                 if (pictureReadHook_)
                     pictureReadHook_();
-                chatimages::Prepared r = chatimages::fromFile(p);
+                chatimages::Prepared r;
+                try
+                {
+                    r = chatimages::fromFile(p);
+                }
+                catch (...)
+                {
+                    r = {};                        // the picture refused, in words (fminus/Failure.h)
+                    try
+                    {
+                        r.why = failure::sentence("reading the picture");
+                    }
+                    catch (...)
+                    {
+                    }
+                }
                 const std::lock_guard<std::mutex> lock(mutex_);
                 --attaching_;
                 attachDone_ = std::max(attachDone_, seq);   // read or refused: a message waiting for it goes on
@@ -3049,7 +3084,46 @@ namespace playground
 
     void ChatAgent::runTurn()
     {
+        // An exception (fminus/Failure.h) ends the turn in words, as a failed request does, and the chat is free for the
+        // next message: what the turn's tools did before stands.
+        try
+        {
+            turn();
+        }
+        catch (...)
+        {
+            try
+            {
+                const std::string why = "The turn stopped: " + failure::sentence("answering") + ".";
+                const std::lock_guard<std::mutex> lock(mutex_);
+                addEntry(ChatEntry::Kind::error, why);
+            }
+            catch (...)
+            {
+            }
+            {
+                const std::lock_guard<std::mutex> lock(mutex_);
+                busy_ = false;
+                activity_.clear();
+                turnThread_.store(std::thread::id{});
+                touch();
+            }
+            try
+            {
+                keep();
+                usage::flush();
+                applyPendingOwner();
+            }
+            catch (...)
+            {
+            }
+        }
+    }
+
+    void ChatAgent::turn()
+    {
         turnThread_.store(std::this_thread::get_id());
+        failure::at("turn");
         if (!takePending())
             return;                                // stopped while its pictures were read
         {
@@ -4230,7 +4304,45 @@ namespace playground
 
     ChatAgent::McpResult ChatAgent::mcpCall(const std::string& name, const juce::var& arguments, uint64_t call)
     {
+        // An exception (fminus/Failure.h) answers the caller with an error in words, and the chat is freed if this call
+        // held it: the link lives, and the next call is taken as any.
+        try
+        {
+            return mcpCallOnce(name, arguments, call);
+        }
+        catch (...)
+        {
+            McpResult r;
+            r.isError = true;
+            try
+            {
+                juce::Array<juce::var> a;
+                a.add(claude::object({ { "type", "text" },
+                                       { "text", juce::String::fromUTF8(failure::sentence(("running " + name).c_str()).c_str()) } }));
+                r.content = juce::var(a);
+            }
+            catch (...)
+            {
+            }
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (busy_ && mcpWorking_.load() && turnThread_.load() == std::this_thread::get_id())
+            {
+                busy_ = false;
+                mcpWorking_.store(false);
+                mcpRunning_ = 0;
+                mcpRunningCancelled_ = false;
+                activity_.clear();
+                turnThread_.store(std::thread::id{});
+                touch();
+            }
+            return r;
+        }
+    }
+
+    ChatAgent::McpResult ChatAgent::mcpCallOnce(const std::string& name, const juce::var& arguments, uint64_t call)
+    {
         McpResult r;
+        failure::at("mcp");
         const auto words = [](const std::string& t) {
             juce::Array<juce::var> a;
             a.add(claude::object({ { "type", "text" }, { "text", juce::String::fromUTF8(t.c_str()) } }));
@@ -4283,7 +4395,20 @@ namespace playground
             turnThread_.store(std::this_thread::get_id());
         }
         const juce::var use = claude::object({ { "type", "tool_use" }, { "id", "mcp" }, { "name", juce::String(name) }, { "input", input } });
-        const juce::var block = live ? liveTool(use, { true, call }) : runTool(use);
+        juce::var block;
+        if (!live)
+            block = runTool(use);                  // (its exception its error result)
+        else
+        {
+            try
+            {
+                block = liveTool(use, { true, call });
+            }
+            catch (...)
+            {
+                block = thrownResult(use);
+            }
+        }
         if (!live)
         {
             // A project Claude Desktop opened shows its chat now, while the call still holds the chat (readState keeps
@@ -4443,7 +4568,17 @@ namespace playground
             const std::lock_guard<std::mutex> lock(mutex_);
             before = entries_.size();
         }
-        const juce::var block = toolResult(use);
+        // An exception (fminus/Failure.h) is that tool's error result, and the turn goes on.
+        juce::var block;
+        try
+        {
+            failure::at("tool");
+            block = toolResult(use);
+        }
+        catch (...)
+        {
+            block = thrownResult(use);
+        }
         if (static_cast<bool>(block.getProperty("is_error", false)))
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -4453,6 +4588,24 @@ namespace playground
             touch();
         }
         return block;
+    }
+
+    juce::var ChatAgent::thrownResult(const juce::var& use)
+    {
+        std::string why;
+        try
+        {
+            why = failure::sentence(("running " + str(use, "name")).c_str())
+                + ". What it had done before it failed stands.";
+        }
+        catch (...)
+        {
+            why = "the plugin itself failed while running the tool";
+        }
+        return claude::object({ { "type", "tool_result" },
+                                { "tool_use_id", use.getProperty("id", juce::var()) },
+                                { "is_error", true },
+                                { "content", juce::String::fromUTF8(why.c_str()) } });
     }
 
     juce::var ChatAgent::toolResult(const juce::var& use)

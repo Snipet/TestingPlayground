@@ -3,6 +3,7 @@
 
 #include "plugin/EditorPort.h"
 #include "plugin/Factory.h"
+#include "fminus/Failure.h"
 #include "fminus/Xdg.h"
 
 #include "Product.h"
@@ -1985,13 +1986,34 @@ namespace playground::projectstore
                                 ++it;
                     }
                 }
-                if (job.number >= 0)
-                    readVersions(job.path, numbers);
-                else
-                    read(job.path);
+                try
+                {
+                    if (job.number >= 0)
+                        readVersions(job.path, numbers);
+                    else
+                        read(job.path);
+                }
+                catch (...)
+                {
+                }                                        // (out of memory keeping it: asked again, the next poll)
                 const std::lock_guard<std::mutex> lock(mutex);
                 for (const std::string& k : keys)
                     asked.erase(k);
+            }
+        }
+
+        // parse(), an exception (out of memory: fminus/Failure.h) read as a file it cannot read (Cached::broken), as a
+        // damaged one is: never the process's end.
+        static std::optional<Project> parsed(const juce::File& f)
+        {
+            try
+            {
+                failure::at("reader");
+                return parse(f, nullptr);
+            }
+            catch (...)
+            {
+                return std::nullopt;
             }
         }
 
@@ -2012,7 +2034,7 @@ namespace playground::projectstore
                     return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
-            const std::optional<Project> p = parse(f, nullptr);
+            const std::optional<Project> p = parsed(f);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
             revision.fetch_add(1, std::memory_order_release);
@@ -2040,7 +2062,7 @@ namespace playground::projectstore
                     return;
             }
             readerParsed.fetch_add(1, std::memory_order_relaxed);
-            const std::optional<Project> p = parse(f, nullptr);
+            const std::optional<Project> p = parsed(f);
             const std::lock_guard<std::mutex> lock(cacheMutex);
             keepRead(f, p, modified, size);
             keepVersions(f, p, modified, size, numbers);

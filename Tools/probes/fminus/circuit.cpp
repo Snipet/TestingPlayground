@@ -90,6 +90,9 @@
 //   GIVEUP       a test that gives no answer (a budget of one step) is not tried again: the status says why in place of
 //                the provisional note (a new revision, the same program), and a compile of the same files wants no job
 //                and says why too
+//   THROWN       an exception in a test (fminus/Failure.h's seam) gives no answer, said as the plugin's own failure where
+//                the provisional note was, never tried again; one in the refine's compile drops it, a note saying why
+//                (out of memory), the provisional configuration playing on and the answer kept
 //   MISFIT       an answer stored with the netlist's key that the netlist cannot take (ADAA with BDF2, as a damaged
 //                session's would be, restored) neither fails the compile nor stays: provisional, one job, the answer
 //                erased
@@ -109,6 +112,7 @@
 #include "dsp/Sources.h"
 #include "fminus/CirTemplates.h"
 #include "fminus/Circuits.h"
+#include "fminus/Failure.h"
 #include "fminus/Lang.h"
 #include "fminus/LibraryIncludes.h"
 #include "fminus/Patch.h"
@@ -1454,6 +1458,43 @@ namespace
                                          && !store.claim(key) ? 1 : 0, 1);
             P.eq("giveup.compile_says_why", again.patch != nullptr && again.circuitJobs.empty() && has(again.notes, says)
                                                 && !has(again.notes, "chooses this circuit's configuration") ? 1 : 0, 1);
+        }
+
+        // ---- THROWN -----------------------------------------------------------------------------------------------------
+        // An exception in a test (fminus/Failure.h's seam): no answer, said as an internal failure where the provisional
+        // note was, the key not tried again, and the thread lives (the provisional configuration plays on). An exception
+        // in the refine's compile: dropped, its note saying why, the program that plays playing on.
+        {
+            store.clearForTests();
+            Live live(false);
+            const pg::CompileStatus a = live.compiler->compileNow(files);
+            pg::failure::plant("selftest", pg::failure::Kind::runtime);
+            const bool refined = live.compiler->selfTestNow();
+            const int fired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::CompileStatus b = live.compiler->status();
+            std::printf("thrown: refined %d, fired %d; the status: %s%s", refined ? 1 : 0, fired, b.errors.c_str(), b.notes.c_str());
+            P.eq("thrown.test_fired", fired, 1);
+            P.eq("thrown.test_says_why", !refined && b.ok && b.program == a.program
+                                             && has(b.notes, "clipper.cir: note: the self-test found no configuration for this circuit (the "
+                                                             "plugin itself failed while testing it: a planted failure; this is not a fault "
+                                                             "in your program)") ? 1 : 0, 1);
+            P.eq("thrown.test_not_again", store.gaveUp(key) && !store.find(key) && !store.claim(key) && !live.compiler->selfTesting() ? 1 : 0, 1);
+
+            store.clearForTests();
+            Live refine(false);
+            const pg::CompileStatus c = refine.compiler->compileNow(files);
+            pg::failure::plant("compile", pg::failure::Kind::badAlloc);
+            const bool offered = refine.compiler->selfTestNow();
+            const int compileFired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::CompileStatus d = refine.compiler->status();
+            std::printf("thrown refine: offered %d, fired %d; the status: %s", offered ? 1 : 0, compileFired, d.notes.c_str());
+            P.eq("thrown.refine_dropped", !offered && compileFired == 1 && d.ok && d.program == c.program && !d.refined
+                                              && has(d.notes, "clipper.cir: note: the self-test's configuration was not brought in, so "
+                                                              "the provisional one plays on: program.fm:1:1: error: the plugin itself "
+                                                              "failed while compiling: out of memory") ? 1 : 0, 1);
+            P.eq("thrown.refine_answer_kept", store.find(key).has_value() ? 1 : 0, 1);
         }
 
         // ---- MISFIT -----------------------------------------------------------------------------------------------------

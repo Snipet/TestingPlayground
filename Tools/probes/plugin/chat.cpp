@@ -31,6 +31,9 @@
 //            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta;
 //            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
+//   THROWN   an exception inside the plugin (fminus/Failure.h's seam): a tool that throws is its error result in words,
+//            the turn going on; a turn that throws ends in words, the chat free, and the next message is answered; an
+//            MCP call that throws answers its caller in words, and the next call is answered
 //   LIMIT    a reply cut off at max_tokens with no tool call: a note, the reply in the history as it came (its thinking
 //            and signature), and the turn goes on with a line that tells Claude; a second cut off in a row ends the
 //            turn with a note, the history still valid, and the next message goes; a tool call cut off twice gets
@@ -335,6 +338,7 @@
 #include "dsp/Profile.h"
 #include "dsp/Regex.h"
 #include "fminus/CirDoc.h"
+#include "fminus/Failure.h"
 
 #include "Library.h"
 #include "Product.h"
@@ -1098,6 +1102,59 @@ PROBE(plugin, chat)
             wrote = wrote || f.name == "x.fm";
         P.eq("invalid.ran_nothing", wrote ? 1 : 0, 0);
         P.eq("invalid.turn_went_on", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Sorry, again." ? 1 : 0, 1);
+    }
+
+    // ---- THROWN: an exception inside the plugin (fminus/Failure.h's seam) ---------------------------------------------
+    {
+        const std::string tail = "; this is not a fault in your program";
+        // A tool that throws: its error result in words, and the turn goes on.
+        script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_t1", "get_status", "{}").end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Carried on.").end()));
+        pg::failure::plant("tool", pg::failure::Kind::runtime);
+        agent.send("what plays?");
+        agent.waitIdle();
+        pg::failure::unplant();
+        const juce::Array<juce::var> m = messagesOf(script->body(script->postCount() - 1));
+        const juce::Array<juce::var> results = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        std::printf("THROWN tool: %s\n", results.isEmpty() ? "-" : str(results[0], "content").c_str());
+        P.eq("thrown.tool_error_result",
+             results.size() == 1 && static_cast<bool>(results[0].getProperty("is_error", false))
+                     && has(str(results[0], "content"), "the plugin itself failed while running get_status: a planted failure" + tail
+                                                            + ". What it had done before it failed stands.") ? 1 : 0, 1);
+        P.eq("thrown.tool_turn_went_on", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Carried on." ? 1 : 0, 1);
+
+        // A turn that throws: it ends in words, the chat free; the next message is taken.
+        const int posts = script->postCount();
+        pg::failure::plant("turn", pg::failure::Kind::badAlloc);
+        agent.send("hello?");
+        agent.waitIdle();
+        pg::failure::unplant();
+        const pg::ChatState after = agent.chatState();
+        std::printf("THROWN turn: %s\n", lastText(after, pg::ChatEntry::Kind::error).c_str());
+        P.eq("thrown.turn_in_words", !after.busy && script->postCount() == posts
+                                         && lastText(after, pg::ChatEntry::Kind::error)
+                                                == "The turn stopped: the plugin itself failed while answering: out of memory" + tail + "."
+                                         ? 1 : 0, 1);
+        script->add(fake::Response::ok(fake::Sse().start().text("Back again.").end()));
+        agent.send("and now?");
+        agent.waitIdle();
+        P.eq("thrown.turn_next", !agent.chatState().busy && lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Back again."
+                                     ? 1 : 0, 1);
+
+        // An MCP call that throws answers its caller in words; the chat is free, and the next call is answered.
+        const auto mcpText = [](const pg::ChatAgent::McpResult& r) {
+            std::string all;
+            for (const auto& b : arr(r.content))
+                all += str(b, "text") + "\n";
+            return all;
+        };
+        pg::failure::plant("mcp", pg::failure::Kind::other);
+        const pg::ChatAgent::McpResult bad = agent.mcpCall("measure_output", input({}));
+        pg::failure::unplant();
+        const pg::ChatAgent::McpResult good = agent.mcpCall("get_status", input({}));
+        P.eq("thrown.mcp_answers", bad.isError && has(mcpText(bad), "the plugin itself failed while running measure_output: an "
+                                                                       "unknown error" + tail) ? 1 : 0, 1);
+        P.eq("thrown.mcp_next", !good.isError && !agent.chatState().busy && !mcpText(good).empty() ? 1 : 0, 1);
     }
 
     // ---- LIMIT ---------------------------------------------------------------------------------------------------------
