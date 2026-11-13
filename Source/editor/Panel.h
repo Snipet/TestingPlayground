@@ -152,9 +152,11 @@
 
 #include <funkgui/text/LineEdit.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -346,7 +348,8 @@ namespace playground::ui
         const funkgui::Rect& programCard() const noexcept { return programCard_; }   // the program's card
         const PanelSpec& panelSpec() const noexcept { return panelSpec_; }      // the program's that the panel shows
         const GuiControlItem& guiControl(int slot) const;
-        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader
+        const Item& guiItem(int kind, int k) const;   // kind 0: a pad, 1: an envelope, 2: tabs, 3: a keyboard, 4: a shader,
+                                                      // 5: a pointer's (GuiPointerItem)
         void chooseGuiPage(int node, int page);
         void scrollGui(float dx, float dy);
         int layouts() const noexcept { return layouts_; }    // layout() calls so far (a scroll makes none)
@@ -504,6 +507,9 @@ namespace playground::ui
             std::vector<float> scopeIn, scopeOut;
             std::vector<std::pair<int, float>> taps;
             float inLevel = -1.0f, outLevel = -1.0f;
+            // The pointer over the shaders (pointer.x, .y, .down, .hover: GuiView::showPointer), NaN for none.
+            static constexpr float kNone = std::numeric_limits<float>::quiet_NaN();
+            std::array<float, 4> pointer{ kNone, kNone, kNone, kNone };
         };
         void showState(ShownState state);
         void playShown() noexcept { shownPlaying_ = true; }

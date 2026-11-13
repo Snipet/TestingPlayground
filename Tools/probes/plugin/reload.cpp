@@ -104,7 +104,7 @@ namespace
         knob gain label="GAIN"
         switch mode "OFF" "ON"
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -116,7 +116,7 @@ namespace
         switch mode "OFF" "ON"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -127,7 +127,7 @@ namespace
         switch mode "OFF" "ON"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";
@@ -138,7 +138,7 @@ namespace
         switch mode "LOW" "HIGH"
         number mark
         meter level min=0 max=2
-        shader "glow.sc" inputs="gain" width=120 height=60
+        shader "glow.sc" inputs="gain" width=200 height=120
     }
 }
 )GUI";

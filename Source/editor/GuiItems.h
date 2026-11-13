@@ -9,7 +9,11 @@
 //   GuiXyItem        a pad that moves two parameters at once: x to the right, y up
 //   GuiEnvelopeItem  the ADSR shape four parameters make, drawn (a readout)
 //   GuiKeyboardItem  an instrument's keys: a click plays a note, a drag slides across them
-//   GuiShaderItem    a shader of the program's own, drawn by the GPU
+//   GuiShaderItem    a shader of the program's own, drawn by the GPU; the pointer over it is among its inputs
+//                    (pointer.x ...), and its pointer properties write parameters as an area's do
+//   GuiPointerItem   an area, or what a container, a label or a display with pointer properties takes (x=, y=,
+//                    down=, wheel=, hover=: PanelPointer, PointerSink): it draws nothing (but a focus ring) and is
+//                    hit after every other item, so a control inside a container still takes its own presses
 //   GuiTabsItem      the tabs over a tabs element's pages (a strip, a bar, pills or a side list): a click shows that
 //                    page
 // and drawGuiPanel, which draws what is no item: the panel's ground, the sections' and boxes' frames, the labels and
@@ -338,6 +342,120 @@ namespace playground::ui
     // A note's name: 60 is C4.
     std::string noteName(int note);
 
+    // What the pointer does over an element (PanelPointer, fminus/GuiSpec.h): the parameters it writes and the pointer's
+    // own state, which a shader reads as its pointer.* inputs. One press is one gesture of x, y and down together: each
+    // port's begin at the press, its writes as it moves, its end at the release (FunkGui's GestureController holds one
+    // drag at a time, so the sink brackets its ports itself, the writes of an event in one host batch, as tapMany's).
+    // x and y absolute: the place across the rect (left 0, right 1) and up it (bottom 0, top 1), as host values, so a
+    // knob's taper maps them; relative: by the travel, kDragRange px the range, Shift ten times finer (a knob's);
+    // spring: their defaults at the release. down: 1 (its highest) while pressed, 0 at the release. A double-click puts x and y back
+    // to their defaults; the wheel nudges wheel= as a knob's; a right-click opens the first parameter's dial menu. The
+    // keys (a focusable element: x, y or down): the arrows move x and y by 1 % (Shift 10 %), Home puts both back, Space
+    // and Return press down for kKeyHold seconds, a key's repeat keeping it pressed (FunkGui sends no key's release).
+    // hover=, a panel dial, is written straight (a panel dial has no gesture) as the pointer comes and goes.
+    class PointerSink
+    {
+    public:
+        static constexpr float kDragRange = 200.0f;      // px for the whole range, relative
+        static constexpr float kKeyHold = 0.3f;          // seconds a key's press holds down
+
+        // Its properties and the values of their slots (x, y, down, wheel, hover: the controls' values, which change
+        // with the program; null for none); `menu` opens a slot's dial menu at a point (none: no menu). A gesture open
+        // over other ports ends first.
+        void bind(const PanelPointer& p, std::array<GuiValue*, 5> values, std::function<void(int, funkgui::Point)> menu);
+        void setRect(const funkgui::Rect& r) noexcept { rect_ = r; }
+        const PanelPointer& pointer() const noexcept { return p_; }
+        bool any() const noexcept { return p_.any(); }
+        bool focusable() const noexcept { return p_.presses(); }
+        bool wheels() const noexcept { return v_[kWheel] != nullptr; }
+
+        void move(funkgui::Point at) noexcept;           // the pointer over it (pointer.x and pointer.y)
+        void press(const funkgui::PointerEvent& e, funkgui::GestureController& g);
+        void drag(const funkgui::PointerEvent& e, funkgui::GestureController& g);
+        void release();                                  // the gesture ends (a release, the element hidden, the editor going)
+        void doubleClick(funkgui::GestureController& g);
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now);
+        bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g);
+        // A frame: `hovered` (the pointer over it, and no card over the panel) writes hover=; a key's press runs out.
+        void tick(float dt, bool hovered);
+
+        // The pointer's inputs for a shader: x, y (0..1 in its rect, the last place), down, hover.
+        std::array<float, 4> inputs() const noexcept;
+        bool pressed() const noexcept { return pressed_ || keyHeld_ > 0.0f; }
+        bool hovered() const noexcept { return hover_; }
+        bool busy() const noexcept { return keyHeld_ > 0.0f; }   // a key's press running out: frames wanted
+        funkgui::Cursor cursor() const noexcept;
+        uint64_t key() const noexcept;                   // what a ring drawn round it changes with
+
+        // A screen reader's: a slider for x and for y, a button for down, titled by their parameters (ids x, y, down).
+        void accessibility(std::vector<funkgui::A11yItem>& out, const std::array<uint32_t, 3>& ids) const;
+        bool a11yAction(const std::array<uint32_t, 3>& ids, uint32_t id, funkgui::A11yAction a, double v,
+                        funkgui::GestureController& g);
+        // The footer's line: what it writes, and how.
+        void specLine(char* out, std::size_t n, const char* what) const;
+
+    private:
+        enum : std::size_t { kX, kY, kDown, kWheel, kHover };
+        funkgui::ParamPort* port(std::size_t k) const noexcept { return v_[k] != nullptr ? &v_[k]->port() : nullptr; }
+        void begin(funkgui::GestureController& g);       // the ports of x, y and down: their gestures begin
+        void write(std::size_t k, float host01);         // inside the gesture, when it changes
+        void end();                                      // down low, springs, the gestures end
+        void writeHover(bool on);
+
+        PanelPointer p_;
+        std::array<GuiValue*, 5> v_{};
+        std::function<void(int, funkgui::Point)> menu_;
+        funkgui::Rect rect_;
+        std::vector<funkgui::ParamPort*> open_;          // ports whose gesture is open
+        funkgui::HostServices* host_ = nullptr;          // the press's (its batches), while it is open
+        bool pressed_ = false, hover_ = false;
+        funkgui::ParamPort* hoverOn_ = nullptr;          // the hover= port written high
+        float px_ = 0.5f, py_ = 0.5f;                    // the pointer's place (pointer.x, pointer.y)
+        float x01_ = 0.0f, y01_ = 0.0f;                  // relative: where x and y have got to
+        funkgui::Point last_{};
+        float keyHeld_ = 0.0f;                           // seconds a key's press of down has left
+    };
+
+    // An area, or a container's, a label's or a display's pointer properties: an item that draws nothing but its focus
+    // ring and writes what the pointer does over its rect (PointerSink). The Panel hits it after every other item.
+    class GuiPointerItem final : public Item
+    {
+    public:
+        explicit GuiPointerItem(std::array<uint32_t, 3> ids) : ids_(ids) {}
+        PointerSink& sink() noexcept { return sink_; }
+        const PointerSink& sink() const noexcept { return sink_; }
+        // Its element's kind (the footer's word), its rect, the panel's area, whether it is shown.
+        void place(GuiKind kind, const funkgui::Rect& rect, const funkgui::Rect& area, bool shown);
+        const funkgui::Rect& rect() const noexcept { return rect_; }
+        GuiKind kind() const noexcept { return kind_; }
+        void tick(float dt, bool hovered, bool focused, funkgui::Point) override;
+        void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
+        uint64_t drawKey() const override { return DrawKey{}.mix(sink_.key()).mix(rect_).mix(focused_).h; }
+        bool contains(funkgui::Point p) const override { return shown() && area_.contains(p) && rect_.contains(p); }
+        funkgui::Cursor cursorAt(funkgui::Point) const override { return sink_.cursor(); }
+        void pointerMove(const funkgui::PointerEvent& e) override { sink_.move({ e.x, e.y }); }
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override;
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override { sink_.drag(e, g); }
+        void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) override { sink_.release(); }
+        void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController& g) override { sink_.doubleClick(g); }
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now) override { return sink_.wheel(e, g, now); }
+        bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g) override { return sink_.key(e, g); }
+        void accessibility(std::vector<funkgui::A11yItem>& out) const override;
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override;
+        void specLine(char* out, std::size_t n) const override;
+        bool settled() const override { return !sink_.busy(); }
+        funkgui::Point centre() const override { return { rect_.centreX(), rect_.centreY() }; }
+        bool shown() const override { return shown_ && sink_.any(); }
+        bool focusable() const override { return sink_.focusable(); }
+
+    private:
+        std::array<uint32_t, 3> ids_;
+        PointerSink sink_;
+        GuiKind kind_ = GuiKind::area;
+        funkgui::Rect rect_, area_;
+        bool shown_ = false, focused_ = false;
+    };
+
     // A shader element (fminus/Shaders.h): its program, drawn over its cell by FunkGui (Canvas::shader) with its
     // inputs as u_params, once the Panel has registered it (funkgui/gpu/ShaderLibrary.h); until then, or when it was
     // refused, a placeholder that says why. It moves every frame while it animates (its code reads u_time:
@@ -346,7 +464,8 @@ namespace playground::ui
     class GuiShaderItem final : public Item
     {
     public:
-        explicit GuiShaderItem(uint32_t id) : id_(id) {}
+        // `ids`: its own (an image to a screen reader), then its pointer's x, y and down.
+        explicit GuiShaderItem(std::array<uint32_t, 4> ids) : id_(ids[0]), pointerIds_{ ids[1], ids[2], ids[3] } {}
 
         // Its element, its cell, the panel's area, whether it is shown; its program's id (0: none) and file, and why
         // it draws nothing ("" when it draws), and whether it animates.
@@ -357,32 +476,56 @@ namespace playground::ui
         uint32_t program() const noexcept { return program_; }
         const std::string& why() const noexcept { return why_; }
         const funkgui::Rect& cell() const noexcept { return cell_; }
+        // Its pointer properties (PointerSink), and whether its inputs read the pointer (pointer.x ...): with either
+        // it takes the pointer; with neither a press goes to the container around it.
+        PointerSink& sink() noexcept { return sink_; }
+        const PointerSink& sink() const noexcept { return sink_; }
+        void setReadsPointer(bool reads) noexcept { readsPointer_ = reads; }
+        bool takesPointer() const noexcept { return readsPointer_ || sink_.any(); }
 
-        void tick(float dt, bool, bool, funkgui::Point) override
+        // A frame: its inputs moved (Stirred: what place() and setInputs() saw change, kept until the next tick reads
+        // it), the pointer over it.
+        void tick(float dt, bool hovered, bool focused, funkgui::Point) override
         {
             stir_.tick(dt, changed_);
             changed_ = false;
+            sink_.tick(dt, hovered && shown_);
+            focused_ = focused;
         }
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool ring) const override;
-        uint64_t drawKey() const override                // its inputs (u_params) and what it draws
+        uint64_t drawKey() const override                // its inputs (u_params, the pointer's among them) and what it draws
         {
             DrawKey k;
             for (const float v : inputs_)
                 k.mix(v);
-            return k.mix(program_).mix(why_).mix(cell_).h;
+            return k.mix(program_).mix(why_).mix(cell_).mix(focused_).h;
         }
-        bool contains(funkgui::Point p) const override { return shown_ && area_.contains(p) && cell_.contains(p); }
-        void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
+        bool contains(funkgui::Point p) const override { return shown_ && takesPointer() && area_.contains(p) && cell_.contains(p); }
+        funkgui::Cursor cursorAt(funkgui::Point) const override { return sink_.cursor(); }
+        void pointerMove(const funkgui::PointerEvent& e) override { sink_.move({ e.x, e.y }); }
+        void pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&) override;
+        void pointerDrag(const funkgui::PointerEvent& e, funkgui::GestureController& g) override { sink_.drag(e, g); }
+        void pointerUp(const funkgui::PointerEvent&, funkgui::GestureController&) override { sink_.release(); }
+        void doubleClick(const funkgui::PointerEvent&, funkgui::GestureController& g) override { sink_.doubleClick(g); }
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now) override { return sink_.wheel(e, g, now); }
+        bool key(const funkgui::KeyEvent& e, funkgui::GestureController& g) override { return sink_.key(e, g); }
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
-        bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
+        bool a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g) override;
         void specLine(char* out, std::size_t n) const override;
-        bool settled() const override { return !shown_ || (!(animated_ && program_ != 0) && !stir_.moving()); }
+        // Moving while it animates, while an input moves, and while a key's press of its down= runs out.
+        bool settled() const override
+        {
+            return !shown_ || (!(animated_ && program_ != 0) && !stir_.moving() && !sink_.busy());
+        }
         funkgui::Point centre() const override { return { cell_.centreX(), cell_.centreY() }; }
         bool shown() const override { return shown_; }
-        bool focusable() const override { return false; }
+        bool focusable() const override { return shown_ && sink_.focusable(); }
 
     private:
         uint32_t id_;
+        std::array<uint32_t, 3> pointerIds_;
+        PointerSink sink_;
+        bool readsPointer_ = false, focused_ = false;
         uint32_t program_ = 0;
         std::string file_, why_;
         std::array<float, kMaxShaderInputs> inputs_{};

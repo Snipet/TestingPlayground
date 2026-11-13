@@ -75,7 +75,13 @@ namespace playground::ui
         // Item
         void tick(float dt, bool, bool, funkgui::Point) override { stir_.tick(dt, moving_); }   // after update()
         void draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const override;
-        bool contains(funkgui::Point p) const override { return shown_ && cell_.contains(p) && (area_.w <= 0.0f || area_.contains(p)); }
+        // Under a .gui file's pointer properties (its own, or a container's around it: GuiView), a press passes it by
+        // to them (GuiPointerItem): a display takes none of its own.
+        void setPassThrough(bool through) noexcept { passThrough_ = through; }
+        bool contains(funkgui::Point p) const override
+        {
+            return shown_ && !passThrough_ && cell_.contains(p) && (area_.w <= 0.0f || area_.contains(p));
+        }
         void pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&) override {}
         void accessibility(std::vector<funkgui::A11yItem>& out) const override;
         bool a11yAction(uint32_t, funkgui::A11yAction, double, funkgui::GestureController&) override { return false; }
@@ -101,6 +107,7 @@ namespace playground::ui
         uint32_t id_;
         PanelDisplay display_;
         bool shown_ = false;
+        bool passThrough_ = false;
         funkgui::Rect cell_;
         // What it shows, moving.
         std::array<float, 2> level_{}, hold_{}, holdFor_{};   // a meter's bars, 0..1

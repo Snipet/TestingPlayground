@@ -19,9 +19,11 @@
 #include <funkgui/text/TextFit.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <sstream>
 
@@ -945,7 +947,9 @@ namespace playground::sandbox
             values[static_cast<std::size_t>(c)] = normOf(controls_[static_cast<std::size_t>(c)], controls_[static_cast<std::size_t>(c)].def);
         std::vector<std::pair<int, float>> taps;
         float inLevel = -1.0f, outLevel = -1.0f;
-        std::string fieldsShown;
+        std::array<float, 4> pointer;                    // pointer.x ... over every shader (NaN: none asked)
+        pointer.fill(std::numeric_limits<float>::quiet_NaN());
+        std::string fieldsShown, pointerShown;
         if (const juce::DynamicObject* o = r["values"].getDynamicObject())
             for (const auto& kv : o->getProperties())
             {
@@ -959,7 +963,13 @@ namespace playground::sandbox
                     if (num)
                         x = static_cast<double>(kv.value);
                     bool found = false;
-                    if (name == "out" || (name == "in" && !instrument_))
+                    if (const int which = pointerInput(name); which >= 0)
+                    {
+                        found = true;
+                        if (num && std::isfinite(x))
+                            pointer[static_cast<std::size_t>(which)] = std::clamp(static_cast<float>(x), 0.0f, 1.0f);
+                    }
+                    else if (name == "out" || (name == "in" && !instrument_))
                     {
                         found = true;
                         if (num && std::isfinite(x))
@@ -977,6 +987,8 @@ namespace playground::sandbox
                         said += "There is no dial or field " + name + ". ";
                     else if (!num || !std::isfinite(x))
                         said += name + " takes a number. ";
+                    else if (pointerInput(name) >= 0)
+                        pointerShown += (pointerShown.empty() ? "" : ", ") + name;
                     else
                         fieldsShown += (fieldsShown.empty() ? "" : ", ") + name;
                     continue;
@@ -996,6 +1008,7 @@ namespace playground::sandbox
         View view(spec_, controls_, values, files_, notes_, w, h, page, instrument_);
         if (!taps.empty() || inLevel >= 0.0f || outLevel >= 0.0f)
             view.setShown(std::move(taps), inLevel, outLevel);
+        view.showPointer(pointer);
         funkgui::HeadlessHost host(view, themeIndex, kDpi);
         host.settle(120);
         const picture::Drawn drawn = picture::draw(host.draw());
@@ -1056,6 +1069,8 @@ namespace playground::sandbox
                   + " not built here, shown as placeholders (the notes say why)";
         else
             line += std::string("; drawn by the GPU as the plugin draws it") + (spec_.shaders.empty() ? "" : ", shaders included");
+        if (!pointerShown.empty())
+            line += "; the shaders drawn with the pointer at " + pointerShown;
         line += "; the displays show demo values" + (fieldsShown.empty() ? std::string() : " but " + fieldsShown + " (as asked)")
               + ". Sandbox #" + std::to_string(number_) + ".";
         // The area goes back with it: the server keeps it, so a helper started again lays the panel out as it was.

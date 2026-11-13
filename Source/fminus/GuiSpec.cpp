@@ -481,12 +481,19 @@ namespace playground
         {
             return isContainerWord(w) || isDisplay(w) || w == "spacer" || w == "divider" || w == "label" || w == "knob"
                 || w == "slider" || w == "switch" || w == "buttons" || w == "menu" || w == "xy" || w == "envelope"
-                || w == "keyboard" || w == "shader";
+                || w == "keyboard" || w == "shader" || w == "area";
+        }
+
+        // The pointer's properties (PanelPointer): what it writes, then how.
+        bool isPointerKey(const std::string& k)
+        {
+            return k == "x" || k == "y" || k == "down" || k == "wheel" || k == "hover" || k == "drag" || k == "release"
+                || k == "cursor";
         }
 
         constexpr const char* kElements = "row, column, grid, section, box, tabs, page, spacer, divider, label, knob, "
-                                          "slider, switch, buttons, menu, xy, envelope, keyboard, shader, meter, vu, "
-                                          "led, number, scope, spectrum, class or defaults";
+                                          "slider, switch, buttons, menu, xy, envelope, keyboard, shader, area, meter, "
+                                          "vu, led, number, scope, spectrum, class or defaults";
 
         constexpr const char* kKnobLooks = "modern, vintage, flat, minimal, ring, led, chicken, soft or dot";
 
@@ -535,7 +542,8 @@ namespace playground
                 std::string rest;
                 std::vector<int> left;
                 for (int c = 0; c < kMaxControls; ++c)
-                    if (controls_[static_cast<std::size_t>(c)].used && !placed_[static_cast<std::size_t>(c)])
+                    if (controls_[static_cast<std::size_t>(c)].used && !placed_[static_cast<std::size_t>(c)]
+                        && !pointed_[static_cast<std::size_t>(c)])   // a pointer's param: the panel's, drawn as it says
                     {
                         left.push_back(c);
                         rest += (rest.empty() ? "" : ", ") + std::string(controls_[static_cast<std::size_t>(c)].name);
@@ -666,8 +674,117 @@ namespace playground
             // out quietly: a class may serve several kinds).
             void unknown(const Prop& p, const std::string& element, const std::string& takes)
             {
-                if (p.own)
-                    note(p.value, element + " takes " + takes + ": " + p.key + "= is left out");
+                if (!p.own)
+                    return;
+                if (isPointerKey(p.key))
+                {
+                    const bool presses = element == "knob" || element == "slider" || element == "switch" || element == "buttons"
+                                      || element == "menu" || element == "xy" || element == "keyboard" || element == "tabs";
+                    note(p.value, p.key + "= goes on area, shader, row, column, grid, section, box, label or a display: "
+                                      + element + (presses ? " takes presses itself" : " takes no pointer") + ", so it is left out");
+                    return;
+                }
+                note(p.value, element + " takes " + takes + ": " + p.key + "= is left out");
+            }
+
+            // ---- the pointer: x=, y=, down=, wheel=, hover=, drag=, release=, cursor= ------------------------------------
+            // The parameter one of them names, as a slot (-1 and a note when it names none or one of a type it cannot
+            // write). Not a control: a parameter may have both, and a pointer's leaves it out of the section of the rest.
+            int pointerParam(const Prop& p)
+            {
+                if (!p.value.is(Token::Kind::name))
+                {
+                    note(p.value, p.key + "= takes a parameter's name, not '" + p.value.value + "'");
+                    return -1;
+                }
+                const int c = slotNamed(p.value.value);
+                if (c < 0)
+                {
+                    note(p.value, "there is no parameter " + p.value.value + " (the dials: " + dialNames() + "): " + p.key + "= is left out");
+                    return -1;
+                }
+                const Control& k = controls_[static_cast<std::size_t>(c)];
+                if ((p.key == "x" || p.key == "y") && k.type != ControlType::real)
+                {
+                    note(p.value, p.key + "= moves a float: " + p.value.value + " is " + typeName(k) + ", so it is left out");
+                    return -1;
+                }
+                if (p.key == "wheel" && k.type == ControlType::toggle)
+                {
+                    note(p.value, "wheel= turns a float or an int: " + p.value.value + " is a bool, so it is left out");
+                    return -1;
+                }
+                if (p.key == "hover" && !isPanelDial(c))
+                {
+                    note(p.value, "hover= needs a panel-only param: one after the program's " + std::to_string(kHostControls)
+                                      + "nd (" + p.value.value + " is a host parameter), so it is left out");
+                    return -1;
+                }
+                return c;
+            }
+
+            // An element's pointer properties (in its order; a class's and the defaults' too). A shader keeps its
+            // cursor= alone (its pointer inputs make it something to point at); kMaxPointers elements at most.
+            PanelPointer pointerOf(const std::vector<Prop>& props, const std::string& w, bool shader)
+            {
+                PanelPointer out;
+                const Prop* shaping = nullptr;           // drag= or release=, for a note when x= and y= are none
+                for (const Prop& p : props)
+                {
+                    if (p.key == "drag")
+                    {
+                        if (const int k = choice(p, { "absolute", "relative" }); k >= 0)
+                            out.drag = static_cast<PanelPointer::Drag>(k);
+                        shaping = shaping != nullptr ? shaping : &p;
+                    }
+                    else if (p.key == "release")
+                    {
+                        if (const int k = choice(p, { "keep", "spring" }); k >= 0)
+                            out.release = static_cast<PanelPointer::Release>(k);
+                        shaping = shaping != nullptr ? shaping : &p;
+                    }
+                    else if (p.key == "cursor")
+                    {
+                        if (const int k = choice(p, { "hand", "cross", "grab", "leftright", "updown" }); k >= 0)
+                            out.cursor = static_cast<PanelPointer::Cursor>(k + 1);
+                    }
+                    else
+                    {
+                        const int slot = pointerParam(p);
+                        (p.key == "x" ? out.x : p.key == "y" ? out.y : p.key == "down" ? out.down : p.key == "wheel" ? out.wheel : out.hover) = slot;
+                    }
+                }
+                if (shaping != nullptr && out.x < 0 && out.y < 0 && shaping->own)
+                    note(shaping->value, "drag= and release= shape x= and y=: " + w + " has neither, so they do nothing");
+                if (!out.any())
+                {
+                    if (!shader && out.cursor != PanelPointer::Cursor::normal && !props.empty())
+                        for (const Prop& p : props)
+                            if (p.key == "cursor" && p.own)
+                            {
+                                note(p.value, "cursor= is the pointer's shape over what x=, y=, down=, wheel= or hover= "
+                                              "writes: " + w + " has none, so it is left out");
+                                break;
+                            }
+                    PanelPointer none;
+                    if (shader)
+                        none.cursor = out.cursor;
+                    return none;
+                }
+                if (pointers_ >= kMaxPointers)
+                {
+                    note(props.front().value, "a panel has " + std::to_string(kMaxPointers) + " elements with pointer "
+                                              "properties at most: this " + w + "'s are left out");
+                    PanelPointer none;
+                    if (shader)
+                        none.cursor = out.cursor;
+                    return none;
+                }
+                ++pointers_;
+                for (const int slot : { out.x, out.y, out.down, out.wheel, out.hover })
+                    if (slot >= 0)
+                        pointed_[static_cast<std::size_t>(slot)] = true;
+                return out;
             }
 
             int push(GuiNode n, int parent)
@@ -911,6 +1028,8 @@ namespace playground
                     addKeyboard(e, parent);
                 else if (w == "shader")
                     addShader(e, parent);
+                else if (w == "area")
+                    addArea(e, parent);
                 else if (isDisplay(w))
                     addDisplay(e, parent);
                 else
@@ -1056,11 +1175,15 @@ namespace playground
                 }
                 if (n.kind == GuiKind::page && n.text.empty())
                     n.text = "PAGE " + std::to_string(spec_.gui.nodes[static_cast<std::size_t>(parent)].children.size() + 1);
+                const bool pointed = n.kind != GuiKind::tabs && n.kind != GuiKind::page;
+                std::vector<Prop> pointer;
                 for (const Prop& p : e.props)
                 {
                     if (layoutProp(n, p, true) || decorProp(n, p))
                         continue;
-                    if (p.key == "cols" && n.kind == GuiKind::grid)
+                    if (pointed && isPointerKey(p.key))
+                        pointer.push_back(p);
+                    else if (p.key == "cols" && n.kind == GuiKind::grid)
                         n.cols = static_cast<int>(number(p, 1.0f, 32.0f, 4.0f));
                     else if (p.key == "layout" && (n.kind == GuiKind::section || n.kind == GuiKind::box || n.kind == GuiKind::page))
                     {
@@ -1072,6 +1195,7 @@ namespace playground
                     else
                         unknown(p, w, containerProps(n.kind));
                 }
+                n.pointer = pointerOf(pointer, w, false);
                 const int i = push(std::move(n), parent);
                 for (const Element& c : e.children)
                     add(c, i);
@@ -1093,6 +1217,8 @@ namespace playground
                     out += ", color=, look=";
                 if (k == GuiKind::section || k == GuiKind::tabs)
                     out += ", titlecolor=, titlealign=, titlesize=";
+                if (k != GuiKind::tabs && k != GuiKind::page)
+                    out += ", x=, y=, down=, wheel=, hover=, drag=, release=, cursor=";
                 return out;
             }
 
@@ -1115,11 +1241,14 @@ namespace playground
                     note(e.name, "label takes a \"text\": label \"FILTER\"");
                     return;
                 }
+                std::vector<Prop> pointer;
                 for (const Prop& p : e.props)
                 {
                     if (layoutProp(n, p, false))
                         continue;
-                    if (p.key == "color" && n.kind != GuiKind::spacer)
+                    if (n.kind == GuiKind::label && isPointerKey(p.key))
+                        pointer.push_back(p);
+                    else if (p.key == "color" && n.kind != GuiKind::spacer)
                         n.color = color(p.value);
                     else if (p.key == "size" && n.kind == GuiKind::label)
                     {
@@ -1137,8 +1266,10 @@ namespace playground
                         n.style.thickness = number(p, 1.0f, 12.0f, 1.0f);
                     else
                         unknown(p, w, std::string(n.kind == GuiKind::label ? "size=, align=, color=, " : n.kind == GuiKind::divider ? "color=, thickness=, " : "")
-                                          + "grow=, width=, height=, margin=, self=");
+                                          + "grow=, width=, height=, margin=, self="
+                                          + (n.kind == GuiKind::label ? ", x=, y=, down=, wheel=, hover=, drag=, release=, cursor=" : ""));
                 }
+                n.pointer = pointerOf(pointer, w, false);
                 if (n.kind == GuiKind::spacer && n.width == 0.0f && n.height == 0.0f && n.grow == 0.0f)
                     n.grow = 1.0f;                       // a spacer without a size takes the room there is
                 push(std::move(n), parent);
@@ -1590,11 +1721,14 @@ namespace playground
                                     "(it draws nothing until then)");
                 for (std::size_t k = 1; k < e.args.size(); ++k)
                     note(e.args[k], "shader takes one file: '" + e.args[k].value + "' is left out (inputs=\"...\")");
+                std::vector<Prop> pointer;
                 for (const Prop& p : e.props)
                 {
                     if (layoutProp(n, p, false))
                         continue;
-                    if (p.key == "inputs")
+                    if (isPointerKey(p.key))
+                        pointer.push_back(p);
+                    else if (p.key == "inputs")
                     {
                         // Parameters (their 0..1), fields (their values), in and out (their levels), kMaxShaderInputs.
                         names.clear();
@@ -1613,7 +1747,9 @@ namespace playground
                                 break;
                             }
                             const std::size_t before = k;
-                            if (one == "in" || one == "out")
+                            if (pointerInput(one) >= 0)  // the pointer over it (pointer.x, pointer.y, ...)
+                                n.inputs[k++] = one;
+                            else if (one == "in" || one == "out")
                             {
                                 if (one == "in" && !instrument_)
                                     n.inputs[k++] = one;
@@ -1633,15 +1769,43 @@ namespace playground
                         }
                     }
                     else
-                        unknown(p, "shader", "inputs=, width=, height=, grow=, margin=, self=");
+                        unknown(p, "shader", "inputs=, width=, height=, grow=, margin=, self=, x=, y=, down=, wheel=, hover=, "
+                                             "drag=, release=, cursor=");
                 }
                 if (spec_.shaders.size() >= kMaxGuiShaders)
                 {
                     note(e.name, "a panel draws " + std::to_string(kMaxGuiShaders) + " shaders at most: this one is left out");
                     return;
                 }
+                n.pointer = pointerOf(pointer, "shader", true);
                 n.shader = static_cast<int>(spec_.shaders.size());
                 spec_.shaders.push_back({ n.file, std::move(names), {}, 0 });
+                push(std::move(n), parent);
+            }
+
+            // area x=padX y=padY down=gate: room that draws nothing, for the pointer's properties alone (a region of the
+            // panel something else draws, or nothing).
+            void addArea(const Element& e, int parent)
+            {
+                GuiNode n;
+                n.kind = GuiKind::area;
+                n.line = e.name.line;
+                for (const Token& a : e.args)
+                    note(a, "area takes no argument: '" + a.value + "' is left out (x=, y=, down=, wheel=, hover=)");
+                std::vector<Prop> pointer;
+                for (const Prop& p : e.props)
+                {
+                    if (layoutProp(n, p, false))
+                        continue;
+                    if (isPointerKey(p.key))
+                        pointer.push_back(p);
+                    else
+                        unknown(p, "area", "x=, y=, down=, wheel=, hover=, drag=, release=, cursor=, width=, height=, grow=, "
+                                           "margin=, self=");
+                }
+                n.pointer = pointerOf(pointer, "area", false);
+                if (!n.pointer.any() && pointer.empty())
+                    note(e.name, "area writes what the pointer does there: give it x=, y=, down=, wheel= or hover=");
                 push(std::move(n), parent);
             }
 
@@ -1666,11 +1830,14 @@ namespace playground
                 const bool sized = d.kind == DisplayKind::scope || d.kind == DisplayKind::spectrum;
                 const bool readout = d.kind == DisplayKind::number;
                 const Prop* formatProp = nullptr;          // a number's unit=, decimals= or scale=, for a note on audio
+                std::vector<Prop> pointer;
                 for (const Prop& p : e.props)
                 {
                     if (commonProp(n, p))
                         continue;
-                    if (readout && (p.key == "unit" || p.key == "decimals" || p.key == "scale"))
+                    if (isPointerKey(p.key))
+                        pointer.push_back(p);
+                    else if (readout && (p.key == "unit" || p.key == "decimals" || p.key == "scale"))
                     {
                         // As a knob's value reads (formatValue): its unit, its places (0 to 4), times its scale.
                         formatProp = formatProp != nullptr ? formatProp : &p;
@@ -1712,7 +1879,8 @@ namespace playground
                         n.grow = number(p, 0.0f, 100.0f, 0.0f);
                     else
                         unknown(p, w, "label=, color=, min=, max=, grow=, margin=, self=" + std::string(sized ? ", width=, height=" : "")
-                                          + std::string(readout ? ", unit=, decimals=, scale=" : ""));
+                                          + std::string(readout ? ", unit=, decimals=, scale=" : "")
+                                          + ", x=, y=, down=, wheel=, hover=, drag=, release=, cursor=");
                 }
                 if (formatProp != nullptr && d.audio())
                 {
@@ -1780,6 +1948,7 @@ namespace playground
                     d.name = d.source + std::to_string(same + 1);
                 if (!d.audio())
                     d.tap = taps_++;
+                n.pointer = pointerOf(pointer, w, false);
                 n.display = static_cast<int>(spec_.displays.size());
                 spec_.displays.push_back(std::move(d));
                 push(std::move(n), parent);
@@ -1793,6 +1962,8 @@ namespace playground
             std::string& notes_;
             PanelSpec spec_;
             std::array<bool, kMaxControls> placed_{};
+            std::array<bool, kMaxControls> pointed_{};   // a pointer property's (PanelPointer)
+            int pointers_ = 0;                           // elements with pointer properties (kMaxPointers)
             std::map<std::string, std::vector<Prop>> classes_, defaults_;
             std::set<std::string> said_;
             int taps_ = 0, count_ = 0;

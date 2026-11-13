@@ -260,8 +260,10 @@ namespace playground::ui
                     case GuiKind::keyboard:
                         return { std::max(160.0f, 16.0f * static_cast<float>(guiWhiteKeys(n.from, n.keys)))
                                      + (n.wheels ? kGuiWheelsW : 0.0f), 72.0f };
-                    case GuiKind::shader:
-                        return { 200.0f, 120.0f };
+                    case GuiKind::shader:                // width= and height= its size (a 72 px dial), else 200 x 120
+                        return { n.width > 0.0f ? n.width : 200.0f, n.height > 0.0f ? n.height : 120.0f };
+                    case GuiKind::area:                  // width= and height= its size, else 120 x 80
+                        return { n.width > 0.0f ? n.width : 120.0f, n.height > 0.0f ? n.height : 80.0f };
                     case GuiKind::display:
                     {
                         if (n.display < 0 || static_cast<std::size_t>(n.display) >= spec_.displays.size())
@@ -413,7 +415,8 @@ namespace playground::ui
                 if (own > 0.0f && c.kind != GuiKind::spacer)
                     return false;
                 if (isContainer(c.kind) || c.kind == GuiKind::label || c.kind == GuiKind::divider || c.kind == GuiKind::spacer
-                    || c.kind == GuiKind::envelope || c.kind == GuiKind::shader || c.kind == GuiKind::keyboard)
+                    || c.kind == GuiKind::envelope || c.kind == GuiKind::shader || c.kind == GuiKind::keyboard
+                    || c.kind == GuiKind::area)
                     return true;
                 if (c.kind == GuiKind::display && c.display >= 0 && static_cast<std::size_t>(c.display) < spec_.displays.size())
                 {
@@ -739,6 +742,7 @@ namespace playground::ui
                 return "display";
             case GuiKind::keyboard: return "keyboard from " + std::to_string(n.from) + ", " + std::to_string(n.keys) + " keys";
             case GuiKind::shader:   return "shader \"" + n.file + "\"";
+            case GuiKind::area:     return "area";
         }
         return "element";
     }

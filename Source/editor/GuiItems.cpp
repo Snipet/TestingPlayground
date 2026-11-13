@@ -325,7 +325,7 @@ namespace playground::ui
             }
             case GuiKind::row: case GuiKind::column: case GuiKind::grid: case GuiKind::section: case GuiKind::box:
             case GuiKind::tabs: case GuiKind::page: case GuiKind::spacer: case GuiKind::divider: case GuiKind::label:
-            case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader:
+            case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader: case GuiKind::area:
                 break;
         }
         if (focusRing)
@@ -647,7 +647,7 @@ namespace playground::ui
                 return;
             case GuiKind::row: case GuiKind::column: case GuiKind::grid: case GuiKind::section: case GuiKind::box:
             case GuiKind::tabs: case GuiKind::page: case GuiKind::spacer: case GuiKind::divider: case GuiKind::label:
-            case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader:
+            case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader: case GuiKind::area:
                 return;
         }
     }
@@ -753,7 +753,7 @@ namespace playground::ui
                 break;
             case GuiKind::knob: case GuiKind::slider: case GuiKind::row: case GuiKind::column: case GuiKind::grid:
             case GuiKind::section: case GuiKind::box: case GuiKind::tabs: case GuiKind::page: case GuiKind::spacer:
-            case GuiKind::divider: case GuiKind::label: case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader:
+            case GuiKind::divider: case GuiKind::label: case GuiKind::xy: case GuiKind::envelope: case GuiKind::display: case GuiKind::keyboard: case GuiKind::shader: case GuiKind::area:
                 item.role = funkgui::A11yRole::slider;
                 item.v = value_.value01();
                 item.lo = 0.0;
@@ -1277,11 +1277,440 @@ namespace playground::ui
                       held_ >= 0 ? "   playing " : "", held_ >= 0 ? noteName(held_).c_str() : "");
     }
 
+    // ---- PointerSink ------------------------------------------------------------------------------------------------------
+    void PointerSink::bind(const PanelPointer& p, std::array<GuiValue*, 5> values, std::function<void(int, funkgui::Point)> menu)
+    {
+        if (p != p_ || values != v_)
+        {
+            release();                                   // a gesture over the ports it had ends there
+            if (hoverOn_ != nullptr && (values[kHover] == nullptr || &values[kHover]->port() != hoverOn_))
+                writeHover(false);
+        }
+        p_ = p;
+        v_ = values;
+        menu_ = std::move(menu);
+    }
+
+    void PointerSink::move(funkgui::Point at) noexcept
+    {
+        if (rect_.w <= 0.0f || rect_.h <= 0.0f)
+            return;
+        px_ = clamp01((at.x - rect_.x) / rect_.w);
+        py_ = clamp01((rect_.bottom() - at.y) / rect_.h);
+    }
+
+    void PointerSink::begin(funkgui::GestureController& g)
+    {
+        std::array<funkgui::ParamPort*, 3> ports{ port(kX), port(kY), port(kDown) };
+        // A wheel's burst (or a drag) of the controller's on one of them ends first: a port has one gesture open.
+        for (funkgui::ParamPort* pt : ports)
+            if (pt != nullptr && (g.wheelParam() == pt || g.dragParam() == pt))
+                g.closeAll();
+        host_ = &g.host();
+        for (funkgui::ParamPort* pt : ports)
+            if (pt != nullptr && std::find(open_.begin(), open_.end(), pt) == open_.end())
+            {
+                pt->beginGesture();
+                open_.push_back(pt);
+            }
+    }
+
+    void PointerSink::write(std::size_t k, float host01)
+    {
+        funkgui::ParamPort* pt = port(k);
+        if (pt == nullptr || std::find(open_.begin(), open_.end(), pt) == open_.end())
+            return;
+        const float v = clamp01(host01);
+        if (pt->value01() != v)
+            pt->setValue01(v);
+    }
+
+    void PointerSink::press(const funkgui::PointerEvent& e, funkgui::GestureController& g)
+    {
+        if (e.popup)
+        {
+            // The dial menu of the first parameter it writes (MIDI learn), never a write.
+            for (const int slot : { p_.x, p_.y, p_.down, p_.wheel, p_.hover })
+                if (slot >= 0)
+                {
+                    if (menu_)
+                        menu_(slot, { e.x, e.y });
+                    break;
+                }
+            return;
+        }
+        if (keyHeld_ > 0.0f)
+        {
+            keyHeld_ = 0.0f;                             // a key's press ends: this one is the pointer's
+            end();
+        }
+        move({ e.x, e.y });
+        pressed_ = true;
+        last_ = { e.x, e.y };
+        if (!p_.presses())
+            return;
+        begin(g);
+        host_->beginBatch();
+        if (p_.drag == PanelPointer::Drag::relative)
+        {
+            x01_ = v_[kX] != nullptr ? v_[kX]->value01() : 0.0f;
+            y01_ = v_[kY] != nullptr ? v_[kY]->value01() : 0.0f;
+        }
+        else
+        {
+            write(kX, px_);
+            write(kY, py_);
+        }
+        write(kDown, 1.0f);
+        host_->endBatch();
+    }
+
+    void PointerSink::drag(const funkgui::PointerEvent& e, funkgui::GestureController&)
+    {
+        if (!pressed_)
+            return;
+        move({ e.x, e.y });
+        if (!open_.empty() && host_ != nullptr)
+        {
+            host_->beginBatch();
+            if (p_.drag == PanelPointer::Drag::relative)
+            {
+                // As a knob: kDragRange px the range, Shift ten times finer; up raises y, right raises x.
+                const float fine = e.mods.shift ? 0.1f : 1.0f;
+                x01_ = clamp01(x01_ + (e.x - last_.x) * fine / kDragRange);
+                y01_ = clamp01(y01_ + (last_.y - e.y) * fine / kDragRange);
+                write(kX, x01_);
+                write(kY, y01_);
+            }
+            else
+            {
+                write(kX, px_);
+                write(kY, py_);
+            }
+            host_->endBatch();
+        }
+        last_ = { e.x, e.y };
+    }
+
+    void PointerSink::end()
+    {
+        if (open_.empty())
+            return;
+        if (host_ != nullptr)
+            host_->beginBatch();
+        write(kDown, 0.0f);
+        if (p_.release == PanelPointer::Release::spring)
+        {
+            if (v_[kX] != nullptr)
+                write(kX, v_[kX]->default01());
+            if (v_[kY] != nullptr)
+                write(kY, v_[kY]->default01());
+        }
+        for (funkgui::ParamPort* pt : open_)
+            pt->endGesture();
+        open_.clear();
+        if (host_ != nullptr)
+            host_->endBatch();
+        host_ = nullptr;
+    }
+
+    void PointerSink::release()
+    {
+        pressed_ = false;
+        keyHeld_ = 0.0f;
+        end();
+    }
+
+    void PointerSink::doubleClick(funkgui::GestureController& g)
+    {
+        if (v_[kX] == nullptr && v_[kY] == nullptr)
+            return;
+        if (!open_.empty() && host_ != nullptr)
+        {
+            // Inside the press's gesture (the second press of the double-click): x and y back, the release keeps them.
+            host_->beginBatch();
+            if (v_[kX] != nullptr)
+                write(kX, x01_ = v_[kX]->default01());
+            if (v_[kY] != nullptr)
+                write(kY, y01_ = v_[kY]->default01());
+            host_->endBatch();
+            return;
+        }
+        const std::pair<funkgui::ParamPort*, float> writes[] = {
+            { port(kX), v_[kX] != nullptr ? v_[kX]->default01() : 0.0f },
+            { port(kY), v_[kY] != nullptr ? v_[kY]->default01() : 0.0f } };
+        g.tapMany(writes);
+    }
+
+    bool PointerSink::wheel(const funkgui::WheelEvent& e, funkgui::GestureController& g, double now)
+    {
+        GuiValue* v = v_[kWheel];
+        if (v == nullptr)
+            return false;
+        float dy = e.dy != 0.0f ? e.dy : -e.dx;
+        if (e.reversed)
+            dy = -dy;
+        if (dy == 0.0f)
+            return true;
+        const float step = v->step() * (e.mods.shift ? 0.1f : 1.0f);   // as a knob's
+        g.wheelTo(v->port(), clamp01(v->value01() + (dy > 0.0f ? step : -step)), now);
+        return true;
+    }
+
+    bool PointerSink::key(const funkgui::KeyEvent& e, funkgui::GestureController& g)
+    {
+        if (!focusable())
+            return false;
+        const float step = e.mods.shift ? 0.1f : 0.01f;
+        const auto nudge = [&](std::size_t k, float by) {
+            if (v_[k] == nullptr)
+                return false;
+            g.tap(v_[k]->port(), clamp01(v_[k]->value01() + by));
+            return true;
+        };
+        switch (e.key)
+        {
+            case funkgui::Key::left:  return nudge(kX, -step);
+            case funkgui::Key::right: return nudge(kX, step);
+            case funkgui::Key::up:    return nudge(kY, step);
+            case funkgui::Key::down:  return nudge(kY, -step);
+            case funkgui::Key::home:
+            {
+                if (v_[kX] == nullptr && v_[kY] == nullptr)
+                    return false;
+                const std::pair<funkgui::ParamPort*, float> writes[] = {
+                    { port(kX), v_[kX] != nullptr ? v_[kX]->default01() : 0.0f },
+                    { port(kY), v_[kY] != nullptr ? v_[kY]->default01() : 0.0f } };
+                g.tapMany(writes);
+                return true;
+            }
+            case funkgui::Key::enter:
+            case funkgui::Key::space:
+            {
+                funkgui::ParamPort* pt = port(kDown);
+                if (pt == nullptr)
+                    return false;
+                if (pressed_)
+                    return true;                         // the pointer holds it already
+                if (keyHeld_ <= 0.0f)
+                {
+                    // down alone, one gesture until the press runs out (FunkGui sends no key's release).
+                    if (g.wheelParam() == pt || g.dragParam() == pt)
+                        g.closeAll();
+                    host_ = &g.host();
+                    pt->beginGesture();
+                    open_.push_back(pt);
+                    write(kDown, 1.0f);
+                }
+                keyHeld_ = kKeyHold;                     // a key's repeat keeps it pressed
+                return true;
+            }
+            case funkgui::Key::character: case funkgui::Key::tab: case funkgui::Key::pageUp: case funkgui::Key::pageDown:
+            case funkgui::Key::end: case funkgui::Key::escape: case funkgui::Key::backspace: case funkgui::Key::del:
+                return false;
+        }
+        return false;
+    }
+
+    void PointerSink::writeHover(bool on)
+    {
+        if (on)
+        {
+            if (funkgui::ParamPort* pt = port(kHover); pt != nullptr)
+            {
+                if (pt->value01() != 1.0f)
+                    pt->setValue01(1.0f);                // a panel dial: no gesture
+                hoverOn_ = pt;
+            }
+        }
+        else if (hoverOn_ != nullptr)
+        {
+            if (hoverOn_->value01() != 0.0f)
+                hoverOn_->setValue01(0.0f);
+            hoverOn_ = nullptr;
+        }
+    }
+
+    void PointerSink::tick(float dt, bool hovered)
+    {
+        if (keyHeld_ > 0.0f)
+        {
+            keyHeld_ -= std::max(dt, 0.0f);
+            if (keyHeld_ <= 0.0f)
+            {
+                keyHeld_ = 0.0f;
+                if (!pressed_)
+                    end();
+            }
+        }
+        if (hovered != hover_ || (hovered && hoverOn_ == nullptr && port(kHover) != nullptr))
+        {
+            hover_ = hovered;
+            writeHover(hovered);
+        }
+    }
+
+    std::array<float, 4> PointerSink::inputs() const noexcept
+    {
+        return { px_, py_, pressed() ? 1.0f : 0.0f, hover_ ? 1.0f : 0.0f };
+    }
+
+    funkgui::Cursor PointerSink::cursor() const noexcept
+    {
+        switch (p_.cursor)
+        {
+            case PanelPointer::Cursor::hand:      return funkgui::Cursor::pointingHand;
+            case PanelPointer::Cursor::cross:     return funkgui::Cursor::crosshair;
+            case PanelPointer::Cursor::grab:      return pressed_ ? funkgui::Cursor::grabbing : funkgui::Cursor::grab;
+            case PanelPointer::Cursor::leftright: return funkgui::Cursor::leftRight;
+            case PanelPointer::Cursor::updown:    return funkgui::Cursor::upDown;
+            case PanelPointer::Cursor::normal:    break;
+        }
+        return funkgui::Cursor::normal;
+    }
+
+    uint64_t PointerSink::key() const noexcept
+    {
+        return DrawKey{}.mix(pressed()).mix(hover_).h;
+    }
+
+    void PointerSink::accessibility(std::vector<funkgui::A11yItem>& out, const std::array<uint32_t, 3>& ids) const
+    {
+        for (std::size_t k = kX; k <= kDown; ++k)
+        {
+            const GuiValue* v = v_[k];
+            if (v == nullptr)
+                continue;
+            funkgui::A11yItem item;
+            item.id = ids[k];
+            item.bounds = rect_;
+            item.title = v->label();
+            item.value = v->text();
+            if (k == kDown)
+                item.role = funkgui::A11yRole::button;
+            else
+            {
+                item.role = funkgui::A11yRole::slider;
+                item.v = v->value01();
+                item.lo = 0.0;
+                item.hi = 1.0;
+                item.step = 0.01;
+                item.description = k == kX ? "across" : "up";
+            }
+            out.push_back(std::move(item));
+        }
+    }
+
+    bool PointerSink::a11yAction(const std::array<uint32_t, 3>& ids, uint32_t id, funkgui::A11yAction a, double v,
+                                 funkgui::GestureController& g)
+    {
+        const auto at = std::find(ids.begin(), ids.end(), id);
+        if (at == ids.end())
+            return false;
+        const std::size_t k = static_cast<std::size_t>(at - ids.begin());
+        GuiValue* val = v_[k];
+        if (val == nullptr)
+            return true;
+        const int slots[] = { p_.x, p_.y, p_.down };
+        switch (a)
+        {
+            case funkgui::A11yAction::increment: if (k != kDown) g.tap(val->port(), clamp01(val->value01() + 0.01f)); break;
+            case funkgui::A11yAction::decrement: if (k != kDown) g.tap(val->port(), clamp01(val->value01() - 0.01f)); break;
+            case funkgui::A11yAction::setValue:  if (k != kDown) g.tap(val->port(), clamp01(static_cast<float>(v))); break;
+            case funkgui::A11yAction::press:
+            case funkgui::A11yAction::toggle:
+                if (k == kDown)
+                {
+                    funkgui::KeyEvent space;
+                    space.key = funkgui::Key::space;
+                    key(space, g);                       // as Space: a press of kKeyHold
+                }
+                break;
+            case funkgui::A11yAction::showMenu:
+                if (menu_)
+                    menu_(slots[k], { rect_.centreX(), rect_.centreY() });
+                break;
+            case funkgui::A11yAction::focus:
+                break;
+        }
+        return true;
+    }
+
+    void PointerSink::specLine(char* out, std::size_t n, const char* what) const
+    {
+        std::string line = what;
+        const char* names[] = { "X", "Y", "DOWN", "WHEEL", "HOVER" };
+        for (std::size_t k = 0; k < v_.size(); ++k)
+            if (v_[k] != nullptr)
+                line += std::string("   ") + names[k] + " " + v_[k]->label() + " " + v_[k]->text();
+        if (p_.presses())
+            line += p_.drag == PanelPointer::Drag::relative ? "   DRAG   SHIFT FINER" : "   CLICK OR DRAG";
+        if (v_[kX] != nullptr || v_[kY] != nullptr)
+            line += "   DOUBLE-CLICK: DEFAULT";
+        std::snprintf(out, n, "%s", line.c_str());
+    }
+
+    // ---- GuiPointerItem ---------------------------------------------------------------------------------------------------
+    void GuiPointerItem::place(GuiKind kind, const Rect& rect, const Rect& area, bool shown)
+    {
+        if (!shown && shown_)
+            sink_.release();
+        kind_ = kind;
+        rect_ = rect;
+        area_ = area;
+        shown_ = shown;
+        sink_.setRect(rect);
+    }
+
+    void GuiPointerItem::tick(float dt, bool hovered, bool focused, funkgui::Point)
+    {
+        sink_.tick(dt, hovered && shown());
+        focused_ = focused;
+    }
+
+    void GuiPointerItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const
+    {
+        if (focusRing && shown())
+            ring(c, th, rect_);                          // nothing else: the element under it is drawn as it is
+    }
+
+    void GuiPointerItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&)
+    {
+        if (shown())
+            sink_.press(e, g);
+    }
+
+    void GuiPointerItem::accessibility(std::vector<funkgui::A11yItem>& out) const
+    {
+        if (shown())
+            sink_.accessibility(out, ids_);
+    }
+
+    bool GuiPointerItem::a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g)
+    {
+        return shown() && sink_.a11yAction(ids_, id, a, v, g);
+    }
+
+    void GuiPointerItem::specLine(char* out, std::size_t n) const
+    {
+        if (!shown())
+        {
+            if (n > 0)
+                out[0] = '\0';
+            return;
+        }
+        sink_.specLine(out, n, kind_ == GuiKind::area ? "AREA" : kind_ == GuiKind::label ? "LABEL"
+                                     : kind_ == GuiKind::display ? "DISPLAY" : "PANEL");
+    }
+
     // ---- GuiShaderItem ----------------------------------------------------------------------------------------------
     void GuiShaderItem::place(const GuiNode&, const Rect& cell, const Rect& area, bool shown, uint32_t program,
                               const std::string& file, const std::string& why, bool animated)
     {
         changed_ = changed_ || program != program_ || shown != shown_;
+        if (!shown && shown_)
+            sink_.release();
+        sink_.setRect(cell);
         cell_ = cell;
         area_ = area;
         shown_ = shown;
@@ -1300,10 +1729,12 @@ namespace playground::ui
             inputs_[k] = std::isfinite(v[k]) ? v[k] : 0.0f;
     }
 
-    void GuiShaderItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool) const
+    void GuiShaderItem::draw(funkgui::Canvas& c, const funkgui::Theme& th, bool focusRing) const
     {
         if (!shown_ || cell_.w <= 0.0f || cell_.h <= 0.0f)
             return;
+        if (focusRing && sink_.focusable())
+            ring(c, th, cell_);
         if (program_ != 0)
         {
             c.shader(program_, cell_, inputs_.data(), static_cast<int>(inputs_.size()));
@@ -1345,6 +1776,18 @@ namespace playground::ui
         item.value = program_ != 0 ? std::string("drawn") : (why_.empty() ? std::string("not built yet") : why_);
         item.readOnly = true;
         out.push_back(std::move(item));
+        sink_.accessibility(out, pointerIds_);           // its pointer's x, y and down, when it writes them
+    }
+
+    bool GuiShaderItem::a11yAction(uint32_t id, funkgui::A11yAction a, double v, funkgui::GestureController& g)
+    {
+        return shown_ && sink_.a11yAction(pointerIds_, id, a, v, g);
+    }
+
+    void GuiShaderItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController& g, funkgui::HostServices&)
+    {
+        if (shown_ && takesPointer())
+            sink_.press(e, g);
     }
 
     void GuiShaderItem::specLine(char* out, std::size_t n) const
@@ -1353,6 +1796,11 @@ namespace playground::ui
         {
             if (n > 0)
                 out[0] = '\0';
+            return;
+        }
+        if (sink_.any())
+        {
+            sink_.specLine(out, n, ("shader " + file_).c_str());
             return;
         }
         std::snprintf(out, n, "shader %s   %s", file_.c_str(), program_ != 0 ? "drawn" : (why_.empty() ? "not built" : why_.c_str()));
@@ -1848,7 +2296,7 @@ namespace playground::ui
                 }
                 case GuiKind::tabs: case GuiKind::spacer: case GuiKind::knob: case GuiKind::slider: case GuiKind::toggle:
                 case GuiKind::buttons: case GuiKind::menu: case GuiKind::xy: case GuiKind::envelope: case GuiKind::display:
-                case GuiKind::keyboard: case GuiKind::shader:
+                case GuiKind::keyboard: case GuiKind::shader: case GuiKind::area:
                     break;
             }
         }
