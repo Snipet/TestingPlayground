@@ -385,7 +385,10 @@ namespace playground
             usage::setListedPrice(providers::usageName(p), id, price);
         std::vector<ChatModel> found = providers::modelsOf(p, r.body);
         if (found.empty())
+        {
+            otherFetched_ = false;                 // none yet (Ollama with nothing pulled): asked again next turn
             return;
+        }
         // A model that refused a thinking level this session keeps none, whatever its list says.
         for (ChatModel& m : found)
             if (effortRefused_.count(effortKey(p, m.id)) > 0)
@@ -457,7 +460,11 @@ namespace playground
                     turnJsonSchema_ = !schemaRefused_;
                     const int context = m != nullptr ? m->context : 0;
                     turnShort_ = context > 0 ? context < kShortPromptBelow : providers::isLocal(providers::baseOf(turnProvider_));
-                    maxTokens = (m != nullptr ? *m : providers::plainModel(turnModel_)).maxTokens;
+                    // What one reply holds, said when one is cut off: Gemini's listed output limit, which its server
+                    // applies; none for an OpenAI-compatible server or a model its list lacks (no request carries
+                    // max_tokens, so the server's own limit cuts it, and no number is named).
+                    const bool gemini = providers::kindOf(turnProvider_.kind) == providers::Kind::gemini;
+                    maxTokens = m != nullptr && gemini ? m->maxTokens : 0;
                     plannerAsks_ = 0;
                     turnPlanUsage_.clear();
                     return Start::other;

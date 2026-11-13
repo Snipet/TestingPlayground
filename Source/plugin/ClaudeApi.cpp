@@ -1,6 +1,8 @@
 // Source/plugin/ClaudeApi.cpp: see ClaudeApi.h.
 #include "plugin/ClaudeApi.h"
 
+#include "fminus/Lang.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -57,7 +59,7 @@ namespace playground::claude
     {
         std::string message = errorMessage(body);
         if (message.empty())
-            message = body.substr(0, 300);
+            message = std::string(lang::headOf(body, 300));   // never inside a character
         switch (status)
         {
             case 401: return "the API key was refused (" + message + "): add it again";

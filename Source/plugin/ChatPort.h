@@ -128,6 +128,8 @@ namespace playground
         std::vector<ChatCheck> checks;        // a checks entry's
         std::string from;                     // a plan's: the model that wrote it ("Claude Fable 5.1")
         bool answer = false;                  // a plan entry that answers ask_planner (else a request's plan)
+        bool failed = false;                  // a tool's: its result was an error (a run that did not compile or
+                                              // stopped, a refusal), drawn so
     };
 
     struct ChatModel
@@ -189,8 +191,14 @@ namespace playground
         { "openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-", "platform.openai.com (API keys)" },
         { "openrouter", "OpenRouter", "openai", "https://openrouter.ai/api/v1", "sk-or-", "openrouter.ai (Keys)" },
         { "gemini", "Google Gemini", "gemini", "https://generativelanguage.googleapis.com", "AIza", "aistudio.google.com (Get API key)" },
+        // The servers on this machine, named in kThisMachine's words (EditorPort.h).
+#if defined(__APPLE__)
         { "ollama", "Ollama (this Mac)", "openai", "http://localhost:11434/v1", "", "" },
         { "lmstudio", "LM Studio (this Mac)", "openai", "http://localhost:1234/v1", "", "" },
+#else
+        { "ollama", "Ollama (this computer)", "openai", "http://localhost:11434/v1", "", "" },
+        { "lmstudio", "LM Studio (this computer)", "openai", "http://localhost:1234/v1", "", "" },
+#endif
         { "custom", "Other OpenAI-compatible server", "openai", "", "", "" },
     };
 
@@ -222,6 +230,8 @@ namespace playground
         int attaching = 0;                    // files still being read
         std::string activity;                 // what it is doing: "THINKING", "WRITING filters.fm", ...
         std::vector<ChatEntry> entries;
+        uint64_t conversation = 0;            // moves when other words replace the conversation shown (another chat
+                                              // opened, a new chat, a session loaded)
         std::vector<ChatModel> models;
         std::string model;                    // the chosen model's id (the builder's)
         std::string planner;                  // the planning model's id ("" for none)

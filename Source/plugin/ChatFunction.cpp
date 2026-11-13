@@ -9,7 +9,10 @@
 
 #include "Product.h"
 
+#include "fsdsp/core/ScopedFtz.h"
+
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -338,15 +341,32 @@ namespace playground
         else
         {
             // A fresh instance of the editor's files: as compile() makes it (init run), with the dials as they are.
+            // Every dial as the Engine gives it before an instance's first call: the main module's params, Shared's params
+            // named as dials, and the circuits' pots and switches through set() (as many calls as a switch's ramp takes, so
+            // it stands at the dial's position).
             const std::map<std::string, float> dials = currentDials();
             const Controls& cs = patch.controls();
+            std::array<float, kMaxControls> plain{};
             for (int c = 0; c < kMaxControls; ++c)
             {
                 const Control& k = cs[static_cast<std::size_t>(c)];
                 if (!k.used)
                     continue;
-                if (const auto it = dials.find(std::string(k.name)); it != dials.end())
+                const auto it = dials.find(std::string(k.name));
+                plain[static_cast<std::size_t>(c)] = it != dials.end() ? it->second : k.def;
+                if (it != dials.end())
                     patch.setValue(c, it->second, 0);
+            }
+            {
+                const fsdsp::ScopedFtz ftz;                  // as every call into the program runs
+                if (patch.sharedDials() != 0)
+                    patch.setSharedDials(plain.data());
+                if (patch.circuits())
+                {
+                    const int calls = patch.circuitRamps() ? static_cast<int>(std::ceil(0.02 * rate / 16.0)) + 1 : 1;
+                    for (int k = 0; k < calls; ++k)
+                        patch.setCircuits(plain.data(), 0);
+                }
             }
             char r[32];
             std::snprintf(r, sizeof r, "%.0f", static_cast<double>(rate));

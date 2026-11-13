@@ -30,6 +30,7 @@
 #include "dsp/Regex.h"
 #include "dsp/TextDiff.h"
 #include "fminus/CirDoc.h"
+#include "fminus/Lang.h"
 
 #include <algorithm>
 #include <cctype>
@@ -70,6 +71,17 @@ namespace playground
         }
 
         std::string numberedLine(int n, std::string_view text) { return std::to_string(n) + "\t" + std::string(text) + "\n"; }
+
+        // A line too long for what a part read has room for (`room` characters, at least half of kMaxOutput): its head, cut
+        // where a character starts, then its length and the way to it all (a part read would show the same head again).
+        std::string cutLongLine(int n, std::string_view text, std::size_t room)
+        {
+            const std::string note = "(line " + std::to_string(n) + " is " + std::to_string(text.size())
+                                   + " characters long: cut here; read_file with no from, lines or find gives the whole file)\n";
+            const std::size_t head = std::to_string(n).size() + 2 + note.size();
+            const std::string_view shown = lang::headOf(text, room > head ? room - head : 0);
+            return std::to_string(n) + "\t" + std::string(shown) + "\n" + note;
+        }
 
         // "a", "a and b", "a, b and c".
         std::string joinedAnd(const std::vector<std::string>& parts)
@@ -553,12 +565,13 @@ namespace playground
     std::string ChatAgent::keepVersion(const std::string& name, const std::string& text, bool refused)
     {
         const std::string version = versionOf(text);
-        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused };
+        FileVersion kept{ name, version, std::make_shared<const std::string>(text), ++versionsGiven_, !refused, mcpWorking_.load() };
         const auto same = [&](const FileVersion& v) { return v.name == name && v.version == version; };
         if (const auto was = std::find_if(fileVersions_.begin(), fileVersions_.end(), same); refused && was != fileVersions_.end())
         {
             kept.given = was->given;                             // newest again (so kept longest), given as it was
             kept.asked = was->asked;
+            kept.desktop = was->desktop;
         }
         fileVersions_.erase(std::remove_if(fileVersions_.begin(), fileVersions_.end(), same), fileVersions_.end());
         fileVersions_.push_back(std::move(kept));
@@ -647,8 +660,10 @@ namespace playground
 
         // The `shown` of the lines `found` holds (1-based, ascending) from its `first`, `context` lines around each,
         // numbered, groups apart ("--"), onto `out`: how many of them it wrote whole (`shown` unless kMaxOutput cut it).
+        // A line past the room while under half of it is used is shown cut (cutLongLine), its number in `longCut` (else
+        // 0): its note says how to read it all, and longReadOn how to read the lines found after it.
         std::size_t aroundEach(const std::vector<std::string_view>& lines, const std::vector<int>& found, std::size_t first, std::size_t shown,
-                               int context, std::string& out)
+                               int context, std::string& out, int& longCut)
         {
             const int count = static_cast<int>(lines.size());
             int last = 0;                                        // the last line written
@@ -662,7 +677,14 @@ namespace playground
                 {
                     const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                     if (out.size() + l.size() > kMaxOutput)
+                    {
+                        if (out.size() < kMaxOutput / 2)
+                        {
+                            out += cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size());
+                            longCut = n;
+                        }
                         return i;
+                    }
                     out += l;
                 }
                 last = std::max(last, b);
@@ -682,6 +704,19 @@ namespace playground
         std::string readOn(std::size_t next, std::size_t total, const std::string& narrower)
         {
             return "(" + std::to_string(total - next) + " more: call again with skip=" + std::to_string(next) + ", or give find " + narrower + ")\n";
+        }
+
+        // After a find cut at long line `cut` of a file whose hits are `found`, shown from its `first`, `before` hits (of
+        // every file) ahead of them and `total` in all: the skip that reads the hits after that line, and a context that
+        // keeps it out of their first group (else the same line is cut again); "" when none is left.
+        std::string longReadOn(const std::vector<int>& found, std::size_t first, int cut, int context, std::size_t before, std::size_t total)
+        {
+            const std::size_t k = std::max(first, static_cast<std::size_t>(std::upper_bound(found.begin(), found.end(), cut) - found.begin()));
+            if (before + k >= total)
+                return {};
+            const int narrower = k < found.size() ? std::min(context, found[k] - cut - 1) : context;
+            return "(" + std::to_string(total - before - k) + " more after line " + std::to_string(cut) + ": call again with skip="
+                 + std::to_string(before + k) + (narrower < context ? " and context=" + std::to_string(narrower) : std::string()) + ")\n";
         }
 
         // find with no name: every file's lines that hold it, file by file in the tabs' order (in its case in every file
@@ -791,7 +826,10 @@ namespace playground
                 const int count = static_cast<int>(h.lines.size());
                 out += h.file->name + ": " + std::to_string(count) + (count == 1 ? " line" : " lines") + ", version " + versions[k]
                      + (shown == 1 ? "; line " : "; lines ") + someNumbers(h.found, first, shown) + ":\n";
-                const std::size_t written = out.size() > kMaxOutput ? 0 : aroundEach(h.lines, h.found, first, shown, r.context, out);
+                int longCut = 0;
+                const std::size_t written = out.size() > kMaxOutput ? 0 : aroundEach(h.lines, h.found, first, shown, r.context, out, longCut);
+                if (longCut > 0)
+                    return out + longReadOn(h.found, first, longCut, r.context, next - first, total) + (stopped.empty() ? "" : "(" + stopped + ")\n");
                 next += written;
                 if (written < shown)
                     return out + "(cut here: call again with skip=" + std::to_string(next) + ", or give find " + finder.narrower()
@@ -930,7 +968,10 @@ namespace playground
             {
                 const std::string l = numberedLine(n, lines[static_cast<std::size_t>(n - 1)]);
                 if (out.size() + l.size() > kMaxOutput)
-                    return out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
+                    return out.size() < kMaxOutput / 2
+                               ? out + cutLongLine(n, lines[static_cast<std::size_t>(n - 1)], kMaxOutput - out.size())
+                                     + (n < to ? "(read from " + std::to_string(n + 1) + " for the lines after it)\n" : "")
+                               : out + "(cut here: read from " + std::to_string(n) + " for the rest)\n";
                 out += l;
             }
             return out;
@@ -961,7 +1002,11 @@ namespace playground
         const std::size_t first = reading.skip, shownCount = std::min(found.size() - first, kMaxFound);
         out += " (" + someNumbers(found, first, shownCount) + ")" + aroundWords(reading.context)
              + (first > 0 ? ", after the first " + std::to_string(first) : std::string()) + ":\n";
-        if (const std::size_t written = aroundEach(lines, found, first, shownCount, reading.context, out); written < shownCount)
+        int longCut = 0;
+        const std::size_t written = aroundEach(lines, found, first, shownCount, reading.context, out, longCut);
+        if (longCut > 0)
+            return withStop(out + longReadOn(found, first, longCut, reading.context, 0, found.size()));
+        if (written < shownCount)
             return out + "(cut here: call again with skip=" + std::to_string(first + written) + ", or give find " + finder.narrower()
                  + ", or from and lines)\n";
         if (found.size() > first + shownCount)
@@ -972,14 +1017,15 @@ namespace playground
     }
 
     // The text changed since `version` (the file's lines that changed, against the kept text), refused: the user's edit,
-    // unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after it gave `version`.
+    // unless the text now is a version one of Claude's calls gave (a read, a write, edit_circuit) after it gave `version`:
+    // the caller's own when the same side gave it (the plugin's chat, or Claude Desktop), else the other Claude's.
     // A text Claude saw before `version`, which the user's undo brought back, is the user's; so is one only a refusal
     // showed (this one keeps it, as given as it was: a second refusal says the same).
     std::string ChatAgent::changedSinceText(const std::string& file, const std::string& version, const std::string& now, bool many)
     {
         std::shared_ptr<const std::string> then;
         std::string nowVersion;
-        bool known = false;
+        bool known = false, other = false;                   // given by this side's calls, or by the other Claude's
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             const std::string current = versionOf(now);
@@ -995,11 +1041,16 @@ namespace playground
                 if (v.name == file && v.version == current)
                     is = &v;
             }
-            known = is != nullptr && is->asked && is->given > thenGiven;
+            const bool claude = is != nullptr && is->asked && is->given > thenGiven;
+            known = claude && is->desktop == mcpWorking_.load();
+            other = claude && !known;
             nowVersion = keepVersion(file, now, true);
         }
+        const std::string whose = mcpWorking_.load() ? "a call of the plugin's own chat" : "a call of Claude Desktop's";
         std::string out = file + " changed since version " + version
-                        + (known ? " (now version " + nowVersion + ", which one of your own calls gave)" : " (the user's edit, which is kept)")
+                        + (known   ? " (now version " + nowVersion + ", which one of your own calls gave)"
+                           : other ? " (now version " + nowVersion + ", which " + whose + " gave)"
+                                   : " (the user's edit, which is kept)")
                         + ": nothing was written" + (many ? " to any file. " : ". ");
         if (!then)
             return out + "That version's text is no longer kept, so read_file shows the file now (version " + nowVersion + ").";

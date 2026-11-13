@@ -24,13 +24,14 @@
 //            (the file) read, then moved in, the Anthropic key and another provider's; a keyring left locked (its
 //            prompt dismissed: a lookup finds nothing and says nothing, a clear removes nothing and says nothing): the
 //            key kept and said locked, a forget false with why and the key still kept, then forgotten once unlocked;
-//            the agent (a processor's): a turn's key read while the keyring's prompt waits, the chat's state asked
+//            a keyring that cannot be asked (no Secret Service behind the bus): the key in its file, a forget true (the
+//            file deleted, nothing held), again true; one the keyring held before it went quiet: a forget false; the agent (a processor's): a turn's key read while the keyring's prompt waits, the chat's state asked
 //            meanwhile and answered (the read holds no lock of the agent's), the turn then sent with that key; a
 //            removal the locked keyring refuses said as an error (Anthropic's, Gemini's), the key still shown kept,
 //            then removed and said so. The desktop's (libsecret): with no session bus to reach, not
 //            available and saying why, and the key goes to its file (the container's case); with a bus address that
 //            leads nowhere (libsecret loaded), each call returns its error, nothing hangs or crashes, and the key goes
-//            to its file. The machine's key: /etc/machine-id's text, else D-Bus's, else "host:" and the host's name
+//            to its file, a forget deleting it and true. The machine's key: /etc/machine-id's text, else D-Bus's, else "host:" and the host's name
 //   WHEEL    the racing wheel over evdev and sysfs (plugin/WheelEvdev.h's Hub) with a made-up sysfs tree and nodes of
 //            the probe's own (a socket a node: the probe writes the kernel's events into it and reads what the hub
 //            writes): the G29 found among other devices (a keyboard of Logitech's, another vendor's; a G27 in
@@ -187,13 +188,14 @@ namespace
     // `locked`: as libsecret over a keyring the user leaves locked (the prompt to unlock it dismissed): its search
     // (has) still finds the item, its lookup finds nothing and says nothing, its store fails, its clear removes nothing
     // and says nothing. `hold`: lookup waits until it is let go (a prompt the user has not answered yet), `inLookup`
-    // saying so. Lookups may run on the agent's worker while the probe's thread looks: the maps are the probe's alone
-    // then (it changes them only while no turn runs).
+    // saying so. `dead`: as libsecret over a session bus with no Secret Service behind it: nothing can be asked (has
+    // -1), and every call fails, saying why. Lookups may run on the agent's worker while the probe's thread looks: the
+    // maps are the probe's alone then (it changes them only while no turn runs).
     struct FakeStore final : pg::secrets::Store
     {
         std::map<std::string, std::string> kept;             // kind \n origin -> secret
         std::map<std::string, std::string> labels;
-        bool up = true, refuse = false, failRead = false, locked = false;
+        bool up = true, refuse = false, failRead = false, locked = false, dead = false;
         std::atomic<bool> hold{ false }, inLookup{ false };
         std::atomic<int> hasCalls{ 0 };
         static std::string id(const pg::secrets::Item& i) { return i.kind + "\n" + i.origin; }
@@ -204,9 +206,15 @@ namespace
                 *why = "down";
             return up;
         }
-        int has(const pg::secrets::Item& i, std::string*) override
+        int has(const pg::secrets::Item& i, std::string* why) override
         {
             ++hasCalls;
+            if (dead)
+            {
+                if (why != nullptr)
+                    *why = "no service";
+                return -1;
+            }
             return kept.count(id(i)) != 0 ? 1 : 0;
         }
         std::optional<std::string> lookup(const pg::secrets::Item& i, std::string* why) override
@@ -215,7 +223,7 @@ namespace
             for (int waited = 0; hold.load() && waited < 3000; ++waited)   // 30 s at most: a probe never hangs
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             inLookup = false;
-            if (failRead)
+            if (failRead || dead)
             {
                 if (why != nullptr)
                     *why = "locked";
@@ -228,7 +236,7 @@ namespace
         }
         bool store(const pg::secrets::Item& i, const std::string& label, std::string_view secret, std::string* why) override
         {
-            if (refuse || locked)
+            if (refuse || locked || dead)
             {
                 if (why != nullptr)
                     *why = "refused";
@@ -238,8 +246,14 @@ namespace
             labels[id(i)] = label;
             return true;
         }
-        bool clear(const pg::secrets::Item& i, std::string*) override
+        bool clear(const pg::secrets::Item& i, std::string* why) override
         {
+            if (dead)
+            {
+                if (why != nullptr)
+                    *why = "no service";
+                return false;
+            }
             if (!locked)
                 kept.erase(id(i));
             return true;
@@ -807,6 +821,25 @@ PROBE(plugin, linux)
         P.eq("secrets.unlocked.forgotten", store::hasKey() || store::hasProviderKey("openai", "https://api.openai.com") ? 1 : 0, 0);
         P.eq("secrets.unlocked.ring_empty", static_cast<int64_t>(ring.kept.size()), 0);
 
+        // A keyring that cannot be asked (a session bus with no Secret Service behind it): the key goes to its file, and
+        // removing it deletes the file and is no failure, the keyring never having held it (again: nothing to remove);
+        // a key the keyring held before it went quiet is still said held, as nothing shows it gone.
+        ring.dead = true;
+        store::setSecretStoreForTests(&ring, true);
+        yes(P, "secrets.dead.save_file", store::saveKey(key, &why) && keyFile.existsAsFile(), why);
+        forgetWhy.clear();
+        yes(P, "secrets.dead.forget", store::forgetKey(&forgetWhy) && !keyFile.exists(), forgetWhy);
+        P.eq("secrets.dead.forgotten_has", store::hasKey() ? 1 : 0, 0);
+        forgetWhy.clear();
+        yes(P, "secrets.dead.forget_again", store::forgetKey(&forgetWhy), forgetWhy);
+        ring.dead = false;
+        yes(P, "secrets.dead.held_setup", store::saveKey(key, &why) && !keyFile.exists(), why);
+        ring.dead = true;
+        forgetWhy.clear();
+        P.eq("secrets.dead.held_said", store::forgetKey(&forgetWhy) ? 1 : 0, 0);
+        ring.dead = false;
+        yes(P, "secrets.dead.cleared", store::forgetKey(&forgetWhy) && ring.kept.empty(), forgetWhy);
+
         // The agent: a turn reads the key without the agent's lock (the keyring's prompt may wait for the user while the
         // editor asks for the chat's state); a removal the keyring refuses is said as such, the key still shown kept.
         {
@@ -900,7 +933,8 @@ PROBE(plugin, linux)
             std::printf("secrets.dead_bus: %s\n", w2.c_str());
             yes(P, "secrets.dead_bus.file", store::saveKey(key, &why) && keyFile.existsAsFile(), why);
             same(P, "secrets.dead_bus.file_loads", store::loadKey(&why).value_or(""), key);
-            store::forgetKey();
+            std::string w5;
+            yes(P, "secrets.dead_bus.forget", store::forgetKey(&w5) && !keyFile.exists(), w5);
         }
         else
             yes(P, "secrets.libsecret.why", !libWhy.empty(), "not loaded, and no reason");

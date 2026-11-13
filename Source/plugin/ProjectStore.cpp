@@ -1413,7 +1413,13 @@ namespace playground::projectstore
         v.circuits = mergedAnswers({}, circuits);
         p.versions.push_back(std::move(v));
         if (p.versions.size() > static_cast<std::size_t>(kMaxVersions))
+        {
+            const std::size_t cut = p.versions.size() - static_cast<std::size_t>(kMaxVersions);
+            saved.dropped = static_cast<int>(cut);
+            saved.droppedFrom = p.versions.front().number;
+            saved.droppedTo = p.versions[cut - 1].number;
             p.versions.erase(p.versions.begin(), p.versions.end() - kMaxVersions);
+        }
         keepNamedSamples(p, samples);                    // the new version's files in, those no version names out
         if (const std::string refused = samplesRefusal(p); !refused.empty())
         {

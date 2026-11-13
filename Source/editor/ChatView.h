@@ -6,7 +6,7 @@
 //                         Copy); under the last answer of a turn a Copy for the whole answer, shown under the pointer
 //   Claude's thinking     a row that opens and closes ("Thinking" while it streams), its summary dim beside a rule
 //   what Claude did       a rounded card, a row and an icon an action (a file written, a run, a dial set, a sound
-//                         measured); a run that failed in the danger colour
+//                         measured); one whose result was an error (ChatEntry::failed) in the danger colour
 //   errors and notes      an error in a tinted card; the chat's own notes small and centred
 //   Claude's questions    a card (ask_user): each question, its options as buttons (a ring for one choice, a box for
 //                         several); one question of one choice is answered by its click, more by Send answers; once
@@ -14,9 +14,11 @@
 //   while Claude works    three pulsing dots and what it is doing ("Writing osc.fm (12 KB)")
 //   an empty chat         a title, a line, a button for the API key while none is stored, and suggestions to start
 //                         from (a click puts one in the message box: nothing is sent until the user sends it)
-// It scrolls with the wheel (a thin bar while it overflows), follows the end while it is at the end, and a round
-// button jumps back to the end. Each block keeps its layout until its text, its width or its state changes, so a
-// long conversation costs only its streaming end. Text is printable ASCII (asciiText, ChatItems.h).
+// It scrolls with the wheel (a thin bar while it overflows) and, tabbed to, with the arrows, Page Up and Down, Home and
+// End; it follows the end while it is at the end, and a round button jumps back to the end. A screen reader has every
+// block, and its focus on one out of view scrolls it in. Each block keeps its layout until its text, its width or its
+// state changes, so a long conversation costs only its streaming end. Text is drawn as printable ASCII (asciiText,
+// Items.h); a Copy copies the entry's own text. The user's words are drawn as typed (no markdown).
 #pragma once
 
 #include "editor/ChatStyle.h"
@@ -82,6 +84,10 @@ namespace playground::ui
         bool atEnd() const noexcept;
         void scrollTo(float y);
         float scroll() const noexcept { return scroll_; }
+        std::string shownText() const;                                // every span drawn, a line each
+        float overlap() const;          // the most a span's text, as drawn, reaches past the start of the next on its line
+        int failedRows() const;                                       // tool rows drawn as failed
+        bool chosen(int q, int o) const;                              // marked in the last question, open or answered
         float contentHeight() const noexcept { return contentH_; }
 
         // Item
@@ -104,12 +110,14 @@ namespace playground::ui
         void specLine(char* out, std::size_t n) const override;
         bool settled() const override;
         funkgui::Point centre() const override { return { bounds_.centreX(), bounds_.centreY() }; }
-        bool focusable() const override { return false; }
+        bool focusable() const override { return !hidden_; }   // a Tab stop: its keys scroll (key())
+        bool key(const funkgui::KeyEvent&, funkgui::GestureController&) override;
         bool shown() const override { return !hidden_; }
         void setHidden(bool hidden) { hidden_ = hidden; }   // the chat folded away
 
         // How a piece of text is set (ChatView.cpp resolves the style and the colour).
-        enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote, accent };
+        enum Role : uint8_t { body, strong, code, h1, h2, h3, dim, small, smallStrong, faint, danger, quote, accent,
+                              smallCode };
 
     private:
         struct Span
@@ -170,6 +178,7 @@ namespace playground::ui
             // A question's (ask_user).
             std::vector<ChatQuestion> questions;
             std::vector<std::string> answers;
+            std::vector<std::vector<bool>> chosen;    // an answered one's options chosen (chosenOf)
             bool open = false;
             // The checks' (set_checks).
             std::vector<ChatCheck> checks;
@@ -191,9 +200,15 @@ namespace playground::ui
         float maxScroll() const noexcept;
         float adv(Role r) const;
         void layoutBlock(Block& b, const std::vector<ChatEntry>& entries, int count, bool copyAfter, float w, bool live);
-        void layoutMarkdown(Block& b, const std::string& text, float w, float& y) const;
-        float flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH) const;
-        void layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines, float w, float& y) const;
+        // text: as drawn (asciiText); raw: the entry's own, line for line (what Copy copies).
+        void layoutMarkdown(Block& b, const std::string& text, const std::string& raw, float w, float& y) const;
+        // markdown false: the paragraph as plain text (the user's own words).
+        float flow(Block& b, const std::string& paragraph, Role base, float x0, float w, float y, float lineH,
+                   bool markdown = true) const;
+        void layoutCode(Block& b, const std::string& lang, const std::vector<std::string>& lines, const std::string& copied,
+                        float w, float& y) const;
+        void reveal(int block);                            // scrolled to show the block whole (as far as it fits)
+        static std::vector<bool> chosenOf(const ChatQuestion& q, const std::string& answer);
         void layoutEmpty(float w);
         funkgui::Rect onScreen(const Block& b, const funkgui::Rect& r) const;   // content -> panel px
         bool live(const Block& b) const;          // the block still streaming
@@ -222,6 +237,7 @@ namespace playground::ui
         std::string activity_;
         std::string text_;
         size_t entryCount_ = 0;
+        uint64_t conversation_ = 0;                   // ChatState::conversation shown
         float contentH_ = 0.0f;
         float scroll_ = 0.0f;
         Scroll bar_;                                  // the thumb's drag (its offset: scroll_, scroller())

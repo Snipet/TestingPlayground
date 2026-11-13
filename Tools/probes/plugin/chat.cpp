@@ -28,7 +28,8 @@
 //            "fallbacks" or their beta (and without fast mode's beta on Opus 5.5), the choice is stored, and the footer
 //            says "fast" when the usage does; busy (a 429, again after one wait) the turn goes on at standard speed with
 //            a note, fast mode still chosen; refused (a 400 about the speed) the turn goes on at standard speed and fast
-//            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta
+//            mode is off; a model that takes no fast mode asks for no speed; Opus 4.8 (in preview) sends fast mode's beta;
+//            Fable 5.2, listed, takes fast mode without a beta, and "fallbacks" (with their beta) at standard speed
 //   INVALID  a tool call whose input is not JSON gets an INVALID_JSON error result, runs nothing, and the turn goes on
 //   LIMIT    a reply cut off at max_tokens with no tool call: a note, the reply in the history as it came (its thinking
 //            and signature), and the turn goes on with a line that tells Claude; a second cut off in a row ends the
@@ -95,7 +96,9 @@
 //            and no find), and a pattern of many states over a 30,000-character line stopped at its 20 million steps,
 //            saying where, in one file and in every file (a line found before it: none counted only in the files
 //            searched, and what was not searched named), the steps one budget across the lines and files of a call
-//            (stopped in a second file where neither alone spends it); a part read is not the file seen, nor is an edit
+//            (stopped in a second file where neither alone spends it); that line read by from and lines, and found in
+//            one file and in every file: shown cut, its length said, a whole read named; a long line among a find's
+//            context lines, with skip and in every file cut too, then the skip and context that read on past it; a part read is not the file seen, nor is an edit
 //            after it (the next state sends it, with the user's line and the edit, and names unchanged a file read
 //            whole), and an edit of a file seen is seen; edit_file's miss gives the closest passage, numbered, and what
 //            differs (the characters; only the whitespace; a fragment of a long line, a letter off, gets that line), a
@@ -104,7 +107,8 @@
 //            refuses a write after the user's edit, keeps it and shows its line (the result's first line naming the
 //            edit), and with the version it gives the write goes; given the oldest of the versions kept, it still shows
 //            the lines changed; edit_circuit's result gives its version, and an `expected` from before it is refused as
-//            Claude's own change; edit_file's files (MULTI): one bad edit in the second file changes neither; files
+//            Claude's own change, and a version Claude Desktop's write gave as its, not the chat's; edit_file's files
+//            (MULTI): one bad edit in the second file changes neither; files
 //            beside name is refused; two files in one write, the result a line each and the tool's row naming both,
 //            merged as one undo step across their tabs (Cmd-Z in either tab undoes both, Cmd-Shift-Z in the other
 //            redoes both; a tab typed in since keeps its typing and its edit while the other's Cmd-Z undoes its own);
@@ -148,7 +152,8 @@
 //            program's that played), and the turn ends; run_program after a default changed lists the dials, and
 //            again says them unchanged in a line; a program with FMinus's -Wswitch warning plays, and run_program says
 //            it on one line (clang's note left out, no Notes:); one card a turn with its rows,
-//            a note that Claude went on; checks that cannot pass: twice, then the turn ends ("will not ask again"); a
+//            a note that Claude went on; checks that cannot pass: twice (the first saying it asks once more), then the
+//            turn ends ("will not ask again"); a
 //            metric that is none refused; a turn that only talks is not sent on, nor one that only lists them, nor one
 //            that only sweeps a dial (tune_dials' sweep sets nothing), nor one that only exports the files (write_file's
 //            to); the session keeps them (and loads
@@ -190,7 +195,10 @@
 //            whose at + len does (view_sound's 14 s), naming it; a glide and a note that end at 10 s taken (the phrase
 //            described over 10.00 s); Claude
 //            Desktop's cancel mid-render (the activity counting the seconds first): what it reached, nothing measured,
-//            back within 2 s, the next call free (its numbers measured)
+//            back within 2 s, the next call free (its numbers measured); view_sound cancelled before it began draws
+//            nothing and says so, the next free. MISTYPED: hold_seconds, velocity, a dial's value, dials, notes and
+//            set_checks' index of the wrong JSON type refused in words; compare's hold_seconds refused; view_sound's
+//            from_seconds alone and a close-up backwards refused, both ends taken
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
 //            instrument's levels while held, an effect's noise's gain), a width it does not take refused; every report
 //            ending with the metrics, name=value
@@ -200,7 +208,8 @@
 //   BASE     an instrument's base_hz (off_order_db's base) through MCP: the report's orders line names it, one under 1
 //            Hz, over 20 kHz or not a number refused; a check with one names it on its line, is saved with it and loads
 //   TUNE     tune_dials: a level for an RMS (an instrument) or a gain for a gain (an effect): the goal met, the dial
-//            set (measured afterwards, it gives the goal); an unknown dial an error result; a sweep of two values, its
+//            set (measured afterwards, it gives the goal); the editor's files with a dial the program that plays has
+//            not: the one it has set, the other named as not set; an unknown dial an error result; a sweep of two values, its
 //            table, the dial left as it was; a sweep that is no list refused
 //   TRIAL    try_edits (ChatScenario.h): measure_output with a passage edited and a file added on a copy says so in
 //            its first line and renders it, the editor's files untouched; an edit whose text is not there is an error
@@ -236,13 +245,15 @@
 //            goes to the planner (the question and its context after the history before the reply that asks) and its
 //            answer is the tool's result (a second plan entry, an answer); the footer counts the planner's tokens; the
 //            session keeps the plan entries; a planner that fails (a 400) leaves the turn to the builder with a note;
-//            with no planner, ask_planner is refused
+//            one stopped as its plan streams: the plan read so far kept on its card (not in the history), "Stopped.",
+//            nothing sent to the builder; with no planner, ask_planner is refused
 //   ASK      ask_user: a reply with text, get_status, a question of two parts (one choice, several) and a second
 //            ask_user: the turn waits (asking, not busy) with the question's entry open, the other calls' results in
 //            the history and the second ask refused; the session saved meanwhile opens with it still waiting. The
 //            answer (labels) goes in the next request after the other results, as its tool result, and the turn goes
 //            on; the entry keeps the answers. A question answered by a message instead: its result says so and the
-//            words follow in the same message. A question of one option is refused in its result and asks nothing
+//            words follow in the same message. A question of one option is refused in its result and asks nothing.
+//            Its limits count characters (a label and a question in kana within them taken), a header cut whole
 //   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
 //            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
 //            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
@@ -269,7 +280,7 @@
 //            state names it without its text), a what Claude did entry; a name the library has not is an error
 //            result naming its files; the same file again is there already, not added twice
 //   BROKEN   a stream cut short (no message_stop) is asked again; what it showed is taken back, and the answer appears
-//            once
+//            once; one stopped in the wait before asking again: the history keeps none of what was taken back
 //   COMPACT  a compaction block: a note, the usage counts the compaction; the next request starts at the block, in its
 //            assistant message (what came before is dropped), and sends the files' text again with the next message;
 //            in the middle of a turn (an answer with tool calls), the next request starts at the block too, every tool
@@ -293,7 +304,8 @@
 //            the message is not taken (send says so: the box keeps it; no entry, no request), the chat stays busy with
 //            the call, and idle after it
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
-//            and the same history
+//            and the same history; a tool's row carries its outcome (a run that did not compile failed, a file named
+//            errors.fm written not), kept too
 //   OLD      what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin; chat.json's
 //            "account" and "use", the account chosen), the key stored too: a processor made then deletes the token's
 //            file and the two fields, keeps the choice, and the chat uses the key; a session saved by such a build (a
@@ -1035,6 +1047,35 @@ PROBE(plugin, chat)
         agent.waitIdle();
         P.eq("fast.preview_speed", str(lastBody(), "speed") == "fast" ? 1 : 0, 1);
         P.eq("fast.preview_beta", has(lastBeta(), "fast-mode-2026-02-01") && !has(lastBeta(), "server-side-fallback") ? 1 : 0, 1);
+
+        // Claude Fable 5.2, listed: fast mode without a beta, and "fallbacks" at standard speed.
+        script->models = fake::modelsBody({ { "claude-opus-5-5", "Claude Opus 5.5", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-sonnet-5-5", "Claude Sonnet 5.5", true, { "low", "medium", "high", "xhigh" } },
+                                            { "claude-haiku-5-5", "Claude Haiku 5.5", true, { "low", "medium", "high" }, 64000, false },
+                                            { "claude-opus-4-8", "Claude Opus 4.8", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high", "xhigh", "max" } },
+                                            { "claude-old-4", "Claude Old 4", false, {} } });
+        agent.setModel("claude-opus-5-5");
+        agent.setTransport(std::make_unique<fake::Transport>(script));
+        script->add(fake::Response::ok(fake::Sse().start().text("Listed.").end("end_turn", 321, "fast")));
+        agent.send("list them again");
+        agent.waitIdle();
+        bool fableFast = false;
+        for (const pg::ChatModel& m : agent.chatState().models)
+            fableFast = fableFast || (m.id == "claude-fable-5-2" && m.fast);
+        P.eq("fast.fable_listed", fableFast ? 1 : 0, 1);
+        agent.setModel("claude-fable-5-2");
+        script->add(fake::Response::ok(fake::Sse().start("claude-fable-5-2").text("Fast.").end("end_turn", 321, "fast")));
+        agent.send("on fable, fast");
+        agent.waitIdle();
+        P.eq("fast.fable_no_beta", str(lastBody(), "speed") == "fast" && !has(lastBeta(), "fast-mode-2026-02-01")
+                                       && !lastBody().hasProperty("fallbacks") ? 1 : 0, 1);
+        agent.setFast(false);
+        script->add(fake::Response::ok(fake::Sse().start("claude-fable-5-2").text("Standard.").end()));
+        agent.send("on fable, standard");
+        agent.waitIdle();
+        P.eq("fast.fable_fallbacks", str(lastBody(), "fallbacks") == "default" && has(lastBeta(), "server-side-fallback-2026-07-01")
+                                         ? 1 : 0, 1);
 
         agent.setFast(false);
         agent.setModel("claude-opus-5-5");
@@ -2131,6 +2172,7 @@ PROBE(plugin, chat)
                                              && has(refused("a**"), "bad repetition operator: **") && has(refused("a{1001}"), "at most 1000")
                                              && has(refused("(a{100}){100}"), "too large") && has(refused("\\p{L}"), "\\p")
                                              && has(refused("(?:(?:()()()()()()()()()()a){1000}){5}"), "too large")
+                                             && has(refused("(?:(?:()()()()a){1000}){4}"), "take too many steps to write out")
                                              && has(refused("\\Q\\E*"), "missing argument to repetition operator: *")
                                              && refused("[z-a]") == "invalid character class range: z-a (at character 2)" ? 1 : 0, 1);
             // (a+)+$ and (a|aa)+$ on 100,000 a's and a b: exponential for a backtracking engine, here a few steps a
@@ -2438,6 +2480,48 @@ PROBE(plugin, chat)
                                                      && has(toolText(stale), "tone.cir changed since version " + before + " (now version " + drawn
                                                                                  + ", which one of your own calls gave): nothing was written.")
                                                      && !has(toolText(stale), "the user's edit") && has(fileText("tone.cir"), "22n") ? 1 : 0, 1);
+        }
+        // Two Claudes: the plugin's chat reads a version, Claude Desktop writes the next; the chat's stale `expected` is
+        // refused naming Claude Desktop's call, never "one of your own".
+        {
+            const auto chatTool = [&](const char* id, const char* tool, const juce::var& in) {
+                const int before = script->postCount();
+                script->add(fake::Response::ok(fake::Sse().start().tool(id, tool, in).end("tool_use")));
+                script->add(fake::Response::ok(fake::Sse().start().text("Done.").end()));
+                agent.send("go on");
+                agent.waitIdle();
+                processor.poll();
+                std::string out;
+                if (script->postCount() >= before + 2)
+                {
+                    const juce::Array<juce::var> m = messagesOf(script->body(before + 1));
+                    const juce::var last = m.isEmpty() ? juce::var() : m[m.size() - 1];
+                    for (const juce::var& b : arr(last.getProperty("content", {})))
+                        if (str(b, "type") == "tool_result")
+                        {
+                            const juce::var c = b.getProperty("content", {});
+                            if (c.isString())
+                                out += c.toString().toStdString();
+                            for (const juce::var& t : arr(c))
+                                out += str(t, "text");
+                        }
+                }
+                return out;
+            };
+            const std::string chatRead = chatTool("toolu_v1", "read_file", input({ { "name", "notes.fm" } }));
+            const std::string vChat = versionIn(chatRead);
+            const pg::ChatAgent::McpResult desk = call("write_file", input({ { "name", "notes.fm" },
+                                                                             { "content", juce::String(fileText("notes.fm") + "// Claude Desktop's line\n") } }));
+            const std::string vDesk = versionIn(toolText(desk));
+            juce::Array<juce::var> e1;
+            e1.add(input({ { "old_text", "// Claude Desktop's line" }, { "new_text", "// the chat's line" } }));
+            const std::string stale = chatTool("toolu_v2", "edit_file", input({ { "name", "notes.fm" }, { "edits", juce::var(e1) },
+                                                                                 { "expected", juce::String(vChat) } }));
+            std::printf("the chat's edit_file after Claude Desktop's write:\n%s\n", stale.c_str());
+            P.eq("files.expected_other_claude", !vChat.empty() && !vDesk.empty() && vChat != vDesk
+                                                    && has(stale, "notes.fm changed since version " + vChat + " (now version " + vDesk
+                                                                      + ", which a call of Claude Desktop's gave): nothing was written.")
+                                                    && has(fileText("notes.fm"), "// Claude Desktop's line") ? 1 : 0, 1);
         }
         // MULTI: edit_file's files, several files' edits in one write (all or none, each file's version guard), which the
         // editor merges as one undo step across their tabs; and as a unified diff.
@@ -2805,6 +2889,46 @@ PROBE(plugin, chat)
                                                && inAll == "No line found yet: the search stopped at long.fm's line 1: " + costly
                                                              + "a file's name with from and lines, searches the rest.\n"
                                                && ms < 4000.0 ? 1 : 0, 1);
+
+            // A line longer than a part read may show (12,000 characters): shown cut where a character starts, with its
+            // length, and a whole read named as the way to it all (never "read from 1" again, which shows the same).
+            const std::string partRead = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "from", 1 }, { "lines", 1 } })));
+            const std::string foundOne = toolText(agent.mcpCall("read_file", input({ { "name", "long.fm" }, { "find", "// aaa" } })));
+            const std::string foundAll = toolText(agent.mcpCall("read_file", input({ { "find", "aaaaaaaa" } })));
+            const std::string longSaid = "line 1 is 30003 characters long: cut here; read_file with no from, lines or find gives the whole file";
+            std::printf("a 30,003-character line read in part: %s\n%s\n%s\n", partRead.substr(partRead.size() - std::min<std::size_t>(partRead.size(), 200)).c_str(),
+                        foundOne.substr(foundOne.size() - std::min<std::size_t>(foundOne.size(), 200)).c_str(),
+                        foundAll.substr(foundAll.size() - std::min<std::size_t>(foundAll.size(), 200)).c_str());
+            P.eq("files.long_line_range", has(partRead, "1\t// aaaa") && has(partRead, longSaid) && !has(partRead, "read from 1 for the rest")
+                                              && partRead.size() <= 12200 ? 1 : 0, 1);
+            P.eq("files.long_line_find", has(foundOne, "1\t// aaaa") && has(foundOne, longSaid) && !has(foundOne, "give find")
+                                             && foundOne.size() <= 12200 ? 1 : 0, 1);
+            P.eq("files.long_line_find_all", has(foundAll, "1\t// aaaa") && has(foundAll, longSaid) && !has(foundAll, "give find")
+                                                 && foundAll.size() <= 12200 ? 1 : 0, 1);
+            // A long line among a find's context lines, and with skip: cut as well, then the skip (and the context) that
+            // read the lines found after it without that line again.
+            {
+                pg::Draft cd;
+                cd.files = { saved.files.front(), { "ctx.fm", "int hit1;\n// " + std::string(30000, 'b') + "\nint hit3;\n\nint hit5;\n" } };
+                processor.editorPort().setDraft(cd);
+                const std::string ctxSaid = "line 2 is 30003 characters long: cut here; read_file with no from, lines or find gives the whole file)\n";
+                const std::string inContext = toolText(agent.mcpCall("read_file", input({ { "name", "ctx.fm" }, { "find", "int hit" }, { "context", 1 } })));
+                const std::string skipped = toolText(agent.mcpCall("read_file", input({ { "name", "ctx.fm" }, { "find", "int hit" }, { "context", 1 }, { "skip", 1 } })));
+                const std::string everyFile = toolText(agent.mcpCall("read_file", input({ { "find", "int hit" }, { "context", 1 } })));
+                const std::string onFrom = toolText(agent.mcpCall("read_file", input({ { "name", "ctx.fm" }, { "find", "int hit" }, { "context", 0 }, { "skip", 1 } })));
+                std::printf("a long line among a find's context lines:\n%s\n%s\n%s\n", inContext.substr(inContext.size() - std::min<std::size_t>(inContext.size(), 300)).c_str(),
+                            skipped.substr(skipped.size() - std::min<std::size_t>(skipped.size(), 300)).c_str(),
+                            everyFile.substr(everyFile.size() - std::min<std::size_t>(everyFile.size(), 300)).c_str());
+                const std::string after = "(2 more after line 2: call again with skip=1 and context=0)\n";
+                const auto endsWith = [](const std::string& t, const std::string& e) { return t.size() >= e.size() && t.compare(t.size() - e.size(), e.size(), e) == 0; };
+                P.eq("files.long_line_context", has(inContext, "\n1\tint hit1;\n2\t// bbbb") && endsWith(inContext, ctxSaid + after)
+                                                    && inContext.size() <= 12200 ? 1 : 0, 1);
+                P.eq("files.long_line_skip", has(skipped, ", after the first 1:\n2\t// bbbb") && endsWith(skipped, ctxSaid + after)
+                                                 && skipped.size() <= 12200 ? 1 : 0, 1);
+                P.eq("files.long_line_every_file", has(everyFile, "\n1\tint hit1;\n2\t// bbbb") && endsWith(everyFile, ctxSaid + after)
+                                                       && everyFile.size() <= 12200 ? 1 : 0, 1);
+                P.eq("files.long_line_read_on", has(onFrom, "\n3\tint hit3;\n--\n5\tint hit5;\n") && !has(onFrom, "bbbb") ? 1 : 0, 1);
+            }
 
             // Stopped partway with a line found before: none is said only of the files searched to their end, and what
             // was not searched is named (the rest of the file it stopped in, and the files after it).
@@ -3351,6 +3475,8 @@ PROBE(plugin, chat)
             const int b2 = turn("louder", 4);
             P.eq("checks.limit_posts", ss->postCount() - b2, 4);
             P.eq("checks.limit_last_says", says(lastUser(b2 + 3), "will not ask again") ? 1 : 0, 1);
+            P.eq("checks.limit_first_says_once_more", says(lastUser(b2 + 2), "asks once more")
+                                                          && !says(lastUser(b2 + 2), "Your turn ends") ? 1 : 0, 1);
             P.eq("checks.limit_answer", lastText(sa.chatState(), pg::ChatEntry::Kind::assistant)
                                             == "It cannot pass: +30 dBFS is beyond the output." ? 1 : 0, 1);
 
@@ -3733,6 +3859,34 @@ PROBE(plugin, chat)
                 P.le("long.cancel_at_once", back, 2.0);
                 const pg::ChatAgent::McpResult next = sa.mcpCall("measure_output", held(1.0));
                 P.eq("long.cancel_then_free", !next.isError && has(allText(next), "Metrics: ") && !has(allText(next), "Cancelled") ? 1 : 0, 1);
+                // view_sound's render is cancelled as the others are: a cancel that came before the call starts it
+                // cancelled, so it draws nothing and says so.
+                sa.mcpCancel(4545);
+                const pg::ChatAgent::McpResult drawn = sa.mcpCall("view_sound", held(2.0), 4545);
+                std::printf("view_sound cancelled before it began:\n%s\n", allText(drawn).c_str());
+                P.eq("long.view_sound_cancelled", drawn.isError && has(allText(drawn), "Cancelled ") && has(allText(drawn), "nothing was drawn")
+                                                      ? 1 : 0, 1);
+                P.eq("long.view_sound_then_free", sa.mcpCall("view_sound", held(1.0)).isError ? 0 : 1, 1);
+
+                // MISTYPED: a render setting of the wrong JSON type is refused in words, never dropped; compare refuses
+                // the render settings it does not take; view_sound's close-up takes both its ends or neither.
+                P.eq("mistyped.hold", refused("measure_output", with(held(1.0), "hold_seconds", "5"), "hold_seconds is a number of seconds"), 1);
+                P.eq("mistyped.velocity", refused("measure_output", with(held(1.0), "velocity", "loud"), "velocity is a number"), 1);
+                P.eq("mistyped.dial", refused("measure_output", with(held(1.0), "dials", input({ { levelDial, "2000" } })),
+                                              std::string("dials.") + levelDial + " is a number"), 1);
+                P.eq("mistyped.dials_object", refused("measure_output", with(held(1.0), "dials", "loud"), "dials is an object"), 1);
+                P.eq("mistyped.notes", refused("measure_output", with(held(1.0), "notes", "57"), "notes is a list of MIDI notes"), 1);
+                P.eq("mistyped.check_index",
+                     refused("set_checks", input({ { "mode", "merge" },
+                                                   { "checks", juce::Array<juce::var>{ input({ { "index", "2" }, { "label", "Level" },
+                                                                                               { "metric", level }, { "max", 0.0 } }) } } }),
+                             "index is a whole number"), 1);
+                P.eq("mistyped.compare_hold", refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "hold_seconds", 1.0 } }),
+                                                      "compare takes no hold_seconds"), 1);
+                P.eq("closeup.from_alone", refused("view_sound", with(held(1.0), "from_seconds", 0.5), "from_seconds and to_seconds go together"), 1);
+                P.eq("closeup.backwards", refused("view_sound", with(with(held(1.0), "from_seconds", 0.5), "to_seconds", 0.4),
+                                                  "to_seconds is after from_seconds"), 1);
+                P.eq("closeup.both_taken", sa.mcpCall("view_sound", with(with(held(1.0), "from_seconds", 0.5), "to_seconds", 0.52)).isError ? 0 : 1, 1);
             }
 
             // ---- SPECTRUM ----------------------------------------------------------------------------------------------
@@ -4061,6 +4215,31 @@ PROBE(plugin, chat)
             const double got = session.measure(r).values[metric];
             std::printf("tune_dials: %s %.2f, %s %.2f\n", levelDial, static_cast<double>(plain), metric, got);
             P.near("tune.dial_measures", got, goal, 0.25);
+            // The editor's files tuned with a dial the program that plays has not (added, not run yet): the dial it has is
+            // set, the other is named as not set (with its value and how to set it), never "the dials are set".
+            {
+                const pg::Draft played = sp.editorPort().draft();
+                pg::Draft added = played;
+                std::string& text = added.files[0].text;
+                const std::size_t at = text.find("{\n    param float ");
+                text.insert(at + 2, "    param float spare [[fminus::range(0, 1)]] [[fminus::default(0.5)]];\n");
+                sp.editorPort().setDraft(added);
+                juce::var both = input({ { "tune", juce::Array<juce::var>{ juce::var(levelDial), "spare" } },
+                                         { "goals", juce::Array<juce::var>{ input({ { "metric", metric }, { "target", goal + 6.0 },
+                                                                                    { "tolerance", 0.2 } }) } } });
+                if constexpr (pg::product::kIsInstrument)
+                    both.getDynamicObject()->setProperty("notes", juce::Array<juce::var>{ 57 });
+                const float levelBefore = sp.getParameters()[dialSlot]->getValue();
+                const pg::ChatAgent::McpResult tuned = sa.mcpCall("tune_dials", both);
+                const std::string said = allText(tuned);
+                sp.poll();
+                std::printf("tune_dials with a dial only the editor's files have:\n%s\n", said.c_str());
+                P.eq("tune.missing_dial_said", !tuned.isError && !has(said, "The dials are set to the best values")
+                                                   && has(said, "The program that plays has no dial spare") && has(said, "run_program") ? 1 : 0, 1);
+                P.eq("tune.missing_dial_others_set", has(said, "Set " + std::string(levelDial) + " to the best value")
+                                                         && sp.getParameters()[dialSlot]->getValue() != levelBefore ? 1 : 0, 1);
+                sp.editorPort().setDraft(played);
+            }
             // An int or an unknown dial: an error result.
             ss->add(fake::Response::ok(fake::Sse()
                                                .start()
@@ -4440,7 +4619,7 @@ PROBE(plugin, chat)
             const pg::ChatAgent::McpResult ex = sa.mcpCall("trace", ask);
             const std::string exported = toolText(ex);
             std::printf("trace with export:\n%s\n", exported.c_str());
-            const std::string lead = "Exported on this Mac (the user can open these) to ";
+            const std::string lead = std::string("Exported on ") + pg::kThisMachine + " (the user can open these) to ";
             const std::size_t d0 = exported.find(lead);
             const std::string dir = d0 == std::string::npos ? std::string() : exported.substr(d0 + lead.size(), exported.find(":\n", d0) - d0 - lead.size());
             const juce::File folder(juce::String::fromUTF8(dir.c_str()));
@@ -4519,7 +4698,7 @@ PROBE(plugin, chat)
                 const juce::File pairInput = folder.getChildFile("probe pair input.wav");
                 const bool made = !sa.mcpCall("trace", first).isError && pairInput.existsAsFile() && pairInput.setLastModificationTime(old);
                 const std::string said = toolText(sa.mcpCall("trace", second));
-                const std::size_t e0 = said.find("Exported on this Mac");
+                const std::size_t e0 = said.find(std::string("Exported on ") + pg::kThisMachine);
                 std::printf("export: \"probe pair\" after \"probe pair input\": %s\n",
                             e0 == std::string::npos ? said.c_str() : said.substr(e0, said.find("\n- ", said.find("\n- ", e0) + 3) - e0).c_str());
                 P.eq("export.names_kept_apart", made && pairInput.getLastModificationTime() == old
@@ -4581,7 +4760,7 @@ PROBE(plugin, chat)
                 const std::string said = toolText(cut);
                 std::printf("export cancelled (%s):\n%s\n", early ? "while it rendered" : "after it ended", said.c_str());
                 P.eq("export.cancel_writes_nothing", tracing && early && has(said, "Cancelled, so nothing was exported: no file was written.")
-                                                         && has(said, "cancelled") && !has(said, "Exported on this Mac")
+                                                         && has(said, "cancelled") && !has(said, std::string("Exported on ") + pg::kThisMachine)
                                                          && !folder.getChildFile("probe cancelled.wav").exists()
                                                          && folder.findChildFiles(juce::File::findFiles, false).size() == filesBefore.size() ? 1 : 0, 1);
             }
@@ -4665,6 +4844,30 @@ PROBE(plugin, chat)
         P.eq("planner.fails_posts", script->postCount() - b2, 2);
         P.eq("planner.fails_note", has(lastText(agent.chatState(), pg::ChatEntry::Kind::note), "goes on without a plan") ? 1 : 0, 1);
         P.eq("planner.fails_builder", lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Built it without a plan." ? 1 : 0, 1);
+
+        // Stopped while the plan streams: the plan read so far stays on its card (never in the history), the chat says
+        // "Stopped.", and nothing goes to the builder.
+        fake::Response planning = fake::Response::ok(fake::Sse().start().text("1. A plan begun."));
+        planning.stall = true;
+        script->add(planning);
+        const int bs = script->postCount();
+        agent.send("plan and stop");
+        for (int i = 0; i < 5000 && script->streaming.load() == 0; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        agent.stop();
+        agent.waitIdle();
+        {
+            const pg::ChatState ps = agent.chatState();
+            P.eq("planner.stopped_posts", script->postCount() - bs, 1);
+            P.eq("planner.stopped_plan_kept", !ps.entries.empty() && ps.entries.size() >= 2
+                                                  && ps.entries[ps.entries.size() - 2].kind == pg::ChatEntry::Kind::plan
+                                                  && ps.entries[ps.entries.size() - 2].text == "1. A plan begun." ? 1 : 0, 1);
+            P.eq("planner.stopped_note", !ps.entries.empty() && ps.entries.back().kind == pg::ChatEntry::Kind::note
+                                             && ps.entries.back().text == "Stopped." ? 1 : 0, 1);
+            const juce::Array<juce::var> m = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+            P.eq("planner.stopped_history", !m.isEmpty() && str(m[m.size() - 1], "role") == "user"
+                                                && !has(claude::toJson(m[m.size() - 1]), "A plan begun") ? 1 : 0, 1);
+        }
 
         // No planner: ask_planner is refused, and a message goes straight to the builder.
         agent.setPlanner({});
@@ -4816,6 +5019,39 @@ PROBE(plugin, chat)
             for (const pg::ChatEntry& e : agent.chatState().entries)
                 n += e.kind == pg::ChatEntry::Kind::question ? 1 : 0;
             P.eq("ask.bad_asks_nothing", n == questionsBefore && !agent.chatState().asking ? 1 : 0, 1);
+        }
+        // Its limits count characters, as its schema says, in any script; a header cut never splits one.
+        {
+            std::string kana25, kana140;
+            for (int i = 0; i < 140; ++i)
+                (i < 25 ? kana25 : kana140) += "\xE3\x81\x82";   // HIRAGANA A: three bytes
+            kana140 += kana25;
+            const auto utf = [](const std::string& t) { return juce::String::fromUTF8(t.c_str()); };
+            const juce::var wide = input(
+                { { "questions",
+                    juce::Array<juce::var>{ input({ { "header", utf("Filtercharakter\xC3\xBCs") },   // 17: cut to 16
+                                                    { "question", utf(kana140) },                      // 140, 420 bytes
+                                                    { "options", juce::Array<juce::var>{ input({ { "label", utf(kana25) } }),
+                                                                                         option("Nein", "") } } }) } } });
+            // Its JSON with the characters escaped, as the scripted stream sends it in pieces of a few bytes.
+            std::string json = claude::toJson(wide);
+            const std::pair<std::string, std::string> escapes[] = { { "\xE3\x81\x82", "\\u3042" }, { "\xC3\xBC", "\\u00fc" } };
+            for (const auto& [from, to] : escapes)
+                for (std::size_t at = json.find(from); at != std::string::npos; at = json.find(from, at + to.size()))
+                    json.replace(at, from.size(), to);
+            script->add(fake::Response::ok(fake::Sse().start().toolUse("toolu_a6", "ask_user", json).end("tool_use")));
+            agent.send("auf Deutsch");
+            agent.waitIdle();
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* q = lastQuestion(st);
+            P.eq("ask.characters_taken", st.asking && q != nullptr && q->questions.size() == 1
+                                             && q->questions[0].question == kana140 && q->questions[0].options.size() == 2
+                                             && q->questions[0].options[0].label == kana25 ? 1 : 0, 1);
+            P.eq("ask.header_cut_whole", q != nullptr && !q->questions.empty()
+                                             && q->questions[0].header == "Filtercharakter\xC3\xBC" ? 1 : 0, 1);
+            script->add(fake::Response::ok(fake::Sse().start().text("Gut.").end()));
+            agent.send("egal");
+            agent.waitIdle();
         }
     }
 
@@ -5391,6 +5627,24 @@ PROBE(plugin, chat)
             half = half || has(e.text, "Half an answ");
         P.eq("broken.half_taken_back", half ? 0 : 1, 1);
         P.eq("broken.note", has(lastText(st, pg::ChatEntry::Kind::note), "broke off") ? 1 : 0, 1);
+
+        // Stopped in the wait before asking again: what the chat took back stays out of the history too.
+        fake::Response cutAgain = fake::Response::ok(fake::Sse().start().text("A second half answ"));
+        cutAgain.retryAfter = 30;
+        script->add(cutAgain);
+        agent.send("tell me more");
+        for (int i = 0; i < 5000 && !juce::String(agent.chatState().activity).containsIgnoreCase("retrying"); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        P.eq("broken.waiting", juce::String(agent.chatState().activity).containsIgnoreCase("retrying") ? 1 : 0, 1);
+        agent.stop();
+        agent.waitIdle();
+        const juce::Array<juce::var> m = arr(claude::parseJson(agent.saveState()).getProperty("messages", {}));
+        const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+        P.eq("broken.stopped_in_wait_kept_nothing", !m.isEmpty() && str(m[m.size() - 1], "role") == "assistant" && c.size() == 1
+                                                        && str(c[0], "text") == "(stopped by the user)"
+                                                        && !has(agent.saveState(), "A second half") ? 1 : 0, 1);
+        P.eq("broken.stopped_in_wait_note", lastText(agent.chatState(), pg::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
+        P.eq("broken.stopped_in_wait_alternates", alternates(m) ? 1 : 0, 1);
     }
 
     // ---- COMPACT -------------------------------------------------------------------------------------------------------
@@ -5787,6 +6041,44 @@ PROBE(plugin, chat)
 
     // ---- STATE ---------------------------------------------------------------------------------------------------------
     {
+        // A tool's row carries its outcome (ChatEntry::failed), never read out of its words: a file named errors.fm
+        // written is no failure, a run that did not compile is one; the session keeps it.
+        const pg::Draft was = processor.editorPort().draft();
+        const std::string first = was.files.empty() ? std::string("program.fm") : was.files[0].name;
+        const std::string firstText = was.files.empty() ? levelProgram() : was.files[0].text;
+        script->add(fake::Response::ok(fake::Sse()
+                                           .start()
+                                           .tool("toolu_x1", "write_file", input({ { "name", "errors.fm" }, { "content", "// notes\n" } }))
+                                           .tool("toolu_x2", "write_file", input({ { "name", juce::String(first) },
+                                                                                   { "content", "this is no program" } }))
+                                           .tool("toolu_x3", "run_program", input({}))
+                                           .tool("toolu_x4", "write_file", input({ { "name", juce::String(first) },
+                                                                                   { "content", juce::String(firstText) } }))
+                                           .tool("toolu_x5", "run_program", input({}))
+                                           .tool("toolu_x6", "delete_file", input({ { "name", "errors.fm" } }))
+                                           .end("tool_use")));
+        script->add(fake::Response::ok(fake::Sse().start().text("Back as it was.").end()));
+        agent.send("show me a run that fails");
+        agent.waitIdle();
+        processor.settle();
+        const pg::ChatState s = agent.chatState();
+        int wroteErrors = -1, failedRuns = 0, runs = 0;
+        for (const pg::ChatEntry& e : s.entries)
+        {
+            if (e.kind != pg::ChatEntry::Kind::tool)
+                continue;
+            if (has(e.text, "errors.fm") && has(e.text, "wrote"))
+                wroteErrors = e.failed ? 1 : 0;
+            if (e.text.rfind("ran it", 0) == 0)
+            {
+                ++runs;
+                failedRuns += e.failed ? 1 : 0;
+            }
+        }
+        P.eq("state.tool_named_error_not_failed", wroteErrors, 0);
+        P.eq("state.tool_failed_run", runs >= 2 && failedRuns >= 1 && !s.entries.empty() ? failedRuns : -1, 1);
+    }
+    {
         juce::MemoryBlock state;
         processor.getStateInformation(state);
         pg::Processor second;
@@ -5796,6 +6088,14 @@ PROBE(plugin, chat)
         for (std::size_t i = 0; same && i < a.entries.size(); ++i)
             same = a.entries[i].kind == b.entries[i].kind && a.entries[i].text == b.entries[i].text;
         P.eq("state.entries", same ? 1 : 0, 1);
+        bool outcomes = a.entries.size() == b.entries.size();
+        int failed = 0;
+        for (std::size_t i = 0; outcomes && i < a.entries.size(); ++i)
+        {
+            outcomes = a.entries[i].failed == b.entries[i].failed;
+            failed += b.entries[i].failed ? 1 : 0;
+        }
+        P.eq("state.tool_outcomes_kept", outcomes && failed >= 1 ? 1 : 0, 1);
         P.ge("state.entry_count", static_cast<double>(b.entries.size()), 20.0);
         const auto history = [](pg::ChatAgent& x) { return claude::toJson(claude::parseJson(x.saveState()).getProperty("messages", {})); };
         P.eq("state.history", history(agent) == history(second.chatAgent()) ? 1 : 0, 1);
@@ -5870,11 +6170,11 @@ PROBE(plugin, chat)
     // ---- MODELS: a models list that did not come is asked for again, once a turn ------------------------------------
     {
         const pg::chatstore::Choice chosen = pg::chatstore::loadChoice();
-        pg::chatstore::saveChoice({ "claude-fable-5-2", "high", false, false, "" });   // a model the built-in list lacks
+        pg::chatstore::saveChoice({ "claude-mythos-5-2", "high", false, false, "" });   // a model the built-in list lacks
         pg::Processor fresh;
         pg::ChatAgent& a = fresh.chatAgent();
         auto s2 = std::make_shared<fake::Script>();
-        s2->models = fake::modelsBody({ { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high" }, 100000, true } });
+        s2->models = fake::modelsBody({ { "claude-mythos-5-2", "Claude Mythos 5.2", true, { "low", "medium", "high" }, 100000, true } });
         a.setTransport(std::make_unique<fake::Transport>(s2));
         const std::string gets = "GET /v1/models?limit=100";
         const auto turnOf = [&](const std::string& words) {
@@ -5915,7 +6215,7 @@ PROBE(plugin, chat)
         P.eq("models.own_values", ownValues(lastBody()) ? 1 : 0, 1);
         bool listed = false;
         for (const pg::ChatModel& m : a.chatState().models)
-            listed = listed || m.id == "claude-fable-5-2";
+            listed = listed || m.id == "claude-mythos-5-2";
         P.eq("models.menu", listed ? 1 : 0, 1);
         // Listed: not asked again.
         turnOf("five");

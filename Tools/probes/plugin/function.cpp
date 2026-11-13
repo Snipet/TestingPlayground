@@ -10,7 +10,8 @@
 //            (its buffer that long: the write landed in it, said so); a method on a fresh instance of the editor's
 //            files (init run at the host's rate, the dials as they are: an int dial set to 5 reads 5), a field's method
 //            by its path (and an array's element), the fields it changed (counter.n: 0 -> 1), another module's on an
-//            instance of its own; the processor's program untouched (its state counts on)
+//            instance of its own; the processor's program untouched (its state counts on); an instrument's Shared
+//            param named as a dial reads the dial as set on a fresh instance
 //   STOP     a runaway method stopped by the loop budget within seconds, in words, an error; an index past an array
 //            stopped by the bounds check, the access named
 //   REFUSE   a signature mismatch (the count, a bool for a float, 1.5 for an int, a number for an array, an array for a
@@ -139,6 +140,14 @@ namespace
     {
         return "module Shared\n{\n    int built;\n    void init(float r) { built = 7; }\n    int twiceBuilt() { return 2 * built; }\n};\n\n"
              + mainModule("    Shared* shared;\n    int count;\n    int fromShared() { return shared->built; }\n");
+    }
+
+    // An instrument's Shared whose param is named as a dial (Patch.h, "Shared on its own"): its value the dial's.
+    [[maybe_unused]] std::string sharedDialProgram()
+    {
+        return "module Shared\n{\n    param float tone;\n    float toneNow() { return tone[0]; }\n};\n\n"
+             + mainModule("    Shared* shared;\n    param float tone [[fminus::range(0, 1)]] [[fminus::default(0.25)]];\n"
+                          "    int count;\n");
     }
 
     // An instrument's Shared that runs on its own (its tick, every 16 samples, whether a voice sounds or not).
@@ -422,6 +431,16 @@ PROBE(plugin, function)
         P.eq("playing.shared_method", !error && has(own, "Returned 14.") && has(own, "on the Shared of a copy") ? 1 : 0, 1);
         const std::string fresh = call(object({ { "name", "Shared::twiceBuilt" } }), &error);
         P.eq("call.shared_method", !error && has(fresh, "Returned 14.") ? 1 : 0, 1);
+    }
+    if constexpr (kInstrument)
+    {
+        // A fresh instance takes every dial as it is: Shared's param named as a dial reads the dial's value.
+        P.eq("call.shared_dial_compiles", load(p, sharedDialProgram()) ? 1 : 0, 1);
+        agent.mcpCall("set_dial", object({ { "name", "tone" }, { "value", 0.75 } }));
+        bool error = true;
+        const std::string t = call(object({ { "name", "Shared::toneNow" } }), &error);
+        P.eq("call.shared_dial_as_set", !error && has(t, "Returned 0.75.") ? 1 : 0, 1);
+        p.poll();
     }
     {
         P.eq("playing.heap_compiles", load(p, heapProgram()) ? 1 : 0, 1);

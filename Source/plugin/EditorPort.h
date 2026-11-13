@@ -190,6 +190,15 @@ namespace playground
     inline constexpr const char* kThisMachine = "this computer";
 #endif
 
+    // A whole path as the user's machine writes one (a tool's refusal of a path that is none).
+#if defined(_WIN32)
+    inline constexpr const char* kWholePath = "C:\\... or ~\\...";
+#elif defined(__APPLE__)
+    inline constexpr const char* kWholePath = "/Users/... or ~/...";
+#else
+    inline constexpr const char* kWholePath = "/home/... or ~/...";
+#endif
+
     // A shortcut as the user's keyboard names it: the text's "Cmd-" is "Ctrl-" on Windows and Linux, whose editor
     // hosts give Ctrl the editor's Cmd (JUCE's command key there; editor/nogpu/SoftEditorHost.h).
     inline std::string shortcutText(std::string_view macText)
@@ -579,6 +588,8 @@ namespace playground
         bool created = false;                    // a new project
         std::string name;                        // the project saved into (a factory project's copy: its own new name)
         bool copied = false;                     // the user's own copy of a factory project
+        int dropped = 0, droppedFrom = 0, droppedTo = 0;   // the oldest versions the save let go (a project keeps its
+                                                           // newest projectstore::kMaxVersions): how many, their numbers
     };
 
     // A save of the editor's off the message thread (startSave(), saving()): the one in flight, and the last one's

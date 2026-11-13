@@ -9,7 +9,8 @@
 // of one. A reader gets each dial's moves after its token as one line, its net change (first -> last, at the first
 // move's place, with how many and who): forty-five minutes of play is a line a dial, not a line a move. A change that
 // sets dials without a line for each (dialsNote: a run, a version, a preset, a fresh start, a state loaded) ends those
-// lines: a dial moved before it and after it has a line on either side of it. The lines say
+// lines: a dial moved before it and after it has a line on either side of it; it and a run that sets no dial
+// (runNote) end a file's typing so too. The lines say
 // who in the third person ("the user", "the host", "the plugin's own chat"): "you" reads as the reader, a Claude. A
 // token is the journal's identity (made at random, so a token of another instance or of before a reload is known as
 // not this one's) and the number of the last change: tokens rather than a cursor here, since one server process may
@@ -48,7 +49,7 @@ namespace playground
             user,                                     // the user, in the editor
             host,                                     // the host: its automation, its own controls, its transport
             chat,                                     // the plugin's own chat (its Claude)
-            plugin,                                   // the plugin itself (the output guard)
+            plugin,                                   // the plugin itself (the output guard, a program that stopped)
         };
 
         Journal();
@@ -65,6 +66,10 @@ namespace playground
         // preset applied, a fresh start, a state loaded): a dial's moves before it and after it are two lines, one on
         // either side of it, so that it never reads as if it came after the dial's last value.
         void dialsNote(Who who, const std::string& words);
+        // A run's note that sets no dial (a panel's edit, a run that failed, an A/B side kept with the dials as they
+        // are). This and a dialsNote are where a file's typing breaks: an edit after a run is a line after the run's,
+        // never merged into the one before it.
+        void runNote(Who who, const std::string& words);
         // The bypass's edges: "bypassed", then "bypassed (14:04:10-14:05:01)" once it ends (and, when a token was
         // handed out meanwhile, "un-bypassed" for that token's readers).
         void bypass(bool on);
@@ -87,6 +92,7 @@ namespace playground
             int64_t fromMs = 0, toMs = 0;             // when (the wall clock, ms)
             bool open = false;                        // the bypass still on
             bool setsDials = false;                   // a dialsNote: a dial's moves are not one line across it
+            bool run = false;                         // a run (runNote, dialsNote): nor a file's edits
             uint64_t ends = 0;                        // an un-bypass: the bypass it ends (a reader of both reads one)
         };
         static constexpr int64_t kMergeMs = 1500;     // a drag's pause at most

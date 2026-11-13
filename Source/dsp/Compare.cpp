@@ -219,7 +219,8 @@ namespace playground::measure
                 out.sound.title = "the recording";
                 return out;
             }
-            out.session = std::make_unique<Session>(side.files, rate, nullptr, side.request.assets);
+            out.session = std::make_unique<Session>(side.files, rate, side.pins.empty() ? nullptr : &side.pins,
+                                                    side.request.assets);
             if (!out.session->compiled())
             {
                 out.errors = out.session->errors();

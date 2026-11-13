@@ -185,10 +185,11 @@ namespace playground::projectstore
 namespace playground
 {
     // Claude's projects (the projects tool: ChatProjects.cpp, ChatHost::chatProjects). Safe by design: a save only adds
-    // (a version, a preset, the user's own copy of a factory project), a preset is replaced only with `replace` (the old
-    // values said), and opening a project or applying a preset over unsaved changes (the editor's files, its samples or
-    // the dials changed since they were opened or saved) only with `discard`, which the user must have asked for;
-    // nothing is deleted (that is the user's alone).
+    // (a version, a preset, the user's own copy of a factory project; a project keeps its newest kMaxVersions versions,
+    // the result naming one let go), a preset is replaced only with `replace` (the old values said), and opening a
+    // project over unsaved changes (the editor's files, its samples or the dials changed since they were opened or
+    // saved), or applying a preset over dials moved so (the files stay), only with `discard`, which the user must have
+    // asked for; nothing is deleted (that is the user's alone).
     struct ProjectCall
     {
         enum class Action : uint8_t { list, saveVersion, savePreset, applyPreset, open };
@@ -219,7 +220,11 @@ namespace playground
         virtual ~ChatHost() = default;
 
         virtual Draft chatDraft() const = 0;                        // the editor's files and tab
-        virtual void chatSetDraft(const Draft& draft) = 0;          // the files Claude wrote; the editor follows
+        // The files Claude wrote (the editor follows), `draft` being what the tool made of `read`, the draft it read:
+        // the files it changed (their text, a name, one added or deleted) are written, the others keep their text as it
+        // is now, and a tab the user added since stays, so typing that landed between the read and the write is never
+        // reverted.
+        virtual void chatSetDraft(const Draft& draft, const Draft& read) = 0;
         // chatSetDraft's conditional write (edit_file, edit_circuit): each file `read` names gets its text from `draft`
         // (and the tab `draft` shows is shown), in one change of the draft, under the same lock as the test, only while
         // every one of them is still the text the tool read (`read`'s); false, and nothing set, when a gesture or the
@@ -230,11 +235,14 @@ namespace playground
         virtual CompileStatus chatRun(const Sources& files) = 0;    // RUN, then the compile's outcome
         virtual CompileStatus chatLastStatus() const = 0;
         virtual Sources chatRunning() const = 0;
-        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets), from one
-        // look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
-        virtual Sources chatPlaying(Assets& samples) const
+        // The same files, and in `samples` the samples that program compiled with (CompileStatus::assets) and in `pins`
+        // (when given) the configuration its netlists play with (CompileStatus::circuits, not the self-test's store), from
+        // one look: what a render of the program that plays takes (compare's playing, trace's, view_panel's at).
+        virtual Sources chatPlaying(Assets& samples, CircuitPins* pins = nullptr) const
         {
             samples = chatAssets();
+            if (pins != nullptr)
+                pins->clear();
             return chatRunning();
         }
         // What played before the last run that changed what plays (its files, a netlist's drawing aside, or the samples
@@ -553,7 +561,8 @@ namespace playground
         // The start of a turn (the worker's, first): the provider, and for another one its key, its models and the
         // turn's model and options, all from one moment (a provider chosen while the list was on its way, nothing
         // sent yet, is the turn's: it looks again). anthropic: the turn is Anthropic's (turnProvider_ set);
-        // other: another provider's, ready (`maxTokens` its model's); ended: it cannot start, said in the chat.
+        // other: another provider's, ready (`maxTokens` its model's, 0 when its server keeps a limit of its own);
+        // ended: it cannot start, said in the chat.
         enum class Start : uint8_t { anthropic, other, ended };
         Start startTurn(int& maxTokens);
         // The provider's state in chatState (mutex held; `kept`: keyKept's, asked before), the settings kept
@@ -568,7 +577,8 @@ namespace playground
         std::string otherEffort(const ChatProvider& p, const std::string& model) const;
         static std::pair<std::string, std::string> effortKey(const ChatProvider& p, const std::string& model);
         std::string contextBlock();                                 // the plugin's state, when it changed
-        juce::var runTool(const juce::var& toolUse);               // a tool_result block
+        juce::var runTool(const juce::var& toolUse);               // a tool_result block; its rows failed if an error
+        juce::var toolResult(const juce::var& toolUse);            // runTool's work
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
         juce::var captureTool(const juce::var& toolUse);           // capture's (ChatCapture.cpp)
@@ -663,7 +673,8 @@ namespace playground
         // no turn running): by a chat of the store, by a copy of one (another owner's, as a new chat of `owner`, written
         // at once), by the owner's newest (else a new one), by a new one. clearChat: the conversation forgotten (mutex
         // held). worthKeeping, titleNow: mutex held. applyPendingOwner: a change of owner asked from the turn's thread,
-        // at its end.
+        // at its end (an MCP call's: before it frees the chat), unless another was asked meanwhile (setOwner, a session's
+        // restoreChat or adoptChat drop it).
         void keepLocked();
         void showChat(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
         void showCopy(const chatstore::Loaded& chat, const std::string& owner, const std::string& label);
@@ -685,6 +696,7 @@ namespace playground
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;
         std::vector<ChatEntry> entries_;
+        uint64_t conversation_ = 0;                                 // ChatState::conversation: readState, clearChat
         juce::Array<juce::var> messages_;                           // the API's history
         std::vector<ChatModel> models_;
         bool modelsFetched_ = false;
@@ -734,6 +746,8 @@ namespace playground
             std::shared_ptr<const std::string> text;
             uint64_t given = 0;                                     // when it was given last (versionsGiven_ then)
             bool asked = true;                                      // given by a read or a write, not a refusal alone
+            bool desktop = false;                                   // given to Claude Desktop (an MCP call), else to the
+                                                                    // plugin's own chat
         };
         static constexpr std::size_t kFileVersions = 16;
         std::deque<FileVersion> fileVersions_;                      // the newest versions read or written (keepVersion)
@@ -813,7 +827,8 @@ namespace playground
         std::atomic<bool> mcpWorking_{ false };                     // a call of Claude Desktop's, not live, runs
 
         // The chat shown (above): its owner, the owner's name, its id, the user's title (named), when it was made, its file
-        // as last written or read here (another writer's change shows), revision_ when it was last written; storeMutex_
+        // as last written or read here (another writer's change shows), revision_ when it was last written and what it
+        // held then (storedDigest_, keepLocked's: a redraw that changed nothing writes nothing; 0: unknown); storeMutex_
         // keeps the writes and the replacing of the chat one at a time (never taken under mutex_). An open asked from a
         // turn's own thread (turnThread_: the worker's, or an MCP call's; Claude Desktop's projects open) waits in
         // pendingOwner_.
@@ -824,6 +839,7 @@ namespace playground
         int64_t chatCreated_ = 0;
         chatstore::Stamp chatStamp_;
         uint64_t storedRevision_ = 0;
+        uint64_t storedDigest_ = 0;
         mutable std::mutex storeMutex_;
         struct PendingOwner
         {
@@ -838,7 +854,8 @@ namespace playground
         std::atomic<bool> cancel_{ false };
         bool mcpNoted_ = false;                                      // the conversation says Claude Desktop is at work
         uint64_t mcpRunning_ = 0;                                   // the MCP call running (its number; mutex held)
-        std::atomic<uint64_t> mcpCancelled_{ 0 };                   // the MCP call last cancelled
+        bool mcpRunningCancelled_ = false;                          // that call was cancelled (mutex held): its own
+                                                                    // cancel, never another call's after it
         std::thread worker_;
         // Pictures to read: jobs run in order on one thread, started on first use, so the message thread never waits
         // for them.

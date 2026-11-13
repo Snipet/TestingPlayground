@@ -4,7 +4,9 @@
 // real processor, against scripted servers (FakeClaude.h: OpenAiSse, GeminiSse and the models lists, in the shapes
 // the providers' API references give): nothing reaches the network, and the keys' folder is the probe's own.
 //   URL       a server's address made canonical (https anywhere; http only on this Mac or the local network; no user,
-//             query or fragment; no slash at the end), its origin, host and path; the presets by their address
+//             query or fragment; no slash at the end), its origin, host and path; the presets by their address; an
+//             address the system reads otherwise never local (a leading zero, hex, a short form, a trailing dot; a
+//             backslash, a '%', a bracket left open or followed by a name, a port that is no number), the plain ones are
 //   STORE     another provider's key sealed and bound to its server: read back for that origin only, never in clear
 //             in its file or its name; an Anthropic key refused for another provider; forgotten
 //   DEFAULT   a new chat talks to Anthropic, as before: its provider, its name, a key needed
@@ -25,7 +27,8 @@
 //             noted once
 //   PICTURES  a model that refuses a picture: the request made again with a line of text in its place, a note, and
 //             the model takes none from then on
-//   LIMITS    an answer cut at its length: the turn goes on with the plugin's line
+//   LIMITS    an answer cut at its length: the turn goes on with the plugin's line, naming the server's limit (no
+//             number: no request carried one)
 //   EMPTY     an answer of reasoning alone: kept as "(no answer)" (its reasoning never), shown so; the history valid;
 //             white space beside a tool call: the call run and answered, no blank text kept
 //   CHECKS    a check that cannot pass sends the turn on twice, as with Anthropic
@@ -43,8 +46,10 @@
 //   BACK      Anthropic again, with the planner chosen before the Gemini turns: its request as before (the full
 //             prompt cached, thinking, its key alone), the history without another provider's thought_signature in the
 //             builder's request and in the planner's, every tool id in its alphabet, no message empty or blank
-//   ERRORS    the provider named in its errors; a local server not running asked about
-//   SERVERS   a turn with no model whose list could not be read says why and sends nothing (LM Studio not running:
+//   ERRORS    the provider named in its errors; a local server not running asked about; a body that is no JSON, a raw
+//             error and a redirect's address cut short never inside a character
+//   SERVERS   a server that lists no model yet: said, and its list asked for again next turn, its model then taken;
+//             a turn with no model whose list could not be read says why and sends nothing (LM Studio not running:
 //             is it running?; a key the server refused: the key's problem); a redirect is never followed (the one
 //             request, to the server chosen; the error says where it pointed); a model the server says cannot chat
 //             with tools (OpenAI's Responses-only) goes off the menu and is no longer chosen
@@ -314,9 +319,55 @@ PROBE(plugin, providers)
         P.eq("url.local", pr::isLocal("http://localhost:1234/v1") && pr::isLocal("http://studio.local:1234/v1")
                               && pr::isLocal("http://10.0.0.5/v1") && !pr::isLocal("https://openrouter.ai/api/v1") ? 1 : 0, 1);
         pg::ChatProvider ollama{ "openai", "http://localhost:11434/v1/", "" }, custom{ "openai", "https://llm.example.org/v1", "" };
-        P.eq("url.preset_names", pr::nameOf(ollama) == "Ollama (this Mac)" && pr::nameOf(custom) == "llm.example.org"
+        P.eq("url.preset_names", pr::nameOf(ollama) == "Ollama (" + std::string(pg::kThisMachine) + ")" && pr::nameOf(custom) == "llm.example.org"
                                      && pr::nameOf({ "gemini", "", "" }) == "Google Gemini" && pr::nameOf({}) == "Anthropic" ? 1 : 0, 1);
         P.eq("url.keyless", pr::keyless(ollama) && !pr::keyless(custom) && !pr::keyless({ "gemini", "", "" }) ? 1 : 0, 1);
+
+        // An address the system reads otherwise is never local: a part with a leading zero (010 is octal 8 to
+        // inet_aton and the resolvers behind it, so http://010.0.0.5 went to 8.0.0.5), hex, a short form, a whole
+        // number, a trailing dot; and an authority clients part otherwise (a backslash, a '%' escape, a bracket left
+        // open or followed by a name, a port that is no number, an IPv6 group that is not a ULA's or fe80's).
+        const auto refusedAll = [&](std::initializer_list<const char*> urls) {
+            bool all = true;
+            for (const char* u : urls)
+            {
+                std::string w;
+                const bool refused = pr::canonical(u, w).empty() && !w.empty() && !pr::isLocal(u);
+                if (!refused)
+                    std::printf("taken: %s\n", u);
+                all = all && refused;
+            }
+            return all;
+        };
+        P.eq("url.leading_zero_refused", refusedAll({ "http://010.0.0.5:1234/v1", "http://010.8.8.8/v1", "http://010.010.010.010/v1",
+                                                      "http://192.168.001.010/v1", "http://127.0.0.01/v1", "http://00.0.0.0/v1" }) ? 1 : 0, 1);
+        why.clear();
+        pr::canonical("http://010.0.0.5:1234/v1", why);
+        P.eq("url.leading_zero_said", has(why, "no leading zeros") ? 1 : 0, 1);
+        P.eq("url.other_forms_refused", refusedAll({ "http://0x7f.0.0.1/v1", "http://0177.0.0.1/v1", "http://127.1/v1", "http://10.1/v1",
+                                                     "http://2130706433/v1", "http://10.0.0.1./v1", "http://localhost./v1",
+                                                     "http://127.0.0.1.evil.com/v1", "http://localhost.evil.com/v1" }) ? 1 : 0, 1);
+        P.eq("url.authority_refused", refusedAll({ "http://evil.com\\.local/v1", "http://evil.com%2f.local/v1", "http://[::1].evil.com/v1",
+                                                   "http://[fdevil.example.com/v1", "http://[fc.evil.com/v1", "http://[::1/v1",
+                                                   "http://10.0.0.1:evil.com/v1", "http://10.0.0.1:/v1", "http://10.0.0.1:99999/v1",
+                                                   "http://[fd::1]/v1", "http://[fe80::1%25en0]/v1", "https://api.example.com:x/v1",
+                                                   "https://evil.com\\@api.example.com/v1", "http://:8080/v1" }) ? 1 : 0, 1);
+        const auto takenAll = [&](std::initializer_list<const char*> urls) {
+            bool all = true;
+            for (const char* u : urls)
+            {
+                std::string w;
+                const bool taken = !pr::canonical(u, w).empty();
+                if (!taken)
+                    std::printf("refused: %s (%s)\n", u, w.c_str());
+                all = all && taken;
+            }
+            return all;
+        };
+        P.eq("url.plain_forms_taken", takenAll({ "http://10.0.0.5:1234/v1", "http://192.168.0.10/v1", "http://172.16.0.1:8080",
+                                                 "http://169.254.10.1/v1", "http://127.0.0.1:65535/v1", "http://[fe80::1]/v1",
+                                                 "http://[fd12:3456::1]:8080/v1", "http://[FC00::1]/v1", "http://studio.local:1234/v1",
+                                                 "http://my.localhost/v1", "https://api.example.com:8443/v1", "https://8.8.8.8/v1" }) ? 1 : 0, 1);
     }
 
     // ---- STORE -----------------------------------------------------------------------------------------------------------
@@ -524,7 +575,7 @@ PROBE(plugin, providers)
         P.eq("local.set_without_key", agent.setProvider({ "openai", "http://localhost:11434/v1", "" }, "", why) ? 1 : 0, 1);
         agent.waitIdle();
         const pg::ChatState s = agent.chatState();
-        P.eq("local.ready", s.ready() && s.keyless && !s.hasKey && s.providerName == "Ollama (this Mac)" ? 1 : 0, 1);
+        P.eq("local.ready", s.ready() && s.keyless && !s.hasKey && s.providerName == "Ollama (" + std::string(pg::kThisMachine) + ")" ? 1 : 0, 1);
         P.eq("local.models", s.models.size() == 2 && s.model == "qwen-probe:32b" ? 1 : 0, 1);
         P.eq("local.no_levels", s.effort.empty()
                                     && std::none_of(s.models.begin(), s.models.end(), [](const pg::ChatModel& m) { return !m.efforts.empty(); })
@@ -609,7 +660,12 @@ PROBE(plugin, providers)
         agent.waitIdle();
         const pg::ChatState s = agent.chatState();
         P.eq("limits.went_on", script->postCount() - before == 2 && has(allOf(s, pg::ChatEntry::Kind::note), "length limit")
-                                   && has(script->body(before + 1), "your reply reached its limit") ? 1 : 0, 1);
+                                   && has(script->body(before + 1), "your reply reached") ? 1 : 0, 1);
+        // No request carried a limit, so none is named: the server's own cut it.
+        std::printf("cut off: %s\n", allOf(s, pg::ChatEntry::Kind::note).c_str());
+        P.eq("limits.server_named", has(allOf(s, pg::ChatEntry::Kind::note), "length limit of its server")
+                                        && !has(allOf(s, pg::ChatEntry::Kind::note), "64K") && !has(script->body(before + 1), "64K")
+                                        && has(script->body(before + 1), "the length limit of the model's server") ? 1 : 0, 1);
     }
 
     // ---- EMPTY -------------------------------------------------------------------------------------------------------------
@@ -890,12 +946,39 @@ PROBE(plugin, providers)
         P.eq("errors.quota", has(pr::errorText(openai, 429, body), "rate limiting") ? 1 : 0, 1);
         const std::string ctx = claude::toJson(input({ { "error", input({ { "message", "This model's maximum context length is 8192 tokens" } }) } }));
         P.eq("errors.context", has(pr::errorText(ollama, 400, ctx), "longer context in the server's settings") ? 1 : 0, 1);
-        P.eq("errors.not_running", has(pr::connectionText(ollama, "no connection"), "is the server (Ollama (this Mac)) running?") ? 1 : 0, 1);
+        P.eq("errors.not_running", has(pr::connectionText(ollama, "no connection"), "is the server (Ollama (" + std::string(pg::kThisMachine) + ")) running?") ? 1 : 0, 1);
         P.eq("errors.string_error", has(pr::errorText(ollama, 404, "{\"error\":\"model 'x' not found\"}"), "model 'x' not found") ? 1 : 0, 1);
+
+        // A page that is no JSON (a proxy's), cut short: never inside a character. A two-byte character across each cut.
+        const auto across = [](std::size_t cut) { return std::string(cut - 1, 'a') + "\xC3\xA4" + std::string(400, 'b'); };
+        const auto valid = [](const std::string& t) { return juce::CharPointer_UTF8::isValidString(t.c_str(), static_cast<int>(t.size())); };
+        const std::string raw = claude::toJson(input({ { "error", input({ { "message", "Provider returned error" },
+                                                                          { "metadata", input({ { "raw", juce::String::fromUTF8(across(500).c_str()) } }) } }) } }));
+        P.eq("errors.cut_whole", valid(pr::errorText(ollama, 502, across(300))) && valid(claude::apiError(502, across(300)))
+                                     && valid(pr::errorText(openai, 400, raw))
+                                     && valid(pr::redirectText(ollama, 307, "http://x/" + across(191))) ? 1 : 0, 1);
     }
 
     // ---- SERVERS -----------------------------------------------------------------------------------------------------------
     {
+        // A server here that lists no model yet (Ollama with nothing pulled): said; once one is there, the next turn
+        // asks for the list again and takes it.
+        script->gets["/v1/models"] = { 200, fake::openAiModels({}) };
+        why.clear();
+        P.eq("servers.empty_set", agent.setProvider({ "openai", "http://127.0.0.1:8080/v1", "" }, "", why) ? 1 : 0, 1);
+        agent.waitIdle();
+        agent.send("anyone there?");
+        agent.waitIdle();
+        P.eq("servers.listed_none", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error), "listed none") ? 1 : 0, 1);
+        script->gets["/v1/models"] = { 200, fake::openAiModels({ { "pulled-probe", "", 1762000000 } }) };
+        const int listsBefore = script->count("GET /v1/models"), postsBefore = script->postCount();
+        script->add(stream(fake::OpenAiSse("pulled-probe").text("Here now.").finish("stop").usage(9000, 8).done().str()));
+        agent.send("and now?");
+        agent.waitIdle();
+        P.eq("servers.listed_again", script->count("GET /v1/models") - listsBefore == 1 && script->postCount() - postsBefore == 1
+                                         && agent.chatState().model == "pulled-probe"
+                                         && lastText(agent.chatState(), pg::ChatEntry::Kind::assistant) == "Here now." ? 1 : 0, 1);
+
         // LM Studio on this Mac, not running, no model chosen: the turn says why, and sends nothing.
         script->gets["/v1/models"] = { 0, "" };
         why.clear();
@@ -905,8 +988,8 @@ PROBE(plugin, providers)
         agent.send("hello");
         agent.waitIdle();
         P.eq("servers.not_running", has(lastText(agent.chatState(), pg::ChatEntry::Kind::error),
-                                        "Could not read LM Studio (this Mac)'s models: no connection to localhost:1234: is the "
-                                        "server (LM Studio (this Mac)) running?")
+                                        "Could not read LM Studio (" + std::string(pg::kThisMachine) + ")'s models: no connection to "
+                                        "localhost:1234: is the server (LM Studio (" + pg::kThisMachine + ")) running?")
                                         && script->postCount() == before && !agent.chatState().busy ? 1 : 0, 1);
 
         // Another server whose list refuses the key, no model chosen: the key's problem, nothing sent.

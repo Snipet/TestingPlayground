@@ -440,7 +440,7 @@ namespace playground
         if (ab_.st.ownDials)
             journal_.dialsNote(Journal::Who::user, std::string("kept ") + letter(side) + " of the A/B listening (" + what + ", its own dials)");
         else
-            journal_.note(Journal::Who::user, std::string("kept ") + letter(side) + " of the A/B listening (" + what + ")");
+            journal_.runNote(Journal::Who::user, std::string("kept ") + letter(side) + " of the A/B listening (" + what + ")");
         abStop(ending);
         return true;
     }

@@ -314,14 +314,19 @@ namespace playground
                     text = "Nothing new to save: version " + std::to_string(saved.number) + " of " + inQuotes(into)
                          + " has these files and dials already, so no version was added.";
                 else if (saved.copied)
-                    text = "Saved " + inQuotes(into) + ", the user's own copy of the factory's " + inQuotes(ownName(st.name.empty() || !isFactoryName(name) ? st.name : name))
+                    text = "Saved " + inQuotes(into) + ", the user's own copy of the factory's " + inQuotes(ownName(isFactoryName(name) ? name : st.name))
                          + " (which stays as it is): its version 1, with the factory project's presets. It is the project open now.";
                 else if (saved.created)
                     text = "Saved " + inQuotes(into) + ", a new project: its version 1. It is the project open now.";
                 else
                     text = "Saved version " + std::to_string(saved.number) + " of " + inQuotes(into)
-                         + (another ? " (which was not the project open: it is now)" : "")
-                         + ". Every version is kept: the user opens any in PROJECTS.";
+                         + (another ? " (which was not the project open: it is now)" : "") + "."
+                         + (saved.dropped <= 0 ? std::string(" The user opens any of its versions in PROJECTS.")
+                            : " A project keeps its newest " + std::to_string(projectstore::kMaxVersions) + " versions, so "
+                                  + (saved.dropped == 1 ? "version " + std::to_string(saved.droppedFrom) + ", its oldest, is"
+                                                        : "versions " + std::to_string(saved.droppedFrom) + " to "
+                                                              + std::to_string(saved.droppedTo) + ", its oldest, are")
+                                  + " no longer kept; the user opens any other in PROJECTS.");
                 if (!note.empty() && !saved.unchanged)
                     text += " Its note: Claude: " + note + ".";
                 // The category, whether or not a version was added (an unchanged project's is set all the same: it is

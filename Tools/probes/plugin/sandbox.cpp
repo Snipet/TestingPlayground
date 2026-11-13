@@ -18,6 +18,7 @@
 //            render's; a dial's unit shown only from the .gui's unit=, as in the plugin; an edit naming the first by
 //            its number acts on the first (put back in the helper), a render naming the second shows the second as it
 //            was; a number no sandbox has refused; apply without a number refused
+//   NOTREGULAR a folder holding a FIFO x.sh: refused ("not a regular file"), never read (the time printed)
 //   SHADER   a program's folder opened from disk (the .fm, the .gui, the .sc, the .sh; its dials declared, a `param enum` an int
 //            dial as FMinus makes it, which a menu of its names takes; its fields listed for the displays but those no
 //            display can show, an array as its elements (ring[i]), an enumeration's an int as FMinus makes it, Shared's
@@ -42,7 +43,9 @@
 //            (gui.sandbox.example.png, .example.view.png); reading the instance leaves the plugin's record of what
 //            MCP was told alone (the host's change still starts the next result)
 //   APPLY    an edit applied: panel.gui written into the processor's draft, run, its interface the sandbox's; a dial
-//            the host moved since the last MCP call said first
+//            the host moved since the last MCP call said first; an apply naming its instance cancelled in the same
+//            write: nothing written, nothing answered; write_file's refusal (a 17th file) quoted, not the hint before
+//            it; a program that does not compile: written, the run's failure said, never "the user sees it"
 //   STRAY    a .gui with a { where an element's name should be (one around a knob, one the file ends inside) opens,
 //            the reader's notes on them in its report
 //   CIRCUIT  a program holding screamer.cir's module (an Effect's Screamer amp[2], a Voice's one), never calling its
@@ -102,6 +105,7 @@
 #include <dirent.h>
 #endif
 #include <spawn.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -572,6 +576,20 @@ PROBE(plugin, sandbox)
         P.eq("two.apply_needs_number", r.error && has(r.text, "apply needs sandbox") ? 1 : 0, 1);
     }
 
+    // ---- NOTREGULAR: a folder holding a FIFO of an editor's kind: refused, never read (it would block) -------------
+    {
+        const std::filesystem::path folder = std::filesystem::path(dir) / "fifo";
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / pg::kProgramName) << program();
+        const bool made = mkfifo((folder / "x.sh").c_str(), 0600) == 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
+        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        std::printf("a folder with a FIFO (%.2f s): %s", took, r.text.c_str());
+        P.eq("notregular.refused", made && r.error && has(r.text, "x.sh is not a regular file") ? 1 : 0, 1);
+        std::filesystem::remove_all(folder);
+    }
+
     // ---- SHADER ----------------------------------------------------------------------------------------------------------
     int shaderNumber = 0;
     {
@@ -892,6 +910,70 @@ PROBE(plugin, sandbox)
         P.eq("apply.written", !a.error && has(a.text, "wrote panel.gui into its program") && has(written, "label \"APPLIED HERE\"") ? 1 : 0, 1);
         P.eq("apply.runs", port.status().ok && labelled ? 1 : 0, 1);
         P.eq("apply.hint", a.text.rfind("(1 thing changed since the last MCP call here: the host moved ", 0) == 0 ? 1 : 0, 1);
+        const auto panelText = [&] {
+            for (const pg::SourceFile& f : port.draft().files)
+                if (f.name == "panel.gui")
+                    return f.text;
+            return std::string();
+        };
+        const std::string instance = processor.mcpLink() != nullptr ? processor.mcpLink()->id() : "1";
+        // Cancelled while the server asks which instance `instance` names: nothing is written, nothing run.
+        {
+            const Result e2 = s.sandbox(object({ { "action", "edit" }, { "sandbox", exampleNumber },
+                                                 { "edits", juce::Array<juce::var>{ object({ { "old_text", "APPLIED HERE" }, { "new_text", "CANCELLED HERE" } }) } } }),
+                                        &processor);
+            const int id = s.next++;
+            const std::string both
+                = line(object({ { "jsonrpc", "2.0" }, { "id", id }, { "method", "tools/call" },
+                                { "params", object({ { "name", "gui_sandbox" },
+                                                     { "arguments", object({ { "action", "apply" }, { "sandbox", exampleNumber },
+                                                                             { "instance", juce::String(instance) } }) } }) } }))
+                + "\n" + line(object({ { "jsonrpc", "2.0" }, { "method", "notifications/cancelled" }, { "params", object({ { "requestId", id } }) } }))
+                + "\n";
+            [[maybe_unused]] const ssize_t n = write(s.in, both.data(), both.size());
+            bool answered = false;
+            for (int k = 0; k < 200; ++k)                // a second
+            {
+                std::string got;
+                if (s.reader->next(got, 5) > 0)
+                {
+                    const juce::var v = juce::JSON::parse(juce::String::fromUTF8(got.c_str()));
+                    answered = answered || (v.hasProperty("id") && static_cast<int>(v["id"]) == id);
+                }
+                processor.poll();
+            }
+            processor.settle();
+            std::printf("apply cancelled: panel.gui %s\n", has(panelText(), "CANCELLED HERE") ? "WRITTEN" : "as it was");
+            P.eq("apply.cancelled_writes_nothing", !e2.error && !answered && has(panelText(), "APPLIED HERE") && !has(panelText(), "CANCELLED HERE") ? 1 : 0, 1);
+        }
+        // Refused by write_file (a 17th file: sixteen and no .gui) after the host moved a dial: the refusal is quoted,
+        // not the line of what changed.
+        {
+            const pg::Draft keep = port.draft();
+            pg::Draft full;
+            full.files.push_back(keep.files.front());
+            for (int k = 1; k < 16; ++k)
+                full.files.push_back({ "f" + std::to_string(k) + ".fm", "// f\n" });
+            port.setDraft(full);
+            processor.poll();
+            processor.getParameters()[1]->setValueNotifyingHost(0.25f);
+            processor.poll();
+            const Result r = s.sandbox(object({ { "action", "apply" }, { "sandbox", exampleNumber } }), &processor);
+            std::printf("apply refused: %s", r.text.c_str());
+            P.eq("apply.refusal_quoted", r.error && has(r.text, "nothing was applied: ") && has(r.text, "16 files")
+                                             && !has(r.text, "nothing was applied: (") ? 1 : 0, 1);
+            // A program that does not compile: written, but the run failed, and the answer says so.
+            pg::Draft broken = keep;
+            broken.files.front().text += "\nthis is not FMinus\n";
+            port.setDraft(broken);
+            processor.poll();
+            const Result f = s.sandbox(object({ { "action", "apply" }, { "sandbox", exampleNumber } }), &processor);
+            std::printf("apply, the run failing: %s", f.text.substr(0, 600).c_str());
+            P.eq("apply.run_failed_said", f.error && has(f.text, "but the run failed") && !has(f.text, "so the user sees it") ? 1 : 0, 1);
+            port.setDraft(keep);
+            port.run(keep.files);
+            processor.settle();
+        }
         s.sandbox(object({ { "action", "close" }, { "sandbox", exampleNumber } }), &processor);
     }
 

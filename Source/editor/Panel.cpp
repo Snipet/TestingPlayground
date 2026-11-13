@@ -3557,7 +3557,9 @@ namespace playground::ui
             idFor(), spec(B::Shape::circle, [this] { return chat_.busy ? chat::Icon::stop : chat::Icon::arrowUp; }, {},
                           false, [] { return B::Look::primary; },
                           [this] {
-                              return chat_.busy || inputItem().editor().text().find_first_not_of(" \t\n") != std::string::npos;
+                              // As sendChat() takes it: words, or pictures alone (attached or still being read).
+                              return chat_.busy || !chat_.attached.empty() || chat_.attaching > 0
+                                  || inputItem().editor().text().find_first_not_of(" \t\n") != std::string::npos;
                           },
                           [this] {
                               if (chat_.busy)
@@ -4584,10 +4586,12 @@ namespace playground::ui
         dirty_ = true;
     }
 
-    void Panel::filesDragEnter(const std::vector<std::string>&, float x, float y)
+    // The chat's overlay is for pictures alone: a drag of project or audio files (taken anywhere on the panel) keeps
+    // where it is over the card (filesDropped reads it) but claims nothing for Claude.
+    void Panel::filesDragEnter(const std::vector<std::string>& paths, float x, float y)
     {
         noteInput();
-        dropActive_ = true;
+        dropActive_ = std::any_of(paths.begin(), paths.end(), [](const std::string& p) { return isPictureName(p); });
         dropHover_ = card_.contains({ x, y });
         dirty_ = true;
     }
@@ -6400,7 +6404,7 @@ namespace playground::ui
     float Panel::chatsPillX() const
     {
         const float tx = card_.x + kCardPad + 4.0f;
-        return std::round(tx + 15.0f + funkgui::text::width(funkgui::FontService::get().atlas(), chatTitle().c_str(), chat::kTitle) + 8.0f);
+        return std::round(tx + 15.0f + funkgui::text::width(funkgui::FontService::get().atlas(), chatTitleShown().c_str(), chat::kTitle) + 8.0f);
     }
 
     std::optional<funkgui::Point> Panel::centreOfDesktopBadge() const
@@ -6677,7 +6681,10 @@ namespace playground::ui
         const int fields = renaming_ ? 1 : dialogFields();
         const int rows = (fields & 1) + ((fields >> 1) & 1) + ((fields >> 2) & 1);
         const bool other = !renaming_ && !dialogAnthropic();
-        const float h = renaming_ ? kRenameDialogH : other ? kProviderRowsTop + kProviderRowPitch * static_cast<float>(rows) + 76.0f : kKeyDialogH;
+        // A refusal of more than one line (the longest address's) takes the room it needs above the buttons.
+        const float more = 16.0f * static_cast<float>(std::max<std::size_t>(1, whyLines(w - 48.0f).size()) - 1);
+        const float h = more + (renaming_ ? kRenameDialogH : other ? kProviderRowsTop + kProviderRowPitch * static_cast<float>(rows) + 76.0f
+                                                                   : kKeyDialogH);
         d.box = { std::round((width_ - w) * 0.5f), std::round((height_ - h) * 0.42f), w, h };
         if (!renaming_)
             d.provider = { d.box.right() - 24.0f - kProviderPillW, d.box.y + 22.0f, kProviderPillW, 30.0f };
@@ -6873,6 +6880,7 @@ namespace playground::ui
         chooseKeyPreset(preset);
         keyEdit_.set("", kMaxKeyLength);
         keyWhy_.clear();
+        dialogControl_ = 0;
         focusBeforeKey_ = focus_;
         setFocus(-1);
         ring_ = false;
@@ -6888,6 +6896,7 @@ namespace playground::ui
         renaming_ = true;
         keyEdit_.set(chatsLabel(), static_cast<int>(kMaxChatTitle));
         keyWhy_.clear();
+        dialogControl_ = 0;
         focusBeforeKey_ = focus_;
         setFocus(-1);
         ring_ = false;
@@ -6908,6 +6917,7 @@ namespace playground::ui
         renaming_ = false;
         keyEdit_.set("", kMaxKeyLength);                 // nothing of the key stays in the panel
         keyWhy_.clear();
+        dialogControl_ = 0;
         pendingSend_.clear();
         if (focusBeforeKey_ >= 0)
             setFocus(focusBeforeKey_);
@@ -6932,16 +6942,14 @@ namespace playground::ui
         // Another provider: its settings and its key (none typed keeps the one stored; a server here needs none).
         if (typed.empty() && dialogAnthropic() && (dialogAsBefore() || !dialogInfo_.hasKey))
         {
-            keyWhy_ = shortcutText("Paste a key first (Cmd-V).");
-            dirty_ = true;
+            refuseInDialog(shortcutText("Paste a key first (Cmd-V)."));
             return;
         }
         std::string why;
         const bool ok = dialogAsBefore() ? port_.chat().saveKey(typed, why) : port_.chat().setProvider(dialogProvider(), typed, why);
         if (!ok)
         {
-            keyWhy_ = asciiText(why);
-            dirty_ = true;
+            refuseInDialog(why);
             return;
         }
         const std::string pending = pendingSend_;
@@ -6966,11 +6974,29 @@ namespace playground::ui
         refreshChat(host_ != nullptr ? host_->nowSeconds() : 0.0);
     }
 
-    // Every key is the dialog's while it is open: Return saves, Escape cancels, Cmd-V pastes; the caret stays at the end
-    // (the key is masked, so there is nothing to move it over).
+    // Every key is the dialog's while it is open: Escape cancels; Tab moves over its fields and buttons (dialogStops);
+    // on a button Return or Space presses it and no other key does anything (none types into a field); in a field
+    // Return saves, Cmd-V pastes, and the key's caret stays at its end (it is masked: nothing to move it over).
     bool Panel::keyDialogKey(const funkgui::KeyEvent& e)
     {
         using funkgui::Key;
+        dirty_ = true;
+        if (e.key == Key::escape)
+        {
+            closeKeyDialog();
+            return true;
+        }
+        if (e.key == Key::tab)
+        {
+            moveDialogFocus(e.mods.shift ? -1 : 1);
+            return true;
+        }
+        if (dialogControl_ != 0)
+        {
+            if ((e.key == Key::enter || e.key == Key::space) && !e.mods.cmd && !e.mods.ctrl && !e.mods.alt)
+                pressDialogControl();
+            return true;
+        }
         if (renaming_)
         {
             // A name: the field's own keys (the caret moves), Return renames, Escape cancels, Cmd-V pastes.
@@ -6993,27 +7019,6 @@ namespace playground::ui
         }
         if (e.key == Key::enter)
             saveKeyFromDialog();
-        else if (e.key == Key::escape)
-            closeKeyDialog();
-        else if (e.key == Key::tab && !dialogAnthropic())
-        {
-            // The next field shown (Shift: the one before): the address, the key, the model.
-            const int fields = dialogFields();
-            const int order[3] = { 1, 0, 2 };
-            int at = 0;
-            for (int i = 0; i < 3; ++i)
-                if (order[i] == dialogField_)
-                    at = i;
-            for (int step = 1; step <= 3; ++step)
-            {
-                const int next = order[(at + (e.mods.shift ? 3 - step : step)) % 3];
-                if ((fields & (1 << next)) != 0)
-                {
-                    dialogField_ = next;
-                    break;
-                }
-            }
-        }
         else if (dialogField_ != 0)
         {
             // The address or the model: a plain field (the caret moves; the text is no secret).
@@ -7051,9 +7056,14 @@ namespace playground::ui
         return true;
     }
 
+    // A click: a button acts; in a field the keys go there, the selection dropped and, in a plain field, the caret
+    // where the pointer is. The key's field takes no caret position: it is drawn masked (a prefix, stars, its last
+    // four), so a place in the stars names no character, and its caret stays at its end. The keys leave a button for
+    // the field.
     void Panel::keyDialogPointerDown(funkgui::Point p)
     {
         const KeyDialog d = keyDialog();
+        dialogControl_ = 0;
         if (d.save.contains(p))
             saveKeyFromDialog();
         else if (d.cancel.contains(p))
@@ -7062,13 +7072,187 @@ namespace playground::ui
             removeKeyFromDialog();
         else if (!renaming_ && d.provider.contains(p))
             openProviders();
+        else if (renaming_ && d.field.contains(p))
+            placeFieldCaret(keyEdit_, d.field, p.x);
         else if (!renaming_ && d.base.contains(p))
+        {
             dialogField_ = 1;
+            placeFieldCaret(baseEdit_, d.base, p.x);
+        }
         else if (!renaming_ && d.model.contains(p))
+        {
             dialogField_ = 2;
+            placeFieldCaret(modelEdit_, d.model, p.x);
+        }
         else if (!renaming_ && d.field.contains(p))
+        {
             dialogField_ = 0;
+            keyEdit_.allSelected = false;
+        }
         dirty_ = true;
+    }
+
+    int Panel::keyDialogCaret() const
+    {
+        const funkgui::text::LineEdit& e = renaming_ || dialogField_ == 0 ? keyEdit_ : dialogField_ == 1 ? baseEdit_ : modelEdit_;
+        return e.caret;
+    }
+
+    float Panel::keyDialogScroll() const
+    {
+        if (dialogControl_ != 0 || (!renaming_ && dialogField_ == 0))
+            return 0.0f;                                 // the key is drawn masked, from its start
+        const KeyDialog d = keyDialog();
+        const funkgui::Rect& f = renaming_ ? d.field : dialogField_ == 1 ? d.base : d.model;
+        return fieldScroll(renaming_ ? keyEdit_ : dialogField_ == 1 ? baseEdit_ : modelEdit_, f.w - 28.0f);
+    }
+
+    std::vector<std::string> Panel::keyDialogWhyLines() const
+    {
+        return whyLines(std::min(kKeyDialogW, width_ - 2.0f * kMargin) - 48.0f);
+    }
+
+    // The refusal in lines of at most maxW px (kSmall), broken where a space is (the space dropped), a word longer than
+    // a line cut where it must.
+    std::vector<std::string> Panel::whyLines(float maxW) const
+    {
+        std::vector<std::string> lines;
+        const auto& atlas = funkgui::FontService::get().atlas();
+        std::string rest = asciiText(keyWhy_);
+        while (!rest.empty() && lines.size() < 4)
+        {
+            if (funkgui::text::width(atlas, rest.c_str(), chat::kSmall) <= maxW)
+            {
+                lines.push_back(rest);
+                break;
+            }
+            std::size_t cut = rest.size();
+            while (cut > 1 && funkgui::text::width(atlas, rest.substr(0, cut).c_str(), chat::kSmall) > maxW)
+                --cut;
+            const std::size_t space = rest.rfind(' ', cut);
+            const std::size_t at = space != std::string::npos && space > 0 ? space : cut;
+            lines.push_back(rest.substr(0, at));
+            rest.erase(0, space != std::string::npos && space > 0 ? at + 1 : at);
+        }
+        return lines;
+    }
+
+    // How far a plain field is drawn scrolled: none while its text fits (or is all selected, drawn from its start),
+    // else just enough that the caret stays inside (the text's head goes out of view as the caret reaches the end).
+    float Panel::fieldScroll(const funkgui::text::LineEdit& e, float maxW)
+    {
+        const auto& atlas = funkgui::FontService::get().atlas();
+        if (e.allSelected || funkgui::text::width(atlas, e.buffer.c_str(), chat::kBody) <= maxW)
+            return 0.0f;
+        const std::string before = e.buffer.substr(0, static_cast<std::size_t>(std::clamp(e.caret, 0, static_cast<int>(e.buffer.size()))));
+        return std::max(0.0f, funkgui::text::width(atlas, before.c_str(), chat::kBody) - (maxW - 2.0f));
+    }
+
+    // A press in a plain field: the selection dropped, the caret at the character boundary nearest the pointer, as the
+    // field is drawn (scrolled) now.
+    void Panel::placeFieldCaret(funkgui::text::LineEdit& e, const funkgui::Rect& f, float px)
+    {
+        const auto& atlas = funkgui::FontService::get().atlas();
+        const float local = px - (f.x + 14.0f) + fieldScroll(e, f.w - 28.0f);
+        int best = 0;
+        float bestD = std::fabs(local);
+        for (std::size_t i = 1; i <= e.buffer.size(); ++i)
+        {
+            const float d = std::fabs(funkgui::text::width(atlas, e.buffer.substr(0, i).c_str(), chat::kBody) - local);
+            if (d < bestD)
+            {
+                bestD = d;
+                best = static_cast<int>(i);
+            }
+        }
+        e.allSelected = false;
+        e.caret = best;
+    }
+
+    // The dialog's Tab order: its fields as shown (the address, the key, the model; a name), then the Provider pill,
+    // Remove key (while a key is stored), Cancel and Save. A field is 10 + its number, a button dialogControl_'s.
+    std::vector<int> Panel::dialogStops() const
+    {
+        std::vector<int> stops;
+        if (renaming_)
+            stops = { 10, 3, 4 };
+        else
+        {
+            const int fields = dialogFields();
+            for (const int f : { 1, 0, 2 })
+                if ((fields & (1 << f)) != 0)
+                    stops.push_back(10 + f);
+            stops.push_back(1);
+            if (dialogHasKey())
+                stops.push_back(2);
+            stops.push_back(3);
+            stops.push_back(4);
+        }
+        return stops;
+    }
+
+    void Panel::moveDialogFocus(int dir)
+    {
+        const std::vector<int> stops = dialogStops();
+        const int now = dialogControl_ != 0 ? dialogControl_ : 10 + (renaming_ ? 0 : dialogField_);
+        const auto it = std::find(stops.begin(), stops.end(), now);
+        const int n = static_cast<int>(stops.size());
+        const int at = it == stops.end() ? (dir > 0 ? -1 : 0) : static_cast<int>(it - stops.begin());
+        const int next = stops[static_cast<std::size_t>((at + dir + n) % n)];
+        if (next >= 10)
+        {
+            dialogControl_ = 0;
+            if (!renaming_)
+                dialogField_ = next - 10;
+        }
+        else
+            dialogControl_ = next;
+    }
+
+    // Return or Space on the dialog's button with the keys: as its click.
+    void Panel::pressDialogControl()
+    {
+        switch (dialogControl_)
+        {
+            case 1: if (!renaming_) openProviders(); break;
+            case 2: if (!renaming_ && dialogHasKey()) removeKeyFromDialog(); break;
+            case 3: closeKeyDialog(); break;
+            case 4: saveKeyFromDialog(); break;
+            default: break;
+        }
+    }
+
+    // A refused Save: the reason under the fields, on the field it is about (a screen reader's help there), and said.
+    // The field from the refusal's words (ChatAgent::setProvider: the address first, then the model, then the key).
+    void Panel::refuseInDialog(const std::string& why)
+    {
+        keyWhy_ = asciiText(why);
+        keyWhyField_ = keyWhy_.find("address") != std::string::npos || keyWhy_.rfind("http://", 0) == 0 ? 1
+                     : keyWhy_.find("model's name") != std::string::npos                         ? 2
+                                                                                                  : 0;
+        if ((dialogFields() & (1 << keyWhyField_)) == 0)
+            keyWhyField_ = 0;
+        if (host_ != nullptr)
+            host_->announce(keyWhy_, funkgui::HostServices::Announce::high);
+        dirty_ = true;
+    }
+
+    // The title as the header draws it: cut ("...") to leave the chats' pill its least room before the header's buttons
+    // (another provider's name may be a long server's host).
+    std::string Panel::chatTitleShown() const
+    {
+        std::string s = chatTitle();
+        if (newChatItem_ < 0)
+            return s;
+        const float tx = card_.x + kCardPad + 4.0f;
+        const float newChat = static_cast<const ButtonItem&>(*items_[static_cast<std::size_t>(newChatItem_)]).bounds().x;
+        const float room = newChat - 6.0f - kChatsPillLeast - 8.0f - (tx + 15.0f);
+        const auto& atlas = funkgui::FontService::get().atlas();
+        if (funkgui::text::width(atlas, s.c_str(), chat::kTitle) <= room)
+            return s;
+        while (!s.empty() && funkgui::text::width(atlas, (s + "...").c_str(), chat::kTitle) > room)
+            s.pop_back();
+        return s + "...";
     }
 
     // The key as the field shows it, typed or pasted: the provider's public prefix ("sk-ant-", "sk-or-": the preset's
@@ -7186,6 +7370,7 @@ namespace playground::ui
             dropdown::State st;
             st.hover = hasPointer_ && r.contains(pointer_);
             st.open = menuOpenAt(r);
+            st.focus = dialogControl_ == 1;
             const funkgui::Col ink = dropdown::drawTrigger(c, p, r, dropdown::Base::outlined, st);
             c.text(fitText(c, "Provider", chat::kSmall, dropdown::labelRoom(r, r.x + 14.0f)).c_str(), r.x + 14.0f,
                    c.capCentreTop(r.centreY(), chat::kSmall), chat::kSmall, ink);
@@ -7197,23 +7382,31 @@ namespace playground::ui
                                     : keyWhy_.empty() ? funkgui::mix(p.composerEdge, p.accent, 0.45f) : p.danger;
             c.rrect(f.x, f.y, f.w, f.h, 10.0f, p.composer, 1.0f, edge);
         };
-        // A plain field (a name, an address, a model): the text, the selection, the caret where it is.
+        // A plain field (a name, an address, a model): the text, the selection, the caret where it is; with the keys, a
+        // text longer than the field drawn scrolled so that the caret stays in view (fieldScroll), else cut with "...".
         const auto plain = [&](const funkgui::Rect& f, const funkgui::text::LineEdit& edit, const std::string& hint, bool focused) {
             const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
             const float maxW = f.w - 28.0f;
             const std::string& b = edit.buffer;
             const std::string shownText = asciiText(b);
+            const float scroll = focused ? fieldScroll(edit, maxW) : 0.0f;
             if (focused && edit.allSelected && !b.empty())
                 c.rrect(f.x + 12.0f, f.y + 8.0f, std::min(c.textWidth(shownText.c_str(), chat::kBody), maxW) + 4.0f, f.h - 16.0f,
                         3.0f, th.accentDim);
             if (b.empty())
                 c.text(fitText(c, hint, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.faint);
+            else if (scroll > 0.0f)
+            {
+                c.pushClip({ f.x + 12.0f, f.y + 2.0f, maxW + 4.0f, f.h - 4.0f });
+                c.text(shownText.c_str(), f.x + 14.0f - scroll, textTop, chat::kBody, p.text);
+                c.popClip();
+            }
             else
                 c.text(fitText(c, shownText, chat::kBody, maxW).c_str(), f.x + 14.0f, textTop, chat::kBody, p.text);
             if (!focused)
                 return;
             const std::string before = asciiText(b.substr(0, static_cast<std::size_t>(std::clamp(edit.caret, 0, static_cast<int>(b.size())))));
-            const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody), maxW);
+            const float cx = f.x + 14.0f + std::min(c.textWidth(before.c_str(), chat::kBody) - scroll, maxW);
             c.rrect(cx, f.y + 9.0f, 1.5f, f.h - 18.0f, 0.75f, p.accent);
         };
         const auto label = [&](const funkgui::Rect& f, const char* text) {
@@ -7221,11 +7414,12 @@ namespace playground::ui
         };
 
         const funkgui::Rect f = d.field;
-        const bool keyFocused = renaming_ || !other || dialogField_ == 0;
+        const bool fieldKeys = dialogControl_ == 0;     // a field has the keys (else a button: its ring)
+        const bool keyFocused = fieldKeys && (renaming_ || !other || dialogField_ == 0);
         box(f, keyFocused);
         const float textTop = c.capCentreTop(f.centreY(), chat::kBody);
         if (renaming_)
-            plain(f, keyEdit_, "A name for this chat", true);
+            plain(f, keyEdit_, "A name for this chat", keyFocused);
         else
         {
             // The key masked (its first and last characters shown), the caret at its end.
@@ -7251,27 +7445,32 @@ namespace playground::ui
             label(f, "Key");
             if (d.base.w > 0.0f)
             {
-                box(d.base, dialogField_ == 1);
-                plain(d.base, baseEdit_, "https://host/v1", dialogField_ == 1);
+                box(d.base, fieldKeys && dialogField_ == 1);
+                plain(d.base, baseEdit_, "https://host/v1", fieldKeys && dialogField_ == 1);
                 label(d.base, "Server");
             }
             if (d.model.w > 0.0f)
             {
-                box(d.model, dialogField_ == 2);
+                box(d.model, fieldKeys && dialogField_ == 2);
                 plain(d.model, modelEdit_, dialogInfo_.picksFirst ? "Empty: the first it lists (then the model menu)"
                                                                   : "Empty: choose it in the model menu after Save",
-                      dialogField_ == 2);
+                      fieldKeys && dialogField_ == 2);
                 label(d.model, "Model");
             }
         }
         const funkgui::Rect last = d.model.w > 0.0f ? d.model : f;
-        if (!keyWhy_.empty())
-            c.text(fitText(c, asciiText(keyWhy_), chat::kSmall, d.box.w - 48.0f).c_str(), other ? x : f.x + 2.0f,
-                   c.capCentreTop(last.bottom() + 14.0f, chat::kSmall), chat::kSmall, p.danger);
+        float wy = last.bottom() + 14.0f;                // the refusal, on as many lines as it takes (the box grew)
+        for (const std::string& line : whyLines(d.box.w - 48.0f))
+        {
+            c.text(line.c_str(), other ? x : f.x + 2.0f, c.capCentreTop(wy, chat::kSmall), chat::kSmall, p.danger);
+            wy += 16.0f;
+        }
 
         // The buttons: pills.
-        const auto button = [&](const funkgui::Rect& r, const char* text, int look) {   // 0 primary, 1 outlined, 2 quiet
+        const auto button = [&](const funkgui::Rect& r, const char* text, int look, int control) {   // 0 primary, 1 outlined, 2 quiet
             const bool hover = hasPointer_ && r.contains(pointer_);
+            if (dialogControl_ == control)               // the keys' button: the focus ring
+                c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, r.h * 0.5f + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
             funkgui::Col fill = p.card.withAlpha(0.0f), edge = p.card.withAlpha(0.0f), ink = p.soft;
             if (look == 0)
             {
@@ -7290,10 +7489,10 @@ namespace playground::ui
             const funkgui::TextStyle& st = look == 0 ? chat::kSmallStrong : chat::kSmall;
             c.text(text, r.centreX(), c.capCentreTop(r.centreY(), st), st, ink, funkgui::Align::centre);
         };
-        button(d.save, renaming_ ? "Rename" : "Save", 0);
-        button(d.cancel, "Cancel", 1);
+        button(d.save, renaming_ ? "Rename" : "Save", 0, 4);
+        button(d.cancel, "Cancel", 1, 3);
         if (dialogHasKey() && !renaming_)
-            button(d.remove, "Remove key", 2);
+            button(d.remove, "Remove key", 2, 2);
     }
 
     void Panel::openExamples()
@@ -8568,6 +8767,7 @@ namespace playground::ui
             .mix(subtitle_).mix(activity_).mix(desktop_).mix(chat_.busy).mix(unread_).mix(frozenShown_).mix(mutedShown_)
             .mix(recordShownText_).mix(compiling_).mix(lastOk_).mix(edited_).mix(chatOpen_).mix(explorerShown_).mix(panelView_).mix(dropActive_)
             .mix(dropHover_).mix(keyOpen_).mix(renaming_).mix(keyWhy_).mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected)
+            .mix(dialogField_).mix(dialogControl_).mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret)
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
@@ -8758,7 +8958,7 @@ namespace playground::ui
             const float ty = headerY_ + kIconButton * 0.5f;
             const float tx = card_.x + kCardPad + 4.0f;
             c.disc(tx + 4.0f, ty, chat_.busy ? 4.0f : 3.5f, chat_.busy ? p.accent : funkgui::mix(p.card, p.accent, 0.75f));
-            c.text(chatTitle().c_str(), tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
+            c.text(chatTitleShown().c_str(), tx + 15.0f, c.capCentreTop(ty, chat::kTitle), chat::kTitle, p.text);
             // After the chats' pill, while Claude Desktop acts on or talks to this instance: what it does, its name for it.
             const funkgui::Rect pill = triggerRect(chatsItem_);
             const float sub = pill.right() + 8.0f;
@@ -8832,10 +9032,11 @@ namespace playground::ui
         if (settings_.isOpen())
             std::snprintf(line, sizeof line, "SETTINGS   TAB THE NEXT CONTROL   RETURN OR SPACE CHOOSES   ESCAPE OR DONE CLOSES");
         else if (keyOpen_ && renaming_)
-            std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, "RENAME   ITS NAME IN THE CHAT LIST   RETURN RENAMES IT   TAB THE BUTTONS   ESCAPE CANCELS");
         else if (keyOpen_)
-            std::snprintf(line, sizeof line, "%s", dialogAnthropic() ? "API KEY   CMD-V PASTES IT   RETURN SAVES IT   ESCAPE CANCELS"
-                                                                     : "PROVIDER   TAB THE NEXT FIELD   CMD-V PASTES   RETURN SAVES   ESCAPE CANCELS");
+            std::snprintf(line, sizeof line, dialogAnthropic() ? "API KEY   %s PASTES IT   RETURN SAVES IT   TAB THE PROVIDER AND THE BUTTONS   ESCAPE CANCELS"
+                                                               : "PROVIDER   TAB THE NEXT FIELD OR BUTTON   %s PASTES   RETURN SAVES   ESCAPE CANCELS",
+                          upper(shortcutText("Cmd-V")).c_str());
         else if (export_.isOpen() && export_.bulk())
             std::snprintf(line, sizeof line, export_.running() ? "EXPORT   CANCEL STOPS IT, NO FILE LEFT   ESCAPE CLOSES (IT GOES ON)"
                                                                : "EXPORT   ONE .ZIP OF THEIR EXPORTS   ESCAPE CLOSES");
@@ -9074,8 +9275,10 @@ namespace playground::ui
         // the focus (and its ring): the keyboard's way.
         if (pressed_ == sendItem_)
             setFocus(inputItem_);
-        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_))
-            setFocus(pressed_);                          // an edge's drag leaves the focus (the caret) where it was
+        else if (pressed_ >= 0 && items_[static_cast<std::size_t>(pressed_)]->focusable() && !isEdge(pressed_)
+                 && pressed_ != chatViewItem_)
+            setFocus(pressed_);                          // an edge's drag, or a click in the conversation (a Copy, a
+                                                         // thinking row), leaves the focus (the caret) where it was
         else if (pressed_ < 0 && textItem() >= 0)
             setFocus(-1);                                // a press beside everything takes the caret away
         if (pressed_ >= 0 && gestures_ && host_ != nullptr)
@@ -9222,8 +9425,8 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen())
-            return true;
+        if (export_.isOpen() || name_.isOpen() || keyOpen_)
+            return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
             compare_.wheel(e, width_, height_);
@@ -9527,6 +9730,8 @@ namespace playground::ui
                 f.bounds = r;
                 f.title = title;
                 f.value = e.buffer.empty() ? "empty" : asciiText(e.buffer);
+                if (!keyWhy_.empty() && keyWhyField_ == (id == kKeyBaseId ? 1 : 2))
+                    f.help = keyWhy_;                    // the refusal is about this field
                 out.push_back(std::move(f));
             };
             if (!renaming_ && keyDialog().base.w > 0.0f)
@@ -9539,7 +9744,7 @@ namespace playground::ui
             field.title = renaming_ ? "Name" : "Key";
             field.value = renaming_ ? asciiText(keyEdit_.buffer)
                         : keyEdit_.buffer.empty() ? "empty" : std::to_string(keyEdit_.buffer.size()) + " characters";
-            field.help = !keyWhy_.empty() ? keyWhy_ : renaming_ ? "Return renames it" : "Command V pastes it";
+            field.help = !keyWhy_.empty() && keyWhyField_ == 0 ? keyWhy_ : renaming_ ? "Return renames it" : "Command V pastes it";
             out.push_back(std::move(field));
             if (!renaming_ && keyDialog().model.w > 0.0f)
                 plainField(kKeyModelId, keyDialog().model, "Model", modelEdit_);
@@ -9642,6 +9847,8 @@ namespace playground::ui
         // A netlist's Schematic view: its parts and nets as they come and go (never a pan or a zoom).
         r ^= files().schematicShown() ? 0x7FEB352Du ^ (files().schematic().a11yRevision() * 0x846CA68Bu) : 0u;
         r ^= (dialsBar_ ? 0x5BD1E995u : 0u) ^ (dialsFolded_ ? 0x1B56C4E9u : 0u);
+        // The conversation's scroll, however it moved (the wheel, its keys, its bar, a block revealed): its items move.
+        r ^= std::bit_cast<uint32_t>(chatView().scroll()) * 0x4CF5AD43u;
         return r ^ (files().layoutRevision() * 0x85EBCA77u) ^ (layoutRevision_ * 0xC2B2AE3Du) ^ (chatA11y_ * 2654435761u)
              ^ (explorer().revision() * 0x27220A95u) ^ (explorerShown_ ? 0x1B873593u : 0u)
              ^ (frozenShown_ ? 0x68E31DA4u ^ std::bit_cast<uint32_t>(centreOfFrozen().x) : 0u);   // it moves with the load's text

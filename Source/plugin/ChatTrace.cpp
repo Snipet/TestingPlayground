@@ -9,13 +9,15 @@
 // server runs here too), and gives a short CSV inline for a client that cannot open them (a cloud session). The folder
 // is rendersFolder() (the user's Music folder, <Company>/<Name>/Renders; a probe's sandbox under CTest), whose files
 // are the user's: an export only adds files, never replacing or deleting one (a stem, the name given or the time's,
-// takes a number after it while a file it would write is there), so the tool is no read-only one but no
+// takes a number after it while a file it would write is there, and each is moved in by a move that refuses a file
+// there: projectexport::place), so the tool is no read-only one but no
 // destructive one either (ChatAgent.cpp's kFaces); an export that would take the folder past kMaxFolderBytes, or the
 // disk past kKeepFree, is refused in words, and a trace cancelled writes nothing. Never of the user's recording
 // (Capture.h: it is never written anywhere): a render that reads it is refused.
 #include "plugin/ChatAgent.h"
 
 #include "plugin/ChatScenario.h"
+#include "plugin/ProjectExport.h"
 
 #include "dsp/Debug.h"
 #include "dsp/Export.h"
@@ -46,6 +48,13 @@ namespace playground
         };
 
         bool isNumber(const juce::var& v) { return v.isDouble() || v.isInt() || v.isInt64(); }
+
+        // Where an export goes, as the description says it (kThisMachine's words, EditorPort.h).
+#if defined(__APPLE__)
+        constexpr const char* kUsersMachine = "the user's Mac";
+#else
+        constexpr const char* kUsersMachine = "the user's computer";
+#endif
 
         // ---- the export --------------------------------------------------------------------------------------------
         constexpr int64_t kMaxFolderBytes = int64_t{ 2 } << 30;    // the renders folder at most (refused past it)
@@ -86,10 +95,11 @@ namespace playground
             return b;
         }
 
-        // A file written whole through a temporary beside it, then moved into place (a failed write leaves no part).
-        bool writeFile(const juce::File& target, const std::function<bool(const measure::Sink&)>& body, std::string& why)
+        // A file written whole into a temporary beside where it goes (`temp`); export's placing moves it in (a failed
+        // write leaves no part).
+        bool writeFile(const juce::File& target, juce::TemporaryFile& temp, const std::function<bool(const measure::Sink&)>& body,
+                       std::string& why)
         {
-            juce::TemporaryFile temp(target);
             {
                 std::unique_ptr<juce::FileOutputStream> out = temp.getFile().createOutputStream();
                 if (out == nullptr || !out->openedOk())
@@ -104,11 +114,6 @@ namespace playground
                         + "; is the disk full?)";
                     return false;
                 }
-            }
-            if (!temp.overwriteTargetFileWithTemporary())
-            {
-                why = "could not move " + target.getFileName().toStdString() + " into place";
-                return false;
             }
             return true;
         }
@@ -175,20 +180,58 @@ namespace playground
                     || (!product::kIsInstrument && dir.getChildFile(s + " input.wav").exists());
             };
             std::string stem = base;
-            for (int k = 2; taken(stem); ++k)
+            int k = 2;
+            for (; taken(stem); ++k)
                 stem = base + " " + std::to_string(k);
-            const juce::File wavFile = dir.getChildFile(stem + ".wav"), inFile = dir.getChildFile(stem + " input.wav"),
-                             csvFile = dir.getChildFile(stem + ".csv");
 
+            // Each file written whole into a temporary first, then moved in by a move that refuses a file there
+            // (projectexport::place): another instance exporting the same stem at once never has its files replaced. The
+            // WAV goes first; one there by then (made meanwhile) takes the next number, and a later file's failure names
+            // the files already in place, which stay.
             const bool fl = ask.wav == measure::WavFormat::float32;
+            const juce::File wavName = dir.getChildFile(base + ".wav"), inName = dir.getChildFile(base + " input.wav"),
+                             csvName = dir.getChildFile(base + ".csv");
+            juce::TemporaryFile wavTemp(wavName), inTemp(inName), csvTemp(csvName);
             measure::WavWritten w;
-            if (!writeFile(wavFile, [&](const measure::Sink& sink) { return (w = measure::writeWav(sink, r.l, r.r, rate, ask.wav)).ok; }, why))
+            if (!writeFile(wavName, wavTemp, [&](const measure::Sink& sink) { return (w = measure::writeWav(sink, r.l, r.r, rate, ask.wav)).ok; }, why))
                 return {};
             measure::WavWritten wi;
-            if (input && !writeFile(inFile, [&](const measure::Sink& sink) { return (wi = measure::writeWav(sink, r.inL, r.inR, rate, ask.wav)).ok; }, why))
+            if (input && !writeFile(inName, inTemp, [&](const measure::Sink& sink) { return (wi = measure::writeWav(sink, r.inL, r.inR, rate, ask.wav)).ok; }, why))
                 return {};
             std::size_t csvBytes = 0;
-            if (csv && !writeFile(csvFile, [&](const measure::Sink& sink) { return (csvBytes = measure::writeCsv(sink, r.log, rate)) > 0; }, why))
+            if (csv && !writeFile(csvName, csvTemp, [&](const measure::Sink& sink) { return (csvBytes = measure::writeCsv(sink, r.log, rate)) > 0; }, why))
+                return {};
+            juce::File wavFile, inFile, csvFile;
+            for (int tries = 0;; ++tries, stem = base + " " + std::to_string(k++))
+            {
+                if (taken(stem))
+                    continue;
+                wavFile = dir.getChildFile(stem + ".wav");
+                inFile = dir.getChildFile(stem + " input.wav");
+                csvFile = dir.getChildFile(stem + ".csv");
+                std::string refused;
+                if (projectexport::place(wavTemp.getFile(), wavFile, false, &refused))
+                    break;
+                if (!wavFile.exists() || tries >= 100)
+                {
+                    why = "could not move " + wavFile.getFileName().toStdString() + " into place (" + refused + ")";
+                    return {};
+                }
+            }
+            const auto rest = [&](const juce::File& target, const juce::TemporaryFile& temp, const std::vector<juce::File>& before) {
+                std::string refused;
+                if (projectexport::place(temp.getFile(), target, false, &refused))
+                    return true;
+                std::string kept;
+                for (const juce::File& f : before)
+                    kept += (kept.empty() ? "" : ", ") + f.getFullPathName().toStdString();
+                why = "could not move " + target.getFileName().toStdString() + " into place (" + refused + "); written before it, "
+                      "and kept: " + kept;
+                return false;
+            };
+            if (input && !rest(inFile, inTemp, { wavFile }))
+                return {};
+            if (csv && !rest(csvFile, csvTemp, input ? std::vector<juce::File>{ wavFile, inFile } : std::vector<juce::File>{ wavFile }))
                 return {};
 
             const std::string format = fl ? "float32" : "24-bit PCM";
@@ -199,7 +242,7 @@ namespace playground
             // Pass 1's render cut short (TraceResult::stoppedFirst: the time limit, or its records full); a stop in the
             // calls of 1 sample after it leaves the render whole.
             const std::string part = r.stoppedFirst ? "; up to where trace stopped" : "";
-            std::string out = "Exported on this Mac (the user can open these) to " + dir.getFullPathName().toStdString()
+            std::string out = std::string("Exported on ") + kThisMachine + " (the user can open these) to " + dir.getFullPathName().toStdString()
                             + (stem != base && !ask.name.empty() ? " (\"" + base + "\" was taken, and nothing is replaced)" : "") + ":\n";
             out += "- " + wavFile.getFileName().toStdString() + ": the render, " + secondsText(static_cast<double>(frames) / rate)
                  + " at " + std::to_string(std::llround(rate)) + " Hz, stereo " + format + ", " + sizeText(static_cast<int64_t>(w.bytes))
@@ -295,7 +338,7 @@ namespace playground
                 "then of 1 sample before each problem, and says when the output depends on how the calls are split. detail: "
                 "more of each. Its Render hash line: SHA-256 of the render's float32 samples, L R interleaved (the reports' "
                 "lines, as measure_output's: an instrument's the same render as this one). export (true, or {wav, every, rows, "
-                "name}) writes the render to files on the user's Mac and gives each one's path (one the user can open): a WAV "
+                "name}) writes the render to files on ") + kUsersMachine + juce::String(" and gives each one's path (one the user can open): a WAV "
                 "(wav: float32, the default, whose data hashes to the render hash; or 24, 24-bit PCM, clipped at full scale), "
                 "an effect's input beside it, and with fields a CSV of them (time_s, sample, a column a field, as voice "
                 "chooses; a row every `every` samples, a multiple of 16, default about 1 ms), up to 300 s of render; then the "
@@ -377,7 +420,7 @@ namespace playground
         }
         else if (source == "playing")
         {
-            files = host_.chatPlaying(samples);
+            files = host_.chatPlaying(samples, &q.pins);   // as its netlists play
             playing = true;
             words = "the program that plays (its own code; once its dials hold still the plugin plays a frozen copy whose "
                     "last bits differ, which this does not render)";
@@ -412,7 +455,7 @@ namespace playground
                 words = "the user's recording, replayed through the program that played it (" + recording.about + ")";
                 if (files.empty())
                 {
-                    files = host_.chatPlaying(samples);
+                    files = host_.chatPlaying(samples, &q.pins);   // as its netlists play
                     playing = true;
                     words = "the user's recording, replayed through the program that plays now (the one that played it is "
                             "no longer known; " + recording.about + ")";

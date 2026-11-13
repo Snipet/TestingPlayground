@@ -7,7 +7,8 @@
 // steps against a budget the caller gives, and stops with `spent` when it runs out, so a search across every file has
 // a bound in time too (the MCP link runs its calls on one worker). Compiling has one as well: a repetition of what
 // matches the empty string alone writes nothing, and a pattern whose repetitions written out make more than kMaxProgram
-// instructions, or take more than a few calls an instruction to write ((?:()()()a){1000}), is refused as too large.
+// instructions, or take more than about 4 x kMaxProgram calls in all to write ((?:(?:()()()()a){1000}){4}: 4,001
+// instructions, but its empty groups' calls past that), is refused as too large.
 //
 // The syntax: literals; . (any character but '\n', with s any); [abc], [^a-z], [[:alpha:]] (alnum, alpha, ascii, blank,
 // cntrl, digit, graph, lower, print, punct, space, upper, word, xdigit; [:^alpha:] its complement); \d \D \w \W \s \S;

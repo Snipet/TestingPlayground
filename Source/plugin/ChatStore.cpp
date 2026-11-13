@@ -542,6 +542,15 @@ namespace playground::chatstore
             seen[itemKey(item)] = { kept, std::chrono::steady_clock::now() };
         }
 
+        // What the store said of `item` last here (a save it took, a look, a removal), however long ago: none when it
+        // said nothing yet.
+        std::optional<bool> lastSaid(const secrets::Item& item)
+        {
+            const std::lock_guard<std::mutex> lock(storeMutex);
+            const auto it = seen.find(itemKey(item));
+            return it != seen.end() ? std::optional<bool>(it->second.kept) : std::nullopt;
+        }
+
         // The store keys go to, when it can be asked now: a probe's; else none while the folder is a test's or a
         // probe's sandbox (a test never reaches the user's keyring); else the desktop's (SecretStore.h: Linux).
         secrets::Store* usableStore()
@@ -651,18 +660,23 @@ namespace playground::chatstore
 
         // Both places emptied: the store's item and the file, each whatever the other did. False, with why, when either
         // still holds the key: the store's is looked for again after clear() (a keyring the user left locked keeps it,
-        // and its clear says nothing: SecretStore.h).
+        // and its clear says nothing: SecretStore.h). A store that can be asked nothing (a session bus with no Secret
+        // Service behind it) and whose clear failed is taken to hold the key only when it said so last here, or, having
+        // said nothing, when there is no file (the key could only have come from it): one that never held it (every
+        // save fell back to the file) fails no removal.
         bool dropKey(const secrets::Item& item, const juce::File& file, std::string* why)
         {
             std::string problem;
+            const bool hadFile = file.existsAsFile();
             if (secrets::Store* store = usableStore())
             {
                 std::string w;
                 const bool cleared = store->clear(item, &w);
                 const int has = store->has(item, nullptr);
-                const bool left = has == 1 || (has < 0 && !cleared);   // not asked again either: as it was, kept
+                const std::optional<bool> said = lastSaid(item);
+                const bool left = has == 1 || (has < 0 && !cleared && (said ? *said : !hadFile));
                 remember(item, left);
-                if (!cleared)
+                if (left && !cleared)
                     problem = store->name() + ": " + (w.empty() ? std::string("it failed") : w);
                 else if (left)
                     problem = store->name() + " still holds it (it is locked: remove the key again, and unlock it when it asks)";

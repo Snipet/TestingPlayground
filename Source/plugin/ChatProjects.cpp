@@ -36,10 +36,11 @@ namespace playground
                 "list); one of that name is replaced only with replace: true, and the result gives its old values. "
                 "apply_preset applies a preset of the project open (its dials glide there); open opens a project's newest "
                 "version, or Name@N's (@N alone: the open one's): its files go into the editor (one step the user can "
-                "undo there) and play, and its dials follow once it compiles. Both refuse while the editor holds unsaved "
-                "changes (files, samples or dials changed since they were opened or saved) unless discard: true, only when "
-                "the user said to drop them. A save only adds; nothing is deleted (that is the user's alone, in PROJECTS). Each "
-                "save shows in the plugin and in the change notices." },
+                "undo there) and play, and its dials follow once it compiles. open refuses while the editor holds unsaved "
+                "changes (files, samples or dials changed since they were opened or saved), apply_preset while dials moved "
+                "so (the files stay), unless discard: true, only when the user said to drop them. A save only adds (a "
+                "project keeps its newest 100 versions: the result says when the oldest went); deleting is the user's "
+                "alone, in PROJECTS. Each save shows in the plugin and in the change notices." },
               { "eager_input_streaming", true },
               { "input_schema", claude::object({ { "type", "object" }, { "properties", props } }) } });
     }
@@ -100,8 +101,18 @@ namespace playground
             if (!r.entry.empty())
                 addEntry(ChatEntry::Kind::tool, r.entry);
             // Another project opened: the checks were the program's before it, so they go, as at a fresh start
-            // (Processor::startAfresh), and nothing measures the project the user asked for against them.
-            if (const std::size_t n = checks_.size(); r.ok && r.another && n > 0)
+            // (Processor::startAfresh), and nothing measures the project the user asked for against them. Claude
+            // Desktop's open leaves the chat shown (its checks with it) to the project before, as the user's own open
+            // does: the project's own chat shows at the call's end (pendingOwner_), with its own checks.
+            if (const std::size_t n = checks_.size(); r.ok && r.another && n > 0 && pendingOwner_.set)
+            {
+                text += n == 1 ? "\nThe check you set stays with the chat of the project before it, in the plugin; the "
+                                 "chat shown now is this project's own, with its own checks (set_checks lists them)."
+                               : "\nThe " + std::to_string(n) + " checks you set stay with the chat of the project before it, "
+                                 "in the plugin; the chat shown now is this project's own, with its own checks (set_checks "
+                                 "lists them).";
+            }
+            else if (r.ok && r.another && n > 0)
             {
                 checks_.clear();
                 checksFailing_ = false;
