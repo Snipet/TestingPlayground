@@ -342,12 +342,14 @@ PROBE(gui, git)
         paperHost.settle();
         writePng(P, paperHost, "gui.git.linked.paper.png");
         paper.gitCard().press(GC::Button::close);
-        paper.openGit("Git Pad 2");                      // no such project: not linked
-        paper.openGit(project);
+        paper.openGit("Git Pad 2");                      // no such project: the card not linked
         paperHost.settle();
+        P.eq("paper.not_linked_open", paper.gitCard().isOpen() && !paper.gitCard().link().linked ? 1 : 0, 1);
         writePng(P, paperHost, "gui.git.not_linked.paper.png");
+        paper.gitCard().press(GC::Button::close);
         paper.openGit("");
         paperHost.settle();
+        P.eq("paper.add_open", paper.gitCard().isOpen() && paper.gitCard().mode() == GC::Mode::add ? 1 : 0, 1);
         writePng(P, paperHost, "gui.git.add.paper.png");
         paper.gitCard().press(GC::Button::close);
         paper.openProjects();
