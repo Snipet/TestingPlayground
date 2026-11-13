@@ -2,7 +2,7 @@
 #include "sandbox/Sandbox.h"
 
 #include "sandbox/SandboxProtocol.h"
-#include "sandbox/View.h"
+#include "editor/PanelView.h"
 
 #include "editor/GuiLayout.h"
 #include "editor/Items.h"

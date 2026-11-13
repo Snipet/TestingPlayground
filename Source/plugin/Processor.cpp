@@ -408,7 +408,8 @@ namespace playground
         // defaults.
         draft_.files = singleFile(kExamples[0].source);
         projectFiles_ = draft_.files;                            // nothing to lose yet: no project's open asks first
-        compiler_.setShaderTools(shaderTools(wrapperType == wrapperType_Standalone));
+        previewTools_ = shaderTools(wrapperType == wrapperType_Standalone);   // the previews' too (package 04)
+        compiler_.setShaderTools(previewTools_);
         compiler_.setDialCarrier([this](const Controls& controls, const PanelSpec& panel) { return carryFor(controls, panel); });
         capture_.setOwnCode([this](bool on) { engine_.setOwnCode(on); });
         const CompileStatus s = compiler_.compileNow(draft_.files);
@@ -526,6 +527,7 @@ namespace playground
     {
         finishExport();                                          // an export in flight cancelled, its thread joined
         finishGit();                                             // a git job in flight cancelled (its git killed), joined
+        finishPreviews();                                        // the previews' thread stopped and joined
         finishSave();                                            // a save in flight writes its file, then goes
         mcp_.reset();                                            // no call comes in while the rest goes
         stopTimer();
@@ -1409,10 +1411,12 @@ namespace playground
 
     void Processor::poll()
     {
+        bool pictureDrawn = false;                               // Claude's comes first: no preview drawn this poll
         {
             std::unique_lock<std::mutex> lock(pictureMutex_);
             if (pictureAsked_)
             {
+                pictureDrawn = true;
                 pictureAsked_ = false;
                 const PictureView view = pictureView_;
                 const std::string page = picturePage_;
@@ -1429,6 +1433,7 @@ namespace playground
                 pictureDone_.notify_all();
             }
         }
+        pollPreviews(pictureDrawn);                              // a Projects card's preview, one a poll (package 04)
         picturesIdle();                                          // the pictures' GPU context, let go when idle
         pollSave();                                              // the editor's save, its file written: it lands
         pollExport();                                            // an export that ended: its thread joined

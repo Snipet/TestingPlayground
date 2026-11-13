@@ -896,6 +896,11 @@ namespace playground::ui
         int attachItem_ = -1;
         void syncPictures();                             // the registry follows chat_ (the attached and the sent)
         void releasePictures();
+        // Package 04: the Projects card's preview, registered as the chat's pictures are (counted), while the card shows
+        // it and kPictureHoldSeconds after it closes (reopened, the same picture shows at once).
+        uint32_t previewPicture_ = 0;
+        double previewClosedAt_ = -1.0;
+        void syncPreview(double nowSec);
         void openPictures();                             // the attach button's file chooser
         void openSamples();                              // the ASSETS header's: audio files as samples
         void addSamples(const std::vector<std::string>& paths);
