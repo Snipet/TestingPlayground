@@ -6,6 +6,8 @@
 #include "plugin/ChatStore.h"
 #include "plugin/Providers.h"
 
+#include "fminus/Failure.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -174,7 +176,26 @@ namespace playground
         // Its list, for the picker, off the message thread: a flag of its own ends it (a Stop, the agent's end), never a
         // turn's stop left over from before.
         listCancel_.store(false);
-        queueJob([this] { fetchOtherModels(listCancel_); });
+        queueJob([this] {
+            try
+            {
+                fetchOtherModels(listCancel_);
+            }
+            catch (...)
+            {
+                // Why, as a list that could not be read (fminus/Failure.h): asked again next turn.
+                try
+                {
+                    std::string failed = failure::sentence("reading the models' list");
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    otherFetched_ = false;
+                    otherListError_ = std::move(failed);
+                }
+                catch (...)
+                {
+                }
+            }
+        });
         return true;
     }
 

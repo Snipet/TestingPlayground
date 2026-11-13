@@ -527,7 +527,8 @@ namespace playground
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
 
-        void runTurn();                                             // the worker
+        void runTurn();                                             // the worker: turn(), an exception ended in words
+        void turn();
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                         int& status, std::string& error, int& retryAfter);
         juce::var buildRequest(std::string& beta) const;
@@ -578,6 +579,8 @@ namespace playground
         static std::pair<std::string, std::string> effortKey(const ChatProvider& p, const std::string& model);
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block; its rows failed if an error
+        juce::var thrownResult(const juce::var& toolUse);          // inside a catch: the tool's error result, in words
+        McpResult mcpCallOnce(const std::string& name, const juce::var& arguments, uint64_t call);   // mcpCall's work
         juce::var toolResult(const juce::var& toolUse);            // runTool's work
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)

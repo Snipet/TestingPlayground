@@ -11,6 +11,7 @@
 #include "plugin/ChatImages.h"
 
 #include "editor/Preview.h"
+#include "fminus/Failure.h"
 
 #include "Product.h"
 
@@ -120,33 +121,66 @@ namespace playground
             for (auto it = previews_.begin(); it != previews_.end(); ++it)
                 if (it->queued && (job == previews_.end() || it->used > job->used))
                     job = it;
-            const std::shared_ptr<const preview::Request> request = job->request;
-            const std::string project = job->project;
-            const int number = job->state.number, theme = job->theme;
-            const uint64_t content = job->content;
-            job->queued = false;
-            lock.unlock();
-            // A text the readers choke on costs this preview, never the process (this thread's).
+            // An exception (of any kind: fminus/Failure.h) costs this preview, never the process (this thread's): it
+            // fails in words, or, should even those fail (out of memory), with none, never left waiting; the next is
+            // answered as any.
+            std::shared_ptr<const preview::Request> request;
+            std::string project;
+            int number = 0, theme = 0;
+            uint64_t content = 0;
             std::shared_ptr<const preview::Prepared> prepared;
             try
             {
-                prepared = std::make_shared<const preview::Prepared>(preview::prepare(*request, previewTools_));
+                request = job->request;
+                project = job->project;
+                number = job->state.number;
+                theme = job->theme;
+                content = job->content;
+                job->queued = false;
+                lock.unlock();
+                try
+                {
+                    failure::at("preview");
+                    prepared = std::make_shared<const preview::Prepared>(preview::prepare(*request, previewTools_));
+                }
+                catch (...)
+                {
+                    try
+                    {
+                        auto failed = std::make_shared<preview::Prepared>();
+                        failed->why = failure::sentence("preparing it");
+                        prepared = std::move(failed);
+                    }
+                    catch (...)
+                    {
+                        prepared.reset();                  // failed with no words (below)
+                    }
+                }
+                lock.lock();
             }
-            catch (const std::exception&)
+            catch (...)
             {
-                auto failed = std::make_shared<preview::Prepared>();
-                failed->why = "its files could not be read";
-                prepared = std::move(failed);
+                // Copying the job failed (out of memory), the lock held throughout: that entry fails with no words.
+                job->queued = false;
+                job->request.reset();
+                job->state.status = PreviewState::Status::failed;
+                continue;
             }
-            lock.lock();
             for (PreviewEntry& e : previews_)
                 if (e.project == project && e.state.number == number && e.theme == theme && e.content == content)
                 {
                     e.request.reset();
-                    if (!prepared->ok)
+                    if (!prepared || !prepared->ok)
                     {
                         e.state.status = PreviewState::Status::failed;
-                        e.state.why = prepared->why;
+                        try
+                        {
+                            e.state.why = prepared ? prepared->why : std::string();
+                        }
+                        catch (...)
+                        {
+                            e.state.why.clear();
+                        }
                     }
                     else
                         e.prepared = prepared;

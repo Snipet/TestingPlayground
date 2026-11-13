@@ -10,6 +10,7 @@
 #include "dsp/Sources.h"
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+#include "fminus/Failure.h"
 #include "fminus/Xdg.h"
 #endif
 
@@ -1172,23 +1173,43 @@ namespace playground::factorystore
                     a = answer;
                     busy = true;
                 }
-                if (doAnswer)
+                // An exception (fminus/Failure.h) fails this pass in words, as a refusal does (the reason, its step
+                // none), the set as it was: never the process.
+                try
                 {
-                    const std::string word = answerWord(a);
-                    (void)writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
-                    const std::lock_guard<std::mutex> lock(m);
-                    if (answer == a)
-                        answerDirty = false;
+                    failure::at("factory");
+                    if (doAnswer)
+                    {
+                        const std::string word = answerWord(a);
+                        (void)writeFile(answerFile, word.empty() ? std::string("{}\n") : "{\"answer\":\"" + word + "\"}\n");
+                        const std::lock_guard<std::mutex> lock(m);
+                        if (answer == a)
+                            answerDirty = false;
+                    }
+                    bool loaded = false;
+                    {
+                        const std::lock_guard<std::mutex> lock(m);
+                        loaded = state.loaded;
+                    }
+                    if (doLoad || (doFetch && !loaded))
+                        load();
+                    if (doFetch && !cancel.load())
+                        considerFetch(doForce);
                 }
-                bool loaded = false;
+                catch (...)
                 {
+                    Refusal r;
+                    try
+                    {
+                        r.reason = failure::sentence("reading the factory projects");
+                    }
+                    catch (...)
+                    {
+                    }
+                    fail(Failure::check, r);
                     const std::lock_guard<std::mutex> lock(m);
-                    loaded = state.loaded;
+                    state.fetching = false;
                 }
-                if (doLoad || (doFetch && !loaded))
-                    load();
-                if (doFetch && !cancel.load())
-                    considerFetch(doForce);
                 const std::lock_guard<std::mutex> lock(m);
                 busy = false;
                 cancel.store(false);

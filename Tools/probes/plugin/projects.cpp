@@ -75,7 +75,8 @@
 //            asks the Reader again for the first); a file another rewrote is read again; a factory project's at once;
 //            the editor's own content (editorContent) its draft, its dials, with no read
 //   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
-//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread
+//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread;
+//            one whose preparing throws (fminus/Failure.h's seam) fails in words, and the next is answered
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -98,6 +99,7 @@
 
 #include "dsp/Compiler.h"
 #include "fminus/Circuits.h"
+#include "fminus/Failure.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -1135,6 +1137,30 @@ PROBE(plugin, projects)
             P.eq("preview.answered", then.status != pg::PreviewState::Status::reading
                                          && (last.status == pg::PreviewState::Status::ready || last.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
             P.eq("preview.none_here", there(), 0);
+            // A preview whose preparing throws (fminus/Failure.h's seam) fails in words, never left waiting; the next is
+            // answered.
+            const auto settled = [&](int number, int theme) {
+                pg::PreviewState got = pd.previewPolled("Diffs", number, theme);
+                for (int k = 0; k < 2000 && got.status == pg::PreviewState::Status::reading; ++k)
+                {
+                    (void)waitReader();
+                    (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+                    got = pd.previewPolled("Diffs", number, theme);
+                }
+                (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+                return pd.previewPolled("Diffs", number, theme);
+            };
+            pg::failure::plant("preview", pg::failure::Kind::other);
+            const pg::PreviewState thrown = settled(2, 1);
+            const int fired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::PreviewState next = settled(1, 1);
+            std::printf("preview thrown: fired %d, status %d, why: %s; the next: status %d\n", fired, static_cast<int>(thrown.status),
+                        thrown.why.c_str(), static_cast<int>(next.status));
+            P.eq("preview.thrown_fails", fired == 1 && thrown.status == pg::PreviewState::Status::failed
+                                             && thrown.why == "the plugin itself failed while preparing it: an unknown error; this is "
+                                                              "not a fault in your program" ? 1 : 0, 1);
+            P.eq("preview.thrown_next", next.status == last.status ? 1 : 0, 1);
         }
         P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }

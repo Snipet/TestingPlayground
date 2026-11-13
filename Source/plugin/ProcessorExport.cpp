@@ -5,6 +5,8 @@
 
 #include "plugin/ProjectExport.h"
 
+#include "fminus/Failure.h"
+
 #include <juce_core/juce_core.h>
 
 namespace playground
@@ -73,7 +75,26 @@ namespace playground
             exportState_.path = path;
         }
         exportCancel_.store(false);
-        exporter_ = std::thread([this, job = std::move(taken)] { runExport(job); });
+        exporter_ = std::thread([this, job = std::move(taken)] {
+            // An exception (fminus/Failure.h) fails the export in words, as its own refusals do: never the process.
+            try
+            {
+                failure::at("export");
+                runExport(job);
+            }
+            catch (...)
+            {
+                std::string failed;
+                try
+                {
+                    failed = failure::sentence("exporting");
+                }
+                catch (...)
+                {
+                }
+                endExport(false, {}, failed, false);
+            }
+        });
         return true;
     }
 
