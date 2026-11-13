@@ -162,6 +162,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -378,6 +379,17 @@ namespace playground
         bool openChat(const std::string& id) override;
         void renameChat(const std::string& title) override;
         void deleteChat() override;
+        std::shared_ptr<const UsageView> usage(usage::Range range) override;
+        void resetUsage() override;
+        // Probes only: how long a view of usage() stands before it is read again with nothing else moved (another
+        // process's write: kUsageRereadSeconds by default).
+        void setUsageRereadSecondsForTests(double seconds);
+        // Probes only: a read of usage() held before it reads (a read in flight, as long as the probe likes; the agent
+        // going lets it go), and how many reads have run.
+        void holdUsageReadsForTests(bool hold);
+        uint64_t usageReadsForTests() const;
+        int usageReadsHeldForTests() const;         // reads waiting at the hold now (0 or 1: the job thread is serial)
+        static constexpr double kUsageRereadSeconds = 3.0;
 
         // The conversation (the API's messages and the view's entries, as JSON), and back. A turn that is running is not
         // saved half-done: its user message and what came back so far are. The panel's pictures (view_panel's,
@@ -527,7 +539,8 @@ namespace playground
     private:
         static claude::Headers headersFor(const std::string& key);  // the key and the API version
 
-        void runTurn();                                             // the worker
+        void runTurn();                                             // the worker: turn(), an exception ended in words
+        void turn();
         bool streamOnce(const std::string& body, const std::string& beta, claude::MessageBuilder& builder,
                         int& status, std::string& error, int& retryAfter);
         juce::var buildRequest(std::string& beta) const;
@@ -545,6 +558,14 @@ namespace playground
         // ", $0.12" (or ", ~$0.12", an estimate) for the footer while every request this turn has a cost; "" else.
         // Under mutex_.
         std::string turnCostText() const;
+        // The Usage page's reads and its reset (ChatPort::usage, resetUsage), on the job thread: a snapshot of the
+        // range priced and published as the view when it differs from the one held; a reset owed (usage::resetOwed:
+        // confirmed, its cut made) run, by a read before it lets go too, and the destructor runs one the job thread
+        // never reached before its last flush; then the view read again for the range last asked. Under usageMutex_
+        // only while the view and the flags change, never across the file's I/O.
+        void readUsage(usage::Range range);
+        void runUsageReset();
+        void publishUsage(UsageView view);          // usageMutex_ held
         // Another provider: the key of `p`'s server ("" for none), read with mutex_ released (the keyring may ask the
         // user to unlock it, and wait: never under the lock the editor's chatState() takes) and kept as otherKey_ while
         // `p` is the provider chosen and no key was saved or removed meanwhile (keyGeneration_); whether one is kept for
@@ -578,6 +599,8 @@ namespace playground
         static std::pair<std::string, std::string> effortKey(const ChatProvider& p, const std::string& model);
         std::string contextBlock();                                 // the plugin's state, when it changed
         juce::var runTool(const juce::var& toolUse);               // a tool_result block; its rows failed if an error
+        juce::var thrownResult(const juce::var& toolUse);          // inside a catch: the tool's error result, in words
+        McpResult mcpCallOnce(const std::string& name, const juce::var& arguments, uint64_t call);   // mcpCall's work
         juce::var toolResult(const juce::var& toolUse);            // runTool's work
         juce::var compareTool(const juce::var& toolUse);           // compare's (ChatCompare.cpp)
         juce::var traceTool(const juce::var& toolUse);             // trace's (ChatTrace.cpp)
@@ -865,5 +888,17 @@ namespace playground
         bool jobRunning_ = false;                                   // a job is running
         bool jobStop_ = false;
         std::thread jobThread_;
+        // The Usage page's view (usage(), above): under usageMutex_ (the editor's, the job thread's; never mutex_).
+        mutable std::mutex usageMutex_;
+        std::shared_ptr<const UsageView> usageView_ = std::make_shared<const UsageView>();
+        bool usageReading_ = false;                                 // a read is queued or running
+        usage::Range usageAsked_ = usage::Range::week;              // the range last asked for
+        uint64_t usageReadRevision_ = 0;                            // usage::revision() when the last read began
+        std::chrono::steady_clock::time_point usageReadAt_{};       // when the last read ended
+        double usageReread_ = kUsageRereadSeconds;
+        std::condition_variable usageCv_;                           // holdUsageReadsForTests
+        bool usageHold_ = false, usageStopping_ = false;
+        int usageHeld_ = 0;                                         // reads waiting at the hold
+        uint64_t usageReads_ = 0;
     };
 }

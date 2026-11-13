@@ -31,6 +31,16 @@
 // While it is open it takes every pointer event and key, and the rest of the panel is dimmed. Its selects are
 // dropdowns (Dropdown.h): a field's trigger, open while their menu is (setMenuOpen: the Panel's menuOpenAt), their menu
 // a radio set as wide as the select, the current choice highlighted when it opens.
+//
+// A page that draws (the Usage page's chart): its build may set the Places' hooks (PageHooks, all optional, none on
+// every other page). A control it marks `custom` is drawn by the page's draw hook, not by the card, which still
+// focuses it, hits it, tabs to it and makes its accessibility item; a pointer's press on it hands the page that
+// press's own point (Control::press: none for a key's or a screen reader's press). The keys the card does not use (all
+// but Escape, Tab, Up, Down, Return and Space) go to the page's key hook while a custom control has the focus; its
+// a11y hook adds items under that control's. The page's draw hook draws in the body's clip, after the card's controls.
+// What a page keeps for its view lives in pageState(its id) while the card lives. The card's draw notes the pointer it
+// drew with (pointerMoves(), lastPointer(): view state written by a const draw, which the Panel's draw key covers, as
+// it holds the pointer), so a page can tell a pointer that moved since a key's choice from one at rest.
 #pragma once
 
 #include "editor/ChatStyle.h"
@@ -46,6 +56,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -54,6 +66,11 @@
 
 namespace playground::ui
 {
+    namespace settings
+    {
+        struct Context;
+    }
+
     class SettingsCard
     {
     public:
@@ -75,6 +92,8 @@ namespace playground::ui
             bool on = false;                     // a switch's state; a rail's entry: its page shows
             bool enabled = true;
             chat::Icon icon = chat::Icon::none;  // a button's icon before its label (Test's play)
+            bool custom = false;                 // drawn by its page (PageHooks::draw), not by the card
+            std::optional<funkgui::Point> press; // a pointer's press on it: where (handed to its page's act)
             uint32_t id = 0;                     // its accessibility id
         };
 
@@ -87,6 +106,28 @@ namespace playground::ui
             funkgui::Rect r;                     // drawn from r.x, centred on r's middle, fitted to r.w
         };
 
+        struct Places;
+
+        // What a page that draws gives the card (above): each optional.
+        struct Drawing
+        {
+            funkgui::Canvas& c;
+            const funkgui::Theme& th;
+            const Places& at;
+            funkgui::Point pointer;
+            bool hasPointer = false;
+            int focus = -1;                      // the control whose focus ring shows (its index in at.controls), -1 none
+        };
+        struct PageHooks
+        {
+            void (*draw)(const Drawing&, settings::Context&) = nullptr;
+            // A key the card does not use, while `c` (custom) has the focus: true when the page used it.
+            bool (*key)(const Control& c, const funkgui::KeyEvent&, settings::Context&) = nullptr;
+            // Items under `c`'s own (parent: c.id), their ids from `firstId` on.
+            void (*a11y)(const Control& c, const Places& at, std::vector<funkgui::A11yItem>& out, uint32_t firstId,
+                         settings::Context&) = nullptr;
+        };
+
         struct Places
         {
             funkgui::Rect box;                   // the card
@@ -96,6 +137,7 @@ namespace playground::ui
             float contentH = 0.0f, scroll = 0.0f, maxScroll = 0.0f;
             std::vector<Control> controls;       // in the Tab order: the rail's pages, the page's, Done last
             std::vector<Line> lines;             // the page's
+            PageHooks hooks;                     // the page's, when it draws (none: the card draws it all)
         };
 
         // What the card reads from the Panel: the chat's provider as the Panel holds it (the AI page: never the chat's
@@ -170,6 +212,11 @@ namespace playground::ui
         void changed();
         bool menuOpenAt(const funkgui::Rect& r) const { return menuOpen_ && menuOpen_(r); }
         EditorPort& port() noexcept { return port_; }
+        // What a page keeps for its view (its choices, what the keys chose) while the card lives: the page's own type.
+        std::shared_ptr<void>& pageState(std::string_view id) { return pageStates_[std::string(id)]; }
+        // The pointer the card last drew with, and how many times it has moved between its draws.
+        uint64_t pointerMoves() const noexcept { return pointerMoves_; }
+        std::optional<funkgui::Point> lastPointer() const { return drawnHas_ ? std::optional<funkgui::Point>(drawnPointer_) : std::nullopt; }
 
     private:
         struct Key
@@ -203,5 +250,10 @@ namespace playground::ui
         bool viewer_ = false;
         std::vector<DebugSection> debug_;
         double debugAt_ = -1.0;                  // the host's clock at the last read (-1: read, the clock not taken)
+        std::map<std::string, std::shared_ptr<void>> pageStates_;
+        // Written by draw() (const): the pointer it drew with, and a count of its moves (above).
+        mutable funkgui::Point drawnPointer_{};
+        mutable bool drawnHas_ = false;
+        mutable uint64_t pointerMoves_ = 0;
     };
 }

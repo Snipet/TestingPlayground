@@ -5,6 +5,8 @@
 // version a pull saved when its project is open with no change.
 #include "plugin/Processor.h"
 
+#include "fminus/Failure.h"
+
 #include "plugin/GitProjects.h"
 #include "plugin/ProjectStore.h"
 
@@ -12,6 +14,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <exception>
 
@@ -155,6 +158,7 @@ namespace playground
         std::pair<std::string, int> open;
         try
         {
+            failure::at("git");
             const git::Found found = git::find(projectstore::gitPath());
             ended.looked = true;
             ended.gitPath = found.path;
@@ -231,15 +235,31 @@ namespace playground
             if ((job.op == GitOp::pull || job.op == GitOp::takeTheirs) && o.ok && o.version > 0)
                 open = { job.project, o.version };
         }
-        catch (const std::exception& e)
-        {
-            ended.ok = false;
-            ended.words = std::string("Git's job failed: ") + e.what();
-        }
         catch (...)
         {
-            ended.ok = false;
-            ended.words = "Git's job failed.";
+            // fminus/Failure.h's words, as every thread of the plugin says a failure; the card shows a sentence.
+            ended = GitState{};
+            open = {};
+            try
+            {
+                std::string words = failure::sentence(job.op == GitOp::find       ? "looking for git"
+                                                      : job.op == GitOp::connect    ? "linking the project to git"
+                                                      : job.op == GitOp::push       ? "pushing the project"
+                                                      : job.op == GitOp::pull       ? "pulling the project"
+                                                      : job.op == GitOp::check      ? "checking the remote"
+                                                      : job.op == GitOp::add        ? "adding a project from git"
+                                                      : job.op == GitOp::keepMine   ? "keeping your side"
+                                                      : job.op == GitOp::takeTheirs ? "taking their side"
+                                                      : job.op == GitOp::theirs     ? "reading their side"
+                                                                                    : "running git");
+                if (!words.empty())
+                    words[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(words[0])));
+                ended.words = words + ".";
+            }
+            catch (...)
+            {
+                ended.words.clear();
+            }
         }
         {
             const std::lock_guard<std::mutex> lock(gitMutex_);

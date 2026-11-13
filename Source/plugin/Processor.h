@@ -201,11 +201,17 @@ namespace playground
         static constexpr std::size_t kPreviewsKept = 12;
         uint64_t previewsDrawn() const noexcept { return previewsDrawn_.load(); }
         std::size_t previewsKept() const;
-        bool previewsWaiting() const;
-        std::size_t previewsQueued() const;                      // waiting for previewThread_
+        bool previewsWaiting() const;                            // one queued, being prepared, or prepared and not drawn
+        std::size_t previewsQueued() const;                      // not prepared yet: queued, or being prepared
         std::size_t previewsToDraw() const;                      // prepared, waiting for poll()
         bool pictureWaiting() const;                             // a picture for Claude asked for, not drawn yet
         bool previewsSettle(double seconds = 60.0);
+#if defined(FP_PROBES)
+        // Probes only: shut, previewThread_ waits once it has taken a job and before it prepares it (so that a job in
+        // flight can be looked at); previewGateHeld() says it waits there now.
+        void setPreviewGate(bool shut);
+        bool previewGateHeld() const;
+#endif
         // For the probes: the editor's save in flight (startSave) waits before the store's work while shut, so that what
         // shows meanwhile can be checked; open, it goes on (poll() lands it). saveWritten: the last one started has done
         // its store's work (the next poll() lands it), so a probe can time the landing alone.
@@ -846,6 +852,8 @@ namespace playground
             PreviewState state;
             std::shared_ptr<const preview::Prepared> prepared;   // set by previewThread_; drawn by poll()
             bool queued = false;                                 // waits for previewThread_
+            bool inFlight = false;                               // taken by previewThread_, not landed yet: never
+                                                                 // erased (the cap, the hold), and where it lands
             uint64_t used = 0;                                   // previewUse_ when last asked for
             std::shared_ptr<const preview::Request> request;     // until prepared
         };
@@ -861,6 +869,10 @@ namespace playground
         std::thread previewThread_;                              // started by the first preview asked for
         ShaderTools previewTools_;                               // the Compiler's (the constructor's)
         std::atomic<uint64_t> previewsDrawn_{ 0 };
+#if defined(FP_PROBES)
+        bool previewGateShut_ = false;                           // previewMutex_ (setPreviewGate)
+        bool previewGateHeld_ = false;                           // previewMutex_
+#endif
 
         uint64_t seen_ = 0;                                      // the compiler's revision poll() last applied
         uint64_t journaled_ = 0;                                 // the editor's RUN poll() last journalled

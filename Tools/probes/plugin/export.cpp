@@ -16,6 +16,8 @@
 //   REFUSE   a package of the other kind (the why names it), one with a byte changed (its check), one cut short, a file
 //            that is no export, a zip with no project.json, and (but on macOS) one in xz, the why naming it: refused,
 //            nothing added
+//   THROWN   an export that throws with its temporary written (fminus/Failure.h's seam), one project and a bundle:
+//            fails in words, the folder holding nothing new, and the next export is taken
 //   BUNDLE   several projects as one bundle (startExport, off the message thread): held before its store's work
 //            (setExportGate), the export says it is in flight and no project's file is read on the message thread
 //            (parses() still across startExport and exporting()); once let go it writes a .zip of stored entries:
@@ -32,6 +34,7 @@
 //            cancels it and waits for it, no file left
 #include "Probe.h"
 
+#include "fminus/Failure.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectExport.h"
 #include "plugin/ProjectStore.h"
@@ -507,6 +510,30 @@ PROBE(plugin, export)
             P.eq("cancel.ended", waitExport(a) ? 1 : 0, 1);
             const pg::ExportState st = pa.exporting();
             P.eq("cancel.no_file", !st.ok && st.cancelled && !cancelled.exists() && temps() == 0 ? 1 : 0, 1);
+        }
+        // An exception with the temporary written (fminus/Failure.h's seam): the export fails in words, the folder
+        // holds nothing new (no file, no temporary), and the next export is taken as any (one project, then a bundle).
+        for (const bool single : { true, false })
+        {
+            const juce::File target = out.getChildFile(single ? "Thrown.fmpack" : "Thrown.zip");
+            const int filesBefore = out.getNumberOfChildFiles(juce::File::findFiles | juce::File::ignoreHiddenFiles);
+            pg::failure::plant("export", pg::failure::Kind::badAlloc);
+            const std::vector<std::string> which = single ? std::vector<std::string>{ "Glass Bloom" } : names;
+            const bool go = pa.startExport(which, true, true, target.getFullPathName().toStdString(), why);
+            const bool ended = waitExport(a);
+            const int fired = pg::failure::fired();
+            pg::failure::unplant();
+            const pg::ExportState st = pa.exporting();
+            std::printf("thrown (%s): fired %d, %s\n", single ? "one" : "bundle", fired, st.why.c_str());
+            P.eq(single ? "thrown.single_in_words" : "thrown.bundle_in_words",
+                 go && ended && fired == 1 && !st.ok && !st.cancelled
+                     && st.why == "the plugin itself failed while exporting: out of memory; this is not a fault in your program" ? 1 : 0, 1);
+            P.eq(single ? "thrown.single_nothing_left" : "thrown.bundle_nothing_left",
+                 !target.exists() && temps() == 0
+                     && out.getNumberOfChildFiles(juce::File::findFiles | juce::File::ignoreHiddenFiles) == filesBefore ? 1 : 0, 1);
+            const bool again = pa.startExport(which, true, true, target.getFullPathName().toStdString(), why) && waitExport(a);
+            P.eq(single ? "thrown.single_next" : "thrown.bundle_next", again && pa.exporting().ok && target.existsAsFile() ? 1 : 0, 1);
+            target.deleteFile();
         }
         // A file made at the target meanwhile: never replaced (a bundle, then one project).
         for (const bool single : { false, true })

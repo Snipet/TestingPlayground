@@ -4,6 +4,8 @@
 #include "Product.h"
 #include "plugin/EditorPort.h"
 
+#include "fminus/Failure.h"
+
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
@@ -95,6 +97,7 @@ namespace playground::projectexport
                 }
                 out.flush();
             }
+            failure::at("export");                           // (probes: a throw with the temporary written)
             if (!place(temp, to, replace, why))
             {
                 temp.deleteFile();
@@ -783,6 +786,7 @@ namespace playground::projectexport
         }
         if (out.cancelled)
             fail(why, "cancelled");
+        failure::at("export");                               // (probes: a throw with the temporary written)
         if (!ok || !place(temp, to, replace, why))
         {
             temp.deleteFile();

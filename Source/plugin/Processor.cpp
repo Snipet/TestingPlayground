@@ -13,6 +13,7 @@
 #include "Product.h"
 
 #include "fminus/CirDoc.h"
+#include "fminus/Failure.h"
 #include "fminus/Circuits.h"
 #include "fsdsp/core/Sanitize.h"
 
@@ -2898,13 +2899,39 @@ namespace playground
     // (a version added to another project, a new project, one from before ids): its file read here, never at landing.
     void Processor::runSave(SaveJob& job)
     {
-        job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi, job.samples.get(),
-                                               &job.why, job.lead);
+        // An exception (fminus/Failure.h; the saver's thread, or a caller's) fails the save in words, as the store's own
+        // refusals do; once the version is written, it only leaves the chats' owner to be looked up again at landing.
+        try
+        {
+            failure::at("save");
+            job.result = projectstore::saveVersion(job.name, job.files, job.active, job.dials, job.answers, job.midi,
+                                                   job.samples.get(), &job.why, job.lead);
+        }
+        catch (...)
+        {
+            job.result.reset();
+            try
+            {
+                job.why = failure::sentence("saving the project");
+            }
+            catch (...)
+            {
+                job.why.clear();
+            }
+            return;
+        }
         if (!job.result)
             return;
-        const std::string tidy = projectstore::tidyName(job.name);
-        if (job.result->id.empty() || job.result->id != job.knownId || !projectstore::sameName(tidy, job.knownIdName))
-            job.ownerId = projectstore::idOf(tidy);
+        try
+        {
+            const std::string tidy = projectstore::tidyName(job.name);
+            if (job.result->id.empty() || job.result->id != job.knownId || !projectstore::sameName(tidy, job.knownIdName))
+                job.ownerId = projectstore::idOf(tidy);
+        }
+        catch (...)
+        {
+            job.ownerId.clear();
+        }
     }
 
     // The message thread's part once the file is written: the journal's note, and the project open made the one saved,

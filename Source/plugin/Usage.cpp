@@ -319,9 +319,13 @@ namespace playground::usage
             return s.str();
         }
 
+        std::atomic<bool> writesFail{ false };     // setWritesFailForTests
+
         // `bytes` written beside `p` and renamed over it, 0600 (FactoryStore.cpp's writeFile, made private).
         bool writeFile(const fs::path& p, const std::string& bytes)
         {
+            if (writesFail.load())
+                return false;
             std::error_code ec;
             fs::create_directories(p.parent_path(), ec);
             const std::string tag = juce::Uuid().toString().substring(0, 12).toStdString();
@@ -480,6 +484,7 @@ namespace playground::usage
             k.day = today();
         const std::lock_guard<std::mutex> lock(mutex_);
         addRows(pending_, k, counts);
+        revision_.fetch_add(1, std::memory_order_acq_rel);
     }
 
     bool Ledger::pending() const
@@ -507,6 +512,8 @@ namespace playground::usage
         fs::path file;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            if (owed_)
+                return false;                       // after the cut: written once the reset has run
             if (pending_.empty())
                 return true;
             taken.swap(pending_);
@@ -532,6 +539,8 @@ namespace playground::usage
                 ok = writeFile(file, write(tidy(std::move(rows), todayDay)));
             }
         }
+        if (ok)
+            revision_.fetch_add(1, std::memory_order_acq_rel);
         if (!ok)
         {
             // Kept for the next flush, with what came meanwhile.
@@ -539,6 +548,75 @@ namespace playground::usage
             for (const Row& r : taken)
                 addRows(pending_, r.key, r.counts);
         }
+        return ok;
+    }
+
+    void Ledger::requestReset()
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (const Row& r : pending_)
+            addRows(cut_, r.key, r.counts);
+        pending_.clear();
+        owed_ = true;
+        failed_ = false;
+        revision_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    bool Ledger::resetOwed() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return owed_;
+    }
+
+    bool Ledger::lastResetFailed() const
+    {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return failed_;
+    }
+
+    bool Ledger::reset()
+    {
+        const std::lock_guard<std::mutex> one(flushMutex_);        // one flush or reset at a time
+        fs::path file;
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!owed_)
+                return true;
+            file = file_;
+        }
+        bool ok = false;
+        if (!file.empty())
+        {
+            const FolderLock lock(file.parent_path());
+            if (lock.held())
+            {
+                // A file that is no ledger is kept beside as usage.json.bad, as a flush keeps it, and put back when the
+                // empty one cannot be written.
+                bool damaged = false;
+                (void) read(file, &damaged);
+                fs::path bad = file;
+                bad += ".bad";
+                std::error_code ec;
+                if (damaged)
+                    fs::rename(file, bad, ec);
+                ok = writeFile(file, write({}));
+                if (!ok && damaged && !ec)
+                {
+                    std::error_code back;
+                    fs::rename(bad, file, back);
+                }
+            }
+        }
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (!ok)
+                for (const Row& r : cut_)              // nothing lost: back with what came meanwhile
+                    addRows(pending_, r.key, r.counts);
+            cut_.clear();
+            owed_ = false;
+            failed_ = !ok;
+        }
+        revision_.fetch_add(1, std::memory_order_acq_rel);
         return ok;
     }
 
@@ -550,6 +628,7 @@ namespace playground::usage
             const std::lock_guard<std::mutex> lock(mutex_);
             file = file_;
             rows = pending_;
+            rows.insert(rows.end(), cut_.begin(), cut_.end());   // in the file's place until the reset runs
         }
         if (!file.empty())
             for (Row& r : read(file))
@@ -609,6 +688,24 @@ namespace playground::usage
         l.setFile(processFile());
         return l.flush();
     }
+
+    void requestReset() { processLedger().requestReset(); }
+
+    bool reset()
+    {
+        Ledger& l = processLedger();
+        if (!l.resetOwed())
+            return true;
+        l.setFile(processFile());
+        return l.reset();
+    }
+
+    bool resetOwed() { return processLedger().resetOwed(); }
+    bool lastResetFailed() { return processLedger().lastResetFailed(); }
+
+    uint64_t revision() noexcept { return processLedger().revision(); }
+
+    void setWritesFailForTests(bool fail) { writesFail.store(fail); }
 
     Snapshot snapshot(Range range)
     {

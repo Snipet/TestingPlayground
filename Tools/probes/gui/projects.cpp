@@ -1293,12 +1293,15 @@ PROBE(gui, projects)
             P.eq("preview.after_claude", static_cast<int>(processor.previewsDrawn() - before), 1);
             processor.poll();
         }
-        // Twelve kept: the newest asked for.
+        // Twelve kept: the newest asked for. Each asked until the store's Reader has read its version (a version not read
+        // yet makes no entry: the card asks again each frame, and so does this), then prepared and drawn.
         {
+            const auto until = std::chrono::steady_clock::now() + probe::kWorkWait;
             for (int t = 0; t < 2; ++t)
                 for (const char* name : { "Panel Pad", "Panel Two", "Panel Three", "Sketch 1", "Sketch 2", "Sketch 3", "Deep Sub" })
                 {
-                    (void)port.previewPolled(name, 0, t);
+                    while (port.previewPolled(name, 0, t).status == St::reading && std::chrono::steady_clock::now() < until)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     processor.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
                 }
             P.eq("preview.twelve_kept", static_cast<int>(processor.previewsKept()), static_cast<int>(pg::Processor::kPreviewsKept));
