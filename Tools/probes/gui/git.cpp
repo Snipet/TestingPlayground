@@ -10,6 +10,8 @@
 //   gui.git.cancelled.png     ... cancelled: nothing linked, nothing left
 //   gui.git.linked.png        linked: the remote, the state, the folder, the commits, Push, Pull, Check, Show folder
 //   gui.git.behind.png        a push refused: the remote moved (pull first), in git's words
+//   gui.git.diverged.png      (part 3) both sides changed the same lines: Keep mine, Take theirs, Compare...
+//   gui.git.compare.png       ... COMPARE, the newest version against their side (no A/B, no Open for it)
 //   gui.git.disconnect.png    the Disconnect question: what stays and what goes
 //   gui.git.nogit.png         a chosen git that is none: said
 //   gui.git.add.png           Add from Git
@@ -23,6 +25,8 @@
 //   CONNECT  Connect waits for an address; Return presses it; the card says what runs, then the outcome; linked after
 //   CANCEL   Cancel kills git: nothing linked, the folder it made gone
 //   FAIL     a push refused: behind, "pull first", the line in the danger colour's place (failed)
+//   DIVERGED (part 3) a pull that cannot merge: the three ways; Compare... opens COMPARE on their side (A/B off); Keep
+//            mine settles it and Push sends it
 //   ASK      Disconnect asks first (its line names the folder that stays), Escape withdraws it, the second click
 //            disconnects: the project and its folder left
 //   MARK     the explorer's row and the pill carry the mark; their accessibility says "linked to"
@@ -30,6 +34,7 @@
 //   NOGIT    a chosen git that is no git: the card says so, nothing else changes
 #include "Probe.h"
 
+#include "editor/DiffCard.h"
 #include "editor/GitCard.h"
 #include "editor/Panel.h"
 #include "editor/ProjectBrowser.h"
@@ -295,6 +300,45 @@ PROBE(gui, git)
             P.eq(row + "fail.behind", card.failed() && has(card.line(), "pull first") && card.state().behind ? 1 : 0, 1);
             writePng(P, host, "gui.git.behind" + sfx + ".png");
         }
+
+        // ---- DIVERGED (part 3): Pull finds both sides changed the same lines -----------------------------------------------
+        press(GC::Button::pull);
+        settled();
+        std::printf("diverged: \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.three_ways", card.link().diverged && card.label(GC::Button::primary) == "Keep mine"
+                                              && card.label(GC::Button::pull) == "Take theirs" && card.label(GC::Button::check) == "Compare..."
+                                              && has(card.line(), "Keep mine") ? 1 : 0, 1);
+        {
+            const GC::Places dp = card.places(W, H);
+            P.eq(row + "diverged.buttons_apart", dp.disconnect.right() + 8.0f <= dp.check.x && dp.check.right() <= dp.pull.x
+                                                     && dp.pull.right() <= dp.primary.x ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.git.diverged" + sfx + ".png");
+        press(GC::Button::check);                     // Compare...: their side read into memory, COMPARE opened on it
+        pump(processor, host, [&] { return panel.compareCard().isOpen() && !panel.compareCard().reading(); });
+        {
+            const pg::ui::DiffCard& dc = panel.compareCard();
+            std::vector<funkgui::A11yItem> out;
+            dc.accessibility(out, W, H);
+            bool abOff = false;
+            for (const funkgui::A11yItem& it : out)
+                abOff = abOff || (it.title == "A/B" && !it.enabled);
+            P.eq(row + "diverged.compare_theirs", dc.isOpen() && dc.side(1) == pg::ui::DiffCard::kTheirs && dc.sideLabel(1) == "Theirs"
+                                                      && !card.isOpen() && abOff ? 1 : 0, 1);
+            writePng(P, host, "gui.git.compare" + sfx + ".png");
+        }
+        host.keys("escape");
+        host.settle();
+        panel.openGit("Glass Bloom");
+        host.settle();
+        press(GC::Button::primary);                   // Keep mine
+        settled();
+        std::printf("diverged: keep mine \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.keep_mine", !card.link().diverged && has(card.line(), "Kept yours") ? 1 : 0, 1);
+        press(GC::Button::primary);                   // and Push
+        settled();
+        std::printf("diverged: pushed \"%s\"\n", card.line().c_str());
+        P.eq(row + "diverged.pushed", !card.failed() && has(card.line(), "Pushed") ? 1 : 0, 1);
 
         // ---- ASK: Disconnect's question ----------------------------------------------------------------------------------
         press(GC::Button::disconnect);

@@ -45,6 +45,13 @@
 //            repository with no project refused, the folder each made gone; a clone that fails leaves no folder
 //   PROJECT_PULL  nothing new; a fast-forward saved as a new version ("Pulled ..."); both sides moved: diverged, nothing
 //            changed
+//   MERGE    (part 3) two machines on one remote: changes to different files merged clean into a new version
+//            ("Merged with ..."), pushed, pulled by the other; the same line changed on both: no merge, the link keeps
+//            their commit, the folder, the project and git's state as they were (no merge left under way), a push
+//            waits; Compare's side read from memory, nothing written; Keep mine: theirs a version, mine again on top,
+//            pushed and pulled by the other; Take theirs: theirs the newest, mine the one before; cut off between Keep
+//            mine's saves and its commit, pressing it again finishes, keeping yours; a merge the user left under way in
+//            the folder: refused, left as it is
 //   JOB      through a Processor: the job connects, links and marks (projectsPolled, gitLink); the listing and the card's
 //            link run no git (a git that leaves a marker); a pull opens the new version when the project is open and
 //            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so
@@ -409,6 +416,127 @@ namespace
             const gp::Outcome diverged = gp::pull(env, added.project);
             std::printf("pull: diverged \"%s\"\n", diverged.words.c_str());
             P.eq("project_pull.diverged", !diverged.ok && diverged.diverged && ps::load(added.project)->latest().number == versionsBefore ? 1 : 0, 1);
+        }
+
+        // ---- MERGE (part 3): both sides moved ----------------------------------------------------------------------------
+        {
+            // Two machines on one remote: A ("Duo") and B (its clone).
+            use(storeA);
+            const fs::path duoRemote = bareRemote("duo.git");
+            const pg::Sources base{ { "program.fm", "// duo\n// line 2\n// line 3\n" }, { "lib.fm", "// lib\n// lib 2\n" } };
+            ps::saveVersion("Duo", base, 0, dials);
+            gp::connect(env, "Duo", fileUrl(duoRemote), "main");
+            use(storeB);
+            const std::string duoB = gp::add(env, fileUrl(duoRemote), "").project;
+            const auto linkB = [&] {
+                const std::optional<ps::Project> p = ps::load(duoB);
+                return p ? ps::linkOf(p->id) : std::nullopt;
+            };
+            const auto folderB = [&] {
+                const std::optional<ps::Link> l = linkB();
+                return l ? fs::path(gp::folderOf(*l)) : fs::path();
+            };
+            // A changes program.fm, B lib.fm: different files, the same dials: merged clean.
+            use(storeA);
+            pg::Sources a1 = base;
+            a1[0].text = "// duo, from A\n// line 2\n// line 3\n";
+            ps::saveVersion("Duo", a1, 0, dials);
+            gp::push(env, "Duo");
+            use(storeB);
+            pg::Sources b1 = base;
+            b1[1].text = "// lib, from B\n// lib 2\n";
+            ps::saveVersion(duoB, b1, 0, dials);
+            const gp::Outcome merged = gp::pull(env, duoB);
+            const std::optional<ps::Project> pm = ps::load(duoB);
+            std::printf("merge: clean \"%s\"\n", merged.words.c_str());
+            const bool both = pm && pm->latest().files.size() == 2 && pm->latest().files[0].text == a1[0].text
+                           && pm->latest().files[1].text == b1[1].text;
+            P.eq("merge.clean", merged.ok && both && pm->latest().note.rfind("Merged with ", 0) == 0 && linkB() && linkB()->theirs.empty()
+                                    && readFile(folderB() / "program.fm") == a1[0].text ? 1 : 0, 1);
+            P.eq("merge.clean_pushes", gp::push(env, duoB).ok ? 1 : 0, 1);
+            use(storeA);
+            gp::pull(env, "Duo");
+            const std::optional<ps::Project> pa = ps::load("Duo");
+            P.eq("merge.other_side_pulls", pa && pm && pa->latest().files == pm->latest().files ? 1 : 0, 1);
+
+            // Both change the same line of program.fm: no merge; the folder and the project as they were.
+            const auto conflict = [&](const std::string& tag) {
+                use(storeA);
+                gp::pull(env, "Duo");                    // A takes what B pushed last, so its push goes
+                pg::Sources a = ps::load("Duo")->latest().files;
+                a[0].text = "// duo, A says " + tag + "\n// line 2\n// line 3\n";
+                ps::saveVersion("Duo", a, 0, dials);
+                gp::push(env, "Duo");
+                use(storeB);
+                pg::Sources b = ps::load(duoB)->latest().files;
+                b[0].text = "// duo, B says " + tag + "\n// line 2\n// line 3\n";
+                ps::saveVersion(duoB, b, 0, dials);
+                return std::make_pair(a, b);
+            };
+            const auto [ta, tb] = conflict("one");
+            const int before = ps::load(duoB)->latest().number;
+            const gp::Outcome clash = gp::pull(env, duoB);
+            std::printf("merge: conflict \"%s\"\n", clash.words.c_str());
+            P.eq("merge.conflict_kept_apart", !clash.ok && clash.diverged && clash.words.find("program.fm") != std::string::npos
+                                                  && linkB() && !linkB()->theirs.empty() && ps::load(duoB)->latest().number == before
+                                                  && readFile(folderB() / "program.fm") == tb[0].text
+                                                  && !pg::git::mergeUnderWay(context(folderB())) ? 1 : 0, 1);
+            P.eq("merge.push_waits", gp::push(env, duoB).ok ? 0 : 1, 1);
+            // Compare: their side from memory, nothing written.
+            std::string sha, why;
+            const std::optional<pt::Tree> theirs = gp::theirsOf(env, duoB, sha, why);
+            P.eq("merge.compare_from_memory", theirs && theirs->version.files[0].text == ta[0].text
+                                                  && ps::load(duoB)->latest().number == before
+                                                  && readFile(folderB() / "program.fm") == tb[0].text ? 1 : 0, 1);
+            // Keep mine: theirs a version, mine again on top, a merge commit; pushed, the other side has it.
+            const gp::Outcome kept = gp::keepMine(env, duoB);
+            const std::optional<ps::Project> pk = ps::load(duoB);
+            std::printf("merge: keep mine \"%s\"\n", kept.words.c_str());
+            const std::size_t nk = pk ? pk->versions.size() : 0;
+            P.eq("merge.keep_mine", kept.ok && pk && nk >= 2 && pk->latest().number == before + 2 && pk->latest().files[0].text == tb[0].text
+                                        && pk->versions[nk - 2].files[0].text == ta[0].text && linkB()->theirs.empty()
+                                        && readFile(folderB() / "program.fm") == tb[0].text ? 1 : 0, 1);
+            P.eq("merge.keep_mine_pushes", gp::push(env, duoB).ok ? 1 : 0, 1);
+            use(storeA);
+            gp::pull(env, "Duo");
+            P.eq("merge.keep_mine_reaches", ps::load("Duo")->latest().files[0].text == tb[0].text ? 1 : 0, 1);
+
+            // Take theirs: theirs the newest version, mine the one before.
+            const auto [ua, ub] = conflict("two");
+            gp::pull(env, duoB);
+            const int mine = ps::load(duoB)->latest().number;
+            const gp::Outcome took = gp::takeTheirs(env, duoB);
+            const std::optional<ps::Project> pt2 = ps::load(duoB);
+            std::printf("merge: take theirs \"%s\"\n", took.words.c_str());
+            P.eq("merge.take_theirs", took.ok && pt2 && pt2->latest().number == mine + 1 && pt2->latest().files[0].text == ua[0].text
+                                          && pt2->version(mine) != nullptr && pt2->version(mine)->files[0].text == ub[0].text
+                                          && readFile(folderB() / "program.fm") == ua[0].text && linkB()->theirs.empty() ? 1 : 0, 1);
+            P.eq("merge.take_theirs_pushes", gp::push(env, duoB).ok ? 1 : 0, 1);
+
+            // Cut off between Keep mine's saves and its commit: the link still says diverged; pressing it again finishes.
+            const auto [va, vb] = conflict("three");
+            gp::pull(env, duoB);
+            {
+                ps::Version theirsV = ps::load(duoB)->latest();
+                theirsV.files[0].text = va[0].text;
+                ps::addVersion(duoB, theirsV, {}, 0, "Theirs, cut off", {}, nullptr);   // as a first try left it
+            }
+            const gp::Outcome again = gp::keepMine(env, duoB);
+            std::printf("merge: again \"%s\"\n", again.words.c_str());
+            P.eq("merge.cut_off_finishes", again.ok && linkB()->theirs.empty() && ps::load(duoB)->latest().files[0].text == vb[0].text
+                                               && gp::push(env, duoB).ok ? 1 : 0, 1);
+
+            // A merge the user left under way in the folder: refused, left as it is.
+            conflict("four");
+            pg::git::fetch(context(folderB()), "origin", "main");
+            gp::push(env, duoB);                         // commits B's version (the push itself is refused: behind)
+            pg::git::call(context(folderB()), { "merge", "--no-commit", "--no-ff", "refs/remotes/origin/main" });
+            const bool underWay = pg::git::mergeUnderWay(context(folderB()));
+            const gp::Outcome refused = gp::pull(env, duoB);
+            std::printf("merge: under way %d \"%s\"\n", underWay ? 1 : 0, refused.words.c_str());
+            P.eq("merge.users_merge_left", underWay && !refused.ok && refused.words.find("under way") != std::string::npos
+                                               && pg::git::mergeUnderWay(context(folderB())) ? 1 : 0, 1);
+            pg::git::call(context(folderB()), { "merge", "--abort" });
         }
         ps::setDirectoryForTests({});
     }
