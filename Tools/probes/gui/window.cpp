@@ -9,8 +9,10 @@
 // and checks:
 //   MENUS  the app menu (About <Name>, Settings... Cmd-, , Services, Hide <Name> Cmd-H, Hide Others Cmd-Option-H, Show
 //          All, Quit <Name> Cmd-Q), File (Load State..., Save State As..., Reset to Default State), Edit (Undo Cmd-Z, Redo
-//          Cmd-Shift-Z, Cut, Copy, Paste, Select All: Cmd-X, C, V, A) and Window (Minimize Cmd-M, Zoom, Bring All to
-//          Front), in that order; no two items share a shortcut; none takes a key the editor uses (Cmd-Return, Cmd-S)
+//          Cmd-Shift-Z, Cut, Copy, Paste, Select All: Cmd-X, C, V, A; Find..., Find and Replace..., Find in All Files...
+//          with no shortcut, each sending the editor's Cmd-F, Cmd-Alt-F, Shift-Cmd-F) and Window (Minimize Cmd-M, Zoom,
+//          Bring All to Front), in that order; no two items share a shortcut; none takes a key the editor uses
+//          (Cmd-Return, Cmd-S, Cmd-F)
 //   HOST   no hooks (a host's window): no room, the product's mark where it always was, a press on the top bar drags
 //          nothing
 //   ROOM   the window's buttons: the top bar keeps them room at its left (the mark after them and a gap), the project's
@@ -24,9 +26,11 @@
 //          PROJECTS is open drag nothing
 //   EDIT   each Edit item sends its shortcut to the focused component (as the app does), and the editor's text field
 //          takes it: Select All and Copy (the clipboard holds the text), Cut (empty), Paste (back), Undo (empty), Redo
-//          (back); with no text field focused they change nothing
+//          (back); with no text field focused they change nothing; the find items, with no text field focused, open the
+//          code's find bar (Find in All Files... with All files on, Find and Replace... with its replace row)
 #include "Probe.h"
 
+#include "editor/CodeAssist.h"
 #include "editor/Panel.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
@@ -139,7 +143,8 @@ PROBE(gui, window)
             P.eq("menus.app", app == "About " + name + "|-|Settings\xe2\x80\xa6|-|Services|-|Hide " + name + "|Hide Others|Show All|-|Quit " + name
                                   ? 1 : 0, 1);
             P.eq("menus.file", file == "Load State\xe2\x80\xa6|Save State As\xe2\x80\xa6|-|Reset to Default State" ? 1 : 0, 1);
-            P.eq("menus.edit", edit == "Undo|Redo|-|Cut|Copy|Paste|Select All" ? 1 : 0, 1);
+            P.eq("menus.edit", edit == "Undo|Redo|-|Cut|Copy|Paste|Select All|-|Find\xe2\x80\xa6|Find and Replace\xe2\x80\xa6|"
+                                       "Find in All Files\xe2\x80\xa6" ? 1 : 0, 1);
             P.eq("menus.window", window == "Minimize|Zoom|-|Bring All to Front" ? 1 : 0, 1);
         }
         const auto key = [&](sm::Command c) {
@@ -165,13 +170,23 @@ PROBE(gui, window)
                 if (k.empty())
                     continue;
                 shared += seen.insert(k).second ? 0 : 1;
-                editorKeys += (k == "cmd+s" || k == "cmd+return") ? 1 : 0;
+                editorKeys += (k == "cmd+s" || k == "cmd+return" || k == "cmd+f" || k == "cmd+alt+f" || k == "cmd+shift+f") ? 1 : 0;
                 edits += sm::isEdit(it.command) ? 1 : 0;
             }
         P.eq("menus.shortcuts_unique", shared, 0);
         P.eq("menus.none_the_editors", editorKeys, 0);
         P.eq("menus.edit_commands", edits, 6);
         P.eq("menus.shortcut_of", sm::shortcutOf(sm::Command::redo) == sm::Shortcut{ 'z', true, false } ? 1 : 0, 1);
+        // The find items: Edit commands with no shortcut of the menu's, each sending the editor's own key.
+        P.eq("menus.find_no_keys", key(sm::Command::find).empty() && key(sm::Command::findReplace).empty()
+                                       && key(sm::Command::findInFiles).empty() ? 1 : 0, 1);
+        P.eq("menus.find_edit", sm::isEdit(sm::Command::find) && sm::isEdit(sm::Command::findReplace)
+                                    && sm::isEdit(sm::Command::findInFiles) ? 1 : 0, 1);
+        P.eq("menus.find_editor_keys", sm::keysOf(sm::editorKeyOf(sm::Command::find)) == "cmd+f"
+                                           && sm::keysOf(sm::editorKeyOf(sm::Command::findReplace)) == "cmd+alt+f"
+                                           && sm::keysOf(sm::editorKeyOf(sm::Command::findInFiles)) == "cmd+shift+f"
+                                           && sm::editorKeyOf(sm::Command::undo) == sm::shortcutOf(sm::Command::undo)
+                                           && sm::keysOf(sm::editorKeyOf(sm::Command::quit)).empty() ? 1 : 0, 1);
     }
 
     pg::Processor processor;
@@ -317,6 +332,29 @@ PROBE(gui, window)
     send(sm::Command::selectAll);
     send(sm::Command::cut);
     P.eq("edit.unfocused_nothing", ed.text() == text ? 1 : 0, 1);
+    // The find items, with no text field focused: the code's find bar, as the app sends their keys.
+    {
+        pg::ui::CodeAssist& assist = panel.codeAssist();
+        const auto sendKey = [&](sm::Command c) {
+            host.keys(sm::keysOf(sm::editorKeyOf(c)).c_str());
+            host.settle();
+        };
+        sendKey(sm::Command::find);
+        P.eq("edit.find", assist.findOpen() && !assist.replaceOpen() && !assist.allFiles() ? 1 : 0, 1);
+        host.keys("escape");
+        host.keys("escape");
+        host.settle();
+        sendKey(sm::Command::findReplace);
+        P.eq("edit.find_replace", assist.findOpen() && assist.replaceOpen() && !assist.allFiles() ? 1 : 0, 1);
+        host.keys("escape");
+        host.keys("escape");
+        host.settle();
+        sendKey(sm::Command::findInFiles);
+        P.eq("edit.find_in_files", assist.findOpen() && assist.allFiles() ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("edit.find_left_text", ed.text() == text ? 1 : 0, 1);
+    }
 
     processor.setWindowHooks({});
     folder.deleteRecursively();

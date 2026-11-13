@@ -207,6 +207,9 @@ using playground::standalone::Command;
         case Command::copy:      standard = @selector(copy:); break;
         case Command::paste:     standard = @selector(paste:); break;
         case Command::selectAll: standard = @selector(selectAll:); break;
+        case Command::find:                      // the editor's alone: nothing of AppKit's
+        case Command::findReplace:
+        case Command::findInFiles:
         case Command::separator:
         case Command::about:
         case Command::settings:
@@ -373,6 +376,9 @@ namespace playground::standalone::native
                     case Command::copy:
                     case Command::paste:
                     case Command::selectAll:
+                    case Command::find:
+                    case Command::findReplace:
+                    case Command::findInFiles:
                         break;
                 }
                 const char key[2] = { it.shortcut.key, 0 };
