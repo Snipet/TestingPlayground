@@ -615,6 +615,15 @@ namespace playground::ui
         void  idle(double nowSec) override;
         void  draw(funkgui::Canvas&, const funkgui::Theme&) override;
         bool  needsDraw() const override;                // above, "Unchanged frames"
+#if defined(FP_PROBES)
+        // Probes only (the probe executables alone define FP_PROBES, cmake/Probes.cmake: the plugin has none of it):
+        // why needsDraw() is true now, in words ("" while it is false). Each term that holds: "dirty" or "undrawn" with
+        // where the change was first seen (a checkpoint of tick() or refresh(); "before the tick" is input, a menu's or
+        // a file chooser's answer, or idle()'s refresh), "moving" and "settling" with the first unsettled item, the draw
+        // key with each part that moved since the last draw (an item by its index and type, or the Panel's own field
+        // by name), and "safety net" with the seconds since the last draw.
+        std::string drawReason() const;
+#endif
         bool  wantsFullRate() const override;
         void  pointerMove(const funkgui::PointerEvent&) override;
         void  pointerExit() override;
@@ -1060,6 +1069,20 @@ namespace playground::ui
         uint64_t watched_ = 0, drawnKey_ = 0;
         double drawnAt_ = -1.0e9;
         uint64_t watchKey() const;
+#if defined(FP_PROBES)
+        // drawReason()'s records: watchKey()'s parts, named, at the last tick and at the last draw; where dirty_ was
+        // first seen set since the last tick (noteDirty: tick()'s and refresh()'s checkpoints), and where the change
+        // undrawn_ keeps was.
+        struct WatchPart
+        {
+            std::string name;
+            uint64_t key = 0;
+        };
+        std::vector<WatchPart> watchParts() const;
+        std::vector<WatchPart> watchedParts_, drawnParts_;
+        std::string dirtyAt_, undrawnAt_;
+        void noteDirty(const char* where);
+#endif
         // The meters' reader (above): held, the last tick's time (the host's clock; -1 before any tick or idle call),
         // and the idle calls since.
         bool reading_ = false;
