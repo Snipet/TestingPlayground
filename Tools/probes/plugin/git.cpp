@@ -50,8 +50,9 @@
 //            their commit, the folder, the project and git's state as they were (no merge left under way), a push
 //            waits; Compare's side read from memory, nothing written; Keep mine: theirs a version, mine again on top,
 //            pushed and pulled by the other; Take theirs: theirs the newest, mine the one before; cut off between Keep
-//            mine's saves and its commit, pressing it again finishes, keeping yours; a merge the user left under way in
-//            the folder: refused, left as it is
+//            mine's saves and its commit, pressing it again finishes, keeping yours, and Take theirs's, its words naming
+//            yours; a merge the user left under way in the folder: refused, left as it is; a git older than 2.38 (a
+//            stand-in): the pull diverged, saying so, and Keep mine and Take theirs settle it
 //   JOB      through a Processor: the job connects, links and marks (projectsPolled, gitLink); the listing and the card's
 //            link run no git (a git that leaves a marker); a pull opens the new version when the project is open and
 //            unedited, and leaves it in the list when it is edited; a chosen git that is no git: the job says so
@@ -537,6 +538,51 @@ namespace
             P.eq("merge.users_merge_left", underWay && !refused.ok && refused.words.find("under way") != std::string::npos
                                                && pg::git::mergeUnderWay(context(folderB())) ? 1 : 0, 1);
             pg::git::call(context(folderB()), { "merge", "--abort" });
+
+            // Take theirs pressed again after a first press cut off once their side was saved: it finishes, and its words
+            // name yours (the version last committed), not the side it saved before.
+            use(storeB);
+            gp::push(env, duoB);                         // B's version from "four" committed; settle it first
+            gp::pull(env, duoB);
+            gp::keepMine(env, duoB);
+            gp::push(env, duoB);
+            const auto [xa, xb] = conflict("five");
+            gp::pull(env, duoB);
+            const int yours = linkB() ? linkB()->committed : -1;
+            {
+                ps::Version theirsV = ps::load(duoB)->latest();
+                theirsV.files[0].text = xa[0].text;
+                ps::addVersion(duoB, theirsV, {}, 0, "Took theirs, cut off", {}, nullptr);
+            }
+            const gp::Outcome tookAgain = gp::takeTheirs(env, duoB);
+            std::printf("merge: take theirs again \"%s\" (yours v%d)\n", tookAgain.words.c_str(), yours);
+            P.eq("merge.take_theirs_cut_off", tookAgain.ok && linkB()->theirs.empty() && ps::load(duoB)->latest().files[0].text == xa[0].text
+                                                  && tookAgain.words.find("yours stays version " + std::to_string(yours) + ".") != std::string::npos
+                                                  && gp::push(env, duoB).ok ? 1 : 0, 1);
+            (void)xb;
+#if !defined(_WIN32)
+            // A git older than 2.38 (a stand-in that answers merge-tree --write-tree as one does: its usage, exit 129): no
+            // dead end; the pull is diverged, saying so, and Keep mine and Take theirs settle it.
+            const fs::path oldGit = root / "old-git";
+            writeFile(oldGit, "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = \"--write-tree\" ] && { echo 'usage: git merge-tree "
+                              "[--write-tree] [<options>] <branch1> <branch2>' >&2; exit 129; }; done\nexec '"
+                                  + found.path + "' \"$@\"\n");
+            fs::permissions(oldGit, fs::perms::owner_all, ec);
+            gp::Env old = env;
+            old.git = oldGit.string();
+            conflict("six");
+            const gp::Outcome oldPull = gp::pull(old, duoB);
+            std::printf("merge: old git \"%s\"\n", oldPull.words.c_str());
+            P.eq("merge.old_git_diverged", !oldPull.ok && oldPull.diverged && oldPull.words.find("older than 2.38") != std::string::npos
+                                               && linkB() && !linkB()->theirs.empty() ? 1 : 0, 1);
+            P.eq("merge.old_git_keep_mine", gp::keepMine(old, duoB).ok && gp::push(old, duoB).ok ? 1 : 0, 1);
+            conflict("seven");
+            const gp::Outcome oldPull2 = gp::pull(old, duoB);
+            P.eq("merge.old_git_take_theirs", oldPull2.diverged && gp::takeTheirs(old, duoB).ok && gp::push(old, duoB).ok ? 1 : 0, 1);
+#else
+            for (const char* r : { "merge.old_git_diverged", "merge.old_git_keep_mine", "merge.old_git_take_theirs" })
+                probe::skip(P, r, "the old git's stand-in is a shell script (POSIX)");
+#endif
         }
         ps::setDirectoryForTests({});
     }

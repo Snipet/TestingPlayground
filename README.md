@@ -1159,7 +1159,9 @@ To add one, add a file there whose first line is `// <Title>: what it is`.
   version, yours again on top of it, and a merge commit of yours), **Take theirs** (their side saved as the newest
   version, yours the one before) and **Compare...**, the Compare card with your newest version against theirs, read
   from the remote's commit and shown from memory (no Open or A/B for it): nothing is written until you choose. A merge
-  you left under way in the folder yourself is never touched: finish or abort it there first. Each version's
+  you left under way in the folder yourself is never touched: finish or abort it there first. A git older than 2.38
+  cannot merge the two sides on its own: the card says so and offers the same three ways (a newer git merges changes
+  to different places by itself). When COMPARE was opened from the card's Compare..., closing it brings the card back. Each version's
   `project.json` keeps one item a line and no version number, time or note, so two sides that changed different dials
   or files merge cleanly. **Check** fetches and counts.
   **Show folder** shows the working folder, **Disconnect** (asked first) removes the link and leaves the project and the

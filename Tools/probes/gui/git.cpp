@@ -26,7 +26,8 @@
 //   CANCEL   Cancel kills git: nothing linked, the folder it made gone
 //   FAIL     a push refused: behind, "pull first", the line in the danger colour's place (failed)
 //   DIVERGED (part 3) a pull that cannot merge: the three ways; Compare... opens COMPARE on their side (A/B off); Keep
-//            mine settles it and Push sends it
+//            mine settles it and Push sends it; their side's moved dial worded as the panel says it; COMPARE closed brings
+//            the Git card back, diverged
 //   ASK      Disconnect asks first (its line names the folder that stays), Escape withdraws it, the second click
 //            disconnects: the project and its folder left
 //   MARK     the explorer's row and the pill carry the mark; their accessibility says "linked to"
@@ -58,6 +59,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -122,6 +124,12 @@ namespace
     {
         const std::string s = p.generic_string();
         return "file://" + std::string(s.front() == '/' ? "" : "/") + s;
+    }
+
+    std::string readText(const fs::path& p)
+    {
+        std::ifstream f(p, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
 
     bool has(const std::string& s, const std::string& part) { return s.find(part) != std::string::npos; }
@@ -220,6 +228,8 @@ PROBE(gui, git)
         GC& card = panel.gitCard();
         const auto settled = [&] { return pump(processor, host, [&] { return !port.gitState().busy && !card.running(); }); };
         const auto press = [&](GC::Button b) { clickAt(host, card.centreOf(b, W, H)); };
+        std::string movedDial, movedText;              // part 3: a dial the other machine moved
+        float movedValue = 0.0f;
 
         // ---- OPEN: PROJECTS' Git... with the project chosen ------------------------------------------------------------
         panel.openProjects();
@@ -285,6 +295,24 @@ PROBE(gui, git)
             const fs::path other = root / ("other" + sfx);
             pg::git::clone(context(root), url, other.string(), "main");
             writeFile(other / "program.fm", "// from elsewhere\n");
+            // Part 3: one of its real dials moved there too (COMPARE words their side's dials as a version's).
+            for (int k = 0; k < pg::kMaxControls && movedDial.empty(); ++k)
+                if (const pg::Control& ctl = processor.control(k); ctl.used && ctl.type == pg::ControlType::real)
+                {
+                    std::string json = readText(other / "project.json");
+                    const std::string key = "{ \"name\": \"" + std::string(ctl.name) + "\", \"value\": ";
+                    if (const std::size_t at = json.find(key); at != std::string::npos)
+                    {
+                        const std::size_t from = at + key.size(), end = json.find_first_of(",}", from);
+                        movedValue = ctl.max;
+                        char buf[32];
+                        std::snprintf(buf, sizeof buf, "%.9g ", static_cast<double>(movedValue));
+                        json.replace(from, end - from, buf);
+                        writeFile(other / "project.json", json);
+                        movedDial = ctl.name;
+                        movedText = pg::dialText(ctl, movedValue);
+                    }
+                }
             pg::git::commitAll(context(other), "From elsewhere", 0, {});
             pg::git::push(context(other), "origin", "main");
             d = port.draft();
@@ -325,12 +353,20 @@ PROBE(gui, git)
                 abOff = abOff || (it.title == "A/B" && !it.enabled);
             P.eq(row + "diverged.compare_theirs", dc.isOpen() && dc.side(1) == pg::ui::DiffCard::kTheirs && dc.sideLabel(1) == "Theirs"
                                                       && !card.isOpen() && abOff ? 1 : 0, 1);
+            // Their side's moved dial worded as the panel says it, as a version's dials are.
+            std::string said;
+            for (const pg::ContentDial& cd : port.gitTheirs("Glass Bloom").dials)
+                if (cd.name == movedDial)
+                    said = cd.text;
+            std::printf("diverged: their %s says \"%s\" (the panel's \"%s\")\n", movedDial.c_str(), said.c_str(), movedText.c_str());
+            P.eq(row + "diverged.dials_worded", !movedDial.empty() && said == movedText ? 1 : 0, 1);
             writePng(P, host, "gui.git.compare" + sfx + ".png");
         }
-        host.keys("escape");
+        host.keys("escape");                          // COMPARE closed: the Git card back, the choice still owed
         host.settle();
-        panel.openGit("Glass Bloom");
-        host.settle();
+        pump(processor, host, [&] { return card.isOpen(); });
+        P.eq(row + "diverged.card_back", card.isOpen() && card.project() == "Glass Bloom" && card.link().diverged
+                                             && card.label(GC::Button::primary) == "Keep mine" ? 1 : 0, 1);
         press(GC::Button::primary);                   // Keep mine
         settled();
         std::printf("diverged: keep mine \"%s\"\n", card.line().c_str());
