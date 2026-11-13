@@ -312,7 +312,7 @@ endforeach()
 # The extension's own version (every product's .mcpb): Claude Desktop updates an installed extension only to a newer
 # one, so this goes up with every change to the server, its manifest or what the plugin tells it (the tools, the
 # guide's preamble).
-set(FP_MCP_VERSION "0.17.0")
+set(FP_MCP_VERSION "0.19.0")
 
 # This build's commit (the Debug page: Source/plugin/ProcessorDebug.cpp), in a header of its own that one file includes,
 # never in Product.h, which nearly every file includes: written at configure and brought up to date at every build,

@@ -283,10 +283,10 @@ namespace playground::ui::irview
         return text(header(v, programFile, from), shown(v, from.ir != nullptr ? *from.ir : none).get());
     }
 
-    void configure(funkgui::TextEditor& e, const funkgui::Theme& theme)
+    void configure(funkgui::TextEditor& e, const funkgui::Theme& theme, const funkgui::TextStyle& style)
     {
         funkgui::TextEditorOptions o;
-        o.style = funkgui::editorFont(funkgui::EditorFont::code);
+        o.style = style;
         o.readOnly = true;                               // it moves, selects, copies; it refuses every edit
         o.softTabs = true;
         o.tabWidth = 2;                                  // LLVM indents by two

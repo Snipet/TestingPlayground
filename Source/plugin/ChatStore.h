@@ -165,7 +165,8 @@ namespace playground::chatstore
 
     juce::File chatsDirectory();                                 // directory()'s chats/
     // An owner's chats, the newest (last changed) first; a chat whose .meta is missing or damaged is listed from its
-    // file's time, titled "Chat". Ids not valid and files not sealed here are left out.
+    // file's time, titled "Chat", when the chat itself was sealed here (its MAC checked, the answer kept by its stamp).
+    // Ids not valid and files not sealed here are left out.
     std::vector<ChatMeta> chatsOf(std::string_view owner);
     bool hasChat(std::string_view owner, std::string_view id);
     // Whether an owner's folder is there (none: it never kept a chat, or its project was deleted with its chats), and

@@ -14,7 +14,8 @@
 //            described on measure_output, undescribed in a check's and tune_dials', on no other tool, none of the effect's;
 //            tune_dials' sweep (numbers, its cap said, its first sentence naming it) and compare's b_rate and
 //            previous_run, each on its own tool alone; read_file's from, lines,
-//            find and regex (nothing required), edit_file's edits, expected and files (a list or a diff; nothing required), trace's render settings (its dials; the
+//            find, regex, context, count and skip (nothing required), edit_file's edits, expected, files (a list or a diff)
+//            and find (its regex undescribed: read_file's words; nothing required), trace's render settings (its dials; the
 //            synth's notes); an instrument's notes,
 //            velocity and wheels in the synth's measure_output and
 //            in none of the effect's tools; edit_circuit's description its first sentence, its face "Edit a circuit", its `name`
@@ -53,7 +54,8 @@
 //            tools/list (list_instances, playground_guide, gui_sandbox and the chat's tools, each with `instance` (in a
 //            few words on the first of the chat's alone: the instructions say how to name one) and a title in words,
 //            the ones that only look marked read-only (trace not: its export writes files, adding and never replacing,
-//            so destructiveHint false), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
+//            so destructiveHint false; capture not: it changes what plays and lets a take go, so destructiveHint
+//            true), the annotations without a title or a read-only tool's destructiveHint; a client of 2025-03-26 gets each title in the annotations; the reply's line, what
 //            Claude Desktop receives,
 //            at most kToolsBound bytes: its size and the slack printed), list_instances naming this processor by its name,
 //            get_status and write_file routed to it, playground_guide (its start, a part, and the debugging part naming the
@@ -585,8 +587,9 @@ PROBE(plugin, mcp)
         const juce::var checkedMetric = setChecks["inputSchema"]["properties"]["checks"]["items"]["properties"]["metric"];
         P.eq("link.tune_metric_string", tunedMetric["type"].toString() == "string" && !tunedMetric.hasProperty("enum")
                                             && checkedMetric["enum"].size() == static_cast<int>(pg::measure::metrics().size()) ? 1 : 0, 1);
-        // read_file's part (from, lines, find, regex; find with no name searches every file: nothing required) and
-        // edit_file's list, guard and files (edits, expected; files a list or a diff, in place of name: nothing required).
+        // read_file's part (from, lines, find, regex, and find's context, count and skip; find with no name searches every
+        // file: nothing required) and edit_file's list, guard, files and find (edits, expected; files a list or a diff,
+        // in place of name; find every match, its regex described once, read_file's words: nothing required).
         {
             juce::var readFile, editFile, trace;
             if (const juce::Array<juce::var>* t = tools.getArray())
@@ -605,6 +608,12 @@ PROBE(plugin, mcp)
                                           && !trace["properties"]["dials"].hasProperty("description") ? 1 : 0, 1);
             P.eq("link.file_tools", readFile["properties"].hasProperty("from") && readFile["properties"].hasProperty("lines")
                                         && readFile["properties"].hasProperty("find") && readFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && readFile["properties"]["context"]["type"].toString() == "integer"
+                                        && readFile["properties"]["count"]["type"].toString() == "boolean"
+                                        && readFile["properties"]["skip"]["type"].toString() == "integer"
+                                        && editFile["properties"]["find"]["type"].toString() == "string"
+                                        && editFile["properties"]["regex"]["type"].toString() == "boolean"
+                                        && !editFile["properties"]["regex"].hasProperty("description")
                                         && !readFile.hasProperty("required") && editFile["properties"].hasProperty("edits")
                                         && editFile["properties"].hasProperty("expected")
                                         && editFile["properties"]["files"]["anyOf"].size() == 2 && !editFile.hasProperty("required") ? 1 : 0, 1);
@@ -1162,7 +1171,7 @@ PROBE(plugin, mcp)
         P.eq("server.tools", hasTool(list, "list_instances") && hasTool(list, "playground_guide") && hasTool(list, "gui_sandbox") && hasTool(list, "write_file")
                                  && !hasTool(list, "ask_user") && pluginTools == tools.size() && instanceArg ? 1 : 0, 1);
         {
-            juce::var measure, write, del, trace;
+            juce::var measure, write, del, trace, capture;
             bool titled = true, lean = true;
             if (const juce::Array<juce::var>* t = list.getArray())
                 for (const juce::var& tool : *t)
@@ -1182,6 +1191,8 @@ PROBE(plugin, mcp)
                         del = tool;
                     if (tool["name"].toString() == "trace")
                         trace = tool;
+                    if (tool["name"].toString() == "capture")
+                        capture = tool;
                 }
             P.eq("server.titles", titled && measure["title"].toString() == "Measure the sound"
                                       && static_cast<bool>(measure["annotations"]["readOnlyHint"]) && !static_cast<bool>(write["annotations"]["readOnlyHint"]) ? 1 : 0, 1);
@@ -1192,6 +1203,10 @@ PROBE(plugin, mcp)
             P.eq("server.trace_writes", trace.isObject() && !trace["annotations"].hasProperty("readOnlyHint")
                                             && trace["annotations"].hasProperty("destructiveHint")
                                             && !static_cast<bool>(trace["annotations"]["destructiveHint"]) ? 1 : 0, 1);
+            // capture changes what plays (an arm takes the program's own code, a restart compiles it again and cuts
+            // what sounds) and lets the take kept go (a new arm, forget): not read-only, destructive.
+            P.eq("server.capture_writes", capture.isObject() && !capture["annotations"].hasProperty("readOnlyHint")
+                                              && static_cast<bool>(capture["annotations"]["destructiveHint"]) ? 1 : 0, 1);
         }
         rep = s.request({ a.get() }, "tools/call", object({ { "name", "list_instances" }, { "arguments", juce::var(new juce::DynamicObject()) } }));
         std::printf("list_instances: %s", firstText(rep["result"]).c_str());

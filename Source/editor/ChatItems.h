@@ -131,6 +131,9 @@ namespace playground::ui
         void setSpecNow(std::function<std::string()> spec) { spec_.specNow = std::move(spec); }
         void setOpen(std::function<bool()> open) { spec_.open = std::move(open); }
         float preferredWidth() const;                 // a pill's, for its label now
+        // A pill with an icon drawn as its icon alone (no label), where the bar has no room for its words: its
+        // accessibility title and its footer's line stay.
+        void setCompact(bool compact) { compact_ = compact; }
 
         void tick(float, bool hovered, bool focused, funkgui::Point) override
         {
@@ -162,5 +165,6 @@ namespace playground::ui
         funkgui::Rect bounds_;
         bool hovered_ = false, focused_ = false;
         bool hidden_ = false;
+        bool compact_ = false;
     };
 }

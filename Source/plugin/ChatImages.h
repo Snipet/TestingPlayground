@@ -21,6 +21,11 @@ namespace playground::chatimages
     inline constexpr int kThumbEdge = 320;                   // px, the thumbnail's
     inline constexpr std::size_t kMaxBytes = 3'750'000;      // a picture as sent (5 MB once in base64)
     inline constexpr std::size_t kMaxFileBytes = 64u << 20;  // a file larger is not read
+    // A picture of more pixels is not decoded: its header's size is read first (a PNG's, a JPEG's or a GIF's in
+    // portable code, any other's from ImageIO's properties), since a decoder allocates the whole picture before it reads
+    // a row, and a file of a few hundred bytes may say 65,535 x 65,535 (17 GB). 100 megapixels is past a camera's and a
+    // screenshot's (a 24-megapixel photo, an 8K screen's 33) and bounds a decode at 400 MB of 8-bit RGBA.
+    inline constexpr uint64_t kMaxPixels = 100'000'000;
     inline constexpr int kMaxPerMessage = 6;
     inline constexpr int kMaxInChat = 20;                    // in the history: a request carries them all
     // The formats this build reads, as its notes name them: ImageIO's on macOS (BMP too), JUCE's elsewhere.
@@ -40,6 +45,9 @@ namespace playground::chatimages
 
     Prepared fromFile(const std::string& path);
     Prepared fromBytes(const std::vector<uint8_t>& bytes, const std::string& name);
+
+    // How many pictures this process has decoded from bytes (the probes: a picture refused by its header decodes none).
+    std::size_t decodes();
 
     // The thumbnail's pixels from its encoded bytes (a session's): false when they do not decode.
     bool decodeThumb(ChatPicture& picture);
