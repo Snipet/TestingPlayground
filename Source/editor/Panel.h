@@ -132,6 +132,7 @@
 #include "editor/DiffCard.h"
 #include "editor/ExportCard.h"
 #include "editor/NameCard.h"
+#include "editor/UpdateCards.h"
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
@@ -237,6 +238,8 @@ namespace playground::ui
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
     inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
     inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
+    inline constexpr funkgui::Tag kOfferTag = funkgui::tags::firstProduct + 44;       // the website's offer (UpdateCards.h)
+    inline constexpr funkgui::Tag kUpdateTag = funkgui::tags::firstProduct + 45;      // the update card (UpdateCards.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -376,6 +379,9 @@ namespace playground::ui
         void openExport(const std::string& project);
         ExportCard& exportCard() noexcept { return export_; }
         NameCard& nameCard() noexcept { return name_; }
+        OfferCard& offerCard() noexcept { return offer_; }      // the website's offer (UpdateCards.h), for the probes
+        UpdateCard& updateCard() noexcept { return update_; }
+        std::optional<funkgui::Point> centreOfUpdatePill() const;   // nullopt while it does not show
         // Claude Desktop as this Panel shows it (probes): the chat header's subtitle and badge ("" for none), and where
         // the badge is while it shows (the chat open), and its mark on the rail (the chat folded).
         const std::string& desktopLine() const noexcept { return desktop_; }
@@ -887,7 +893,7 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen() || compare_.isOpen();
+                || picker_.isOpen() || compare_.isOpen() || update_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -1012,6 +1018,18 @@ namespace playground::ui
         static constexpr float kChatsPillLeast = 48.0f;  // the room the pill keeps before the badge takes any
         void desktopRow(const ExplorerItem::Row& row);
         NameCard name_{ port_ };
+        // The website (package 08: UpdateCards.h): the offer, made once the answers are read and neither is given (an
+        // editor's Panel alone; not modal, not drawn under a modal card); the top bar's pill while a newer version is out
+        // and not skipped, which opens the update card; the status line's notice once a process (announceUpdate).
+        OfferCard offer_{ port_ };
+        UpdateCard update_{ port_ };
+        int updateItem_ = -1;                            // the top bar's pill
+        bool offerDecided_ = false;                      // the offer made, or found not due, once
+        uint64_t updateSeen_ = 0;                        // the update check's revision as last read
+        UpdateState updateState_;
+        bool updatePill_ = false;                        // the pill shows (its place laid out)
+        void syncUpdates();
+        void afterUpdateCards();                         // their notices to the status, the focus kept
         int focusBeforeName_ = -1;
         void afterName(bool wasOpen);                    // its notice to the status, the focus back once it closed
         uint32_t chatA11y_ = 0;                          // bumps when the conversation's items change

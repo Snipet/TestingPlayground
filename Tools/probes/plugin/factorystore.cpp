@@ -10,7 +10,9 @@
 //             set, no index and no file (not even a temporary). The other product's taken rows are its own run's (its
 //             projects are of its kind, which this product's store refuses): skipped here, said.
 //   GATE      nothing is asked of the site before an editor opens, nor with the answer not given or no, nor with
-//             <ENV_PREFIX>FACTORY=off (processConfig reads it); the site the environment may name (siteFrom)
+//             <ENV_PREFIX>FACTORY=off (processConfig reads it); the site the environment may name (siteFrom); the
+//             offer's answer given through the processor (EditorPort::answerOffer): a yes fetches only once an editor
+//             opens, a no never
 //   FIRST     a first fetch: the set appears, the generation moves, the files are on disk, the request sends a
 //             User-Agent alone; a second store on the folder reads it with no request; the same index again asks for
 //             the index alone; an editor's open again asks nothing within 24 hours, and the index alone after
@@ -543,6 +545,34 @@ PROBE(plugin, factorystore)
             P.eq("gate.yes_no_editor.nothing_asked", site->requests().empty() && s->state().status == fsx::Status::none ? 1 : 0, 1);
         }
         {
+            // The offer's answer through the processor (EditorPort::answerOffer, package 08's card): a yes asks nothing
+            // before an editor opens, and the editor's open fetches; a no, nothing even then.
+            for (const bool yes : { true, false })
+            {
+                const juce::File h = freshHome();
+                auto s = std::make_shared<Site>(fixtures().getChildFile("good-1"));
+                const fsx::Config c = configOf(me, h, s);
+                fsx::useConfigForTests(&c);
+                {
+                    pg::Processor a;
+                    std::shared_ptr<fsx::Store> store = fsx::process();
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    a.editorPort().answerOffer(true, yes, false);
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    const std::string label = yes ? "gate.offer_yes" : "gate.offer_no";
+                    P.eq(label + ".answer", store != nullptr && store->answer() == (yes ? fsx::Answer::yes : fsx::Answer::no) ? 1 : 0, 1);
+                    P.eq(label + ".nothing_before_an_editor", s->requests().empty() ? 1 : 0, 1);
+                    a.editorPort().editorOpened();
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    P.eq(label + (yes ? ".editor_fetches" : ".editor_asks_nothing"), s->asked("index.json") == yes ? 1 : 0, 1);
+                }
+                fsx::useConfigForTests(nullptr);
+            }
+        }
+        {
             fsx::Config c = configOf(me, home, site);
             c.off = true;
             fsx::Store s(c);
@@ -761,6 +791,32 @@ PROBE(plugin, factorystore)
         s->refreshNow();
         const bool again = settle(*s);
         P.eq("thrown.next", again && s->state().status == fsx::Status::ready && ownNames(s->set()) == namesOf(good1) ? 1 : 0, 1);
+    }
+
+    // A pass that throws with an answer to write (the seam fires before the write): the answer kept as one whose write
+    // failed, the file as it was and never read back over it, no pass after it (the seam would throw again at each).
+    {
+        const juce::File home = freshHome();
+        auto site = std::make_shared<Site>(fixtures().getChildFile("good-1"));
+        const std::unique_ptr<fsx::Store> s = storeOf(me, home, site);
+        const juce::File answerFile = home.getChildFile("factory.json");
+        const std::string before = answerFile.loadFileAsString().toStdString();
+        const int requests = s->requests();
+        pg::failure::plant("factory", pg::failure::Kind::badAlloc, 5);
+        s->setAnswer(fsx::Answer::no);
+        const bool settled = settle(*s);
+        const int fired = pg::failure::fired();
+        pg::failure::unplant();
+        P.eq("thrown.answer.once", settled && fired == 1 ? 1 : 0, 1);
+        P.eq("thrown.answer.kept", s->answer() == fsx::Answer::no && !s->answerWritten()
+                                       && answerFile.loadFileAsString().toStdString() == before ? 1 : 0, 1);
+        s->refreshNow();                                 // a pass that reads the answer: the file's is not taken over it
+        const bool again = settle(*s);
+        P.eq("thrown.answer.not_read_back", again && s->answer() == fsx::Answer::no && s->requests() == requests ? 1 : 0, 1);
+        s->setAnswer(fsx::Answer::no);                   // the next answer's write takes it
+        const bool written = settle(*s);
+        P.eq("thrown.answer.written_after", written && s->answerWritten()
+                                                && answerFile.loadFileAsString().contains("\"no\"") ? 1 : 0, 1);
     }
 
     // ---- RESUME ----------------------------------------------------------------------------------------------------------

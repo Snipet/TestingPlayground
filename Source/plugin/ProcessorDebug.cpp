@@ -233,6 +233,15 @@ namespace playground
                                                            + (f.reason.empty() ? "" : ": " + f.reason) });
             }
             s.rows.push_back({ "Factory folder", shown(factorystore::directory()), true });
+            if (updateCheck_ != nullptr)                 // package 08: app.json is in the factory folder's parent
+            {
+                const UpdateState u = updateState();
+                static const char* const kCheck[] = { "off", "not asked", "on", "checking", "failed" };
+                s.rows.push_back({ "Update check", std::string(kCheck[static_cast<int>(u.check)])
+                                                       + (u.latest.empty() ? std::string() : ", latest " + u.latest)
+                                                       + (u.skipped.empty() ? std::string() : ", skipped " + u.skipped)
+                                                       + ", last checked " + when(u.checkedMs) + (u.why.empty() ? "" : ": " + u.why) });
+            }
             out.push_back(std::move(s));
         }
 

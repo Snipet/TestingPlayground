@@ -17,7 +17,9 @@
 # row (P.num, P.hash, ...) would report golden_missing (exit 3) and fail. A product's outputs (WAVs, PNGs) go to
 # <build>/probe-out/<key>/, its results JSON to <build>/probe-results/<key>/, and the FunkGui preferences of a probe
 # to <build>/sandbox/<key>/<probe>/ (never the user's ~/Library). <prefix>FACTORY=off: no probe's processor fetches the
-# factory projects from the website (plugin.factorystore makes its own stores, over a scripted transport). <prefix>GIT is
+# factory projects from the website (plugin.factorystore makes its own stores, over a scripted transport).
+# <prefix>UPDATES=off: none checks for a new version, and no probe's editor meets the website's offer (plugin.updates and
+# gui.updates make their own checks over a scripted transport, and turn it on for themselves). <prefix>GIT is
 # CMake's GIT_EXECUTABLE (cmake/Deps.cmake's find_package(Git)): the git plugin.git runs (plugin/Git.h's find()).
 #
 # fp_add_lints(), once after every product: lint.exports (macOS and Linux) and lint.signature (macOS) over every
@@ -173,7 +175,7 @@ function(fp_add_probes key)
     set_tests_properties(${_test} PROPERTIES
         LABELS "probe;${_layer};${key}"
         TIMEOUT ${_timeout}
-        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}FACTORY=off;${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>;${_p}GIT=${GIT_EXECUTABLE}")
+        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}FACTORY=off;${_p}UPDATES=off;${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>;${_p}GIT=${GIT_EXECUTABLE}")
   endforeach()
 endfunction()
 

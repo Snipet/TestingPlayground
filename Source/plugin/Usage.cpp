@@ -1,5 +1,6 @@
 // The chat's usage ledger (Usage.h).
 #include "plugin/Usage.h"
+#include "plugin/FileReplace.h"
 
 #include "plugin/ChatStore.h"
 
@@ -187,15 +188,26 @@ namespace playground::usage
         }
     }
 
+    namespace
+    {
+        // Moves each time the table in use changes (a later one taken, the probes' reset): revision() adds it, so a
+        // reader that follows the revision (ChatAgent::usage, the Usage page) prices with the new table at its next
+        // read, not only at its periodic reread.
+        std::atomic<uint64_t> pricesChanged{ 0 };
+    }
+
     bool offerPrices(PriceTable table)
     {
         if (!validDay(table.asOf))
             return false;
-        const std::lock_guard<std::mutex> lock(pricesMutex);
-        const std::string& now = offered ? offered->asOf : builtInPrices().asOf;
-        if (table.asOf <= now)
-            return false;
-        offered = std::move(table);
+        {
+            const std::lock_guard<std::mutex> lock(pricesMutex);
+            const std::string& now = offered ? offered->asOf : builtInPrices().asOf;
+            if (table.asOf <= now)
+                return false;
+            offered = std::move(table);
+        }
+        pricesChanged.fetch_add(1, std::memory_order_acq_rel);
         return true;
     }
 
@@ -207,9 +219,12 @@ namespace playground::usage
 
     void resetPricesForTests()
     {
-        const std::lock_guard<std::mutex> lock(pricesMutex);
-        offered.reset();
-        listed.clear();
+        {
+            const std::lock_guard<std::mutex> lock(pricesMutex);
+            offered.reset();
+            listed.clear();
+        }
+        pricesChanged.fetch_add(1, std::memory_order_acq_rel);
     }
 
     void setListedPrice(const std::string& provider, const std::string& model, const Price& price)
@@ -330,7 +345,7 @@ namespace playground::usage
             fs::create_directories(p.parent_path(), ec);
             const std::string tag = juce::Uuid().toString().substring(0, 12).toStdString();
             const fs::path temp = p.parent_path() / (p.filename().string() + "." + tag + ".tmp");
-            bool written = false;
+            bool written = false, moved = false;
             {
                 std::ofstream out(temp, std::ios::binary | std::ios::trunc);
                 out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -340,10 +355,9 @@ namespace playground::usage
             if (written)
             {
                 fs::permissions(temp, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace, ec);
-                ec.clear();
-                fs::rename(temp, p, ec);
+                moved = files::replace(temp, p, ec);   // FileReplace.h: a reader on Windows waited out
             }
-            if (!written || ec)
+            if (!written || !moved)                  // the helper's answer: ec may say a try's error it waited out
             {
                 std::error_code e;
                 fs::remove(temp, e);
@@ -703,7 +717,7 @@ namespace playground::usage
     bool resetOwed() { return processLedger().resetOwed(); }
     bool lastResetFailed() { return processLedger().lastResetFailed(); }
 
-    uint64_t revision() noexcept { return processLedger().revision(); }
+    uint64_t revision() noexcept { return processLedger().revision() + pricesChanged.load(std::memory_order_acquire); }
 
     void setWritesFailForTests(bool fail) { writesFail.store(fail); }
 
