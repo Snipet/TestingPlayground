@@ -184,19 +184,24 @@ namespace
 
     pg::ChatState chat(pg::Processor& p) { return p.chatAgent().chatState(); }
 
-    // The editor's check while typing (CodeAssist) landed: a Panel's first is asked once its files have rested (0.6 s
-    // of the host's clock) and answers on the compiler's thread whenever that thread has a core; its outcome takes the
-    // status line's Checking... away, a frame of its own at a moment of the real clock, not idleness (gui.switch RATE,
-    // gui.dump DRAW). A row that counts an idle Panel's frames begins once it has landed.
+    // The editor's check while typing (CodeAssist) landed: a check is due once the files change and is sent once they
+    // have rested (0.6 s of the host's clock: CodeAssist::settled() is false until then), then answers on the
+    // compiler's thread whenever that thread has a core; its outcome takes the status line's Checking... away, a frame
+    // of its own at a moment of the real clock, not idleness (gui.switch RATE, gui.dump DRAW). So this ticks until no
+    // check is due or running and no compile runs, and a row that counts an idle Panel's frames begins once it is true.
+    // settled() also waits for the hover card's delay while the pointer rests over the editor and for the caret's
+    // occurrences after the editor takes the keys: each a fixed span of the host's clock, which these ticks pass.
     bool checkLanded(pg::ui::Panel& panel, funkgui::HeadlessHost& host, pg::EditorPort& port)
     {
+        const pg::ui::CodeAssist& code = panel.codeAssist();
+        const auto busy = [&] { return !code.settled() || code.checking() || port.compiling(); };
         for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
-             (panel.codeAssist().checking() || port.compiling()) && std::chrono::steady_clock::now() < by;)
+             busy() && std::chrono::steady_clock::now() < by;)
         {
             host.tick(1, 1.0f / 12.0f);                  // a calm editor's cadence
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        return !panel.codeAssist().checking() && !port.compiling();
+        return !busy();
     }
 
     // The script's answers no request took (a row that failed left them): dropped, so the next turns get their own.
