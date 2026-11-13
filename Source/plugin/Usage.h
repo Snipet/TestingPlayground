@@ -150,7 +150,9 @@ namespace playground::usage
         bool flush(std::string_view today);
         bool flush() { return flush(usage::today()); }
         // Every count gone: the file emptied (written beside and renamed, under the folder's .lock) and what was not
-        // written yet dropped. False when the lock or the write failed (the file as it was).
+        // written yet dropped. False when the lock or the write failed: the file as it was, and the counts not written
+        // yet kept (with any add() brought meanwhile), so a failed Reset loses nothing. A count added while a Reset
+        // that succeeds runs is kept and written by the next flush: it came after the Reset was asked.
         bool reset(std::string_view today);
         Snapshot snapshot(Range range, std::string_view today) const;
         Snapshot snapshot(Range range) const { return snapshot(range, usage::today()); }

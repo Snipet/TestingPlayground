@@ -1273,7 +1273,8 @@ namespace playground
         if (jobThread_.joinable())
             jobThread_.join();
         keep();                                    // the chat stays on this Mac (the plugin closed unsaved)
-        usage::flush();                            // what the ledger has not written yet
+        settleUsageReset();                        // a Reset the user confirmed whose job was dropped: done now
+        usage::flush();                            // what the ledger has not written yet (counted after the Reset)
     }
 
     void ChatAgent::setTransport(std::unique_ptr<claude::Transport> transport)

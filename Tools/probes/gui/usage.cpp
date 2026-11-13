@@ -12,26 +12,32 @@
 //   gui.usage.reset.png       Reset asked (Reset and Cancel)
 //   gui.usage.paper.png, gui.usage.paper.small.png   30 days (a new card's range) in PAPER, and at the least window
 // and checks:
+//   COLOURS  Theme.h's series inks: at least 3.7:1 against the card in both themes and kinds; never an accent, the
+//            errors' colour or each other
 //   MODEL    buildModel (pure): the series ranked by tokens, the buckets by day (week) and by month (year), the total;
 //            a round axis; an estimate marked ~, none said "no price known"
-//   EMPTY    the ledger read (not merely the card open): "No requests yet.", no bar, the footnote's date, Reset disabled
+//   EMPTY    the ledger read (not merely the card open): "No requests yet.", no bar, the footnote's date, Reset
+//            disabled
 //   RANGES   7 days 7 bars, 30 days 30, 12 months 12 (the newest this month), All back to the oldest month kept
-//   STACKS   in the frame, each bar's segments bottom up in the chart's order: the model with the most tokens at the foot
+//   STACKS   in the frame, each bar's segments bottom up in the chart's order: the model with the most tokens at the
+//            foot
 //   SHOW     Tokens and Cost: the chart's name and the bars' readouts in tokens, then in dollars; the table's costs: an
 //            estimate with ~, the provider's own figure without, "no price known", the total ~ and + when partly priced
-//   READOUT  the bar under the pointer; a click picks a bar, kept once the pointer leaves the chart; End, Home and Right
-//            pick by the keys, and a key's pick holds over the pointer's bar until the pointer moves
-//   A11Y     the chart a group named and valued by its readout, a bar an item each; the table a table, a row a model and
-//            the total
-//   PLACES   the default, the least and a large window: the rail and Done inside the card; the body inside the card (its
-//            clip never crosses the card's edge); every page control that shows within the body's width; every one
-//            reachable by scrolling (inside the content, no taller than the body) and by Tab (the body scrolls to it);
-//            every control with an accessible title
-//   RESET    asked first: the file untouched while asked and after Cancel; reached by the wheel and by Tab alone, Return
-//            asks and Return on Reset empties the file, on the chat's job thread (the message thread waits on nothing)
+//   READOUT  the bar under the pointer; a click picks a bar, kept once the pointer leaves the chart; End, Home and
+//            Right pick by the keys, and a key's pick holds over the pointer's bar until the pointer moves
+//   A11Y     the chart a group named and valued by its readout, a bar an item each; the table a table, a row a model
+//            and the total
+//   PLACES   the default, the least and a large window: the rail and Done inside the card; the body inside the card
+//            (its clip never crosses the card's edge); every page control that shows within the body's width; every
+//            one reachable by scrolling (inside the content, no taller than the body) and by Tab (the body scrolls to
+//            it); every control with an accessible title
+//   RESET    asked first: the file untouched while asked and after Cancel; reached by the wheel and by Tab alone,
+//            Return asks and Return on Reset empties the file, on the chat's job thread (the message thread waits on
+//            nothing)
 //   THEMES   the page in both themes and the least window in PAPER; no missing glyph
 #include "Probe.h"
 
+#include "editor/ChatStyle.h"
 #include "editor/Panel.h"
 #include "editor/SettingsCard.h"
 #include "editor/SettingsPages.h"
@@ -55,6 +61,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <map>
 #include <set>
 #include <string>
@@ -146,7 +153,7 @@ PROBE(gui, usage)
     const int64_t now = pg::usage::dayNumber(today);
     const std::string opus = "claude-opus-5-5", sonnet = "claude-sonnet-5-5", haiku = "claude-haiku-5-5";
 
-    // ---- MODEL: buildModel is pure, so it is checked on a snapshot made by hand -----------------------------------------
+    // ---- MODEL: buildModel is pure, so it is checked on a snapshot made by hand -------------------------------------
     {
         pg::usage::Snapshot snap;
         snap.today = today;
@@ -185,7 +192,41 @@ PROBE(gui, usage)
         P.eq("model.none_words", up::moneyText(none) == "no price known" ? 1 : 0, 1);
     }
 
-    // ---- the page over a real Processor ---------------------------------------------------------------------------------
+    // ---- COLOURS: Theme.h's series inks hold what its comment says -------------------------------------------------
+    {
+        const auto lum = [](funkgui::Col c) {
+            const auto lin = [](uint8_t v) {
+                const double x = v / 255.0;
+                return x <= 0.04045 ? x / 12.92 : std::pow((x + 0.055) / 1.055, 2.4);
+            };
+            return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+        };
+        const auto contrast = [&](funkgui::Col a, funkgui::Col b) {
+            const double x = lum(a), y = lum(b);
+            return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
+        };
+        const auto same = [](funkgui::Col a, funkgui::Col b) { return a.r == b.r && a.g == b.g && a.b == b.b; };
+        double least = 99.0;
+        bool apart = true;
+        for (const bool instrument : { false, true })
+            for (const int t : { 0, 1 })
+            {
+                const funkgui::Theme th = pg::ui::kindTheme(funkgui::Theme::byIndex(t), instrument);
+                const funkgui::Col card = pg::ui::chat::palette(th).card;
+                for (int i = 0; i < pg::ui::kSeriesInks; ++i)
+                {
+                    const funkgui::Col c = pg::ui::seriesInk(i, th);
+                    least = std::min(least, contrast(c, card));
+                    apart = apart && !same(c, th.accent) && !same(c, th.signal);
+                    for (int j = 0; j < i; ++j)
+                        apart = apart && !same(c, pg::ui::seriesInk(j, th));
+                }
+            }
+        P.ge("colours.contrast_on_card", least, 3.7);       // both kinds, both themes (WCAG asks 3:1 of graphics)
+        P.eq("colours.apart", apart ? 1 : 0, 1);           // no accent, no errors' colour, no two alike
+    }
+
+    // ---- the page over a real Processor -----------------------------------------------------------------------------
     pg::Processor processor;
     pg::EditorPort& port = processor.editorPort();
     processor.settle();
@@ -275,10 +316,11 @@ PROBE(gui, usage)
         return out;
     };
     const auto packed = [](funkgui::Col c) {
-        return static_cast<uint32_t>(c.r) | static_cast<uint32_t>(c.g) << 8 | static_cast<uint32_t>(c.b) << 16 | static_cast<uint32_t>(c.a) << 24;
+        return static_cast<uint32_t>(c.r) | static_cast<uint32_t>(c.g) << 8 | static_cast<uint32_t>(c.b) << 16
+             | static_cast<uint32_t>(c.a) << 24;
     };
 
-    // ---- EMPTY: the ledger read, and nothing in it ----------------------------------------------------------------------
+    // ---- EMPTY: the ledger read, and nothing in it ------------------------------------------------------------------
     panel.openSettings("usage");
     settle();
     P.eq("empty.shown", card.pageId() == "usage" ? 1 : 0, 1);
@@ -302,7 +344,7 @@ PROBE(gui, usage)
     }
     writePng(P, host, "gui.usage.empty.png");
 
-    // ---- seed: Anthropic's estimated (no reported figure), OpenRouter's reported, Gemini's and OpenAI's unpriced ------
+    // ---- seed: Anthropic's estimated, OpenRouter's reported, Gemini's and OpenAI's unpriced ------------------------
     pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, false }, counts(120000, 60000, 24000, 12));
     pg::usage::add({ pg::usage::dayOf(now), "anthropic", opus, true }, counts(10000, 0, 2000, 2));
     pg::usage::add({ pg::usage::dayOf(now), "anthropic", sonnet, false }, counts(20000, 0, 4000, 2));
@@ -318,7 +360,7 @@ PROBE(gui, usage)
     const int64_t allMonths = monthOf(today) - monthOf(pg::usage::dayOf(now - 500)) + 1;
     const int64_t seeded = fileRows();
 
-    // ---- RANGES ----------------------------------------------------------------------------------------------------------
+    // ---- RANGES -----------------------------------------------------------------------------------------------------
     P.eq("ranges.month_filled", waitFor(host, [&] { return bars() > 0 && seen().bars.size() == 30; }) ? 1 : 0, 1);
     P.eq("ranges.month_bars", static_cast<int64_t>(seen().bars.size()), 30);
     P.eq("ranges.year", chooseRange("12 months", 12) ? 1 : 0, 1);
@@ -338,7 +380,7 @@ PROBE(gui, usage)
     settle();
     writePng(P, host, "gui.usage.week.png");
 
-    // ---- STACKS: the largest model at each bar's foot, as the chart orders them -------------------------------------------
+    // ---- STACKS: the largest model at each bar's foot, as the chart orders them -------------------------------------
     {
         const up::Model m = up::buildModel(pg::usage::snapshot(usage::week), usage::week);
         const funkgui::Theme th = pg::ui::productTheme(funkgui::Theme::byIndex(0));
@@ -365,7 +407,7 @@ PROBE(gui, usage)
         P.ge("stacks.today_stacked", static_cast<double>(stacked), 1.0);   // today: opus under sonnet
     }
 
-    // ---- SHOW: Tokens, then Cost ------------------------------------------------------------------------------------------
+    // ---- SHOW: Tokens, then Cost ------------------------------------------------------------------------------------
     {
         const Seen w = seen();
         P.eq("show.tokens_named", w.chart.title.find("tokens") != std::string::npos ? 1 : 0, 1);
@@ -390,7 +432,7 @@ PROBE(gui, usage)
     host.chooseMenuItem("Tokens");
     settle();
 
-    // ---- READOUT: the pointer, a click, the keys ----------------------------------------------------------------------
+    // ---- READOUT: the pointer, a click, the keys --------------------------------------------------------------------
     {
         const funkgui::Rect rail = card.places(W(), H()).rail;
         const auto valueAfter = [&] {
@@ -428,7 +470,7 @@ PROBE(gui, usage)
         settle();
     }
 
-    // ---- YEAR's picture: the newest month picked by the keys --------------------------------------------------------------
+    // ---- YEAR's picture: the newest month picked by the keys --------------------------------------------------------
     chooseRange("12 months", 12);
     {
         const auto chart = card.centreOf(Act::item, up::kChart, W(), H());
@@ -444,7 +486,7 @@ PROBE(gui, usage)
     waitFor(host, [&] { return seen().bars.size() == 7; });
     settle();
 
-    // ---- A11Y ---------------------------------------------------------------------------------------------------------
+    // ---- A11Y -------------------------------------------------------------------------------------------------------
     {
         const Seen w = seen();
         P.eq("a11y.chart_group", w.chart.id != 0 ? 1 : 0, 1);
@@ -457,7 +499,7 @@ PROBE(gui, usage)
         P.eq("a11y.rows", static_cast<int64_t>(w.rows.size()), 6);   // five models in the week and the total
     }
 
-    // ---- PLACES -------------------------------------------------------------------------------------------------------
+    // ---- PLACES -----------------------------------------------------------------------------------------------------
     for (const auto& [w, h] : { std::pair{ pg::ui::kDefaultWidth, pg::ui::kDefaultHeight },
                                 std::pair{ pg::ui::kMinWidth, pg::ui::kMinHeight }, std::pair{ 1600, 1000 } })
     {
@@ -515,7 +557,7 @@ PROBE(gui, usage)
     host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
     settle();
 
-    // ---- RESET: asked first, by the wheel and the pointer, then by the keys alone -----------------------------------------
+    // ---- RESET: asked first, by the wheel and the pointer, then by the keys alone -----------------------------------
     P.eq("reset.reached_wheel", reach(Act::item, up::kReset) ? 1 : 0, 1);
     click(Act::item, up::kReset);
     settle();
@@ -553,7 +595,7 @@ PROBE(gui, usage)
     P.eq("reset.file_empty", fileRows(), 0);
     settle();
 
-    // ---- THEMES ------------------------------------------------------------------------------------------------------
+    // ---- THEMES -----------------------------------------------------------------------------------------------------
     host.keys("escape");
     settle();
     {

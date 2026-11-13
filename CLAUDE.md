@@ -741,10 +741,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
 - **One card, every host** (`editor/SettingsCard.h`, `SettingsPages.h`): the gear opens it everywhere; the Audio and
   MIDI page is listed only while there are devices (the Standalone). A page is a file and a row in `settings::pages()`
   (Usage before Debug, below; packages to come: Network before it, Git rows on Projects, the code text size on Editor),
-  never a change inside the card. A page that draws more than texts and controls (the Usage page's chart) marks a Control
-  `own` and draws it itself (`settings::Page::paint`, `keyed`, `a11y`; its view state `SettingsCard::viewState`; a click's
-  point `SettingsCard::pressPoint`). Each control writes where its setting already lives and reads it there at each layout: the card keeps
-  no copy, and a page's `key()` makes the card draw again when what it reads moves with no input.
+  never a change inside the card. A page that draws more than texts and controls (the Usage page's chart) marks a
+  Control `own` and draws it itself (`settings::Page::paint`, `keyed`, `a11y`; its view state `SettingsCard::viewState`;
+  a click's point `SettingsCard::pressPoint`). Each control writes where its setting already lives and reads it there at
+  each layout: the card keeps no copy, and a page's `key()` makes the card draw again when what it reads moves with no
+  input.
 - **The Debug page gathers only while it shows**: the card counts itself a viewer (`EditorPort::addDebugViewer`) while
   its Debug page shows, `Processor::debugRows` returns nothing (and gathers nothing: `debugGathers`) with none, and the
   card reads again once a second. The graphics rows are the host's (`Panel::setHostDebug`: `gpu/CodeWindow.cpp`'s
@@ -757,9 +758,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   months and All, stacked by model, the largest `kMaxSeries` a colour each and the rest Other, round axis steps, the bar
   under the pointer, or the one a click or the keys picked, read out: a key's pick holds until the pointer moves); a
   table (a row a model: its provider, requests, tokens in, cached, out, cost, share, and the total); the footnote with
-  the price table's date; Reset..., asked first (`ChatPort::resetUsage`). An estimate is never a cost (`~` before it;
-  `no price known` where there is none; the date always shown). The colours hold in both themes and both accents and are
-  never the errors' `signal`; the model (`usagepage::buildModel`) is pure. `gui.usage` checks it.
+  the price table's date and that the provider's invoice is the record; Reset..., asked first (`ChatPort::resetUsage`).
+  An estimate is never a cost (`~` before it; `no price known` where there is none; the date always shown). Its series'
+  colours after the accent are `Theme.h`'s `seriesInk` (one set for both kinds, a value for each theme, never an accent
+  or the errors' `signal`; their contrast and colour-blind spacing in its comment, `gui.usage` COLOURS); the model
+  (`usagepage::buildModel`) is pure. `gui.usage` checks it.
 - **This build's commit is never in `Product.h`** (nearly every file includes it, so a value that changes each commit
   would rebuild everything): `cmake/BuildCommit.cmake` writes `<build>/generated/common/BuildCommit.h` at configure and
   at each build (`fp_build_commit`), only when it changes, and `Source/plugin/ProcessorDebug.cpp` alone includes it.

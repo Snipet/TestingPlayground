@@ -10,8 +10,6 @@
 #include "editor/Theme.h"
 #include "plugin/ChatPort.h"
 
-#include "Product.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,7 +21,7 @@
 
 namespace playground::ui::usagepage
 {
-    // ---- the model --------------------------------------------------------------------------------------------------------
+    // ---- the model --------------------------------------------------------------------------------------------------
     void Money::add(const usage::Cost& c)
     {
         if (c.kind == usage::Cost::Kind::none)
@@ -306,25 +304,15 @@ namespace playground::ui::usagepage
 
     funkgui::Col colourOf(int index, const funkgui::Theme& th)
     {
-        const chat::Palette p = chat::palette(th);
         if (index < 0)
-            return p.dim;
+            return chat::palette(th).dim;                // Other
         if (index == 0)
-            return p.accent;
-        // Neither accent nor the errors' red: the effect's accent is orange and its errors cyan; the instrument's accent
-        // is blue and its errors orange.
-        constexpr funkgui::Col violet{ 155, 123, 224, 255 }, green{ 93, 187, 122, 255 }, gold{ 214, 178, 74, 255 };
-        constexpr funkgui::Col blue{ 91, 155, 230, 255 }, pink{ 217, 115, 155, 255 };
-        constexpr std::array<funkgui::Col, 4> effect{ violet, green, blue, gold };
-        constexpr std::array<funkgui::Col, 4> instrument{ violet, green, gold, pink };
-        const auto& set = product::kIsInstrument ? instrument : effect;
-        const funkgui::Col c = set[static_cast<std::size_t>(index - 1) % set.size()];
-        const bool dark = th.ground.r < 128;
-        return dark ? c : funkgui::mix(c, funkgui::Col{ 0, 0, 0, 255 }, 0.22f);
+            return th.accent;
+        return seriesInk(index - 1, th);                 // Theme.h: one set for both kinds and both themes
     }
 }
 
-// ---- the page -----------------------------------------------------------------------------------------------------------
+// ---- the page -------------------------------------------------------------------------------------------------------
 
 namespace playground::ui::settings
 {
@@ -343,6 +331,11 @@ namespace playground::ui::settings
         const char* const kRanges[] = { "7 days", "30 days", "12 months", "All" };
         const char* const kShows[] = { "Tokens", "Cost" };
 
+        // The page's view state (SettingsCard::viewState). paint() writes three of it, keyed, keyPointer and shown,
+        // which a draw that reads only cannot be: what the readout shows depends on whether the pointer moved since a
+        // key picked a bar, and only a frame sees the pointer. It stays a function of what the frame reads: keyed is
+        // in key(), so the card's revision moves with it; keyPointer and shown follow the pointer, which the Panel's
+        // draw key mixes. Nothing else in paint() changes state.
         struct View
         {
             usage::Range range = usage::Range::month;
@@ -408,7 +401,8 @@ namespace playground::ui::settings
             return {};
         }
 
-        // The table's columns, from the right: share, cost, out, cached, in, requests, provider; the model has the rest.
+        // The table's columns, from the right: share, cost, out, cached, in, requests, provider; the model has the
+        // rest.
         struct Columns
         {
             float model, provider, requests, in, cached, out, cost, share;   // each one's right edge (the model's left)
@@ -485,14 +479,15 @@ namespace playground::ui::settings
         {
             std::string w = isTotal ? std::string("Total") : s.model + ", " + providerText(s.provider);
             w += ": " + grouped(s.counts.requests) + (s.counts.requests == 1 ? " request, " : " requests, ");
-            w += tokensText(s.counts.tokensIn()) + " tokens in (" + tokensText(s.counts.cacheRead + s.counts.cacheWrite5m + s.counts.cacheWrite1h)
-               + " cached), " + tokensText(s.counts.output) + " out, " + moneyText(s.money);
+            const int64_t cached = s.counts.cacheRead + s.counts.cacheWrite5m + s.counts.cacheWrite1h;
+            w += tokensText(s.counts.tokensIn()) + " tokens in (" + tokensText(cached) + " cached), " + tokensText(s.counts.output)
+               + " out, " + moneyText(s.money);
             if (!isTotal)
                 w += ", " + shareText(shareOf(s, cost), shareOf(total, cost)) + (cost ? " of the cost" : " of the tokens");
             return w;
         }
 
-        // ---- build ----------------------------------------------------------------------------------------------------------
+        // ---- build --------------------------------------------------------------------------------------------------
         void build(Builder& b)
         {
             View& v = viewOf(b.ctx);
@@ -542,7 +537,8 @@ namespace playground::ui::settings
             const std::string asOf = v.data != nullptr && !v.data->pricesAsOf.empty() ? v.data->pricesAsOf : usage::pricesInUse().asOf;
             b.y += 4.0f;
             b.notes("Prices as of " + asOf + ", the table in use. A cost with ~ is an estimate at those prices; one without "
-                        "is the provider's own figure; + after it: a part has no price known.",
+                        "is the provider's own figure; + after it: a part has no price known. Your provider's invoice is "
+                        "the record.",
                     0.0f, b.inner);
             b.notes(std::string("Every request the chat sent from ") + kThisMachine + ", by both playgrounds: names and numbers, "
                         "never a word of a chat.",
@@ -625,7 +621,7 @@ namespace playground::ui::settings
             return mix(h, v.modelMade ? 1u : 0u);
         }
 
-        // ---- paint ----------------------------------------------------------------------------------------------------------
+        // ---- paint --------------------------------------------------------------------------------------------------
         void paint(funkgui::Canvas& c, const funkgui::Theme& th, const SettingsCard::Places& at, Context& ctx, funkgui::Point pointer,
                    bool hasPointer)
         {
@@ -666,7 +662,8 @@ namespace playground::ui::settings
                            funkgui::Align::right);
                 }
             c.hairlineH(plot.x, std::round(plot.bottom()), plot.w, p.composerEdge);
-            c.text(v.cost ? "$0" : "0", plot.x - 8.0f, c.capCentreTop(plot.bottom(), chat::kSmall), chat::kSmall, p.faint, funkgui::Align::right);
+            c.text(v.cost ? "$0" : "0", plot.x - 8.0f, c.capCentreTop(plot.bottom(), chat::kSmall), chat::kSmall, p.faint,
+                   funkgui::Align::right);
             if (empty)
             {
                 c.text(!has ? "Reading..." : "No requests yet.", plot.centreX(), c.capCentreTop(plot.centreY(), chat::kSmall), chat::kSmall,
@@ -707,7 +704,8 @@ namespace playground::ui::settings
                 for (int i = n - 1; i >= 0; i -= every)
                 {
                     const Bucket& b = m.buckets[static_cast<std::size_t>(i)];
-                    c.text(b.label.c_str(), plot.x + slot * (static_cast<float>(i) + 0.5f), c.capCentreTop(plot.bottom() + 10.0f, chat::kSmall),
+                    const float lx = plot.x + slot * (static_cast<float>(i) + 0.5f);
+                    c.text(b.label.c_str(), lx, c.capCentreTop(plot.bottom() + 10.0f, chat::kSmall),
                            chat::kSmall, i == shown ? p.text : p.faint, funkgui::Align::centre);
                 }
             }
@@ -715,7 +713,8 @@ namespace playground::ui::settings
             // The readout: the bar under the pointer, else the one picked, else the legend.
             const float ry = r.bottom() + 0.5f * kReadoutH;
             if (has && !m.empty() && shown >= 0)
-                c.text(fitText(c, readoutText(m, shown, v.cost), chat::kSmall, r.w - 8.0f).c_str(), r.x + 4.0f, c.capCentreTop(ry, chat::kSmall),
+                c.text(fitText(c, readoutText(m, shown, v.cost), chat::kSmall, r.w - 8.0f).c_str(), r.x + 4.0f,
+                       c.capCentreTop(ry, chat::kSmall),
                        chat::kSmall, p.text);
             else if (has && !m.empty())
             {

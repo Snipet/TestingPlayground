@@ -215,8 +215,8 @@ namespace playground
         bool current = false;                 // the one shown
     };
 
-    // The usage ledger as the settings card's Usage page reads it (ChatPort::usage): a snapshot of a range, read off the
-    // message thread, and the price table's date in use. Counts and names only (Usage.h): nothing of a chat.
+    // The usage ledger as the settings card's Usage page reads it (ChatPort::usage): a snapshot of a range, read off
+    // the message thread, and the price table's date in use. Counts and names only (Usage.h): nothing of a chat.
     struct UsageView
     {
         uint64_t revision = 0;                   // moves with each read

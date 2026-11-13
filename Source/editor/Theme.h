@@ -53,6 +53,24 @@ namespace playground::ui
         return dark ? funkgui::Col{ 0x7F, 0xD4, 0xE8 } : funkgui::Col{ 0x1E, 0x7E, 0x96 };
     }
 
+    // A chart's series after the accent (the Usage page's models, UsagePage.h): one fixed set for both kinds, neither
+    // kind's accent nor errors' colour, a value for each theme. Chosen for a chart on the card's ground (ChatStyle.h's
+    // `card`): each at least 3.7:1 against it in both themes (WCAG asks 3:1 of graphics), and every two of them and
+    // the accent at least 11.8 apart (CIELAB) under simulated protanopia, deuteranopia and tritanopia as well
+    // (Machado 2009).
+    // Where colour is not enough, the chart says the rest: the stacks keep one order (the most used at the foot), and
+    // the legend, the readout and the table name each model beside its swatch.
+    inline constexpr int kSeriesInks = 4;
+    inline funkgui::Col seriesInk(int index, const funkgui::Theme& th)
+    {
+        constexpr funkgui::Col graphite[kSeriesInks]{ { 0x7C, 0x83, 0xF2 }, { 0x5D, 0xBB, 0x7A }, { 0xF2, 0xA0, 0xB8 },
+                                                      { 0xC0, 0x8A, 0x5A } };
+        constexpr funkgui::Col paper[kSeriesInks]{ { 0x3B, 0x43, 0xB8 }, { 0x2F, 0x8A, 0x4E }, { 0xA3, 0x37, 0x5E },
+                                                   { 0x7A, 0x4E, 0x28 } };
+        const int i = ((index % kSeriesInks) + kSeriesInks) % kSeriesInks;   // indigo, green, rose, brown
+        return th.ground.r < 128 ? graphite[i] : paper[i];
+    }
+
     // The product's: kindTheme() and kindCodeSecond() for its kind (Theme.cpp, compiled into each product).
     funkgui::Theme productTheme(const funkgui::Theme& host);
     funkgui::Col codeSecond(const funkgui::Theme& th);

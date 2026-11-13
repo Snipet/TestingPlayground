@@ -12,6 +12,12 @@
 //   DAYS      the day arithmetic both ways; 400 days kept by day, older days folded into their month; the ranges
 //   FILE      two ledgers on one file add up (and a flush with nothing pending writes nothing); what does not parse is
 //             kept beside as usage.json.bad and a new ledger begins; the file 0600 (POSIX)
+//   RESET     Ledger::reset empties the file and drops what was not written; the folder's lock refused, or the write
+//             refused: false, the file as it was, the counts not written kept with those added meanwhile; a count
+//             added while a Reset that succeeds waits for the lock is kept for the next flush
+//   PAGE      the usage page's Reset (ChatAgent::resetUsage): confirmed while a read is past its look for one, the
+//             read itself runs it, with no further ask; at the agent's end, owed with its read held, and owed with
+//             its job queued behind another (dropped by the destructor): the file emptied either way
 //   TURN      a turn over the scripted API adds each request once, under the model that served it: the cache writes
 //             by lifetime (the split, and a total without one as five minutes'); the footer keeps its words and adds
 //             the turn's cost
@@ -41,6 +47,8 @@
 #include <funkgui/panel/HeadlessGuiScope.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -48,7 +56,19 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
+
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+#else
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+#endif
 
 namespace pg = playground;
 namespace claude = playground::claude;
@@ -83,6 +103,66 @@ namespace
             if (r.key.provider == provider && r.key.model == model && r.key.fast == fast)
                 c += r.counts;
         return c;
+    }
+
+    // The folder's .lock held from outside the ledger (another process's flush, as the ledger sees it).
+    class HeldLock
+    {
+    public:
+        explicit HeldLock(const fs::path& dir)
+        {
+            const fs::path p = dir / ".lock";
+#if defined(_WIN32)
+            _wsopen_s(&fd_, p.c_str(), _O_RDWR | _O_CREAT | _O_BINARY, _SH_DENYRW, _S_IREAD | _S_IWRITE);
+#else
+            fd_ = ::open(p.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+            if (fd_ >= 0 && ::flock(fd_, LOCK_EX | LOCK_NB) != 0)
+            {
+                ::close(fd_);
+                fd_ = -1;
+            }
+#endif
+        }
+        ~HeldLock() { release(); }
+        HeldLock(const HeldLock&) = delete;
+        HeldLock& operator=(const HeldLock&) = delete;
+        bool held() const { return fd_ >= 0; }
+        void release()
+        {
+            if (fd_ < 0)
+                return;
+#if defined(_WIN32)
+            _close(fd_);
+#else
+            ::flock(fd_, LOCK_UN);
+            ::close(fd_);
+#endif
+            fd_ = -1;
+        }
+
+    private:
+        int fd_ = -1;
+    };
+
+    int64_t requestsIn(const fs::path& file)
+    {
+        int64_t n = 0;
+        for (const usage::Row& r : usage::read(file))
+            n += r.counts.requests;
+        return n;
+    }
+
+    // Until `done`, probe::kWorkWait at most: what it waits for is another thread's.
+    bool waitUntil(const std::function<bool()>& done)
+    {
+        const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+        while (!done())
+        {
+            if (std::chrono::steady_clock::now() >= by)
+                return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return true;
     }
 
     // A million of every kind of token.
@@ -330,6 +410,89 @@ PROBE(plugin, usage)
         P.eq("file.new_ledger", usage::read(file).size() == 1 && usage::read(file)[0].counts.requests == 1 ? 1 : 0, 1);
     }
 
+    // ---- RESET -----------------------------------------------------------------------------------------------------------
+    {
+        const fs::path dir = probe::outPath("usage-reset");
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        const fs::path file = dir / "usage.json";
+        const usage::Key k{ day, "anthropic", "claude-opus-5-5", false };
+        usage::Counts one;
+        one.requests = 1;
+        one.input = 10;
+        {
+            // Done: the file emptied and what was not written dropped.
+            usage::Ledger l(file);
+            l.add(k, one);
+            P.eq("reset.flushed_first", l.flush(day) ? 1 : 0, 1);
+            l.add(k, one);                                           // pending
+            P.eq("reset.done", l.reset(day) ? 1 : 0, 1);
+            P.eq("reset.file_emptied", static_cast<int64_t>(usage::read(file).size()), 0);
+            P.eq("reset.pending_dropped", l.pending() ? 1 : 0, 0);
+        }
+        {
+            // The lock refused (held all through the ledger's 5 s): false, the file as it was, every count kept.
+            usage::Ledger l(file);
+            l.add(k, one);
+            l.flush(day);                                            // the file: 1 request
+            l.add(k, one);                                           // pending: 1
+            HeldLock held(dir);
+            P.eq("reset.lock_held_by_probe", held.held() ? 1 : 0, 1);
+            std::atomic<bool> started{ false };
+            bool result = true;
+            std::thread t([&] {
+                started.store(true);
+                result = l.reset(day);
+            });
+            waitUntil([&] { return started.load(); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            l.add(k, one);                                           // while it waits for the lock: 1 more
+            t.join();
+            P.eq("reset.lock_refused_false", result ? 1 : 0, 0);
+            P.eq("reset.lock_file_as_was", requestsIn(file), 1);
+            held.release();
+            P.eq("reset.lock_flush_after", l.flush(day) ? 1 : 0, 1);
+            P.eq("reset.lock_counts_kept", requestsIn(file), 3);     // the file's, the pending one, the one meanwhile
+        }
+        {
+            // A count added while a Reset that succeeds waits for the lock: kept for the next flush.
+            usage::Ledger l(file);
+            l.add(k, one);
+            l.flush(day);
+            HeldLock held(dir);
+            std::atomic<bool> started{ false };
+            bool result = false;
+            std::thread t([&] {
+                started.store(true);
+                result = l.reset(day);
+            });
+            waitUntil([&] { return started.load(); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            l.add(k, one);                                           // after the Reset was asked
+            held.release();                                          // well inside its 5 s
+            t.join();
+            P.eq("reset.during_done", result ? 1 : 0, 1);
+            P.eq("reset.during_file_empty", static_cast<int64_t>(usage::read(file).size()), 0);
+            l.flush(day);
+            P.eq("reset.during_count_kept", requestsIn(file), 1);
+        }
+        {
+            // The write refused (a folder where the file goes: the rename fails): false, every count kept.
+            const fs::path blocked = dir / "blocked.json";
+            fs::create_directories(blocked / "inside", ec);
+            usage::Ledger l(blocked);
+            l.add(k, one);
+            l.add(k, one);
+            P.eq("reset.write_refused_false", l.reset(day) ? 1 : 0, 0);
+            P.eq("reset.write_left_as_was", fs::is_directory(blocked) ? 1 : 0, 1);
+            P.eq("reset.write_pending_kept", l.pending() ? 1 : 0, 1);
+            fs::remove_all(blocked, ec);
+            P.eq("reset.write_flush_after", l.flush(day) ? 1 : 0, 1);
+            P.eq("reset.write_counts_kept", requestsIn(blocked), 2);
+        }
+    }
+
     // ---- the agent ---------------------------------------------------------------------------------------------------------
     pg::Processor processor;
     pg::ChatAgent& agent = processor.chatAgent();
@@ -563,6 +726,103 @@ PROBE(plugin, usage)
             }
         P.ge("privacy.rows", rows, 6);
         P.eq("privacy.names_and_numbers", only ? 1 : 0, 1);
+    }
+
+    // ---- PAGE: the usage page's Reset, never left owed -------------------------------------------------------------------
+    {
+        const fs::path file = usage::processFile();
+        const auto seed = [&] {
+            usage::Counts one;
+            one.requests = 1;
+            usage::add({ usage::today(), "anthropic", "claude-opus-5-5", false }, one);
+            usage::flush();
+            return requestsIn(file) > 0;
+        };
+        {
+            // Confirmed while a read is past its look for one, and nothing asks again: the read runs it.
+            P.eq("page.seeded", seed() ? 1 : 0, 1);
+            std::atomic<bool> hold{ true }, entered{ false };
+            agent.setUsageReadHookForTests([&] {
+                entered.store(true);
+                while (hold.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            });
+            agent.usage(usage::Range::month);
+            P.eq("page.read_held", waitUntil([&] { return entered.load(); }) ? 1 : 0, 1);
+            agent.resetUsage();
+            hold.store(false);
+            agent.waitIdle();
+            agent.setUsageReadHookForTests(nullptr);
+            P.eq("page.reset_in_flight_done", requestsIn(file), 0);
+        }
+        {
+            // At the agent's end, owed while its read is held: the read, joined by the destructor, runs it.
+            P.eq("page.seeded_end", seed() ? 1 : 0, 1);
+            std::atomic<bool> hold{ true }, entered{ false };
+            std::thread release;
+            {
+                pg::Processor second;
+                pg::ChatAgent& a = second.chatAgent();
+                a.setUsageReadHookForTests([&] {
+                    entered.store(true);
+                    while (hold.load())
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                });
+                a.usage(usage::Range::month);
+                waitUntil([&] { return entered.load(); });
+                a.resetUsage();
+                release = std::thread([&] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    hold.store(false);
+                });
+            }
+            release.join();
+            P.eq("page.reset_at_end_held", requestsIn(file), 0);
+        }
+        {
+            // At the agent's end, owed with its job queued behind another (a picture's read, held): the destructor
+            // drops the job and runs the Reset itself. That path is taken only when the destructor stops the job
+            // thread before the picture's read is let go; a try where a stalled thread let the read go first (the
+            // usage read ran) is told apart and made again, waiting longer, four at most. Every try empties the file.
+            const juce::File txt = juce::File(juce::String(probe::outPath("usage-not-a-picture.txt")));
+            txt.replaceWithText("not a picture");
+            bool emptiedEach = true, dropped = false;
+            int tries = 0;
+            for (const int ms : { 100, 300, 1000, 3000 })
+            {
+                ++tries;
+                emptiedEach = emptiedEach && seed();
+                std::atomic<bool> hold{ true }, entered{ false }, readRan{ false };
+                std::thread release;
+                {
+                    pg::Processor second;
+                    pg::ChatAgent& a = second.chatAgent();
+                    a.setPictureReadHookForTests([&] {
+                        entered.store(true);
+                        while (hold.load())
+                            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    });
+                    a.setUsageReadHookForTests([&] { readRan.store(true); });
+                    a.attach({ txt.getFullPathName().toStdString() });
+                    waitUntil([&] { return entered.load(); });
+                    a.resetUsage();                                  // its read queued behind the picture's
+                    release = std::thread([&, ms] {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+                        hold.store(false);
+                    });
+                }
+                release.join();
+                emptiedEach = emptiedEach && requestsIn(file) == 0;
+                std::printf("page.dropped try %d (%d ms): the usage read %s\n", tries, ms, readRan.load() ? "ran" : "was dropped");
+                if (!readRan.load())
+                {
+                    dropped = true;
+                    break;
+                }
+            }
+            P.eq("page.reset_at_end_each_try", emptiedEach ? 1 : 0, 1);
+            P.eq("page.reset_at_end_dropped_path", dropped ? 1 : 0, 1);
+        }
     }
 
     pg::chatstore::setDirectoryForTests(juce::File());

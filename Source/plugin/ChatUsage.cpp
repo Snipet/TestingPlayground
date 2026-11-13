@@ -64,7 +64,7 @@ namespace playground
     }
 }
 
-// ---- the usage page's reads (ChatPort::usage) ---------------------------------------------------------------------------
+// ---- the usage page's reads (ChatPort::usage) -----------------------------------------------------------------------
 
 namespace playground
 {
@@ -97,48 +97,73 @@ namespace playground
         if (stale && !usageReading_)
         {
             usageReading_ = true;
-            const bool resetFirst = std::exchange(usageResetAsked_, false);
-            queueJob([this, range, resetFirst] { readUsage(range, resetFirst); });
+            queueJob([this, range] { readUsage(range); });
         }
         return usageView_;
     }
 
+    // A Reset the user confirmed is owed until it has run: the read under way runs it before it ends (readUsage's
+    // loop), else a read is queued for it; and a job the agent's end drops leaves it to the destructor. It never waits
+    // for the page to ask again.
     void ChatAgent::resetUsage()
     {
         const std::lock_guard<std::mutex> lock(usageMutex_);
+        usageResetOwed_ = true;
         if (usageReading_)
-        {
-            usageResetAsked_ = true;                     // done by the read after the one under way
-            usageAt_ = 0.0;
             return;
-        }
         usageReading_ = true;
         const usage::Range range = usageView_ != nullptr ? usageView_->range : usage::Range::month;
-        queueJob([this, range] { readUsage(range, true); });
+        queueJob([this, range] { readUsage(range); });
     }
 
-    // On the job thread: never the message thread, which never waits on the disk or the folder's lock.
-    void ChatAgent::readUsage(usage::Range range, bool resetFirst)
+    // On the job thread: never the message thread, which never waits on the disk or the folder's lock. It reads until
+    // no Reset is owed, and only then lets go of usageReading_.
+    void ChatAgent::readUsage(usage::Range range)
     {
-        const bool failed = resetFirst && !usage::reset();
-        auto view = std::make_shared<UsageView>();
-        const uint64_t seen = usage::revision();
-        view->range = range;
-        view->snapshot = usage::snapshot(range);
-        view->pricesAsOf = usage::pricesInUse().asOf;
-        const std::lock_guard<std::mutex> lock(usageMutex_);
-        // A failed Reset is said until the next one (a reread a few seconds on keeps it).
-        view->resetFailed = failed || (!resetFirst && usageView_ != nullptr && usageView_->resetFailed);
-        // The same as the view held (a reread with nothing new): kept, so the page draws nothing again.
-        if (usageView_ == nullptr || !sameView(*usageView_, *view))
+        for (;;)
         {
-            view->revision = ++usageReads_;
-            usageView_ = std::move(view);
+            bool resetFirst = false;
+            {
+                const std::lock_guard<std::mutex> lock(usageMutex_);
+                resetFirst = std::exchange(usageResetOwed_, false);
+            }
+            if (usageReadHook_)
+                usageReadHook_();                        // a probe holds the read here: past its look at the Reset
+            const bool failed = resetFirst && !usage::reset();
+            auto view = std::make_shared<UsageView>();
+            const uint64_t seen = usage::revision();
+            view->range = range;
+            view->snapshot = usage::snapshot(range);
+            view->pricesAsOf = usage::pricesInUse().asOf;
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            // A failed Reset is said until the next one (a reread a few seconds on keeps it).
+            view->resetFailed = failed || (!resetFirst && usageView_ != nullptr && usageView_->resetFailed);
+            // The same as the view held (a reread with nothing new): kept, so the page draws nothing again.
+            if (usageView_ == nullptr || !sameView(*usageView_, *view))
+            {
+                view->revision = ++usageReads_;
+                usageView_ = std::move(view);
+            }
+            usageSeen_ = seen;
+            usageAt_ = steadySeconds();
+            if (!usageResetOwed_)
+            {
+                usageReading_ = false;
+                return;
+            }
         }
-        usageSeen_ = seen;
-        usageAt_ = steadySeconds();
-        usageReading_ = false;
-        if (usageResetAsked_)
-            usageAt_ = 0.0;                              // the reset asked meanwhile goes with the next ask
+    }
+
+    // The agent's end (its destructor, after the job thread is joined): a Reset still owed (its job dropped before it
+    // ran) runs here, on the thread that ends the agent, as the destructor's flush does.
+    void ChatAgent::settleUsageReset()
+    {
+        bool owed = false;
+        {
+            const std::lock_guard<std::mutex> lock(usageMutex_);
+            owed = std::exchange(usageResetOwed_, false);
+        }
+        if (owed)
+            usage::reset();
     }
 }

@@ -545,16 +545,28 @@ namespace playground::usage
     bool Ledger::reset(std::string_view todayDay)
     {
         const std::lock_guard<std::mutex> one(flushMutex_);
+        std::vector<Row> held;                 // the counts not written yet: dropped only once the file is emptied
         fs::path file;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            pending_.clear();
+            held.swap(pending_);
             file = file_;
         }
-        if (file.empty())
-            return true;
-        const FolderLock lock(file.parent_path());
-        return lock.held() && writeFile(file, write(tidy({}, todayDay)));
+        bool ok = file.empty();
+        if (!ok)
+        {
+            const FolderLock lock(file.parent_path());
+            ok = lock.held() && writeFile(file, write(tidy({}, todayDay)));
+        }
+        if (!ok)
+        {
+            // The file as it was: the counts held go back, with what add() brought meanwhile.
+            const std::lock_guard<std::mutex> lock(mutex_);
+            for (const Row& r : pending_)
+                addRows(held, r.key, r.counts);
+            pending_.swap(held);
+        }
+        return ok;
     }
 
     Snapshot Ledger::snapshot(Range range, std::string_view todayDay) const

@@ -3,9 +3,10 @@
 // the message thread never waits on the disk or the ledger's lock.
 //
 //   a range (7 days, 30 days, 12 months, All) and Tokens or Cost;
-//   a chart (ui::BarChart): a bar a day (a month in 12 months and All), stacked by model, the largest models a colour each
-//   (kMaxSeries), the rest Other, round steps up its axis; the bar under the pointer, or the one the keys picked (Left,
-//   Right, Home, End with the chart focused), read out under it, else the legend; each bar an accessibility item;
+//   a chart (the page's own control, drawn by its paint(): UsagePage.cpp): a bar a day (a month in 12 months and All),
+//   stacked by model, the largest models a colour each (kMaxSeries), the rest Other, round steps up its axis; the bar
+//   under the pointer, or the one a click or the keys picked (Left, Right, Home, End with the chart focused; a key's
+//   pick holds until the pointer moves), read out under it, else the legend; each bar an accessibility item;
 //   a table: a row a model (its provider, requests, tokens in, cached, out, cost, share) and the total;
 //   the footnote: the date of the price table in use, `~` before an estimate, "no price known" where there is none;
 //   Reset..., which asks first (ChatPort::resetUsage).
@@ -14,6 +15,7 @@
 // read or shown: the ledger holds names and numbers alone. The model below is pure, for the probes (gui.usage).
 #pragma once
 
+#include "editor/Theme.h"
 #include "plugin/Usage.h"
 
 #include <funkgui/canvas/Tags.h>
@@ -32,7 +34,7 @@ namespace playground::ui
     {
         // The page's own codes (Act::item).
         constexpr int kRange = 0, kShow = 1, kChart = 2, kReset = 3, kResetYes = 4, kResetNo = 5;
-        constexpr int kMaxSeries = 5;            // models a colour each; the rest are Other
+        constexpr int kMaxSeries = 1 + kSeriesInks;   // a colour each (the accent, then Theme.h's); the rest Other
 
         // What a set of rows cost: what is priced summed, and whether any of it is an estimate, any has no price.
         struct Money
@@ -44,7 +46,8 @@ namespace playground::ui
             void add(const usage::Cost& c);
             void add(const Money& m);
         };
-        // "$1.23", "~$1.23" (an estimate in it), "~$1.23+" (a part has no price known), "no price known" (none has one).
+        // "$1.23", "~$1.23" (an estimate in it), "~$1.23+" (a part has no price known), "no price known" (none has
+        // one).
         std::string moneyText(const Money& m);
 
         // A model's row in the table (a series of the chart when it is among the largest).
@@ -85,7 +88,8 @@ namespace playground::ui
         // each row's cost at the table in use (usage::costOf).
         Model buildModel(const usage::Snapshot& snapshot, usage::Range range);
 
-        // A round axis for values up to `max`: steps of 1, 2, 2.5 or 5 times a power of ten (at least `least`), about four.
+        // A round axis for values up to `max`: steps of 1, 2, 2.5 or 5 times a power of ten (at least `least`), about
+        // four of them.
         struct Axis
         {
             double top = 0.0, step = 0.0;
@@ -101,8 +105,8 @@ namespace playground::ui
         // What the readout says of a bucket ("Wed 12 Nov: 12K tokens; claude-opus-5-5 8.1K, Other 3.9K").
         std::string readoutText(const Model& m, int bucket, bool cost);
 
-        // A series' colour: 0 the accent, then a set that is neither accent nor the errors' red (Theme.h), darker on
-        // Paper; Other's (-1) a neutral ink.
+        // A series' colour: 0 the accent, then Theme.h's seriesInk (one set for both kinds, a value for each theme,
+        // never an accent or the errors' colour); Other's (-1) a neutral ink (ChatStyle.h's dim).
         funkgui::Col colourOf(int index, const funkgui::Theme& th);
     }
 }

@@ -452,6 +452,8 @@ namespace playground
         void setCircuitWriteHookForTests(std::function<void(int attempt)> hook) { circuitWriteHook_ = std::move(hook); }
         // For probes: the same for edit_file, where it has read the files and applied the edits, before each write.
         void setFileWriteHookForTests(std::function<void(int attempt)> hook) { fileWriteHook_ = std::move(hook); }
+        // For probes: called on the job thread in each pass of a usage read, after it has looked for a Reset owed.
+        void setUsageReadHookForTests(std::function<void()> hook) { usageReadHook_ = std::move(hook); }
 
         // The system prompt and the tools as sent (for probes and the docs).
         static const std::string& systemPrompt();
@@ -776,9 +778,12 @@ namespace playground
         std::shared_ptr<const UsageView> usageView_;
         uint64_t usageSeen_ = 0;                                    // usage::revision() it was read at
         double usageAt_ = 0.0;                                      // when (seconds, steady)
-        bool usageReading_ = false, usageResetAsked_ = false;
+        bool usageReading_ = false;                                 // a read queued or running
+        bool usageResetOwed_ = false;                               // a Reset confirmed and not yet run (resetUsage)
         uint64_t usageReads_ = 0;
-        void readUsage(usage::Range range, bool resetFirst);
+        std::function<void()> usageReadHook_;
+        void readUsage(usage::Range range);
+        void settleUsageReset();                                    // the destructor's: a Reset still owed runs
         bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {
