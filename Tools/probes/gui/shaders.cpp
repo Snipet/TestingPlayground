@@ -833,7 +833,8 @@ PROBE(gui, shaders)
         host.tick(2);
         host.settle();
         // The editor's check while typing landed (a change of its own, late on a loaded machine).
-        for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+        for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+             (panel.codeAssist().checking() || port.compiling()) && std::chrono::steady_clock::now() < by;)
         {
             host.tick(1, 1.0f / 12.0f);
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

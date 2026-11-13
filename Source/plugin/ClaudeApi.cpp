@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <limits>
 #include <thread>
 
@@ -493,6 +494,32 @@ namespace playground::claude
     }
 
     // ---- the message -------------------------------------------------------------------------------------------------
+    // What a usage object says beyond the counts the event reads itself: that it came, the cache writes by lifetime
+    // (usage.cache_creation; without it, all of cache_creation_input_tokens as five minutes'), a provider's own cost.
+    void MessageBuilder::readUsageExtras(const juce::var& u)
+    {
+        if (!u.isObject())
+            return;
+        usage_.reported = true;
+        const juce::var split = u.getProperty("cache_creation", juce::var());
+        if (split.isObject())
+        {
+            usage_.cacheWrite5m = static_cast<juce::int64>(split.getProperty("ephemeral_5m_input_tokens", 0));
+            usage_.cacheWrite1h = static_cast<juce::int64>(split.getProperty("ephemeral_1h_input_tokens", 0));
+        }
+        else if (u.hasProperty("cache_creation_input_tokens"))
+        {
+            usage_.cacheWrite5m = usage_.cacheWrite;
+            usage_.cacheWrite1h = 0;
+        }
+        if (const juce::var cost = u.getProperty("cost", juce::var()); cost.isDouble() || cost.isInt() || cost.isInt64())
+        {
+            const double usd = static_cast<double>(cost);
+            if (std::isfinite(usd) && usd >= 0 && usd < 1e6)
+                usage_.costMicroUsd = static_cast<int64_t>(std::llround(usd * 1e6));
+        }
+    }
+
     void MessageBuilder::event(const std::string& type, const std::string& data)
     {
         const juce::var v = parseJson(data);
@@ -511,6 +538,7 @@ namespace playground::claude
             usage_.output = static_cast<juce::int64>(u.getProperty("output_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
+            readUsageExtras(u);
         }
         else if (kind == "content_block_start")
         {
@@ -658,6 +686,7 @@ namespace playground::claude
                 usage_.cacheWrite = static_cast<juce::int64>(u.getProperty("cache_creation_input_tokens", 0));
             if (u.hasProperty("speed"))
                 usage_.speed = u.getProperty("speed", "").toString().toStdString();
+            readUsageExtras(u);
             const juce::var server = u.getProperty("server_tool_use", juce::var());
             if (server.isObject())
             {
