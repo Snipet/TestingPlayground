@@ -615,37 +615,92 @@ namespace playground
             carryInto(*b, carrier);                // just before the offer: the dials as they are now
         }
         const uint64_t id = b->status.request;
+        const std::string program = fileOf(b->status);
         engine_.offer(std::move(b->patch), watch);
-        if (watch && !firstBlocks(id))
+        // Past the offer the program plays: an exception from here on (Compiler.h, "A program that stops") is said as
+        // a note on its status, never as a compile that failed.
+        try
         {
-            // It stopped in its first blocks, and the Engine went back to the program it replaced, which plays on: the
-            // RUN failed, as a compile that does not compile fails (above, "A program that stops").
-            Engine::Stopped st;
-            bool read = false;
-            for (int k = 0; k < 1000 && !(read = engine_.lastStop(st) && st.program == id); ++k)
-                std::this_thread::yield();        // published just after the Engine claimed the revert
-            CompileStatus s = std::move(b->status);
-            s.ok = false;
-            s.stopped = true;
-            s.stoppedProgram = id;
-            s.bounds = read && st.bounds.failed;
-            s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate(),
-                                          read ? &st.bounds : nullptr);
+            if (watch && !firstBlocks(id))
             {
-                const std::lock_guard<std::mutex> lock(mutex_);
-                stoppedProgram_ = id;
+                // It stopped in its first blocks, and the Engine went back to the program it replaced, which plays on: the
+                // RUN failed, as a compile that does not compile fails (above, "A program that stops").
+                Engine::Stopped st;
+                bool read = false;
+                for (int k = 0; k < 1000 && !(read = engine_.lastStop(st) && st.program == id); ++k)
+                    std::this_thread::yield();        // published just after the Engine claimed the revert
+                CompileStatus s = std::move(b->status);
+                s.ok = false;
+                s.stopped = true;
+                s.stoppedProgram = id;
+                s.bounds = read && st.bounds.failed;
+                s.errors = Patch::stopMessage(s.sources, read ? st.call : Patch::Method::process, engine_.rate(),
+                                              read ? &st.bounds : nullptr);
+                {
+                    const std::lock_guard<std::mutex> lock(mutex_);
+                    stoppedProgram_ = id;
+                }
+                return finish(std::move(s));
             }
-            return finish(std::move(s));
+            played(std::move(b->recipe), std::move(b->jobs), landed, carry);
+            failure::at("offered");
+            // Its IR before its status: a view that sees the status has the text.
+            tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
+            CompileStatus s = finish(std::move(b->status));
+            if (!watch)
+                return s;
+            std::unique_lock<std::mutex> lock(mutex_);
+            checkStops(lock);                          // one that stopped with nothing to go back to: said at once
+            return status_;
         }
-        played(std::move(b->recipe), std::move(b->jobs), landed, carry);
-        // Its IR before its status: a view that sees the status has the text.
-        tookProgram(b->status.request, fileOf(b->status), b->keepIr, b->ir);
-        CompileStatus s = finish(std::move(b->status));
-        if (!watch)
-            return s;
-        std::unique_lock<std::mutex> lock(mutex_);
-        checkStops(lock);                          // one that stopped with nothing to go back to: said at once
-        return status_;
+        catch (...)
+        {
+            return offeredThrew(*b, id, program, watch);
+        }
+    }
+
+    CompileStatus Compiler::offeredThrew(Built& b, uint64_t id, const std::string& program, bool watch) noexcept
+    {
+        try
+        {
+            // It plays unless the Engine went back from it already; settled now, so a later stop is said as one
+            // (checkStops), never gone back from in silence.
+            const bool plays = !watch || engine_.settle(id);
+            const std::string line = program + ":1:1: note: " + failure::sentence("starting the program") + "\n";
+            const std::lock_guard<std::mutex> lock(mutex_);
+            if (status_.request != id)
+            {
+                // Its status not out yet: b's (intact until finish() takes it), as it played or not.
+                CompileStatus s = std::move(b.status);
+                if (plays)
+                {
+                    s.ok = true;
+                    s.program = id;
+                    s.notes += line;
+                    if (recipe_.program != id)
+                        s.notes += program + ":1:1: note: the plugin lost track of it as it began: RUN it again before "
+                                             "measuring or saving it\n";
+                }
+                else
+                {
+                    s.ok = false;
+                    s.stopped = true;
+                    s.stoppedProgram = id;
+                    s.program = recipe_.program;
+                    s.errors = program + ":1:1: error: " + failure::sentence("starting the program") + "\n";
+                }
+                status_ = std::move(s);
+            }
+            else
+                status_.notes += line;             // out already (finish ran): the note added
+            status_.revision += 1;
+            revision_.store(status_.revision, std::memory_order_release);
+            return status_;
+        }
+        catch (...)
+        {
+            return {};                             // not even that (out of memory): the status as it stands
+        }
     }
 
     bool Compiler::firstBlocks(uint64_t program)

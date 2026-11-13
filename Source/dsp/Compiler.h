@@ -92,6 +92,18 @@
 // nothing plays until the next RUN. A program that stopped is never gone back to again, nor refined, nor frozen: a
 // refine built while the program it refines stopped is let go before the offer, and the stop said.
 //
+// An exception once a program is offered (fminus/Failure.h; land()). What may throw then, all of it allocating:
+// building a stop's message (Patch::stopMessage) when it stopped in its first blocks; played() (the recipe kept, the
+// program before copied as previous_, the jobs copied for the self-test); tookProgram() (the IR's texts copied, while
+// someone looks); finish() (the status published, then copied to return); checkStops() (a stop said, the program
+// before compiled again). The Engine plays the program then, so its status is not a failed compile: it is the
+// program's own (`ok`, `program` its id, its dials and panel), the offer settled (Engine::settle: a later stop is said,
+// never gone back from in silence), with a note at the program's first line: "program.fm:1:1: note: the plugin itself
+// failed while starting the program: out of memory; this is not a fault in your program". When played() did not
+// finish, the recipe is still the program before's (the freezer, a refine, a panel's edit and a stop's watch follow
+// the recipe), and a second note says to RUN it again. When the Engine went back from it first, the RUN failed in
+// those words, as an error, and the program before plays on. Should even that fail, the status stands as it was.
+//
 // A panel's edit. A RUN (request(files), unless told otherwise) whose files differ from those of the program that plays
 // only in its panel's files (Sources.h's isPanelFile: the .gui file, a shader's .sc or .sh) is applied to that program
 // without compiling it: nothing is offered, so the program plays on, its instances, its state and its voices untouched
@@ -327,6 +339,9 @@ namespace playground
         // when `carry`), published. `watch` (a RUN's): offered revertible, and its first blocks waited for (above, "A
         // program that stops"); firstBlocks() is the wait, false when the Engine went back from it.
         CompileStatus land(std::unique_ptr<Built> b, uint64_t landed, bool carry = true, bool watch = false);
+        // Inside land()'s catch, past the offer: the program plays (unless the Engine went back from it), so its status
+        // says so, with the plugin's failure as a note (above, "A program that stops").
+        CompileStatus offeredThrew(Built& b, uint64_t id, const std::string& program, bool watch) noexcept;
         bool firstBlocks(uint64_t program);
         // No block under way, and none ended for three of the audio thread's own (20 ms at least): it is stopped.
         bool audioIdle() const;

@@ -43,7 +43,8 @@
 //   THROWN  an exception inside the plugin (fminus/Failure.h's seam): a RUN whose compile throws fails in words (the
 //           plugin's failure, not the program's; out of memory as such, one with no words or of no std::exception an
 //           unknown error), the program before playing on as its twin, and the next RUN compiles; a check that throws
-//           gives no messages and the next its own; compileNow throws nothing; a shader build that throws is that
+//           gives no messages and the next its own; compileNow throws nothing; one past the offer plays, its status
+//           ok with the failure as a note; a shader build that throws is that
 //           shader's note, the program playing; a frozen copy that throws is none and is not tried again
 //   AB      a RUN of the panel's files alone while an A/B is on compiles. Not covered: a held refine, a stopped
 //           program and a .sc that FMinus #includes, which also compile (Compiler::editPanel's first checks)
@@ -764,6 +765,21 @@ PROBE(plugin, reload)
         pg::failure::unplant();
         P.eq("thrown.compile_now", !escaped && !now.ok && now.program == next.program
                                        && has(now.errors, "failed while compiling: an unknown error" + tail) ? 1 : 0, 1);
+
+        // An exception once the program is offered (Compiler.h: past the offer): it plays, and its status says so, the
+        // plugin's failure a note; the editor's program is it.
+        pg::failure::plant("offered", pg::failure::Kind::runtime);
+        const pg::CompileStatus offered = h.run(filesOf(program("    // offered\n"), kGui, kGlow));
+        const int offeredFired = pg::failure::fired();
+        pg::failure::unplant();
+        h.blocks(2);
+        std::printf("THROWN offered: fired %d ok %d program %llu notes: %s", offeredFired, offered.ok ? 1 : 0,
+                    static_cast<unsigned long long>(offered.program), offered.notes.c_str());
+        P.eq("thrown.offered_plays", offeredFired == 1 && offered.ok && offered.errors.empty() && offered.program == offered.request
+                                         && offered.program != next.program && h.meters().program == offered.program ? 1 : 0, 1);
+        P.eq("thrown.offered_noted", has(offered.notes, "program.fm:1:1: note: the plugin itself failed while starting the program: a "
+                                                        "planted failure" + tail)
+                                         && !has(offered.notes, "lost track") ? 1 : 0, 1);
 
         // A shader build that throws (the compile's early thread, then its own): that shader's note in words, the
         // program compiled and playing.
