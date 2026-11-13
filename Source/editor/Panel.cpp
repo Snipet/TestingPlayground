@@ -72,6 +72,14 @@
 #include <string_view>
 #include <utility>
 
+// Probes only (Panel.h, drawReason): where a frame's dirty_ was first seen set. Nothing in the plugin.
+#if defined(FP_PROBES)
+#include <typeinfo>
+#define FP_DIRTY_AT(where) noteDirty(where)
+#else
+#define FP_DIRTY_AT(where) ((void)0)
+#endif
+
 namespace playground::ui
 {
 
@@ -5919,6 +5927,7 @@ namespace playground::ui
 
     void Panel::refresh(double nowSec)
     {
+        FP_DIRTY_AT("before refresh");
         if (compare_.isOpen())
         {
             const uint32_t before = compare_.revision();
@@ -5945,6 +5954,7 @@ namespace playground::ui
                 dirty_ = true;
             }
         }
+        FP_DIRTY_AT("refresh: COMPARE, A/B");
         syncColumnWidths();
         syncCodePanel();
         // The text size: this machine's preference, which another editor's keys or wheel may have moved (CodeAssist.h).
@@ -5958,12 +5968,16 @@ namespace playground::ui
             }
         }
         keepStepDefaults(nowSec, false);
+        FP_DIRTY_AT("refresh: the columns, the panel under the code, the text size");
         syncFolder();
+        FP_DIRTY_AT("refresh: syncFolder");
         syncMidi();
+        FP_DIRTY_AT("refresh: syncMidi");
         // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
         syncSave();
         // An export this Panel started (EXPORT): how far it has come, then what came of it.
         syncExport();
+        FP_DIRTY_AT("refresh: syncSave, syncExport");
         // PROJECTS and EXPORT read the store's cache alone: what its Reader has read since shows now.
         if (projects_.poll())
             dirty_ = true;
@@ -5972,6 +5986,7 @@ namespace playground::ui
         syncPreview(nowSec);
         if (export_.poll())
             dirty_ = true;
+        FP_DIRTY_AT("refresh: PROJECTS' and EXPORT's polls");
         // What Claude's projects tool did (a save, an open, a preset): said once in the status, the lists read again.
         if (role_ == Role::editor)
             if (const ClaudeNotice n = port_.claudeNotice(); n.count != claudeSeen_)
@@ -5982,6 +5997,7 @@ namespace playground::ui
                 projects_.reread();
                 dirty_ = true;
             }
+        FP_DIRTY_AT("refresh: Claude's notice");
         // The draft, when a host loaded a session while the editor was open, or Claude changed the files. (While the
         // editor is in the code window, that Panel's: this one's hidden copy takes nothing and gives nothing.)
         bool textChanged = std::exchange(pushedFiles_, false);   // a gesture's files, given at once
@@ -5997,6 +6013,7 @@ namespace playground::ui
             (void)pushFiles();
             textChanged = true;
         }
+        FP_DIRTY_AT("refresh: the draft merged or pushed");
         // The editor's check while typing (CodeAssist.h): the files once they have rested, its messages when it is done
         // (the code window's, while the editor is out: this Panel's copy asks for none).
         if (!out_ && files().assist().takeCheckRequest())
@@ -6006,6 +6023,7 @@ namespace playground::ui
             files().assist().checkSent(before);
             dirty_ = true;                               // the status line says Checking...
         }
+        FP_DIRTY_AT("refresh: the check sent");
         if (files().assist().checking())
             if (const CheckStatus c = port_.checkStatus(); files().assist().takeCheckResult(c.revision))
             {
@@ -6013,6 +6031,7 @@ namespace playground::ui
                 files().assist().checkDone();
                 dirty_ = true;
             }
+        FP_DIRTY_AT("refresh: the check's result");
         // A finished compile: its messages, and the dials of the program that plays.
         bool statusChanged = false;
         if (const uint64_t r = port_.statusRevision(); r != seenStatus_)
@@ -6117,6 +6136,7 @@ namespace playground::ui
                 dirty_ = true;
             }
         }
+        FP_DIRTY_AT("refresh: the compile's status, the IR, the presets");
         // The project open, in words.
         {
             const ProjectState st = port_.project();
@@ -6134,6 +6154,7 @@ namespace playground::ui
                 dirty_ = true;
             }
         }
+        FP_DIRTY_AT("refresh: the project's words");
         // The status line and the meter.
         if (nowSec < noticeUntil_)
             status_ = notice_;
@@ -6160,6 +6181,7 @@ namespace playground::ui
         }
         if (status_ != statusBefore)
             dirty_ = true;
+        FP_DIRTY_AT("refresh: the status line");
 
         // The meter, four times a second at most: a frame for it when it changed. The snowflake (the dials compiled in,
         // while they hold still) comes and goes with the frame after the change.
@@ -6183,11 +6205,15 @@ namespace playground::ui
                 dirty_ = true;
             }
         }
+        FP_DIRTY_AT("refresh: the meter");
         if (role_ == Role::code)
             return;                                      // no settings card and no chat in the code window
         syncSettings();
+        FP_DIRTY_AT("refresh: syncSettings");
         syncRecording(nowSec);
+        FP_DIRTY_AT("refresh: syncRecording");
         refreshChat(nowSec);
+        FP_DIRTY_AT("refresh: refreshChat");
     }
 
     // ---- the chat -----------------------------------------------------------------------------------------------------
@@ -8691,12 +8717,14 @@ namespace playground::ui
         // window's, which shows no display).
         tickedAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;
         idlesSinceTick_ = 0;
+        FP_DIRTY_AT("before the tick");
         if (!reading_ && role_ != Role::code)
         {
             port_.addMeterReader();
             reading_ = true;
         }
         refresh(host_ != nullptr ? host_->nowSeconds() : 0.0);
+        FP_DIRTY_AT("tick: refresh");
         // The key dialog's address typed: what is kept for that server (a key, none needed), read once it rests a
         // moment or the keys go to another field; until then the dialog promises nothing of a key stored.
         if (keyOpen_ && !renaming_ && !dialogInfoNow()
@@ -8704,13 +8732,17 @@ namespace playground::ui
             readDialogInfo();
         if (layoutStale())
             layout();                                    // a netlist's view came or went, or the panel under the code
+        FP_DIRTY_AT("tick: the key dialog, a stale layout");
         syncWindowButtons();
+        FP_DIRTY_AT("tick: syncWindowButtons");
         syncExplorer();
+        FP_DIRTY_AT("tick: syncExplorer");
         // The message box follows its text, one row to eight: the conversation gives it the room. Folded (or no chat:
         // the code window) it has no height to follow, and asks for no layout: layoutChat() sets it when it opens.
         if (chatOpen_ && hasChat()
             && std::fabs(inputItem().desiredHeight(inputItem().box().w, kBarH) - composerH_) > 0.5f)
             layoutChat();
+        FP_DIRTY_AT("tick: the message box's height");
         // The displays: what the Engine published since the last frame, and the scopes' samples.
         {
             Meters m;
@@ -8780,12 +8812,21 @@ namespace playground::ui
             const int idx = static_cast<int>(i);
             items_[i]->tick(dt, hovered == idx, ring_ && focus_ == idx, hasPointer_ ? pointer_ : far);
         }
+        FP_DIRTY_AT("tick: the displays, the items' ticks");
+#if defined(FP_PROBES)
+        if (dirty_ && undrawnAt_.empty())
+            undrawnAt_ = dirtyAt_.empty() ? "unnamed" : dirtyAt_;
+        dirtyAt_.clear();
+#endif
         // Unchanged frames (Panel.h): a change not drawn yet, what moves, and what draw() would read now.
         undrawn_ = undrawn_ || dirty_;
         dirty_ = false;
         settling_ = moving_;
         moving_ = std::any_of(items_.begin(), items_.end(), [](const auto& it) { return it->shown() && !it->settled(); });
         watched_ = watchKey();
+#if defined(FP_PROBES)
+        watchedParts_ = watchParts();
+#endif
     }
 
     // Everything draw() reads that may change with no input and no motion: whether each item shows and, for one that
@@ -8837,6 +8878,132 @@ namespace playground::ui
         return host_ != nullptr && host_->nowSeconds() - drawnAt_ >= kRedrawEvery;
     }
 
+#if defined(FP_PROBES)
+    void Panel::noteDirty(const char* where)
+    {
+        if (dirty_ && dirtyAt_.empty())
+            dirtyAt_ = where;
+    }
+
+    // watchKey()'s parts one by one, named (the same values in the same order: a part whose key moved names what did).
+    std::vector<Panel::WatchPart> Panel::watchParts() const
+    {
+        std::vector<WatchPart> parts;
+        for (std::size_t i = 0; i < items_.size(); ++i)
+        {
+            const Item& it = *items_[i];
+            DrawKey k;
+            k.mix(it.shown());
+            if (it.shown())
+                k.mix(it.drawKey());
+            parts.push_back({ "item " + std::to_string(i) + " (" + typeid(it).name() + ")", k.h });
+        }
+        const auto add = [&parts](const char* name, const auto& v) { parts.push_back({ name, DrawKey{}.mix(v).h }); };
+        add("status_", status_);
+        add("meter_", meter_);
+        add("meterAlerts_", meterAlerts_);
+        add("meterLoad_", meterLoad_);
+        add("port_.alerts()", port_.alerts() != 0);
+        add("projectText_", projectText_);
+        add("title_", title_);
+        add("subtitle_", subtitle_);
+        add("activity_", activity_);
+        add("desktop_", desktop_);
+        add("chat_.busy", chat_.busy);
+        add("unread_", unread_);
+        add("frozenShown_", frozenShown_);
+        add("mutedShown_", mutedShown_);
+        add("recordShownText_", recordShownText_);
+        add("compiling_", compiling_);
+        add("lastOk_", lastOk_);
+        add("edited_", edited_);
+        add("chatOpen_", chatOpen_);
+        add("explorerShown_", explorerShown_);
+        add("panelView_", panelView_);
+        add("dropActive_", dropActive_);
+        add("dropHover_", dropHover_);
+        add("keyOpen_", keyOpen_);
+        add("renaming_", renaming_);
+        add("keyWhy_", keyWhy_);
+        add("keyEdit_", DrawKey{}.mix(keyEdit_.buffer).mix(keyEdit_.caret).mix(keyEdit_.allSelected).h);
+        add("dialogField_", dialogField_);
+        add("dialogControl_", dialogControl_);
+        add("baseEdit_, modelEdit_", DrawKey{}.mix(baseEdit_.caret).mix(baseEdit_.allSelected).mix(modelEdit_.caret).h);
+        add("projects_", DrawKey{}.mix(projects_.isOpen()).h);
+        add("export_", DrawKey{}.mix(export_.isOpen()).h);
+        add("settings_", DrawKey{}.mix(settings_.isOpen()).mix(settings_.revision()).h);
+        add("name_", DrawKey{}.mix(name_.isOpen()).mix(name_.revision()).h);
+        add("desktopBadge_", desktopBadge_);
+        add("picker_", DrawKey{}.mix(picker_.isOpen()).mix(picker_.revision()).h);
+        add("focus_, ring_, pressed_, touched_", DrawKey{}.mix(focus_).mix(ring_).mix(pressed_).mix(touched_).h);
+        add("the pointer", DrawKey{}.mix(hasPointer_).mix(pointer_).h);
+        add("the size", DrawKey{}.mix(width_).mix(height_).h);
+        add("layoutRevision_", layoutRevision_);
+        add("buttonsRoom_", buttonsRoom_);
+        // The footer, as watchKey() reads it.
+        uint64_t footer = 0;
+        if (!dialogOpen())
+        {
+            int src = pressed_;
+            if (src < 0 && hasPointer_)
+                src = itemAt(pointer_);
+            if (src < 0)
+                src = focus_ >= 0 ? focus_ : touched_;
+            if (src >= 0)
+            {
+                char line[256] = {};
+                items_[static_cast<std::size_t>(src)]->specLine(line, sizeof line);
+                footer = DrawKey{}.mix(static_cast<const char*>(line)).h;
+            }
+        }
+        add("the footer's line", footer);
+        return parts;
+    }
+
+    std::string Panel::drawReason() const
+    {
+        if (!needsDraw())
+            return {};
+        std::string why;
+        const auto say = [&why](const std::string& s) { why += (why.empty() ? "" : "; ") + s; };
+        if (undrawn_)
+            say("undrawn (" + (undrawnAt_.empty() ? std::string("since the Panel was made") : undrawnAt_) + ")");
+        if (dirty_)
+            say("dirty (" + (dirtyAt_.empty() ? std::string("set since the last tick") : dirtyAt_) + ")");
+        const auto unsettled = [this]() -> std::string {
+            for (std::size_t i = 0; i < items_.size(); ++i)
+                if (items_[i]->shown() && !items_[i]->settled())
+                {
+                    const Item& it = *items_[i];
+                    return "item " + std::to_string(i) + " (" + typeid(it).name() + ")";
+                }
+            return "none now";
+        };
+        if (moving_)
+            say("moving: " + unsettled());
+        if (settling_)
+            say("settling (the frame after a motion)");
+        if (watched_ != drawnKey_)
+        {
+            std::string moved;
+            if (drawnParts_.size() != watchedParts_.size())
+                moved = "the items' count";
+            else
+                for (std::size_t i = 0; i < watchedParts_.size(); ++i)
+                    if (watchedParts_[i].key != drawnParts_[i].key)
+                        moved += (moved.empty() ? "" : ", ") + watchedParts_[i].name;
+            say("draw key: " + (moved.empty() ? std::string("a part watchParts() does not name") : moved));
+        }
+        if (why.empty() && host_ != nullptr)
+        {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "safety net (%.3f s since the last draw)", host_->nowSeconds() - drawnAt_);
+            say(buf);
+        }
+        return why;
+    }
+#endif
+
     void Panel::idle(double nowSec)
     {
         if (gestures_)
@@ -8885,6 +9052,10 @@ namespace playground::ui
         settling_ = false;
         drawnKey_ = watched_;
         drawnAt_ = host_ != nullptr ? host_->nowSeconds() : 0.0;
+#if defined(FP_PROBES)
+        drawnParts_ = watchedParts_;
+        undrawnAt_.clear();
+#endif
         const funkgui::Theme th = productTheme(hostTheme);
         files().setTheme(th);                            // the code's colours follow the theme
         const float contentW = width_ - 2.0f * kMargin;
