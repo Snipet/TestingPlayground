@@ -4,8 +4,6 @@
 #include "editor/ChatStyle.h"
 #include "editor/Items.h"
 
-#include "dsp/TextDiff.h"
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -19,7 +17,6 @@ namespace playground::ui
         constexpr float kPad = 24.0f;
         constexpr float kListTop = 100.0f;               // below the title, its line and the lists' captions
         constexpr float kGap = 16.0f;                    // between the versions and the changes
-        constexpr float kTabH = 26.0f;
         constexpr float kPlayH = 40.0f;                  // A and B
         constexpr float kPlayW = 140.0f;
         constexpr float kButtonH = 32.0f;
@@ -41,137 +38,33 @@ namespace playground::ui
 
         std::string shortWhen(const std::string& when) { return when.size() > 5 ? when.substr(5) : when; }   // "10-27 14:02"
 
-        // A line as the card shows it: ASCII, a tab as four spaces, no carriage return.
-        std::string shown(std::string_view line)
-        {
-            std::string out;
-            for (const char ch : asciiText(line))
-                if (ch == '\t')
-                    out += "    ";
-                else if (ch != '\r')
-                    out += ch;
-            return out;
-        }
-
-        float tabW(const std::string& label) { return std::clamp(6.6f * static_cast<float>(label.size()) + 26.0f, 64.0f, 240.0f); }
-    }
-
-    // ---- the diff ------------------------------------------------------------------------------------------------------
-    std::vector<AbCard::FileDiff> AbCard::diffOf(const Sources& a, const Sources& b)
-    {
-        const auto named = [](const Sources& s, const std::string& name) -> const SourceFile* {
-            for (const SourceFile& f : s)
-                if (f.name == name)
-                    return &f;
-            return nullptr;
-        };
-        std::vector<std::string> names;
-        for (const SourceFile& f : a)
-            names.push_back(f.name);
-        for (const SourceFile& f : b)
-            if (named(a, f.name) == nullptr)
-                names.push_back(f.name);
-        std::vector<FileDiff> out;
-        for (const std::string& name : names)
-        {
-            const SourceFile *fa = named(a, name), *fb = named(b, name);
-            FileDiff d;
-            d.name = name;
-            const auto whole = [&](const SourceFile& f, Line::Kind kind) {
-                int n = 0;
-                for (const std::string_view l : textdiff::lines(f.text))
-                {
-                    ++n;
-                    if (static_cast<int>(d.lines.size()) < kMaxDiffRows)
-                        d.lines.push_back({ kind, kind == Line::Kind::removed ? n : 0, kind == Line::Kind::added ? n : 0, shown(l) });
-                }
-                (kind == Line::Kind::added ? d.added : d.removed) = n;
-                if (n > kMaxDiffRows)
-                    d.lines.push_back({ Line::Kind::gap, 0, 0, "... and " + std::to_string(n - kMaxDiffRows) + " more lines" });
-            };
-            if (fa != nullptr && fb != nullptr && fa->text == fb->text)
-                d.change = Change::same;
-            else if (fb == nullptr)
-            {
-                d.change = Change::removed;
-                whole(*fa, Line::Kind::removed);
-            }
-            else if (fa == nullptr)
-            {
-                d.change = Change::added;
-                whole(*fb, Line::Kind::added);
-            }
-            else
-            {
-                d.change = Change::changed;
-                const std::vector<std::string_view> la = textdiff::lines(fa->text), lb = textdiff::lines(fb->text);
-                const std::vector<textdiff::Edit> script = textdiff::diff(la, lb, nullptr, 4000);
-                const std::size_t n = script.size();
-                std::vector<bool> near(n, false);
-                for (std::size_t i = 0; i < n; ++i)
-                    if (script[i].op != textdiff::Op::same)
-                    {
-                        const std::size_t from = i >= static_cast<std::size_t>(kContext) ? i - kContext : 0;
-                        for (std::size_t j = from; j < std::min(n, i + kContext + 1); ++j)
-                            near[j] = true;
-                        if (script[i].op == textdiff::Op::added)
-                            ++d.added;
-                        else
-                            ++d.removed;
-                    }
-                bool cut = false;
-                for (std::size_t i = 0; i < n && !cut; ++i)
-                {
-                    if (static_cast<int>(d.lines.size()) >= kMaxDiffRows)
-                    {
-                        d.lines.push_back({ Line::Kind::gap, 0, 0, "... the rest is cut here" });
-                        cut = true;
-                        break;
-                    }
-                    if (!near[i])
-                    {
-                        std::size_t run = 0;
-                        while (i + run < n && !near[i + run])
-                            ++run;
-                        d.lines.push_back({ Line::Kind::gap, 0, 0,
-                                            std::to_string(run) + (run == 1 ? " line" : " lines") + " the same" });
-                        i += run - 1;
-                        continue;
-                    }
-                    const textdiff::Edit& e = script[i];
-                    Line l;
-                    l.kind = e.op == textdiff::Op::same ? Line::Kind::same : e.op == textdiff::Op::added ? Line::Kind::added : Line::Kind::removed;
-                    l.a = e.op == textdiff::Op::added ? 0 : static_cast<int>(e.a) + 1;
-                    l.b = e.op == textdiff::Op::removed ? 0 : static_cast<int>(e.b) + 1;
-                    l.text = shown(e.op == textdiff::Op::added ? lb[e.b] : la[e.a]);
-                    d.lines.push_back(std::move(l));
-                }
-            }
-            out.push_back(std::move(d));
-        }
-        return out;
-    }
-
-    std::string AbCard::tabLabel(const FileDiff& f)
-    {
-        switch (f.change)
-        {
-            case Change::same: return f.name;
-            case Change::added: return f.name + " new";
-            case Change::removed: return f.name + " gone";
-            case Change::changed: break;
-        }
-        return f.name + " +" + std::to_string(f.added) + " -" + std::to_string(f.removed);
     }
 
     // ---- opening, following ------------------------------------------------------------------------------------------
+    void AbCard::readVersions(const std::string& project)
+    {
+        versions_.clear();
+        versionsRead_ = true;
+        versionsSeen_ = port_.projectsRead();
+        if (project.empty())
+            return;
+        const ProjectDetail d = port_.projectPolled(project);   // the store's cache: no file read whole here
+        versions_ = d.versions;
+        versionsRead_ = !d.exists || d.read;
+    }
+
     bool AbCard::open(const std::string& project, int version)
     {
-        versions_ = project.empty() ? std::vector<VersionEntry>{} : port_.versions(project);
+        readVersions(project);
         const int b = version > 0 ? version : versions_.empty() ? 0 : versions_.front().number;
+        return open(project, 0, b);
+    }
+
+    bool AbCard::open(const std::string& project, int a, int b)
+    {
         std::string why;
         why_.clear();
-        if (!port_.startAb(project, 0, b, why))
+        if (!port_.startAb(project, a, b, why))
         {
             why_ = "Not started: " + why + ".";
             ++revision_;
@@ -185,22 +78,15 @@ namespace playground::ui
         const AbState s = port_.ab();
         if (!s.on)
             return false;
-        versions_ = s.project.empty() ? std::vector<VersionEntry>{} : port_.versions(s.project);
+        readVersions(s.project);
         open_ = true;
         why_.clear();
         diffA_.clear();
         diffB_.clear();
-        diffs_.clear();
-        file_ = firstTab_ = 0;
-        diff_ = list_ = Scroll{};
+        view_.set({}, false);
+        list_ = Scroll{};
         follow();
-        // The first file that changed shows first.
-        for (std::size_t i = 0; i < diffs_.size(); ++i)
-            if (diffs_[i].change != Change::same)
-            {
-                showFile(static_cast<int>(i));
-                break;
-            }
+        view_.set(diffOf(diffA_, diffB_), false);        // the first file that changed shows first
         if (const int row = rowOfVersion(state_.sides[1].version); row >= 0)
             list_.offset = static_cast<float>(std::max(0, row - 3)) * Places{}.rowH;   // clamped as it is used
         ++revision_;
@@ -220,16 +106,9 @@ namespace playground::ui
         }
         if (!(state_.sides[0].files == diffA_) || !(state_.sides[1].files == diffB_))
         {
-            const std::string was = file_ >= 0 && file_ < static_cast<int>(diffs_.size()) ? diffs_[static_cast<std::size_t>(file_)].name : std::string();
             diffA_ = state_.sides[0].files;
             diffB_ = state_.sides[1].files;
-            diffs_ = diffOf(diffA_, diffB_);
-            file_ = 0;
-            for (std::size_t i = 0; i < diffs_.size(); ++i)
-                if (diffs_[i].name == was)
-                    file_ = static_cast<int>(i);
-            firstTab_ = std::min(firstTab_, file_);
-            diff_.offset = 0.0f;
+            view_.set(diffOf(diffA_, diffB_), true);
         }
         ++revision_;
     }
@@ -238,6 +117,11 @@ namespace playground::ui
     {
         if (open_ && port_.abRevision() != state_.revision)
             follow();
+        if (open_ && !versionsRead_ && port_.projectsRead() != versionsSeen_)
+        {
+            readVersions(state_.project);                // the store's Reader has read a file: perhaps this one
+            ++revision_;
+        }
     }
 
     void AbCard::close()
@@ -317,16 +201,6 @@ namespace playground::ui
         follow();
     }
 
-    void AbCard::showFile(int i)
-    {
-        if (diffs_.empty())
-            return;
-        file_ = std::clamp(i, 0, static_cast<int>(diffs_.size()) - 1);
-        firstTab_ = std::min(firstTab_, file_);
-        diff_.offset = 0.0f;
-        ++revision_;
-    }
-
     // ---- places --------------------------------------------------------------------------------------------------------
     AbCard::Places AbCard::places(float width, float height) const
     {
@@ -342,17 +216,11 @@ namespace playground::ui
         at.rows = std::max(1, static_cast<int>(std::floor((listH - 8.0f) / at.rowH)));
         at.list = { box.x + kPad, top, leftW, static_cast<float>(at.rows) * at.rowH + 8.0f };
         const float rightX = at.list.right() + kGap, rightW = box.right() - kPad - rightX;
-        float x = rightX;
-        for (int i = std::max(0, firstTab_); i < static_cast<int>(diffs_.size()); ++i)
-        {
-            const float tw = tabW(tabLabel(diffs_[static_cast<std::size_t>(i)]));
-            if (x + tw > rightX + rightW + 0.5f && !at.tabs.empty())
-                break;
-            at.tabs.push_back({ x, top, std::min(tw, rightW), kTabH });
-            x += tw + 6.0f;
-        }
-        at.diff = { rightX, top + kTabH + 8.0f, rightW, at.list.bottom() - (top + kTabH + 8.0f) };
-        at.lines = std::max(1, static_cast<int>(std::floor((at.diff.h - 12.0f) / at.lineH)));
+        const DiffView::Places v = view_.places({ rightX, top, rightW, at.list.bottom() - top });
+        at.tabs = v.tabs;
+        at.diff = v.diff;
+        at.lineH = v.lineH;
+        at.lines = v.lines;
         at.playA = { box.x + kPad, cy, kPlayW, kPlayH };
         at.playB = { at.playA.right() + 8.0f, cy, kPlayW, kPlayH };
         at.same = { at.playB.right() + 72.0f, cy + 6.0f, 64.0f, 28.0f };
@@ -379,12 +247,22 @@ namespace playground::ui
 
     funkgui::Point AbCard::centreOfTab(int i, float width, float height) const
     {
-        const Places at = places(width, height);
-        const int k = i - firstTab_;
-        if (k < 0 || k >= static_cast<int>(at.tabs.size()))
-            return { -1.0e4f, -1.0e4f };
-        const funkgui::Rect& r = at.tabs[static_cast<std::size_t>(k)];
-        return { r.centreX(), r.centreY() };
+        return view_.centreOfTab(i, changes(places(width, height)));
+    }
+
+    funkgui::Rect AbCard::changes(const Places& at) const
+    {
+        return { at.diff.x, at.list.y, at.diff.w, at.list.bottom() - at.list.y };
+    }
+
+    DiffView::Places AbCard::viewPlaces(const Places& at) const
+    {
+        DiffView::Places v;
+        v.tabs = at.tabs;
+        v.diff = at.diff;
+        v.lineH = at.lineH;
+        v.lines = at.lines;
+        return v;
     }
 
     Scroll AbCard::listScroll(const Places& at) const
@@ -397,28 +275,14 @@ namespace playground::ui
         return s;
     }
 
-    Scroll AbCard::diffScroll(const Places& at) const
-    {
-        Scroll s = diff_;
-        const int n = file_ >= 0 && file_ < static_cast<int>(diffs_.size()) ? static_cast<int>(diffs_[static_cast<std::size_t>(file_)].lines.size()) : 0;
-        s.content = static_cast<float>(n) * at.lineH;
-        s.view = static_cast<float>(at.lines) * at.lineH;
-        s.row = at.lineH;
-        s.clamp();
-        return s;
-    }
+    Scroll AbCard::diffScroll(const Places& at) const { return view_.diffScroll(viewPlaces(at)); }
 
     funkgui::Rect AbCard::listBar(const Places& at) const
     {
         return { at.list.x, at.list.y + 4.0f, at.list.w - 3.0f, static_cast<float>(at.rows) * at.rowH };
     }
 
-    funkgui::Rect AbCard::diffBar(const Places& at) const
-    {
-        return { at.diff.x, at.diff.y + 4.0f, at.diff.w - 3.0f, at.diff.h - 8.0f };
-    }
-
-    int AbCard::scroll() const noexcept { return static_cast<int>(std::ceil(diff_.offset / Places{}.lineH - 1.0e-3f)); }
+    funkgui::Rect AbCard::diffBar(const Places& at) const { return view_.diffBar(viewPlaces(at)); }
 
     funkgui::Rect AbCard::rowRect(const Places& at, int row) const
     {
@@ -447,12 +311,8 @@ namespace playground::ui
             ++revision_;
             return;
         }
-        if (Scroll s = diffScroll(at); s.press(p, diffBar(at)))
-        {
-            diff_ = s;
-            ++revision_;
+        if (view_.pointerDown(p, changes(at)))           // its bar's thumb, a tab
             return;
-        }
         if (at.list.contains(p))
         {
             if (const int row = rowAt(p, at); row >= 0)
@@ -463,12 +323,6 @@ namespace playground::ui
             }
             return;
         }
-        for (std::size_t k = 0; k < at.tabs.size(); ++k)
-            if (at.tabs[k].contains(p))
-            {
-                showFile(firstTab_ + static_cast<int>(k));
-                return;
-            }
         if (at.playA.contains(p))
             play(0);
         else if (at.playB.contains(p))
@@ -495,12 +349,14 @@ namespace playground::ui
     {
         // As the code scrolls (Scroll.h): the delta as it came, WheelEvent::reversed never read.
         const Places at = places(width, height);
-        Scroll& kept = at.list.contains({ e.x, e.y }) ? list_ : diff_;
-        if (!at.list.contains({ e.x, e.y }) && !at.diff.contains({ e.x, e.y }))
+        if (!at.list.contains({ e.x, e.y }))
+        {
+            (void)view_.wheel(e, changes(at));
             return;
-        Scroll s = &kept == &list_ ? listScroll(at) : diffScroll(at);
+        }
+        Scroll s = listScroll(at);
         s.wheel(e.dy, e.smooth);
-        kept = s;
+        list_ = s;
         ++revision_;
     }
 
@@ -513,23 +369,20 @@ namespace playground::ui
             s.drag(p, listBar(at));
             list_ = s;
         }
-        else if (diff_.dragging())
-        {
-            Scroll s = diffScroll(at);
-            s.drag(p, diffBar(at));
-            diff_ = s;
-        }
         else
+        {
+            (void)view_.pointerDrag(p, changes(at));
             return;
+        }
         ++revision_;
     }
 
     void AbCard::pointerUp()
     {
-        if (!list_.dragging() && !diff_.dragging())
+        (void)view_.pointerUp();
+        if (!list_.dragging())
             return;
         list_.release();
-        diff_.release();
         ++revision_;
     }
 
@@ -560,27 +413,8 @@ namespace playground::ui
             list_ = s;
             setSide(side, next);
         }
-        else if (e.key == Key::tab && !diffs_.empty())
-        {
-            const int n = static_cast<int>(diffs_.size());
-            showFile((file_ + (e.mods.shift ? n - 1 : 1)) % n);
-            while (firstTab_ < file_ && file_ >= firstTab_ + static_cast<int>(places(width, height).tabs.size()))
-                ++firstTab_;                             // the tab shown in the row
-        }
-        else if (e.key == Key::pageUp || e.key == Key::pageDown)
-        {
-            Scroll s = diffScroll(at);
-            s.moveTo(s.offset + static_cast<float>((e.key == Key::pageUp ? -1 : 1) * std::max(1, at.lines - 2)) * at.lineH);
-            diff_ = s;
-            ++revision_;
-        }
-        else if (e.key == Key::home || e.key == Key::end)
-        {
-            Scroll s = diffScroll(at);
-            s.moveTo(e.key == Key::home ? 0.0f : s.max());
-            diff_ = s;
-            ++revision_;
-        }
+        else
+            (void)view_.key(e, changes(at));             // Tab, Page Up and Down, Home and End
     }
 
     funkgui::Cursor AbCard::cursor(funkgui::Point p, float width, float height) const
@@ -589,9 +423,8 @@ namespace playground::ui
         for (const funkgui::Rect& r : { at.playA, at.playB, at.same, at.own, at.match, at.close, at.keepA, at.keepB })
             if (r.contains(p))
                 return funkgui::Cursor::pointingHand;
-        for (const funkgui::Rect& r : at.tabs)
-            if (r.contains(p))
-                return funkgui::Cursor::pointingHand;
+        if (view_.hand(p, changes(at)))
+            return funkgui::Cursor::pointingHand;
         if (rowAt(p, at) >= 0)
             return funkgui::Cursor::pointingHand;
         return funkgui::Cursor::normal;
@@ -700,67 +533,7 @@ namespace playground::ui
             const funkgui::TextStyle& cap = chat::kSmallStrong;
             const std::string caption = "CHANGES FROM A (" + upper(state_.sides[0].label) + ") TO B (" + upper(state_.sides[1].label) + ")";
             c.text(fitText(c, caption, cap, d.w).c_str(), d.x + 2.0f, c.capCentreTop(at.list.y - 11.0f, cap), cap, p.faint);
-            for (std::size_t k = 0; k < at.tabs.size(); ++k)
-            {
-                const int i = firstTab_ + static_cast<int>(k);
-                const FileDiff& f = diffs_[static_cast<std::size_t>(i)];
-                const funkgui::Rect& t = at.tabs[k];
-                const bool chosen = i == file_;
-                const bool hover = hasPointer && t.contains(pointer);
-                c.rrect(t.x, t.y, t.w, t.h, t.h * 0.5f, chosen ? funkgui::mix(p.composer, p.accent, 0.2f) : hover ? p.hover : p.composer,
-                        1.0f, chosen ? p.accent : p.composerEdge);
-                const funkgui::Col ink = f.change == Change::same ? p.faint : chosen ? p.text : p.soft;
-                c.text(fitText(c, tabLabel(f), chat::kSmall, t.w - 20.0f).c_str(), t.centreX(), c.capCentreTop(t.centreY(), chat::kSmall),
-                       chat::kSmall, ink, funkgui::Align::centre);
-            }
-            if (firstTab_ + static_cast<int>(at.tabs.size()) < static_cast<int>(diffs_.size()))
-                c.text("...", d.right() - 4.0f, c.capCentreTop(at.list.y + 0.5f * kTabH, chat::kSmall), chat::kSmall, p.faint,
-                       funkgui::Align::right);
-            c.rrect(d.x, d.y, d.w, d.h, 10.0f, p.code, 1.0f, p.codeEdge);
-            if (file_ >= 0 && file_ < static_cast<int>(diffs_.size()))
-            {
-                const FileDiff& f = diffs_[static_cast<std::size_t>(file_)];
-                if (f.change == Change::same)
-                    c.text(fitText(c, f.name + " is the same in A and B.", chat::kBody, d.w - 24.0f).c_str(), d.centreX(),
-                           c.capCentreTop(d.y + 28.0f, chat::kBody), chat::kBody, p.faint, funkgui::Align::centre);
-                const funkgui::Canvas::ClipScope clip(c, { c.snapX(d.x + 1.0f), c.snapY(d.y + 1.0f), d.w - 2.0f, d.h - 2.0f });
-                const float cw = std::max(1.0f, c.textWidth("M", chat::kCodeText));
-                const float textX = d.x + 96.0f;
-                const auto maxChars = static_cast<std::size_t>(std::max(0.0f, (d.right() - 12.0f - textX) / cw));
-                // The lines in view, a line at an edge in part (the clip above).
-                const Scroll scroll = diffScroll(at);
-                const int from = std::max(0, static_cast<int>(std::floor(scroll.offset / at.lineH)));
-                const int to = std::min(static_cast<int>(f.lines.size()), static_cast<int>(std::ceil((scroll.offset + scroll.view) / at.lineH)) + 1);
-                for (int i = from; i < to; ++i)
-                {
-                    const Line& l = f.lines[static_cast<std::size_t>(i)];
-                    const float y = d.y + 6.0f + static_cast<float>(i) * at.lineH - scroll.offset, mid = y + 0.5f * at.lineH;
-                    if (l.kind == Line::Kind::gap)
-                    {
-                        c.hairlineH(d.x + 8.0f, mid, d.w - 16.0f, p.codeEdge);
-                        const float tw = c.textWidth(l.text.c_str(), chat::kSmall) + 16.0f;
-                        c.rrect(d.centreX() - 0.5f * tw, mid - 7.0f, tw, 14.0f, 7.0f, p.code);
-                        c.text(l.text.c_str(), d.centreX(), c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.faint, funkgui::Align::centre);
-                        continue;
-                    }
-                    if (l.kind != Line::Kind::same)
-                        c.rrect(d.x + 2.0f, y, d.w - 4.0f, at.lineH, 0.0f,
-                                (l.kind == Line::Kind::removed ? p.danger : p.accent).withAlpha(0.14f));
-                    if (l.a > 0)
-                        c.text(std::to_string(l.a).c_str(), d.x + 40.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.faint,
-                               funkgui::Align::right);
-                    if (l.b > 0)
-                        c.text(std::to_string(l.b).c_str(), d.x + 74.0f, c.capCentreTop(mid, chat::kSmall), chat::kSmall, p.faint,
-                               funkgui::Align::right);
-                    if (l.kind != Line::Kind::same)
-                        c.text(l.kind == Line::Kind::removed ? "-" : "+", d.x + 84.0f, c.capCentreTop(mid, chat::kCodeText), chat::kCodeText,
-                               l.kind == Line::Kind::removed ? p.danger : p.accent);
-                    const std::string text = l.text.size() > maxChars ? l.text.substr(0, maxChars > 3 ? maxChars - 3 : 0) + "..." : l.text;
-                    c.text(text.c_str(), textX, c.capCentreTop(mid, chat::kCodeText), chat::kCodeText,
-                           l.kind == Line::Kind::removed ? p.soft : p.text);
-                }
-                scroll.draw(c, diffBar(at), th);
-            }
+            view_.draw(c, th, changes(at), pointer, hasPointer);
         }
 
         // A and B: the side that plays filled, the one on its way outlined.
@@ -908,34 +681,7 @@ namespace playground::ui
                 out.push_back(std::move(b));
             }
         }
-        for (std::size_t k = 0; k < at.tabs.size(); ++k)
-        {
-            const int i = firstTab_ + static_cast<int>(k);
-            funkgui::A11yItem t;
-            t.id = kTabId + static_cast<uint32_t>(i);
-            t.parent = kBoxId;
-            t.role = funkgui::A11yRole::toggleButton;
-            t.bounds = at.tabs[k];
-            t.title = tabLabel(diffs_[static_cast<std::size_t>(i)]);
-            t.checkable = true;
-            t.checked = i == file_;
-            out.push_back(std::move(t));
-        }
-        funkgui::A11yItem diff;
-        diff.id = kDiffId;
-        diff.parent = kBoxId;
-        diff.role = funkgui::A11yRole::staticText;
-        diff.bounds = at.diff;
-        if (file_ >= 0 && file_ < static_cast<int>(diffs_.size()))
-        {
-            const FileDiff& f = diffs_[static_cast<std::size_t>(file_)];
-            diff.title = "Changes in " + f.name;
-            diff.value = f.change == Change::same    ? "the same in A and B"
-                       : f.change == Change::added   ? "new in B, " + std::to_string(f.added) + " lines"
-                       : f.change == Change::removed ? "gone in B, " + std::to_string(f.removed) + " lines"
-                                                     : std::to_string(f.added) + " lines added, " + std::to_string(f.removed) + " taken away";
-        }
-        out.push_back(std::move(diff));
+        view_.accessibility(out, changes(at), kBoxId, kTabId, kDiffId);
         const auto button = [&](uint32_t id, const funkgui::Rect& r, const std::string& title, bool checkable, bool checked,
                                 funkgui::A11yRole role = funkgui::A11yRole::button) {
             funkgui::A11yItem b;
@@ -995,11 +741,7 @@ namespace playground::ui
         else if (id == kKeepBId)
             keep(1);
         else if (id >= kTabId && id < kTabId + 0x100u)
-        {
-            if (static_cast<int>(id - kTabId) >= static_cast<int>(diffs_.size()))
-                return false;
-            showFile(static_cast<int>(id - kTabId));
-        }
+            return view_.a11yAction(id, changes(at), kTabId);
         else if (id >= kRowId && id < kRowId + 0x8000u)
         {
             const int row = static_cast<int>((id - kRowId) / 4u), part = static_cast<int>((id - kRowId) % 4u);

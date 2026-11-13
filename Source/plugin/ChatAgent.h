@@ -529,6 +529,14 @@ namespace playground
         std::string requestBody(std::string& beta);
         bool streamOther(const std::string& body, claude::MessageBuilder& builder, int& status, std::string& error,
                          int& retryAfter);
+        // The usage ledger (ChatUsage.cpp, Usage.h): every request that reached an API and reported usage, whatever
+        // became of it, added once (streamOnce, after its transport returns: a turn's rounds, each retry and broken
+        // stream, the fast-mode and web tools' second requests, the planner's, a provider's work-around request), under
+        // the model that served it; its cost added to the turn's (turnCost_), for the footer. Without mutex_ held.
+        void countUsage(const claude::MessageBuilder& builder, bool other);
+        // ", $0.12" (or ", ~$0.12", an estimate) for the footer while every request this turn has a cost; "" else.
+        // Under mutex_.
+        std::string turnCostText() const;
         // Another provider: the key of `p`'s server ("" for none), read with mutex_ released (the keyring may ask the
         // user to unlock it, and wait: never under the lock the editor's chatState() takes) and kept as otherKey_ while
         // `p` is the provider chosen and no key was saved or removed meanwhile (keyGeneration_); whether one is kept for
@@ -739,6 +747,14 @@ namespace playground
         bool planNext_ = false;                                     // the next turn starts with a plan (a message)
         int plannerAsks_ = 0;                                       // ask_planner's calls this turn
         std::string turnPlanUsage_;                                 // the planner's tokens this turn, for the footer
+        struct TurnCost
+        {
+            int64_t microUsd = 0;
+            int requests = 0;                                       // the requests counted this turn
+            bool unknown = false;                                   // one had no price: no cost said
+            bool estimate = false;                                  // one was an estimate
+        };
+        TurnCost turnCost_;                                         // this turn's requests' cost (countUsage)
         bool checksFailing_ = false;                                // one failed when they were last measured
         struct Attached
         {

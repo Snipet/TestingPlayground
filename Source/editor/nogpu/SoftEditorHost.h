@@ -66,6 +66,7 @@ namespace playground::ui
 
         funkgui::Panel& panel() noexcept { return *panel_; }
         int appliedZoomPercent() const noexcept { return zoomApplied_; }   // what the editor is sized and drawn at
+        uint32_t ticks() const noexcept { return ticks_; }                 // the Panel's ticks (the settings' Debug page)
 
         void paint(juce::Graphics&) override;
         void resized() override;

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <initializer_list>
 #include <iterator>
@@ -216,6 +217,11 @@ namespace playground::providers
     }
 
     bool keyless(const ChatProvider& p) { return kindOf(p.kind) == Kind::openai && isLocal(baseOf(p)); }
+
+    std::string usageName(const ChatProvider& p)
+    {
+        return usage::providerName(idOf(kindOf(p.kind)), hostOf(baseOf(p)), keyless(p));
+    }
 
     bool picksFirst(const ChatProvider& p) { return kindOf(p.kind) == Kind::gemini || keyless(p); }
 
@@ -683,6 +689,9 @@ namespace playground::providers
                                              { "messages", openAiMessages(body, options) } });
             if (!tools.isEmpty())
                 out.getDynamicObject()->setProperty("tools", tools);
+            // OpenRouter's usage accounting: its documentation asks for this to have the request's cost in the usage.
+            if (reasoning == Reasoning::openRouter)
+                out.getDynamicObject()->setProperty("usage", claude::object({ { "include", true } }));
             // The thinking level, chosen: OpenRouter's effort alone (never a max_tokens beside it), OpenAI's own field.
             if (isLevel(options.effort) && reasoning == Reasoning::openRouter)
                 out.getDynamicObject()->setProperty("reasoning", claude::object({ { "effort", juce::String(options.effort) } }));
@@ -902,6 +911,53 @@ namespace playground::providers
         return m;
     }
 
+    std::vector<std::pair<std::string, usage::Price>> listedPrices(const ChatProvider& p, const std::string& body)
+    {
+        std::vector<std::pair<std::string, usage::Price>> out;
+        if (reasoningOf(p) != Reasoning::openRouter)
+            return out;
+        // A price as the list writes it: a string of USD (a number taken too); -1 for none.
+        const auto usd = [](const juce::var& v) {
+            if (v.isString())
+            {
+                const juce::String t = v.toString().trim();
+                if (t.isEmpty() || !t.containsOnly("0123456789.eE+-"))
+                    return -1.0;
+                const double d = t.getDoubleValue();
+                return std::isfinite(d) && d >= 0 ? d : -1.0;
+            }
+            if (v.isDouble() || v.isInt() || v.isInt64())
+            {
+                const double d = static_cast<double>(v);
+                return std::isfinite(d) && d >= 0 ? d : -1.0;
+            }
+            return -1.0;
+        };
+        const juce::var v = claude::parseJson(body);
+        for (const juce::var& m : arrayOf(v.getProperty("data", juce::var())))
+        {
+            const std::string id = str(m, "id");
+            const juce::var pricing = m.getProperty("pricing", juce::var());
+            if (!plausibleModel(id) || !pricing.isObject())
+                continue;
+            const double in = usd(pricing.getProperty("prompt", juce::var()));
+            const double outTok = usd(pricing.getProperty("completion", juce::var()));
+            if (in < 0 || outTok < 0)
+                continue;
+            const double read = usd(pricing.getProperty("input_cache_read", juce::var()));
+            const double write = usd(pricing.getProperty("input_cache_write", juce::var()));
+            const double search = usd(pricing.getProperty("web_search", juce::var()));
+            usage::Price price;
+            price.in = in * 1e6;
+            price.out = outTok * 1e6;
+            price.cacheRead = (read >= 0 ? read : in) * 1e6;
+            price.write5m = price.write1h = (write >= 0 ? write : in) * 1e6;
+            price.webSearch = search >= 0 ? search : 0;
+            out.emplace_back(id, price);
+        }
+        return out;
+    }
+
     Reasoning reasoningOf(const ChatProvider& p)
     {
         switch (kindOf(p.kind))
@@ -1058,8 +1114,9 @@ namespace playground::providers
                                       { "message", claude::object({ { "type", "message" },
                                                                     { "role", "assistant" },
                                                                     { "model", utf8(model) },
-                                                                    { "content", juce::Array<juce::var>() },
-                                                                    { "usage", claude::object({ { "input_tokens", 0 }, { "output_tokens", 0 } }) } }) } }));
+                                                                    { "content", juce::Array<juce::var>() } }) } }));
+                // No usage here: the provider says it at the end (end()), and a stream that broke off before then
+                // reported none (Usage.h: the ledger counts a request that reported usage).
             }
 
             int open(const juce::var& block)
@@ -1076,13 +1133,17 @@ namespace playground::providers
 
             void close(int i) { emit("content_block_stop", claude::object({ { "type", "content_block_stop" }, { "index", i } })); }
 
-            void end(const std::string& stopReason, int64_t input, int64_t cached, int64_t output)
+            // `cost`: the provider's own figure in USD (OpenRouter's usage.cost), as usage.cost; < 0 unsaid.
+            void end(const std::string& stopReason, int64_t input, int64_t cached, int64_t output, double cost = -1)
             {
+                juce::var usage = claude::object({ { "input_tokens", static_cast<juce::int64>(std::max<int64_t>(0, input - cached)) },
+                                                   { "cache_read_input_tokens", static_cast<juce::int64>(cached) },
+                                                   { "output_tokens", static_cast<juce::int64>(output) } });
+                if (cost >= 0)
+                    usage.getDynamicObject()->setProperty("cost", cost);
                 emit("message_delta", claude::object({ { "type", "message_delta" },
                                                        { "delta", claude::object({ { "stop_reason", utf8(stopReason) } }) },
-                                                       { "usage", claude::object({ { "input_tokens", static_cast<juce::int64>(std::max<int64_t>(0, input - cached)) },
-                                                                                   { "cache_read_input_tokens", static_cast<juce::int64>(cached) },
-                                                                                   { "output_tokens", static_cast<juce::int64>(output) } }) } }));
+                                                       { "usage", usage } }));
                 emit("message_stop", claude::object({ { "type", "message_stop" } }));
             }
 
@@ -1203,6 +1264,9 @@ namespace playground::providers
                     input_ = static_cast<juce::int64>(u.getProperty("prompt_tokens", 0));
                     output_ = static_cast<juce::int64>(u.getProperty("completion_tokens", 0));
                     cached_ = static_cast<juce::int64>(u.getProperty("prompt_tokens_details", juce::var()).getProperty("cached_tokens", 0));
+                    // OpenRouter's own figure for the request, in USD (its usage accounting).
+                    if (const juce::var cost = u.getProperty("cost", juce::var()); cost.isDouble() || cost.isInt() || cost.isInt64())
+                        cost_ = static_cast<double>(cost);
                 }
                 const juce::Array<juce::var> choices = arrayOf(v.getProperty("choices", juce::var()));
                 if (choices.isEmpty())
@@ -1278,7 +1342,7 @@ namespace playground::providers
                                        : finish_ == "content_filter"   ? "refusal"
                                        : tools                         ? "tool_use"
                                                                        : "end_turn";
-                out_.end(stop, input_, cached_, output_);
+                out_.end(stop, input_, cached_, output_, cost_);
             }
 
         private:
@@ -1293,6 +1357,7 @@ namespace playground::providers
             std::map<int, Call> calls_;
             std::string model_, finish_;
             int64_t input_ = 0, output_ = 0, cached_ = 0;
+            double cost_ = -1;
             bool done_ = false, errored_ = false;
         };
 
