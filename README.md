@@ -2845,9 +2845,10 @@ scripts/                 plugin.py (the products' identities: info, add, rename,
                          app's disk image), entitlements/ (the Standalones' hardened runtime, by kind),
                          package-linux.sh (the Linux package, a .tar.gz) and linux-install.sh (its install.sh)
 .github/workflows/       build.yml (each pull request built and tested on macOS, Windows and Linux, bgfx's shader
-                         compiler kept in a cache on all three and the compilers' objects in ccache's on macOS and
-                         Linux, saved from main; a pull request that changes only docs/ and the root's .md files
-                         builds nothing, its checks passing at once), release.yml (a v* tag's installers for macOS,
+                         compiler and the compilers' objects kept in caches on all three (ccache on macOS and Linux,
+                         sccache on Windows), saved from main; a pull request that changes only docs/ and the root's
+                         .md files builds nothing, its checks passing at once; run by hand, `platforms` builds only
+                         the platforms named), release.yml (a v* tag's installers for macOS,
                          Windows and Linux, as a draft release), publish-downloads.yml (a published release's files
                          to the website), runners.yml (what the hosted runners offer)
 cmake/                   Deps.cmake (the pins), Flags.cmake, Probes.cmake (the probes and lints), Product.h.in,
