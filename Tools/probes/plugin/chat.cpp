@@ -122,6 +122,9 @@
 //            both files, Cmd-Shift-Z and Cmd-Y redo them though the tab's history went back past them; in a netlist's
 //            Schematic view Cmd-Z undoes the change in both files and the drawing loses its part; a session loaded over
 //            two tabs is one step; a fresh start ends the groups
+//            ASCII: write_file's and edit_file's non-ASCII text held as the editor holds it (the draft, the version and
+//            the tab one text, the result saying what changed), an edit_file on that version taken, and the editor's
+//            tabs given back changing nothing (get_status since: nothing changed)
 //            GREP: find's context (0, 10; 11 refused), count (one file's, every file's: no lines), skip (the first 40's
 //            last line saying how many more and the skip that reads on, the rest after it, past them all, and across the
 //            files in the tabs' order); context, count or skip without find refused
@@ -131,7 +134,9 @@
 //            all or none (a pattern past its steps in a later file, 2,001 matches, a named file's expected after the
 //            user's edit), the user's typing between the read and the write kept and replaced too, the refusals (no
 //            match with the closest line and the lines in another case, find beside old_text, a bad pattern, expected
-//            with no name, two lines, no new_text), and a replacement in a file the chat's Claude had seen seen
+//            with no name, two lines, no new_text), a replacement in a file the chat's Claude had seen seen, and a
+//            new_text outside ASCII held as the editor holds it (one file and every file: the draft, the tab and the
+//            version one text, the result saying what changed in each file)
 //   SOUND    view_sound through the agent (a program that sounds): its result a PNG of 1120 x 800 and what it shows,
 //            the tool's entry with the picture's thumbnail (480 px), the session without the PNG but with the thumbnail;
 //            a program that does not compile draws nothing and says why; with a window, a PNG that shades it and words
@@ -180,7 +185,10 @@
 //            bounded; refused in words past the caps: hold_seconds 301, view_sound's 11 (naming the tools that take 300
 //            s), tail_seconds 11, a scenario's move at 301 s (tune_dials), compare's picture with one at 11 s, trace's
 //            hold 301; at 192 kHz a hold of 200 s or 150 s (past 145 s, the times' cap there) and a window to 160 s (past
-//            the 155 s a render holds), and compare's B at b_rate 192000 with a move at 150 s (A at 48 kHz fits); Claude
+//            the 155 s a render holds), and compare's B at b_rate 192000 with a move at 150 s (A at 48 kHz fits); a glide
+//            whose at + over ends past the cap (view_sound's 14.5 s, measure_output's 315 s) and an instrument's note
+//            whose at + len does (view_sound's 14 s), naming it; a glide and a note that end at 10 s taken (the phrase
+//            described over 10.00 s); Claude
 //            Desktop's cancel mid-render (the activity counting the seconds first): what it reached, nothing measured,
 //            back within 2 s, the next call free (its numbers measured)
 //   SPECTRUM measure_output's spectrum through MCP: an octave's, a third's and a semitone's bands in the report (an
@@ -238,9 +246,16 @@
 //   PICTURES pictures for a message (attach): a PNG with transparency goes as its own bytes, a JPEG of 2400 x 1200 is
 //            scaled to 1568 x 784, each with a thumbnail (at most 320 px); a text file and a file that is not a picture
 //            are refused with a note; on macOS a TIFF reads (ImageIO) and a photo stored on its side reads upright,
-//            elsewhere a TIFF is refused, its note naming the formats read there (PNG, JPEG or GIF);
+//            elsewhere a TIFF is refused, its note naming the formats read there (PNG, JPEG or GIF); a PNG, a JPEG and
+//            a GIF of a few hundred bytes whose headers say 20,000 x 6,000 pixels refused by that size, none decoded;
+//            read as the decoders read them, a GIF whose graphic control extension begins with a block of 0 (a 1 x 1
+//            descriptor's bytes in the blocks after it, 65,535 x 65,535 after those) and a JPEG whose APP0 says a
+//            length of 0 refused, none decoded, while a GIF with a graphic control extension and a JPEG with an APP1
+//            are taken; a picture of 4000 x 3000 taken (scaled to 1568 x 1176);
 //            detach takes one back; the message's pictures go before its words as base64
-//            image blocks, the entry shows them and the box empties; a message of pictures alone goes; a message takes
+//            image blocks, the entry shows them and the box empties; a message sent while its pictures are still read
+//            shows at once and goes with them all once they are in (one that is no picture refused on the way), the box
+//            empty; a Stop while it waits sends nothing; a message of pictures alone goes; a message takes
 //            six; a new chat drops the attached; the session keeps each picture's thumbnail, which loads back
 //   WEB      web search: off at first, no web tools; on (with the key), the request has web_search and web_fetch
 //            (20260209, five uses each, a fetch's text capped, its citations on) and the history's thinking goes (the
@@ -274,6 +289,9 @@
 //            loses its thinking blocks when it loads (a reply of thinking alone keeps a line), one saved with it keeps
 //            them
 //   STOP     a stalled stream: stop() ends the turn at once; the history ends with Claude's text so far
+//   BUSY     a call of Claude Desktop's that takes the chat while send() joins the last turn (between its two looks):
+//            the message is not taken (send says so: the box keeps it; no entry, no request), the chat stays busy with
+//            the call, and idle after it
 //   STATE    the conversation is in the session: a second processor loading the first's state has the same entries
 //            and the same history
 //   OLD      what a build from before 2026-10-28 kept of a sign-in to a server (account-token.bin; chat.json's
@@ -282,6 +300,9 @@
 //            note of the sign-in, a turn through it) loads as any other, and the next turn goes to api.anthropic.com
 //            with the key and no other credential (the models too), the history valid; the key removed, a message
 //            asks for the key (and for nothing else) and sends nothing
+//   MODELS   /v1/models gave no list (a Stop while it was asked, a 529, no connection): the turn goes with the
+//            built-in values and the next turn asks again; once listed, the model's own max_tokens, level and
+//            compaction go and it is not asked again; a turn of several requests asks once
 //   NEW      newChat forgets the conversation
 #include "Pictures.h"
 #include "Probe.h"
@@ -2837,11 +2858,48 @@ PROBE(plugin, chat)
                                                                   + "a file's name with from and lines, searches the rest.\n"
                                              ? 1 : 0, 1);
         }
+        // ASCII: Claude's text goes into the draft as the editor holds it (TextEditor::sanitise: printable ASCII, tabs
+        // and LF), so the draft, its version and the tab are one text, the result says what changed, an edit_file on
+        // that version is taken, and the editor giving its tabs back changes nothing and journals nothing as the user's.
+        {
+            processor.editorPort().setDraft(fd);
+            host.tick(2);
+            const std::string raw = juce::String::fromUTF8("// caf\xC3\xA9 \xE2\x86\x92 x\r\nfloat f(float x) { return x; }\n").toStdString();
+            const std::string held = funkgui::TextEditor::sanitise(raw);
+            const std::string wrote = toolText(call("write_file", input({ { "name", "notes.fm" }, { "content", juce::String::fromUTF8(raw.c_str()) } })));
+            std::printf("write_file of non-ASCII text:\n%s\n", wrote.c_str());
+            const std::string v = versionIn(wrote);
+            P.eq("ascii.draft_held", fileText("notes.fm") == held && held == "// caf? ? x\nfloat f(float x) { return x; }\n" ? 1 : 0, 1);
+            P.eq("ascii.write_says", has(wrote, "CR LF line ends read as LF; 2 characters outside ASCII became '?', as the editor holds ASCII") ? 1 : 0, 1);
+            P.eq("ascii.version_held", !v.empty() && versionIn(toolText(call("read_file", input({ { "name", "notes.fm" } })))) == v ? 1 : 0, 1);
+            P.eq("ascii.tab_is_draft", panel.editor().text() == fileText("notes.fm") ? 1 : 0, 1);
+            const std::string asciiEdit = toolText(call("edit_file", input({ { "name", "notes.fm" }, { "old_text", "return x;" },
+                                                                          { "new_text", juce::String::fromUTF8("return -x; // \xC2\xB5") },
+                                                                          { "expected", juce::String(v) } })));
+            std::printf("edit_file of non-ASCII text on that version:\n%s\n", asciiEdit.c_str());
+            P.eq("ascii.expected_holds", has(asciiEdit, "Edited notes.fm") && has(asciiEdit, "1 character outside ASCII became '?'")
+                                             && has(fileText("notes.fm"), "return -x; // ?") ? 1 : 0, 1);
+            const auto tokenOf = [](const std::string& status) {
+                const std::size_t at = status.rfind("Token: ");
+                return at == std::string::npos ? std::string() : status.substr(at + 7, status.find(' ', at + 7) - at - 7);
+            };
+            const std::string token = tokenOf(toolText(agent.mcpCall("get_status", input({}))));
+            pg::Draft given = processor.editorPort().draft();   // as the editor's tabs hold it
+            for (pg::SourceFile& f : given.files)
+                f.text = funkgui::TextEditor::sanitise(f.text);
+            const bool same = given.files == processor.editorPort().draft().files;
+            processor.editorPort().setDraft(given);
+            processor.poll();
+            const std::string since = toolText(agent.mcpCall("get_status", input({ { "since", juce::String(token) } })));
+            std::printf("get_status since, after the editor gave its tabs back:\n%s\n", since.c_str());
+            P.eq("ascii.push_changes_nothing", same && !token.empty() && has(since, "Nothing changed since your last look") ? 1 : 0, 1);
+        }
         // REPLACE: edit_file's find, every match replaced by new_text: in one file and in every file (one write of the
         // draft, one step Cmd-Z undoes in each file's tab, the tool's row naming them), with regex (new_text as it is:
         // no $1), a netlist's *@ lines untouched, all or none (a pattern past its steps in a later file, more than 2,000,
         // a named file's `expected` after the user's edit), the user's typing between the read and the write kept and
-        // the replacement run on it, the refusals in words, and an edit of a file seen seen.
+        // the replacement run on it, the refusals in words, an edit of a file seen seen, and a new_text outside ASCII
+        // held as the editor holds it.
         {
             const std::string aText = "float zq_gain = 1.0f;\nfloat b = zq_gain * 2.0f; // zq_gain\n";
             const std::string bText = "// uses zq_gain\nfloat c = zq_gain;\n";
@@ -3031,6 +3089,29 @@ PROBE(plugin, chat)
                     state = str(b, "text");
             P.eq("replace.seen", fileText("b.fm") == swapped(bText, "zq_gain", "zq_drive")
                                      && has(state, "<file name=\"b.fm\" lines=\"2\" unchanged=\"true\"/>") ? 1 : 0, 1);
+
+            // As the editor holds it: a new_text outside ASCII lands as TextEditor::sanitise makes it, in one file and in
+            // every file, the result saying so for each file, the version given that text's, and the tab the draft.
+            processor.editorPort().setDraft(rd);
+            sync();
+            const juce::String accented = juce::String::fromUTF8("zq_caf\xC3\xA9");
+            const pg::ChatAgent::McpResult heldOne = replace(input({ { "name", "a.fm" }, { "find", "zq_gain" }, { "new_text", accented } }));
+            std::printf("edit_file find with a new_text outside ASCII:\n%s", toolText(heldOne).c_str());
+            const std::string aHeld = swapped(aText, "zq_gain", "zq_caf?");
+            P.eq("replace.ascii_held", !heldOne.isError && fileText("a.fm") == aHeld && panel.editor().text() == aHeld ? 1 : 0, 1);
+            P.eq("replace.ascii_says", has(toolText(heldOne), "; 3 characters outside ASCII became '?', as the editor holds ASCII.\nThe lines changed:\n1\tfloat zq_caf? = 1.0f;\n")
+                                       ? 1 : 0, 1);
+            P.eq("replace.ascii_version", !versionIn(toolText(heldOne)).empty()
+                                              && versionIn(toolText(agent.mcpCall("read_file", input({ { "name", "a.fm" } })))) == versionIn(toolText(heldOne))
+                                          ? 1 : 0, 1);
+            const pg::ChatAgent::McpResult heldEvery = replace(input({ { "find", "zq_" }, { "new_text", juce::String::fromUTF8("z\xE2\x86\x92_") } }));
+            std::printf("edit_file find in every file with a new_text outside ASCII:\n%s", toolText(heldEvery).c_str());
+            P.eq("replace.ascii_every", !heldEvery.isError && fileText("a.fm") == swapped(aHeld, "zq_", "z?_")
+                                            && fileText("b.fm") == swapped(bText, "zq_", "z?_")
+                                            && has(toolText(heldEvery), "\n- a.fm: 3 (lines 1, 2); now 2 lines, version ")
+                                            && has(toolText(heldEvery), "; 3 characters outside ASCII became '?', as the editor holds ASCII\n- b.fm: 2 ")
+                                            && has(toolText(heldEvery), "; 2 characters outside ASCII became '?', as the editor holds ASCII\n")
+                                        ? 1 : 0, 1);
         }
         processor.editorPort().setDraft(saved);
         host.tick(2);
@@ -3602,6 +3683,29 @@ PROBE(plugin, chat)
                 const juce::var at150 = input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", 150.0 }, { "to", -6.0 } }) } } });
                 P.eq("long.b_rate_refused", refused("compare", input({ { "a", "editor" }, { "b", "editor" }, { "b_rate", 192000 }, { "scenario", at150 } }),
                                                     "B at b_rate: " + std::string(highTimes) + "150 s: render it shorter, or at a lower rate."), 1);
+                // What lasts ends by the cap too: a glide whose at + over passes it, and a note whose at + len does, are
+                // refused naming them, never cut there; one that ends at the cap is taken, described with its own times.
+                const auto glide = [&](double at, double over) {
+                    return input({ { "automate", juce::Array<juce::var>{ input({ { "dial", levelDial }, { "at", at }, { "to", -6.0 }, { "over", over } }) } } });
+                };
+                P.eq("long.picture_glide_end_refused",
+                     refused("view_sound", with(held(1.0), "scenario", glide(9.5, 5.0)),
+                             "scenario.automate[0]: at + over is 0 to 10 s (this move ends at 14.5 s) (a picture's render: "), 1);
+                P.eq("long.glide_end_refused", refused("measure_output", with(held(1.0), "scenario", glide(295.0, 20.0)),
+                                                       "scenario.automate[0]: at + over is 0 to 300 s (this move ends at 315 s) (a render "
+                                                       "that returns numbers)"), 1);
+                P.eq("long.glide_at_cap_taken", sa.mcpCall("view_sound", with(held(1.0), "scenario", glide(9.0, 1.0))).isError ? 0 : 1, 1);
+                if constexpr (pg::product::kIsInstrument)
+                {
+                    const auto note = [&](double at, double len) {
+                        return input({ { "phrase", juce::Array<juce::var>{ input({ { "note", 57 }, { "at", at }, { "len", len } }) } } });
+                    };
+                    P.eq("long.picture_note_end_refused", refused("view_sound", input({ { "scenario", note(9.0, 5.0) } }),
+                                                                  "scenario.phrase[0]: at + len is 0 to 10 s (this note ends at 14 s) "
+                                                                  "(a picture's render: "), 1);
+                    const pg::ChatAgent::McpResult atCap = sa.mcpCall("view_sound", input({ { "scenario", note(8.0, 2.0) } }));
+                    P.eq("long.note_at_cap_taken", !atCap.isError && has(allText(atCap), "a phrase of 1 note (A3) over 10.00 s") ? 1 : 0, 1);
+                }
                 // Cancelled mid-render (Claude Desktop's cancel): what it reached, at once; the activity said how far.
                 pg::ChatAgent::McpResult cut;
                 std::atomic<bool> finished{ false };
@@ -4817,6 +4921,190 @@ PROBE(plugin, chat)
             P.eq("pictures.entry", user != nullptr && user->pictures.size() == 2 && user->text == "a panel like these" ? 1 : 0, 1);
             P.eq("pictures.box_empty", st.attached.empty() ? 1 : 0, 1);
         }
+        // Files of a few hundred bytes whose headers say 20,000 x 6,000 pixels (120 megapixels, past kMaxPixels): a PNG
+        // (its IHDR, a CRC that holds), a JPEG (an APP0 and a DQT before its SOF0) and a GIF (an extension before its
+        // image descriptor), each refused by its header's size before any decoder sees it; a picture of 4000 x 3000 is
+        // taken as before.
+        {
+            const auto crc32 = [](const std::string& bytes) {
+                uint32_t c = 0xffffffffu;
+                for (const char ch : bytes)
+                {
+                    c ^= static_cast<uint8_t>(ch);
+                    for (int k = 0; k < 8; ++k)
+                        c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+                }
+                return c ^ 0xffffffffu;
+            };
+            const auto be32 = [](uint32_t v) {
+                return std::string{ static_cast<char>(v >> 24), static_cast<char>(v >> 16), static_cast<char>(v >> 8), static_cast<char>(v) };
+            };
+            const auto chunk = [&](const std::string& type, const std::string& data) {
+                return be32(static_cast<uint32_t>(data.size())) + type + data + be32(crc32(type + data));
+            };
+            const auto write = [&](const char* name, const std::string& bytes) {
+                const juce::File f = dir.getChildFile(name);
+                f.replaceWithData(bytes.data(), bytes.size());
+                return f.getFullPathName().toStdString();
+            };
+            const uint32_t w = 20000, h = 6000;
+            const std::string hugePng = write("huge.png", std::string("\x89PNG\r\n\x1a\n", 8)
+                                                              + chunk("IHDR", be32(w) + be32(h) + std::string("\x08\x02\x00\x00\x00", 5))
+                                                              + chunk("IDAT", std::string("\x78\x9c\x63\x00\x00\x00\x01\x00\x01", 9))
+                                                              + chunk("IEND", ""));
+            std::string tiny("\xff\xd8", 2);
+            tiny += std::string("\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00", 18);
+            tiny += std::string("\xff\xdb\x00\x43\x00", 5) + std::string(64, '\x01');
+            tiny += std::string("\xff\xc0\x00\x0b\x08", 5) + std::string{ static_cast<char>(h >> 8), static_cast<char>(h & 0xff),
+                                                                          static_cast<char>(w >> 8), static_cast<char>(w & 0xff) }
+                  + std::string("\x01\x01\x11\x00", 4);
+            tiny += std::string("\xff\xda\x00\x08\x01\x01\x00\x00\x3f\x00\x00\x00\xff\xd9", 14);
+            const std::string hugeJpeg = write("huge.jpg", tiny);
+            std::string gif = "GIF89a";
+            gif += std::string{ static_cast<char>(16), 0, static_cast<char>(16), 0, static_cast<char>(0x80), 0, 0 };   // a small screen
+            gif += std::string("\x00\x00\x00\xff\xff\xff", 6);
+            gif += std::string("\x21\xf9\x04\x00\x00\x00\x00\x00", 8);                                               // an extension
+            gif += std::string{ ',', 0, 0, 0, 0, static_cast<char>(w & 0xff), static_cast<char>(w >> 8),
+                                static_cast<char>(h & 0xff), static_cast<char>(h >> 8), 0 };
+            gif += std::string("\x02\x02\x44\x01\x00;", 6);
+            const std::string hugeGif = write("huge.gif", gif);
+            juce::Image large(juce::Image::RGB, 4000, 3000, true);
+            {
+                juce::Graphics g(large);
+                g.fillAll(juce::Colours::darkslategrey);
+            }
+            const std::string honest = save(large, "large.png", true);
+            std::printf("huge pictures: %zu, %zu and %zu bytes\n", static_cast<std::size_t>(juce::File(hugePng).getSize()),
+                        static_cast<std::size_t>(juce::File(hugeJpeg).getSize()), static_cast<std::size_t>(juce::File(hugeGif).getSize()));
+            const std::size_t decodesBefore = pg::chatimages::decodes();
+            agent.attach({ hugePng, hugeJpeg, hugeGif });
+            agent.waitIdle();
+            const std::size_t decodesAfter = pg::chatimages::decodes();
+            const std::string said = notes();
+            const auto refused = [&](const char* name) {
+                return has(said, std::string(name) + " is 20000 x 6000 pixels: a picture of more than 100 megapixels is not read") ? 1 : 0;
+            };
+            P.eq("pictures.huge_png_refused", refused("huge.png"), 1);
+            P.eq("pictures.huge_jpeg_refused", refused("huge.jpg"), 1);
+            P.eq("pictures.huge_gif_refused", refused("huge.gif"), 1);
+            P.eq("pictures.huge_none_taken", agent.chatState().attached.empty() ? 1 : 0, 1);
+            P.eq("pictures.huge_not_decoded", static_cast<int64_t>(decodesAfter - decodesBefore), 0);
+            // Read as the decoders read them. A GIF whose graphic control extension starts with a block of size 0: JUCE's
+            // loader reads on through the blocks after it (one holding a 1 x 1 image descriptor's bytes), and sizes the
+            // picture by the descriptor after them, 65,535 x 65,535. A JPEG whose APP0 says a length of 0 (libjpeg
+            // takes it as 2 and goes on to a SOF of 20,000 x 6,000). Both refused, nothing decoded.
+            std::string trick = "GIF89a";
+            trick += std::string("\x0a\x00\x0a\x00\x00\x00\x00", 7);                                    // a 10 x 10 screen
+            trick += std::string("\x21\xf9\x00", 3);                                                    // a block of 0 first
+            trick += std::string("\x0b\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00", 12) + std::string(1, '\0');
+            trick += std::string("\x2c\x00\x00\x00\x00\xff\xff\xff\xff\x00", 10);
+            trick += std::string("\x02\x02\x44\x01\x00;", 6);
+            const std::string trickGif = write("trick.gif", trick);
+            std::string shortApp("\xff\xd8\xff\xe0\x00\x00", 6);
+            shortApp += std::string("\xff\xc0\x00\x0b\x08", 5) + std::string{ static_cast<char>(h >> 8), static_cast<char>(h & 0xff),
+                                                                              static_cast<char>(w >> 8), static_cast<char>(w & 0xff) }
+                      + std::string("\x01\x01\x11\x00", 4) + std::string("\xff\xd9", 2);
+            const std::string shortJpeg = write("short.jpg", shortApp);
+            const std::size_t trickBefore = pg::chatimages::decodes();
+            agent.attach({ trickGif, shortJpeg });
+            agent.waitIdle();
+            const std::string tricked = notes();
+            P.eq("pictures.gif_extension_walk_refused", has(tricked, "trick.gif is 65535 x 65535 pixels: a picture of more than 100 megapixels") ? 1 : 0, 1);
+            P.eq("pictures.jpeg_short_length_refused", has(tricked, "short.jpg is not a picture this plugin can read (its JPEG header does not say its size)") ? 1 : 0, 1);
+            P.eq("pictures.tricks_not_decoded", static_cast<int64_t>(pg::chatimages::decodes() - trickBefore), 0);
+            P.eq("pictures.tricks_none_taken", agent.chatState().attached.empty() ? 1 : 0, 1);
+            // A well-formed GIF with a graphic control extension (a transparent colour), and a JPEG with an APP1 segment
+            // beside JUCE's APP0: taken.
+            std::string small = "GIF89a";
+            small += std::string("\x01\x00\x01\x00\x80\x00\x00", 7) + std::string("\x00\x00\x00\xff\xff\xff", 6);
+            small += std::string("\x21\xf9\x04\x01\x00\x00\x00\x00", 8);
+            small += std::string("\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00", 10) + std::string("\x02\x02\x44\x01\x00;", 6);
+            const std::string smallGif = write("dot.gif", small);
+            juce::MemoryOutputStream encoded;
+            juce::JPEGImageFormat().writeImageToStream(clear.convertedToFormat(juce::Image::RGB), encoded);
+            const auto* e = static_cast<const char*>(encoded.getData());
+            std::string withApp1(e, 2);
+            withApp1 += std::string("\xff\xe1\x00\x10" "Exif\x00\x00" "MM\x00\x2a\x00\x00\x00\x08", 18);
+            withApp1 += std::string(e + 2, encoded.getDataSize() - 2);
+            const std::string app1Jpeg = write("app1.jpg", withApp1);
+            agent.attach({ smallGif, app1Jpeg });
+            agent.waitIdle();
+            {
+                const pg::ChatState st = agent.chatState();
+                bool dotTaken = false, app1Taken = false;
+                for (const pg::ChatPicturePtr& p : st.attached)
+                {
+                    dotTaken = dotTaken || (p->name == "dot.gif" && p->width == 1 && p->height == 1);
+                    app1Taken = app1Taken || (p->name == "app1.jpg" && p->width == 64 && p->height == 48);
+                }
+                P.eq("pictures.gif_with_extension_taken", dotTaken ? 1 : 0, 1);
+                P.eq("pictures.jpeg_with_app1_taken", app1Taken ? 1 : 0, 1);
+                for (const pg::ChatPicturePtr& p : st.attached)
+                    agent.detach(p->id);
+            }
+            agent.attach({ honest });
+            agent.waitIdle();
+            const pg::ChatState st = agent.chatState();
+            P.eq("pictures.large_taken", st.attached.size() == 1 && st.attached[0]->width == 1568 && st.attached[0]->height == 1176 ? 1 : 0, 1);
+            for (const pg::ChatPicturePtr& p : st.attached)
+                agent.detach(p->id);
+        }
+        // Sent while the pictures are still being read (the reads held on the job thread): the message shows at once,
+        // waits for them, then goes with every one read (a file that is no picture refused on the way), none left in
+        // the box; a Stop while it waits ends the turn with nothing sent.
+        {
+            std::atomic<bool> hold{ true };
+            agent.setPictureReadHookForTests([&] {
+                while (hold.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            });
+            agent.attach({ png, jpeg, broken.getFullPathName().toStdString() });
+            script->add(fake::Response::ok(fake::Sse().start().text("Both, then.").end()));
+            const int sent = script->postCount();
+            agent.send("these too");
+            {
+                const pg::ChatState st = agent.chatState();
+                P.eq("pictures.waits", st.busy && st.attaching == 3 && script->postCount() == sent
+                                           && lastText(st, pg::ChatEntry::Kind::user) == "these too" ? 1 : 0, 1);
+            }
+            hold = false;
+            agent.waitIdle();
+            const juce::Array<juce::var> m = messagesOf(script->body(sent));
+            const juce::Array<juce::var> c = arr(m.isEmpty() ? juce::var() : m[m.size() - 1].getProperty("content", {}));
+            int images = 0, textAt = -1, lastImage = -1;
+            for (int i = 0; i < c.size(); ++i)
+            {
+                if (str(c[i], "type") == "image")
+                {
+                    ++images;
+                    lastImage = i;
+                }
+                if (str(c[i], "type") == "text" && str(c[i], "text") == "these too" && textAt < 0)
+                    textAt = i;
+            }
+            const pg::ChatState st = agent.chatState();
+            const pg::ChatEntry* user = nullptr;
+            for (const pg::ChatEntry& e : st.entries)
+                if (e.kind == pg::ChatEntry::Kind::user)
+                    user = &e;
+            P.eq("pictures.waited_sent_with", script->postCount() == sent + 1 && images == 2 && textAt > lastImage ? 1 : 0, 1);
+            P.eq("pictures.waited_entry", user != nullptr && user->text == "these too" && user->pictures.size() == 2 ? 1 : 0, 1);
+            P.eq("pictures.waited_none_left", st.attached.empty() && st.attaching == 0 && !st.busy ? 1 : 0, 1);
+
+            hold = true;
+            agent.attach({ png });
+            const int stopped = script->postCount();
+            agent.send("never mind");
+            agent.stop();
+            hold = false;
+            agent.waitIdle();
+            const pg::ChatState after = agent.chatState();
+            P.eq("pictures.stop_while_waiting", !after.busy && script->postCount() == stopped
+                                                    && lastText(after, pg::ChatEntry::Kind::note) == "Stopped." ? 1 : 0, 1);
+            agent.setPictureReadHookForTests(nullptr);
+            for (const pg::ChatPicturePtr& pic : after.attached)
+                agent.detach(pic->id);
+        }
 #if defined(__APPLE__)
         // What JUCE cannot read (a TIFF), and a photo stored on its side (EXIF orientation 6): ImageIO reads both,
         // the photo upright, and its bytes do not go as they are.
@@ -5461,6 +5749,42 @@ PROBE(plugin, chat)
         P.eq("stop.alternates", alternates(m) ? 1 : 0, 1);
     }
 
+    // ---- BUSY: a call of Claude Desktop's that takes the chat while send() joins the last turn ----------------------
+    {
+        P.eq("busy.file", agent.mcpCall("write_file", input({ { "name", "busy.fm" }, { "content", "// busy\n" } })).isError ? 1 : 0, 0);
+        std::atomic<bool> release{ false }, inCall{ false };
+        std::thread call;
+        agent.setFileWriteHookForTests([&](int) {
+            inCall = true;
+            while (!release.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        });
+        // Between send()'s two looks: the call starts on a thread of its own (as the MCP link's worker) and holds the
+        // chat until it is released.
+        agent.setSendHookForTests([&] {
+            call = std::thread([&] {
+                agent.mcpCall("edit_file", input({ { "name", "busy.fm" }, { "old_text", "// busy" }, { "new_text", "// busy, edited" } }));
+            });
+            while (!inCall.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        });
+        const int posts = script->postCount();
+        const bool taken = agent.send("while Claude Desktop works");
+        agent.setSendHookForTests(nullptr);
+        const pg::ChatState during = agent.chatState();
+        int typed = 0;
+        for (const pg::ChatEntry& e : during.entries)
+            typed += e.kind == pg::ChatEntry::Kind::user && e.text == "while Claude Desktop works" ? 1 : 0;
+        P.eq("busy.desktop_holds", during.busy ? 1 : 0, 1);
+        P.eq("busy.send_refused", !taken && typed == 0 && script->postCount() == posts ? 1 : 0, 1);
+        release = true;
+        call.join();
+        agent.setFileWriteHookForTests(nullptr);
+        agent.waitIdle();
+        P.eq("busy.idle_after", !agent.chatState().busy && script->postCount() == posts ? 1 : 0, 1);
+        agent.mcpCall("delete_file", input({ { "name", "busy.fm" } }));
+    }
+
     // ---- STATE ---------------------------------------------------------------------------------------------------------
     {
         juce::MemoryBlock state;
@@ -5541,6 +5865,68 @@ PROBE(plugin, chat)
         P.eq("old.no_key_asks_for_key", has(error, "API key") && !has(error, "ign in") ? 1 : 0, 1);
         P.eq("old.no_key_nothing_sent", static_cast<int64_t>(oldScript->paths.size() - n), 0);
         P.eq("old.saved_again", a.saveKey(fake::fakeKey(), why) ? 1 : 0, 1);
+    }
+
+    // ---- MODELS: a models list that did not come is asked for again, once a turn ------------------------------------
+    {
+        const pg::chatstore::Choice chosen = pg::chatstore::loadChoice();
+        pg::chatstore::saveChoice({ "claude-fable-5-2", "high", false, false, "" });   // a model the built-in list lacks
+        pg::Processor fresh;
+        pg::ChatAgent& a = fresh.chatAgent();
+        auto s2 = std::make_shared<fake::Script>();
+        s2->models = fake::modelsBody({ { "claude-fable-5-2", "Claude Fable 5.2", true, { "low", "medium", "high" }, 100000, true } });
+        a.setTransport(std::make_unique<fake::Transport>(s2));
+        const std::string gets = "GET /v1/models?limit=100";
+        const auto turnOf = [&](const std::string& words) {
+            s2->add(fake::Response::ok(fake::Sse().start().text("Yes.").end()));
+            a.send(words);
+            a.waitIdle();
+        };
+        const auto lastBody = [&] { return claude::parseJson(s2->body(s2->postCount() - 1)); };
+        const auto ownValues = [&](const juce::var& b) {
+            return static_cast<int>(b.getProperty("max_tokens", 0)) == 100000
+                && str(b.getProperty("output_config", {}), "effort") == "high"
+                && b.getProperty("context_management", {}).isObject();
+        };
+        // A Stop while the list is asked for: no list.
+        s2->holdGets = true;
+        a.send("one");
+        const auto t0 = std::chrono::steady_clock::now();
+        while (s2->heldGets.load() == 0 && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10))
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        a.stop();
+        s2->holdGets = false;
+        a.waitIdle();
+        P.eq("models.stopped_once", s2->count(gets), 1);
+        // Overloaded (529): the built-in list's values for this turn.
+        s2->modelsStatus = 529;
+        turnOf("two");
+        P.eq("models.overloaded_asked_again", s2->count(gets), 2);
+        P.eq("models.overloaded_builtin", s2->postCount() == 1 && !ownValues(lastBody())
+                                              && static_cast<int>(lastBody().getProperty("max_tokens", 0)) == 64000 ? 1 : 0, 1);
+        // No connection.
+        s2->modelsStatus = 0;
+        turnOf("three");
+        P.eq("models.unreachable_asked_again", s2->count(gets), 3);
+        // The list comes: the model's own max_tokens, level and compaction.
+        s2->modelsStatus = 200;
+        turnOf("four");
+        P.eq("models.listed_at_last", s2->count(gets), 4);
+        P.eq("models.own_values", ownValues(lastBody()) ? 1 : 0, 1);
+        bool listed = false;
+        for (const pg::ChatModel& m : a.chatState().models)
+            listed = listed || m.id == "claude-fable-5-2";
+        P.eq("models.menu", listed ? 1 : 0, 1);
+        // Listed: not asked again.
+        turnOf("five");
+        P.eq("models.not_again", s2->count(gets), 4);
+        // A turn of several requests asks once.
+        s2->modelsStatus = 529;
+        a.setTransport(std::make_unique<fake::Transport>(s2));   // the list forgotten: asked at the next turn
+        s2->add(fake::Response::ok(fake::Sse().start().tool("toolu_m", "get_status", input({})).end("tool_use")));
+        turnOf("six");
+        P.eq("models.once_a_turn", s2->count(gets) == 5 && s2->postCount() == 6 ? 1 : 0, 1);
+        pg::chatstore::saveChoice(chosen);
     }
 
     // ---- NEW -----------------------------------------------------------------------------------------------------------

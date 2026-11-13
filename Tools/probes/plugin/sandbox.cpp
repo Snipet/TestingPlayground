@@ -44,7 +44,10 @@
 //            set(), with a panel.gui of its dials, playing in a processor: the sandbox opened from that instance lists
 //            the same dials, the circuit's (drive, tone, level) by the compiled program's names and defaults, and
 //            renders what view_panel's picture shows, pixel for pixel within MATCH's bound (gui.sandbox.circuit.png,
-//            .circuit.view.png)
+//            .circuit.view.png); the same files as a folder the user named (open from file): the netlist read, so
+//            the same dials and circuit dials, with a file that sorts before program.fm in it too (program.fm stays
+//            the program), and with the folder sync's read-only copies (host.fm of the plugin's text, fifteen its
+//            manifest names), which count for nothing
 //   MOST     33 dials of Claude's: the report says the 33rd to the 64th are the panel's own
 //   MCPB     the extension (<Name>.mcpb) carries the server, the helper and the licences of what the helper holds
 //   HANG     a helper that never answers a render (<ENV_PREFIX>SANDBOX_TEST_HANG): the call answered at the deadline
@@ -54,6 +57,7 @@
 #include "Pictures.h"
 #include "Probe.h"
 
+#include "fminus/Patch.h"
 #include "mcp/McpProtocol.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/EditorPort.h"
@@ -886,6 +890,43 @@ PROBE(plugin, sandbox)
         P.le("circuit.match_pixels_off", static_cast<double>(d.outside), 0.002 * d.total);
         P.le("circuit.match_largest", d.largestOutside, 40);
         s.sandbox(object({ { "action", "close" }, { "sandbox", number } }), &processor);
+
+        // The same files in a folder the user named: the netlist read too, so the same dials and circuit dials.
+        const auto sameDials = [&](const Result& r) {
+            return !r.error && has(r.text, "Dials: 4, 4 from the program's declarations")
+                && has(r.text, "Circuit dials (the program's circuits' pots and switches, after its params, as the plugin makes "
+                               "them): " + defaults + ".")
+                && !has(r.text, "no parameter");
+        };
+        const std::filesystem::path cf = std::filesystem::path(dir) / "circuit";
+        std::filesystem::create_directories(cf);
+        std::ofstream(cf / pg::kProgramName) << program;
+        std::ofstream(cf / "screamer.cir") << (lib != nullptr ? lib->source : "");
+        std::ofstream(cf / "panel.gui") << circuitGui;
+        const auto openFolder = [&](const char* what) {
+            const Result r = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(cf.string()) } }));
+            std::printf("from the folder (%s):\n%s", what, r.text.c_str());
+            s.sandbox(object({ { "action", "close" }, { "sandbox", numberIn(r.text) } }));
+            return r;
+        };
+        P.eq("circuit.folder_same_dials", sameDials(openFolder("its three files")) ? 1 : 0, 1);
+        // A file of the program's that sorts before program.fm does not take the program's place.
+        std::ofstream(cf / "adsr.fm") << "module Adsr\n{\n    float level;\n};\n";
+        std::ofstream(cf / pg::kProgramName) << "#include \"adsr.fm\"\n" + program;
+        P.eq("circuit.folder_program_first", sameDials(openFolder("a file before program.fm")) ? 1 : 0, 1);
+        // The folder sync's read-only copies count for nothing: host.fm of the plugin's text, and fifteen copies its
+        // manifest names (with the four files, 20 past the 16 the sandbox reads).
+        std::ofstream(cf / "host.fm") << pg::Patch::hostSource();
+        std::ofstream manifest(cf / ".fmsync");
+        manifest << "fmsync 1\n";
+        for (int k = 0; k < 15; ++k)
+        {
+            const std::string name = "copy" + std::to_string(k) + ".fm";
+            std::ofstream(cf / name) << "module Copy" << k << "\n{\n    float x;\n};\n";
+            manifest << "copy 0123456789abcdef " << name << "\n";
+        }
+        manifest.close();
+        P.eq("circuit.folder_copies_left_out", sameDials(openFolder("with the folder sync's copies")) ? 1 : 0, 1);
     }
 
     // ---- MOST: past the host's 32 dials ----------------------------------------------------------------------------------

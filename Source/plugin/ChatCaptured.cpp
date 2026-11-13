@@ -93,9 +93,13 @@ namespace playground::scenario
         {
             capture::Replay whole;
             std::string unused;
-            whole.request.assets = host.chatAssets();
-            fidelity = capture::replayOf(t, 0.0, -1.0, whole, unused) ? capture::nullTest(t, whole).line
-                                                                     : "Replay: nothing to replay.";
+            if (capture::replayOf(t, 0.0, -1.0, whole, unused))
+            {
+                whole.request.assets = host.chatAssets();    // after replayOf, which starts from an empty Replay
+                fidelity = capture::nullTest(t, whole).line;
+            }
+            else
+                fidelity = "Replay: nothing to replay.";
             capture::Options keep;
             keep.take = reply.take;
             keep.replay = fidelity;

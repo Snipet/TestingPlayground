@@ -13,7 +13,8 @@
 //   EXITS    a program that does not compile: 2, its messages on stderr at the file's line; one whose process loops
 //            past its budget after a quarter of a second: 3, the report beginning with the stop, the WAV still written
 //            whole; one that reaches past its array: 3, saying so; one whose init never ends: 3, nothing written; a hold
-//            past 300 s, the user's recording, JSON that is none, a folder without program.fm, an option it has not: 1,
+//            past 300 s, a glide whose at + over ends past it and an instrument's note whose at + len does, the user's
+//            recording, JSON that is none, a folder without program.fm, an option it has not: 1,
 //            each saying why; a program that reads a sample (#pragma sample): 1, naming it, nothing written (its
 //            fields still listed)
 //   MORE     a library file the program #includes and the folder lacks: added, saying so; --list-fields names the
@@ -490,6 +491,16 @@ PROBE(plugin, render)
         P.eq("exit.not_json", notJson.code == 1 && has(notJson.out, "not JSON") ? 1 : 0, 1);
         P.eq("exit.no_program", noProgram.code == 1 && has(noProgram.out, "has no program.fm") ? 1 : 0, 1);
         P.eq("exit.no_option", noOption.code == 1 && has(noOption.out, "no option --loudly") ? 1 : 0, 1);
+        // What lasts ends by the cap, as the tools take it: a glide past 300 s, and an instrument's note, refused.
+        const Ran glide = render({ at, "-r", "{\"scenario\": {\"automate\": [{\"dial\": \"level\", \"at\": 295, \"to\": 0.5, \"over\": 20}]}}" });
+        std::printf("a glide past the cap (exit %d): %s", glide.code, glide.out.c_str());
+        P.eq("exit.glide_end", glide.code == 1 && has(glide.out, "scenario.automate[0]: at + over is 0 to 300 s (this move ends at 315 s)") ? 1 : 0, 1);
+        if constexpr (kInstrument)
+        {
+            const Ran note = render({ at, "-r", "{\"scenario\": {\"phrase\": [{\"note\": 57, \"at\": 299, \"len\": 5}]}}" });
+            std::printf("a note past the cap (exit %d): %s", note.code, note.out.c_str());
+            P.eq("exit.note_end", note.code == 1 && has(note.out, "scenario.phrase[0]: at + len is 0 to 300 s (this note ends at 304 s)") ? 1 : 0, 1);
+        }
     }
     {
         // A program that reads a sample (#pragma sample): the plugin's own (its session, its projects), which no folder

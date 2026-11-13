@@ -3,7 +3,8 @@
 //
 //   Transport       POST and GET against a host: https://api.anthropic.com, with the user's own key (or another
 //                   provider's server: Providers.h). httpsTransport() is JUCE's WebInputStream; the probes give the
-//                   agent a scripted one. A POST's body streams to a callback as it arrives. A redirect is never
+//                   agent a scripted one. A POST's body streams to a callback as it arrives (JUCE's, a line at a
+//                   time: its read waits for the whole count asked, so it reads a byte at a time). A redirect is never
 //                   followed: the request goes to the host it names or nowhere (a 3xx is returned as it came, with
 //                   its location), so a conversation and a key never reach another origin.
 //   SseParser       Server-Sent Events: the stream cut into (event, data) pairs, however the chunks fall.
@@ -100,6 +101,11 @@ namespace playground::claude
     struct Usage
     {
         int64_t input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
+        // cacheWrite by the cache's lifetime (usage.cache_creation's ephemeral_5m_input_tokens and
+        // ephemeral_1h_input_tokens); a response without the split counts all of it as five minutes'.
+        int64_t cacheWrite5m = 0, cacheWrite1h = 0;
+        int64_t costMicroUsd = -1;            // the provider's own cost (OpenRouter's usage.cost), -1 unsaid
+        bool reported = false;                // a usage object came (message_start's or message_delta's)
         int compactions = 0;                  // compaction iterations in the request (usage.iterations)
         int webSearches = 0, webFetches = 0;  // usage.server_tool_use: searches cost $10 a thousand
         std::string speed;                    // the speed it ran at, "fast" or "standard" (usage.speed); "" unsaid
@@ -148,6 +154,8 @@ namespace playground::claude
             std::string type;
             juce::Array<juce::var> citations;   // a text block's, as they streamed
         };
+
+        void readUsageExtras(const juce::var& usage);
 
         Callbacks cb_;
         std::vector<Block> blocks_;

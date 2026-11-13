@@ -131,9 +131,9 @@ These are CLAUDE.md's, gathered for an implementer; CLAUDE.md wins where they di
 - **What Claude sees.** A tool changed means its `kFaces` line, the guide's notes, `FP_MCP_VERSION` raised, and
   the tools/list reply still at most 24,000 bytes for each product (`plugin.mcp` prints the slack: about 600 bytes
   for the synth today).
-- **Docs with the code:** README.md for users, CHANGELOG.md under Unreleased, CLAUDE.md for what a session must
-  know (a new file's row in "What goes where", a new rule where one is made), the prompt and the guide where the
-  AI is taught.
+- **Docs with the code:** README.md for users, an entry in `docs/changelog/` (never CHANGELOG.md itself),
+  CLAUDE.md for what a session must know (a new file's row in "What goes where", a new rule where one is made),
+  the prompt and the guide where the AI is taught.
 - **Git:** a branch a package, commits that say what changed and why, a pull request only when the user asks.
 
 ## 6. Deliberately left out

@@ -25,12 +25,19 @@
 //              BUILD WITH (OpenRouter) and has no PLAN WITH
 //   EFFORT     a model OpenRouter's list says reasons: the Thinking pill back (a combo box to a screen reader), its
 //              default shown; its menu the model's levels in order (Off, Minimal, Low, Medium (the default), High,
-//              Extra high), a radio set, the default dotted; High chosen: the pill says it, the chat keeps it; the model
-//              without levels again: the pill gone
+//              Extra high), a radio set, the default dotted; High chosen: the pill says it, the chat keeps it; at the
+//              least window the message box's bar (the model's and the thinking pills) has no item over another or
+//              past it; the model without levels again: the pill gone
 //   TURN       a message goes to openrouter.ai, its answer shown
 //   LOCAL      Ollama: no key asked for (its field says none is needed), saved without one, the chat ready
 //   GEMINI     Gemini: its key and model alone; saved with a key
 //   CUSTOM     another server: the keys go to its address first; an http address on the internet refused
+//   EDITED     the Server field of OpenRouter's edited: the dialog's title, its lines (where the key is stored and
+//              sent) and its stored-key hint and Remove key name the server typed, never the preset's; Remove key then
+//              removes that server's key alone; Ollama's with a remote address typed no longer says nothing leaves
+//   MASK       for every provider a key pasted, or typed, is drawn as its preset's public prefix (at its own server),
+//              stars and, for a key of 20 characters or more, its last four: no other character of it; a key of 12
+//              characters shows none of its own
 //   REMOVE     Gemini's stored key removed from the dialog
 //   BACK       Anthropic again: Save with nothing typed and no Anthropic key refused; a key pasted saves it, and
 //              the thinking pill is back
@@ -38,6 +45,7 @@
 
 #include "../plugin/FakeClaude.h"
 
+#include "editor/ChatItems.h"
 #include "editor/Panel.h"
 #include "plugin/ChatAgent.h"
 #include "plugin/ChatStore.h"
@@ -52,6 +60,7 @@
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <optional>
@@ -113,6 +122,52 @@ namespace
                     if (s->find(key.substr(p, 12)) != std::string::npos)
                         return true;
         return false;
+    }
+
+    // The message box's bar: every item shown in it lies inside it, and none over another (so none under send).
+    bool barFits(const funkgui::HeadlessHost& host, const pg::ui::Panel& panel)
+    {
+        const funkgui::Rect bar = panel.chatInputItem().bar();
+        std::vector<funkgui::A11yItem> items;
+        for (const funkgui::A11yItem& a : host.accessibility())
+            for (const char* t : { "Add pictures", "Model", "Thinking level", "Fast mode", "Web search", "Send or stop" })
+                if (a.title == t)
+                    items.push_back(a);
+        bool ok = items.size() >= 3;
+        for (std::size_t i = 0; i < items.size(); ++i)
+        {
+            const funkgui::Rect& a = items[i].bounds;
+            std::printf("bar: %s at %.1f to %.1f (the bar %.1f to %.1f)\n", items[i].title.c_str(), static_cast<double>(a.x),
+                        static_cast<double>(a.x + a.w), static_cast<double>(bar.x), static_cast<double>(bar.x + bar.w));
+            if (a.w <= 0.0f || a.x < bar.x - 0.5f || a.x + a.w > bar.x + bar.w + 0.5f || a.y < bar.y - 0.5f || a.y + a.h > bar.y + bar.h + 0.5f)
+                ok = false;
+            for (std::size_t j = i + 1; j < items.size(); ++j)
+            {
+                const funkgui::Rect& b = items[j].bounds;
+                if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h)
+                    ok = false;
+            }
+        }
+        return ok;
+    }
+
+    // The key dialog as a screen reader has it: its title and its lines.
+    std::optional<funkgui::A11yItem> dialogGroup(const funkgui::HeadlessHost& host)
+    {
+        for (const funkgui::A11yItem& item : host.accessibility())
+            if (item.role == funkgui::a11yrole::group)
+                return item;
+        return std::nullopt;
+    }
+
+    // What of the key the field draws in clear (every character but the stars).
+    std::string clearOf(const std::string& shown)
+    {
+        std::string clear;
+        for (const char c : shown)
+            if (c != '*')
+                clear += c;
+        return clear;
     }
 
     int presetIndex(std::string_view id)
@@ -292,6 +347,11 @@ PROBE(gui, providers)
         const auto chosen = a11yTitled(host, "Thinking level");
         P.eq("effort.chosen", chosen && chosen->value == "Thinking: High" && chat(processor).effort == "high" ? 1 : 0, 1);
         writePng(P, host, "gui.providers.effort.png");
+        host.resize(500, 300);                          // raised to the least
+        host.settle();
+        P.eq("effort.least_bar_fits", a11yTitled(host, "Thinking level") && barFits(host, panel) ? 1 : 0, 1);
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+        host.settle();
         clickAt(host, panel.centreOfModel());
         host.settle();
         P.eq("effort.model_back", host.pendingMenu() != nullptr && host.chooseMenuItem("Claude via OpenRouter") ? 1 : 0, 1);
@@ -360,6 +420,114 @@ PROBE(gui, providers)
         host.settle();
         P.eq("custom.http_refused", panel.keyDialogOpen() && has(panel.keyDialogWhy(), "https://") && chat(processor).provider.kind == "gemini" ? 1 : 0, 1);
         writePng(P, host, "gui.providers.custom.png");
+        host.keys("escape");
+        host.settle();
+    }
+
+    // ---- EDITED ------------------------------------------------------------------------------------------------------------
+    {
+        std::string why;
+        P.eq("edited.keys", pg::chatstore::saveProviderKey("openai", "https://api.openai.com", fake::fakeOpenAiKey(), &why) ? 1 : 0, 1);
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("edited.choose", choose(host, panel, "OpenRouter") ? 1 : 0, 1);
+        const auto own = dialogGroup(host);
+        P.eq("edited.preset_named", own && own->title == "OpenRouter" && has(own->description, "sent only to openrouter.ai")
+                                        && panel.centreOfKeyRemove() ? 1 : 0, 1);
+        // Another server typed (as it rests): the dialog is that server's.
+        const auto typeBase = [&](const char* base) {
+            clickAt(host, *panel.centreOfKeyBase());
+            host.keys("cmd+a");
+            host.setClipboard(base);
+            host.keys("cmd+v");
+            host.tick(30);
+            host.settle();
+        };
+        typeBase("https://llm.example.test/v1");
+        const auto typed = dialogGroup(host);
+        std::printf("edited: %s: %s; hint: %s\n", typed ? typed->title.c_str() : "", typed ? typed->description.c_str() : "",
+                    panel.keyDialogHint().c_str());
+        P.eq("edited.title_follows_server", typed && typed->title == "llm.example.test" && !a11yTitled(host, "OpenRouter") ? 1 : 0, 1);
+        P.eq("edited.lines_follow_server", typed && has(typed->description, "sent only to llm.example.test")
+                                               && !has(typed->description, "openrouter.ai") ? 1 : 0, 1);
+        P.eq("edited.no_stored_promise", !panel.centreOfKeyRemove() && !has(panel.keyDialogHint(), "Stored") ? 1 : 0, 1);
+        // Half an address: no server's promise at all.
+        typeBase("https://");
+        const auto half = dialogGroup(host);
+        P.eq("edited.half_address", half && !has(half->description, "openrouter.ai") && !has(half->description, "llm.example.test")
+                                        && !panel.centreOfKeyRemove() ? 1 : 0, 1);
+        // A server whose key is stored: its hint and Remove key, which removes that one alone.
+        typeBase("https://api.openai.com/v1");
+        P.eq("edited.stored_follows_server", has(panel.keyDialogHint(), "Stored") && panel.centreOfKeyRemove() ? 1 : 0, 1);
+        if (const auto remove = panel.centreOfKeyRemove())
+            clickAt(host, *remove);
+        host.tick(2);
+        host.settle();
+        P.eq("edited.remove_is_the_typed_servers", !pg::chatstore::hasProviderKey("openai", "https://api.openai.com")
+                                                       && pg::chatstore::hasProviderKey("openai", "https://openrouter.ai") ? 1 : 0, 1);
+        // Ollama's with a remote address typed: no "nothing leaves".
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("edited.ollama", choose(host, panel, "Ollama (this Mac)") ? 1 : 0, 1);
+        const auto local = dialogGroup(host);
+        P.eq("edited.ollama_local", local && has(local->description, "nothing leaves") ? 1 : 0, 1);
+        typeBase("https://llm.example.test/v1");
+        const auto remote = dialogGroup(host);
+        P.eq("edited.ollama_remote", remote && !has(remote->description, "nothing leaves") && has(remote->description, "llm.example.test")
+                                         && !has(panel.keyDialogHint(), "None needed") ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        P.eq("edited.provider_untouched", chat(processor).provider.kind == "gemini" ? 1 : 0, 1);
+    }
+
+    // ---- MASK --------------------------------------------------------------------------------------------------------------
+    {
+        const std::string other = "local-probe-NotARealKey-0123456789";
+        for (const pg::ChatPreset& preset : pg::kChatPresets)
+        {
+            const std::string id = preset.id;
+            const std::string key = id == "anthropic" ? fake::fakeKey() : id == "openai" ? fake::fakeOpenAiKey() : id == "openrouter" ? fake::fakeOpenRouterKey()
+                                  : id == "gemini" ? fake::fakeGeminiKey() : other;
+            clickAt(host, panel.centreOfKey());
+            host.settle();
+            const bool chosen = choose(host, panel, preset.name);
+            if (id == "custom")
+            {
+                clickAt(host, *panel.centreOfKeyBase());
+                host.setClipboard("https://llm.example.test/v1");
+                host.keys("cmd+v");
+            }
+            clickAt(host, panel.centreOfKeyField());
+            host.setClipboard(key);
+            host.keys("cmd+v");
+            host.settle();
+            const std::string prefix = id == "custom" ? std::string() : std::string(preset.key);
+            const std::string want = (!prefix.empty() && key.rfind(prefix, 0) == 0 ? prefix : std::string()) + key.substr(key.size() - 4);
+            const std::string shown = panel.keyDialogShown();
+            std::printf("mask: %s: %s\n", id.c_str(), shown.c_str());
+            P.eq("mask." + id, chosen && shown.size() == std::min<std::size_t>(key.size(), want.size() + 40) && clearOf(shown) == want && shown.rfind(want.substr(0, want.size() - 4), 0) == 0
+                                   && a11yHoldsKey(host, key) == false ? 1 : 0, 1);
+            host.keys("escape");
+            host.settle();
+        }
+        // A short key (12 characters): none of it shown, pasted or typed; another server's prefix is no public one.
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("mask.custom_choose", choose(host, panel, "Other OpenAI-compatible server") ? 1 : 0, 1);
+        host.setClipboard("https://llm.example.test/v1");
+        host.keys("cmd+v,tab");
+        host.setClipboard("token-abc123");
+        host.keys("cmd+v");
+        host.settle();
+        P.eq("mask.short_none", clearOf(panel.keyDialogShown()) == "" && panel.keyDialogShown().size() == 12 ? 1 : 0, 1);
+        host.keys("escape");
+        host.settle();
+        clickAt(host, panel.centreOfKey());
+        host.settle();
+        P.eq("mask.openrouter_choose", choose(host, panel, "OpenRouter") ? 1 : 0, 1);
+        type(host, "sk-or-v1-abcdefgh");
+        host.settle();
+        P.eq("mask.typed", clearOf(panel.keyDialogShown()) == "sk-or-" ? 1 : 0, 1);
         host.keys("escape");
         host.settle();
     }

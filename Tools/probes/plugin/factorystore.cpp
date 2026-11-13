@@ -868,8 +868,14 @@ PROBE(plugin, factorystore)
             auto s = storeOf(me, freshHome(), site);
             s->refreshNow();
             s->cancel();                                 // nothing in flight yet, or the fetch's start: either ends
+            // cancel() ends only a fetch in flight: one it came before the thread took is still to run, and stalls.
+            // So wait for either, and ask for a second fetch only when the first ended (a refreshNow() meanwhile
+            // would leave one wanted, which would start, and stall, as soon as the cancel below ended the first).
             const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-            s->refreshNow();
+            while (!s->idle() && site->stalling() == 0 && std::chrono::steady_clock::now() < until)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (site->stalling() == 0)
+                s->refreshNow();
             while (site->stalling() == 0 && std::chrono::steady_clock::now() < until)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             P.eq("cancel.in_flight", site->stalling(), 1);
