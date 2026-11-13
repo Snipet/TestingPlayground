@@ -1511,6 +1511,7 @@ PROBE(gui, chat)
                 if (again.needsDraw())
                 {
                     ++asked;
+                    std::printf("  frame asked to draw at %.3f s: %s\n", h2.nowSeconds(), again.drawReason().c_str());
                     h2.draw();
                 }
                 return again.wantsFullRate();
