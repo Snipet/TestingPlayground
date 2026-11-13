@@ -10,7 +10,8 @@
 //                          the fallback (SoftRaster, forced by the test hook)
 //   gui.shaders.text.png, gui.shaders.text.moved.png   TEXT's panel on the GPU: text, numbers and a gauge of shapes
 // and checks:
-//   PROMPT    the system prompt's shader example is there, and it builds
+//   PROMPT    the system prompt's shader examples are there, and they build (glow.sc, gauge.sc, and dial.sc, the
+//             pointer's: its .gui line read, its pointer inputs built)
 //   ANIMATES  shaderAnimates: u_time and u_viewSize as words of the code animate; in a // comment (one a backslash
 //             continues too) or a /* */ one, or part of a longer name, they do not; the probe's still shader names
 //             u_time in a comment only, its moving one reads it, and so does the prompt's example
@@ -38,6 +39,10 @@
 //             it reads moves with no input (Panel.h "Unchanged frames"): the shader's inputs ask, the parameter's knob
 //             being on a page not shown (a hidden item's key is not watched) and its dial hidden in the PANEL view; the
 //             move keeps the full rate (the shader unsettled) for a quarter second, then the panel is calm
+//   POINTER   a shader whose inputs are the pointer over it (pointer.x, .hover, .down) and whose y= drags cutoff: at
+//             rest its inputs 0; the pointer coming over it a frame, its place and hover its inputs; held still, no frame
+//             asked between events; a press its down, a relative drag up 50 px a quarter of cutoff, the release its
+//             down 0; on the GPU its picture lit by hover and by the press (skipped where there are no GPU pictures)
 //   CACHE     the process's cache and the disk's (Shaders.h, "The cache"; the disk's folder under CTest the sandbox's,
 //             shaderCacheFolder): a second instance runs no shaderc (its builds from memory, the same panel); a restart
 //             (the memory let go) runs none either, reading both from the disk; a changed shaderc (a copy, its time
@@ -185,9 +190,9 @@ namespace
 
     const char* const kGui = R"GUI(panel {
     row {
-        section "STILL" { shader "still.sc" inputs="cutoff" width=160 height=90 }
-        section "MOVING" { shader "moving.sc" inputs="out" width=160 height=90 }
-        section "BROKEN" { shader "broken.sc" width=200 height=90 }
+        section "STILL" { shader "still.sc" inputs="cutoff" width=200 height=120 }
+        section "MOVING" { shader "moving.sc" inputs="out" width=200 height=120 }
+        section "BROKEN" { shader "broken.sc" width=200 height=120 }
     }
     row { knob cutoff; knob level }
 }
@@ -316,10 +321,10 @@ namespace
             return files;
         const std::string k = "(1.0 - " + std::to_string(salt) + ".0e-7)";
         files.push_back({ "panel.gui", "panel { row {\n"
-                                       "    shader \"glow.sc\" inputs=\"cutoff out\" width=120 height=90\n"
-                                       "    shader \"rings.sc\" inputs=\"level\" width=120 height=90\n"
-                                       "    shader \"bars.sc\" inputs=\"out env\" width=120 height=90\n"
-                                       "    shader \"sky.sc\" inputs=\"cutoff level\" width=120 height=90\n"
+                                       "    shader \"glow.sc\" inputs=\"cutoff out\" width=200 height=120\n"
+                                       "    shader \"rings.sc\" inputs=\"level\" width=200 height=120\n"
+                                       "    shader \"bars.sc\" inputs=\"out env\" width=200 height=120\n"
+                                       "    shader \"sky.sc\" inputs=\"cutoff level\" width=200 height=120\n"
                                        "} row { knob cutoff; knob level } }\n" });
         files.push_back({ "glow.sc", "float ring(vec2 p, float r, float w) { return smoothstep(w, 0.0, abs(length(p) - r)); }\n"
                                      "void main()\n{\n"
@@ -543,6 +548,22 @@ PROBE(gui, shaders)
         if (!gwhy.empty())
             std::printf("FunkGui: %s\n", gwhy.c_str());
         P.eq("prompt.gauge_still", pg::shaderAnimates(gauge) ? 0 : 1, 1);
+        // The dial the pointer drags (THE INTERFACE's pointer): it builds with its pointer inputs, and it is still.
+        const std::string dial = promptExample(pg::ChatAgent::systemPrompt(), "dial.sc");
+        const pg::ShaderBuild db = pg::buildShader("dial.sc", dial, { "cutoff", "pointer.hover", "pointer.down" }, t);
+        if (!db.ok())
+            std::printf("the prompt's dial:\n%s", db.error.c_str());
+        std::string dwhy;
+        P.eq("prompt.dial_builds", !dial.empty() && db.ok() && has(dial, "in_pointer_hover")
+                                       && funkgui::shaders::check(db.binary.data(), static_cast<uint32_t>(db.binary.size()), dwhy) ? 1 : 0, 1);
+        P.eq("prompt.dial_still", pg::shaderAnimates(dial) ? 0 : 1, 1);
+        // Its .gui line reads as the prompt writes it: the pointer's inputs and y= on the shader.
+        const std::string prompt = pg::ChatAgent::systemPrompt();
+        const std::size_t line = prompt.find("shader \"dial.sc\" inputs=");
+        P.eq("prompt.dial_line", line != std::string::npos
+                                     && pg::readGuiShaders({ "panel.gui", prompt.substr(line, prompt.find('\n', line) - line) + "\n" },
+                                                           pg::product::kIsInstrument)
+                                            .size() == 1 ? 1 : 0, 1);
     }
 
     // ---- ANIMATES ------------------------------------------------------------------------------------------------------
@@ -825,7 +846,7 @@ PROBE(gui, shaders)
     // not watched. (A .gui file that leaves a parameter out shows its knob last: the knobs are named, on page B.)
     {
         const char* const still = "panel { tabs {\n"
-                                  "    page \"A\" { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n"
+                                  "    page \"A\" { shader \"still.sc\" inputs=\"cutoff\" width=200 height=120 }\n"
                                   "    page \"B\" { knob cutoff; knob level }\n"
                                   "} }\n";
         load(processor, { { pg::kProgramName, program() }, { "panel.gui", still }, { "still.sc", kStill } });
@@ -862,6 +883,98 @@ PROBE(gui, shaders)
         P.eq("draw.input_held", sh != nullptr && !sh->settled() && panel.wantsFullRate() ? 1 : 0, 1);
         host.tick(9);
         P.eq("draw.input_calm_after", sh != nullptr && sh->settled() && !panel.wantsFullRate() ? 1 : 0, 1);
+    }
+
+    // ---- POINTER -------------------------------------------------------------------------------------------------------
+    // A shader that reads the pointer over it (pointer.x, .hover, .down) and drags cutoff with y=: its inputs follow
+    // the pointer, it asks for frames on the pointer's events and not between them, and the drag writes its param.
+    {
+        const char* const touch = "// touch.sc: lit by the pointer over it\n"
+                                  "void main()\n"
+                                  "{\n"
+                                  "    gl_FragColor = vec4(0.2 + 0.6 * in_pointer_hover, 0.2 + 0.6 * in_pointer_down, in_cutoff, 1.0);\n"
+                                  "}\n";
+        const char* const gui = "panel { tabs {\n"
+                                "    page \"A\" { shader \"touch.sc\" inputs=\"cutoff pointer.x pointer.hover pointer.down\" y=cutoff "
+                                "drag=relative width=160 height=90 }\n"
+                                "    page \"B\" { knob cutoff; knob level }\n"
+                                "} }\n";
+        load(processor, { { pg::kProgramName, program() }, { "panel.gui", gui }, { "touch.sc", touch } });
+        processor.settle();
+        host.tick(2);
+        host.settle();
+        for (int k = 0; k < 600 && (panel.codeAssist().checking() || port.compiling()); ++k)
+        {
+            host.tick(1, 1.0f / 12.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const pg::ui::GuiShaderItem* sh = shaderShowing(panel, "touch.sc");
+        P.eq("pointer.shown", sh != nullptr && sh->takesPointer() ? 1 : 0, 1);
+        if (sh != nullptr)
+        {
+            const funkgui::Rect r = sh->cell();
+            host.move(5.0f, 5.0f);
+            host.settle();
+            P.eq("pointer.rest", sh->inputs()[2] == 0.0f && sh->inputs()[3] == 0.0f ? 1 : 0, 1);
+            const auto frames = [&](int ticks) {
+                int asked = 0;
+                for (int k = 0; k < ticks; ++k)
+                {
+                    host.tick(1, 1.0f / 12.0f);
+                    asked += panel.needsDraw() ? 1 : 0;
+                }
+                return asked;
+            };
+            host.draw();
+            P.eq("pointer.quiet_away", frames(11), 0);
+            // The pointer comes: a frame for it, its inputs the place and hover.
+            host.move(r.x + 0.25f * r.w, r.y + 0.75f * r.h);
+            host.tick(1, 1.0f / 12.0f);
+            host.tick(1, 1.0f / 12.0f);
+            P.near("pointer.input_x", static_cast<double>(sh->inputs()[1]), 0.25, 0.01);
+            P.eq("pointer.input_hover", sh->inputs()[2] == 1.0f ? 1 : 0, 1);
+            P.eq("pointer.draws_on_move", panel.needsDraw() || !sh->settled() ? 1 : 0, 1);
+            host.draw();
+            // Held still over it: calm again once its inputs rest (a quarter second), no frame asked between events.
+            host.tick(6, 1.0f / 12.0f);
+            host.draw();
+            P.eq("pointer.quiet_between", frames(11), 0);
+            const auto colour = [&]() -> std::array<double, 3> {
+                const pg::picture::Drawn d = pg::picture::draw(host.draw());
+                if (!d.gpu)
+                    return { -1.0, -1.0, -1.0 };
+                const Px c = pixelsOf(d.image, r, 2.0f, 4.0f);
+                return meanColour(d.image, c.x0, c.x1, c.y0, c.y1);
+            };
+            const std::array<double, 3> hovered = colour();
+            // A press: down high, a drag up 50 px (relative) raises cutoff a quarter, one host gesture.
+            const float before = processor.ports()[0]->value01();
+            host.press(r.centreX(), r.centreY());
+            host.moveTo(r.centreX(), r.centreY() - 50.0f, 5);
+            host.tick(1, 1.0f / 12.0f);
+            P.eq("pointer.input_down", sh->inputs()[3] == 1.0f ? 1 : 0, 1);
+            P.near("pointer.drag_writes", static_cast<double>(processor.ports()[0]->value01() - before), 0.25, 0.01);
+            const std::array<double, 3> pressed = colour();
+            host.release();
+            host.tick(2, 1.0f / 12.0f);
+            P.eq("pointer.input_up", sh->inputs()[3] == 0.0f ? 1 : 0, 1);
+            host.move(5.0f, 5.0f);
+            host.tick(2, 1.0f / 12.0f);
+            const std::array<double, 3> away = colour();
+            // The pixels: the GPU's picture of the shader lit by hover and by the press (red, then green, up 0.6 * 255).
+            if (probe::noGpuPictures().empty())
+            {
+                std::printf("pointer: the shader's colour away (%.0f, %.0f, %.0f), hovered (%.0f, %.0f, %.0f), pressed (%.0f, %.0f, %.0f)\n",
+                            away[0], away[1], away[2], hovered[0], hovered[1], hovered[2], pressed[0], pressed[1], pressed[2]);
+                P.ge("pointer.pixels_hover", hovered[0] - away[0], 100.0);
+                P.ge("pointer.pixels_down", pressed[1] - hovered[1], 100.0);
+            }
+            else
+            {
+                probe::skip(P, "pointer.pixels_hover", probe::noGpuPicturesSkip());
+                probe::skip(P, "pointer.pixels_down", probe::noGpuPicturesSkip());
+            }
+        }
     }
 
     // ---- CACHE ---------------------------------------------------------------------------------------------------------
@@ -1438,7 +1551,7 @@ PROBE(gui, shaders)
             qh.settle();
         }
         load(q, { { pg::kProgramName, source },
-                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=160 height=90 } }\n" },
+                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=200 height=120 } }\n" },
                   { "sixteen.sc", body } });
         q.settle();
         qh.tick(20);
@@ -1598,9 +1711,9 @@ PROBE(gui, shaders)
                                    "    ink = max(ink, text(v_px, vec2(8.0, 98.0), 12.0, 0.0, \"8999001\"));\n"
                                    "    gl_FragColor = vec4(vec3_splat(ink), 1.0);\n}\n";
         const std::string textGui = "panel { row {\n"
-                                    "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=110\n"
-                                    "    shader \"dash.sc\" inputs=\"cutoff level\" width=170 height=110\n"
-                                    "    shader \"odo.sc\" inputs=\"level\" width=120 height=110\n"
+                                    "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=120\n"
+                                    "    shader \"dash.sc\" inputs=\"cutoff level\" width=200 height=120\n"
+                                    "    shader \"odo.sc\" inputs=\"level\" width=200 height=120\n"
                                     "} row { knob cutoff; knob level } }\n";
         const std::string firstWords = "A STRING LONGER THAN TWELVE";
         const pg::Sources textFiles{ { pg::kProgramName, program() }, { "panel.gui", textGui }, { "text.sc", kTextSc },

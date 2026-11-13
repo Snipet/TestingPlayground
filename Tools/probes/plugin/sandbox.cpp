@@ -26,6 +26,9 @@
 //            in the library's text (funk/text.sh); values naming the field the shader reads (an input with no display
 //            of its own) changes its colour. On Linux, where FunkGui draws no GPU picture (common/Pictures.h), the
 //            render is SoftRaster's, its text saying why, the shader's cell the placeholder; the GPU's rows skipped
+//   POINTER  a shader dial whose inputs are pointer.hover and pointer.down, opened from a folder: render's values of
+//            pointer.hover and pointer.down draw it hovered and pressed (gui.sandbox.pointer.png), the text saying so;
+//            its colours on the GPU (skipped where there are no GPU pictures)
 //   VALUES   a render's values naming fields (a main module's, Shared's) draws them in place of the demo's: only the
 //            numbers' cells change (gui.sandbox.values.png); the text says which, and names a name that is none
 //   RESTART  the helper killed between calls: the next call starts it again, says so, with the panel as it was (the
@@ -575,7 +578,7 @@ PROBE(plugin, sandbox)
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=120\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
         // The shader takes its colour from a .sh file of the program's own and writes its title with the library's text.
         std::ofstream(folder / "glow.sc") << "#include \"funk/text.sh\"\n#include \"tint.sh\"\n\nvoid main()\n{\n"
@@ -714,6 +717,61 @@ PROBE(plugin, sandbox)
         P.eq("none.closed_empty", after.error && has(after.text, "open it first") ? 1 : 0, 1);
         const Result kept = s.sandbox(object({ { "action", "render" }, { "sandbox", first }, { "width", 320 }, { "height", 160 } }));
         P.eq("none.kept_after_close", !kept.error && !kept.png.empty() && has(kept.text, "Sandbox #" + std::to_string(first) + ".") ? 1 : 0, 1);
+    }
+
+    // ---- POINTER: a shader dial drawn hovered and pressed (render's values: pointer.hover, pointer.down) --------------
+    {
+        const std::filesystem::path folder = std::filesystem::path(dir) / "pointer";
+        std::filesystem::create_directories(folder);
+        std::ofstream(folder / pg::kProgramName) << program();
+        std::ofstream(folder / "panel.gui") << "row {\n    shader \"dial.sc\" inputs=\"glow pointer.hover pointer.down\" y=glow "
+                                                "drag=relative cursor=updown width=120 height=120\n    knob level\n}\n";
+        // Blue at rest; red under the pointer; green while pressed.
+        std::ofstream(folder / "dial.sc") << "void main()\n{\n    gl_FragColor = vec4(0.9 * in_pointer_hover * (1.0 - in_pointer_down), "
+                                             "0.9 * in_pointer_down, 0.9 * (1.0 - in_pointer_hover), 1.0);\n}\n";
+        const Result o = s.sandbox(object({ { "action", "open" }, { "from", "file" }, { "path", juce::String(folder.string()) } }));
+        const int number = numberIn(o.text);
+        P.eq("pointer.opened", !o.error && number > 0 && !has(o.text, "panel.gui:") ? 1 : 0, 1);
+        float x = 0, y = 0, w = 0, h = 0;
+        const bool found = rectOf(o.text, "shader \"dial.sc\"", x, y, w, h);
+        const auto render = [&](juce::var values, int& red, int& green, int& blue) {
+            const Result v = s.sandbox(object({ { "action", "render" }, { "sandbox", number }, { "width", 400 }, { "height", 200 },
+                                                { "detail", "high" }, { "values", values } }));
+            const juce::Image im = decode(v.png);
+            red = green = blue = 0;
+            if (found && im.isValid())
+                for (int py = static_cast<int>((y + 4) * pg::sandbox::kDpi); py < static_cast<int>((y + h - 4) * pg::sandbox::kDpi); ++py)
+                    for (int px = static_cast<int>((x + 4) * pg::sandbox::kDpi); px < static_cast<int>((x + w - 4) * pg::sandbox::kDpi); ++px)
+                    {
+                        const juce::Colour c = im.getPixelAt(px, py);
+                        red += c.getRed() > 180 && c.getGreen() < 60 && c.getBlue() < 60 ? 1 : 0;
+                        green += c.getRed() < 60 && c.getGreen() > 180 && c.getBlue() < 60 ? 1 : 0;
+                        blue += c.getRed() < 60 && c.getGreen() < 60 && c.getBlue() > 180 ? 1 : 0;
+                    }
+            return v;
+        };
+        int rr = 0, rg = 0, rb = 0, hr = 0, hg = 0, hb = 0, dr = 0, dg = 0, db = 0;
+        render(object({}), rr, rg, rb);
+        const Result hovered = render(object({ { "pointer.hover", 1 } }), hr, hg, hb);
+        const Result pressed = render(object({ { "pointer.hover", 1 }, { "pointer.down", 1 } }), dr, dg, db);
+        writeBytes(probe::outPath("gui.sandbox.pointer.png"), pressed.png);
+        std::printf("pointer: %s", pressed.text.c_str());
+        std::printf("dial cell at rest %d red %d green %d blue; hovered %d %d %d; pressed %d %d %d\n", rr, rg, rb, hr, hg, hb, dr, dg, db);
+        P.eq("pointer.said", !hovered.error && has(hovered.text, "the shaders drawn with the pointer at pointer.hover")
+                                 && has(pressed.text, "pointer.hover, pointer.down") ? 1 : 0, 1);
+        const std::string noGpu = probe::noGpuPictures();
+        if (noGpu.empty())
+        {
+            const int n = static_cast<int>((w - 8.0f) * pg::sandbox::kDpi) * static_cast<int>((h - 8.0f) * pg::sandbox::kDpi);
+            P.ge("pointer.rest_blue", rb, n * 9 / 10);
+            P.ge("pointer.hover_red", hr, n * 9 / 10);
+            P.ge("pointer.down_green", dg, n * 9 / 10);
+        }
+        else
+            for (const char* row : { "pointer.rest_blue", "pointer.hover_red", "pointer.down_green" })
+                probe::skip(P, row, probe::noGpuPicturesSkip());
+        const Result c = s.sandbox(object({ { "action", "close" }, { "sandbox", number } }));
+        P.eq("pointer.closed", !c.error ? 1 : 0, 1);
     }
 
     // ---- MATCH and APPLY: a processor playing the prompt's example -------------------------------------------------------

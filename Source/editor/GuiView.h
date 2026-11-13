@@ -21,7 +21,15 @@
 //                       and scroll kept for the next layout()
 //   setControls()       each slot's dial (its Control, label and options' names) for the controls
 //   registerShaders()   the spec's shaders' programs given to FunkGui's registry (once built: Shaders.h), or why not
-//   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters
+//   tick()              a frame: the controls' live= marks and the shaders' inputs, from the meters (and the
+//                       pointer over each shader: pointer.x ...)
+//   showPointer()       a picture's pointer (view_panel's and the sandbox's values: pointer.hover ...): every shader's
+//                       pointer inputs drawn at those values, in place of the pointer's
+//
+// The pointer (fminus/GuiSpec.h; GuiItems.h's PointerSink): a pool of kPointers GuiPointerItems, appended last so the
+// owner hits them after every other item (a control in a container with pointer properties takes its own presses),
+// the innermost element's first; each area's, container's, label's and display's with pointer properties, its rect the
+// element's; a shader's are its own item's. A display under them passes presses by (DisplayItem::setPassThrough).
 //
 // Message thread only, as the items.
 #pragma once
@@ -44,6 +52,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -61,6 +70,7 @@ namespace playground::ui
         static constexpr int kPool = 8;                    // tabs, pads and envelopes a panel draws
         static constexpr int kKeyboards = 2;
         static constexpr int kShaders = 4;                 // kMaxGuiShaders
+        static constexpr int kPointers = kMaxPointers;     // areas and other elements with pointer properties
         static constexpr float kScrollGutter = 8.0f;       // the scroll bar's room, at the area's right
         static constexpr float kRow = 24.0f;               // the rows three of which a wheel's notch scrolls
         static constexpr float wheelPx(bool smooth) noexcept { return Scroll::pxPerUnit(smooth, kRow); }
@@ -77,8 +87,9 @@ namespace playground::ui
         };
 
         // Its items, appended to `items` in this order (the Tab order): kPool tabs, a control a port (kMaxControls at
-        // most), kPool pads, kPool envelopes, kKeyboards keyboards, kShaders shaders, each with the id `idFor` gives as
-        // it is made. `displays`: the owner's display items (kMaxDisplays, DisplayItem), placed while the interface
+        // most), kPool pads, kPool envelopes, kKeyboards keyboards, kShaders shaders (four ids each: its own, its
+        // pointer's x, y and down), kPointers pointer items (three ids each), each with the ids `idFor` gives as it is
+        // made. `displays`: the owner's display items (kMaxDisplays, DisplayItem), placed while the interface
         // shows them.
         GuiView(Items& items, std::span<funkgui::ParamPort* const> ports, std::vector<int> displays,
                 const std::function<uint32_t()>& idFor, Hooks hooks);
@@ -98,6 +109,8 @@ namespace playground::ui
         // `shown`: the meters as the displays take them; `live`: they are this interface's program's (else the controls
         // show no live= mark); `liveTaps`: taps whose live= marks show even so (bit t: tap t; a picture's state).
         void tick(const PanelSpec& spec, const Meters& shown, bool live, uint32_t liveTaps = 0);
+        // A picture's pointer: x, y, down, hover (pointer.x ... in a shader's inputs), each NaN for the pointer's own.
+        void showPointer(const std::array<float, 4>& pointer) noexcept { shownPointer_ = pointer; }
 
         // Drawing: the ground, the frames, the labels and the dividers (drawGuiPanel, in the area); the theme the items
         // are drawn in (guiTheme); the scroll bars, in the gutter and under the area (in `th`, the panel's).
@@ -129,21 +142,29 @@ namespace playground::ui
 
         // The items, by what they are.
         int controlItem(int slot) const;                   // slot's control's index in the owner's list, -1 for none
+        // A control, or an item whose pointer properties take the wheel (wheel=): the wheel over it is its own, and
+        // does not scroll the interface.
         bool isControl(int item) const;
         const std::vector<int>& pads() const noexcept { return pads_; }
         const std::vector<int>& envelopes() const noexcept { return envelopes_; }
         const std::vector<int>& tabs() const noexcept { return tabs_; }
         const std::vector<int>& keyboards() const noexcept { return keyboards_; }
         const std::vector<int>& shaders() const noexcept { return shaders_; }
+        const std::vector<int>& pointers() const noexcept { return pointers_; }   // GuiPointerItem
         const std::vector<int>& displays() const noexcept { return displays_; }
-        void releaseKeys();                                // a note held is let go (the editor closes)
+        void releaseKeys();                                // a note held is let go, a press of the pointer's ended
+                                                           // (the editor closes)
 
     private:
         GuiControlItem& control(int slot);
+        std::array<GuiValue*, 5> pointerValues(const PanelPointer& p);   // x, y, down, wheel, hover's values
         void scrolled();                                   // gui_ from content_, moved by the scroll
 
         Items& items_;
-        std::vector<int> displays_, controls_, tabs_, pads_, envelopes_, keyboards_, shaders_;
+        std::vector<int> displays_, controls_, tabs_, pads_, envelopes_, keyboards_, shaders_, pointers_;
+        std::function<void(int, funkgui::Point)> dialMenu_;   // Hooks::dialMenu, a pointer's right-click
+        static constexpr float kNoPointer = std::numeric_limits<float>::quiet_NaN();
+        std::array<float, 4> shownPointer_{ kNoPointer, kNoPointer, kNoPointer, kNoPointer };
         std::vector<int> shaderNode_;                      // by shaders_: the node it shows (-1: none)
         // The shaders' programs, by PanelSpec::shaders: the id registered with FunkGui (0: none), why not, and whether
         // its code reads the time (it then moves every frame).

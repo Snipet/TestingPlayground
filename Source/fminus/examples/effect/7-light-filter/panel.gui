@@ -1,0 +1,15 @@
+// The cutoff as a dial of light, and the spectrum to drag it across (the box's x= and y=: a press anywhere over it).
+row gap=16 align=center {
+    section "CUTOFF" layout=column align=center {
+        shader "dial.sc" inputs="tone pointer.hover pointer.down" y=tone drag=relative cursor=updown width=96 height=96
+        label "DRAG UP OR DOWN" size=small
+    }
+    section "SPECTRUM" grow=1 {
+        box x=tone y=resonance cursor=cross grow=1 {
+            spectrum out height=140
+        }
+    }
+    section "FILTER" {
+        knob resonance
+    }
+}

@@ -7313,7 +7313,7 @@ namespace playground::ui
         if (i < 0 || i >= static_cast<int>(std::size(kExamples)))
             return;
         const Example& e = kExamples[static_cast<std::size_t>(i)];
-        startAfresh(withLibraryIncludes(singleFile(e.source)), "the example \"" + std::string(e.title) + "\"",
+        startAfresh(withLibraryIncludes(exampleSources(e)), "the example \"" + std::string(e.title) + "\"",
                     std::string("Load ") + e.title);
     }
 
@@ -8004,6 +8004,7 @@ namespace playground::ui
     void Panel::showState(ShownState state)
     {
         shown_ = std::move(state);
+        guiView_->showPointer(shown_.pointer);           // a picture's pointer over its shaders
         showing_ = true;
         shownPlaying_ = false;
         shownAt_ = 0;
@@ -8183,7 +8184,8 @@ namespace playground::ui
                                      : kind == 1 ? guiView_->envelopes()
                                      : kind == 2 ? guiView_->tabs()
                                      : kind == 3 ? guiView_->keyboards()
-                                                 : guiView_->shaders();
+                                     : kind == 4 ? guiView_->shaders()
+                                                 : guiView_->pointers();
         return *items_[static_cast<std::size_t>(pool[static_cast<std::size_t>(std::clamp(k, 0, static_cast<int>(pool.size()) - 1))])];
     }
 

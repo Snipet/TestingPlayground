@@ -1,11 +1,12 @@
 // PROBE name=fminus.examples timeout=300
 //
-// fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/<product>/*.fm, the first the
-// default) as the plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz, with the library files it
+// fminus.examples: every program of the editor's EXAMPLES (Source/fminus/examples/<product>/*.fm and the folders of a
+// program.fm and its panel.gui and shader, the first the default) as the plugin compiles and plays it (Patch::compile, the Engine), at 48 kHz, with the library files it
 // #includes beside it as EXAMPLES adds them (fminus/LibraryIncludes.h: the circuit examples' netlists, screamer.cir
 // and otalp.cir, generated as they are #included):
 //   COMPILE  it compiles for this plugin's kind, with no message; its dials are its first parameters, at most 32,
-//            each with a name, a range (min < max) and a default inside it
+//            each with a name, a range (min < max) and a default inside it; a folder's panel has a shader and pointer
+//            properties
 //   PLAY     two seconds at the defaults: an effect over stereo noise at -12 dBFS, an instrument playing a chord
 //            (C4, E4, G4 at velocity 0.8, released at 1 s): the output is finite and audible (above -60 dBFS RMS over
 //            its first second), and the output guard raised no alert (no NaN, nothing beyond +-4)
@@ -54,9 +55,9 @@ PROBE(fminus, examples)
     {
         const std::string key = "example" + std::to_string(++index);
         std::printf("%s: %s\n", key.c_str(), example.title);
-        const pg::Sources files = pg::withLibraryIncludes(pg::singleFile(example.source));
+        const pg::Sources files = pg::withLibraryIncludes(pg::exampleSources(example));
         for (std::size_t k = 1; k < files.size(); ++k)
-            std::printf("  with the library's %s\n", files[k].name.c_str());
+            std::printf("  with %s%s\n", static_cast<int>(k) <= example.count ? "" : "the library's ", files[k].name.c_str());
 
         // COMPILE
         probe::Rig rig(kFs, 512);
@@ -68,6 +69,17 @@ PROBE(fminus, examples)
         P.eq(key + ".no_messages", messages.empty() ? 1 : 0, 1);
         if (!ok)
             continue;
+        // A folder's example (its panel.gui and a shader beside its program): the panel reads with no note (above), a
+        // shader in it, and the pointer drives a param there.
+        if (example.count > 0)
+        {
+            const pg::PanelSpec& panel = rig.panel();
+            bool pointer = false;
+            for (const pg::GuiNode& node : panel.gui.nodes)
+                pointer = pointer || node.pointer.any();
+            P.eq(key + ".panel_shader", !panel.gui.empty() && !panel.shaders.empty() ? 1 : 0, 1);
+            P.eq(key + ".panel_pointer", pointer ? 1 : 0, 1);
+        }
         for (int c = 0; c < pg::kMaxControls; ++c)
         {
             const pg::Control& ctl = rig.controls()[static_cast<std::size_t>(c)];
