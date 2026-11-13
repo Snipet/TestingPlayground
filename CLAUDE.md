@@ -88,7 +88,7 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `linux-release-build`), in `build-linux-<preset>`, with clang and lld, on an X display that runs a window manager
   (with `$DISPLAY` unset the menus' pictures are skipped, saying so; a bare X server ends the process: "Linux" below).
 - `cmake --workflow --preset dev-verify`: configure, build (both products' Standalone, AU, VST3, MCP server, headless
-  renderer and probes, and the installer) and run every test in `build-dev`: each of the 81 probes once for each product
+  renderer and probes, and the installer) and run every test in `build-dev`: each of the 80 probes once for each product
   (`effect:fminus.examples`, `synth:fminus.examples`, ...), and the lints (`lint.layers`, `lint.changelog`, ...) and
   the installer's probes once
   (`installer.engine`, `installer.gui`: `build-dev/probe-out/installer/gui.installer*.png`, look at them after any
