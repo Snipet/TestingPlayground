@@ -963,126 +963,124 @@ namespace playground
 
     void Compiler::pass(std::unique_lock<std::mutex>& lock)
     {
+        // A RUN waits while compileNow (or selfTestNow's refine) compiles on another thread.
+        wake_.wait_for(lock, std::chrono::milliseconds(100),
+                       [this] { return (hasQueued_ && !compiling_) || hasCheck_ || irDue_ || stop_; });
+        if (stop_)
+            return;
+        bool compiled = false;
+        if (hasQueued_ && !compiling_)
         {
-            // A RUN waits while compileNow (or selfTestNow's refine) compiles on another thread.
-            wake_.wait_for(lock, std::chrono::milliseconds(100),
-                           [this] { return (hasQueued_ && !compiling_) || hasCheck_ || irDue_ || stop_; });
-            if (stop_)
-                return;
-            bool compiled = false;
-            if (hasQueued_ && !compiling_)
-            {
-                Sources files = std::move(queued_);
-                const uint64_t id = queuedId_;
-                const ShaderTools tools = tools_;
-                const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
-                const bool panelEdits = queuedPanel_;
-                const Assets assets = assets_;
-                hasQueued_ = false;
-                compiling_ = true;
-                lock.unlock();
-                // An exception fails this RUN in words, as a compile that does not compile fails (fminus/Failure.h): the
-                // program that plays plays on, and the next RUN is taken as any.
-                try
-                {
-                    const uint64_t landed = circuits::answers().landed();
-                    // An edit of the panel's files alone plays on (Compiler.h, "A panel's edit"); else a compile.
-                    if (!(panelEdits && editPanel(files, id, tools, assets)))
-                        land(build(engine_.rate(), files, id, tools, shaders_, keepIr, nullptr, assets), landed, true, true);
-                }
-                catch (...)
-                {
-                    failed(id, files.empty() ? std::string() : files.front().name, "compiling");
-                }
-                lock.lock();
-                compiling_ = false;
-                compiled = true;
-                idle_.notify_all();                    // wait() (when no other RUN waits) and compileNow
-            }
-            if (hasCheck_ && !hasQueued_ && !stop_)
-            {
-                // The editor's check, once no RUN waits: its messages only.
-                Sources files = std::move(checkQueued_);
-                hasCheck_ = false;
-                lock.unlock();
-                std::string errors;
-                double ms = 0.0;
-                try
-                {
-                    failure::at("check");
-                    Patch::Result r = Patch::check(files);
-                    errors = std::move(r.errors);
-                    ms = r.compileMs;
-                }
-                catch (...)
-                {
-                    errors.clear();                    // an exception (fminus/Failure.h): no messages for this check
-                }
-                lock.lock();
-                check_.revision += 1;
-                check_.errors = std::move(errors);
-                check_.ms = ms;
-                check_.sources = std::move(files);
-            }
-            if (irDue_ && !hasQueued_ && !stop_)
-            {
-                // The IR of the program that plays, which its compile did not keep: compiled again for it alone, nothing
-                // offered. Kept only if that program still plays and someone still looks.
-                irDue_ = false;
-                const Patch::Recipe recipe = recipe_;
-                lock.unlock();
-                Patch::Ir ir;
-                std::string why;
-                bool made = false;
-                std::shared_ptr<const IrText> lowered, optimised;
-                try
-                {
-                    made = recipe.program != 0 && Patch::ir(recipe, ir, why);
-                    lowered = made ? irText(ir.lowered) : nullptr;
-                    optimised = made ? irText(ir.optimised) : nullptr;
-                }
-                catch (...)
-                {
-                    made = false;                      // an exception (fminus/Failure.h): the view says why
-                    lowered.reset();
-                    optimised.reset();
-                    try
-                    {
-                        why = failure::sentence("making the IR");
-                    }
-                    catch (...)
-                    {
-                        why.clear();
-                    }
-                }
-                lock.lock();
-                if (irWanted_ && recipe.program != 0 && recipe_.program == recipe.program && !irDue_)
-                {
-                    ir_.program = recipe.program;
-                    ir_.file = recipe.files.empty() ? std::string(kProgramName) : recipe.files.front().name;
-                    ir_.lowered = std::move(lowered);
-                    ir_.optimised = std::move(optimised);
-                    ir_.why = made ? std::string() : why;
-                }
-                ir_.making = irDue_;
-                bumpIr();
-            }
-            // A program that stopped as it played (above, "A program that stops"): said, and the one before it played
-            // again.
-            if (!hasQueued_ && !stop_)
-                checkStops(lock);
-            // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
-            // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
-            // first).
-            std::unique_ptr<Built> stale = checkLanded();
-            checkOutcomes();
-            if (selfTesting_ && !compiled && mayRefine())
-                refine(lock);
+            Sources files = std::move(queued_);
+            const uint64_t id = queuedId_;
+            const ShaderTools tools = tools_;
+            const bool keepIr = irWanted_;         // someone looks: this compile keeps the program's IR
+            const bool panelEdits = queuedPanel_;
+            const Assets assets = assets_;
+            hasQueued_ = false;
+            compiling_ = true;
             lock.unlock();
-            stale.reset();
-            engine_.collect();                     // what the audio thread handed back
+            // An exception fails this RUN in words, as a compile that does not compile fails (fminus/Failure.h): the
+            // program that plays plays on, and the next RUN is taken as any.
+            try
+            {
+                const uint64_t landed = circuits::answers().landed();
+                // An edit of the panel's files alone plays on (Compiler.h, "A panel's edit"); else a compile.
+                if (!(panelEdits && editPanel(files, id, tools, assets)))
+                    land(build(engine_.rate(), files, id, tools, shaders_, keepIr, nullptr, assets), landed, true, true);
+            }
+            catch (...)
+            {
+                failed(id, files.empty() ? std::string() : files.front().name, "compiling");
+            }
             lock.lock();
+            compiling_ = false;
+            compiled = true;
+            idle_.notify_all();                    // wait() (when no other RUN waits) and compileNow
         }
+        if (hasCheck_ && !hasQueued_ && !stop_)
+        {
+            // The editor's check, once no RUN waits: its messages only.
+            Sources files = std::move(checkQueued_);
+            hasCheck_ = false;
+            lock.unlock();
+            std::string errors;
+            double ms = 0.0;
+            try
+            {
+                failure::at("check");
+                Patch::Result r = Patch::check(files);
+                errors = std::move(r.errors);
+                ms = r.compileMs;
+            }
+            catch (...)
+            {
+                errors.clear();                    // an exception (fminus/Failure.h): no messages for this check
+            }
+            lock.lock();
+            check_.revision += 1;
+            check_.errors = std::move(errors);
+            check_.ms = ms;
+            check_.sources = std::move(files);
+        }
+        if (irDue_ && !hasQueued_ && !stop_)
+        {
+            // The IR of the program that plays, which its compile did not keep: compiled again for it alone, nothing
+            // offered. Kept only if that program still plays and someone still looks.
+            irDue_ = false;
+            const Patch::Recipe recipe = recipe_;
+            lock.unlock();
+            Patch::Ir ir;
+            std::string why;
+            bool made = false;
+            std::shared_ptr<const IrText> lowered, optimised;
+            try
+            {
+                made = recipe.program != 0 && Patch::ir(recipe, ir, why);
+                lowered = made ? irText(ir.lowered) : nullptr;
+                optimised = made ? irText(ir.optimised) : nullptr;
+            }
+            catch (...)
+            {
+                made = false;                      // an exception (fminus/Failure.h): the view says why
+                lowered.reset();
+                optimised.reset();
+                try
+                {
+                    why = failure::sentence("making the IR");
+                }
+                catch (...)
+                {
+                    why.clear();
+                }
+            }
+            lock.lock();
+            if (irWanted_ && recipe.program != 0 && recipe_.program == recipe.program && !irDue_)
+            {
+                ir_.program = recipe.program;
+                ir_.file = recipe.files.empty() ? std::string(kProgramName) : recipe.files.front().name;
+                ir_.lowered = std::move(lowered);
+                ir_.optimised = std::move(optimised);
+                ir_.why = made ? std::string() : why;
+            }
+            ir_.making = irDue_;
+            bumpIr();
+        }
+        // A program that stopped as it played (above, "A program that stops"): said, and the one before it played
+        // again.
+        if (!hasQueued_ && !stop_)
+            checkStops(lock);
+        // The self-test's answer for the program that plays, compiled in when it may be (above), at a pass of its
+        // own: never the one whose compile made it due (a RUN's waiter and the processor have that compile's status
+        // first).
+        std::unique_ptr<Built> stale = checkLanded();
+        checkOutcomes();
+        if (selfTesting_ && !compiled && mayRefine())
+            refine(lock);
+        lock.unlock();
+        stale.reset();
+        engine_.collect();                     // what the audio thread handed back
+        lock.lock();
     }
 
     // ---- the self-test --------------------------------------------------------------------------------------------------
