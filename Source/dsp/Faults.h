@@ -27,6 +27,7 @@ namespace playground::faults
         selfTestBatch,     // a batch of a self-test's parallel work, on its workers
         tool,              // a chat tool's work (ChatAgent::runTool, a turn's or an MCP call's; mcpCall's live tools)
         turn,              // a chat turn's own work, outside its tools (ChatAgent::runTurn, once its message is taken)
+        preview,           // a Projects card's preview, prepared on the processor's previews thread
         count
     };
     enum class Kind

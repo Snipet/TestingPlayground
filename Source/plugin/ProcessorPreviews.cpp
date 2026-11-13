@@ -8,6 +8,7 @@
 // replaced, draws again), and let go kPictureHoldSeconds after the card last asked.
 #include "plugin/Processor.h"
 
+#include "dsp/Faults.h"
 #include "plugin/ChatImages.h"
 
 #include "editor/Preview.h"
@@ -130,20 +131,34 @@ namespace playground
             std::shared_ptr<const preview::Prepared> prepared;
             try
             {
+                faults::reach(faults::Stage::preview);
                 prepared = std::make_shared<const preview::Prepared>(preview::prepare(*request, previewTools_));
             }
-            catch (const std::exception&)
+            catch (...)
             {
-                auto failed = std::make_shared<preview::Prepared>();
-                failed->why = "its files could not be read";
-                prepared = std::move(failed);
+                // Any exception (one of no std:: kind too, which left this thread and ended the host before).
+                try
+                {
+                    auto failed = std::make_shared<preview::Prepared>();
+                    failed->why = "its files could not be read";
+                    prepared = std::move(failed);
+                }
+                catch (...)
+                {
+                }
             }
             lock.lock();
             for (PreviewEntry& e : previews_)
                 if (e.project == project && e.state.number == number && e.theme == theme && e.content == content)
                 {
                     e.request.reset();
-                    if (!prepared->ok)
+                    if (!prepared)
+                    {
+                        // Not even the failure could be made (out of memory): failed, with no words.
+                        e.state.status = PreviewState::Status::failed;
+                        e.state.why.clear();
+                    }
+                    else if (!prepared->ok)
                     {
                         e.state.status = PreviewState::Status::failed;
                         e.state.why = prepared->why;

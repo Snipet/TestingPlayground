@@ -75,7 +75,8 @@
 //            asks the Reader again for the first); a file another rewrote is read again; a factory project's at once;
 //            the editor's own content (editorContent) its draft, its dials, with no read
 //   PREVIEW  a version's panel as the Projects card asks for it (previewPolled): "reading" until the Reader has read
-//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread
+//            the file another rewrote, then answered (drawn, or none, saying why); nothing parsed on the asking thread;
+//            one whose preparing throws (planted) failed in its words, and the next answered as before
 //   ASYNC    the editor's save off the message thread (startSave) on a project of about 5 MB: its own cost on the
 //            message thread under a tenth of saveVersion's (each the thread's CPU time); held before the store's work
 //            (setSaveGate), saving() says it is in flight and nothing is written yet; one more asked for meanwhile
@@ -98,6 +99,7 @@
 
 #include "dsp/Compiler.h"
 #include "fminus/Circuits.h"
+#include "dsp/Faults.h"
 #include "plugin/EditorPort.h"
 #include "plugin/ProjectStore.h"
 #include "plugin/Processor.h"
@@ -1135,6 +1137,17 @@ PROBE(plugin, projects)
             P.eq("preview.answered", then.status != pg::PreviewState::Status::reading
                                          && (last.status == pg::PreviewState::Status::ready || last.status == pg::PreviewState::Status::failed) ? 1 : 0, 1);
             P.eq("preview.none_here", there(), 0);
+            // One whose preparing throws an exception of no std:: kind (planted: dsp/Faults.h): failed in its words, and
+            // the previews' thread lives to answer the next (another theme: a preview of its own).
+            pg::faults::plantForTests(pg::faults::Stage::preview, pg::faults::Kind::unknown, 1);
+            (void)pd.previewPolled("Diffs", 1, 1);
+            (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+            const pg::PreviewState thrown = pd.previewPolled("Diffs", 1, 1);
+            P.eq("preview.thrown_failed", thrown.status == pg::PreviewState::Status::failed && thrown.why == "its files could not be read"
+                                              ? 1 : 0, 1);
+            (void)pd.previewPolled("Diffs", 1, 2);
+            (void)d.previewsSettle(static_cast<double>(probe::kWorkWait.count()));
+            P.eq("preview.thrown_next", pd.previewPolled("Diffs", 1, 2).status == last.status ? 1 : 0, 1);
         }
         P.eq("version.removed", pd.deleteProject("Diffs", w) ? 1 : 0, 1);
     }
