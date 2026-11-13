@@ -36,6 +36,21 @@ namespace playground
         bool digit(char c) { return c >= '0' && c <= '9'; }
         bool hex(char c) { return digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
+        // The notes each part of a reading says at most (the words, the elements, the interface): a file however
+        // broken gives a page of them, then one line that says the rest were left out.
+        constexpr int kMaxNotes = 100;
+
+        // Whether the next note may be said, counted in `count`; the first past kMaxNotes says the rest are left out.
+        bool sayNote(int& count, std::string& notes, const std::string& file)
+        {
+            if (count > kMaxNotes)
+                return false;
+            if (++count <= kMaxNotes)
+                return true;
+            notes += file + ": note: more than " + std::to_string(kMaxNotes) + " notes: the rest are left out\n";
+            return false;
+        }
+
         // The file in tokens. A newline or a ; ends an element (an `end` token); what is no token is a note, and
         // skipped.
         std::vector<Token> lex(std::string_view s, const std::string& file, std::string& notes)
@@ -43,8 +58,10 @@ namespace playground
             std::vector<Token> out;
             int line = 1, col = 1;
             std::size_t i = 0;
+            int said = 0;
             const auto note = [&](int l, int c, const std::string& what) {
-                notes += file + ":" + std::to_string(l) + ":" + std::to_string(c) + ": note: " + what + "\n";
+                if (sayNote(said, notes, file))
+                    notes += file + ":" + std::to_string(l) + ":" + std::to_string(c) + ": note: " + what + "\n";
             };
             const auto advance = [&](std::size_t n) {
                 for (std::size_t k = 0; k < n && i < s.size(); ++k, ++i)
@@ -242,17 +259,36 @@ namespace playground
             Parser(const std::vector<Token>& t, const std::string& file, std::string& notes)
                 : t_(t), file_(file), notes_(notes) {}
 
-            // Elements until a } (which the caller takes) or the end of the file.
+            // Elements until a } (which the caller takes) or the end of the file. A { with no element before it is
+            // read as if its braces were not there: what it holds is this list's, and its } is taken with it.
             std::vector<Element> list(int depth)
             {
                 std::vector<Element> out;
+                std::vector<Token> bare;                 // the nameless { open in this list, the innermost last
                 for (;;)
                 {
                     while (peek().is(Token::Kind::end))
                         ++at_;
                     const Token& t = peek();
+                    if (t.is(Token::Kind::close) && !bare.empty())
+                    {
+                        bare.pop_back();
+                        ++at_;
+                        continue;
+                    }
                     if (t.is(Token::Kind::eof) || t.is(Token::Kind::close))
+                    {
+                        for (const Token& open : bare)
+                            note(open, "this { has no } (the file ends inside it)");
                         return out;
+                    }
+                    if (t.is(Token::Kind::open))
+                    {
+                        note(t, "a { with no element before it: what it holds is read as if the braces were not there");
+                        bare.push_back(t);
+                        ++at_;
+                        continue;
+                    }
                     if (!t.is(Token::Kind::name))
                     {
                         note(t, "an element starts with its name (row, knob, ...), not '" + t.value + "'");
@@ -273,11 +309,13 @@ namespace playground
                         at_ = look + 1;
                         e.block = true;
                         if (depth + 1 > kMaxGuiDepth)
+                        {
                             note(open, "containers nest " + std::to_string(kMaxGuiDepth) + " deep at most: what is in "
                                                                                             "this one is left out");
-                        std::vector<Element> kids = list(depth + 1);
-                        if (depth + 1 <= kMaxGuiDepth)
-                            e.children = std::move(kids);
+                            skipBlock();                 // read no deeper: a file nested a million deep is no stack
+                        }
+                        else
+                            e.children = list(depth + 1);
                         if (peek().is(Token::Kind::close))
                             ++at_;
                         else
@@ -308,7 +346,26 @@ namespace playground
 
             void note(const Token& t, const std::string& what)
             {
-                notes_ += file_ + ":" + std::to_string(t.line) + ":" + std::to_string(t.col) + ": note: " + what + "\n";
+                if (sayNote(said_, notes_, file_))
+                    notes_ += file_ + ":" + std::to_string(t.line) + ":" + std::to_string(t.col) + ": note: " + what
+                            + "\n";
+            }
+
+            // Past what a block holds, to its } (left for the caller) or the end of the file, counting the { and }
+            // inside it.
+            void skipBlock()
+            {
+                for (std::size_t open = 0; !peek().is(Token::Kind::eof); ++at_)
+                {
+                    if (peek().is(Token::Kind::open))
+                        ++open;
+                    else if (peek().is(Token::Kind::close))
+                    {
+                        if (open == 0)
+                            return;
+                        --open;
+                    }
+                }
             }
 
             void skipLine()
@@ -358,6 +415,7 @@ namespace playground
             const std::string& file_;
             std::string& notes_;
             std::size_t at_ = 0;
+            int said_ = 0;
             std::vector<Element> extra_;
         };
 
@@ -596,11 +654,11 @@ namespace playground
             // ---- notes and values -------------------------------------------------------------------------------------
             void note(const Token& at, const std::string& what)
             {
-                if (quiet_)
+                if (quiet_ || count_ > kMaxNotes)
                     return;
                 const std::string line = file_.name + ":" + std::to_string(at.line) + ":" + std::to_string(at.col) + ": note: "
                                        + what + "\n";
-                if (said_.insert(line).second)           // a class's mistake is said once, not at every use
+                if (said_.insert(line).second && sayNote(count_, notes_, file_.name))   // a class's mistake: once
                     notes_ += line;
             }
 
@@ -1737,7 +1795,7 @@ namespace playground
             std::array<bool, kMaxControls> placed_{};
             std::map<std::string, std::vector<Prop>> classes_, defaults_;
             std::set<std::string> said_;
-            int taps_ = 0;
+            int taps_ = 0, count_ = 0;
             bool panelSeen_ = false, full_ = false, quiet_ = false, guessing_ = false;
         };
     }
