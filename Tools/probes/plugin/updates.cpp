@@ -24,6 +24,11 @@
 //             (What's new's "seen"): neither's write is lost, the unknown field kept
 //   PRICES    a good reply's prices handed to the usage ledger (usage::pricesInUse), its rows as the table takes them
 //             (the cache's defaults, a row without a price left out); an older table not taken
+//   LEDGER    end to end, the check to the Usage page (package 09's refresh): a ledger seeded with a model's requests,
+//             the page's view (ChatPort::usage, its periodic reread put off for good) priced at the built-in table and
+//             its date; a check whose reply carries a later asOf and another price for that model: the view read again
+//             at once (taking a table moves usage::revision) with the new date and the row's estimate at the new
+//             price; a reply with an earlier asOf changes neither, and asks for no read
 //   TWO       two processors share one check: one request for two editors' opens
 //   JOIN      a processor (the last holder) going while a check is in flight returns promptly, the thread joined
 //   OFFER     the processor's offer: due with neither answered; Allow with the factory unticked: updates yes, the factory
@@ -32,6 +37,9 @@
 //             without one
 #include "Probe.h"
 
+#include "plugin/ChatAgent.h"
+#include "plugin/ChatPort.h"
+#include "plugin/ChatStore.h"
 #include "plugin/ClaudeApi.h"
 #include "plugin/EditorPort.h"
 #include "plugin/FactoryStore.h"
@@ -560,6 +568,98 @@ PROBE(plugin, updates)
             P.eq("prices.from_app_json", pg::usage::pricesInUse().asOf == "2099-01-02" && s->count() == before ? 1 : 0, 1);
         }
         pg::usage::resetPricesForTests();
+    }
+
+    // ---- LEDGER: the check's prices reach the Usage page ------------------------------------------------------------------
+    {
+        namespace us = pg::usage;
+        us::resetPricesForTests();
+        const juce::File h = freshHome();
+        const juce::File chats = h.getChildFile("chat");
+        (void)chats.createDirectory();
+        pg::chatstore::setDirectoryForTests(chats);
+        const char* const model = "claude-haiku-4-5";
+        const us::Key key{ us::today(), "anthropic", model, false };
+        us::Counts counts;
+        counts.requests = 3;
+        counts.input = 400000;
+        counts.output = 50000;
+        us::add(key, counts);
+        P.eq("ledger.seeded", us::flush() ? 1 : 0, 1);
+        auto s = std::make_shared<Site>();
+        up::Config cfg = configOf(h, s, pg::product::kVersion);
+        cfg.offersPrices = true;
+        h.getChildFile("app.json").replaceWithText("{\"updates\":\"yes\"}\n");
+        up::useConfigForTests(&cfg);
+        pg::factorystore::setDirectoryForTests(h);
+        {
+            pg::Processor a;
+            pg::EditorPort& port = a.editorPort();
+            a.chatAgent().setUsageRereadSecondsForTests(1.0e9);   // only a moved revision makes a read
+            const auto view = [&] { return port.chat().usage(us::Range::week); };
+            const auto rowOf = [&](const pg::UsageView& v) -> std::optional<pg::UsageRow> {
+                for (const pg::UsageRow& r : v.rows)
+                    if (r.key.model == model && r.key.provider == "anthropic" && !r.key.fast)
+                        return r;
+                return std::nullopt;
+            };
+            std::shared_ptr<const pg::UsageView> v;
+            (void)waitFor([&] {
+                v = view();
+                return v->read && rowOf(*v).has_value();
+            });
+            const std::optional<pg::UsageRow> before = rowOf(*v);
+            const us::Cost builtIn = us::costOf(key, counts, us::priceOf(us::builtInPrices(), "anthropic", model));
+            P.eq("ledger.built_in.date", v->pricesAsOf == us::builtInPrices().asOf ? 1 : 0, 1);
+            P.eq("ledger.built_in.estimate", before && before->cost.kind == us::Cost::Kind::estimate
+                                                 && before->cost.microUsd == builtIn.microUsd ? 1 : 0, 1);
+
+            // The check's reply: a later table, another price for that model.
+            const std::string later = "{\"asOf\":\"2099-03-04\",\"webSearchPer1000\":10,\"usdPerMTok\":{\"anthropic\":{"
+                                      "\"" + std::string(model) + "\":{\"in\":7,\"out\":9}}}}";
+            s->serve(release("0.1.0", {}, later));
+            const uint64_t serial = v->serial;
+            port.editorOpened();
+            const std::shared_ptr<up::Check> c = up::process();
+            if (c != nullptr)
+                (void)waitFor([&] { return s->count() >= 1 && c->idle(); });
+            P.eq("ledger.later.asked", s->count(), 1);
+            const bool reread = waitFor([&] {
+                v = view();
+                return v->read && v->serial > serial && v->pricesAsOf == "2099-03-04";
+            });
+            P.eq("ledger.later.read_at_once", reread ? 1 : 0, 1);
+            P.eq("ledger.later.date", v->pricesAsOf == "2099-03-04" ? 1 : 0, 1);
+            us::Price price;
+            price.in = 7;
+            price.out = 9;
+            const us::Cost wanted = us::costOf(key, counts, price);
+            const std::optional<pg::UsageRow> after = rowOf(*v);
+            if (after)
+                std::printf("ledger: %lld micro-USD at the built-in table, %lld at the check's\n",
+                            static_cast<long long>(before ? before->cost.microUsd : -1), static_cast<long long>(after->cost.microUsd));
+            P.eq("ledger.later.estimate", after && after->cost.kind == us::Cost::Kind::estimate && after->cost.microUsd == wanted.microUsd
+                                              && wanted.microUsd != builtIn.microUsd ? 1 : 0, 1);
+
+            // An earlier table: neither the date nor the estimate moves, and no read is asked for.
+            const std::string earlier = "{\"asOf\":\"2099-01-01\",\"usdPerMTok\":{\"anthropic\":{"
+                                        "\"" + std::string(model) + "\":{\"in\":100,\"out\":100}}}}";
+            s->serve(release("0.1.0", {}, earlier));
+            const uint64_t revision = us::revision();
+            port.checkForUpdates();
+            if (c != nullptr)
+                (void)waitFor([&] { return s->count() >= 2 && c->idle(); });
+            P.eq("ledger.earlier.asked", s->count(), 2);
+            P.eq("ledger.earlier.revision_kept", us::revision() == revision ? 1 : 0, 1);
+            const std::shared_ptr<const pg::UsageView> again = view();
+            const std::optional<pg::UsageRow> kept = rowOf(*again);
+            P.eq("ledger.earlier.date_kept", again->pricesAsOf == "2099-03-04" && us::pricesInUse().asOf == "2099-03-04" ? 1 : 0, 1);
+            P.eq("ledger.earlier.estimate_kept", kept && kept->cost.microUsd == wanted.microUsd ? 1 : 0, 1);
+        }
+        up::useConfigForTests(nullptr);
+        pg::factorystore::setDirectoryForTests(juce::File());
+        pg::chatstore::setDirectoryForTests(juce::File());
+        us::resetPricesForTests();
     }
 
     // ---- TWO, OFFER, SKIP (the processor's), DOWNLOAD ------------------------------------------------------------------

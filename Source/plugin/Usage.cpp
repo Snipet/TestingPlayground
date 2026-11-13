@@ -187,15 +187,26 @@ namespace playground::usage
         }
     }
 
+    namespace
+    {
+        // Moves each time the table in use changes (a later one taken, the probes' reset): revision() adds it, so a
+        // reader that follows the revision (ChatAgent::usage, the Usage page) prices with the new table at its next
+        // read, not only at its periodic reread.
+        std::atomic<uint64_t> pricesChanged{ 0 };
+    }
+
     bool offerPrices(PriceTable table)
     {
         if (!validDay(table.asOf))
             return false;
-        const std::lock_guard<std::mutex> lock(pricesMutex);
-        const std::string& now = offered ? offered->asOf : builtInPrices().asOf;
-        if (table.asOf <= now)
-            return false;
-        offered = std::move(table);
+        {
+            const std::lock_guard<std::mutex> lock(pricesMutex);
+            const std::string& now = offered ? offered->asOf : builtInPrices().asOf;
+            if (table.asOf <= now)
+                return false;
+            offered = std::move(table);
+        }
+        pricesChanged.fetch_add(1, std::memory_order_acq_rel);
         return true;
     }
 
@@ -207,9 +218,12 @@ namespace playground::usage
 
     void resetPricesForTests()
     {
-        const std::lock_guard<std::mutex> lock(pricesMutex);
-        offered.reset();
-        listed.clear();
+        {
+            const std::lock_guard<std::mutex> lock(pricesMutex);
+            offered.reset();
+            listed.clear();
+        }
+        pricesChanged.fetch_add(1, std::memory_order_acq_rel);
     }
 
     void setListedPrice(const std::string& provider, const std::string& model, const Price& price)
@@ -694,7 +708,7 @@ namespace playground::usage
 
     bool resetOwed() { return processLedger().resetOwed(); }
 
-    uint64_t revision() noexcept { return processLedger().revision(); }
+    uint64_t revision() noexcept { return processLedger().revision() + pricesChanged.load(std::memory_order_acquire); }
 
     void setWritesFailForTests(bool fail) { writesFail.store(fail); }
 
