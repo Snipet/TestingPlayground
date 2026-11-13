@@ -314,6 +314,24 @@ endforeach()
 # guide's preamble).
 set(FP_MCP_VERSION "0.20.0")
 
+# This build's commit (the Debug page: Source/plugin/ProcessorDebug.cpp), in a header of its own that one file includes,
+# never in Product.h, which nearly every file includes: written at configure and brought up to date at every build,
+# rewritten only when the commit changes (cmake/BuildCommit.cmake).
+set(FP_BUILD_COMMIT_DIR ${CMAKE_BINARY_DIR}/generated/common)
+set(FP_BUILD_COMMIT_H ${FP_BUILD_COMMIT_DIR}/BuildCommit.h)
+execute_process(COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR} -DFP_OUT=${FP_BUILD_COMMIT_H}
+                        -P ${PROJECT_SOURCE_DIR}/cmake/BuildCommit.cmake)
+add_custom_target(fp_build_commit
+    COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR} -DFP_OUT=${FP_BUILD_COMMIT_H}
+            -P ${PROJECT_SOURCE_DIR}/cmake/BuildCommit.cmake
+    BYPRODUCTS ${FP_BUILD_COMMIT_H}
+    VERBATIM)
+if(CMAKE_BUILD_TYPE)
+  set(FP_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+else()
+  set(FP_BUILD_TYPE "multi-config")
+endif()
+
 # The probes (cmake/Probes.cmake): `probes` builds every product's.
 enable_testing()
 include(Probes)
@@ -612,7 +630,8 @@ namespace @FP_NAMESPACE@
   set(_fp_plugin_own ${FP_PLUGIN_SOURCES} ${FP_EDITOR_SOURCES} ${FP_EDITOR_GPU_SOURCES} ${FP_NOGPU_SHARED})
   target_sources(${PRODUCT_NAME} PRIVATE ${_fp_plugin_own})
   fp_warn_sources(${_fp_plugin_own})
-  target_include_directories(${PRODUCT_NAME} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR})
+  target_include_directories(${PRODUCT_NAME} PRIVATE ${FP_SOURCE_ROOT} ${FP_GENERATED_DIR} ${FP_BUILD_COMMIT_DIR})
+  add_dependencies(${PRODUCT_NAME} fp_build_commit)
   # PUBLIC, so the format wrappers compile JUCE with the same settings as the shared code.
   target_compile_definitions(${PRODUCT_NAME} PUBLIC JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0)
   target_link_libraries(${PRODUCT_NAME}

@@ -6,7 +6,8 @@
 //   gui.schematic.screamer.png the Tube Screamer's netlist (screamer.cir), laid out from its text alone
 //   gui.schematic.paper.png    PAPER, a part and a wire selected, an error, a warning and a note marked
 //   gui.schematic.small.png    the least window (1000 x 600), 32 dials folded into the bar under the drawing
-//   gui.schematic.switch.png   the least window, sixteen tabs and the IR tab: the pills icon-only, no tab under its least
+//   gui.schematic.switch.png   the least window, sixteen tabs and the IR tab: the pills icon-only, the tabs scrolling at
+//                              their own widths
 //   gui.schematic.wire.png     a wire being drawn, from a pin, mid-drag
 //   gui.schematic.move.png     two parts being moved, their wires rubber-banded, mid-drag
 //   gui.schematic.errors.png   an error, a warning and a note on parts (badges, an outline, a ring), an unconnected pin,
@@ -205,25 +206,28 @@ namespace
             return inc + "module Effect\n{\n" + params + "    void process(float* restrict left, float* restrict right, int n) {}\n};\n";
     }
 
-    // Ticks (and lets the compiler's thread work) until `done`, a second and a half at most (by default).
-    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done, int tries = 300)
+    // Ticks (and lets the compiler's thread work) until `done`, probe::kWorkWait at most by the clock: what it waits
+    // for (the check while typing, a compile) is the compiler thread's, which a loaded machine keeps from a core for
+    // seconds.
+    bool waitFor(funkgui::HeadlessHost& host, const std::function<bool()>& done)
     {
-        for (int k = 0; k < tries; ++k)
+        const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+        do
         {
             host.tick(1);
             if (done())
                 return true;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
+        } while (std::chrono::steady_clock::now() < by);
         return false;
     }
 
     // The check while typing over: none due, none on the compiler's thread, its outcome landed and the frame settled
-    // after it, so the status line has no "Checking..." and a picture taken now is the same run after run (ten seconds
-    // at most: the machine may be busy).
+    // after it, so the status line has no "Checking..." and a picture taken now is the same run after run (waitFor's
+    // bound: the machine may be busy).
     bool checkSettled(funkgui::HeadlessHost& host, pg::ui::CodeAssist& code)
     {
-        const bool done = waitFor(host, [&] { return !code.checking() && code.settled(); }, 2000);
+        const bool done = waitFor(host, [&] { return !code.checking() && code.settled(); });
         host.settle();
         return done && !code.checking();
     }
@@ -1797,16 +1801,18 @@ PROBE(gui, schematic)
         P.eq("switch.sixteen", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
         P.eq("switch.ir_open", panel.irOpen() && !panel.irShown() ? 1 : 0, 1);
         P.eq("switch.icon_only", panel.viewPillsShown() && !panel.viewPillsLabelled() ? 1 : 0, 1);
+        // the files' tabs keep their names' widths and scroll (TabStrip.h): none narrowed, the strip clear of the pills
         float least = 1.0e9f;
         for (int i = 0; i < panel.fileCount(); ++i)
-            least = std::min(least, panel.fileTabRect(i).w);
+            least = std::min(least, panel.fileTabWidth(i));
         std::printf("the least window: the narrowest tab %.1f, the last ends at %.1f, the pills %.1f to %.1f, the IR tab %.1f wide from %.1f\n",
                     static_cast<double>(least), static_cast<double>(panel.fileTabRect(panel.fileCount() - 1).right()),
                     static_cast<double>(panel.viewPillRect(false).x), static_cast<double>(panel.viewPillRect(true).right()),
                     static_cast<double>(panel.irTabRect().w), static_cast<double>(panel.irTabRect().x));
-        P.ge("switch.no_tab_under_least", least, 26.0 - 1e-3);   // kTabNarrowW
+        P.ge("switch.no_tab_under_least", least, 64.0 - 1e-3);   // kTabMinW: none narrowed
+        P.eq("switch.strip_scrolls", panel.tabStrip().overflows() ? 1 : 0, 1);
         P.ge("switch.ir_tab_least", panel.irTabRect().w, 26.0 - 1e-3);
-        P.eq("switch.apart", panel.fileTabRect(panel.fileCount() - 1).right() < panel.viewPillRect(false).x
+        P.eq("switch.apart", panel.tabStrip().view().right() < panel.viewPillRect(false).x
                                  && panel.viewPillRect(true).right() <= panel.irTabRect().x ? 1 : 0, 1);
         P.near("switch.pill_width", panel.viewPillRect(true).w, 28.0, 1e-3);
         // dials folded (the synth's Init, its sections taller than the room): no section's frame between the
@@ -1833,13 +1839,15 @@ PROBE(gui, schematic)
         for (const funkgui::A11yItem& it : host.accessibility())
             radios += it.role == funkgui::A11yRole::radioButton && (it.title == "Netlist" || it.title == "Schematic") ? 1 : 0;
         P.eq("switch.a11y_radios", radios, 2);
-        // the narrow IR tab has no close box: a click where its cross would be, under the pointer, opens it
+        // the IR tab: narrowed to its chip (no close box: a click where its cross would be opens it) only where the
+        // strip would keep less than five tabs' room; else at its name's width, and a click on its name opens it
         {
             const funkgui::Rect ir = panel.irTabRect();
-            host.moveTo(ir.x + ir.w - 14.0f, ir.centreY(), 2);
-            host.click(ir.x + ir.w - 14.0f, ir.centreY());
+            const float x = ir.w < 64.0f ? ir.x + ir.w - 14.0f : panel.centreOfIrTab().x;
+            host.moveTo(x, ir.centreY(), 2);
+            host.click(x, ir.centreY());
             host.tick(1);
-            P.eq("switch.narrow_ir_click_opens", panel.irOpen() && panel.irShown() ? 1 : 0, 1);
+            P.eq("switch.ir_click_opens", panel.irOpen() && panel.irShown() ? 1 : 0, 1);
         }
     }
 

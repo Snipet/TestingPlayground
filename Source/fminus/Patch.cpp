@@ -2548,4 +2548,15 @@ namespace playground
         r.compileMs = msSince(t0);
         return r;
     }
+
+    Patch::BuildInfo Patch::buildInfo() noexcept
+    {
+        BuildInfo b;
+        b.version = FMINUS_VERSION_STRING;
+        b.llvmVersion = FMINUS_LLVM_PACKAGE_VERSION;
+        b.llvmMode = FMINUS_LLVM_MODE;
+        b.buildType = FMINUS_BUILD_TYPE;
+        b.llvmAssertions = FMINUS_LLVM_ASSERTIONS != 0;
+        return b;
+    }
 }

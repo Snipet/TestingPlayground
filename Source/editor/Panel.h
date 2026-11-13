@@ -129,11 +129,13 @@
 #include "editor/Columns.h"
 #include "editor/Explorer.h"
 #include "editor/AbCard.h"
+#include "editor/DiffCard.h"
 #include "editor/ExportCard.h"
 #include "editor/NameCard.h"
 #include "editor/PresetPicker.h"
 #include "editor/ProjectBrowser.h"
 #include "editor/SettingsCard.h"
+#include "editor/TabStrip.h"
 
 #include <funkgui/a11y/A11yItem.h>
 #include <funkgui/canvas/Tags.h>
@@ -232,6 +234,7 @@ namespace playground::ui
     inline constexpr funkgui::Tag kNameTag = funkgui::tags::firstProduct + 16;        // the name card
     inline constexpr funkgui::Tag kPresetsTag = funkgui::tags::firstProduct + 17;     // the top bar's list of presets
     inline constexpr funkgui::Tag kRecordTag = funkgui::tags::firstProduct + 18;      // the recorder's notice (REC)
+    inline constexpr funkgui::Tag kCompareTag = funkgui::tags::firstProduct + 40;     // COMPARE's card (DiffCard.h)
 
     // One message of the last run, as the problems list shows it.
     struct Problem
@@ -380,6 +383,12 @@ namespace playground::ui
         // A/B (AbCard.h): the editor's files against a version of `project` (0: its newest), played in turn.
         void openAb(const std::string& project, int version);
         AbCard& abCard() noexcept { return ab_; }
+        // COMPARE (DiffCard.h): two sides of `project` (version numbers, DiffCard::kEditor the editor's files), what
+        // changed between them. Its ways in: PROJECTS' Compare... and its versions' menu, and the top bar's project pill's
+        // menu (a right-click: projectMenu), "Compare with the saved version" while the editor has changes.
+        void openCompare(const std::string& project, int left, int right);
+        DiffCard& compareCard() noexcept { return compare_; }
+        void projectMenu();
         // The top bar's presets (EditorPort::presetCycle): the arrows step the project open's presets (and [ and ],
         // while no text field has the caret), wrapping; the name between them opens their list (PresetPicker.h).
         void stepPresets(int step);
@@ -465,7 +474,10 @@ namespace playground::ui
         funkgui::Point centreOfIrTab() const;
         funkgui::Point centreOfIrClose() const;
         funkgui::Rect irTabRect() const;                 // the IR tab (empty while it is closed)
-        funkgui::Rect fileTabRect(int i) const;          // file i's tab
+        funkgui::Rect fileTabRect(int i) const;          // file i's tab, as much as is in view (empty: scrolled out)
+        float fileTabWidth(int i) const;                 // its whole width (its name's)
+        bool fileTabEdited(int i) const;                 // its dot: its text is not what plays
+        TabStrip tabStrip() const;                       // the strip's places and scroll, as laid out now (TabStrip.h)
         // A netlist's two views (SchematicView.h): the pills at the tab bar's right end while a .cir tab shows (Netlist,
         // Schematic; icon-only when their labels would narrow the files' tabs below their least), Cmd-Shift-D, the view
         // and its drawing. In the Schematic view the problems list is hidden, the editor keeps at least
@@ -552,10 +564,17 @@ namespace playground::ui
         float keyDialogScroll() const;
         std::vector<std::string> keyDialogWhyLines() const;
         std::string chatTitleShown() const;              // the chat's title as the header draws it (fitted)
-        // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
-        // while another card is open); the notice while an effect's input is muted, and its Settings... button.
-        bool openSettings();
+        // SETTINGS (SettingsCard.h): the card of pages, in every host, opened by the top bar's gear (at the page it showed
+        // last), the Standalone's Settings... (at EditorPort::settingsPage) and the muted notice (at Audio and MIDI): at
+        // `page` (a page's id, "" the last; false while another card is open); the notice while an effect's input is
+        // muted, and its Settings... button.
+        bool openSettings(const std::string& page = {});
         SettingsCard& settingsCard() noexcept { return settings_; }
+        funkgui::Point centreOfSettings() const;         // the gear
+        // The Debug page's graphics rows from the host the Panel runs in (gpu/CodeWindow.cpp's EditorHost,
+        // nogpu/SoftEditorHost): its frames, the surface, the renderer's counts. None: the Panel's own rows alone (a
+        // headless Panel's). Message thread.
+        void setHostDebug(std::function<std::vector<DebugRow>()> rows) { hostDebug_ = std::move(rows); }
 
         // The dropdowns (Dropdown.h): a menu the Panel's host shows is open and was opened from `anchor` (a trigger's
         // rect): that trigger draws open until the menu is answered, dismissed or replaced (HostProxy keeps it).
@@ -836,7 +855,7 @@ namespace playground::ui
         bool dialogOpen() const noexcept
         {
             return keyOpen_ || projects_.isOpen() || export_.isOpen() || ab_.isOpen() || settings_.isOpen() || name_.isOpen()
-                || picker_.isOpen();
+                || picker_.isOpen() || compare_.isOpen();
         }
         std::string projectLabel() const;                // the top bar's pill: "Name v3 - Preset", "edited", or Projects
         bool unread_ = false;                            // folded, and the conversation grew since
@@ -872,6 +891,8 @@ namespace playground::ui
         void afterPicker(bool wasOpen);                  // its notice to the status, the focus back once it closed
         ExportCard export_{ port_ };
         AbCard ab_{ port_ };
+        DiffCard compare_{ port_ };
+        void afterCompare(bool wasOpen);                 // its notice, its A/B asked for, the focus back once it closed
         uint64_t abSeen_ = 0;                            // the A/B's revision this Panel last looked at (attach)
         uint64_t claudeSeen_ = 0;                        // EditorPort::claudeNotice's count this Panel last said
         uint64_t saveSeen_ = 0;                          // EditorPort::saving().done this Panel last said
@@ -883,10 +904,15 @@ namespace playground::ui
         SettingsCard settings_{ port_ };
         uint64_t seenSettingsAsk_ = 0;
         uint32_t seenSettingsRev_ = 0;
-        uint32_t seenPrefsRev_ = ~0u;                    // UiPreferences' revision the text size was read at
+        uint32_t seenPrefsRev_ = ~0u;
+        int filesPlaying_ = 0;                           // the tabs were given what plays (FilesItem::setPlaying)                    // UiPreferences' revision the text size was read at
         int focusBeforeSettings_ = -1;
         int mutedItem_ = -1;
         bool mutedShown_ = false;
+        int gearItem_ = -1;                              // the top bar's gear
+        bool keyAfterSettings_ = false;                  // the card closed for the key dialog (the AI page)
+        std::function<std::vector<DebugRow>()> hostDebug_;   // setHostDebug's
+        SettingsCard::Hooks settingsHooks();             // what the card reads of the Panel (the chat's provider, ...)
         void syncSettings();                             // refresh(): the devices, the app's request, the notice
         void afterSettings(bool wasOpen);                // the card closed: the focus back
         void placeMutedNotice();                         // its button, left of the zoom in the status bar

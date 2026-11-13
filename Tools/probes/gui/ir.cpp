@@ -708,7 +708,8 @@ PROBE(gui, ir)
             const uint64_t irRevision = processor.compiler().irRevision();
             processor.compiler().setFreezing(true, 0.25);
             processor.prepareToPlay(kRate, kBlock);
-            for (int k = 0; k < 400 && !processor.engine().frozen(); ++k)
+            const auto frozenBy = std::chrono::steady_clock::now() + probe::kWorkWait;   // the freezer's compile
+            for (int k = 0; !processor.engine().frozen() && std::chrono::steady_clock::now() < frozenBy; ++k)
             {
                 play(k);
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -807,8 +808,9 @@ PROBE(gui, ir)
     P.eq("close.panel_gone_nothing_held", kept(processor.compiler().ir()) ? 0 : 1, 1);
 
     // ---- TABS --------------------------------------------------------------------------------------------------------
-    // The least window, sixteen files (kMaxFiles) and a long program name: the IR tab takes no more than the files' tabs leave at
-    // their narrowest, so none runs under it, and the read-only notice fits the card's header.
+    // The least window, sixteen files (kMaxFiles) and a long program name: the files' tabs keep their names' widths and
+    // scroll (TabStrip.h), their strip ending before the IR tab, so none runs under it (a tab scrolled out has no rect), and
+    // the read-only notice fits the card's header.
     {
         pg::Draft many;
         many.files.push_back({ "a_long_named_program_file.fm", program() });
@@ -831,6 +833,7 @@ PROBE(gui, ir)
                     irTab.right());
         P.eq("tabs.ir_open", panel.irShown() && panel.irName() == "a_long_named_program_file.lowered.ll" ? 1 : 0, 1);
         P.le("tabs.files_clear_of_ir", static_cast<double>(filesRight), static_cast<double>(irTab.x) - 4.0 + 0.01);
+        P.eq("tabs.files_scroll", panel.tabStrip().overflows() ? 1 : 0, 1);
         P.ge("tabs.ir_room", static_cast<double>(irTab.w), 64.0);
         P.le("tabs.ir_inside", static_cast<double>(irTab.right()), static_cast<double>(panel.programCard().right()));
         // A file's tab still takes its click (the one at the IR tab's left), and the IR tab its own.

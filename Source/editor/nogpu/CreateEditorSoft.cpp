@@ -6,6 +6,8 @@
 #include "plugin/Processor.h"
 
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace playground
 {
@@ -19,6 +21,14 @@ namespace playground
         auto panel = std::make_unique<ui::Panel>(processor.ports(), processor.editorPort());
         if (processor.editorWidth() > 0 && processor.editorHeight() > 0)
             panel->resize(processor.editorWidth(), processor.editorHeight());
-        return new ui::SoftEditorHost(processor, std::move(config), std::move(panel));
+        ui::Panel* shown = panel.get();
+        auto* host = new ui::SoftEditorHost(processor, std::move(config), std::move(panel));
+        // The settings' Debug page: what this host is (Panel::setHostDebug).
+        shown->setHostDebug([host] {
+            return std::vector<DebugRow>{ { "Host", "the CPU: FunkGui's SoftRaster (a build without the GPU)" },
+                                          { "Frames", std::to_string(host->ticks()) + " ticks, at most 30 drawn a second" },
+                                          { "Zoom applied", std::to_string(host->appliedZoomPercent()) + " %" } };
+        });
+        return host;
     }
 }

@@ -452,8 +452,14 @@ namespace playground::ui
             chat::drawIcon(c, chat::Icon::chevronDown, r.right() - 14.0f, r.centreY() + 0.5f, 8.0f, ink);
     }
 
-    void ButtonItem::pointerDown(const funkgui::PointerEvent&, funkgui::GestureController&, funkgui::HostServices&)
+    void ButtonItem::pointerDown(const funkgui::PointerEvent& e, funkgui::GestureController&, funkgui::HostServices&)
     {
+        if (e.popup && spec_.menu)
+        {
+            if (enabled())
+                spec_.menu();
+            return;
+        }
         if (enabled() && spec_.act)
             spec_.act();
     }
@@ -493,10 +499,16 @@ namespace playground::ui
         out.push_back(std::move(item));
     }
 
-    bool ButtonItem::a11yAction(uint32_t id, funkgui::A11yAction, double, funkgui::GestureController&)
+    bool ButtonItem::a11yAction(uint32_t id, funkgui::A11yAction a, double, funkgui::GestureController&)
     {
         if (id != id_)
             return false;
+        if (a == funkgui::A11yAction::showMenu && spec_.menu)
+        {
+            if (enabled())
+                spec_.menu();
+            return true;
+        }
         if (enabled() && spec_.act)
             spec_.act();
         return true;
