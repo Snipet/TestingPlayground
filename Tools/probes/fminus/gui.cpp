@@ -24,6 +24,12 @@
 //             a } that closes nothing, a "text" without its ", a colour that is none, a number with a unit, tabs
 //             holding no page, a page outside tabs, a label without text, a log taper from 0, decimals out of range;
 //             a second .gui file, and #pragma panel lines beside a .gui file, are notes too
+//   STRAY     a { where an element's name should be (the whole file {, {{{, not a panel {{{, a { inside a row) is read
+//             as if its braces were not there: one note at it, its } taken with it, its elements its holder's; one
+//             the file ends inside is "this { has no }"; every such file compiles and plays, and the reader returns
+//             on every file of up to six tokens of row, knob, cutoff, {, }, =, a line end and a "text", with notes a
+//             few a token; a file of thousands of broken tokens says at most a page of notes and a line that the rest
+//             were left out; containers nested 100,000 deep return, with one note at the first past the limit
 //   PRAGMAS   without a .gui file the #pragma panel lines still make the panel (no tree)
 //   LIMITS    each at its edge and one past it: 64 dials (a knob of the 33rd and the 64th, the panel's own dials:
 //             isPanelDial, at their slots; the 65th parameter none, a note), 32 displays (number f1 to f32, each its
@@ -357,6 +363,113 @@ panel background=#1d1b19 accent=orange {
         P.eq("notes.stray_close", has(c.notes, "panel.gui:19:1: note: a } that closes nothing") ? 1 : 0, 1);
         P.eq("notes.unclosed", has(c.notes, "panel.gui:20:5: note: this { has no }") ? 1 : 0, 1);
         P.eq("notes.rest_stands", find(c.panel.gui, pg::GuiKind::knob, "", level) >= 0 && find(c.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
+    }
+
+    // ---- STRAY ---------------------------------------------------------------------------------------------------------
+    {
+        // Each of these returns (the reader moved on), with its notes and its tree.
+        {
+            const Compiled c = withGui("{");
+            std::printf("STRAY {:\n%s", c.notes.c_str());
+            P.eq("stray.brace_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.brace_noted", has(c.notes, "panel.gui:1:1: note: a { with no element before it: what it holds is read as if "
+                                                   "the braces were not there") ? 1 : 0, 1);
+            P.eq("stray.brace_unclosed", has(c.notes, "panel.gui:1:1: note: this { has no } (the file ends inside it)") ? 1 : 0, 1);
+            P.eq("stray.brace_rest", find(c.panel.gui, pg::GuiKind::knob, "", cutoff) >= 0 ? 1 : 0, 1);
+            P.le("stray.brace_notes", countLines(c.notes), 3);
+        }
+        {
+            const Compiled c = withGui("{{{");
+            P.eq("stray.three_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.three_noted", has(c.notes, "panel.gui:1:1: note: a { with no element") && has(c.notes, "panel.gui:1:2: note: a { with no element")
+                                          && has(c.notes, "panel.gui:1:3: note: a { with no element") ? 1 : 0, 1);
+            P.eq("stray.three_unclosed", has(c.notes, "panel.gui:1:3: note: this { has no }") ? 1 : 0, 1);
+            P.le("stray.three_notes", countLines(c.notes), 7);
+        }
+        {
+            const Compiled c = withGui("not a panel {{{");
+            std::printf("STRAY not a panel {{{:\n%s", c.notes.c_str());
+            P.eq("stray.after_name_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.after_name_unknown", has(c.notes, "panel.gui:1:1: note: unknown element 'not'") ? 1 : 0, 1);
+            P.eq("stray.after_name_noted", has(c.notes, "panel.gui:1:14: note: a { with no element") && has(c.notes, "panel.gui:1:15: note: a { with no element")
+                                               && has(c.notes, "panel.gui:1:13: note: this { has no }") ? 1 : 0, 1);
+            P.le("stray.after_name_notes", countLines(c.notes), 8);
+        }
+        {
+            const Compiled c = withGui("row {\n    {\n        knob cutoff\n    }\n}\nknob resonance\n");
+            std::printf("STRAY in a row:\n%s", c.notes.c_str());
+            const pg::GuiTree& t = c.panel.gui;
+            const int row = find(t, pg::GuiKind::row), knob = find(t, pg::GuiKind::knob, "", cutoff);
+            P.eq("stray.inner_compiles", c.ok ? 1 : 0, 1);
+            P.eq("stray.inner_noted", has(c.notes, "panel.gui:2:5: note: a { with no element before it") ? 1 : 0, 1);
+            P.eq("stray.inner_child_kept", row >= 0 && knob >= 0 && at(t, knob).parent == row && at(t, row).children.size() == 1 ? 1 : 0, 1);
+            P.eq("stray.inner_after", find(t, pg::GuiKind::knob, "", resonance) >= 0
+                                          && at(t, find(t, pg::GuiKind::knob, "", resonance)).parent == at(t, row).parent ? 1 : 0, 1);
+            P.eq("stray.inner_closed", has(c.notes, "closes nothing") || has(c.notes, "has no }") ? 0 : 1, 1);
+            P.eq("stray.inner_one_note", has(c.notes, "a { with no element") && countLines(c.notes) == 2 ? 1 : 0, 1);   // and REST's
+        }
+
+        // The reader alone (readGuiSpec, as compile() calls it) over every file of up to six of these tokens.
+        const Compiled base = withGui("knob cutoff\n");
+        const std::vector<pg::PanelField> noFields;
+        const std::vector<std::string> names{ pg::kProgramName, "panel.gui" };
+        const auto read = [&](const std::string& text) {
+            pg::Controls controls = base.controls;
+            std::string notes;
+            (void) pg::readGuiSpec({ "panel.gui", text }, controls, noFields, kInstrument, names, notes);
+            return notes;
+        };
+        const char* const words[] = { "row", "knob", "cutoff", "{", "}", "=", "\n", "\"T\"" };
+        constexpr int kWords = 8;
+        const double start = probe::threadMs();
+        long files = 0;
+        int worst = 0;                                   // the most note lines, less 3 a token
+        std::string worstFile;
+        for (int n = 1; n <= 6; ++n)
+        {
+            std::vector<int> pick(static_cast<std::size_t>(n), 0);
+            for (;;)
+            {
+                std::string text;
+                for (const int w : pick)
+                    text += std::string(words[w]) + " ";
+                const int over = countLines(read(text)) - 3 * n;
+                if (over > worst)
+                {
+                    worst = over;
+                    worstFile = text;
+                }
+                ++files;
+                std::size_t k = 0;
+                while (k < pick.size() && ++pick[k] == kWords)
+                    pick[k++] = 0;
+                if (k == pick.size())
+                    break;
+            }
+        }
+        const double ms = probe::threadMs() - start;
+        std::printf("STRAY: %ld files read in %.0f ms (thread), the most notes past 3 a token %d: %s\n", files, ms, worst, worstFile.c_str());
+        P.eq("stray.every_file_read", files, 8L + 64 + 512 + 4096 + 32768 + 262144);
+        P.le("stray.notes_few_a_token", worst, 2);
+        P.le("stray.every_file_ms", ms, 120000.0);
+
+        // However broken the file, a page of notes: each part says 100 at most, then that the rest were left out.
+        std::string broken;
+        for (int k = 0; k < 20000; ++k)
+            broken += k % 2 == 0 ? "{ @ " : "= \"T\" } ";
+        const std::string many = read(broken);
+        std::printf("STRAY broken: %zu bytes of notes, %d lines\n", many.size(), countLines(many));
+        P.le("stray.capped_lines", countLines(many), 3 * 101 + 1);
+        P.eq("stray.capped_said", has(many, "panel.gui: note: more than 100 notes: the rest are left out") ? 1 : 0, 1);
+
+        // Nested far past the limit: one note there, and no stack spent on what is left out.
+        std::string deep;
+        for (int k = 0; k < 100000; ++k)
+            deep += "row {";
+        const std::string deepNotes = read(deep);
+        std::printf("STRAY deep: %d lines\n", countLines(deepNotes));
+        P.eq("stray.deep_noted", has(deepNotes, "panel.gui:1:" + std::to_string(5 * pg::kMaxGuiDepth + 5) + ": note: containers nest") ? 1 : 0, 1);
+        P.le("stray.deep_lines", countLines(deepNotes), 3 * 101 + 1);
     }
 
     // ---- two .gui files, pragmas beside one, and PRAGMAS alone -------------------------------------------------------
