@@ -2311,7 +2311,11 @@ place (its `products/<key>.cmake`, and its names in the docs).
   `probe::threadMs()` (the thread's CPU time: a busy machine's waits for a core are not counted) or against a
   calibration on the same thread, never the wall clock; a row whose condition a stalled thread can defeat (a wait
   that rightly takes a 20 ms gap for an idle audio thread) tells that try apart and makes it again (`plugin.reload`
-  WAIT), so the suite passes under load without hiding a real slowdown.
+  WAIT), so the suite passes under load without hiding a real slowdown. A row that counts an idle Panel's frames
+  (`needsDraw()` over calm time) begins once the Panel's first check while typing has landed (its outcome takes the
+  status line's Checking... away at a moment of the compiler's thread: gui.switch RATE's wait, gui.chat's
+  `checkLanded`), and prints `Panel::drawReason()` (probes only, `FP_PROBES`) for each frame it counts, so a failure
+  names its cause.
 - **The logo** (the mark, the app and extension icons, the README's header, the top bar's mark): change
   `Tools/logo/logo.swift` (or the instrument's accent in `Theme.h`), run `swift Tools/logo/logo.swift`, and look at
   `Assets/logo/sheet.png`, `construction.png` and the sizes you changed; then build (the bundles take the new

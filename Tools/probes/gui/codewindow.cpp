@@ -70,11 +70,13 @@
 
 #include <juce_core/juce_core.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace pg = playground;
@@ -83,6 +85,26 @@ namespace
 {
     constexpr bool kInstrument = pg::product::kIsInstrument;
     namespace col = pg::ui::columns;
+
+    // The editor's check while typing (CodeAssist) landed: a check is due once the files change and is sent once they
+    // have rested (0.6 s of the host's clock: CodeAssist::settled() is false until then), then answers on the
+    // compiler's thread whenever that thread has a core; its outcome takes the status line's Checking... away, a frame
+    // of its own at a moment of the real clock, not idleness (gui.switch RATE, gui.dump DRAW). So this ticks until no
+    // check is due or running and no compile runs, and a row that counts an idle Panel's frames begins once it is true.
+    // settled() also waits for the hover card's delay while the pointer rests over the editor and for the caret's
+    // occurrences after the editor takes the keys: each a fixed span of the host's clock, which these ticks pass.
+    bool checkLanded(pg::ui::Panel& panel, funkgui::HeadlessHost& host, pg::EditorPort& port)
+    {
+        const pg::ui::CodeAssist& code = panel.codeAssist();
+        const auto busy = [&] { return !code.settled() || code.checking() || port.compiling(); };
+        for (const auto by = std::chrono::steady_clock::now() + probe::kWorkWait;
+             busy() && std::chrono::steady_clock::now() < by;)
+        {
+            host.tick(1, 1.0f / 12.0f);                  // a calm editor's cadence
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return !busy();
+    }
 
     void writePng(funkgui::test::Probe& P, funkgui::HeadlessHost& host, const char* name)
     {
@@ -390,6 +412,8 @@ PROBE(gui, codewindow)
                     codeHost.draw();
                 return code.wantsFullRate();
             });
+            P.eq("code.idle_check_landed", checkLanded(code, codeHost, port) ? 1 : 0, 1);
+            codeHost.settle();
             codeHost.draw();
             const uint32_t rev = code.a11yRevision();
             int asked = 0;
@@ -397,6 +421,8 @@ PROBE(gui, codewindow)
                 if (code.needsDraw())
                 {
                     ++asked;
+                    std::printf("  the code window's frame asked to draw at %.3f s: %s\n", codeHost.nowSeconds(),
+                                code.drawReason().c_str());
                     codeHost.draw();
                 }
                 return code.wantsFullRate();
