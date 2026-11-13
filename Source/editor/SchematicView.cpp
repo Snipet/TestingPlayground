@@ -17,6 +17,7 @@
 #include <funkgui/params/ParamPort.h>
 #include <funkgui/text/FontService.h>
 #include <funkgui/text/TextFit.h>
+#include <funkgui/widgets/Scroll.h>
 
 #include <algorithm>
 #include <cctype>
@@ -86,7 +87,9 @@ namespace playground::ui
         }
         constexpr float kButtonW = 24.0f, kButtonGap = 2.0f;
         constexpr float kEaseTau = 0.08f;                // a fit's motion
-        constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--
+        constexpr float kStepZoom = 1.25f;               // -, +, Cmd-=, Cmd--, a notch of the wheel
+        constexpr float kZoomDragPx = 120.0f;            // a Ctrl-middle drag: a factor of 2 every this many px
+        constexpr float kPanNotchUnits = 3.0f;           // a notch with Ctrl or Shift: grid units panned
         constexpr float kPinW = 38.0f, kChipH2 = 16.0f;  // the probes' card: Pin, the chip's height
         constexpr float kProbeChipW = 72.0f;             // ... the chip's width (a dropdown's trigger: Dropdown.h)
         constexpr float kMoreW = 60.0f;                  // the toolbar's More (a dropdown's trigger too)
@@ -792,7 +795,8 @@ namespace playground::ui
 
     bool SchematicView::gestureOn() const noexcept
     {
-        return drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::pan || drag_ == Drag::carry;
+        return drag_ == Drag::move || drag_ == Drag::wire || drag_ == Drag::marquee || drag_ == Drag::pan || drag_ == Drag::carry
+            || drag_ == Drag::zoom;
     }
 
     void SchematicView::persist()
@@ -950,6 +954,56 @@ namespace playground::ui
         }
         st_->framed = true;
         fitPending_ = false;
+    }
+
+    void SchematicView::ease(const cir::Box& b, float most)
+    {
+        // fit()'s arithmetic: 4 units of margin a side (the names and values above the parts), eased there
+        const float bw = static_cast<float>(b.x1 - b.x0 + 8), bh = static_cast<float>(b.y1 - b.y0 + 8);
+        const float z = std::clamp(std::min(canvas_.w / (bw * sch::kUnitPx), canvas_.h / (bh * sch::kUnitPx)), kMinZoom, most);
+        zoomTo_ = z;
+        cxTo_ = 0.5f * static_cast<float>(b.x0 + b.x1);
+        cyTo_ = 0.5f * static_cast<float>(b.y0 + b.y1);
+        easing_ = true;
+        st_->framed = true;
+        fitPending_ = false;
+    }
+
+    void SchematicView::frameSelection()
+    {
+        if (!showing() || canvas_.w <= 0.0f || canvas_.h <= 0.0f)
+            return;
+        ensure();
+        // the parts selected and the wires selected, by their grid points
+        cir::Box b{};
+        bool any = false;
+        const auto add = [&](cir::Pt q) {
+            if (!any)
+                b = { q.x, q.y, q.x, q.y };
+            b = { std::min(b.x0, q.x), std::min(b.y0, q.y), std::max(b.x1, q.x), std::max(b.y1, q.y) };
+            any = true;
+        };
+        int parts = 0;
+        for (const std::string& name : st_->selected)
+            if (const int i = d_.part(name); i >= 0)
+            {
+                const cir::Box& body = d_.parts[static_cast<std::size_t>(i)].body;
+                add({ body.x0, body.y0 });
+                add({ body.x1, body.y1 });
+                ++parts;
+            }
+        for (const Run& r : runs_)
+            for (const cir::UnitEdge& e : r.edges)
+            {
+                add(e.a);
+                add(edgeEnd(e));
+            }
+        if (!any)
+        {
+            fit(false);                                  // nothing selected: everything
+            return;
+        }
+        ease(b, parts == 1 && runs_.empty() ? 2.0f : kMaxZoom);   // a single part: never above 200 %
     }
 
     void SchematicView::zoomTo(float z, funkgui::Point about)
@@ -2029,6 +2083,20 @@ namespace playground::ui
         ensure();
         const funkgui::Point p{ e.x, e.y };
         pointer_ = p;
+        // The middle button (only the canvas's: FilesItem::takesButtons) pans, with Ctrl or Cmd zooms about the press;
+        // it selects, moves, writes and closes nothing (an open field stays open: it follows the drawing).
+        if (e.button == funkgui::Button::middle)
+        {
+            drag_ = Drag::none;
+            if (!canvas_.contains(p))
+                return;
+            press_ = Press{ p, e.mods, false, Hit{}, ed_->revision(), view().world(p) };
+            panLast_ = p;
+            panned_ = false;
+            zoomFrom_ = zoom();
+            drag_ = e.mods.ctrl || e.mods.cmd ? Drag::zoom : Drag::pan;
+            return;
+        }
         if (field_.on)
         {
             // In the field: a row's press puts the caret there. Elsewhere: what was typed, when it can be written (else
@@ -2241,6 +2309,11 @@ namespace playground::ui
                 panLast_ = p;
                 panned_ = true;
                 break;
+            case Drag::zoom:
+                // up or right zooms in, down or left out: a factor of 2 every kZoomDragPx, about the press
+                zoomTo(zoomFrom_ * std::exp2(((p.x - press_.at.x) - (p.y - press_.at.y)) / kZoomDragPx), press_.at);
+                panned_ = true;
+                break;
             case Drag::none:
             case Drag::press:
             case Drag::carry:
@@ -2302,7 +2375,7 @@ namespace playground::ui
     {
         const Drag d = drag_;
         drag_ = Drag::none;
-        if (d != Drag::pan && ed_->revision() != press_.rev)
+        if (d != Drag::pan && d != Drag::zoom && ed_->revision() != press_.rev)
         {
             say("The circuit changed: drag again");
             return;
@@ -2386,6 +2459,7 @@ namespace playground::ui
                 break;
             }
             case Drag::pan:
+            case Drag::zoom:
                 if (panned_)
                     persist();
                 break;
@@ -2580,7 +2654,7 @@ namespace playground::ui
         }
     }
 
-    bool SchematicView::wheel(const funkgui::WheelEvent& e, double nowSec)
+    bool SchematicView::wheel(const funkgui::WheelEvent& e)
     {
         if (!showing() || !canvas_.contains({ e.x, e.y }))
             return false;
@@ -2596,22 +2670,52 @@ namespace playground::ui
         }
         if (probeCard().contains({ e.x, e.y }))
             return true;
-        // The pan moves the drawing as the code scrolls: the deltas as they came (JUCE's already follow natural
-        // scrolling), WheelEvent::reversed never read. The zoom is a value the hand sets, as a slider's (JUCE's Slider):
-        // the hand's own direction, so it reads reversed.
+        // Blender's Node Editor (the header's "Navigation"). A gesture's mode is its last event's that was not inertial,
+        // so a momentum tail does what its gesture did (a Ctrl-zoom whose Ctrl was let go keeps zooming) and the next
+        // gesture is read afresh.
+        const bool ctrl = e.mods.ctrl || e.mods.cmd;
+        if (!e.inertial)
+            wheelMode_ = e.smooth ? (ctrl ? WheelMode::zoom : WheelMode::pan)
+                                  : (ctrl ? WheelMode::panX : e.mods.shift ? WheelMode::panY : WheelMode::zoom);
+        // The pans move the drawing as the code scrolls (ui::Scroll's rule): the deltas as they came (JUCE's already
+        // follow natural scrolling), WheelEvent::reversed never read. The zoom is a value the hand sets, as a slider's
+        // (JUCE's Slider): the hand's own direction, so it reads reversed.
         const float dy = e.dy, dx = e.dx;
-        const bool zooms = !e.smooth || e.mods.cmd || e.mods.ctrl || nowSec - zoomedAt_ < 1.0;
-        if (zooms)
+        const float along = dy != 0.0f ? dy : dx;        // a Shift-notch arrives as dx on macOS
+        const float unit = sch::kUnitPx * zoom();        // a notch pans kPanNotchUnits of these (scroll::wheelPx's rows)
+        switch (wheelMode_)
         {
-            const float hand = e.reversed ? -dy : dy;
-            const float f = std::pow(2.0f, std::clamp(hand, -0.5f, 0.5f) * 2.0f);
-            zoomTo(zoom() * f, { e.x, e.y });
-            zoomedAt_ = nowSec;
+            case WheelMode::zoom:
+            {
+                const float hand = e.reversed ? -dy : dy;
+                // a notch kStepZoom (at most three notches an event); a trackpad's delta 2^(2 dy)
+                const float f = e.smooth ? std::exp2(std::clamp(hand, -0.5f, 0.5f) * 2.0f)
+                                         : std::pow(kStepZoom, std::clamp(hand / funkgui::scroll::kWheelNotch, -3.0f, 3.0f));
+                zoomTo(zoom() * f, { e.x, e.y });
+                break;
+            }
+            case WheelMode::pan:
+                panBy(funkgui::scroll::wheelPx(dx, e.smooth, unit), funkgui::scroll::wheelPx(dy, e.smooth, unit));
+                break;
+            case WheelMode::panX:
+                panBy(funkgui::scroll::wheelPx(along, e.smooth, unit * kPanNotchUnits / funkgui::scroll::kRowsPerNotch), 0.0f);
+                break;
+            case WheelMode::panY:
+                panBy(0.0f, funkgui::scroll::wheelPx(along, e.smooth, unit * kPanNotchUnits / funkgui::scroll::kRowsPerNotch));
+                break;
         }
-        else if (e.mods.shift && dx == 0.0f)
-            panBy(dy * 512.0f, 0.0f);
-        else
-            panBy(dx * 512.0f, dy * 512.0f);
+        persist();
+        return true;
+    }
+
+    bool SchematicView::magnify(const funkgui::MagnifyEvent& e)
+    {
+        if (!showing() || !canvas_.contains({ e.x, e.y }))
+            return false;
+        // the gesture's own factor (> 1 opens: in), toward the pointer; a pinch has no direction to reverse
+        if (!(e.scale > 0.0f) || !std::isfinite(e.scale))
+            return true;
+        zoomTo(zoom() * std::clamp(e.scale, 0.5f, 2.0f), { e.x, e.y });
         persist();
         return true;
     }
@@ -2674,6 +2778,8 @@ namespace playground::ui
         const char ch = static_cast<char>(std::tolower(static_cast<int>(e.ch < 128 ? e.ch : 0)));
         if (cmd)
         {
+            // the zoom keys about the pointer while it is over the canvas, else about its centre
+            const funkgui::Point about = canvas_.contains(pointer_) ? pointer_ : funkgui::Point{ canvas_.centreX(), canvas_.centreY() };
             switch (ch)
             {
                 case 'z': shift ? redo() : undo(); return true;
@@ -2689,11 +2795,11 @@ namespace playground::ui
                     return true;
                 case 'r': rotate(!shift); return true;
                 case 'e': mirror(); return true;
-                case '0': zoomTo(1.0f, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
+                case '0': zoomTo(1.0f, about); persist(); return true;
                 case '=':
-                case '+': zoomTo(zoom() * kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
+                case '+': zoomTo(zoom() * kStepZoom, about); persist(); return true;
                 case '-':
-                case '_': zoomTo(zoom() / kStepZoom, { canvas_.centreX(), canvas_.centreY() }); persist(); return true;
+                case '_': zoomTo(zoom() / kStepZoom, about); persist(); return true;
                 default: return false;                   // the rest are the host's
             }
         }
@@ -2701,6 +2807,7 @@ namespace playground::ui
         switch (ch)
         {
             case 'f': fit(false); persist(); return true;
+            case '.': frameSelection(); persist(); return true;   // Blender's numpad . (FunkGui's keys have no numpad)
             case 'a': openMore(false); return true;
             case 'n':
                 setTool(tool_ == Tool::label ? Tool::select : Tool::label);
@@ -2888,7 +2995,8 @@ namespace playground::ui
         }
         const bool clip = host_->clipboardText().find_first_not_of(" \t\r\n") != std::string::npos;
         const cir::Pt pasteAt = gridAt(at);
-        request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 23, "Tidy" },
+        request.items = { { 21, "Select all   Cmd-A" }, { 27, "Paste   Cmd-V", clip }, { 22, "Fit   F" }, { 28, "Frame selection   ." },
+                          { 23, "Tidy" },
                           { 0, {}, true, false, true },   { 24, "Netlist view   Cmd-Shift-D" }, { 0, {}, true, false, true },
                           { 25, "Undo   Cmd-Z", ed_->canUndo() }, { 26, "Redo   Cmd-Shift-Z", ed_->canRedo() } };
         withKeys(request);
@@ -2903,6 +3011,7 @@ namespace playground::ui
                         pasteText(host_->clipboardText(), pasteAt);   // where the menu was opened
                     break;
                 case 22: fit(false); persist(); break;
+                case 28: frameSelection(); persist(); break;
                 case 23: tidy(); break;
                 case 24:
                     if (hooks_.showNetlist)
@@ -2958,6 +3067,8 @@ namespace playground::ui
             st_->cx = funkgui::ease::toward(st_->cx, cxTo_, dt, kEaseTau, 1e-3f);
             st_->cy = funkgui::ease::toward(st_->cy, cyTo_, dt, kEaseTau, 1e-3f);
             easing_ = !(st_->zoom == zoomTo_ && st_->cx == cxTo_ && st_->cy == cyTo_);
+            if (!easing_)
+                persist();                               // the view framed (F, Home, .): the session keeps where it landed
         }
         if (!notice_.empty() && ed_->revision() != noticeRev_)
             quiet();                                     // an undo, a redo, typing or a merge since it was said
@@ -3078,6 +3189,7 @@ namespace playground::ui
             case Drag::move: return moveRefused_ ? funkgui::Cursor::notAllowed : funkgui::Cursor::grabbing;
             case Drag::wire: return funkgui::Cursor::crosshair;
             case Drag::pan: return funkgui::Cursor::grabbing;
+            case Drag::zoom: return funkgui::Cursor::upDown;
             case Drag::carry: return funkgui::Cursor::copy;
             case Drag::knob: return funkgui::Cursor::upDown;
             case Drag::control: return funkgui::Cursor::pointingHand;

@@ -626,6 +626,7 @@ namespace playground::ui
         void  pointerUp(const funkgui::PointerEvent&) override;
         void  doubleClick(const funkgui::PointerEvent&) override;
         bool  wheel(const funkgui::WheelEvent&) override;
+        bool  magnify(const funkgui::MagnifyEvent&) override;   // a pinch: the item under the pointer's (Item::magnify)
         bool  key(const funkgui::KeyEvent&) override;
         funkgui::Cursor cursor() const override;
         void  accessibility(std::vector<funkgui::A11yItem>&) const override;

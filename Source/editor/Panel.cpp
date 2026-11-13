@@ -1910,7 +1910,17 @@ namespace playground::ui
             if (i >= 0 && !(i > 0 && closeRect(i).contains(p)))
                 beginRename(i);
         }
-        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double nowSec) override
+        // The middle button and the pinch are the Schematic view's canvas's alone (it pans and zooms with them).
+        bool takesButtons(funkgui::Point p) const override
+        {
+            return schematicShown() && !stripArea().contains(p) && !assist_.statusRect().contains(p)
+                && schematic_.canvasRect().contains(p);
+        }
+        bool magnify(const funkgui::MagnifyEvent& e) override
+        {
+            return takesButtons({ e.x, e.y }) && schematic_.magnify(e);
+        }
+        bool wheel(const funkgui::WheelEvent& e, funkgui::GestureController&, double) override
         {
             if (stripArea().contains({ e.x, e.y }))
             {
@@ -1918,7 +1928,7 @@ namespace playground::ui
                 return strip_.wheel(e);                  // the strip scrolls sideways (nothing when every tab fits)
             }
             if (schematicShown())
-                return schematic_.wheel(e, nowSec);
+                return schematic_.wheel(e);
             return assist_.wheel(e) || editor().wheel(e);
         }
         bool key(const funkgui::KeyEvent& e, funkgui::GestureController&) override
@@ -9431,6 +9441,22 @@ namespace playground::ui
         pointer_ = { e.x, e.y };
         hasPointer_ = true;
         windowPress_ = false;
+        // The middle button (FunkGui F1) reaches only an item that takes it (Item::takesButtons: the Schematic view's
+        // canvas pans or zooms with it), its drag and release with it; anywhere else, a card included, it does nothing.
+        if (e.button == funkgui::Button::middle)
+        {
+            pressed_ = -1;
+            closingPress_ = false;
+            projectsPress_ = false;
+            guiBarPress_ = false;
+            const int i = itemAt(pointer_);
+            if (i >= 0 && items_[static_cast<std::size_t>(i)]->takesButtons(pointer_) && gestures_ && host_ != nullptr)
+            {
+                pressed_ = touched_ = i;
+                items_[static_cast<std::size_t>(i)]->pointerDown(e, *gestures_, *host_);
+            }
+            return;
+        }
         // A press that closed a card (a click outside the Settings card, a card's Done or Cancel) ends there: the
         // second press of its double-click finds the card gone and would act on what lies under it.
         if (closingPress_ && e.clicks > 1)
@@ -9603,6 +9629,8 @@ namespace playground::ui
     {
         noteInput();
         dirty_ = true;                                   // input: drawn at the next frame
+        if (e.button == funkgui::Button::middle)
+            return;                                      // its presses were the item's that takes them: no double-click
         // The double-click's second press went to the window (dragWindow), which may have zoomed or minimised since:
         // its release, and so this, comes where the pointer now is over the panel, and is no click of the panel's.
         if (windowPress_ || closingPress_)
@@ -9679,6 +9707,19 @@ namespace playground::ui
         if (i == chatViewItem_)
             ++chatA11y_;                                 // what the conversation shows moved
         return items_[static_cast<std::size_t>(i)]->wheel(e, *gestures_, host_->nowSeconds());
+    }
+
+    bool Panel::magnify(const funkgui::MagnifyEvent& e)
+    {
+        noteInput();
+        dirty_ = true;
+        if (dialogOpen())
+            return true;                                 // nothing behind a card zooms
+        const int i = itemAt({ e.x, e.y });
+        if (i < 0)
+            return false;
+        touched_ = i;
+        return items_[static_cast<std::size_t>(i)]->magnify(e);
     }
 
     bool Panel::moveFocus(int dir)

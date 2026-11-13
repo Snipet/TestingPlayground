@@ -114,8 +114,18 @@
 //             menu item
 //   WHEEL     the pan moves the drawing as the code scrolls: a trackpad's delta as it came, the same way with
 //             WheelEvent::reversed set (natural scrolling: JUCE's delta already follows it); the zoom is the hand's (a
-//             notch up zooms in, and with reversed set out), as a slider's. HeadlessHost cannot set reversed: built
-//             WheelEvents to SchematicView::wheel
+//             notch up zooms in, and with reversed set out), as a slider's
+//   NAV       Blender's Node Editor's navigation through HeadlessHost's whole events (FunkGui F1): a notch zooms by
+//             1.25 keeping the world point under the pointer, stopping at 25 % and 400 %; Ctrl-, Cmd- and Shift-notches
+//             pan sideways and up and down by three grid units (a Shift-notch given as dx too), the zoom kept; a smooth
+//             wheel pans by its px both ways, Shift changing nothing, Ctrl zooming; after a zoom a smooth wheel pans at
+//             once; an inertial tail keeps its gesture's zoom with Ctrl let go, the next gesture pans; a pinch of 1.5
+//             zooms by 1.5 about the pointer; a middle drag pans by the pointer's movement (the grabbing hand), from a
+//             part too, selecting and moving nothing; a Ctrl-middle drag zooms about the press (2x for 120 px up, the
+//             up-down cursor); a middle press on the code editor, a dial, a tab and the explorer's button does nothing;
+//             . frames a selection of two parts (both in view with their margin) and, with nothing selected, everything
+//             as F does; Frame selection in the canvas's menu; Cmd-= about the pointer; every gesture kept in the
+//             session's view and none writing the netlist (its revision unmoved)
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
@@ -3503,24 +3513,297 @@ PROBE(gui, schematic)
             w.reversed = reversed;
             return w;
         };
-        constexpr double kLater = 1.0e6;                 // long after any zoom: a trackpad's delta pans
         const float y0 = v.view().oy;
-        v.wheel(event(0.05f, true, false), kLater);
+        v.wheel(event(0.05f, true, false));
         const double plain = v.view().oy - y0;
         const float y1 = v.view().oy;
-        v.wheel(event(0.05f, true, true), kLater + 10.0);
+        v.wheel(event(0.05f, true, true));
         const double natural = v.view().oy - y1;
         std::printf("wheel: a trackpad's 0.05 panned %.2f px, with reversed set %.2f\n", plain, natural);
         P.near("wheel.pan_moves", std::fabs(plain), 0.05 * 512.0, 0.01);
         P.near("wheel.pan_reversed_same_way", natural, plain, 0.01);
         const float z0 = v.zoom();
-        v.wheel(event(0.25f, false, false), kLater + 20.0);   // a notch up: in
+        v.wheel(event(0.25f, false, false));   // a notch up: in
         const float z1 = v.zoom();
-        v.wheel(event(0.25f, false, true), kLater + 40.0);    // the same delta, reversed set: the hand went the other way
+        v.wheel(event(0.25f, false, true));    // the same delta, reversed set: the hand went the other way
         const float z2 = v.zoom();
         std::printf("wheel: zoom %.3f -> %.3f -> %.3f\n", static_cast<double>(z0), static_cast<double>(z1), static_cast<double>(z2));
         P.ge("wheel.zoom_in", z1, z0 * 1.2f);
         P.near("wheel.zoom_reversed_back", z2, z0, 0.02);
+    }
+
+
+    // ---- NAV: Blender's Node Editor's navigation (SchematicView.h's "Navigation") -----------------------------------
+    {
+        Rig r(draftWith(dialsProgram("diodetone.cir", 2), { { "diodetone.cir", libraryText("diodetone.cir") } }, 1));
+        r.run();
+        pg::ui::Panel& panel = *r.panel;
+        funkgui::HeadlessHost& host = *r.host;
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        P.eq("nav.schematic_shown", panel.schematicShown() ? 1 : 0, 1);
+        SV& v = r.view();
+        funkgui::TextEditor& ed = r.ed();
+        frame(v, host);
+        const uint32_t rev = ed.revision();
+        const std::string text = ed.text();
+        const funkgui::Rect c = v.canvasRect();
+        const funkgui::Point at{ c.x + 0.3f * c.w, c.y + 0.4f * c.h };   // off the centre: "toward the pointer" shows
+        constexpr float kNotch = funkgui::scroll::kWheelNotch;
+        const auto wheel = [&](float dy, bool smooth, funkgui::Mods m = {}, float dx = 0.0f, bool inertial = false) {
+            funkgui::WheelEvent w;
+            w.x = at.x;
+            w.y = at.y;
+            w.dx = dx;
+            w.dy = dy;
+            w.smooth = smooth;
+            w.inertial = inertial;
+            w.mods = m;
+            const bool used = host.wheel(w);
+            host.tick(1);
+            return used;
+        };
+        const auto worldAt = [&](funkgui::Point p) { return v.view().world(p); };
+        const auto same = [](funkgui::Point a, funkgui::Point b, float eps) { return std::fabs(a.x - b.x) < eps && std::fabs(a.y - b.y) < eps; };
+        // The session's view of the netlist is the view shown (persist() after the gesture).
+        const auto kept = [&] {
+            for (const pg::FileView& f : r.processor.editorPort().fileViews())
+                if (f.file == "diodetone.cir")
+                    return f.schematic && std::fabs(f.zoom - v.zoom()) < 1e-5f && std::fabs(f.x - v.centre().x) < 1e-3f
+                        && std::fabs(f.y - v.centre().y) < 1e-3f;
+            return false;
+        };
+        funkgui::Mods ctrl, cmd, shift;
+        ctrl.ctrl = true;
+        cmd.cmd = true;
+        shift.shift = true;
+        int keptAll = 1;
+
+        // a notch: 1.25, the world point under the pointer staying there; the limits
+        {
+            const float z0 = v.zoom();
+            const funkgui::Point w0 = worldAt(at);
+            P.eq("nav.notch_used", wheel(kNotch, false) ? 1 : 0, 1);
+            std::printf("nav: a notch %.4f -> %.4f\n", static_cast<double>(z0), static_cast<double>(v.zoom()));
+            P.near("nav.notch_zooms_1_25", v.zoom() / z0, 1.25, 1e-4);
+            P.eq("nav.notch_toward_pointer", same(worldAt(at), w0, 1e-3f) ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            wheel(-kNotch, false);
+            P.near("nav.notch_back", v.zoom(), z0, 1e-4);
+            v.zoomTo(3.9f, at);
+            wheel(kNotch, false);
+            wheel(kNotch, false);
+            P.near("nav.notch_stops_400", v.zoom(), SV::kMaxZoom, 1e-6);
+            v.zoomTo(0.26f, at);
+            wheel(-kNotch, false);
+            wheel(-kNotch, false);
+            P.near("nav.notch_stops_25", v.zoom(), SV::kMinZoom, 1e-6);
+            frame(v, host);
+        }
+        // Ctrl-, Cmd- and Shift-notches pan, three grid units a notch, the zoom kept
+        {
+            const auto panned = [&](funkgui::Mods m, float dy, float dx) {
+                const funkgui::Point c0 = v.centre();
+                const float z0 = v.zoom();
+                wheel(dy, false, m, dx);
+                const funkgui::Point c1 = v.centre();
+                std::printf("nav: notch with mods (shift %d ctrl %d cmd %d) moved the centre %.3f, %.3f units\n", m.shift ? 1 : 0,
+                            m.ctrl ? 1 : 0, m.cmd ? 1 : 0, static_cast<double>(c1.x - c0.x), static_cast<double>(c1.y - c0.y));
+                keptAll &= kept() ? 1 : 0;
+                return std::make_tuple(c1.x - c0.x, c1.y - c0.y, v.zoom() == z0);
+            };
+            const auto [cx, cy, cz] = panned(ctrl, kNotch, 0.0f);
+            P.near("nav.ctrl_notch_sideways", std::fabs(cx), 3.0, 1e-3);
+            P.eq("nav.ctrl_notch_only_sideways", cy == 0.0f && cz ? 1 : 0, 1);
+            const auto [mx, my, mz] = panned(cmd, -kNotch, 0.0f);
+            P.near("nav.cmd_notch_sideways_back", mx, -cx, 1e-3);
+            P.eq("nav.cmd_notch_only_sideways", my == 0.0f && mz ? 1 : 0, 1);
+            const auto [sx, sy, sz] = panned(shift, kNotch, 0.0f);
+            P.near("nav.shift_notch_up_down", std::fabs(sy), 3.0, 1e-3);
+            P.eq("nav.shift_notch_only_up_down", sx == 0.0f && sz ? 1 : 0, 1);
+            const auto [hx, hy, hz] = panned(shift, 0.0f, kNotch);   // macOS gives a Shift-notch as dx
+            P.near("nav.shift_notch_as_dx", hy, sy, 1e-3);
+            P.eq("nav.shift_notch_as_dx_only_up_down", hx == 0.0f && hz ? 1 : 0, 1);
+        }
+        // a smooth wheel pans by its px both ways (Shift the same), Ctrl zooms
+        {
+            const funkgui::Point anchor = v.screenOf({ 0, 0 });
+            const float z0 = v.zoom();
+            wheel(0.05f, true, {}, 0.02f);
+            const funkgui::Point a1 = v.screenOf({ 0, 0 });
+            std::printf("nav: a smooth 0.02, 0.05 moved the drawing %.2f, %.2f px\n", static_cast<double>(a1.x - anchor.x),
+                        static_cast<double>(a1.y - anchor.y));
+            P.near("nav.smooth_pans_x", a1.x - anchor.x, 0.02 * 512.0, 0.01);
+            P.near("nav.smooth_pans_y", a1.y - anchor.y, 0.05 * 512.0, 0.01);
+            P.eq("nav.smooth_keeps_zoom", v.zoom() == z0 ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            wheel(0.05f, true, shift, 0.02f);
+            const funkgui::Point a2 = v.screenOf({ 0, 0 });
+            P.eq("nav.smooth_shift_same", same({ a2.x - a1.x, a2.y - a1.y }, { a1.x - anchor.x, a1.y - anchor.y }, 0.01f) ? 1 : 0, 1);
+            const funkgui::Point w0 = worldAt(at);
+            wheel(0.05f, true, ctrl);
+            P.ge("nav.smooth_ctrl_zooms", v.zoom(), z0 * 1.05f);
+            P.eq("nav.smooth_ctrl_toward_pointer", same(worldAt(at), w0, 1e-3f) ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            // after a zoom a smooth wheel pans at once (no guard)
+            const float z1 = v.zoom();
+            const funkgui::Point b0 = v.screenOf({ 0, 0 });
+            wheel(0.05f, true);
+            const funkgui::Point b1 = v.screenOf({ 0, 0 });
+            P.eq("nav.after_zoom_pans_at_once", v.zoom() == z1 && std::fabs(b1.y - b0.y - 0.05f * 512.0f) < 0.01f ? 1 : 0, 1);
+            // an inertial tail after a Ctrl-zoom whose Ctrl was let go keeps zooming; the next gesture pans
+            wheel(0.05f, true, ctrl);
+            const float z2 = v.zoom();
+            wheel(0.03f, true, {}, 0.0f, true);
+            const float z3 = v.zoom();
+            wheel(0.01f, true, {}, 0.0f, true);
+            const float z4 = v.zoom();
+            P.eq("nav.inertial_keeps_zoom", z3 > z2 && z4 > z3 ? 1 : 0, 1);
+            const funkgui::Point d0 = v.screenOf({ 0, 0 });
+            wheel(0.05f, true);
+            const funkgui::Point d1 = v.screenOf({ 0, 0 });
+            P.eq("nav.next_gesture_pans", v.zoom() == z4 && std::fabs(d1.y - d0.y - 0.05f * 512.0f) < 0.01f ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            frame(v, host);
+        }
+        // a pinch of 1.5: the zoom times 1.5, about the pointer
+        {
+            const float z0 = v.zoom();
+            const funkgui::Point w0 = worldAt(at);
+            funkgui::MagnifyEvent g;
+            g.x = at.x;
+            g.y = at.y;
+            g.scale = 1.5f;
+            P.eq("nav.pinch_used", host.magnify(g) ? 1 : 0, 1);
+            host.tick(1);
+            P.near("nav.pinch_zooms", v.zoom() / z0, 1.5, 1e-4);
+            P.eq("nav.pinch_toward_pointer", same(worldAt(at), w0, 1e-3f) ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            frame(v, host);
+        }
+        // a middle drag pans, from a part too, selecting and moving nothing; Ctrl-middle zooms about the press
+        {
+            const cir::Part& part = v.drawing().parts.front();
+            const funkgui::Point on = partAt(v, part.name.c_str());
+            const funkgui::Point anchor = v.screenOf({ 0, 0 });
+            const float z0 = v.zoom();
+            host.press(on.x, on.y, funkgui::Button::middle);
+            host.moveTo(on.x + 40.0f, on.y + 30.0f, 6);
+            const funkgui::Cursor during = host.cursor();
+            host.release();
+            host.tick(1);
+            const funkgui::Point a1 = v.screenOf({ 0, 0 });
+            std::printf("nav: a middle drag of 40, 30 px from %s moved the drawing %.2f, %.2f px\n", part.name.c_str(),
+                        static_cast<double>(a1.x - anchor.x), static_cast<double>(a1.y - anchor.y));
+            P.eq("nav.middle_pans", same({ a1.x - anchor.x, a1.y - anchor.y }, { 40.0f, 30.0f }, 0.01f) && v.zoom() == z0 ? 1 : 0, 1);
+            P.eq("nav.middle_grabbing", during == funkgui::Cursor::grabbing ? 1 : 0, 1);
+            P.eq("nav.middle_selects_nothing", v.selection().empty() && v.selectedRuns() == 0 && ed.text() == text ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            const funkgui::Point w0 = worldAt(at);
+            host.press(at.x, at.y, funkgui::Button::middle, ctrl);
+            host.moveTo(at.x, at.y - 120.0f, 8);
+            const funkgui::Cursor zooming = host.cursor();
+            host.release();
+            host.tick(1);
+            std::printf("nav: a Ctrl-middle drag 120 px up zoomed %.4f -> %.4f\n", static_cast<double>(z0), static_cast<double>(v.zoom()));
+            P.near("nav.ctrl_middle_zooms", v.zoom() / z0, 2.0, 1e-3);
+            P.eq("nav.ctrl_middle_about_press", same(worldAt(at), w0, 1e-3f) ? 1 : 0, 1);
+            P.eq("nav.ctrl_middle_cursor", zooming == funkgui::Cursor::upDown ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            frame(v, host);
+        }
+        // . frames the selection (two parts both in view, with the margin); nothing selected: everything, as F
+        {
+            const cir::Drawing& d = v.drawing();
+            const std::string a = d.parts.front().name, b = d.parts.back().name;
+            const funkgui::Point pa = partAt(v, a.c_str()), pb = partAt(v, b.c_str());
+            host.click(pa.x, pa.y);
+            host.click(pb.x, pb.y, shift);
+            v.zoomTo(3.0f, { c.centreX(), c.centreY() });
+            v.panBy(-0.6f * c.w, 0.4f * c.h);             // both away
+            host.tick(1);
+            host.keys(".");
+            host.settle();
+            const auto inView = [&](const std::string& name) {
+                const cir::Part* p = partOf(v.drawing(), name.c_str());
+                if (p == nullptr)
+                    return false;
+                const funkgui::Rect body = v.view().rect(p->body);
+                const float m = 3.0f * v.view().scale;   // most of the 4-unit margin
+                return body.x - m >= c.x && body.right() + m <= c.right() && body.y - m >= c.y && body.bottom() + m <= c.bottom();
+            };
+            std::printf("nav: . with %zu selected: zoom %.3f\n", v.selection().size(), static_cast<double>(v.zoom()));
+            P.eq("nav.dot_two_selected", v.selection().size() == 2 ? 1 : 0, 1);
+            P.eq("nav.dot_frames_selection", inView(a) && inView(b) ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            host.keys("f");
+            host.settle();
+            const float fz = v.zoom();
+            const funkgui::Point fc = v.centre();
+            v.zoomTo(3.0f, { c.centreX(), c.centreY() });
+            host.keys("escape");
+            host.tick(1);
+            host.keys(".");
+            host.settle();
+            P.eq("nav.dot_nothing_selected_fits", v.selection().empty() && std::fabs(v.zoom() - fz) < 1e-5f && same(v.centre(), fc, 1e-3f) ? 1 : 0, 1);
+            keptAll &= kept() ? 1 : 0;
+            // the canvas's menu: Frame selection
+            v.zoomTo(3.0f, { c.centreX(), c.centreY() });
+            host.tick(1);
+            const funkgui::Point empty{ c.x + 6.0f, c.y + 6.0f };
+            host.click(empty.x, empty.y, popupMods());
+            P.eq("nav.menu_frame_selection", hasLabel(menuLabels(host), "Frame selection") ? 1 : 0, 1);
+            choose(host, "Frame selection");
+            host.settle();
+            P.eq("nav.menu_frames", std::fabs(v.zoom() - fz) < 1e-5f ? 1 : 0, 1);
+            // Cmd-= about the pointer over the canvas
+            frame(v, host);
+            host.moveTo(at.x, at.y);
+            const funkgui::Point w0 = worldAt(at);
+            const float z0 = v.zoom();
+            host.keys("cmd+=");
+            host.tick(1);
+            P.eq("nav.cmd_equals_about_pointer", std::fabs(v.zoom() / z0 - 1.25f) < 1e-4f && same(worldAt(at), w0, 1e-3f) ? 1 : 0, 1);
+        }
+        P.eq("nav.kept_in_session", keptAll, 1);
+        P.eq("nav.text_untouched", ed.revision() == rev && ed.text() == text ? 1 : 0, 1);
+
+        // a middle press anywhere else does nothing: the code editor, a dial, a tab, the explorer's button
+        {
+            const funkgui::Point tab0 = panel.centreOfTab(0);
+            host.click(tab0.x, tab0.y);
+            host.settle();
+            const int file = panel.activeFile();
+            const funkgui::Point tab1 = panel.centreOfTab(1);
+            host.click(tab1.x, tab1.y, funkgui::Button::middle);
+            host.tick(1);
+            P.eq("nav.middle_tab_nothing", panel.activeFile() == file ? 1 : 0, 1);
+            funkgui::TextEditor& code = panel.editor();
+            const funkgui::Rect er = code.bounds();
+            const funkgui::TextPos caret = code.caret();
+            const int focus = panel.focusItem();
+            const std::string program = code.text();
+            host.drag(er.x + 0.6f * er.w, er.y + 0.5f * er.h, er.x + 0.3f * er.w, er.y + 0.2f * er.h, funkgui::Button::middle);
+            host.tick(1);
+            P.eq("nav.middle_code_nothing", code.caret() == caret && panel.focusItem() == focus && code.text() == program
+                                               && !code.hasSelection() ? 1 : 0, 1);
+            const std::optional<funkgui::Point> dial = panel.centreOfDial(0);
+            P.eq("nav.dial_shown", dial ? 1 : 0, 1);
+            if (dial)
+            {
+                const float was = r.processor.ports()[0]->value01();
+                host.drag(dial->x, dial->y, dial->x, dial->y - 60.0f, funkgui::Button::middle);
+                host.click(dial->x, dial->y, funkgui::Button::middle);
+                host.tick(1);
+                P.eq("nav.middle_dial_nothing", r.processor.ports()[0]->value01() == was ? 1 : 0, 1);
+            }
+            const bool open = panel.explorerOpen();
+            const funkgui::Point toggle = panel.centreOfExplorerToggle();
+            host.click(toggle.x, toggle.y, funkgui::Button::middle);
+            host.tick(1);
+            P.eq("nav.middle_explorer_nothing", panel.explorerOpen() == open ? 1 : 0, 1);
+        }
     }
 
     return P.finish();
