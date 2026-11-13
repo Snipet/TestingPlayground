@@ -11,6 +11,335 @@ Each pull request's entry waits in its own file in `docs/changelog/` until `scri
 
 ## Unreleased
 
+Claude Desktop extension: **0.21.0** (was 0.17.0).
+
+### The Projects card shows a preview of a project's panel ([#61](https://github.com/Snipet/TestingPlayground/pull/61))
+
+**Added**
+- Choosing a project in the Projects card shows a picture of its panel above its versions, without opening it or
+  compiling anything; choosing a version shows that version's. The dials are at the version's values and the displays
+  show sample values, since nothing plays. It works for every project there is, factory projects too, and for a
+  program with no panel.gui, whose dials show in rows or in its sections as the Panel view shows them.
+
+**Changed**
+- The Projects card is a little taller where the window allows, to make room for the preview; in a short window the
+  preview is left out and the lists keep their room.
+
+### Chat fixes: the audit's smaller findings ([#60](https://github.com/Snipet/TestingPlayground/pull/60))
+
+**Fixed**
+- Stopping a turn while it waited to ask again after an answer broke off no longer leaves the broken-off words in the
+  conversation Claude reads next, though the chat had taken them off the screen.
+- Stopping a turn while the planning model wrote its plan, or while the list of models was read, now says "Stopped."
+  and keeps the part of the plan you had read on its card, instead of ending silently and erasing it.
+- Claude's questions (ask_user) count their limits in characters, as they say: a label or a question in Japanese,
+  Chinese or another script is no longer refused while within them, and a long header is never cut inside a letter.
+- When a check still fails, the plugin's first nudge to Claude now says it will ask once more, as it does.
+- A reply from an OpenAI-compatible server (Ollama, LM Studio, OpenRouter, OpenAI) cut off at its length no longer
+  claims a limit of 64K tokens no request named: the chat says the server's limit cut it (on a server of your own, the
+  model's context length in its settings).
+- A server on this Mac that listed no model yet (Ollama with nothing pulled) is asked again at the next message, so
+  a model pulled meanwhile is found without reopening the plugin.
+- Error messages cut short (a proxy's page, a redirect's address) never end inside a character.
+- An address for a server on the local network is read as every system reads it: one written with a leading zero
+  (`http://010.0.0.5`, which the system reads as 8.0.0.5 on the internet), in hex or a short form, or with a backslash,
+  a `%` or a port that is no number, is no longer taken as local; the chat asks for the plain address.
+- Removing an API key on a Linux desktop whose session has no keyring service no longer says the key could not be
+  removed: its file is deleted and the chat says it is removed.
+- A project Claude Desktop opens no longer clears the checks of the chat you were in: they stay with that project's
+  chat, as when you open a project yourself. Opening a project yourself while Claude Desktop's open is still loading
+  keeps your project's chat on screen, instead of switching to the one Claude Desktop opened.
+- Changing the model, the thinking level or web search no longer rewrites the chat shown: it keeps its time and its
+  place in the list, and the chat you last talked in stays the one a project opens with.
+- Typing in one file while Claude writes, renames, deletes or adds another no longer loses what you typed.
+- read_file shows a line longer than a part read may hold (a table on one line) cut where a character starts, with its
+  length, instead of nothing and advice to read the same line again.
+- Claude's save of a project that already holds 100 versions says which version is no longer kept, instead of saying
+  every version is kept; the projects tool and the guide say a project keeps its newest 100 versions, and that applying
+  a preset is refused over moved dials (your files stay). A factory project saved by its name with no project open is
+  named in the reply.
+- Stopping the chat (or Claude Desktop cancelling) while Claude looks at the sound (view_sound) stops its render at
+  once, as it stops the other renders, instead of waiting for the whole picture.
+- tune_dials on files not run yet, with a dial the program that plays has not, no longer says every dial was set: it
+  names the dial it could not set, with its best value, and says to run the program and set it.
+- trace's export never replaces a file another instance exports under the same name at the same moment (the later
+  one takes the next number), and an export that fails part way names the files it wrote.
+- A render setting of the wrong kind (a number written as text, `hold_seconds: "5"`, a dial's value as a word) is
+  refused in words instead of being dropped silently, and so is a check's index given as text; compare refuses the
+  settings it does not read (notes, hold_seconds, ...) instead of ignoring them; view_sound's close-up with only one
+  of its two ends, or with its end before its start, is refused instead of showing the default close-up.
+- run_function on a fresh instance sets every dial as it is, an instrument's Shared dials and a circuit's pots and
+  switches too, as its words say.
+- compare's, trace's and view_panel's "playing" render the circuit configuration the program plays with, not a newer
+  self-test answer it has not taken yet.
+- On Windows and Linux the chat, its notes and Claude's tools say "this computer" where they said "this Mac" (the
+  providers "Ollama (this computer)" and "LM Studio (this computer)", the chats kept, the exports), a path's
+  example is that system's, and the key dialog's footer says Ctrl-V.
+- set_checks describes a check's own dials_from and snapshot, as its listing gives them back, and no longer asks for
+  a label (a check without one is named by its metric).
+- write_file's sample path says it replaces a sample of the same name.
+- Claude Desktop cancelling a tuning (tune_dials) leaves the dials as they were even when another of its calls is
+  cancelled right after (closing a conversation cancels them all).
+- Samples Claude Desktop adds, renames or deletes itself no longer head its own next result as a change of the plugin's
+  own chat.
+- A plugin opened while another instance's host is stopped (in a debugger, or crashing) no longer hangs; two instances
+  started at the same moment no longer take one number for Claude Desktop, and closing one never removes the other's.
+- A program that stopped as it played is told to Claude Desktop as a change, no longer as "the output guard acted".
+- get_status's changes since a token show typing after a run as a line after the run's, not folded into the edit
+  before it; the plugin's own chat is told that its diffs are Claude Desktop's alone (read_file shows a file).
+- When the plugin's chat and Claude Desktop both work on one file, an edit refused because the file changed says which
+  Claude's call changed it, not "one of your own calls".
+- Claude Desktop names an instance by its number only when that instance is open ("Synth 3" with Synth 3 closed no
+  longer reaches a track named "Inst 3"), and a track or project named in another script (Cyrillic, Japanese) is
+  found in any case and by its words.
+- The panel sandbox's apply, cancelled while it looks for the instance, writes nothing; when the plugin refuses the
+  panel, the answer quotes the refusal; when the program does not run, it says so; and the whole apply answers within
+  one call's time.
+- The panel sandbox refuses a file that is no regular file (a pipe, a device) in a folder it opens, instead of waiting
+  on it until it gives up, and never reads more than its limit.
+- The MCP server answers a batch of requests (a client of protocol 2025-03-26 may send them) and answers JSON that is
+  no request as an invalid request.
+- Copy under an answer or a code block copies the text as Claude wrote it (accents, other scripts, symbols such as °
+  and µ), not the plain-letter form the chat draws.
+- Your own message is shown as you typed it: asterisks and backticks (`200*2`, `float* out`) are no longer dropped.
+- Inline code in small text (opened thinking, quotes, an option's description, a check's detail) no longer runs over
+  the word after it.
+- A row of what Claude did is red only when it failed (a run that did not compile or stopped is now red; writing a
+  file named `errors.fm` is not). Chats kept before this show their rows plain.
+- An opened thinking row, a folded plan or an open question's picks no longer carry over to another chat you open.
+- An answered question marks only the option chosen, not also one whose name begins or ends it ("Yes" beside "Yes,
+  but quieter").
+- The conversation scrolls from the keyboard: Shift-Tab from the message box reaches it, then the arrows, Page Up and
+  Down, Home and End scroll it. A screen reader reaches every message, and moving to one out of view scrolls it in.
+- The send button sends a message of pictures alone, as Return does.
+- A long server's name as the chat's title is cut to leave the chat list its button, never drawn over the header's
+  buttons.
+- Pictures that do not fit one row of the message box wrap onto a second, so all six are shown and can be removed.
+- The key dialog works from the keyboard: Tab reaches the Provider pill, Remove key, Cancel and Save, and Return or
+  Space presses the one with the focus (the Provider pill opens its menu). The wheel no longer scrolls the panel behind
+  the dialog.
+- Dragging an audio or project file over the editor no longer lights the chat's "Drop pictures here" overlay.
+- A click in the key dialog's server address, model or a chat's new name places the caret there (and drops the
+  selection); an address or model longer than its field scrolls to show what is typed; a long refusal wraps onto a
+  second line instead of being cut.
+- A refused Save in the key dialog is said by a screen reader, and the reason is on the field it is about.
+
+**Changed**
+- Claude Fable 5.2 is in the model list before your key's list arrives (in place of Fable 5.1), and Fable 5.2 and
+  Mythos 5.2 offer **Fast** and are rerouted by the API's fallbacks when a classifier declines a request, as Opus 5.5
+  is.
+
+### The Projects card sorts four ways, exports several at once and closes on a click outside ([#59](https://github.com/Snipet/TestingPlayground/pull/59))
+
+**Added**
+- The Projects card sorts by **Last modified**, **Date created**, **Size** or **Name**, each within its group, and
+  **Reversed** turns any of them around. Each row shows what the list is sorted by: the date it was saved or made, or
+  its file's size. The order is kept, the same in every instance; the explorer's list stays newest first.
+- Choose several projects (Cmd-click, Shift-click) and **Export...**, or the context menu's **Export N projects...**,
+  writes them all as one .zip, each project's own export inside it, named "<plugin> Projects.zip" unless you name it.
+  The card shows how far it has come and Cancel stops it. **Import...** takes such a file and brings every project in
+  it, and the status line says how many came in and which were refused, by name.
+
+**Changed**
+- A click outside the Projects card or the Export card closes it, as Close and Done do, and the click goes no further.
+- An export never replaces a file. The save dialog suggests a name no file has; a file that is there already is refused,
+  even when the dialog's own "Replace?" was answered yes, and the card asks for another name.
+- Exporting one project no longer holds the editor while a large project is written: every export now runs in the
+  background.
+
+### Faster Windows builds on every pull request ([#58](https://github.com/Snipet/TestingPlayground/pull/58))
+
+**Changed**
+- The builds on GitHub's Windows machines keep their compiled objects between runs too (sccache, as macOS and Linux
+  keep theirs with ccache): a run whose code changed little rebuilds little. The log says how many objects came from
+  the cache and how large it is.
+- A build run by hand can build only some of the platforms (`platforms`: `windows-x64`, say), so a branch's Windows
+  build can be tried without a macOS machine.
+
+### The pointer drives a panel ([#54](https://github.com/Snipet/TestingPlayground/pull/54))
+
+**Added**
+- A panel can have controls of its own making. In a `.gui` file, an `area` (a new element that draws nothing), a
+  `shader`, a row, column, grid, section, box, label or display can name parameters the pointer writes over it: `x=`
+  and `y=` (where it is, across and up), `down=` (while it is pressed), `wheel=` and `hover=` (while it is over it: one
+  of the panel's own dials). `drag=relative` moves by the pointer's travel instead, `release=spring` puts `x` and `y`
+  back when let go, and `cursor=` shapes the pointer. One press is one gesture: one automation pass in the host, one
+  undo step. A knob inside such a box still turns, and a display inside it passes the press on.
+- A shader can read the pointer over it as inputs, `pointer.x`, `pointer.y`, `pointer.down` and `pointer.hover`, so a
+  control can be drawn entirely by a shader and dragged like a knob; it draws again only when they change.
+- Such an element is a Tab stop: the arrows move it, Home puts it back, Space presses it. A screen reader sees a
+  slider for each of `x` and `y` and a button for `down`. A right-click opens the first parameter's menu, MIDI learn
+  included.
+- Two examples drawn this way: Light filter (the effect: a shader dial for the cutoff, and a spectrum to drag it
+  across) and Light saw (the synth: a shader dial for the brightness, and a scope to hold down for a swell). An example
+  can now be a folder, its program with its `panel.gui` and shader beside it.
+- Claude is taught the pointer, with a shader dial as its example, and view_panel and the GUI sandbox draw a panel as
+  if the pointer were over its shaders or pressing them (`values` naming `pointer.hover`, `pointer.down`, `pointer.x`,
+  `pointer.y`).
+
+**Changed**
+- A shader's `width=` and `height=` are now its size. Before, a shader was never smaller than 200 x 120 px, whatever
+  they said: a panel written with `shader "dash.sc" width=170 height=110` drew it 200 x 120, and now draws it 170 x 110,
+  as written. To keep the old look, give it `width=200 height=120` (or leave both out: 200 x 120 as before).
+
+### Find in all files ([#57](https://github.com/Snipet/TestingPlayground/pull/57))
+
+**Added**
+- Find in all files: Shift-Cmd-F (Shift-Ctrl-F on Windows and Linux), or the find bar's new All files toggle, finds in
+  every file's tab at once, `.gui` files and netlists included; never in the IR view, and never in a netlist's `*@`
+  lines, which hold its drawing. The counter says "12 of 37 in 5 files", the next and the one before walk every match,
+  showing its tab (a netlist shown as a schematic switches to its Netlist view), and a list under the bar has a row a
+  match: a click goes there, Up and Down walk it. All replaces in every file, and one Cmd-Z in any of them undoes it
+  in all of them.
+- A magnifier at the left of the code's status line opens find and replace. On Windows and Linux, Ctrl-H opens it too.
+- The Standalone's Edit menu has Find..., Find and Replace... and Find in All Files....
+- The README lists the find bar's keys.
+
+### Settings in every host, with pages and a Debug page ([#49](https://github.com/Snipet/TestingPlayground/pull/49))
+
+**Added**
+- A **Settings** gear in the top bar, left of the theme's button, in every host as well as the Standalone. It opens a
+  card of pages with their names in a rail at its left: **General** (the theme and the zoom, the version), **Editor**
+  (Format on Run), **Projects** (the projects folder, with Show in Finder, Explorer or the file manager), **AI** (the
+  chat's provider, model and key in words, and a button to the key dialog), **Debug** and **About**. The buttons and
+  pills that set these already stay, and the card always agrees with them.
+- The **Debug** page shows what this build is and what it is doing: the versions (this build's commit, FMinus's, LLVM's,
+  FunkGui's, JUCE's, the Claude Desktop extension's), the graphics (the renderer, frames a second, the surface, the
+  shader target), the program (its compile, its dials), the audio (rate, blocks, load, the synth's voices), the
+  shaders, the folders the plugin keeps things in, Claude Desktop's link and the `TSTN_…`/`TSYN_…` switches set. **Copy
+  all** puts it on the clipboard as plain text for a bug report. It shows no key, no word of a chat, no file's text and
+  no audio, and it costs nothing while the page is closed.
+
+**Changed**
+- In the Standalone, Settings… (Cmd-, on macOS) and the effect's muted-input notice open the same card at its **Audio
+  and MIDI** page, which holds the devices as before.
+
+### Compare two versions of a project ([#48](https://github.com/Snipet/TestingPlayground/pull/48))
+
+**Added**
+- **Compare...** in the Projects card shows what changed between two versions of a project, or between a version and
+  what is in the editor now: the files line by line, the dials and the samples, without playing or opening anything.
+  Choose either side from its dropdown, swap them, step from change to change with **]** and **[**, then open a
+  version or listen to both in A/B from the card. A version's right-click menu and the top bar's project pill's
+  right-click menu ("Compare with the saved version", while the editor has unsaved changes) open it too.
+- A netlist whose drawing alone changed shows as one row, "the drawing changed", in Compare and in the A/B card.
+
+**Changed**
+- The A/B card reads a project's version list without reading the whole project file on the panel's thread, so a
+  large project no longer makes the panel stall as the card opens.
+
+### A stray { in a .gui file ([#56](https://github.com/Snipet/TestingPlayground/pull/56))
+
+**Fixed**
+- A `.gui` file with a `{` where an element's name should be (a file that is only `{`, or a `{` alone inside a `row`)
+  no longer hangs the compile while its notes fill the memory: such a `{` is read as if its braces were not there, so
+  what it holds stays where it stands, with one note at it.
+- A `.gui` file however broken says at most a page of notes, then one line that the rest were left out; and
+  containers nested far past the limit no longer spend the stack on what is left out.
+
+### The chat counts its tokens and says what a turn cost ([#50](https://github.com/Snipet/TestingPlayground/pull/50))
+
+**Added**
+- The line under the message box adds what the turn has cost so far, once every request in it has a price: "~$0.07"
+  is an estimate at list prices (Anthropic's from a table built into the plugin, dated 2026-11-12; an OpenRouter
+  model's from its models list), "$0.04" a provider's own figure (OpenRouter's). A model with no known price shows its
+  tokens and no cost.
+- Every request the chat sends is counted, by day and by the model that answered, in `usage.json` beside the chats:
+  retries, the planner's and fast mode's and web search's second tries included, and the tokens written to the cache
+  for five minutes and for an hour apart. It keeps counts and model names only, never a word of a chat, a key or a
+  server's address. A page to see it comes later.
+
+### Tabs that look like tabs, and scroll ([#52](https://github.com/Snipet/TestingPlayground/pull/52))
+
+**Added**
+- Ctrl-Tab and Ctrl-Shift-Tab go to the next and the previous file.
+
+**Changed**
+- The files' tabs read as tabs: the one shown has the editor's own background and opens into it, the others are their
+  names with a thin line between them. A dot before a name says its text has changed since the program last ran.
+- With many files the tabs keep their names whole instead of narrowing to a letter: the strip scrolls sideways (the
+  wheel over it, or a trackpad), the tab shown stays in view, an arrow at an edge shows the next tab, and a menu at the
+  strip's right lists every file.
+
+### Chat fixes: keys and chats on a full disk, Send and Stop, typing against Claude, pictures, streaming ([#51](https://github.com/Snipet/TestingPlayground/pull/51))
+
+**Fixed**
+- Saving the API key or a chat on a full disk (or past a quota) no longer replaces the saved one with an empty file
+  while saying it was saved: the save says it failed, and the key or the chat kept before stays as it was.
+- Chats copied from another computer or account (a copied Library, a backup restored elsewhere) no longer fill the chat
+  list with rows titled "Chat" that open nothing. A chat in the list that cannot be read says so when you open it.
+- A message sent while its pictures were still being read went without them, and they waited for the next message.
+  The message now shows at once and goes with every picture once they are in; Stop still stops it.
+- If the list of Claude's models could not be read when a session began (the API busy, the connection down, or Stop
+  pressed at that moment), it was not asked for again until the plugin was opened again, so a model chosen from it
+  went with the wrong length limit and without its thinking level. It is now asked for again at the next message.
+- A message sent just as Claude Desktop began working on the plugin could start a reply beside it, after which the chat
+  showed Send while Claude was still answering. The message now stays in the box until Claude Desktop is done, as it
+  does whenever Claude Desktop works.
+- A double-click on Send sent the message and then stopped Claude's reply at once (the button is Stop by the second
+  click). The second click of a double-click now does nothing; a click of its own on Stop still stops.
+- After a click on Send (or Stop), Space or Return stopped Claude's reply and other keys went to the host. The caret
+  now goes back to the message box, so you can type the next message while Claude works.
+- In a narrow window the Web pill covered the Send/Stop button, so a click on Stop switched web search instead. The
+  bar now always fits: the pills narrow, and Fast and Web show their icons alone, before anything reaches Send.
+- In the provider settings, typing another server's address left the dialog naming the preset's server (where the key
+  is stored and sent, whether one is stored, Remove key). It now names the address you typed, once it is complete.
+- The key field showed up to eleven characters of a key. It now shows only the provider's public prefix (`sk-ant-`,
+  `sk-or-`, `AIza`, ...) and, for a long key, its last four characters; stars for the rest.
+- A plugin window opened while the chat was folded (and the code window) redrew itself constantly while idle. It now
+  draws only when something changes.
+- Typing in a file at the moment Claude edited the same file could lose what you had just typed. Your keys now reach
+  the plugin as you type them, and Claude's edit is made again over them.
+- Text Claude wrote with characters the editor does not show (an arrow, an accent, a degree sign) went into the
+  program as written while its tab showed `?`, and the next key you pressed anywhere changed Claude's file and counted
+  as your edit, so Claude's next edit of it was refused. Claude's text now goes in as the editor holds it (printable
+  ASCII, tabs and line ends), what plays and what you see are the same, and the tool's answer says what became `?`.
+- On Windows and Linux a picture file of a few kilobytes whose header claimed a huge size could make the plugin use
+  gigabytes of memory, or crash the host, when added to a message. A picture of more than 100 megapixels is now
+  refused before it is read, saying its size; a photo or a screenshot is taken as before.
+- A recording of a program that plays a sample said its replay differed from what played, when it matched: the
+  check replayed it without the samples. It now says the replay matches bit for bit.
+- A note or a dial's glide that ended past a render's limit (10 s for a picture, 300 s for numbers) was cut short
+  without a word, and the answer described the times asked. It is now refused, naming the note or the move and the
+  limit, as a start past the limit was; one that ends at the limit is taken as asked.
+- Claude Desktop is told that recording what you play is no read-only look: arming it changes what plays (a restart
+  starts the program again), and a new recording or forget lets the last one go, so Claude Desktop asks before it
+  does it.
+- Claude Desktop's panel sandbox, opened on a program's folder, left its circuit netlists out, so a circuit's knobs
+  were missing; it put a file that sorts before `program.fm` in the program's place, and counted the folder sync's
+  read-only copies against its sixteen files. It now reads a folder as the plugin does.
+- On macOS and Windows Claude's answer (its words, its thinking, a file it writes) now appears as it is written,
+  rather than all at once at the end or in jumps of a few paragraphs.
+
+### The code's text size ([#46](https://github.com/Snipet/TestingPlayground/pull/46))
+
+**Added**
+- The code's text can be made larger or smaller: Cmd-= (or Cmd-+) and Cmd--, from 9 to 24 px, and Cmd-0 back to
+  12 px; or Cmd and the wheel over the text (Ctrl on Windows and Linux). Every tab and the IR view follow, and every
+  other editor open on the machine; the line at the top and the caret stay put. The completion list, the hover card,
+  the signature and the find bar grow with the text. While the size is not 12 px the status line shows it, and a
+  click there puts it back. It is a preference of the machine, as the zoom is, not of a session.
+
+### Claude searches with more control and replaces every match ([#45](https://github.com/Snipet/TestingPlayground/pull/45))
+
+**Added**
+- Claude's search of the files (read_file's find) shows as many lines around each line found as it asks (none to
+  ten), can give only how many lines each file has, and reads on past the first 40 (its last line says how many are
+  left and how to read them).
+- Claude can replace every match of a text or a pattern at once (edit_file's find), in one file or in all of them: a
+  name changed everywhere is one step you undo with Cmd-Z. It replaces within a line and in the text's own case, never
+  a netlist's drawing lines, at most 2,000 at once, all or none; it never overwrites what you typed meanwhile.
+
+### Faster builds on every pull request ([#41](https://github.com/Snipet/TestingPlayground/pull/41))
+
+**Changed**
+- The builds on GitHub's machines keep bgfx's shader compiler between runs, on macOS, Linux and Windows, and on macOS
+  and Linux the compiled objects too (ccache): a run whose code changed little rebuilds little. `main` keeps the
+  caches fresh; a pull request saves its own only when it found none to start from. Each run's log says how many
+  objects came from the cache.
+- A pull request that changes only the docs (`docs/` and the `.md` files beside this one) builds and tests nothing:
+  its checks pass at once.
+
 ### Every list scrolls as the code does
 
 **Fixed**
