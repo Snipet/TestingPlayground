@@ -1180,12 +1180,13 @@ namespace playground
                 if (!files[k].expected.empty() && versionOf(read[k].text) != files[k].expected)
                     return changedSince(files[k].name, files[k].expected, read[k].text);
             // All or none: every file's edits on a copy first.
-            std::vector<std::string> after;
+            std::vector<std::string> after, held;
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 after.push_back(read[k].text);
                 if (const std::string why = apply(files[k], after.back()); !why.empty())
                     return fail(why);
+                held.push_back(asEditorHolds(after.back()));     // as the editor holds it (ChatAgent.h)
             }
             for (SourceFile& s : d.files)
                 for (std::size_t k = 0; k < files.size(); ++k)
@@ -1231,14 +1232,15 @@ namespace playground
             };
             if (!many)
                 return "Edited " + names[0] + (total > 1 ? ": " + std::to_string(total) + " edits, one step the user can undo" : "") + "; now "
-                     + lines(0) + ", version " + versions[0] + ".";
+                     + lines(0) + ", version " + versions[0] + (held[0].empty() ? "" : "; " + held[0]) + ".";
             std::string out = "Edited " + std::to_string(files.size()) + (files.size() == 1 ? " file" : " files")
                             + ", one step the user can undo:\n";
             for (std::size_t k = 0; k < files.size(); ++k)
             {
                 const std::size_t n = files[k].edits.size();
                 const std::string what = files[k].edits.front().hunk ? (n == 1 ? " hunk" : " hunks") : (n == 1 ? " edit" : " edits");
-                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k] + "\n";
+                out += "- " + files[k].name + ": " + std::to_string(n) + what + "; now " + lines(k) + ", version " + versions[k]
+                     + (held[k].empty() ? "" : "; " + held[k]) + "\n";
             }
             return out;
         }
@@ -1268,7 +1270,10 @@ namespace playground
                             std::uint64_t& steps, std::size_t limit)
         {
             Replacing r;
-            const int withLines = static_cast<int>(std::count(with.begin(), with.end(), '\n'));
+            int withLines = 0;                                   // its line breaks as the editor reads them: CR LF, CR or LF
+            for (std::size_t k = 0; k < with.size(); ++k)
+                if (with[k] == '\n' || (with[k] == '\r' && (k + 1 == with.size() || with[k + 1] != '\n')))
+                    ++withLines;
             int line = 0, newLine = 1;                           // this line's number, before and after
             for (std::size_t at = 0; at < t.size();)
             {
@@ -1470,7 +1475,12 @@ namespace playground
                 return fail(out + "Nothing was changed.");
             }
 
-            // One write of every file it read (those with no match as they were).
+            // One write of every file it read (those with no match as they were), each changed one as the editor
+            // holds it (ChatAgent.h).
+            std::vector<std::string> held(read.size());
+            for (std::size_t k = 0; k < read.size(); ++k)
+                if (done[k].count > 0)
+                    held[k] = asEditorHolds(done[k].text);
             int active = -1;
             for (std::size_t k = 0; k < read.size(); ++k)
                 if (done[k].count > 0)
@@ -1529,7 +1539,8 @@ namespace playground
             std::string out;
             if (named)
                 out = "Replaced " + matches(total) + " of " + finder.quoted() + " in " + name + " (" + lineList(0)
-                    + "), one step the user can undo; now " + linesNow(0) + ", version " + versions[0] + ".\n";
+                    + "), one step the user can undo; now " + linesNow(0) + ", version " + versions[0]
+                    + (held[0].empty() ? "" : "; " + held[0]) + ".\n";
             else
             {
                 out = "Replaced " + matches(total) + " of " + finder.quoted() + " in " + std::to_string(changedFiles.size())
@@ -1538,7 +1549,7 @@ namespace playground
                 {
                     const std::size_t k = changedFiles[j];
                     out += "- " + read[k].name + ": " + std::to_string(done[k].count) + " (" + lineList(k) + "); now " + linesNow(k)
-                         + ", version " + versions[j] + "\n";
+                         + ", version " + versions[j] + (held[k].empty() ? "" : "; " + held[k]) + "\n";
                 }
             }
             // The lines changed, as they are now: the first kChangedShown of them, numbered.

@@ -417,6 +417,7 @@ namespace playground::ui
         // merges first: EditorPort::setDraftIf); false when another came meanwhile, for the next refresh to merge.
         bool mergeDraft();
         bool pushFiles();
+        void giveTyping();                               // pushFiles, in the event that typed (Panel::key)
         // The chat.
         funkgui::TextEditor& chatInput() noexcept;       // the message box
         const std::string& chatPlaceholder() const;      // what it says while empty
@@ -538,6 +539,11 @@ namespace playground::ui
         std::optional<funkgui::Point> centreOfKeyModel() const;
         int keyDialogPreset() const noexcept { return dialogPreset_; }
         int keyDialogField() const noexcept { return dialogField_; }
+        // What the dialog shows now: the key's field as drawn (masked), its hint while empty, and its lines (the server
+        // the key is for and sent to): the server's address typed, never the preset's when it differs.
+        std::string keyDialogShown() const { return keyEdit_.buffer.empty() ? std::string() : maskedKey(); }
+        std::string keyDialogHint() const;
+        std::vector<std::string> keyDialogLines() const;
         void chooseKeyPreset(int preset);
         // SETTINGS (the Standalone's: EditorPort::devices; nothing in a host): the card, opened (false with no devices or
         // while another card is open); the notice while an effect's input is muted, and its Settings... button.
@@ -619,10 +625,12 @@ namespace playground::ui
         bool buttonsPlaced_ = false;                     // the port was told where they go (while they are there)
         bool windowPress_ = false;                       // the last press went to the window (dragWindow): its
                                                          // double-click is none of the panel's
-        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done):
-                                                         // the rest of its click (a double-click's second press,
-                                                         // its doubleClick) reaches nothing under it
+        bool closingPress_ = false;                      // the last press closed a card (outside it, or its Done),
+                                                         // or sent the message (send is stop under it now): the
+                                                         // rest of its click (a double-click's second press, its
+                                                         // doubleClick) reaches nothing under it
         bool projectsPress_ = false;                     // the press began in PROJECTS: its drag and release go there
+        uint32_t sends_ = 0;                             // messages sent from the box (a press's: did it send?)
         bool guiBarPress_ = false;                       // the press was on a .gui interface's bar: its thumb drags
 
         int  itemAt(funkgui::Point) const;               // the item under p, -1 for none (an edge before the cards'
@@ -657,7 +665,7 @@ namespace playground::ui
         // The chat.
         void refreshChat(double nowSec);
         void reshowChat();                               // the conversation laid out again (a row opened, ...)
-        void sendChat();                                 // the message box's text, to Claude
+        bool sendChat();                                 // the message box's text, to Claude (true: it went)
         void suggest(const std::string& text);           // a suggestion into the message box
         void openModels();
         void openThinking();
@@ -706,6 +714,10 @@ namespace playground::ui
         bool dialogAsBefore() const;
         ChatProvider dialogProvider() const;
         bool dialogHasKey() const;
+        bool dialogInfoNow() const;                      // dialogInfo_ is the address typed's (read when it rests)
+        void readDialogInfo();
+        std::string dialogTitle() const;                 // the preset's name, else the server typed's host
+        bool dialogPresetServer() const;                 // the address typed is the preset's own (or it has none)
         void openProviders();
         funkgui::text::LineEdit& dialogEdit();
         int dialogFields() const;                        // the fields shown, as a mask of 1 << field
@@ -938,6 +950,8 @@ namespace playground::ui
         funkgui::text::LineEdit baseEdit_, modelEdit_;   // the model typed, the field typed in, what is kept for it
         int dialogField_ = 0;
         ChatProviderInfo dialogInfo_;
+        std::string dialogInfoBase_;                     // the address dialogInfo_ was read for
+        double baseTypedAt_ = 0.0;                       // when the address was last typed in (read once it rests)
 
         funkgui::HostServices* host_ = nullptr;
         std::optional<funkgui::GestureController> gestures_;

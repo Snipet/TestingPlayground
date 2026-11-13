@@ -169,6 +169,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -328,6 +329,13 @@ namespace playground
         virtual ProjectAnswer chatProjects(const ProjectCall&) { return { false, "This plugin keeps no projects.", {}, false }; }
     };
 
+    // A file's text as the editor holds it (TextEditor::sanitise: printable ASCII, tabs and LF), the one rule for
+    // every text Claude's tools put in the draft (write_file's content, files and from, edit_file's new texts,
+    // edit_circuit's values and names), so that the draft, a version, seen_, what runs and the tab are one text and
+    // the editor's next push of its tabs changes nothing. What it changed, as a result's clause ("CR LF line ends
+    // read as LF; 2 characters outside ASCII became '?', as the editor holds ASCII"), or "".
+    std::string asEditorHolds(std::string& text);
+
     class ChatAgent final : public ChatPort
     {
     public:
@@ -353,7 +361,7 @@ namespace playground
         void setWeb(bool on) override;
         void attach(const std::vector<std::string>& paths) override;
         void detach(uint32_t id) override;
-        void send(const std::string& text) override;
+        bool send(const std::string& text) override;
         void answer(const std::vector<std::string>& answers) override;
         void clearChecks() override;
         void stop() override;
@@ -421,10 +429,14 @@ namespace playground
         std::string chatOwner() const;
 
         // For probes: the transport (the next turn uses it), waiting for the current turn (and for the pictures
-        // being read), the Messages API request bodies sent.
+        // being read).
         void setTransport(std::unique_ptr<claude::Transport> transport);
         void waitIdle();
-        std::vector<std::string> requestsSent() const;
+        // For probes: called in send() between its two looks at whether the chat is busy (the last turn's thread
+        // joined, the plugin's state read), on the message thread: a probe starts a call of Claude Desktop's there.
+        void setSendHookForTests(std::function<void()> hook) { sendHook_ = std::move(hook); }
+        // For probes: called on the job thread before each picture is read: a probe holds the reads there.
+        void setPictureReadHookForTests(std::function<void()> hook) { pictureReadHook_ = std::move(hook); }
         // For probes: called where edit_circuit has read the netlist and applied its commands, before each conditional
         // write (attempt 0, then 1 after a conflict), on the thread the tool runs on: a probe plants a gesture there.
         void setCircuitWriteHookForTests(std::function<void(int attempt)> hook) { circuitWriteHook_ = std::move(hook); }
@@ -611,6 +623,13 @@ namespace playground
         int picturesInHistory() const;                              // the user's pictures in the history (mutex held)
         void deliver(juce::Array<juce::var> content);               // a user message's blocks into the history, and
                                                                     // a turn (mutex held; the caller starts it)
+        void addMessage(juce::Array<juce::var> content);            // deliver's history part (mutex held)
+        // A message's blocks: the missing results, the pictures read up to `upTo` (into `entry`), the words, the state
+        // (mutex held).
+        juce::Array<juce::var> userMessage(const std::string& words, const std::string& context, uint64_t upTo,
+                                           ChatEntry& entry);
+        bool takePending();                                         // the worker: a message waiting for its pictures
+        static constexpr int kPictureWaitSeconds = 30;              // the longest it waits
         void repairHistory();                                       // one the API takes (mutex held)
         void dropThinking();                                        // the history without thinking (mutex held)
         int maxTokensFor(const std::string& id) const;              // a request's max_tokens (mutex held)
@@ -652,6 +671,8 @@ namespace playground
         std::unique_ptr<claude::Transport> transport_;
         std::function<void(int)> circuitWriteHook_;                 // setCircuitWriteHookForTests
         std::function<void(int)> fileWriteHook_;                    // setFileWriteHookForTests
+        std::function<void()> sendHook_;                            // setSendHookForTests
+        std::function<void()> pictureReadHook_;                     // setPictureReadHookForTests
 
         mutable std::mutex mutex_;
         uint64_t revision_ = 1;
@@ -711,7 +732,6 @@ namespace playground
         uint64_t versionsGiven_ = 0;                                // keepVersion's count
         uint64_t lastSignature_ = 0;                                // the plugin's state as Claude last got it
         bool resendState_ = false;                                  // a summary came: the state goes with what follows
-        std::vector<std::string> requests_;                         // bodies sent (probes)
         bool busy_ = false;
         std::string asking_;                                        // the open question's tool_use id ("" for none)
         std::vector<measure::Check> checks_;                        // Claude's checks (set_checks), in the session
@@ -725,10 +745,24 @@ namespace playground
             ChatPicturePtr picture;
             std::string mediaType;
             std::vector<uint8_t> data;                              // as sent
+            uint64_t seq = 0;                                       // its read's number (attachIssued_)
         };
         std::vector<Attached> attached_;                            // for the next message
         int attaching_ = 0;                                         // files the job thread still reads
         uint64_t attachEpoch_ = 0;                                  // a new chat: files read for the old one go
+        // The pictures' reads, numbered as they are asked for (attach) and as they end (the job thread runs them in
+        // order): a message sent while some are read waits for those asked for before it (Pending, the turn's worker).
+        uint64_t attachIssued_ = 0, attachDone_ = 0;
+        std::condition_variable attachCv_;                          // attachDone_ moved, or a stop
+        // A message sent while pictures were still being read: its words, the plugin's state as it was sent, the
+        // reads it waits for, and its entry, which shows at once and gets the pictures when they are in.
+        struct Pending
+        {
+            std::string words, context;
+            uint64_t upTo = 0;
+            std::size_t entry = 0;
+        };
+        std::optional<Pending> pending_;
 
         // The live tools (Live.cpp). liveTool: listen and get_status, from a turn (`caller` none: the stop button stops
         // listen) or from MCP (by its call's number: mcpCancel stops it); other live calls go to runTool. MCP's own view

@@ -1233,6 +1233,10 @@ namespace playground
             jobStop_ = true;                       // a job still queued is dropped
         }
         jobCv_.notify_all();
+        {
+            const std::lock_guard<std::mutex> lock(mutex_);
+            attachCv_.notify_all();                // a message waiting for its pictures (takePending) goes now
+        }
         joinWorker();
         if (jobThread_.joinable())
             jobThread_.join();
@@ -1291,12 +1295,6 @@ namespace playground
     {
         std::unique_lock<std::mutex> lock(jobMutex_);
         jobCv_.wait(lock, [this] { return jobStop_ || (jobs_.empty() && !jobRunning_); });
-    }
-
-    std::vector<std::string> ChatAgent::requestsSent() const
-    {
-        const std::lock_guard<std::mutex> lock(mutex_);
-        return requests_;
     }
 
     void ChatAgent::joinWorker()
@@ -1476,6 +1474,7 @@ namespace playground
     void ChatAgent::attach(const std::vector<std::string>& paths)
     {
         std::vector<std::string> take;
+        std::vector<uint64_t> seqs;
         uint64_t epoch = 0;
         {
             const std::lock_guard<std::mutex> lock(mutex_);
@@ -1499,20 +1498,26 @@ namespace playground
                     take.push_back(p);
             }
             attaching_ += static_cast<int>(take.size());
+            for (std::size_t k = 0; k < take.size(); ++k)
+                seqs.push_back(++attachIssued_);
             epoch = attachEpoch_;
             touch();
         }
-        for (const std::string& p : take)
-            queueJob([this, p, epoch] {
+        for (std::size_t k = 0; k < take.size(); ++k)
+            queueJob([this, p = take[k], seq = seqs[k], epoch] {
+                if (pictureReadHook_)
+                    pictureReadHook_();
                 chatimages::Prepared r = chatimages::fromFile(p);
                 const std::lock_guard<std::mutex> lock(mutex_);
                 --attaching_;
+                attachDone_ = std::max(attachDone_, seq);   // read or refused: a message waiting for it goes on
+                attachCv_.notify_all();
                 if (epoch != attachEpoch_)
                     return;                        // a new chat since
                 if (!r.why.empty())
                     addEntry(ChatEntry::Kind::note, r.why);
                 else
-                    attached_.push_back({ std::move(r.picture), std::move(r.mediaType), std::move(r.data) });
+                    attached_.push_back({ std::move(r.picture), std::move(r.mediaType), std::move(r.data), seq });
                 touch();
             });
     }
@@ -1539,18 +1544,25 @@ namespace playground
         return n;
     }
 
-    void ChatAgent::send(const std::string& message)
+    bool ChatAgent::send(const std::string& message)
     {
         const std::string trimmed = juce::String(message).trim().toStdString();
+        const auto nothing = [&] { return trimmed.empty() && attached_.empty() && attaching_ == 0; };   // mutex held
         {
             const std::lock_guard<std::mutex> lock(mutex_);
-            if (busy_ || (trimmed.empty() && attached_.empty()))
-                return;
+            if (busy_ || nothing())
+                return false;
         }
         joinWorker();                              // a finished turn's thread
         const std::string context = contextBlock();
+        if (sendHook_)
+            sendHook_();
         {
             const std::lock_guard<std::mutex> lock(mutex_);
+            // Looked at again under the lock the message goes under: a call of Claude Desktop's (mcpCall) may have
+            // taken the chat while the last turn's thread was joined, and a turn never runs beside it.
+            if (busy_ || nothing())
+                return false;
             // An open question is answered in the user's own words: its result says so, and they follow.
             for (auto it = entries_.rbegin(); it != entries_.rend(); ++it)
                 if (it->kind == ChatEntry::Kind::question && it->open)
@@ -1558,33 +1570,113 @@ namespace playground
                     it->typed = true;
                     break;
                 }
-            juce::Array<juce::var> content =
-                missingResults("The user did not choose from the options: their own words follow in this message.");
-            // The pictures first, then the words (the vision docs' advice).
             ChatEntry entry;
             entry.kind = ChatEntry::Kind::user;
             entry.text = trimmed;
-            for (const Attached& a : attached_)
-            {
-                content.add(claude::object({ { "type", "image" },
-                                             { "source", claude::object({ { "type", "base64" },
-                                                                          { "media_type", juce::String(a.mediaType) },
-                                                                          { "data", juce::Base64::toBase64(a.data.data(), a.data.size()) } }) } }));
-                entry.pictures.push_back(a.picture);
-            }
-            attached_.clear();
-            entries_.push_back(std::move(entry));
-            touch();
-            if (!trimmed.empty())
-                content.add(text(trimmed));
-            if (!context.empty())
-                content.add(text(context));
-            if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
-                content.add(text(limitNote(maxTokensFor(model_))));
             planNext_ = !planner_.empty();
-            deliver(std::move(content));
+            if (attaching_ > 0)
+            {
+                // Pictures still being read: the message shows now and goes with them once they are in (the turn's
+                // worker waits, takePending), so none is left behind for the next message.
+                pending_ = Pending{ trimmed, context, attachIssued_, entries_.size() };
+                entries_.push_back(std::move(entry));
+                busy_ = true;
+                activity_ = "Reading the pictures";
+                cancel_.store(false);
+                touch();
+            }
+            else
+            {
+                juce::Array<juce::var> content = userMessage(trimmed, context, attachIssued_, entry);
+                entries_.push_back(std::move(entry));
+                touch();
+                deliver(std::move(content));
+            }
         }
         startWorker();
+        return true;
+    }
+
+    // A message's blocks (mutex held): the results the last reply's calls lack, the pictures read up to `upTo` (they
+    // leave the box for `entry`), then the words (the vision docs' advice), the plugin's state and the limit's note.
+    juce::Array<juce::var> ChatAgent::userMessage(const std::string& words, const std::string& context, uint64_t upTo,
+                                                  ChatEntry& entry)
+    {
+        juce::Array<juce::var> content =
+            missingResults("The user did not choose from the options: their own words follow in this message.");
+        std::vector<Attached> later;
+        for (Attached& a : attached_)
+        {
+            if (a.seq > upTo)
+            {
+                later.push_back(std::move(a));     // added after the message was sent: the next one's
+                continue;
+            }
+            content.add(claude::object({ { "type", "image" },
+                                         { "source", claude::object({ { "type", "base64" },
+                                                                      { "media_type", juce::String(a.mediaType) },
+                                                                      { "data", juce::Base64::toBase64(a.data.data(), a.data.size()) } }) } }));
+            entry.pictures.push_back(a.picture);
+        }
+        attached_ = std::move(later);
+        if (!words.empty())
+            content.add(text(words));
+        if (!context.empty())
+            content.add(text(context));
+        if ((effort_ == "xhigh" || effort_ == "max") && provider_.kind == "anthropic")
+            content.add(text(limitNote(maxTokensFor(model_))));
+        return content;
+    }
+
+    // The worker's first step when the message waits for its pictures (send): until every read asked for before it has
+    // ended (read or refused), Stop, or kPictureWaitSeconds; then the message goes with what is in. False when the turn
+    // ends here (stopped, or nothing left to send: no words, and every picture refused or taken back).
+    bool ChatAgent::takePending()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!pending_)
+            return true;
+        const uint64_t upTo = pending_->upTo;
+        const bool in = attachCv_.wait_for(lock, std::chrono::seconds(kPictureWaitSeconds),
+                                           [&] { return attachDone_ >= upTo || cancel_.load(); });
+        const Pending p = std::move(*pending_);
+        pending_.reset();
+        const bool pictures = std::any_of(attached_.begin(), attached_.end(), [&](const Attached& a) { return a.seq <= upTo; });
+        const bool shown = p.entry < entries_.size() && entries_[p.entry].kind == ChatEntry::Kind::user;
+        const auto end = [&] {
+            busy_ = false;
+            activity_.clear();
+            turnThread_.store(std::thread::id{});
+            touch();
+        };
+        if (p.words.empty() && !pictures)
+        {
+            if (shown)
+                entries_.erase(entries_.begin() + static_cast<std::ptrdiff_t>(p.entry));
+            end();
+            return false;
+        }
+        ChatEntry got;
+        juce::Array<juce::var> content = userMessage(p.words, p.context, upTo, got);
+        if (shown)
+            entries_[p.entry].pictures = std::move(got.pictures);
+        if (!in && !cancel_.load())
+            addEntry(ChatEntry::Kind::note, "Some pictures were still being read after " + std::to_string(kPictureWaitSeconds)
+                                                + " seconds: the message went without them, and they stay for the next one.");
+        addMessage(std::move(content));
+        mcpNoted_ = false;
+        if (cancel_.load())
+        {
+            // Stopped while it waited: the message stays in the history (the next one joins it), as after any stop.
+            addEntry(ChatEntry::Kind::note, "Stopped.");
+            end();
+            lock.unlock();
+            keep();
+            return false;
+        }
+        activity_ = "Thinking";
+        touch();
+        return true;
     }
 
     void ChatAgent::answer(const std::vector<std::string>& answers)
@@ -1668,6 +1760,17 @@ namespace playground
     // first, as the API asks.
     void ChatAgent::deliver(juce::Array<juce::var> content)
     {
+        addMessage(std::move(content));
+        busy_ = true;
+        mcpNoted_ = false;                         // Claude Desktop's next call says so again
+        activity_ = "Thinking";
+        cancel_.store(false);
+        touch();
+    }
+
+    // The history part of deliver (mutex held): the message joins a user message left last, or goes after the answer.
+    void ChatAgent::addMessage(juce::Array<juce::var> content)
+    {
         const int n = messages_.size();
         if (n > 0 && str(messages_[n - 1], "role") == "user")
         {
@@ -1689,11 +1792,6 @@ namespace playground
         }
         repairHistory();
         resendState_ = false;                      // the state (whole, after a summary) is in this message
-        busy_ = true;
-        mcpNoted_ = false;                         // Claude Desktop's next call says so again
-        activity_ = "Thinking";
-        cancel_.store(false);
-        touch();
     }
 
     void ChatAgent::stop()
@@ -1701,6 +1799,7 @@ namespace playground
         cancel_.store(true);
         listCancel_.store(true);                   // a models list the turn waits for (setProvider's job)
         const std::lock_guard<std::mutex> lock(mutex_);
+        attachCv_.notify_all();                    // a message waiting for its pictures (takePending)
         if (busy_)
         {
             activity_ = "Stopping";
@@ -2791,9 +2890,6 @@ namespace playground
                 error = "The API key was removed. Add it again.";
                 return false;
             }
-            requests_.push_back(body);
-            if (requests_.size() > 64)
-                requests_.erase(requests_.begin());
         }
         claude::Headers headers = headersFor(key);
         headers.emplace_back("content-type", "application/json");
@@ -2849,7 +2945,13 @@ namespace playground
             return;
         }
         if (r.status != 200)
-            return;                                // the built-in list stays
+        {
+            // The built-in list stays for this turn, and the list is asked for again at the next (a 529, no
+            // connection, a Stop while it was asked); a refused key (above) waits for another key.
+            const std::lock_guard<std::mutex> lock(mutex_);
+            modelsFetched_ = false;
+            return;
+        }
         const juce::var v = claude::parseJson(r.body);
         std::vector<ChatModel> found;
         const juce::var models = v.getProperty("data", juce::var());
@@ -2899,6 +3001,8 @@ namespace playground
     void ChatAgent::runTurn()
     {
         turnThread_.store(std::this_thread::get_id());
+        if (!takePending())
+            return;                                // stopped while its pictures were read
         // The provider for the whole turn (startTurn, ChatProviderTurn.cpp): a change while it runs applies to the next
         // one. Another provider's turn has its key, its model and its options from there.
         int maxTokens = 0;                         // what one reply of this turn's model holds
@@ -3828,7 +3932,7 @@ namespace playground
             { "listen", "Listen live", true, false, "debugging" },
             { "compare", "Compare two sounds", true, false, "debugging" },
             { "trace", "Trace a problem", false, false, "debugging" },   // its export adds files, never replacing one
-            { "capture", "Record what you play", true, false, "debugging" },
+            { "capture", "Record what you play", false, true, "debugging" },   // an arm changes what plays; a take goes
             { "run_function", "Call a function", true, false, "debugging" },
             { "projects", "Projects and presets", false, true, "projects" },
         };
@@ -3887,7 +3991,8 @@ namespace playground
             "program that plays, as they see it. Nothing the sandbox does changes what the plugin plays or shows, until apply.\n"
             "- open: from \"blank\" (a small panel of the dials you give), \"instance\" (the open plugin's panel.gui and "
             "program files, read only; a program without a .gui starts from a blank panel of its dials), \"file\" (path: a "
-            ".gui file or a program's folder the user named, its .fm, .gui, .sc and .sh files, read only, 256 KB a file), or text "
+            ".gui file or a program's folder the user named, its .fm, .cir, .gui, .sc and .sh files, program.fm first, read only, "
+            "256 KB a file), or text "
             "alone (that .gui). The dials come from the program's param declarations (read, never compiled: their ranges and "
             "defaults) and from the dials you give, yours replacing a declaration of the same name: [{ name, range: [lo, hi], "
             "default, type: float, int or bool, unit, options: the names of an int's values, style: knob, slider, switch, "
@@ -4483,7 +4588,9 @@ namespace playground
                 const cir::Applied a = cir::apply(before, cir::reconcile(before, pins), ops, pins);
                 if (!a.error.empty())
                     return fail(a.error + ". Nothing was changed.");
-                d.files[static_cast<std::size_t>(i)].text = a.text;
+                std::string after = a.text;
+                const std::string held = asEditorHolds(after);   // a value or a name as the editor holds it (ChatAgent.h)
+                d.files[static_cast<std::size_t>(i)].text = after;
                 d.active = i;
                 if (circuitWriteHook_)
                     circuitWriteHook_(attempt);
@@ -4495,13 +4602,13 @@ namespace playground
                 std::string version;
                 {
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    version = keepVersion(file, a.text);
+                    version = keepVersion(file, after);
                 }
                 std::string out = "Edited " + file + ": " + std::to_string(ops.size()) + (ops.size() == 1 ? " command" : " commands")
-                                + ", one step the user can undo; version " + version + ".\n";
+                                + ", one step the user can undo" + (held.empty() ? "" : "; " + held) + "; version " + version + ".\n";
                 for (const std::string& said : a.said)
                     out += "- " + said + "\n";
-                const std::string was = cir::stripLayout(before), now = cir::stripLayout(a.text);
+                const std::string was = cir::stripLayout(before), now = cir::stripLayout(after);
                 const std::vector<std::string_view> la = textdiff::lines(was), lb = textdiff::lines(now);
                 std::string changed;
                 int shown = 0, more = 0;
@@ -4521,7 +4628,7 @@ namespace playground
                                        : "The netlist's lines changed (the drawing's *@ lines aside):\n" + changed
                                              + (more > 0 ? "(" + std::to_string(more) + " more)\n" : std::string());
                 {
-                    const Sources one{ { file, a.text } };
+                    const Sources one{ { file, after } };
                     circuits::Generator gen(one);
                     gen.module(file);
                     const std::string said = gen.errors() + gen.warnings();
@@ -4529,21 +4636,21 @@ namespace playground
                                         : "The circuit compiler on the new text:\n" + capped(said)
                                               + (said.back() == '\n' ? "" : "\n");
                 }
-                if (a.text.size() <= kCircuitTextBytes)
+                if (after.size() <= kCircuitTextBytes)
                 {
-                    out += "Its whole text now:\n" + a.text + (a.text.empty() || a.text.back() == '\n' ? "" : "\n");
+                    out += "Its whole text now:\n" + after + (after.empty() || after.back() == '\n' ? "" : "\n");
                     const std::lock_guard<std::mutex> lock(mutex_);
-                    markSeen(file, a.text);
+                    markSeen(file, after);
                 }
                 else
                 {
-                    out += "(" + std::to_string(a.text.size()) + " bytes: read_file shows it whole.)\n";
+                    out += "(" + std::to_string(after.size()) + " bytes: read_file shows it whole.)\n";
                     // Every line it changed is listed above: seen as an edit_file is, only if the text it edited was
                     // (its drawing's *@ lines aside, which no state sends).
                     if (more == 0)
                     {
                         const std::lock_guard<std::mutex> lock(mutex_);
-                        carrySeen(file, before, a.text);
+                        carrySeen(file, before, after);
                     }
                 }
                 note("drew " + file + " (" + std::to_string(ops.size()) + (ops.size() == 1 ? " change)" : " changes)"));

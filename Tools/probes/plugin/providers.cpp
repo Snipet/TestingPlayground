@@ -66,8 +66,10 @@
 //             byte a handshake record: on Linux JUCE's own client never connected to one); an address with a query
 //             goes out as built, a POST's and a GET's (the query in the request line, the body exactly what was
 //             posted: JUCE's client moved a parsed query into a POST's body); a 429's body whole and its
-//             retry-after; a stream stopped by `cancel` ends soon, "stopped"; (Linux) a 200's body reaches onChunk
-//             piece by piece as it comes, the first piece before the server sends the next
+//             retry-after; a stream stopped by `cancel` ends soon, "stopped"; a 200's body reaches onChunk piece by
+//             piece as it comes (the first event before the server sends the next, an event split in a line whole to
+//             the SSE parser once its line ends), the pieces joined the body exactly; a burst of 1 MB that came at
+//             once joined exactly, the event after it before the close, the reader's CPU time for it bounded
 #include "Probe.h"
 
 #include "FakeClaude.h"
@@ -1422,8 +1424,7 @@ PROBE(plugin, providers)
             P.eq("transport.error_body", r.body == body && chunks == 0 ? 1 : 0, 1);
             P.eq("transport.retry_after", r.retryAfterSeconds, 7);
         }
-        // A stream: one event, then the server waits. On Linux the first piece reaches onChunk before the next is sent
-        // (JUCE's macOS client fills its whole read first); then `cancel` ends the call soon.
+        // A stream: one event, then the server waits; `cancel` ends the call soon.
         {
             juce::StreamingSocket listener;
             const bool listening = listener.createListener(0, "127.0.0.1");
@@ -1473,9 +1474,134 @@ PROBE(plugin, providers)
                         gotBeforeSecond.load() ? 1 : 0, took, r.error.c_str(), streamed.size());
             P.eq("transport.stream_status", r.status, 200);
             P.eq("transport.cancel_soon", returned.load() && took < 0.5 && r.error == "stopped" ? 1 : 0, 1);
-#if defined(__linux__)
-            P.eq("transport.piece_by_piece", gotBeforeSecond.load() && streamed.rfind("event: ping\ndata: {}\n\n", 0) == 0 ? 1 : 0, 1);
-#endif
+        }
+        // A stream as it comes: one whole event, which must reach onChunk (and the SSE parser) before the server sends
+        // the next; then an event split in the middle of a line, which the parser has whole once its line ends, before
+        // the server closes; the pieces joined are the body exactly. Each wait of the server's is bounded (3 s): a
+        // transport that holds the pieces back fails the rows, never hangs.
+        {
+            juce::StreamingSocket listener;
+            const bool listening = listener.createListener(0, "127.0.0.1");
+            const std::string first = "event: one\ndata: {\"n\":1}\n\n";
+            const std::string half = "event: two\ndata: {\"te", rest = "xt\":\"hi\"}\n\n";
+            std::atomic<int> events{ 0 };
+            std::atomic<bool> firstBeforeSecond{ false }, splitEarly{ true }, splitBeforeClose{ false };
+            const auto waitFor = [&events](int n) {
+                for (int i = 0; i < 300 && events.load() < n; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                return events.load() >= n;
+            };
+            std::thread server([&] {
+                if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                if (c == nullptr || readRequest(*c).empty())
+                    return;
+                sendText(*c, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n" + first);
+                firstBeforeSecond = waitFor(1);
+                sendText(*c, half);
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));   // the half line read on its own
+                splitEarly = events.load() >= 2;
+                sendText(*c, rest);
+                splitBeforeClose = waitFor(2);
+            });                                                                 // closed when the server's socket goes
+            std::string streamed, secondData;
+            claude::SseParser sse;
+            const std::atomic<bool> cancel{ false };
+            const claude::HttpResult r = post("http://127.0.0.1:" + std::to_string(listener.getBoundPort()),
+                                              [&](std::string_view piece) {
+                                                  streamed.append(piece);
+                                                  sse.feed(piece, [&](const std::string& ev, const std::string& data) {
+                                                      if (ev == "two")
+                                                          secondData = data;
+                                                      events.fetch_add(1);
+                                                  });
+                                                  return true;
+                                              },
+                                              cancel);
+            server.join();
+            std::printf("transport: as it comes: first before the second %d, split early %d, split before close %d, "
+                        "%zu bytes, status %d\n", firstBeforeSecond.load() ? 1 : 0, splitEarly.load() ? 1 : 0,
+                        splitBeforeClose.load() ? 1 : 0, streamed.size(), r.status);
+            P.eq("transport.piece_by_piece", r.status == 200 && firstBeforeSecond.load() ? 1 : 0, 1);
+            P.eq("transport.pieces_joined", streamed == first + half + rest ? 1 : 0, 1);
+            P.eq("transport.split_whole",
+                 !splitEarly.load() && splitBeforeClose.load() && secondData == "{\"text\":\"hi\"}" ? 1 : 0, 1);
+        }
+        // A burst: 1 MB of short events at once (a proxy that held the answer, a machine that slept), all of it in
+        // the client's buffer before it is read. Its pieces joined are the body exactly, the event the server sends
+        // after it reaches onChunk before the close (reading the backlog in blocks holds nothing back once it is
+        // through), and reading it costs the reading thread little: a byte at a time over the whole backlog would
+        // move N * N / 2 bytes on macOS, about 50 s. Every wait is bounded and the call cancelled after the server is
+        // done, so a slow transport fails the rows, never the probe's time.
+        {
+            juce::StreamingSocket listener;
+            const bool listening = listener.createListener(0, "127.0.0.1");
+            std::string burst;
+            for (int i = 0; burst.size() < 1024u * 1024; ++i)
+                burst += "event: b\ndata: {\"i\":" + std::to_string(i) + "}\n\n";
+            const std::string last = "event: last\ndata: {}\n\n";
+            std::atomic<std::size_t> got{ 0 };
+            std::atomic<bool> lastGot{ false }, burstSent{ false }, burstRead{ false }, lastBeforeClose{ false };
+            std::thread server([&] {
+                if (!listening || listener.waitUntilReady(true, 20000) != 1)
+                    return;
+                const std::unique_ptr<juce::StreamingSocket> c(listener.waitForNextConnection());
+                if (c == nullptr || readRequest(*c).empty())
+                    return;
+                const std::string all
+                    = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n" + burst;
+                std::size_t sent = 0;
+                for (int i = 0; i < 2000 && sent < all.size(); ++i)   // the socket may take it in parts (non-blocking)
+                {
+                    if (c->waitUntilReady(false, 10) != 1)
+                        continue;
+                    const std::size_t part = std::min<std::size_t>(all.size() - sent, 1 << 20);
+                    const int n = c->write(all.data() + sent, static_cast<int>(part));
+                    if (n > 0)
+                        sent += static_cast<std::size_t>(n);
+                }
+                burstSent = sent == all.size();
+                for (int i = 0; i < 2000 && got.load() < burst.size(); ++i)   // at most 20 s for the client to read it
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                burstRead = got.load() >= burst.size();
+                sendText(*c, last);
+                for (int i = 0; i < 300 && !lastGot.load(); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                lastBeforeClose = lastGot.load();
+            });
+            std::string streamed;
+            claude::SseParser sse;
+            std::atomic<bool> cancel{ false };
+            claude::HttpResult r;
+            double burstMs = -1.0;
+            std::thread client([&] {
+                const double from = probe::threadMs();
+                r = post("http://127.0.0.1:" + std::to_string(listener.getBoundPort()),
+                         [&](std::string_view piece) {
+                             streamed.append(piece);
+                             got = streamed.size();
+                             sse.feed(piece, [&](const std::string& ev, const std::string&) {
+                                 if (ev == "last")
+                                     lastGot = true;
+                             });
+                             return true;
+                         },
+                         cancel);
+                burstMs = probe::threadMs() - from;
+            });
+            const auto started = std::chrono::steady_clock::now();
+            server.join();
+            cancel = true;                                  // a transport still reading the backlog stops here
+            client.join();
+            const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+            std::printf("transport: burst of %zu bytes sent %d, read %d, the event after it before the close %d, "
+                        "%zu bytes in all, the reader's CPU %.0f ms, %.2f s in all\n", burst.size(),
+                        burstSent.load() ? 1 : 0, burstRead.load() ? 1 : 0, lastBeforeClose.load() ? 1 : 0,
+                        streamed.size(), burstMs, took);
+            P.eq("transport.burst_joined", r.status == 200 && burstSent.load() && streamed == burst + last ? 1 : 0, 1);
+            P.eq("transport.burst_then_event", burstRead.load() && lastBeforeClose.load() ? 1 : 0, 1);
+            P.le("transport.burst_cpu_ms", burstMs, 20000.0);
         }
     }
     pg::chatstore::setDirectoryForTests(juce::File());

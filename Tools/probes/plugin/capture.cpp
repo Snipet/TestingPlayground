@@ -30,8 +30,8 @@
 //             not counted; skipped under emulation: probe::emulated), the take its 20 s
 //   FORGET    forget frees: a recording the audio thread never took at once, one it holds after its next block
 //   TOOL      arm's words say to tell the user and that it stays in memory; status and stop are live (mcpLive), at most
-//             25 lines, and say they are live; the tool is listed for MCP, read-only, titled in words; stop with nothing
-//             armed, and an unknown action, are errors
+//             25 lines, and say they are live; the tool is listed for MCP, destructive (not read-only: an arm changes
+//             what plays), titled in words; stop with nothing armed, and an unknown action, are errors
 //   PRIVACY   the processor's state holds nothing of a recording, nor the chat's session a picture of it (capture's,
 //             view_sound's or compare's of "capture")
 //   ANALYSIS  stop's report has the octave bands (in and out), the centroid, the correlation, the largest steps each
@@ -520,14 +520,14 @@ PROBE(plugin, capture)
 {
     const funkgui::HeadlessGuiScope gui;
 
-    // ---- TOOL (part): listed for MCP, read-only, titled; stop with nothing armed and an unknown action -----------------
+    // ---- TOOL (part): listed for MCP, destructive, titled; stop with nothing armed and an unknown action ---------------
     {
         bool listed = false;
         const juce::var tools = pg::ChatAgent::mcpTools();
         if (const juce::Array<juce::var>* t = tools.getArray())
             for (const juce::var& x : *t)
                 if (x["name"].toString() == "capture")
-                    listed = static_cast<bool>(x["annotations"]["readOnlyHint"]) && x["title"].toString() == "Record what you play"
+                    listed = !x["annotations"].hasProperty("readOnlyHint") && static_cast<bool>(x["annotations"]["destructiveHint"]) && x["title"].toString() == "Record what you play"
                           && x["description"].toString().contains("Tell the user");
         P.eq("tool.listed", listed ? 1 : 0, 1);
         P.eq("tool.live", pg::ChatAgent::mcpLive("capture", object({ { "action", "stop" } }))

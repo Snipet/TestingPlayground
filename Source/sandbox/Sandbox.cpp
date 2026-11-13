@@ -8,6 +8,7 @@
 #include "editor/Items.h"
 #include "editor/Picture.h"
 #include "fminus/GuiSpec.h"
+#include "fminus/Lang.h"
 
 #include "Product.h"
 
@@ -338,7 +339,7 @@ namespace playground::sandbox
         {
             if (!endsWith(path, ".gui"))
             {
-                why = given + " is not a .gui file: name a .gui file or a program's folder (its .fm, .gui, .sc and .sh files)";
+                why = given + " is not a .gui file: name a .gui file or a program's folder (its " + std::string(kProgramFileKinds) + " files)";
                 return false;
             }
             return readOne(named, named.getFileName().toStdString());
@@ -348,18 +349,29 @@ namespace playground::sandbox
             why = given + " is neither a file nor a folder";
             return false;
         }
+        // The editor's kinds of file (netlists too: a circuit's dials are the program's), program.fm first, as the
+        // plugin and the headless renderer read a folder; the folder sync's read-only copies (its manifest's, and a
+        // host.fm of the plugin's own text) are not the program's and count for nothing.
+        juce::MemoryBlock manifest;
+        if (const juce::File m = named.getChildFile(".fmsync"); m.existsAsFile() && m.getSize() <= static_cast<juce::int64>(kMaxTotalBytes))
+            (void)m.loadFileAsData(manifest);
+        const std::vector<std::string> copies = syncCopies(std::string_view(static_cast<const char*>(manifest.getData()), manifest.getSize()));
         std::vector<std::string> names;
         for (const juce::DirectoryEntry& e : juce::RangedDirectoryIterator(named, false, "*", juce::File::findFiles))
         {
             const std::string n = e.getFile().getFileName().toStdString();
-            if (!n.empty() && n[0] != '.'
-                && (endsWith(n, ".fm") || endsWith(n, ".gui") || endsWith(n, ".sc") || endsWith(n, ".sh")))
-                names.push_back(n);
+            if (!validFileName(n) || !isProgramFile(juce::String(str(n)).toLowerCase().toStdString())
+                || std::find(copies.begin(), copies.end(), n) != copies.end())
+                continue;
+            if (n == "host.fm" && e.getFile().getSize() == static_cast<juce::int64>(lang::hostText().size())
+                && e.getFile().loadFileAsString().toStdString() == lang::hostText())
+                continue;
+            names.push_back(n);
         }
-        std::sort(names.begin(), names.end());
+        programFirst(names);
         if (names.empty())
         {
-            why = "the folder " + given + " has no .fm, .gui, .sc or .sh file";
+            why = "the folder " + given + " has no " + std::string(kProgramFileKinds) + " file";
             return false;
         }
         if (names.size() > kMaxFiles)
