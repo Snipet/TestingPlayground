@@ -7879,6 +7879,14 @@ namespace playground::ui
     // the card was closed (or one it did not start) says its outcome in the status, once.
     void Panel::syncGit()
     {
+        // Part 3: COMPARE opened from the Git card's Compare... and closed with no other card open: the card back on that
+        // project (its diverged face), the choice one press away.
+        if (!gitAfterCompare_.empty() && !compare_.isOpen())
+        {
+            const std::string project = std::exchange(gitAfterCompare_, std::string());
+            if (!dialogOpen())
+                openGit(project);
+        }
         const bool wasOpen = git_.isOpen();
         if (git_.poll())
             dirty_ = true;
@@ -7901,6 +7909,8 @@ namespace playground::ui
                         latest = e.latest;
             git_.close();
             openCompare(theirs, latest, DiffCard::kTheirs);
+            if (compare_.isOpen())
+                gitAfterCompare_ = theirs;
         }
         if (wasOpen && !git_.isOpen() && !compare_.isOpen())
         {

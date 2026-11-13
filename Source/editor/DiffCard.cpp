@@ -99,7 +99,9 @@ namespace playground::ui
         for (int k = 0; k < 2; ++k)
             if (content_[static_cast<std::size_t>(k)].missing)
             {
-                summary_ = "Version " + std::to_string(sides_[static_cast<std::size_t>(k)]) + " is not kept any more.";
+                summary_ = sides_[static_cast<std::size_t>(k)] == kTheirs
+                               ? std::string("Their side is not read: the Git card's Compare... reads it.")   // package 05
+                               : "Version " + std::to_string(sides_[static_cast<std::size_t>(k)]) + " is not kept any more.";
                 view_.set({}, false);
                 ++revision_;
                 return;
@@ -352,10 +354,13 @@ namespace playground::ui
     funkgui::Cursor DiffCard::cursor(funkgui::Point p, float width, float height) const
     {
         const Places at = places(width, height);
-        for (const funkgui::Rect& r : { at.left, at.right, at.swap, at.ab, at.close })
+        for (const funkgui::Rect& r : { at.left, at.right, at.swap, at.close })
             if (r.contains(p))
                 return funkgui::Cursor::pointingHand;
-        if ((at.openLeft.contains(p) && sides_[0] != kEditor) || (at.openRight.contains(p) && sides_[1] != kEditor))
+        if (at.ab.contains(p) && !theirsShown())
+            return funkgui::Cursor::pointingHand;
+        const auto opens = [&](int k) { return sides_[static_cast<std::size_t>(k)] != kEditor && sides_[static_cast<std::size_t>(k)] != kTheirs; };
+        if ((at.openLeft.contains(p) && opens(0)) || (at.openRight.contains(p) && opens(1)))
             return funkgui::Cursor::pointingHand;
         if (!reading() && view_.hand(p, at.view))
             return funkgui::Cursor::pointingHand;
