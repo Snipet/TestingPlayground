@@ -181,7 +181,8 @@ namespace
             P.eq("tree.layout", there(tree / "program.fm") && there(tree / "lib.fm") && there(tree / "samples" / "kick.wav")
                                     && there(tree / "README.md") && there(tree / ".gitattributes")
                                     && manifest.find("\"funk-playground-git\"") != std::string::npos
-                                    && manifest.find("\"id\"") == std::string::npos && manifest.find("\"text\"") == std::string::npos
+                                    && manifest.find("\"id\"") == std::string::npos && manifest.find("float half") == std::string::npos
+                                    && manifest.find("// one") == std::string::npos
                                     && manifest.find("PITCH") != std::string::npos ? 1 : 0, 1);
             // A file the user put in the repository stays; a file the version no longer has goes; README stays as edited.
             writeFile(tree / "NOTES.txt", "mine\n");
@@ -253,13 +254,13 @@ namespace
         {
             ps::saveVersion("Pad", programOf("four"), 0, dials);
             const std::vector<ps::Entry> listed = ps::list();
-            P.eq("push.ahead_listed", listed.size() == 1 && listed[0].ahead == 1 ? 1 : 0, 1);
+            P.eq("project.push.ahead_listed", listed.size() == 1 && listed[0].ahead == 1 ? 1 : 0, 1);
             const gp::Result r = gp::push(setup, "Pad");
             std::printf("push: \"%s\" (%s)\n", r.line.c_str(), r.why.c_str());
             const std::optional<ps::Project> p = ps::load("Pad");
-            P.eq("push.only_new", r.ok && remoteCount() == 4 && ps::linkOf(p->id)->committed == 4 && ps::list()[0].ahead == 0 ? 1 : 0, 1);
+            P.eq("project.push.only_new", r.ok && remoteCount() == 4 && ps::linkOf(p->id)->committed == 4 && ps::list()[0].ahead == 0 ? 1 : 0, 1);
             const gp::Result again = gp::push(setup, "Pad");
-            P.eq("push.nothing_new", again.ok && remoteCount() == 4 ? 1 : 0, 1);
+            P.eq("project.push.nothing_new", again.ok && remoteCount() == 4 ? 1 : 0, 1);
         }
 
         // ---- CLONE (machine B) ------------------------------------------------------------------------------------------
@@ -317,13 +318,13 @@ namespace
             const gp::Result r = gp::pull(setup, "Pad");
             std::printf("pull: \"%s\" (%s)\n", r.line.c_str(), r.why.c_str());
             const std::optional<ps::Project> p = ps::load("Pad");
-            P.eq("pull.fast_forward", pushed.ok && r.ok && r.version == latestBefore + 1 && p->latest().number == r.version
+            P.eq("project.pull.fast_forward", pushed.ok && r.ok && r.version == latestBefore + 1 && p->latest().number == r.version
                                           && p->latest().files == programOf("from b") && p->latest().note.rfind("Pulled ", 0) == 0
                                           && ps::linkOf(p->id)->committed == r.version ? 1 : 0, 1);
             const gp::Result none = gp::pull(setup, "Pad");
-            P.eq("pull.nothing_new", none.ok && none.nothing && ps::load("Pad")->versions.size() == p->versions.size() ? 1 : 0, 1);
+            P.eq("project.pull.nothing_new", none.ok && none.nothing && ps::load("Pad")->versions.size() == p->versions.size() ? 1 : 0, 1);
             const int pushedCount = remoteCount();
-            P.eq("pull.not_recommitted", gp::push(setup, "Pad").ok && remoteCount() == pushedCount ? 1 : 0, 1);
+            P.eq("project.pull.not_recommitted", gp::push(setup, "Pad").ok && remoteCount() == pushedCount ? 1 : 0, 1);
 
             // Both sides move: A's push is refused as behind (nothing forced), and its pull refused as diverged.
             ps::saveVersion("Pad", programOf("a again"), 0, dials);
@@ -335,11 +336,11 @@ namespace
             const std::string remoteHead = sh(found, remote, { "rev-parse", "main" });
             const gp::Result behind = gp::push(setup, "Pad");
             std::printf("push: behind says \"%s\"\n", behind.why.c_str());
-            P.eq("push.behind_not_forced", !behind.ok && behind.behind && sh(found, remote, { "rev-parse", "main" }) == remoteHead ? 1 : 0, 1);
+            P.eq("project.push.behind_not_forced", !behind.ok && behind.behind && sh(found, remote, { "rev-parse", "main" }) == remoteHead ? 1 : 0, 1);
             const std::size_t versions = ps::load("Pad")->versions.size();
             const gp::Result diverged = gp::pull(setup, "Pad");
             std::printf("pull: diverged says \"%s\"\n", diverged.why.c_str());
-            P.eq("pull.diverged_refused", !diverged.ok && diverged.diverged && ps::load("Pad")->versions.size() == versions ? 1 : 0, 1);
+            P.eq("project.pull.diverged_refused", !diverged.ok && diverged.diverged && ps::load("Pad")->versions.size() == versions ? 1 : 0, 1);
         }
 
         // ---- CHECK -------------------------------------------------------------------------------------------------------

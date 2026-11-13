@@ -247,10 +247,20 @@ PROBE(gui, git)
     host.keys("escape");
     host.settle();
 
-    // Connect again, for the mark.
+    // Connect again, for the mark: to a fresh remote (the first has commits now, and an empty one is asked for).
+    const juce::File bare2 = temp.getChildFile("remote2.git");
+    bare2.createDirectory();
+    {
+        pg::git::Context c;
+        c.git = found.path;
+        c.folder = bare2.getFullPathName().toStdString();
+        c.allowFile = true;
+        pg::git::call(c, { "init", "--bare", "-q" });
+        pg::git::call(c, { "symbolic-ref", "HEAD", "refs/heads/main" });
+    }
     panel.openGit(project);
     host.settle();
-    card.setRemote(url);
+    card.setRemote(fileUrl(bare2));
     card.press(GC::Button::connect);
     pump(processor, host, 20.0, [&] { return !card.running() && port.gitLink(project).linked; });
     host.keys("escape");
