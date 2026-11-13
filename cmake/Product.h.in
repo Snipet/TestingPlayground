@@ -18,6 +18,11 @@ namespace @FP_NAMESPACE@::product
     inline constexpr char kEnvPrefix[]        = "@PRODUCT_ENV_PREFIX@";
     inline constexpr char kFunkGuiVersion[]   = "@FUNKGUI_VERSION@";
     inline constexpr char kJuceVersion[]      = "@FP_JUCE_TAG@";
+    inline constexpr char kFMinusCommit[]     = "@FP_FMINUS_SHA@";        // the pinned commit (cmake/Deps.cmake)
+    inline constexpr char kBuildType[]        = "@FP_BUILD_TYPE@";        // CMAKE_BUILD_TYPE ("multi-config": none)
+    inline constexpr char kMcpVersion[]       = "@FP_MCP_VERSION@";       // the Claude Desktop extension's
+    // This build's own commit is not here: it changes with every commit, and nearly every file includes this one. It is
+    // BuildCommit.h's (cmake/BuildCommit.cmake), which Source/plugin/ProcessorDebug.cpp alone includes.
 
     static_assert(sizeof(kManufacturerCode) == 5 && sizeof(kPluginCode) == 5, "four-character codes");
 }

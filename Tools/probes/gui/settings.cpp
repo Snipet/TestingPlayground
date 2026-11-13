@@ -1,16 +1,34 @@
 // PROBE name=gui.settings timeout=180
 //
-// gui.settings: SETTINGS, the Standalone's audio and MIDI devices in the editor's own card (editor/SettingsCard.h), and
-// the effect's muted-input notice, headless over a real Processor whose window hooks the probe sets as the app's
-// window does (Processor::setWindowHooks), with a DevicePort of its own (FakeDevices: a few devices, made up; every
-// action recorded and applied as the app's would), to <build>/probe-out/:
-//   gui.settings.png        the card in GRAPHITE, as the app opens it
+// gui.settings: SETTINGS, the editor's card of pages (editor/SettingsCard.h, SettingsPages.h): in a host (no devices:
+// the top bar's gear) and in the Standalone (the Audio and MIDI page, the devices in the editor's own card), and the
+// effect's muted-input notice, headless over a real Processor whose window hooks the probe sets as the app's window
+// does (Processor::setWindowHooks), with a DevicePort of its own (FakeDevices: a few devices, made up; every action
+// recorded and applied as the app's would), to <build>/probe-out/:
+//   gui.settings.png        the Audio and MIDI page in GRAPHITE, as the app opens it
 //   gui.settings.paper.png  in PAPER
 //   gui.settings.small.png  at the least size (kMinWidth x kMinHeight)
 //   gui.settings.error.png  a device's error under its section
 //   gui.settings.muted.png  the effect's notice in the status bar (the synth has none)
+//   gui.settings.host.png   the card in a host (the gear's): General, no Audio and MIDI page
+//   gui.settings.<page>.png, .<page>.paper.png   each page (general, editor, projects, ai, debug, about) in both themes
+//   gui.settings.debug.small.png                 the Debug page at the least size
 // and checks:
-//   HOST     no devices (a host's window): no card and no notice; the app's request and openSettings do nothing
+//   HOST     no devices (a host's window): the gear in the top bar opens the card at General, its rail without Audio
+//            and MIDI (which openSettings("audio") does not show either); no notice
+//   PAGES    the rail lists the pages in order; a click and Return on a rail's entry show its page; the page is kept
+//            while the card is open and when the gear opens it again; the controls' ids are unique
+//   GENERAL  the theme's select writes UiPreferences' theme (another Panel's card follows: its revision moves), the
+//            zoom's the host's zoom; the version shown
+//   EDITOR   Format on Run's switch writes UiPreferences' codeFormatOnRun, both ways
+//   PROJECTS the projects folder shown; Show in File Manager (Finder, Explorer) asks the processor's launcher for it
+//   AI       the provider, model and key in words; Provider and key... closes the card and opens the key dialog
+//   DEBUG    nothing gathered before the page shows; its sections (Versions, Graphics, Program, Audio, Shaders, Stores,
+//            Claude Desktop, Environment) and the rows that must be right (the version, the shader target, the
+//            program's id); read again once a second while it shows, never once it does not; Copy all's text on the
+//            host's clipboard, every section in it, nothing of the program's text
+//   A11Y     the rail's entries are buttons named for their pages, the page shown checked; every control titled
+//   LEAST    every page's places at the least size
 //   NOTICE   the effect: with the devices handed over, the notice and its Settings... button in the status bar, clear of
 //            the zoom; the button opens the card. The synth: none
 //   OPEN     the app's request (Processor::showSettings) opens the card, over the panel (the rest takes no click)
@@ -39,6 +57,7 @@
 
 #include "editor/Panel.h"
 #include "editor/SettingsCard.h"
+#include "editor/SettingsPages.h"
 #include "plugin/DevicePort.h"
 #include "plugin/EditorPort.h"
 #include "plugin/Processor.h"
@@ -48,6 +67,7 @@
 #include "Product.h"
 
 #include <funkgui/canvas/Prim.h>
+#include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/canvas/PrimList.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
@@ -58,6 +78,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -251,16 +272,21 @@ namespace
         for (std::size_t i = 0; i < at.controls.size(); ++i)
         {
             const pg::ui::SettingsCard::Control& c = at.controls[i];
-            in = in && inside(c.r, at.box);
-            body = body && (c.act == Act::done || inside(c.r, at.body));
+            in = in && (inside(c.r, at.box) || (at.maxScroll > 0.0f && !meet(c.r, at.body)));   // scrolled out of view
+            body = body && (c.act == Act::done || c.act == Act::page || inside(c.r, at.body) || at.maxScroll > 0.0f);
             for (std::size_t j = 0; j < i; ++j)
                 apart = apart && !meet(c.r, at.controls[j].r);
             for (const pg::ui::SettingsCard::Line& l : at.lines)
-                clear = clear && !meet(c.r, l.r);
+            {
+                // What is drawn: a page's text is clipped to its body (one scrolled half out of it is cut at its edge).
+                const float top = std::max(l.r.y, at.body.y), bottom = std::min(l.r.bottom(), at.body.bottom());
+                const funkgui::Rect drawn{ l.r.x, top, l.r.w, bottom - top };
+                clear = clear && (bottom <= top || !meet(c.r, drawn));
+            }
         }
         bool linesIn = true;
         for (const pg::ui::SettingsCard::Line& l : at.lines)
-            linesIn = linesIn && inside(l.r, at.body);
+            linesIn = linesIn && (inside(l.r, at.body) || at.maxScroll > 0.0f);   // a page that scrolls: below its body
         std::printf("%s: card %.0f x %.0f at %.0f, %.0f; %zu controls, %zu texts; content %.0f px, scroll %.0f\n", key.c_str(),
                     static_cast<double>(at.box.w), static_cast<double>(at.box.h), static_cast<double>(at.box.x),
                     static_cast<double>(at.box.y), at.controls.size(), at.lines.size(), static_cast<double>(at.contentH),
@@ -286,6 +312,311 @@ namespace
             if (c.act == act)
                 return true;
         return false;
+    }
+
+    // The control of `act` and `index` on the page shown, if any.
+    std::optional<pg::ui::SettingsCard::Control> controlOf(const pg::ui::SettingsCard& card, const pg::ui::Panel& panel, Act act, int index)
+    {
+        for (const pg::ui::SettingsCard::Control& c : card.places(static_cast<float>(panel.width()), static_cast<float>(panel.height())).controls)
+            if (c.act == act && c.index == index)
+                return c;
+        return std::nullopt;
+    }
+
+    bool lineHas(const pg::ui::SettingsCard& card, const pg::ui::Panel& panel, const std::string& text)
+    {
+        for (const pg::ui::SettingsCard::Line& l : card.places(static_cast<float>(panel.width()), static_cast<float>(panel.height())).lines)
+            if (l.text.find(text) != std::string::npos)
+                return true;
+        return false;
+    }
+
+    // PAGES, GENERAL, EDITOR, PROJECTS, AI, DEBUG, A11Y, LEAST and each page's PNGs, in a host's window (no devices).
+    void pagesChecks(funkgui::test::Probe& P, pg::Processor& processor, pg::ui::Panel& panel, funkgui::HeadlessHost& host,
+                     pg::ui::SettingsCard& card)
+    {
+        namespace st = pg::ui::settings;
+        pg::EditorPort& port = processor.editorPort();
+        const auto W = [&] { return static_cast<float>(panel.width()); };
+        const auto H = [&] { return static_cast<float>(panel.height()); };
+        const auto settle = [&] {
+            host.tick(2);
+            host.settle();
+        };
+        const auto click = [&](Act act, int index) {
+            const auto at = card.centreOf(act, index, W(), H());
+            if (at)
+                host.click(at->x, at->y);
+            settle();
+            return at.has_value();
+        };
+        const auto pageIndex = [](const char* id) {
+            const auto all = st::pages();
+            for (std::size_t i = 0; i < all.size(); ++i)
+                if (all[i].id == std::string(id))
+                    return static_cast<int>(i);
+            return -1;
+        };
+
+        // ---- PAGES -------------------------------------------------------------------------------------------------------
+        P.eq("pages.debug_none_before", static_cast<int64_t>(port.debugGathers()), 0);
+        const funkgui::Point gear = panel.centreOfSettings();
+        host.click(gear.x, gear.y);
+        settle();
+        P.eq("pages.gear_opens", card.isOpen() ? 1 : 0, 1);
+        {
+            std::vector<std::string> order;
+            for (const pg::ui::SettingsCard::Control& c : card.places(W(), H()).controls)
+                if (c.act == Act::page)
+                    order.push_back(st::pages()[static_cast<std::size_t>(c.index)].id);
+            std::string joined;
+            for (const std::string& o : order)
+                joined += o + " ";
+            std::printf("rail: %s\n", joined.c_str());
+            P.eq("pages.rail_order", joined == "general editor projects ai debug about " ? 1 : 0, 1);
+        }
+        P.eq("pages.click_editor", click(Act::page, pageIndex("editor")) && card.pageId() == "editor" ? 1 : 0, 1);
+        {
+            // Tab to the rail's Projects, Return.
+            const int projects = pageIndex("projects");
+            for (int k = 0; k < 20; ++k)
+            {
+                const auto f = card.focused(W(), H());
+                if (f && f->act == Act::page && f->index == projects)
+                    break;
+                host.keys("tab");
+            }
+            host.keys("return");
+            settle();
+            P.eq("pages.return_projects", card.pageId() == "projects" ? 1 : 0, 1);
+        }
+        {
+            std::set<uint32_t> ids;
+            const auto at = card.places(W(), H());
+            for (const pg::ui::SettingsCard::Control& c : at.controls)
+                ids.insert(c.id);
+            P.eq("pages.ids_unique", static_cast<int64_t>(ids.size()), static_cast<int64_t>(at.controls.size()));
+        }
+        host.keys("escape");
+        settle();
+        host.click(gear.x, gear.y);
+        settle();
+        P.eq("pages.kept_on_reopen", card.pageId() == "projects" ? 1 : 0, 1);
+
+        // ---- GENERAL: the theme and the zoom, written where they live -------------------------------------------------------
+        card.showPage("general");
+        settle();
+        {
+            pg::ui::Panel other(processor.ports(), port);
+            funkgui::HeadlessHost otherHost(other, 0, 2.0f);
+            otherHost.settle();
+            other.openSettings("general");
+            otherHost.tick(2);
+            const uint32_t otherRev = other.settingsCard().revision();
+            const uint32_t prefsRev = funkgui::UiPreferences::get().revision();
+            click(Act::item, st::kTheme);
+            const funkgui::MenuRequest* menu = host.pendingMenu();
+            bool listed = menu != nullptr && menu->items.size() == 2;
+            bool ticked = false;
+            if (menu != nullptr)
+                for (const funkgui::MenuItem& it : menu->items)
+                    ticked = ticked || (it.checked && it.label == "Graphite");
+            const bool chosen = menu != nullptr && host.chooseMenuItem("Paper");
+            settle();
+            P.eq("general.theme_menu", listed && ticked && chosen ? 1 : 0, 1);
+            P.eq("general.theme_written", funkgui::UiPreferences::get().theme(), 1);
+            P.ge("general.prefs_revision", static_cast<double>(funkgui::UiPreferences::get().revision()), static_cast<double>(prefsRev) + 1.0);
+            otherHost.tick(2);
+            P.ge("general.other_follows", static_cast<double>(other.settingsCard().revision()), static_cast<double>(otherRev) + 1.0);
+            other.settingsCard().close();
+            funkgui::UiPreferences::get().setTheme(0);
+            settle();
+            click(Act::item, st::kZoom);
+            const bool zoomed = host.pendingMenu() != nullptr && host.chooseMenuItem("150%");
+            settle();
+            P.eq("general.zoom_menu", zoomed ? 1 : 0, 1);
+            P.eq("general.zoom_written", host.zoomPercent(), 150);
+            const auto z = controlOf(card, panel, Act::item, st::kZoom);
+            P.eq("general.zoom_shown", z && z->label == "150%" ? 1 : 0, 1);
+            host.setZoom({ 100, 125, 150, 200 }, 100);
+            P.eq("general.version", lineHas(card, panel, pg::product::kVersion) ? 1 : 0, 1);
+        }
+
+        // ---- EDITOR: Format on Run --------------------------------------------------------------------------------------
+        card.showPage("editor");
+        settle();
+        {
+            const int before = funkgui::UiPreferences::get().getInt("codeFormatOnRun", 0, 0, 1);
+            click(Act::item, st::kFormatOnRun);
+            P.eq("editor.format_on_run", funkgui::UiPreferences::get().getInt("codeFormatOnRun", 0, 0, 1), before == 0 ? 1 : 0);
+            const auto t = controlOf(card, panel, Act::item, st::kFormatOnRun);
+            P.eq("editor.switch_shows", t && t->toggle && t->on == (before == 0) ? 1 : 0, 1);
+            click(Act::item, st::kFormatOnRun);
+            P.eq("editor.format_back", funkgui::UiPreferences::get().getInt("codeFormatOnRun", 0, 0, 1), before);
+        }
+
+        // ---- PROJECTS: the folder, shown through the processor's launcher ----------------------------------------------
+        card.showPage("projects");
+        settle();
+        {
+            std::string asked;
+            processor.setFolderLauncher([&asked](pg::FolderApp app, const std::string& path, std::string&) {
+                if (app == pg::FolderApp::files)
+                    asked = path;
+                return true;
+            });
+            P.eq("projects.folder_shown", lineHas(card, panel, port.projectFolder()) ? 1 : 0, 1);
+            const auto b = controlOf(card, panel, Act::item, st::kShowProjects);
+            P.eq("projects.button_words", b && b->label == st::showFolderWord() ? 1 : 0, 1);
+            click(Act::item, st::kShowProjects);
+            std::printf("projects: shown %s\n", asked.c_str());
+            P.eq("projects.show_asked", !asked.empty() && asked.rfind("~", 0) != 0
+                                            && asked == pg::projectstore::directory().getFullPathName().toStdString() ? 1 : 0, 1);
+            processor.setFolderLauncher({});
+        }
+
+        // ---- AI: the provider in words; the key dialog -------------------------------------------------------------------
+        card.showPage("ai");
+        settle();
+        P.eq("ai.provider", lineHas(card, panel, "Anthropic") ? 1 : 0, 1);
+        P.eq("ai.key_words", lineHas(card, panel, "none stored") ? 1 : 0, 1);
+        click(Act::item, st::kProviderKey);
+        P.eq("ai.card_closed", card.isOpen() ? 0 : 1, 1);
+        P.eq("ai.key_dialog", panel.keyDialogOpen() ? 1 : 0, 1);
+        host.keys("escape");
+        settle();
+        P.eq("ai.key_dialog_closes", panel.keyDialogOpen() ? 0 : 1, 1);
+
+        // ---- DEBUG ------------------------------------------------------------------------------------------------------
+        P.eq("debug.none_gathered_closed", static_cast<int64_t>(port.debugGathers()), 0);
+        P.eq("debug.no_viewer_closed", port.debugViewers(), 0);
+        panel.openSettings("debug");
+        settle();
+        P.eq("debug.viewer", port.debugViewers(), 1);
+        P.ge("debug.gathered", static_cast<double>(port.debugGathers()), 1.0);
+        {
+            std::string titles;
+            for (const pg::DebugSection& sec : card.debug())
+                titles += sec.title + "; ";
+            std::printf("debug: %s\n", titles.c_str());
+            P.eq("debug.sections", titles == "Versions; Graphics (FunkGui); Program (FMinus); Audio; Shaders; Stores; Claude Desktop; Environment; "
+                                       ? 1 : 0, 1);
+            const auto rowOf = [&](const std::string& section, const std::string& name) -> std::string {
+                for (const pg::DebugSection& sec : card.debug())
+                    if (sec.title == section)
+                        for (const pg::DebugRow& r : sec.rows)
+                            if (r.name == name)
+                                return r.value;
+                return "(none)";
+            };
+            const std::string product = rowOf("Versions", "Product");
+            std::printf("debug: product %s; build %s; fminus %s; shaders %s; program %s\n", product.c_str(), rowOf("Versions", "Build").c_str(),
+                        rowOf("Versions", "FMinus").c_str(), rowOf("Graphics (FunkGui)", "Shader target").c_str(),
+                        rowOf("Program (FMinus)", "Program").c_str());
+            P.eq("debug.version", product.find(pg::product::kVersion) != std::string::npos ? 1 : 0, 1);
+            P.eq("debug.build_commit", rowOf("Versions", "Build").rfind("commit ", 0) == 0 ? 1 : 0, 1);
+            P.eq("debug.fminus_commit", rowOf("Versions", "FMinus").find(std::string(pg::product::kFMinusCommit).substr(0, 12)) != std::string::npos ? 1 : 0, 1);
+            const funkgui::shaders::Target t = funkgui::shaders::target();
+            const std::string target = rowOf("Graphics (FunkGui)", "Shader target");
+            P.eq("debug.shader_target", t.platform.empty() ? (target.rfind("none yet", 0) == 0 ? 1 : 0)
+                                                           : (target == t.platform + ", " + t.profile ? 1 : 0), 1);
+            P.eq("debug.program_id", rowOf("Program (FMinus)", "Program") == "#" + std::to_string(port.status().program) ? 1 : 0, 1);
+            P.eq("debug.environment_listed", rowOf("Environment", std::string(pg::product::kEnvPrefix) + "PREFS_DIR") != "(none)" ? 1 : 0, 1);
+            P.eq("debug.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
+        }
+        {
+            // Read again once a second while it shows.
+            const uint64_t g = port.debugGathers();
+            host.tick(30);
+            P.eq("debug.not_before_a_second", static_cast<int64_t>(port.debugGathers()), static_cast<int64_t>(g));
+            host.tick(45);
+            P.ge("debug.again_after_a_second", static_cast<double>(port.debugGathers()), static_cast<double>(g) + 1.0);
+        }
+        {
+            // Copy all: plain text on the clipboard, every section, nothing of the program's text.
+            click(Act::item, st::kCopyAll);
+            const std::string text = host.clipboardText();
+            bool sections = !text.empty();
+            for (const pg::DebugSection& sec : card.debug())
+                sections = sections && text.find("\n" + sec.title + "\n") != std::string::npos;
+            P.eq("debug.copy_all", sections ? 1 : 0, 1);
+            const pg::Sources files = port.running();
+            const std::string first = files.empty() ? std::string() : files.front().text.substr(0, files.front().text.find('\n'));
+            P.eq("debug.copy_no_program_text", !first.empty() && text.find(first) == std::string::npos ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.settings.debug.png");
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+        settle();
+        checkPlaces(P, "debug_small", panel, card);
+        P.ge("debug.scrolls_small", static_cast<double>(card.places(W(), H()).maxScroll), 1.0);
+        writePng(P, host, "gui.settings.debug.small.png");
+        host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+        settle();
+        card.showPage("about");
+        settle();
+        P.eq("debug.viewer_gone", port.debugViewers(), 0);
+        {
+            const uint64_t g = port.debugGathers();
+            host.tick(150);
+            P.eq("debug.none_once_gone", static_cast<int64_t>(port.debugGathers()), static_cast<int64_t>(g));
+        }
+
+        // ---- A11Y: the rail's entries ------------------------------------------------------------------------------------
+        {
+            std::vector<funkgui::A11yItem> items;
+            panel.accessibility(items);
+            int rail = 0, checked = 0;
+            for (const funkgui::A11yItem& it : items)
+                if (it.title.rfind("Settings page: ", 0) == 0)
+                {
+                    ++rail;
+                    checked += it.checked ? 1 : 0;
+                    std::string id = "?";
+                    for (const st::Page& pg2 : st::pages())
+                        if (it.title == std::string("Settings page: ") + pg2.title)
+                            id = pg2.id;
+                    P.eq("a11y.rail_" + id, it.role == funkgui::A11yRole::button ? 1 : 0, 1);
+                }
+            P.eq("a11y.rail_entries", rail, static_cast<int64_t>(st::pages().size()) - 1);
+            P.eq("a11y.one_checked", checked, 1);
+        }
+
+        // ---- each page in both themes, and at the least size -----------------------------------------------------------
+        for (const char* id : { "general", "editor", "projects", "ai", "debug", "about" })
+        {
+            card.showPage(id);
+            settle();
+            checkPlaces(P, std::string("page_") + id, panel, card);
+            P.eq(std::string("page_") + id + ".missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
+            if (std::string(id) != "debug")
+                writePng(P, host, (std::string("gui.settings.") + id + ".png").c_str());
+            host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            settle();
+            checkPlaces(P, std::string("least_") + id, panel, card);
+            host.resize(pg::ui::kDefaultWidth, pg::ui::kDefaultHeight);
+            settle();
+        }
+        host.keys("escape");
+        settle();
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.setZoom({ 100, 125, 150, 200 }, 100);
+            paperHost.settle();
+            for (const char* id : { "general", "editor", "projects", "ai", "debug", "about" })
+            {
+                paper.openSettings(id);
+                paperHost.tick(2);
+                paperHost.settle();
+                P.eq(std::string("paper_") + id + ".shown", paper.settingsCard().pageId() == id ? 1 : 0, 1);
+                writePng(P, paperHost, (std::string("gui.settings.") + id + ".paper.png").c_str());
+                paperHost.keys("escape");
+                paperHost.tick(2);
+            }
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        settle();
     }
 }
 
@@ -321,14 +652,56 @@ PROBE(gui, settings)
         return at.has_value();
     };
 
-    // ---- HOST: no devices -------------------------------------------------------------------------------------------
+    // ---- HOST: no devices: the gear opens the card, without the Audio and MIDI page -----------------------------------
     P.eq("host.no_devices", port.devices() == nullptr ? 1 : 0, 1);
-    processor.showSettings();
+    P.eq("host.no_card_at_first", card.isOpen() ? 0 : 1, 1);
+    {
+        const funkgui::Point gear = panel.centreOfSettings();
+        P.le("host.gear_in_top_bar", static_cast<double>(gear.y), 60.0);
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        bool titled = false, clear = true;
+        funkgui::Rect gearRect{};
+        for (const funkgui::A11yItem& it : items)
+            if (it.title == "Settings" && it.bounds.contains(gear))
+            {
+                titled = true;
+                gearRect = it.bounds;
+            }
+        for (const funkgui::A11yItem& it : items)   // nothing else of the top bar under it (the theme, the switch)
+            if (it.title != "Settings" && it.bounds.y < 60.0f && it.bounds.w < 400.0f && meet(it.bounds, gearRect))
+                clear = false;
+        P.eq("host.gear_titled", titled ? 1 : 0, 1);
+        P.eq("host.gear_clear", clear ? 1 : 0, 1);
+        host.click(gear.x, gear.y);
+        settle();
+    }
+    P.eq("host.gear_opens", card.isOpen() ? 1 : 0, 1);
+    P.eq("host.at_general", card.pageId() == "general" ? 1 : 0, 1);
+    {
+        const auto at = card.places(W(), H());
+        int rail = 0;
+        bool audio = false;
+        for (const pg::ui::SettingsCard::Control& c : at.controls)
+            if (c.act == Act::page)
+            {
+                ++rail;
+                audio = audio || pg::ui::settings::pages()[static_cast<std::size_t>(c.index)].id == std::string("audio");
+            }
+        P.eq("host.rail_without_audio", audio ? 0 : 1, 1);
+        P.eq("host.rail_pages", rail, static_cast<int64_t>(pg::ui::settings::pages().size()) - 1);
+        P.eq("host.missing_glyphs", static_cast<int64_t>(host.draw().missingGlyphs), 0);
+    }
+    writePng(P, host, "gui.settings.host.png");
+    P.eq("host.no_audio_page", card.showPage("audio") ? 0 : 1, 1);
+    host.keys("escape");
     settle();
-    P.eq("host.request_no_card", card.isOpen() ? 0 : 1, 1);
-    P.eq("host.open_refused", panel.openSettings() ? 0 : 1, 1);
+    P.eq("host.escape_closes", card.isOpen() ? 0 : 1, 1);
+    P.eq("host.open_asks_audio", panel.openSettings("audio") && card.pageId() != "audio" ? 1 : 0, 1);
+    host.keys("escape");
+    settle();
     P.eq("host.no_notice", panel.mutedNoticeShown() ? 0 : 1, 1);
-    P.eq("host.nothing_drawn", countTag(host.draw(), pg::ui::kMutedTag) + countTag(host.draw(), pg::ui::kSettingsTag), 0);
+    P.eq("host.notice_not_drawn", countTag(host.draw(), pg::ui::kMutedTag), 0);
 
     // The app's window hands its devices over (its request made in the host is not taken now).
     FakeDevices fake;
@@ -728,7 +1101,11 @@ PROBE(gui, settings)
     P.eq("gone.no_notice", panel.mutedNoticeShown() ? 0 : 1, 1);
     processor.showSettings();
     settle();
-    P.eq("gone.request_nothing", card.isOpen() ? 0 : 1, 1);
+    P.eq("gone.request_opens_without_audio", card.isOpen() && card.pageId() != "audio" ? 1 : 0, 1);
+    host.keys("escape");
+    settle();
+
+    pagesChecks(P, processor, panel, host, card);
 
     pg::projectstore::setDirectoryForTests({});
     folder.deleteRecursively();

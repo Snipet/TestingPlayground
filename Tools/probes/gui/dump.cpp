@@ -30,6 +30,8 @@
 // and checks:
 //   FRAME     the frame settles, every glyph is in the font, the editor shows the processor's draft (the first
 //             example), and the dials are the program's parameters: one for each, the rest not shown
+//   TOPBAR    the Settings gear left of the theme, at the default width and the least, no two of the top bar's
+//             controls over each other; the gear opens the card (gui.dump.topbar.least.png)
 //   MARK      the top bar's mark (editor/LogoMark.h, the product's kind's) at 2x and at 1x, and the 2x drawing at the
 //             scales a zoom makes (1.25, 1.5, 2.5, 3): drawn under kLogoTag, an AREA column a pair of the wave's
 //             points and one primitive for the caret. Hinted for 1x and 2x: the caret's stem with its edges on whole
@@ -414,6 +416,58 @@ PROBE(gui, dump)
             dials += panel.centreOfDial(c).has_value() ? 1 : 0;
         P.eq(tag + ".dials_are_params", dials, params);
         writePng(P, host, theme == 0 ? "gui.dump.png" : "gui.dump.paper.png", tag);
+    }
+
+    // TOPBAR: the Settings gear left of the theme, at the default width and the least; no two of the top bar's
+    // controls over each other (the mark, the project's pill, the window button, the Code / Panel switch, the gear,
+    // the theme).
+    for (const int w : { pg::ui::kDefaultWidth, pg::ui::kMinWidth })
+    {
+        const std::string tag = w == pg::ui::kMinWidth ? "topbar.least" : "topbar.default";
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.resize(w, pg::ui::kMinHeight);
+        host.settle();
+        std::vector<funkgui::A11yItem> items;
+        panel.accessibility(items);
+        std::vector<funkgui::A11yItem> bar;
+        funkgui::Rect gear{}, theme{};
+        for (const funkgui::A11yItem& it : items)
+            if (it.visible && it.bounds.w > 0.0f && it.bounds.w < 500.0f && it.bounds.bottom() <= 60.0f)
+            {
+                bar.push_back(it);
+                if (it.title == "Settings")
+                    gear = it.bounds;
+                if (it.title.rfind("Theme", 0) == 0)
+                    theme = it.bounds;
+            }
+        bool apart = true;
+        for (std::size_t i = 0; i < bar.size(); ++i)
+            for (std::size_t j = 0; j < i; ++j)
+            {
+                const funkgui::Rect& a = bar[i].bounds;
+                const funkgui::Rect& b = bar[j].bounds;
+                if (a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom())
+                {
+                    apart = false;
+                    std::printf("%s: '%s' over '%s'\n", tag.c_str(), bar[i].title.c_str(), bar[j].title.c_str());
+                }
+            }
+        std::printf("%s: %zu controls in the top bar, the gear at %.0f, the theme at %.0f\n", tag.c_str(), bar.size(),
+                    static_cast<double>(gear.x), static_cast<double>(theme.x));
+        P.eq(tag + ".gear_shown", gear.w > 0.0f ? 1 : 0, 1);
+        P.eq(tag + ".gear_left_of_theme", gear.w > 0.0f && gear.right() <= theme.x ? 1 : 0, 1);
+        P.eq(tag + ".apart", apart ? 1 : 0, 1);
+        const funkgui::Point c = panel.centreOfSettings();
+        host.click(c.x, c.y);
+        host.settle();
+        P.eq(tag + ".gear_opens_settings", panel.settingsCard().isOpen() ? 1 : 0, 1);
+        if (w == pg::ui::kMinWidth)
+        {
+            host.keys("escape");
+            host.settle();
+            writePng(P, host, "gui.dump.topbar.least.png", tag);
+        }
     }
 
     // MARK, at 2x and at 1x (its numbers, and its pixels: SoftRaster at one sample a pixel, as the GPU draws them),
