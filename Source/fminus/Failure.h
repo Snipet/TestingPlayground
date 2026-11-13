@@ -17,6 +17,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstring>
 #include <exception>
 #include <new>
@@ -108,8 +109,11 @@ namespace playground::failure
     {
         detail::Planted& p = detail::planted;
         p.armed.store(false, std::memory_order_release);
-        std::strncpy(p.stage, stage, sizeof p.stage - 1);
-        p.stage[sizeof p.stage - 1] = '\0';
+        std::size_t k = 0;                       // (no strncpy: Windows' runtime calls it deprecated)
+        for (; k + 1 < sizeof p.stage && stage[k] != '\0'; ++k)
+            p.stage[k] = stage[k];
+        for (; k < sizeof p.stage; ++k)
+            p.stage[k] = '\0';
         p.kind.store(static_cast<int>(kind), std::memory_order_relaxed);
         p.fired.store(0, std::memory_order_relaxed);
         p.times.store(times, std::memory_order_relaxed);
