@@ -355,6 +355,7 @@ namespace playground
         std::string gitChosen() const override;
         bool setGitChosen(const std::string& path, std::string& why) override;
         std::string gitFolder() const override;
+        VersionContent gitTheirs(const std::string& project) const override;
         AbState ab() const override;
         uint64_t abRevision() const override { return ab_.st.revision; }
         bool startAb(const std::string& project, int a, int b, std::string& why) override;
@@ -664,6 +665,12 @@ namespace playground
         std::pair<std::string, int> gitOpen_;                    // under gitMutex_: a pulled version to open
         std::atomic<bool> gitCancel_{ false };
         std::atomic<uint64_t> gitRevision_{ 1 };
+        struct GitTheirs                                         // part 3: a GitOp::theirs job's read (under gitMutex_)
+        {
+            std::string project, sha;
+            VersionContent content;
+        };
+        GitTheirs gitTheirs_;
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
         bool savePresetAs(const std::string& preset, std::optional<Journal::Who> who, std::string& why);
         int programCount() const;

@@ -145,6 +145,18 @@ namespace playground
         return ok;
     }
 
+    VersionContent Processor::gitTheirs(const std::string& project) const
+    {
+        const std::lock_guard<std::mutex> lock(gitMutex_);
+        if (gitTheirs_.project.empty() || !projectstore::sameName(gitTheirs_.project, project))
+        {
+            VersionContent v;
+            v.read = v.missing = true;
+            return v;
+        }
+        return gitTheirs_.content;
+    }
+
     std::string Processor::gitFolder() const { return projectstore::gitFolder().getFullPathName().toStdString(); }
 
     // The git thread: nothing here touches the processor but gitState_ and gitOpen_ (under gitMutex_), the store's own
@@ -188,6 +200,30 @@ namespace playground
                     case GitOp::pull: o = gitprojects::pull(env, job.project); break;
                     case GitOp::check: o = gitprojects::check(env, job.project); break;
                     case GitOp::add: o = gitprojects::add(env, job.remote, job.branch); break;
+                    case GitOp::keepMine: o = gitprojects::keepMine(env, job.project); break;
+                    case GitOp::takeTheirs: o = gitprojects::takeTheirs(env, job.project); break;
+                    case GitOp::theirs:
+                    {
+                        std::string sha, why;
+                        const std::optional<projecttree::Tree> t = gitprojects::theirsOf(env, job.project, sha, why);
+                        o.ok = t.has_value();
+                        o.words = t ? "Their side (" + sha.substr(0, 7) + ") read." : why;
+                        if (t)
+                        {
+                            VersionContent v;
+                            v.read = true;
+                            v.files = t->version.files;
+                            for (const projectstore::Dial& d : t->version.dials)
+                                v.dials.push_back({ d.name, d.value, d.label, d.label.empty() ? juce::String(d.value, 3).toStdString() : d.label });
+                            for (const projectstore::SampleRef& r : t->version.samples)
+                                v.samples.push_back({ r.name, r.hash });
+                            v.note = "Theirs, " + sha.substr(0, 7);
+                            v.when = whenOf(gitprojects::commitTimeOf(env, job.project, sha));
+                            const std::lock_guard<std::mutex> lock(gitMutex_);
+                            gitTheirs_ = { job.project, sha, std::move(v) };
+                        }
+                        break;
+                    }
                     case GitOp::find: break;
                 }
                 if (o.cancelled || gitCancel_.load())
@@ -206,7 +242,7 @@ namespace playground
             ended.diverged = o.diverged;
             ended.words = o.words;
             ended.added = o.project;
-            if (job.op == GitOp::pull && o.ok && o.version > 0)
+            if ((job.op == GitOp::pull || job.op == GitOp::takeTheirs) && o.ok && o.version > 0)
                 open = { job.project, o.version };
         }
         catch (const std::exception& e)
