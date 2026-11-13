@@ -122,13 +122,42 @@ namespace
         return a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom();
     }
 
-    // A home folder of the probe's own and a check over it; the process's check is made from it when the next
-    // processor is.
+    // The factory projects' site: nothing there (every request a 404), counted.
+    class NoFactory final : public pg::claude::Transport
+    {
+    public:
+        int count() const { return count_.load(); }
+        pg::claude::HttpResult post(const std::string&, const std::string&, const std::string&, const pg::claude::Headers&,
+                                    const std::function<bool(std::string_view)>&, const std::atomic<bool>&) override
+        {
+            return { 500, {}, "no POST here", -1, {} };
+        }
+        pg::claude::HttpResult get(const std::string&, const std::string&, const pg::claude::Headers&, const std::atomic<bool>&) override
+        {
+            ++count_;
+            return { 404, {}, "not found", -1, {} };
+        }
+        pg::claude::HttpResult getLimited(const std::string&, const std::string&, const pg::claude::Headers&,
+                                          const std::function<bool(std::string_view)>&, std::size_t, const std::atomic<bool>&) override
+        {
+            ++count_;
+            return { 404, {}, "not found", -1, {} };
+        }
+
+    private:
+        std::atomic<int> count_{ 0 };
+    };
+
+    // A home folder of the probe's own, a check over it and a factory store over a site of nothing (the environment's
+    // <PREFIX>FACTORY=off turned off for it alone, its transport scripted): the process's are made from them when the
+    // next processor is.
     struct Home
     {
         juce::File dir;
         std::shared_ptr<Site> site = std::make_shared<Site>();
+        std::shared_ptr<NoFactory> factorySite = std::make_shared<NoFactory>();
         up::Config config;
+        pg::factorystore::Config factory;
 
         explicit Home(const juce::File& d) : dir(d)
         {
@@ -142,10 +171,16 @@ namespace
             config.offersPrices = false;
             up::useConfigForTests(&config);
             pg::factorystore::setDirectoryForTests(dir);
+            factory = pg::factorystore::processConfig();
+            factory.transport = factorySite;
+            factory.off = false;
+            factory.site = "https://fixture.test";
+            pg::factorystore::useConfigForTests(&factory);
         }
         ~Home()
         {
             up::useConfigForTests(nullptr);
+            pg::factorystore::useConfigForTests(nullptr);
             pg::factorystore::setDirectoryForTests(juce::File());
         }
     };
@@ -203,7 +238,7 @@ PROBE(gui, updates)
         P.eq("offer.shown", tickUntil(host, [&] { return offer.isOpen(); }) ? 1 : 0, 1);
         settle();
         P.eq("offer.both_ticked", offer.factoryTicked() && offer.updatesTicked() ? 1 : 0, 1);
-        P.eq("offer.nothing_asked", home.site->count(), 0);
+        P.eq("offer.nothing_asked", home.site->count() + home.factorySite->count(), 0);
         P.eq("offer.drawn", countTag(host.draw(), pg::ui::kOfferTag) > 0 ? 1 : 0, 1);
         {
             bool group = false;
@@ -442,6 +477,7 @@ PROBE(gui, updates)
             settle();
             const pg::UpdateState v = port.updateState();
             P.eq("again_from_settings", v.updatesOn && v.factory == 1 ? 1 : 0, 1);
+            P.eq("again_from_settings.factory_fetches", tickUntil(host, [&] { return home.factorySite->count() > 0; }) ? 1 : 0, 1);
             host.keys("escape");
             P.eq("paper.pill.shown", tickUntil(host, [&] { return panel.centreOfUpdatePill().has_value(); }) ? 1 : 0, 1);
             settle();
