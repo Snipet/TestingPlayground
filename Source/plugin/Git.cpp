@@ -683,10 +683,12 @@ namespace playground::git
                 o.why = "git merge-tree said nothing.";
             return o;
         }
-        if (has(o.why, "write-tree") || has(o.why, "usage: git merge-tree") || has(o.why, "unknown option"))
+        // Exit 129 is git's usage error: a git older than 2.38, which has no --write-tree (it prints its usage).
+        if ((o.ended == run::Ended::exited && o.code == 129) || has(o.why, "write-tree") || has(o.why, "usage: git merge-tree")
+            || has(o.why, "unknown option"))
         {
             out.unsupported = true;
-            o.why = "This git (" + std::string("older than 2.38") + ") cannot merge without touching the folder: update git.";
+            o.why = "This git (older than 2.38) cannot merge without touching the folder.";
         }
         return o;
     }

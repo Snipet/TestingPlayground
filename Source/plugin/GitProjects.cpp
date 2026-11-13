@@ -322,8 +322,10 @@ namespace playground::gitprojects
                 return !g.ok ? gitFailed(env, g, "Not pulled:") : failed("Not pulled: " + why + ".");
             say(env, "Merging with " + where + "...");
             git::Merged m;
-            if (git::Outcome o = git::mergeTree(c, "HEAD", theirs, m); !o.ok)
+            if (git::Outcome o = git::mergeTree(c, "HEAD", theirs, m); !o.ok && !m.unsupported)
                 return gitFailed(env, o, "Not merged:");
+            // A git older than 2.38 cannot merge in the object store: no dead end, the user chooses (Keep mine and Take
+            // theirs need no merge-tree).
             std::optional<projecttree::Tree> tree;
             if (m.clean)
             {
@@ -344,9 +346,13 @@ namespace playground::gitprojects
                 projectstore::setLink(k.link);
                 Outcome o;
                 o.diverged = true;
-                o.words = "Both sides changed " + (m.conflicts.empty() ? std::string("the same lines") : "the same lines of " + listed(m.conflicts))
-                        + ", so git cannot merge them. Choose: Keep mine, Take theirs, or Compare... to see both. Either way both sides "
-                          "stay, as versions.";
+                o.words = m.unsupported
+                              ? std::string("Both sides have changed, and this git (older than 2.38) cannot merge them on its own (a "
+                                            "newer git merges changes to different places by itself). Choose: Keep mine, Take theirs, "
+                                            "or Compare... to see both. Either way both sides stay, as versions.")
+                              : "Both sides changed " + (m.conflicts.empty() ? std::string("the same lines") : "the same lines of " + listed(m.conflicts))
+                                    + ", so git cannot merge them. Choose: Keep mine, Take theirs, or Compare... to see both. Either way both "
+                                      "sides stay, as versions.";
                 return o;
             }
             say(env, "Saving the merge as a version...");
@@ -746,7 +752,8 @@ namespace playground::gitprojects
         if (git::mergeUnderWay(c))
             return failed("A merge is under way in " + k.folder.string() + " (made there, not by the plugin): finish it or abort it there first.");
         const std::string theirs = k.link.theirs, where = shortRemote(k.link.remote);
-        const int mine = k.project.latest().number;
+        // Yours: the version last committed (a second press after one cut off would find theirs the latest).
+        const int mine = k.project.version(k.link.committed) != nullptr ? k.link.committed : k.project.latest().number;
         say(env, "Reading " + where + "'s side...");
         const std::optional<projecttree::Tree> tree = projecttree::read(commitGetter(c, theirs), &why);
         if (!tree)

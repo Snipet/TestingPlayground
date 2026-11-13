@@ -145,18 +145,6 @@ namespace playground
         return ok;
     }
 
-    VersionContent Processor::gitTheirs(const std::string& project) const
-    {
-        const std::lock_guard<std::mutex> lock(gitMutex_);
-        if (gitTheirs_.project.empty() || !projectstore::sameName(gitTheirs_.project, project))
-        {
-            VersionContent v;
-            v.read = v.missing = true;
-            return v;
-        }
-        return gitTheirs_.content;
-    }
-
     std::string Processor::gitFolder() const { return projectstore::gitFolder().getFullPathName().toStdString(); }
 
     // The git thread: nothing here touches the processor but gitState_ and gitOpen_ (under gitMutex_), the store's own
@@ -213,14 +201,12 @@ namespace playground
                             VersionContent v;
                             v.read = true;
                             v.files = t->version.files;
-                            for (const projectstore::Dial& d : t->version.dials)
-                                v.dials.push_back({ d.name, d.value, d.label, d.label.empty() ? juce::String(d.value, 3).toStdString() : d.label });
                             for (const projectstore::SampleRef& r : t->version.samples)
                                 v.samples.push_back({ r.name, r.hash });
                             v.note = "Theirs, " + sha.substr(0, 7);
                             v.when = whenOf(gitprojects::commitTimeOf(env, job.project, sha));
                             const std::lock_guard<std::mutex> lock(gitMutex_);
-                            gitTheirs_ = { job.project, sha, std::move(v) };
+                            gitTheirs_ = { job.project, sha, std::move(v), t->version.dials };   // worded when read
                         }
                         break;
                     }

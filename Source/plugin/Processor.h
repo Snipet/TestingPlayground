@@ -668,7 +668,8 @@ namespace playground
         struct GitTheirs                                         // part 3: a GitOp::theirs job's read (under gitMutex_)
         {
             std::string project, sha;
-            VersionContent content;
+            VersionContent content;                              // its dials worded by gitTheirs() (ProcessorVersions.cpp)
+            std::vector<projectstore::Dial> dials;
         };
         GitTheirs gitTheirs_;
         bool openProjectAs(const std::string& name, int version, std::optional<Journal::Who> who, std::string& why);
