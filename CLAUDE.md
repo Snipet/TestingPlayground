@@ -742,7 +742,8 @@ place (its `products/<key>.cmake`, and its names in the docs).
   MIDI page is listed only while there are devices (the Standalone). A page is a file and a row in `settings::pages()`
   (Usage before Debug, below; packages to come: Network before it, Git rows on Projects, the code text size on Editor),
   never a change inside the card. A page that draws more than texts and controls (the Usage page's chart) marks a Control
-  `own` and draws it itself (`settings::Page::paint`, `keyed`, `a11y`; its view state `SettingsCard::viewState`). Each control writes where its setting already lives and reads it there at each layout: the card keeps
+  `own` and draws it itself (`settings::Page::paint`, `keyed`, `a11y`; its view state `SettingsCard::viewState`; a click's
+  point `SettingsCard::pressPoint`). Each control writes where its setting already lives and reads it there at each layout: the card keeps
   no copy, and a page's `key()` makes the card draw again when what it reads moves with no input.
 - **The Debug page gathers only while it shows**: the card counts itself a viewer (`EditorPort::addDebugViewer`) while
   its Debug page shows, `Processor::debugRows` returns nothing (and gathers nothing: `debugGathers`) with none, and the
@@ -750,7 +751,15 @@ place (its `products/<key>.cmake`, and its names in the docs).
   EditorHost rows, `nogpu/CreateEditorSoft.cpp`'s) and the Panel's own; no bgfx header outside FunkGui's.
 - **The Debug page never shows a key, a chat's word, a file's text or the user's audio**: names, numbers, paths,
   states; the environment rows are the product's own `<PREFIX>...` switches. Copy all copies only what the page shows.
-- **The Usage page** (`editor/UsagePage.h/.cpp`): what the chat's requests used and cost, from the usage ledger (below) through `ChatPort::usage(Range)`, which reads the file off the message thread (the chat's job thread), so a frame only lays out and draws. A range (7 days, 30 days, 12 months, All) and Tokens or Cost; a chart (a bar a day, a month in 12 months and All, stacked by model, the largest `kMaxSeries` a colour each and the rest Other, round axis steps, the bar under the pointer or picked by the keys read out); a table (a row a model: its provider, requests, tokens in, cached, out, cost, share, and the total); the footnote with the price table's date; Reset..., asked first (`ChatPort::resetUsage`). An estimate is never a cost (`~` before it; `no price known` where there is none; the date always shown). The colours hold in both themes and both accents and are never the errors' `signal`; the model (`usagepage::buildModel`) is pure. `gui.usage` checks it.
+- **The Usage page** (`editor/UsagePage.h/.cpp`): what the chat's requests used and cost, from the usage ledger (below)
+  through `ChatPort::usage(Range)`, which reads the file off the message thread (the chat's job thread), so a frame only
+  lays out and draws. A range (7 days, 30 days, 12 months, All) and Tokens or Cost; a chart (a bar a day, a month in 12
+  months and All, stacked by model, the largest `kMaxSeries` a colour each and the rest Other, round axis steps, the bar
+  under the pointer, or the one a click or the keys picked, read out: a key's pick holds until the pointer moves); a
+  table (a row a model: its provider, requests, tokens in, cached, out, cost, share, and the total); the footnote with
+  the price table's date; Reset..., asked first (`ChatPort::resetUsage`). An estimate is never a cost (`~` before it;
+  `no price known` where there is none; the date always shown). The colours hold in both themes and both accents and are
+  never the errors' `signal`; the model (`usagepage::buildModel`) is pure. `gui.usage` checks it.
 - **This build's commit is never in `Product.h`** (nearly every file includes it, so a value that changes each commit
   would rebuild everything): `cmake/BuildCommit.cmake` writes `<build>/generated/common/BuildCommit.h` at configure and
   at each build (`fp_build_commit`), only when it changes, and `Source/plugin/ProcessorDebug.cpp` alone includes it.

@@ -13,7 +13,7 @@
 // marks `own` (the card draws nothing of it, and focuses, hits and names it as any other), its paint() over the body
 // after the card's own drawing, keyed() for the keys the card leaves to a focused own control (Left, Right, Home, End),
 // a11y() for what it shows to a screen reader; its view state (a choice that is no setting) kept by the card
-// (SettingsCard::viewState). Each is optional: a page without them is as before.
+// (SettingsCard::viewState); act() on an own control told where a click was (SettingsCard::pressPoint). Each is optional: a page without them is as before.
 #pragma once
 
 #include "editor/SettingsCard.h"
