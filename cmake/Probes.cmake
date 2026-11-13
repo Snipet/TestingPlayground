@@ -17,10 +17,11 @@
 # row (P.num, P.hash, ...) would report golden_missing (exit 3) and fail. A product's outputs (WAVs, PNGs) go to
 # <build>/probe-out/<key>/, its results JSON to <build>/probe-results/<key>/, and the FunkGui preferences of a probe
 # to <build>/sandbox/<key>/<probe>/ (never the user's ~/Library). <prefix>FACTORY=off: no probe's processor fetches the
-# factory projects from the website (plugin.factorystore makes its own stores, over a scripted transport).
+# factory projects from the website (plugin.factorystore makes its own stores, over a scripted transport). <prefix>GIT is
+# CMake's GIT_EXECUTABLE (cmake/Deps.cmake's find_package(Git)): the git plugin.git runs (plugin/Git.h's find()).
 #
 # fp_add_lints(), once after every product: lint.exports (macOS and Linux) and lint.signature (macOS) over every
-# product's bundles, and lint.layers over the sources, labelled `lint`.
+# product's bundles, lint.layers over the sources and lint.changelog over docs/changelog/'s entries, labelled `lint`.
 include_guard(GLOBAL)
 
 set(FP_PROBE_ROOT ${PROJECT_SOURCE_DIR}/Tools/probes)
@@ -170,7 +171,7 @@ function(fp_add_probes key)
     set_tests_properties(${_test} PROPERTIES
         LABELS "probe;${_layer};${key}"
         TIMEOUT ${_timeout}
-        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}FACTORY=off;${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>")
+        ENVIRONMENT "PROBE_OUT_DIR=${CMAKE_BINARY_DIR}/probe-out/${key};${_p}PREFS_DIR=${_sb};${_p}FACTORY=off;${_p}SHADERC=${FP_SHADERC};${_p}MCP_DIR=${_sb}/mcp;${_p}MCP_SERVER=$<TARGET_FILE:${FP_MCP}>;${_p}RENDER=$<TARGET_FILE:${FP_RENDER}>;${_p}GIT=${GIT_EXECUTABLE}")
   endforeach()
 endfunction()
 
@@ -196,4 +197,9 @@ function(fp_add_lints)
   add_test(NAME lint.layers COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
                                     -P ${PROJECT_SOURCE_DIR}/cmake/LintLayers.cmake)
   set_tests_properties(lint.layers PROPERTIES LABELS "lint" TIMEOUT 60)
+
+  # ---- the changelog lint: docs/changelog/'s entries well formed, CHANGELOG.md's Unreleased heading there ------------
+  add_test(NAME lint.changelog COMMAND ${CMAKE_COMMAND} -DFP_SOURCE_DIR=${PROJECT_SOURCE_DIR}
+                                       -P ${PROJECT_SOURCE_DIR}/cmake/LintChangelog.cmake)
+  set_tests_properties(lint.changelog PROPERTIES LABELS "lint" TIMEOUT 60)
 endfunction()

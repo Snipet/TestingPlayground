@@ -99,6 +99,16 @@ namespace playground::scenario
                 return num(o, key, where, 0.0, r.longest, out);
             }
 
+            // Where something that lasts ends (`what`, a note's at + len, a move's at + over): by the request's longest
+            // too, as each time is, so a Session never cuts it there.
+            bool ends(const std::string& where, const char* what, double end, const measure::Request& r, const char* item)
+            {
+                if (end > r.longest + 1e-9)
+                    return fail(where, std::string(what) + " is 0 to " + number(r.longest) + " s (" + item + " ends at "
+                                           + number(end) + " s)" + capWords(r));
+                return true;
+            }
+
         private:
             std::string& why_;
         };
@@ -122,7 +132,8 @@ namespace playground::scenario
                 double note = 48.0, at = 0.0, len = 0.5, vel = 0.8;
                 if (!in.keys(n, where, { "note", "at", "len", "vel" }) || !in.num(n, "note", where, 0, 127, note, true)
                     || !in.time(n, "at", where, r, at)
-                    || !in.num(n, "len", where, 0.0001, 3600.0, len) || !in.num(n, "vel", where, 0.0, 1.0, vel))
+                    || !in.num(n, "len", where, 0.0001, 3600.0, len) || !in.num(n, "vel", where, 0.0, 1.0, vel)
+                    || !in.ends(where, "at + len", at + len, r, "this note"))
                     return false;
                 r.phrase.push_back({ static_cast<int>(std::lround(note)), at, len, static_cast<float>(vel) });
             }
@@ -147,7 +158,7 @@ namespace playground::scenario
                 if (dial.empty())
                     return in.fail(where, "dial (a parameter's name) is needed");
                 if (!in.time(m, "at", where, r, at) || !in.num(m, "to", where, -1e9, 1e9, to, true)
-                    || !in.time(m, "over", where, r, over))
+                    || !in.time(m, "over", where, r, over) || !in.ends(where, "at + over", at + over, r, "this move"))
                     return false;
                 r.automate.push_back({ dial, at, static_cast<float>(to), over });
             }

@@ -29,6 +29,8 @@
 //             refused in words: a path not whole, a file that is not there, a sample the program lacks, no program on
 //             either side, b_rate, try_edits on it; a path told from a sample's name alike on every platform (a
 //             Windows path, a drive's or a share's, is a path, never a sample looked up)
+//   CAPTURE   a recording of a program that reads a sample (the synth's player from its note-on, the effect's input
+//             with a frame of it added) replays bit for bit: the take's replay line compiles with the samples
 //   TOOLS     write_file's path adds one (its name tidied), get_status lists it (and which the program reads),
 //             rename_file and delete_file act on it, content for an audio file's name refused
 //   EXAMPLE   sample.fm's one-shot (readAt: the index and the fraction apart): the synth's voice plays the hit at note
@@ -778,6 +780,46 @@ PROBE(plugin, samples)
         P.eq("target.refused_b_rate", has(refusal("wav:kick.wav", "editor", { { "b_rate", 96000 } }), "b_rate takes no target sound") ? 1 : 0, 1);
         P.eq("target.refused_try_edits", has(refusal("editor", "wav:kick.wav", { { "try_edits", juce::Array<juce::var>{} } }),
                                              "try_edits apply to b, which is the target sound") ? 1 : 0, 1);
+    }
+
+    // ---- CAPTURE: a recording of a program that plays a sample ---------------------------------------------------------
+    {
+        pg::Processor p;
+        p.setRateAndBufferSizeDetails(48000.0, kBlock);
+        p.prepareToPlay(48000.0, kBlock);
+        (void)dir.getChildFile("capture").createDirectory();
+        const juce::File k48 = writeFile(dir.getChildFile("capture"), "kick.wav", floatWav(kick, 48000));
+        std::string why;
+        (void)p.editorPort().addAssets({ k48.getFullPathName().toStdString() }, why);
+        // The synth: the player (a fresh state at each note-on). The effect: its input with the sample's 100th frame
+        // added, which keeps no state, so that a take of it replays bit for bit wherever it starts.
+        const std::string program = kInstrument ? player("kick.wav")
+                                                : "#include \"sample.fm\"\n#pragma sample s \"kick.wav\"\nmodule Effect\n{\n    Sample s;\n"
+                                                  "    void process(float* restrict left, float* restrict right, int n)\n    {\n"
+                                                  "        for (int i = 0; i < n; ++i)\n        {\n"
+                                                  "            left[i] += s.at(0, 100);\n            right[i] += s.at(1, 100);\n"
+                                                  "        }\n    }\n};\n";
+        run(p, withLibrary(program));
+        const pg::ChatAgent::McpResult armed = p.chatAgent().mcpCall("capture", object({ { "action", "arm" }, { "mode", "next" }, { "seconds", 1 } }));
+        P.eq("capture.armed", armed.isError ? 0 : 1, 1);
+        for (int b = 0; b < 240; ++b)                           // 1.28 s: the take ends itself after its second
+        {
+            juce::AudioBuffer<float> buffer(2, kBlock);
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < kBlock; ++i)
+                    buffer.setSample(c, i, kInstrument ? 0.0f : 0.25f * static_cast<float>(std::sin(0.05 * (b * kBlock + i))));
+            juce::MidiBuffer midi;
+            if (kInstrument && b == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), 0);
+            p.processBlock(buffer, midi);
+        }
+        p.poll();
+        (void)p.chatAgent().mcpCall("capture", object({ { "action", "stop" } }));
+        const std::string measured = textOf(p.chatAgent().mcpCall("measure_output", object({ { "scenario", object({ { kInstrument ? "phrase" : "input", "capture" } }) } })));
+        std::printf("measure_output of the recording:\n%s\n", measured.c_str());
+        P.eq("capture.replay_with_samples", has(measured, "its replay matches what played bit for bit") ? 1 : 0, 1);
+        const std::string status = textOf(p.chatAgent().mcpCall("capture", object({ { "action", "status" } })));
+        P.eq("capture.status_matches", has(status, "Replay: matches what played bit for bit.") ? 1 : 0, 1);
     }
 
     // ---- TOOLS -------------------------------------------------------------------------------------------------------

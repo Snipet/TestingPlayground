@@ -348,6 +348,7 @@ namespace playground::ui
             .mix(bounds_.x).mix(bounds_.y).mix(bounds_.w).mix(bounds_.h)
             .mix(hovered_)
             .mix(focused_)
+            .mix(compact_)
             .mix(open());
         return k.h;
     }
@@ -416,9 +417,10 @@ namespace playground::ui
         if (ring && focused_)
             c.rrect(r.x - 2.0f, r.y - 2.0f, r.w + 4.0f, r.h + 4.0f, radius + 2.0f, p.card.withAlpha(0.0f), 1.5f, p.accent);
 
-        if (spec_.shape != Shape::pill)
+        if (spec_.shape != Shape::pill || (compact_ && icon != chat::Icon::none))
         {
-            chat::drawIcon(c, icon, r.centreX(), r.centreY(), spec_.shape == Shape::circle ? 13.0f : 14.0f, ink);
+            const float size = spec_.shape == Shape::circle ? 13.0f : spec_.shape == Shape::pill ? 12.0f : 14.0f;
+            chat::drawIcon(c, icon, r.centreX(), r.centreY(), size, ink);
             return;
         }
         float x = r.x + 12.0f;

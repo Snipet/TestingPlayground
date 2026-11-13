@@ -18,6 +18,12 @@
 //   gui.code.hover_long.png  the hover card of a function of eight parameters, on two lines; a local named as a
 //                            constant drawn plain, the constant's uses in the constants' colour
 //   gui.code.hover_local.png the hover card of that local: its name plain, as the editor draws it
+//   gui.code.tabs.png        the tab strip: the tab shown joined to the editor, an edited file's dot, a divider
+//   gui.code.tabs_many.png   sixteen files at the least window: the strip scrolled, its fades and chevrons, the files
+//                            dropdown, the scroll bar under the pointer (and .paper.png each)
+//   gui.code.size_9.png, gui.code.size_12.png, gui.code.size_24.png (and .paper.png each)
+//                            the text size (CodeAssist.h's codesize) at 9, 12 and 24 px: the program and, at 24 px,
+//                            the completion list scaled with it; the status line saying the size (not at 12)
 // and checks:
 //   LOOK      the program's tabs have the code editor's looks (indent guides, the bracket pair, auto-closing pairs,
 //             brace indent, the minimap, the mark column) and draw them; the chat's message box has none of them;
@@ -73,10 +79,27 @@
 //             second under its parenthesis (gui.code.hover_long.png); the local hovered: no glyph of its card in the
 //             constants' colour (gui.code.hover_local.png), the constant hovered: its name's; the tab renamed by its
 //             name's field, and renamed back: the local still plain, the constant still coloured
+//   TABS      the tab strip (editor/TabStrip.h): with two files nothing scrolls, the tab shown drawn down to the
+//             editor's top (its ground opening into the editor), an edit's dot on its tab and none on the others, RUN
+//             clearing it; sixteen files at the least window: every tab at its name's width (none narrowed), the strip
+//             overflowing, the tab shown in view, a click on the last (brought into view first) showing it, the wheel
+//             scrolling it both ways (a trackpad's sideways stroke too) and a plain wheel over the text not, the bar under
+//             the pointer and its drag, the chevrons stepping a tab, the files dropdown (every file, the shown one
+//             checked; a choice showing it), Ctrl-Tab and Ctrl-Shift-Tab wrapping, a double-click renaming a tab and its
+//             close box closing one, the +, the IR tab and the dropdown never moving as it scrolls
+//   SIZE      the text size, this machine's preference: Cmd-=, Cmd-+, Cmd-- and Cmd-0 step it through 9, 10, 11, 12, 13,
+//             14, 16, 18, 20, 24 px, stopping at 9 and 24 (the keys still taken there), every file tab drawn in it, the
+//             row height round(px * 1.4); the line at the text's top and the caret where they were; the status line's
+//             size (none at 12 px), a click on it 12 px again; Cmd-wheel a step a notch both ways, a pad's deltas
+//             gathered to a step, a plain wheel scrolling and leaving the size; the completion list's rows, its width,
+//             the hover card's code and the find bar larger at 24 px than at 12; a second Panel follows the preference with
+//             no input of its own (and a Panel made after reads it); the IR view drawn in it and its keys stepping
+//             it; a netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom, the size unchanged
 #include "Probe.h"
 
 #include "editor/CodeAssist.h"
 #include "editor/Panel.h"
+#include "editor/SchematicView.h"
 #include "fminus/CirDoc.h"
 #include "fminus/Lang.h"
 #include "plugin/ChatAgent.h"
@@ -94,7 +117,9 @@
 #include <funkgui/prefs/UiPreferences.h>
 #include <funkgui/widgets/TextEditor.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -1237,6 +1262,485 @@ PROBE(gui, code)
             idle += panel.needsDraw() ? 1 : 0;
         }
         P.eq("types.code_view_idle", idle, 0);
+    }
+    // ---- TABS -------------------------------------------------------------------------------------------------------
+    {
+        funkgui::UiPreferences::get().setTheme(0);
+        pg::Draft two;
+        two.files = { { pg::kProgramName, program() } };
+        port.setDraft(two);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        P.eq("tabs.svf_added", panel.addLibraryFile("svf.fm") ? 1 : 0, 1);   // the program's Svf, #included
+        host.settle();
+        P.eq("tabs.two", panel.fileCount(), 2);
+        P.eq("tabs.two_fit", panel.tabStrip().overflows() ? 0 : 1, 1);
+        P.eq("tabs.two_no_menu", panel.tabStrip().menu().isEmpty() ? 1 : 0, 1);
+        {
+            const funkgui::Point t0 = panel.centreOfTab(0);
+            host.click(t0.x, t0.y);
+        }
+        host.keys("cmd+return");
+        settleRun(processor, host);
+        P.eq("tabs.runs", port.status().ok ? 1 : 0, 1);
+        // The tab shown: its ground drawn down to the editor's top.
+        const auto joins = [&](int i) {
+            const funkgui::Rect t = panel.fileTabRect(i);
+            const float top = panel.editorArea().y;
+            for (const funkgui::Prim& p : host.draw().prims)
+                if (p.tag == pg::ui::kTabTag && std::abs(p.x0 - t.x) < 2.5f && std::abs(p.x1 - t.right()) < 2.5f
+                    && p.y0 <= t.y + 0.5f && p.y1 >= top - 0.5f)
+                    return 1;
+            return 0;
+        };
+        P.eq("tabs.shown_joins", joins(0), 1);
+        P.eq("tabs.other_apart", joins(1), 0);
+        P.eq("tabs.no_dot_after_run", panel.fileTabEdited(0) || panel.fileTabEdited(1) ? 1 : 0, 0);
+        {
+            const funkgui::Point t1 = panel.centreOfTab(1);
+            host.click(t1.x, t1.y);
+            focusEditor(panel, host);
+            panel.editor().setCaret({ 0, 0 });
+            type(panel, host, "x");
+            host.tick(2);
+            P.eq("tabs.dot_on_edit", panel.fileTabEdited(1) && !panel.fileTabEdited(0) ? 1 : 0, 1);
+            P.eq("tabs.shown_follows", joins(1) == 1 && joins(0) == 0 ? 1 : 0, 1);
+            host.move(10.0f, 10.0f);
+            writePng(P, host, "gui.code.tabs.png", "tabs");
+            host.keys("cmd+z");
+            host.tick(2);
+            P.eq("tabs.dot_gone_on_undo", panel.fileTabEdited(1) ? 0 : 1, 1);
+        }
+    }
+    {
+        // Sixteen files at the least window, the IR tab open.
+        pg::Draft many;
+        many.files.push_back({ pg::kProgramName, program() });
+        for (int k = 1; k < static_cast<int>(pg::kMaxFiles); ++k)
+            many.files.push_back({ "file" + std::to_string(k) + ".fm", "// file " + std::to_string(k) + "\n" });
+        port.setDraft(many);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+        host.settle();
+        panel.openIrView(0);
+        host.settle();
+        const funkgui::Point first = panel.centreOfTab(0);
+        host.click(first.x, first.y);
+        host.settle();
+        P.eq("many.sixteen", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles));
+        float least = 1.0e9f;
+        for (int i = 0; i < panel.fileCount(); ++i)
+            least = std::min(least, panel.fileTabWidth(i));
+        P.ge("many.none_narrowed", static_cast<double>(least), 64.0 - 1e-3);
+        pg::ui::TabStrip st = panel.tabStrip();
+        P.eq("many.overflows", st.overflows() ? 1 : 0, 1);
+        P.eq("many.menu_shown", st.menu().isEmpty() ? 0 : 1, 1);
+        P.eq("many.shown_in_view", std::abs(panel.fileTabRect(0).w - panel.fileTabWidth(0)) < 0.5f ? 1 : 0, 1);
+        P.eq("many.last_out", panel.fileTabRect(panel.fileCount() - 1).isEmpty() ? 1 : 0, 1);
+        const funkgui::Rect irAt = panel.irTabRect(), menuAt = st.menu(), plusAt = st.newTab();
+        P.le("many.strip_clear_of_menu", static_cast<double>(st.view().right()), static_cast<double>(menuAt.x));
+        P.le("many.menu_clear_of_ir", static_cast<double>(std::max(menuAt.right(), plusAt.right())), static_cast<double>(irAt.x));
+        P.eq("many.no_plus", plusAt.isEmpty() ? 1 : 0, 1);              // sixteen: the + box is gone (kMaxFiles)
+        const auto fixedKept = [&] {
+            const pg::ui::TabStrip now = panel.tabStrip();
+            return std::abs(now.menu().x - menuAt.x) < 0.01f && std::abs(panel.irTabRect().x - irAt.x) < 0.01f ? 1 : 0;
+        };
+
+        // The wheel over the strip, both ways; a sideways stroke; a plain wheel over the text leaves it.
+        const float wy = st.view().centreY(), wx = st.view().x + 0.5f * st.view().w;
+        host.wheel(wx, wy, -0.25f);
+        const float scrolled = panel.tabStrip().offset();
+        P.ge("many.wheel_scrolls", static_cast<double>(scrolled), 1.0);
+        P.eq("many.fixed_kept", fixedKept(), 1);
+        host.wheel(wx, wy, 0.25f);
+        P.le("many.wheel_back", static_cast<double>(panel.tabStrip().offset()), 0.01);
+        {
+            funkgui::WheelEvent w;
+            w.x = wx;
+            w.y = wy;
+            w.dx = -0.05f;                               // a trackpad's sideways stroke
+            w.smooth = true;
+            panel.wheel(w);
+            P.ge("many.sideways", static_cast<double>(panel.tabStrip().offset()), 10.0);
+        }
+        {
+            const float before = panel.tabStrip().offset();
+            const funkgui::Rect a = panel.editor().textArea();
+            host.wheel(a.x + 40.0f, a.y + 40.0f, -0.25f);
+            P.near("many.text_wheel_leaves_it", static_cast<double>(panel.tabStrip().offset()), static_cast<double>(before), 0.01);
+        }
+        // Its chevrons: the right one steps a tab, the left one back.
+        {
+            pg::ui::TabStrip s0 = panel.tabStrip();
+            const funkgui::Rect rc = s0.chevron(true);
+            P.eq("many.right_chevron", rc.isEmpty() ? 0 : 1, 1);
+            const float before = s0.offset();
+            host.click(rc.centreX(), rc.centreY());
+            P.ge("many.right_chevron_steps", static_cast<double>(panel.tabStrip().offset()), static_cast<double>(before) + 30.0);
+            const funkgui::Rect lc = panel.tabStrip().chevron(false);
+            P.eq("many.left_chevron", lc.isEmpty() ? 0 : 1, 1);
+            const float mid = panel.tabStrip().offset();
+            host.click(lc.centreX(), lc.centreY());
+            P.le("many.left_chevron_steps", static_cast<double>(panel.tabStrip().offset()), static_cast<double>(mid) - 30.0);
+            P.eq("many.chevron_shows_no_file", panel.activeFile(), 0);
+        }
+        // The bar under the strip, while the pointer is over it, and its drag.
+        {
+            host.move(wx, wy);
+            host.tick(1);
+            pg::ui::TabStrip s1 = panel.tabStrip();
+            P.eq("many.bar_shown", s1.barShown(true) ? 1 : 0, 1);
+            const funkgui::Rect th = s1.barThumb();
+            const float before = s1.offset();
+            host.press(th.centreX(), th.centreY());
+            host.moveTo(th.centreX() + 120.0f, th.centreY(), 4);
+            host.tick(1);
+            writePng(P, host, "gui.code.tabs_many.png", "tabs_many");
+            host.release();
+            P.ge("many.bar_drags", static_cast<double>(panel.tabStrip().offset()), static_cast<double>(before) + 60.0);
+            P.eq("many.bar_drag_shows_no_file", panel.activeFile(), 0);
+        }
+        // A click on the last tab (brought into view first, as a user scrolls to it) shows it, wholly in view.
+        {
+            const funkgui::Point last = panel.centreOfTab(panel.fileCount() - 1);
+            host.click(last.x, last.y);
+            host.tick(1);
+            const int n = panel.fileCount();
+            P.eq("many.last_click", panel.activeFile(), n - 1);
+            P.eq("many.last_in_view", std::abs(panel.fileTabRect(n - 1).w - panel.fileTabWidth(n - 1)) < 0.5f ? 1 : 0, 1);
+            P.eq("many.fixed_kept_end", fixedKept(), 1);
+        }
+        // Ctrl-Tab wraps to the program, Ctrl-Shift-Tab back.
+        {
+            host.keys("ctrl+tab");
+            P.eq("many.ctrl_tab_wraps", panel.activeFile(), 0);
+            P.eq("many.ctrl_tab_in_view", panel.fileTabRect(0).isEmpty() ? 0 : 1, 1);
+            host.keys("ctrl+shift+tab");
+            P.eq("many.ctrl_shift_tab", panel.activeFile(), panel.fileCount() - 1);
+            host.keys("ctrl+shift+tab");
+            P.eq("many.ctrl_shift_tab_again", panel.activeFile(), panel.fileCount() - 2);
+            panel.openIrView(0);
+            host.settle();
+            host.keys("ctrl+tab");
+            P.eq("many.ctrl_tab_from_ir", !panel.irShown() && panel.activeFile() == panel.fileCount() - 1 ? 1 : 0, 1);
+        }
+        // The files dropdown: every file, the one shown checked; a choice shows it.
+        {
+            const funkgui::Rect m = panel.tabStrip().menu();
+            host.click(m.centreX(), m.centreY());
+            const funkgui::MenuRequest* req = host.pendingMenu();
+            P.eq("many.menu_opens", req != nullptr ? 1 : 0, 1);
+            if (req != nullptr)
+            {
+                int checked = -1, items = 0;
+                for (const funkgui::MenuItem& it : req->items)
+                {
+                    ++items;
+                    if (it.checked)
+                        checked = it.id;
+                }
+                P.eq("menu.every_file", items, static_cast<int64_t>(pg::kMaxFiles));
+                P.eq("menu.shown_checked", checked, panel.activeFile() + 1);
+                P.eq("menu.chosen", host.chooseMenuItem("file3.fm") ? 1 : 0, 1);
+                P.eq("menu.shows_it", panel.fileName(panel.activeFile()) == "file3.fm" ? 1 : 0, 1);
+                P.eq("menu.in_view", std::abs(panel.fileTabRect(3).w - panel.fileTabWidth(3)) < 0.5f ? 1 : 0, 1);
+            }
+        }
+        // A double-click renames (Escape cancels); a close box closes, asking first when the file has text.
+        {
+            const funkgui::Point t = panel.centreOfTab(5);
+            host.doubleClick(t.x, t.y);
+            P.eq("many.rename", panel.renamingFile() ? 1 : 0, 1);
+            host.keys("escape");
+            P.eq("many.rename_cancel", panel.renamingFile() ? 0 : 1, 1);
+            const funkgui::Point x = panel.centreOfCloseTab(5);
+            host.click(x.x, x.y);
+            P.eq("many.close_asks", host.pendingMenu() != nullptr ? 1 : 0, 1);   // the file has text
+            (void)host.chooseMenuItem(1);
+            host.settle();
+            std::printf("after the close: %d files\n", panel.fileCount());
+            P.eq("many.close", panel.fileCount(), static_cast<int64_t>(pg::kMaxFiles) - 1);
+            P.eq("many.plus_back", panel.tabStrip().newTab().isEmpty() ? 0 : 1, 1);
+        }
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.resize(pg::ui::kMinWidth, pg::ui::kMinHeight);
+            paperHost.settle();
+            const funkgui::Point t = paper.centreOfTab(7);
+            paperHost.click(t.x, t.y);
+            paperHost.move(t.x + 60.0f, t.y);
+            paperHost.settle();
+            writePng(P, paperHost, "gui.code.tabs_many.paper.png", "tabs_many_paper");
+            funkgui::UiPreferences::get().setTheme(0);
+        }
+        pg::Draft one;
+        one.files = { { pg::kProgramName, program() } };
+        port.setDraft(one);
+    }
+
+    // ---- SIZE -------------------------------------------------------------------------------------------------------
+    {
+        namespace cs = pg::ui::codesize;
+        funkgui::UiPreferences::get().setTheme(0);
+        funkgui::UiPreferences::get().setInt(cs::kKey, cs::kDefault);
+        pg::ui::Panel panel(processor.ports(), port);
+        funkgui::HeadlessHost host(panel, 0, 2.0f);
+        host.setZoom({ 100, 125, 150, 200 }, 100);
+        host.settle();
+        pg::ui::Panel other(processor.ports(), port);    // another editor of the plugin's, open meanwhile
+        funkgui::HeadlessHost otherHost(other, 0, 2.0f);
+        otherHost.settle();
+        pg::ui::CodeAssist& code = panel.codeAssist();
+        P.eq("size.default", panel.codeTextSize(), cs::kDefault);
+        P.eq("size.default_no_status", code.sizeRect().w > 0.0f ? 1 : 0, 0);
+
+        // The program with svf.fm and lines enough to scroll.
+        const funkgui::Point tab0 = panel.centreOfTab(0);
+        host.click(tab0.x, tab0.y);
+        std::string text = withSvf;
+        for (int k = 0; k < 240; ++k)
+            text += "// filler line " + std::to_string(k) + "\n";
+        panel.editor().selectAll();
+        panel.editor().insert(text);
+        (void)panel.addLibraryFile("svf.fm");            // there already, or added
+        host.click(tab0.x, tab0.y);
+        settleChecks(panel, host);
+        focusEditor(panel, host);
+
+        // A key, as the editor's host gives it: Cmd (Ctrl off the Mac) and the character.
+        const auto cmdKey = [&](pg::ui::Panel& pn, char32_t ch, bool shift = false) {
+            funkgui::KeyEvent e;
+            e.key = funkgui::Key::character;
+            e.ch = ch;
+            e.mods.cmd = true;
+            e.mods.shift = shift;
+            pn.key(e);
+        };
+        // Every file tab in `tenths`, the row height FunkGui's.
+        const auto allAt = [&](pg::ui::Panel& pn, int tenths) {
+            bool all = pn.codeTextSize() == tenths;
+            for (int i = 0; i < pn.fileCount(); ++i)
+            {
+                const funkgui::TextEditor& e = pn.fileEditor(i);
+                all = all && std::abs(e.options().style.px - static_cast<float>(tenths) / 10.0f) < 1.0e-4f
+                      && std::abs(e.rowHeight() - std::round(static_cast<float>(tenths) / 10.0f * 1.4f)) < 1.0e-4f;
+            }
+            return all ? 1 : 0;
+        };
+        constexpr int kTop = 100;
+        const funkgui::TextPos kCaret{ 120, 4 };
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setScroll(0.0f, static_cast<float>(ed.rowOf({ kTop, 0 })) * ed.rowHeight());
+            ed.setCaret(kCaret);
+        }
+        P.eq("size.top_set", panel.editor().visibleLineRange().first, kTop);
+        const auto placeKept = [&] {
+            const funkgui::TextEditor& ed = panel.editor();
+            return ed.visibleLineRange().first == kTop && ed.caret().line == kCaret.line && ed.caret().col == kCaret.col ? 1 : 0;
+        };
+
+        // The overlays at 12 px: the completion list, the hover card, the find bar.
+        struct Overlays
+        {
+            funkgui::Rect completion, hover, find;
+            float row = 0.0f;
+        };
+        const auto overlays = [&]() {
+            Overlays o;
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setFocused(true);
+            ed.setCaret(posIn(ed, "filter.set", 7));
+            ed.scrollToCaret();
+            host.keys("ctrl+space");
+            host.tick(1);
+            o.completion = code.completionBox();
+            o.row = code.completionRowHeight();
+            host.keys("escape");
+            const funkgui::Point at = ed.pointOf(posIn(ed, "filter.tick", 9));
+            host.move(at.x + 3.0f, at.y + ed.rowHeight() * 0.5f);
+            host.tick(40);
+            host.draw();                                 // the card's place is where it was drawn
+            std::printf("hover %s: %s\n", code.hoverOpen() ? "open" : "closed", code.hoverText().substr(0, 40).c_str());
+            o.hover = code.hoverBox();
+            host.move(at.x + 3.0f, at.y + 6.0f * ed.rowHeight());
+            host.tick(2);
+            host.keys("cmd+f");
+            o.find = code.findBox();
+            host.keys("escape");
+            focusEditor(panel, host);
+            ed.setFocused(true);
+            return o;
+        };
+        const Overlays at12 = overlays();
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setScroll(0.0f, static_cast<float>(ed.rowOf({ kTop, 0 })) * ed.rowHeight());
+            ed.setCaret(kCaret);
+        }
+
+        // The keys, and the place kept.
+        cmdKey(panel, U'=');
+        P.eq("size.cmd_equals", allAt(panel, 130), 1);
+        P.eq("size.place_kept", placeKept(), 1);
+        P.eq("size.preference", cs::read(), 130);
+        cmdKey(panel, U'=', true);                       // Cmd-+: Shift-= on most keyboards
+        P.eq("size.cmd_plus", allAt(panel, 140), 1);
+        cmdKey(panel, U'+');                             // a keypad's or a layout's own +
+        P.eq("size.cmd_plus_char", allAt(panel, 160), 1);
+        cmdKey(panel, U'-');
+        P.eq("size.cmd_minus", allAt(panel, 140), 1);
+        cmdKey(panel, U'0');
+        P.eq("size.cmd_zero", allAt(panel, 120), 1);
+        P.eq("size.place_kept_back", placeKept(), 1);
+        std::string up;
+        for (int k = 0; k < 9; ++k)
+        {
+            cmdKey(panel, U'=');
+            up += std::to_string(panel.codeTextSize()) + " ";
+        }
+        std::printf("up from 12 px: %s\n", up.c_str());
+        P.eq("size.steps_up", up == "130 140 160 180 200 240 240 240 240 " ? 1 : 0, 1);
+        P.eq("size.most", allAt(panel, cs::kMost), 1);
+        P.eq("size.place_kept_most", placeKept(), 1);
+        P.eq("size.status_shown", code.sizeRect().w > 0.0f ? 1 : 0, 1);
+        otherHost.tick(2);
+        P.eq("size.other_follows", allAt(other, cs::kMost), 1);
+        {
+            pg::ui::Panel later(processor.ports(), port);
+            P.eq("size.later_reads", allAt(later, cs::kMost), 1);
+        }
+        host.tick(2);
+        const Overlays at24 = overlays();
+        std::printf("at 12 px: completion %.0f x %.0f (rows %.0f), hover %.0f x %.0f, find %.0f x %.0f\n",
+                    static_cast<double>(at12.completion.w), static_cast<double>(at12.completion.h), static_cast<double>(at12.row),
+                    static_cast<double>(at12.hover.w), static_cast<double>(at12.hover.h), static_cast<double>(at12.find.w),
+                    static_cast<double>(at12.find.h));
+        std::printf("at 24 px: completion %.0f x %.0f (rows %.0f), hover %.0f x %.0f, find %.0f x %.0f\n",
+                    static_cast<double>(at24.completion.w), static_cast<double>(at24.completion.h), static_cast<double>(at24.row),
+                    static_cast<double>(at24.hover.w), static_cast<double>(at24.hover.h), static_cast<double>(at24.find.w),
+                    static_cast<double>(at24.find.h));
+        P.near("size.completion_rows", static_cast<double>(at24.row), 2.0 * static_cast<double>(at12.row), 0.5);
+        P.ge("size.completion_wider", static_cast<double>(at24.completion.w), 1.3 * static_cast<double>(at12.completion.w));
+        P.le("size.completion_capped", static_cast<double>(at24.completion.w),
+             std::max(330.0, static_cast<double>(code.editorRect().w)) + 0.5);
+        P.ge("size.completion_taller", static_cast<double>(at24.completion.h), 1.5 * static_cast<double>(at12.completion.h));
+        P.ge("size.hover_opens", at12.hover.h > 0.0f && at24.hover.h > 0.0f ? 1.0 : 0.0, 1.0);
+        // (its code's line grows, 18 px to 36; its documentation is the chat's size, as the card's width follows it)
+        P.ge("size.hover_code_taller", static_cast<double>(at24.hover.h - at12.hover.h), 17.0);
+        P.ge("size.hover_not_narrower", static_cast<double>(at24.hover.w), static_cast<double>(at12.hover.w));
+        P.ge("size.find_taller", static_cast<double>(at24.find.h), 1.5 * static_cast<double>(at12.find.h));
+        P.ge("size.find_wider", static_cast<double>(at24.find.w), static_cast<double>(at12.find.w));
+        // ... and in the picture: the completion list open at 24 px.
+        {
+            funkgui::TextEditor& ed = panel.editor();
+            ed.setCaret(posIn(ed, "filter.set", 7));
+            ed.scrollToCaret();
+            host.keys("ctrl+space");
+            host.tick(2);
+            writePng(P, host, "gui.code.size_24.png", "size_24");
+            host.keys("escape");
+        }
+
+        // The status line's size: a click puts 12 px back.
+        {
+            const funkgui::Rect r = code.sizeRect();
+            host.click(r.centreX(), r.centreY());
+            P.eq("size.status_click", allAt(panel, cs::kDefault), 1);
+            P.eq("size.status_gone", code.sizeRect().w > 0.0f ? 1 : 0, 0);
+            otherHost.tick(2);
+            P.eq("size.other_back", allAt(other, cs::kDefault), 1);
+            writePng(P, host, "gui.code.size_12.png", "size_12");
+        }
+
+        // Down to the least, and the wheel.
+        focusEditor(panel, host);
+        std::string down;
+        for (int k = 0; k < 6; ++k)
+        {
+            cmdKey(panel, U'-');
+            down += std::to_string(panel.codeTextSize()) + " ";
+        }
+        std::printf("down from 12 px: %s\n", down.c_str());
+        P.eq("size.steps_down", down == "110 100 90 90 90 90 " ? 1 : 0, 1);
+        P.eq("size.least", allAt(panel, cs::kLeast), 1);
+        {
+            const funkgui::Rect a = panel.editor().textArea();
+            const float x = a.x + a.w * 0.5f, y = a.y + 40.0f;
+            funkgui::Mods cmd;
+            cmd.cmd = true;
+            host.wheel(x, y, 0.25f, false, cmd);         // a notch away from you
+            P.eq("size.wheel_up", allAt(panel, 100), 1);
+            host.wheel(x, y, -0.25f, false, cmd);
+            P.eq("size.wheel_down", allAt(panel, 90), 1);
+            for (int k = 0; k < 3; ++k)
+                host.wheel(x, y, 0.05f, true, cmd);      // a pad: three small deltas make a step
+            P.eq("size.wheel_pad", allAt(panel, 100), 1);
+            funkgui::Mods ctrl;
+            ctrl.ctrl = true;
+            host.wheel(x, y, -0.25f, false, ctrl);       // Ctrl-wheel (off the Mac, Cmd's)
+            P.eq("size.wheel_ctrl", allAt(panel, 90), 1);
+            const float scrolled = panel.editor().scroll().y;
+            host.wheel(x, y, -0.25f, false, {});
+            P.eq("size.wheel_plain_scrolls", allAt(panel, 90) == 1 && panel.editor().scroll().y > scrolled ? 1 : 0, 1);
+        }
+        writePng(P, host, "gui.code.size_9.png", "size_9");
+
+        // The IR view: drawn in the size, its keys stepping it.
+        panel.openIrView(0);
+        host.settle();
+        P.eq("size.ir_shown", panel.irShown() ? 1 : 0, 1);
+        P.eq("size.ir_drawn_in_it", std::abs(panel.editor().options().style.px - 9.0f) < 1.0e-4f ? 1 : 0, 1);
+        cmdKey(panel, U'=');
+        P.eq("size.ir_key", allAt(panel, 100) == 1 && std::abs(panel.editor().options().style.px - 10.0f) < 1.0e-4f ? 1 : 0, 1);
+        panel.closeIrView();
+        host.settle();
+
+        // A netlist's Schematic view keeps Cmd-= and Cmd-- for its zoom.
+        P.eq("size.cir_tab", panel.addLibraryFile("screamer.cir") ? 1 : 0, 1);
+        for (int i = 0; i < panel.fileCount(); ++i)
+            if (panel.fileName(i) == "screamer.cir")
+            {
+                const funkgui::Point t = panel.centreOfTab(i);
+                host.click(t.x, t.y);
+            }
+        host.settle();
+        const funkgui::Point pill = panel.centreOfViewPill(true);
+        host.click(pill.x, pill.y);
+        host.settle();
+        P.eq("size.schematic_shown", panel.schematicShown() ? 1 : 0, 1);
+        const float zoomWas = panel.schematic().zoom();
+        cmdKey(panel, U'=');
+        host.settle();
+        std::printf("schematic zoom %.2f -> %.2f\n", static_cast<double>(zoomWas), static_cast<double>(panel.schematic().zoom()));
+        P.eq("size.schematic_zooms", panel.schematic().zoom() > zoomWas && panel.codeTextSize() == 100 ? 1 : 0, 1);
+        cmdKey(panel, U'-');
+        P.eq("size.schematic_zooms_out", panel.codeTextSize() == 100 ? 1 : 0, 1);
+        panel.setSchematic(false);
+        host.settle();
+
+        // PAPER at each size.
+        for (const int tenths : { 90, 120, 240 })
+        {
+            funkgui::UiPreferences::get().setTheme(1);
+            cs::write(tenths);
+            pg::ui::Panel paper(processor.ports(), port);
+            funkgui::HeadlessHost paperHost(paper, 1, 2.0f);
+            paperHost.settle();
+            const funkgui::Point t0 = paper.centreOfTab(0);
+            paperHost.click(t0.x, t0.y);
+            paperHost.settle();
+            const std::string name = "gui.code.size_" + std::to_string(tenths / 10) + ".paper.png";
+            writePng(P, paperHost, name.c_str(), "size_paper_" + std::to_string(tenths / 10));
+        }
+        funkgui::UiPreferences::get().setTheme(0);
+        cs::write(cs::kDefault);
     }
     funkgui::UiPreferences::get().setTheme(0);
     return P.finish();
