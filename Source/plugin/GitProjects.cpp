@@ -7,6 +7,7 @@
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 
 namespace playground::gitprojects
@@ -206,22 +207,37 @@ namespace playground::gitprojects
             return sha;
         }
 
-        // Their tip (the remote's branch as last fetched) read as a project: checked out beside the working folder, read,
-        // and the checkout taken away again. None, with why, when it holds no project of this plugin's.
+        // Their tip (the remote's branch as last fetched) read as a project: checked out beside the working folder into a
+        // new folder (git worktree add), read, and that checkout alone taken away again by git (worktreeRemove). Nothing
+        // here deletes a folder of its own: when the add fails, nothing is removed. A checkout a cancel or a crash left
+        // (git still lists it: a ".theirs" folder of this repository's beside the working folder) is taken away the same
+        // way the next time their side is read; a ".theirs" folder git does not list is never touched (git worktree
+        // prune forgets only a listed folder that is gone). None, with why, when it holds no project of this plugin's.
         std::optional<projectstore::Project> readTheirs(const git::Context& c, const projectstore::Link& k, std::string& why)
         {
             const juce::File root = juce::File(str(k.folder)).getParentDirectory();
+            std::vector<std::string> listed;
+            if (git::worktrees(c, listed).ok)
+            {
+                namespace fs = std::filesystem;
+                std::error_code ec;
+                const fs::path rootReal = fs::weakly_canonical(fs::path(root.getFullPathName().toStdString()), ec);
+                for (const std::string& path : listed)
+                {
+                    const fs::path p = fs::weakly_canonical(fs::path(path), ec);
+                    if (p.parent_path() == rootReal && p.filename().string().rfind(".theirs", 0) == 0)
+                        git::worktreeRemove(c, path);
+                }
+            }
             const juce::File there = root.getNonexistentChildFile(".theirs", "", false);
             const git::Outcome o = git::checkoutInto(c, "origin", k.branch, there.getFullPathName().toStdString());
             if (!o.ok)
             {
                 why = wordsOf(o);
-                there.deleteRecursively();                // what the checkout made, if anything
                 return std::nullopt;
             }
             std::optional<projectstore::Project> p = projectexport::readTree(there, &why);
             git::worktreeRemove(c, there.getFullPathName().toStdString());
-            there.deleteRecursively();
             return p;
         }
 

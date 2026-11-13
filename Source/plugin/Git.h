@@ -114,10 +114,17 @@ namespace playground::git
     Outcome merge(const Context& c, const std::string& remote, const std::string& branch, bool& conflicts, bool ours = false);
     // A merge in progress taken back: the folder and the index as they were before it.
     Outcome mergeAbort(const Context& c);
-    // The remote's branch (as last fetched) checked out, detached, into `folder` (a new folder: `git worktree add`), so
-    // its files can be read without touching the repository's own folder; worktreeRemove takes it away again.
+    // The remote's branch (as last fetched) checked out, detached, into `folder` (`git worktree add`), so its files can be
+    // read without touching the repository's own folder. `folder` must not exist (nor be a link): refused, nothing run.
+    // worktreeRemove takes one away through `git worktree remove` alone, and only a worktree git lists for this
+    // repository at that very path (worktrees()): a path that is a link, or that git does not list (a folder that was
+    // there before, a checkout whose add failed), is refused and nothing is removed; then `git worktree prune`, which
+    // forgets only the worktrees whose folders are gone.
     Outcome checkoutInto(const Context& c, const std::string& remote, const std::string& branch, const std::string& folder);
     Outcome worktreeRemove(const Context& c, const std::string& folder);
+    // The worktrees git lists for the repository, but its own folder (`git worktree list --porcelain`), as git gives
+    // their paths.
+    Outcome worktrees(const Context& c, std::vector<std::string>& paths);
 
     // `git clone` of `address` into `folder` (its parent must exist; the folder must not, or be empty), its `branch`
     // when one is given. The Context's own folder is not used.

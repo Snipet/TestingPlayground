@@ -51,7 +51,10 @@
 //   LINKS    the file's format; written and read back the same; a rename in the file manager keeps the link; the listing
 //            reads no repository (the working folder moved away); a working folder gone: said; no address in the project
 //   MERGE    (05c) both sides moved: the pull's merge taken back whole (HEAD, the folder and the versions as they were),
-//            the link marked diverged; their side read for Compare with nothing written; Keep mine (theirs a version,
+//            the link marked diverged; their side read for Compare with nothing written; its checkout: a folder there
+//            already refused and not removed (git does not list it), the read going beside it; a link refused, its
+//            target untouched; a checkout a cancel left (still listed) taken away by git at the next read while an
+//            unlisted ".theirs" folder stays; a listed checkout whose folder is gone forgotten (prune); Keep mine (theirs a version,
 //            mine on top, pushed: the remote's program mine), Take theirs (theirs the newest, mine the version before,
 //            a merge commit pushed); with nothing to settle, refused
 //   JOB      the Processor's git thread: a pull of the project open and unedited opens the new version; edited, it waits
@@ -510,6 +513,61 @@ namespace
             P.eq("merge.theirs_read", t.ok && t.theirsProject && t.theirsProject->latest().files == programOf("b again")
                                           && ps::load("Pad")->versions.size() == before->versions.size()
                                           && !there(aFolder.parent_path() / ".theirs") ? 1 : 0, 1);
+            // The checkout of their side: only what git lists is ever taken away, through git; nothing else.
+            {
+                pg::git::Context wc;
+                wc.git = found.path;
+                wc.allowFile = true;
+                wc.folder = aFolder.string();
+                const fs::path side = aFolder.parent_path();
+                const auto listed = [&](const fs::path& f) {
+                    std::vector<std::string> paths;
+                    pg::git::worktrees(wc, paths);
+                    for (const std::string& p : paths)
+                        if (fs::weakly_canonical(fs::path(p), ec) == fs::weakly_canonical(f, ec))
+                            return true;
+                    return false;
+                };
+                const std::string branchName = ps::linkOf(before->id)->branch;
+                // A folder there already where a checkout would go: the add refused, nothing removed; not git's to remove.
+                writeFile(side / ".theirs" / "mine.txt", "mine\n");
+                const pg::git::Outcome onto = pg::git::checkoutInto(wc, "origin", branchName, (side / ".theirs").string());
+                const pg::git::Outcome notOurs = pg::git::worktreeRemove(wc, (side / ".theirs").string());
+                P.eq("merge.worktree_existing_untouched", !onto.ok && !notOurs.ok && readFile(side / ".theirs" / "mine.txt") == "mine\n" ? 1 : 0, 1);
+                // The read of their side with that folder there: it uses another, takes away only its own, and leaves it.
+                const gp::Result again = gp::theirs(setup, "Pad");
+                std::size_t theirsFolders = 0;
+                for (const auto& e : fs::directory_iterator(side, ec))
+                    theirsFolders += e.path().filename().string().rfind(".theirs", 0) == 0 ? 1 : 0;
+                P.eq("merge.worktree_read_beside", again.ok && readFile(side / ".theirs" / "mine.txt") == "mine\n" && theirsFolders == 1 ? 1 : 0, 1);
+#if !defined(_WIN32)
+                // A path that is a link: refused as a checkout's place and as one to remove; what it points to untouched.
+                fs::create_directories(root / "worktree-target", ec);
+                writeFile(root / "worktree-target" / "keep.txt", "keep\n");
+                fs::create_symlink(root / "worktree-target", side / ".theirs-link", ec);
+                const pg::git::Outcome addLink = pg::git::checkoutInto(wc, "origin", branchName, (side / ".theirs-link").string());
+                const pg::git::Outcome removeLink = pg::git::worktreeRemove(wc, (side / ".theirs-link").string());
+                P.eq("merge.worktree_link_refused", !addLink.ok && !removeLink.ok && readFile(root / "worktree-target" / "keep.txt") == "keep\n"
+                                                        && fs::is_symlink(side / ".theirs-link", ec) ? 1 : 0, 1);
+                fs::remove(side / ".theirs-link", ec);   // the link, not where it points
+#else
+                probe::skip(P, "merge.worktree_link_refused", "the row makes a symbolic link (POSIX)");
+#endif
+                // What a cancel or a crash leaves between the add and the remove: a checkout git still lists. The next read
+                // of their side has git take it away; a ".theirs" folder git does not list stays as it is.
+                const pg::git::Outcome left = pg::git::checkoutInto(wc, "origin", branchName, (side / ".theirs-left").string());
+                writeFile(side / ".theirs-stray" / "notes.txt", "notes\n");
+                const bool wasListed = left.ok && listed(side / ".theirs-left");
+                const gp::Result cleared = gp::theirs(setup, "Pad");
+                P.eq("merge.worktree_leftover_cleared", wasListed && cleared.ok && !there(side / ".theirs-left") && !listed(side / ".theirs-left")
+                                                            && readFile(side / ".theirs-stray" / "notes.txt") == "notes\n"
+                                                            && readFile(side / ".theirs" / "mine.txt") == "mine\n" ? 1 : 0, 1);
+                // A listed checkout whose folder is gone (deleted by hand): prune forgets it, nothing else.
+                const pg::git::Outcome gone = pg::git::checkoutInto(wc, "origin", branchName, (side / ".theirs-gone").string());
+                fs::remove_all(side / ".theirs-gone", ec);
+                const gp::Result afterGone = gp::theirs(setup, "Pad");
+                P.eq("merge.worktree_gone_forgotten", gone.ok && afterGone.ok && !listed(side / ".theirs-gone") ? 1 : 0, 1);
+            }
             // Keep mine: theirs a version, mine on top, the link settled; then pushed, and the remote's tree is mine.
             const gp::Result keep = gp::keepMine(setup, "Pad");
             std::printf("merge: keep mine \"%s\" (%s)\n", keep.line.c_str(), keep.why.c_str());

@@ -544,13 +544,48 @@ namespace playground::git
             return refused(why);
         if (folder.empty() || folder[0] == '-')
             return refused("A checkout needs a folder.");
+        std::error_code ec;
+        if (fs::exists(fs::symlink_status(fs::path(folder), ec)))
+            return refused(folder + " is there already: a checkout goes only into a new folder.");
         return call(c, { "worktree", "add", "-q", "--detach", folder, trackingRef(remote, branch) });
+    }
+
+    Outcome worktrees(const Context& c, std::vector<std::string>& paths)
+    {
+        paths.clear();
+        Outcome o = call(c, { "worktree", "list", "--porcelain" });
+        if (!o.ok)
+            return o;
+        std::istringstream in(o.out);
+        std::string line;
+        bool first = true;                                // the repository's own folder: listed first, never one
+        while (std::getline(in, line))
+            if (line.rfind("worktree ", 0) == 0)
+            {
+                if (!first)
+                    paths.push_back(line.substr(9));
+                first = false;
+            }
+        return o;
     }
 
     Outcome worktreeRemove(const Context& c, const std::string& folder)
     {
         if (folder.empty() || folder[0] == '-')
             return refused("No such checkout.");
+        std::error_code ec;
+        if (fs::is_symlink(fs::path(folder), ec))
+            return refused(folder + " is a link: nothing is removed through one.");
+        std::vector<std::string> listed;
+        if (Outcome o = worktrees(c, listed); !o.ok)
+            return o;
+        const fs::path want = fs::weakly_canonical(fs::path(folder), ec);
+        const bool ours = std::any_of(listed.begin(), listed.end(), [&](const std::string& p) {
+            std::error_code e2;
+            return fs::weakly_canonical(fs::path(p), e2) == want;
+        });
+        if (!ours)
+            return refused(folder + " is not a checkout git added here: nothing was removed.");
         Outcome o = call(c, { "worktree", "remove", "--force", folder });
         call(c, { "worktree", "prune" });
         return o;

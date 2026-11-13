@@ -2198,7 +2198,10 @@ finds both sides moved commits this side's versions, then `merge --no-commit`: k
 a project ("Merged with <sha7>"), else `merge --abort` (the folder as it was) and the link's `diverged` set, settled by
 Keep mine (theirs a version, then `merge -s ours`, mine on top) or Take theirs (`merge -s ours`, their tree written over,
 theirs the newest), each a merge commit and both sides versions, or looked at first: Compare reads their tip through a
-`git worktree` checkout beside the folder (taken away after) into memory (`EditorPort::gitTheirs`), the COMPARE card's
+`git worktree` checkout beside the folder, always a new path (one there already, or a link, refused), taken away by
+`git worktree remove` alone and only when git lists it (`git::worktreeRemove`: never a delete of the plugin's own;
+nothing when the add failed; a checkout a cancel or a crash left, still listed, taken away at the next read; a ".theirs"
+folder git does not list never touched), into memory (`EditorPort::gitTheirs`), the COMPARE card's
 side `DiffCard::kTheirs` (no Open, no A/B). Never a force, nothing of the user's deleted. The working folders are
 `<projects folder>/Git/<name>-<8 hex of the id>/`. The card is `editor/GitCard.h`, the mark `editor/GitMark.h`, the
 Settings rows `editor/SettingsGit.cpp`; `gui.git` checks the card, the mark and the rows. Sandboxed hosts, a passphrase
