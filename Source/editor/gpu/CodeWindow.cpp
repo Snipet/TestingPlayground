@@ -7,13 +7,13 @@
 
 #include "Product.h"
 
-#include <funkgui/gpu/BgfxContext.h>
-#include <funkgui/gpu/BgfxSink.h>
 #include <funkgui/gpu/FramePump.h>
+#include <funkgui/gpu/GpuInfo.h>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -28,23 +28,50 @@ namespace playground::ui
     }
 
     // The settings' Debug page's graphics rows for an editor on the GPU (Panel::setHostDebug): what FunkGui's
-    // EditorHost, its frame pump, the bgfx context and the sink say at the pin. The renderer's own name, the GPU's and its
-    // limits wait for FunkGui's gpuInfo(); the last frame's draw calls, vertices and bytes are the sink's, which the
-    // EditorHost keeps to itself.
+    // EditorHost and its frame pump say, and what FunkGui's gpuInfo() (F1) says of the renderer and the GPU: its name,
+    // its ids and its largest texture while bgfx runs. The last frame's draw calls, vertices and bytes are the sink's,
+    // which the EditorHost keeps to itself.
     namespace
     {
+    const char* vendorName(uint16_t id)
+    {
+        switch (id)
+        {
+            case 0x106b: return "Apple";
+            case 0x10de: return "NVIDIA";
+            case 0x1002: return "AMD";
+            case 0x8086: return "Intel";
+            case 0x13b5: return "Arm";
+            case 0x5143: return "Qualcomm";
+            case 0x1414: return "Microsoft (WARP)";
+            default: return nullptr;
+        }
+    }
+
     std::vector<DebugRow> hostDebugRows(const funkgui::EditorHost& host)
     {
         std::vector<DebugRow> rows;
         const funkgui::EditorHost::Diagnostics d = host.diagnostics();
+        const funkgui::GpuInfo gpu = funkgui::gpuInfo();
         char b[160];
 #if defined(_WIN32)
-        rows.push_back({ "Host", "the GPU: bgfx on Direct3D 11" });
+        const char* renderer = "Direct3D 11";
 #elif defined(__APPLE__)
-        rows.push_back({ "Host", "the GPU: bgfx on Metal" });
+        const char* renderer = "Metal";
 #else
-        rows.push_back({ "Host", "the GPU: bgfx on Vulkan" });
+        const char* renderer = "Vulkan";
 #endif
+        rows.push_back({ "Host", std::string("the GPU: bgfx on ") + (gpu.renderer.empty() ? renderer : gpu.renderer.c_str()) });
+        if (gpu.running)
+        {
+            const char* vendor = vendorName(gpu.vendorId);
+            std::snprintf(b, sizeof b, "%s%svendor 0x%04x, device 0x%04x", vendor != nullptr ? vendor : "",
+                          vendor != nullptr ? ": " : "", static_cast<unsigned>(gpu.vendorId), static_cast<unsigned>(gpu.deviceId));
+            rows.push_back({ "GPU", b });
+            rows.push_back({ "Largest texture", std::to_string(gpu.maxTextureSize) + " px" });
+        }
+        else
+            rows.push_back({ "GPU", "not running (no editor drawn and no picture held)" });
         rows.push_back({ "Surface", host.showingFallback() ? "the fallback (the GPU did not start)"
                                     : host.surfaceAttached() ? "attached" : "not attached" });
         const funkgui::FramePump& pump = funkgui::FramePump::get();
@@ -54,11 +81,11 @@ namespace playground::ui
         std::snprintf(b, sizeof b, "%u drawn, %u skipped, %u unchanged; the pump %llu", d.frames, d.skipped, d.unchanged,
                       static_cast<unsigned long long>(pump.framesRun()));
         rows.push_back({ "Frames counted", b });
-        const funkgui::BgfxContext& ctx = funkgui::BgfxContext::get();
-        std::snprintf(b, sizeof b, "%u KB, %u frames dropped (full)", ctx.transientVbBytes() / 1024u, d.overflows);
+        std::snprintf(b, sizeof b, "%u KB, %u frames dropped (full)", gpu.transientVbBytes / 1024u, d.overflows);
         rows.push_back({ "Transient buffer", b });
-        rows.push_back({ "Instancing", ctx.transientVbBytes() == 0 ? "not started" : ctx.instancing() ? "on" : "off (vertices)" });
-        rows.push_back({ "Image textures", std::to_string(funkgui::BgfxSink::imageTextureCount()) });
+        rows.push_back({ "Instancing", !gpu.running ? "not started" : gpu.instancing ? "on" : "off (vertices)" });
+        rows.push_back({ "Image textures", std::to_string(gpu.imageTextures) });
+        rows.push_back({ "Custom shaders", std::to_string(gpu.customShaders) + " registered" });
         std::snprintf(b, sizeof b, "%.2f, zoom %d %%, %u failed attaches", d.scale, d.zoomPercent, d.attachFailures);
         rows.push_back({ "Scale", b });
         return rows;

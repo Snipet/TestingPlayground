@@ -18,6 +18,7 @@
 #include "BuildCommit.h"
 #include "Product.h"
 
+#include <funkgui/core/Version.h>
 #include <juce_core/juce_core.h>
 
 #include <algorithm>
@@ -142,7 +143,11 @@ namespace playground
                                              + " (" + std::string(fm.buildType) + ")" });
             s.rows.push_back({ "LLVM", std::string(fm.llvmVersion) + ", " + std::string(fm.llvmMode) + ", assertions "
                                            + onOff(fm.llvmAssertions) });
-            s.rows.push_back({ "FunkGui", product::kFunkGuiVersion });
+            // the FunkGui compiled in (funkgui::version(), F1), and the pin when they differ (a local override)
+            const std::string funkgui = funkgui::version();
+            s.rows.push_back({ "FunkGui", funkgui == product::kFunkGuiVersion
+                                              ? funkgui
+                                              : funkgui + " (the pin says " + product::kFunkGuiVersion + ")" });
             s.rows.push_back({ "JUCE", product::kJuceVersion });
             s.rows.push_back({ "Claude Desktop extension", product::kMcpVersion });
             out.push_back(std::move(s));

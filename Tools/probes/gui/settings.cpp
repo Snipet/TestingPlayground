@@ -24,8 +24,8 @@
 //   PROJECTS the projects folder shown; Show in File Manager (Finder, Explorer) asks the processor's launcher for it
 //   AI       the provider, model and key in words; Provider and key... closes the card and opens the key dialog
 //   DEBUG    nothing gathered before the page shows; its sections (Versions, Graphics, Program, Audio, Shaders, Stores,
-//            Claude Desktop, Environment) and the rows that must be right (the version, the shader target, the
-//            program's id); read again once a second while it shows, never once it does not; Copy all's text on the
+//            Claude Desktop, Environment) and the rows that must be right (the version, FunkGui's compiled in, the
+//            shader target, the program's id); read again once a second while it shows, never once it does not; Copy all's text on the
 //            host's clipboard, every section in it, nothing of the program's text
 //   A11Y     the rail's entries are buttons named for their pages, the page shown checked; every control titled
 //   LEAST    every page's places at the least size
@@ -69,6 +69,7 @@
 #include <funkgui/canvas/Prim.h>
 #include <funkgui/gpu/ShaderLibrary.h>
 #include <funkgui/canvas/PrimList.h>
+#include <funkgui/core/Version.h>
 #include <funkgui/panel/HeadlessGuiScope.h>
 #include <funkgui/panel/HeadlessHost.h>
 #include <funkgui/prefs/UiPreferences.h>
@@ -514,6 +515,7 @@ namespace
                         rowOf("Versions", "FMinus").c_str(), rowOf("Graphics (FunkGui)", "Shader target").c_str(),
                         rowOf("Program (FMinus)", "Program").c_str());
             P.eq("debug.version", product.find(pg::product::kVersion) != std::string::npos ? 1 : 0, 1);
+            P.eq("debug.funkgui_version", rowOf("Versions", "FunkGui").rfind(funkgui::version(), 0) == 0 ? 1 : 0, 1);
             P.eq("debug.build_commit", rowOf("Versions", "Build").rfind("commit ", 0) == 0 ? 1 : 0, 1);
             P.eq("debug.fminus_commit", rowOf("Versions", "FMinus").find(std::string(pg::product::kFMinusCommit).substr(0, 12)) != std::string::npos ? 1 : 0, 1);
             const funkgui::shaders::Target t = funkgui::shaders::target();
@@ -1007,7 +1009,7 @@ PROBE(gui, settings)
         const auto offset = [&] { return static_cast<double>(card.places(W(), H()).scroll); };
         const pg::ui::Scroll sc = card.scrollOf(card.places(W(), H()));
         const double notch = std::min(3.0 * sc.row, static_cast<double>(sc.max()));
-        const float notchDy = pg::ui::Scroll::kWheelNotch;
+        const float notchDy = funkgui::scroll::kWheelNotch;
         host.wheel(at.body.centreX(), at.body.centreY(), -notchDy);
         P.near("scroll.notch_three_rows", offset(), notch, 0.01);
         host.wheel(at.body.centreX(), at.body.centreY(), 1000.0f);
