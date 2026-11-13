@@ -190,9 +190,9 @@ namespace
 
     const char* const kGui = R"GUI(panel {
     row {
-        section "STILL" { shader "still.sc" inputs="cutoff" width=160 height=90 }
-        section "MOVING" { shader "moving.sc" inputs="out" width=160 height=90 }
-        section "BROKEN" { shader "broken.sc" width=200 height=90 }
+        section "STILL" { shader "still.sc" inputs="cutoff" width=200 height=120 }
+        section "MOVING" { shader "moving.sc" inputs="out" width=200 height=120 }
+        section "BROKEN" { shader "broken.sc" width=200 height=120 }
     }
     row { knob cutoff; knob level }
 }
@@ -321,10 +321,10 @@ namespace
             return files;
         const std::string k = "(1.0 - " + std::to_string(salt) + ".0e-7)";
         files.push_back({ "panel.gui", "panel { row {\n"
-                                       "    shader \"glow.sc\" inputs=\"cutoff out\" width=120 height=90\n"
-                                       "    shader \"rings.sc\" inputs=\"level\" width=120 height=90\n"
-                                       "    shader \"bars.sc\" inputs=\"out env\" width=120 height=90\n"
-                                       "    shader \"sky.sc\" inputs=\"cutoff level\" width=120 height=90\n"
+                                       "    shader \"glow.sc\" inputs=\"cutoff out\" width=200 height=120\n"
+                                       "    shader \"rings.sc\" inputs=\"level\" width=200 height=120\n"
+                                       "    shader \"bars.sc\" inputs=\"out env\" width=200 height=120\n"
+                                       "    shader \"sky.sc\" inputs=\"cutoff level\" width=200 height=120\n"
                                        "} row { knob cutoff; knob level } }\n" });
         files.push_back({ "glow.sc", "float ring(vec2 p, float r, float w) { return smoothstep(w, 0.0, abs(length(p) - r)); }\n"
                                      "void main()\n{\n"
@@ -846,7 +846,7 @@ PROBE(gui, shaders)
     // not watched. (A .gui file that leaves a parameter out shows its knob last: the knobs are named, on page B.)
     {
         const char* const still = "panel { tabs {\n"
-                                  "    page \"A\" { shader \"still.sc\" inputs=\"cutoff\" width=160 height=90 }\n"
+                                  "    page \"A\" { shader \"still.sc\" inputs=\"cutoff\" width=200 height=120 }\n"
                                   "    page \"B\" { knob cutoff; knob level }\n"
                                   "} }\n";
         load(processor, { { pg::kProgramName, program() }, { "panel.gui", still }, { "still.sc", kStill } });
@@ -1550,7 +1550,7 @@ PROBE(gui, shaders)
             qh.settle();
         }
         load(q, { { pg::kProgramName, source },
-                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=160 height=90 } }\n" },
+                  { "panel.gui", "panel { row { shader \"sixteen.sc\" inputs=\"" + names + "\" width=200 height=120 } }\n" },
                   { "sixteen.sc", body } });
         q.settle();
         qh.tick(20);
@@ -1710,9 +1710,9 @@ PROBE(gui, shaders)
                                    "    ink = max(ink, text(v_px, vec2(8.0, 98.0), 12.0, 0.0, \"8999001\"));\n"
                                    "    gl_FragColor = vec4(vec3_splat(ink), 1.0);\n}\n";
         const std::string textGui = "panel { row {\n"
-                                    "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=110\n"
-                                    "    shader \"dash.sc\" inputs=\"cutoff level\" width=170 height=110\n"
-                                    "    shader \"odo.sc\" inputs=\"level\" width=120 height=110\n"
+                                    "    shader \"text.sc\" inputs=\"cutoff level\" width=240 height=120\n"
+                                    "    shader \"dash.sc\" inputs=\"cutoff level\" width=200 height=120\n"
+                                    "    shader \"odo.sc\" inputs=\"level\" width=200 height=120\n"
                                     "} row { knob cutoff; knob level } }\n";
         const std::string firstWords = "A STRING LONGER THAN TWELVE";
         const pg::Sources textFiles{ { pg::kProgramName, program() }, { "panel.gui", textGui }, { "text.sc", kTextSc },

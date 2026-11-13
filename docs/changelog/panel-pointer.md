@@ -22,5 +22,6 @@ Claude Desktop extension: **0.20.0** (was 0.19.0).
   `pointer.y`).
 
 **Changed**
-- A shader's `width=` and `height=` are its size, not only its least: a 72 px dial is 72 px (unsized, 200 x 120 as
-  before).
+- A shader's `width=` and `height=` are now its size. Before, a shader was never smaller than 200 x 120 px, whatever
+  they said: a panel written with `shader "dash.sc" width=170 height=110` drew it 200 x 120, and now draws it 170 x 110,
+  as written. To keep the old look, give it `width=200 height=120` (or leave both out: 200 x 120 as before).

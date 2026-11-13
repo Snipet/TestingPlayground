@@ -576,7 +576,7 @@ PROBE(plugin, sandbox)
         const std::filesystem::path folder = std::filesystem::path(dir) / "program";
         std::filesystem::create_directories(folder);
         std::ofstream(folder / pg::kProgramName) << program();
-        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=100\n    knob glow\n    knob level\n"
+        std::ofstream(folder / "panel.gui") << "section \"GLOW\" {\n    shader \"glow.sc\" inputs=\"glow shine\" width=200 height=120\n    knob glow\n    knob level\n"
                                                 "    menu shape \"RISING\" \"FALLING\"\n}\n";
         // The shader takes its colour from a .sh file of the program's own and writes its title with the library's text.
         std::ofstream(folder / "glow.sc") << "#include \"funk/text.sh\"\n#include \"tint.sh\"\n\nvoid main()\n{\n"

@@ -748,9 +748,10 @@ module Voice
   (line, dot, triangle, none), `sweep=`, `ticks=`, `thickness=`, `bipolar`, `labelpos=`, `value=` and `shadow=`;
   `live=field` marks on its ring where the program has the parameter now (its modulation, from a field).
   `class "NAME" ...` and `defaults KIND ...` lines give properties to many elements at once.
-  `shader "glow.sc" inputs="cutoff out"` draws a GPU shader of the program's own: `glow.sc`, a tab like any file, holds
-  the body of a fragment shader in bgfx's GLSL (a `main()` that sets `gl_FragColor`, reading `v_uv`, `v_px`, `u_size`,
-  `u_time`, `u_px` (one screen pixel in px, to smooth an edge over) and its inputs, 16 at most (FunkGui's `u_params`),
+  `shader "glow.sc" inputs="cutoff out"` draws a GPU shader of the program's own (`width=` and `height=` its size, else
+  200 x 120; it stretches as a scope does): `glow.sc`, a tab like any file, holds the body of a fragment shader in
+  bgfx's GLSL (a `main()` that sets `gl_FragColor`, reading `v_uv`, `v_px`, `u_size`, `u_time`, `u_px` (one screen
+  pixel in px, to smooth an edge over) and its inputs, 16 at most (FunkGui's `u_params`),
   as `in0`..`in15` or `in_cutoff`, `in_out`: a parameter's 0..1, a field's value, the audio's level). It may
   `#include "funk/text.sh"` and `"funk/shapes.sh"`, the plugin's own library, and `.sh` files of the program's (functions
   several shaders share, tabs like any file; a `.sc` or a `.sh` includes one, each read once). `text.sh` draws text and
