@@ -91,22 +91,24 @@ namespace playground::ui::settings
         uint64_t (*key)(const Context&);         // what it reads that changes with no input (null: nothing)
     };
 
-    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Usage, Debug, About.
+    // Every page, in the rail's order: General, Editor, Audio and MIDI, Projects, AI, Usage, Network, Debug, About.
     std::span<const Page> pages();
 
     // The pages in files of their own (the table names them).
     extern const Page kAudioPage;                // SettingsDevices.cpp
     extern const Page kDebugPage;                // SettingsDebug.cpp
     extern const Page kUsagePage;                // UsagePage.cpp
+    extern const Page kNetworkPage;              // SettingsNetwork.cpp
 
     // The Debug page's own codes (Act::item): Copy all; a folder's row's Show button (kShowPath + its row's number).
     constexpr int kCopyAll = 0, kShowPath = 100;
     // The other pages' codes (Act::item), for the probes.
-    constexpr int kTheme = 0, kZoom = 1;                     // General
+    constexpr int kTheme = 0, kZoom = 1, kWhatsNew = 2;      // General
     constexpr int kFormatOnRun = 0;                          // Editor
     constexpr int kShowProjects = 0;                         // Projects
     constexpr int kLookForGit = 10, kChooseGit = 11, kDefaultGit = 12, kShowGitFolder = 13;   // ... its Git rows
     constexpr int kProviderKey = 0;                          // AI
+    constexpr int kCheckUpdates = 0, kFactoryProjects = 1, kCheckNow = 2;   // Network
 
     // The Projects page's Git rows (SettingsGit.cpp, package 05): built after its folder, its codes acted on (true: one
     // of theirs), and what they read that changes with no input.

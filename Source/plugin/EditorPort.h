@@ -597,6 +597,40 @@ namespace playground
         std::vector<DebugRow> rows;
     };
 
+    // The website (package 08: plugin/UpdateCheck.h, plugin/FactoryStore.h), as the offer, the top bar's pill, the
+    // update card and the Network page show it (EditorPort::updateState). Plain data, read where it lives.
+    struct UpdateState
+    {
+        // The update check: off (<ENV_PREFIX>UPDATES=off, or the answer no or later), unanswered, idle, checking, failed.
+        enum class Check : uint8_t { off, unanswered, idle, checking, failed };
+        Check check = Check::off;
+        bool loaded = false;                     // the answers have been read (app.json, factory.json)
+        bool envOff = false;                     // <ENV_PREFIX>UPDATES=off: never checks, and no offer
+        bool updatesOn = false;                  // the answer is yes
+        bool updatesAnswered = false;            // yes, no or later
+        std::string current;                     // this plugin's version
+        std::string latest, date, summary;       // the site's last good answer ("" none yet)
+        bool newer = false;                      // latest is above current, not skipped, and the check is on
+        std::string skipped;
+        int64_t checkedMs = 0;                   // the site's last answer, ms since 1970 (0: never)
+        std::string why;                         // the last check's failure, in words
+        // The factory projects (FactoryStore.h): the answer (0 not asked, 1 yes, 2 no), <ENV_PREFIX>FACTORY=off, and
+        // the store's state in a few words ("12 projects, checked today", "not fetched yet", "failed: no connection").
+        int factory = 0;
+        bool factoryOff = false;
+        std::string factoryWords;
+        // The offer (editor/OfferCard.h): due when both are read, neither question answered, and envOff is false.
+        bool offer = false;
+        // What's new (editor/UpdateCards.h, plugin/Changelog.h): the version whose card was last shown, both products'
+        // ("" never); due once an editor opened and app.json was read again since, when seen is not this version, the
+        // changelog has something to show, and <ENV_PREFIX>WHATSNEW is not "off" (the probes' environment sets it).
+        std::string seen;
+        bool whatsNewOff = false;
+        bool whatsNewReady = false;              // app.json read, and read again since an editor last opened
+        bool whatsNewDue = false;
+        uint64_t revision = 0;
+    };
+
     // The Standalone window's close, minimise and zoom buttons, together (EditorPort::windowButtons).
     struct WindowButtons
     {
@@ -997,6 +1031,54 @@ namespace playground
         virtual bool showPath(const std::string& path, std::string& why)
         {
             (void)path;
+            why = "nothing opens here";
+            return false;
+        }
+
+        // ---- The website (package 08: UpdateState above; plugin/ProcessorUpdates.cpp) -----------------------------------
+        //   updateState()      the update check's state and the factory projects' answer (UpdateState); its revision
+        //                      moves with the check's (a Panel reads the state again only then)
+        //   editorOpened()     an editor's Panel was made (never a picture's): the factory store and the update check
+        //                      may now reach the website, each only after a yes and only when one is due
+        //   answerOffer()      the offer's Allow (each ticked line a yes, each unticked one a no) or Not now (allow
+        //                      false: the update check "later", the factory projects left unasked, the offer not made
+        //                      again by itself)
+        //   setUpdates(), setFactoryProjects()   the Network page's switches (a yes asks for a check or a fetch)
+        //   checkForUpdates()  Check now; skipUpdate() the pill and the card no longer show that version
+        //   announceUpdate()   true the first time this process asks for `version`: the status line's notice, once
+        //   openDownloadPage() the site's fixed download page in the browser (updates::kDownloadPath: never an address
+        //                      from the site), through the processor's hook under a probe; false with why
+        //   whatsNewShown()    What's new was shown (by itself or from Settings): app.json's seen is this version
+        //   openLink()         a link of What's new in the browser: only an https:// address of the repository or the
+        //                      website (changelog::linkAllowed), through the same hook as the download page; false
+        //                      with why (refused, or nothing opens under a probe)
+        virtual UpdateState updateState() const { return {}; }
+        virtual uint64_t updateRevision() const { return 0; }
+        virtual void editorOpened() {}
+        virtual void answerOffer(bool allow, bool factory, bool updates)
+        {
+            (void)allow;
+            (void)factory;
+            (void)updates;
+        }
+        virtual void setUpdates(bool on) { (void)on; }
+        virtual void setFactoryProjects(bool on) { (void)on; }
+        virtual void checkForUpdates() {}
+        virtual void skipUpdate(const std::string& version) { (void)version; }
+        virtual bool announceUpdate(const std::string& version)
+        {
+            (void)version;
+            return false;
+        }
+        virtual bool openDownloadPage(std::string& why)
+        {
+            why = "nothing opens here";
+            return false;
+        }
+        virtual void whatsNewShown() {}
+        virtual bool openLink(const std::string& url, std::string& why)
+        {
+            (void)url;
             why = "nothing opens here";
             return false;
         }

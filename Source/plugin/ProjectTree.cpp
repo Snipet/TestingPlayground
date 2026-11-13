@@ -2,6 +2,7 @@
 #include "plugin/ProjectTree.h"
 
 #include "plugin/EditorPort.h"
+#include "plugin/FileReplace.h"
 
 #include "Product.h"
 
@@ -195,8 +196,9 @@ namespace playground::projecttree
                     return false;
                 }
             }
-            fs::rename(temp, to, ec);
-            if (ec)
+            // FileReplace.h: a file of the folder another program may be reading (the user's editor, git) on Windows
+            // waited out; its answer is the return value.
+            if (!files::replace(temp, to, ec))
             {
                 fs::remove(temp, ec);
                 fail(why, "cannot write " + to.string());

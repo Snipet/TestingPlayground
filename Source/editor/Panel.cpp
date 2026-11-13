@@ -3694,10 +3694,30 @@ namespace playground::ui
             sp.icon = [] { return chat::Icon::gear; };
             sp.act = [this] { openSettings(); };
             sp.a11yTitle = "Settings";
-            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, DEBUG";
+            sp.spec = "SETTINGS   THE THEME, THE ZOOM, THE EDITOR, THE PROJECTS' FOLDER, THE AI, THE NETWORK, DEBUG";
             gearItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
         }
         settings_.setHooks(settingsHooks());
+
+        // The website (package 08): the top bar's pill while a newer version is out and not skipped (an editor's Panel
+        // alone), right of the product's name; a click opens the update card (UpdateCards.h). Nothing opens by itself.
+        {
+            TB::Spec sp;
+            sp.shape = TB::Shape::pill;
+            sp.icon = [] { return chat::Icon::arrowUp; };
+            sp.label = [this] { return updateState_.latest + " is out"; };
+            sp.look = [] { return TB::Look::outlined; };
+            sp.shown = [this] { return updatePill_; };
+            sp.act = [this] {
+                if (dialogOpen())
+                    return;
+                update_.open(updateState_);
+                dirty_ = true;
+            };
+            sp.a11yTitle = "A new version is out";
+            sp.specNow = [this] { return "VERSION " + upper(updateState_.latest) + " IS OUT   A CLICK SAYS MORE: DOWNLOAD, SKIP OR LATER"; };
+            updateItem_ = add(std::make_unique<TB>(idFor(), std::move(sp)));
+        }
 
         // The columns' edges (Columns.h): the explorer's right one and the chat's left one, each a handle that sets its
         // card's width (last of the items: hit by itemAt before the cards' items, drawn over the cards' edges).
@@ -3722,6 +3742,8 @@ namespace playground::ui
         // The processor's files and status, and the chat; the netlists' views the session kept.
         bindFiles();
         claudeSeen_ = port_.claudeNotice().count;        // what Claude did before this editor opened: not said again
+        if (role_ == Role::editor)
+            port_.editorOpened();                        // the website may be reached now, after a yes (package 08)
         saveSeen_ = port_.saving().done;                 // and a save another editor made
         seenDraft_ = port_.draftRevision();
         given_ = port_.draft();
@@ -3884,8 +3906,16 @@ namespace playground::ui
             // The project's pill and, while a project is open, its presets right of it (the arrows and the name), the
             // two centred as one between the product's name and the switch: the pill gives way first, then the name.
             const funkgui::FontAtlasSdf& atlas = funkgui::FontService::get().atlas();
-            const float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
+            float nameRight = kMargin + 50.0f + buttonsRoom_ + std::max(funkgui::text::width(atlas, product::kName, chat::kStrong),
                                                                funkgui::text::width(atlas, subtitle_.c_str(), chat::kSmall));
+            // The update pill (package 08) right of the name, while it shows: the project's pill gives it the room.
+            if (ButtonItem& pill = at(updateItem_); updatePill_)
+            {
+                pill.setBounds({ 0.0f, barMid - 0.5f * kTopButtonH, 10.0f, kTopButtonH });
+                const float pw = pill.preferredWidth();
+                pill.setBounds({ nameRight + 14.0f, barMid - 0.5f * kTopButtonH, pw, kTopButtonH });
+                nameRight += 14.0f + pw;
+            }
             const float segLeft = segRight - 3.0f - 2.0f * kSegmentW - 3.0f - windowW;
             const float room = segLeft - 24.0f - (nameRight + 24.0f);
             const bool presets = presetsShown();
@@ -5981,6 +6011,8 @@ namespace playground::ui
         FP_DIRTY_AT("refresh: syncFolder");
         syncMidi();
         FP_DIRTY_AT("refresh: syncMidi");
+        syncUpdates();                                   // the website: the offer, the pill, the notice (package 08)
+        FP_DIRTY_AT("refresh: syncUpdates");
         // The editor's save in flight (Cmd-S, PROJECTS' Save): what came of it, once it has ended.
         syncSave();
         // An export this Panel started (EXPORT): how far it has come, then what came of it.
@@ -6530,6 +6562,86 @@ namespace playground::ui
         }
         syncDesktop();
         dirty_ = true;
+    }
+
+    // ---- The website (package 08: UpdateCards.h, EditorPort's "The website") ---------------------------------------------
+
+    void Panel::syncUpdates()
+    {
+        if (role_ != Role::editor)
+            return;                                      // the editor's Panel alone: never a picture's, nor the code window's
+        const uint64_t r = port_.updateRevision();
+        // Until the offer is decided the factory store's answer may land with no move of the check's revision; while it
+        // shows, another editor may answer it.
+        if (offerDecided_ && !offer_.isOpen() && r == updateSeen_)
+        {
+            decideWhatsNew();                            // a card it waited for may have closed meanwhile
+            return;
+        }
+        updateSeen_ = r;
+        updateState_ = port_.updateState();
+        const UpdateState& u = updateState_;
+        if (!offerDecided_ && u.loaded && !dialogOpen())
+        {
+            offerDecided_ = true;
+            if (u.offer)
+                offer_.open();
+        }
+        if (offer_.isOpen() && u.loaded && !u.offer)
+            offer_.close();                              // answered in another editor
+        if (u.newer != updatePill_)
+        {
+            updatePill_ = u.newer;
+            if (!updatePill_ && update_.isOpen() && u.skipped == update_.version())
+                update_.close();
+            layout();                                    // the project's pill gives the pill its room, or takes it back
+        }
+        if (u.newer && port_.announceUpdate(u.latest))
+            notice("VERSION " + upper(u.latest) + " IS OUT");
+        decideWhatsNew();
+        dirty_ = true;
+    }
+
+    // What's new, once per version (app.json's seen, both products'): after the offer is decided and answered (never two
+    // cards at once), never over another card, when app.json was read again since this editor opened.
+    void Panel::decideWhatsNew()
+    {
+        const UpdateState& u = updateState_;
+        if (whatsNewDecided_ || !offerDecided_ || !u.loaded || offer_.isOpen() || dialogOpen())
+            return;
+        if (!u.whatsNewReady)
+            return;                                      // app.json's seen not read again since this editor opened
+        whatsNewDecided_ = true;
+        if (u.whatsNewDue)
+            openWhatsNew();
+    }
+
+    void Panel::openWhatsNew()
+    {
+        if (dialogOpen() && !whatsNew_.isOpen())
+            return;
+        whatsNew_.open(updateState_.whatsNewDue ? updateState_.seen : std::string());
+        updateSeen_ = 0;                                 // seen set: read again at the next frame
+        dirty_ = true;
+    }
+
+    void Panel::afterUpdateCards()
+    {
+        if (std::string n = offer_.takeNotice(); !n.empty())
+            notice(n);
+        if (std::string n = update_.takeNotice(); !n.empty())
+            notice(n);
+        if (std::string n = whatsNew_.takeNotice(); !n.empty())
+            notice(n);
+        updateSeen_ = 0;                                 // an answer given: read again at the next frame
+        dirty_ = true;
+    }
+
+    std::optional<funkgui::Point> Panel::centreOfUpdatePill() const
+    {
+        if (updateItem_ < 0 || !items_[static_cast<std::size_t>(updateItem_)]->shown())
+            return std::nullopt;
+        return centreOf(updateItem_);
     }
 
     void Panel::afterName(bool wasOpen)
@@ -8106,6 +8218,8 @@ namespace playground::ui
             focusBeforeSettings_ = -1;
             if (std::exchange(keyAfterSettings_, false) && hasChat())
                 openKeyDialog();                         // the AI page's Provider and key...
+            if (std::exchange(whatsNewAfterSettings_, false))
+                openWhatsNew();                          // the General page's What's new
         }
         dirty_ = true;
     }
@@ -8177,6 +8291,7 @@ namespace playground::ui
             return ai;
         };
         h.keyDialog = [this] { keyAfterSettings_ = true; };   // afterSettings opens it, the focus given back first
+        h.whatsNew = [this] { whatsNewAfterSettings_ = true; };   // afterSettings opens it, as the key dialog
         h.graphics = [this] {
             DebugSection g{ "Graphics (FunkGui)", {} };
             if (hostDebug_)
@@ -8917,7 +9032,8 @@ namespace playground::ui
             .mix(projects_.isOpen()).mix(export_.isOpen()).mix(git_.isOpen()).mix(settings_.isOpen()).mix(settings_.revision())
             .mix(name_.isOpen()).mix(name_.revision()).mix(desktopBadge_).mix(picker_.isOpen()).mix(picker_.revision())
             .mix(focus_).mix(ring_).mix(pressed_).mix(touched_).mix(hasPointer_).mix(pointer_).mix(width_).mix(height_)
-            .mix(layoutRevision_).mix(buttonsRoom_);
+            .mix(layoutRevision_).mix(buttonsRoom_).mix(offer_.isOpen()).mix(offer_.revision()).mix(update_.isOpen())
+            .mix(update_.revision()).mix(whatsNew_.isOpen()).mix(whatsNew_.key());
         // The footer: the spec line of the control under the hand (a dial's value moves with the host's automation).
         if (!dialogOpen())
         {
@@ -9325,6 +9441,11 @@ namespace playground::ui
                                                             : "GIT   TAB THE NEXT FIELD   RETURN PRESSES THE FIRST BUTTON   ESCAPE CLOSES");
         else if (name_.isOpen())
             std::snprintf(line, sizeof line, "NAME   RETURN SAVES IT (EMPTY: ITS NUMBER'S)   ESCAPE CANCELS");
+        else if (update_.isOpen())
+            std::snprintf(line, sizeof line, "NEW VERSION   RETURN DOWNLOADS   ESCAPE OR A CLICK OUTSIDE: LATER");
+        else if (whatsNew_.isOpen())
+            std::snprintf(line, sizeof line, "WHAT'S NEW   UP, DOWN, SPACE AND THE WHEEL SCROLL   A LINK OPENS IN THE BROWSER   "
+                                             "ESCAPE, RETURN OR A CLICK OUTSIDE CLOSES");
         else if (compare_.isOpen())
             std::snprintf(line, sizeof line, "COMPARE   ] AND [ THE NEXT AND THE PREVIOUS CHANGE   TAB THE NEXT FILE   "
                                              "ESCAPE OR A CLICK OUTSIDE CLOSES");
@@ -9405,6 +9526,21 @@ namespace playground::ui
             c.text(dropHover_ ? "Drop to add for Claude" : "Drop pictures here for Claude", r.centreX(),
                    c.capCentreTop(r.centreY() + 14.0f, chat::kStrong), chat::kStrong, dropHover_ ? p.text : p.soft,
                    funkgui::Align::centre);
+        }
+        if (offer_.isOpen() && !dialogOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kOfferTag, false);
+            offer_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (update_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kUpdateTag, false);
+            update_.draw(c, th, width_, height_, pointer_, hasPointer_);
+        }
+        if (whatsNew_.isOpen())
+        {
+            const funkgui::Canvas::Scope s(c, kWhatsNewTag, false);
+            whatsNew_.draw(c, th, width_, height_, pointer_, hasPointer_);
         }
         if (keyOpen_)
             drawKeyDialog(c, th);
@@ -9531,6 +9667,12 @@ namespace playground::ui
             else if (name_.isOpen())
                 pressCard([this] { return name_.isOpen(); }, [this] { name_.pointerDown(pointer_, width_, height_); },
                           [this] { afterName(true); });
+            else if (update_.isOpen())
+                pressCard([this] { return update_.isOpen(); }, [this] { update_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterUpdateCards(); });
+            else if (whatsNew_.isOpen())
+                pressCard([this] { return whatsNew_.isOpen(); }, [this] { whatsNew_.pointerDown(pointer_, width_, height_); },
+                          [this] { afterUpdateCards(); });
             else if (compare_.isOpen())
                 pressCard([this] { return compare_.isOpen(); }, [this] { compare_.pointerDown(pointer_, host_, width_, height_); },
                           [this] { afterCompare(true); });
@@ -9546,6 +9688,15 @@ namespace playground::ui
                               projects_.pointerDown(e, host_, width_, height_);
                           },
                           [this] { afterProjects(true); });
+            return;
+        }
+        // The website's offer (not modal): a press in its box is its own, any other goes to the panel behind it.
+        if (offer_.contains(pointer_, width_, height_))
+        {
+            pressed_ = -1;
+            offer_.pointerDown(pointer_, width_, height_);
+            afterUpdateCards();
+            closingPress_ = !offer_.isOpen();            // answered: its double-click's second press ends here too
             return;
         }
         // A .gui interface's bar (Scroll.h): its thumb drags, a press on its track jumps first.
@@ -9626,6 +9777,11 @@ namespace playground::ui
             return;
         }
         // A card's bar's thumb (Scroll.h: each moves only while its own thumb was pressed).
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.pointerDrag(pointer_, width_, height_);   // its page's thumb
+            return;
+        }
         if (settings_.isOpen() || ab_.isOpen() || picker_.isOpen() || compare_.isOpen())
         {
             if (settings_.isOpen())
@@ -9661,6 +9817,7 @@ namespace playground::ui
             return;
         }
         settings_.pointerUp();                           // a card's thumb let go (none held: nothing)
+        whatsNew_.pointerUp();
         ab_.pointerUp();
         compare_.pointerUp();
         picker_.pointerUp();
@@ -9712,7 +9869,12 @@ namespace playground::ui
             settings_.wheel(e, width_, height_);
             return true;
         }
-        if (export_.isOpen() || name_.isOpen() || keyOpen_ || git_.isOpen())
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.wheel(e, width_, height_);
+            return true;
+        }
+        if (export_.isOpen() || name_.isOpen() || keyOpen_ || update_.isOpen() || git_.isOpen())
             return true;                                 // nothing behind a dialog scrolls
         if (compare_.isOpen())
         {
@@ -9806,6 +9968,20 @@ namespace playground::ui
         {
             name_.key(e, host_, width_, height_);
             afterName(true);
+            return true;
+        }
+        if (update_.isOpen())
+        {
+            update_.key(e, width_, height_);
+            afterUpdateCards();
+            return true;
+        }
+        if (whatsNew_.isOpen())
+        {
+            if (e.mods.cmd)
+                return false;                            // the app's menu keys go on (Cmd-Q), as with Settings
+            whatsNew_.key(e, width_, height_);
+            afterUpdateCards();
             return true;
         }
         if (compare_.isOpen())
@@ -9983,6 +10159,12 @@ namespace playground::ui
             return projects_.cursor(pointer_, width_, height_);
         if (picker_.isOpen())
             return picker_.cursor(pointer_, width_, height_);
+        if (update_.isOpen())
+            return update_.cursor(pointer_, width_, height_);
+        if (whatsNew_.isOpen())
+            return whatsNew_.cursor(pointer_, width_, height_);
+        if (hasPointer_ && offer_.contains(pointer_, width_, height_))
+            return offer_.cursor(pointer_, width_, height_);
         const int i = pressed_ >= 0 ? pressed_ : (hasPointer_ ? itemAt(pointer_) : -1);
         return i >= 0 ? items_[static_cast<std::size_t>(i)]->cursorAt(pointer_) : funkgui::Cursor::normal;
     }
@@ -10106,6 +10288,18 @@ namespace playground::ui
             picker_.accessibility(out, width_, height_);
             return;
         }
+        if (update_.isOpen())
+        {
+            update_.accessibility(out, width_, height_);
+            return;
+        }
+        if (whatsNew_.isOpen())
+        {
+            whatsNew_.accessibility(out, width_, height_);
+            return;
+        }
+        if (offer_.isOpen())
+            offer_.accessibility(out, width_, height_);  // first: it is over the panel, which stays usable behind it
         for (const auto& item : items_)
             if (item->shown())
                 item->accessibility(out);
@@ -10128,8 +10322,11 @@ namespace playground::ui
         r ^= (projects_.isOpen() ? 0x9E3779B1u : 0u) ^ (projects_.revision() * 0x165667B1u);
         r ^= (picker_.isOpen() ? 0x2545F491u : 0u) ^ (picker_.revision() * 0x61C88647u);
         r ^= (export_.isOpen() ? 0x85EBCA77u : 0u) ^ (export_.revision() * 0xC2B2AE3Du);
-        r ^= (git_.isOpen() ? 0x1B873593u : 0u) ^ (git_.revision() * 0xCC9E2D51u);
+        r ^= (git_.isOpen() ? 0x68E31DA4u : 0u) ^ (git_.revision() * 0xB5297A4Du);
         r ^= (name_.isOpen() ? 0x4CF5AD43u : 0u) ^ (name_.revision() * 0x2127599Bu);
+        r ^= (offer_.isOpen() ? 0x3C6EF372u : 0u) ^ (offer_.revision() * 0x9E3779B9u);
+        r ^= (update_.isOpen() ? 0xA54FF53Au : 0u) ^ (update_.revision() * 0x510E527Fu);
+        r ^= (whatsNew_.isOpen() ? 0x1B873593u : 0u) ^ (whatsNew_.revision() * 0xCC9E2D51u);
         r ^= (ab_.isOpen() ? 0x7FEB352Du : 0u) ^ (ab_.revision() * 0x846CA68Bu);
         r ^= (compare_.isOpen() ? 0x3C6EF372u : 0u) ^ (compare_.revision() * 0xA54FF53Bu);
         r ^= (settings_.isOpen() ? 0x27D4EB2Du : 0u) ^ (settings_.revision() * 0x9E3779B1u) ^ (mutedShown_ ? 0x165667B1u : 0u);
@@ -10203,6 +10400,23 @@ namespace playground::ui
         {
             name_.a11yAction(id, a, width_, height_);
             afterName(true);
+            return;
+        }
+        if (update_.isOpen())
+        {
+            (void)update_.a11yAction(id, a, width_, height_);
+            afterUpdateCards();
+            return;
+        }
+        if (whatsNew_.isOpen())
+        {
+            (void)whatsNew_.a11yAction(id, a, width_, height_);
+            afterUpdateCards();
+            return;
+        }
+        if (offer_.isOpen() && offer_.a11yAction(id, a, width_, height_))
+        {
+            afterUpdateCards();
             return;
         }
         if (compare_.isOpen())
