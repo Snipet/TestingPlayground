@@ -1017,7 +1017,7 @@ namespace playground::ui
         int updateItem_ = -1;                            // the top bar's pill
         bool offerDecided_ = false;                      // the offer made, or found not due, once
         uint64_t updateSeen_ = 0;                        // the update check's revision as last read
-        EditorPort::UpdateState updateState_;
+        UpdateState updateState_;
         bool updatePill_ = false;                        // the pill shows (its place laid out)
         void syncUpdates();
         void afterUpdateCards();                         // their notices to the status, the focus kept

@@ -15,9 +15,9 @@ namespace playground
 {
     namespace
     {
-        EditorPort::UpdateState::Check checkOf(updates::Status s)
+        UpdateState::Check checkOf(updates::Status s)
         {
-            using C = EditorPort::UpdateState::Check;
+            using C = UpdateState::Check;
             switch (s)
             {
                 case updates::Status::off: return C::off;
@@ -48,7 +48,7 @@ namespace playground
         }
     }
 
-    EditorPort::UpdateState Processor::updateState() const
+    UpdateState Processor::updateState() const
     {
         UpdateState u;
         u.current = product::kVersion;
@@ -86,6 +86,7 @@ namespace playground
 
     void Processor::editorOpened()
     {
+        editorSeen_ = true;
         if (factoryStore_ != nullptr)
             factoryStore_->editorOpened();
         if (updateCheck_ != nullptr)
@@ -105,8 +106,8 @@ namespace playground
         if (factoryStore_ != nullptr)
         {
             factoryStore_->setAnswer(factory ? factorystore::Answer::yes : factorystore::Answer::no);
-            if (factory)
-                factoryStore_->refreshNow();             // the factory spec's "Get them": a fetch now
+            if (factory && editorSeen_)
+                factoryStore_->refreshNow();             // the factory spec's "Get them": a fetch now (an editor asked)
         }
         if (updateCheck_ != nullptr)
             updateCheck_->setAnswer(updates ? updates::Answer::yes : updates::Answer::no);   // a yes checks when due
@@ -123,14 +124,14 @@ namespace playground
         if (factoryStore_ == nullptr)
             return;
         factoryStore_->setAnswer(on ? factorystore::Answer::yes : factorystore::Answer::no);
-        if (on)
+        if (on && editorSeen_)
             factoryStore_->editorOpened();               // a fetch when the set on disk is missing or a day old
     }
 
     void Processor::checkForUpdates()
     {
-        if (updateCheck_ != nullptr)
-            updateCheck_->checkNow();
+        if (updateCheck_ != nullptr && editorSeen_)
+            updateCheck_->checkNow();                    // Check now: an editor's (never before one opened)
     }
 
     void Processor::skipUpdate(const std::string& version)

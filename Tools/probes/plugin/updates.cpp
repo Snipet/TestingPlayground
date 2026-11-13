@@ -401,7 +401,7 @@ PROBE(plugin, updates)
                                                           [](const std::string& p) { return p.find("elsewhere") != std::string::npos; })
                                                  ? 1 : 0, 1);
         refused("large", release("0.9.0", ",\"pad\":\"" + std::string(70 * 1024, 'x') + "\""), 200, "larger than 64 KB");
-        P.le("refuse.large.read_no_further", static_cast<int64_t>(site->delivered()), static_cast<int64_t>(up::kMaxBytes + 1024));
+        P.le("refuse.large.read_no_further", static_cast<double>(site->delivered()), static_cast<double>(up::kMaxBytes + 1024));
         refused("broken", "{\"format\":\"funk-playground-release\",", 200, "does not read");
         refused("format", "{\"format\":\"something-else\",\"version\":1,\"latest\":{\"version\":\"0.9.0\"}}", 200, "not a release file");
         refused("version", "{\"format\":\"funk-playground-release\",\"version\":2,\"latest\":{\"version\":\"0.9.0\"}}", 200,
@@ -577,8 +577,8 @@ PROBE(plugin, updates)
             pg::EditorPort& pa = a.editorPort();
             pg::EditorPort& pb = b.editorPort();
             (void)waitFor([&] { return pa.updateState().loaded; });
-            const pg::EditorPort::UpdateState u0 = pa.updateState();
-            P.eq("offer.due", u0.offer && !u0.updatesAnswered && u0.factory == 0 && u0.check == pg::EditorPort::UpdateState::Check::unanswered ? 1 : 0, 1);
+            const pg::UpdateState u0 = pa.updateState();
+            P.eq("offer.due", u0.offer && !u0.updatesAnswered && u0.factory == 0 && u0.check == pg::UpdateState::Check::unanswered ? 1 : 0, 1);
             pa.editorOpened();
             pb.editorOpened();
             if (c != nullptr)
@@ -587,7 +587,7 @@ PROBE(plugin, updates)
             pa.answerOffer(true, false, true);
             if (c != nullptr)
                 (void)waitFor([&] { return s->count() >= 1 && c->idle(); });
-            const pg::EditorPort::UpdateState u1 = pb.updateState();
+            const pg::UpdateState u1 = pb.updateState();
             P.eq("offer.allow.updates_yes", u1.updatesOn && u1.updatesAnswered ? 1 : 0, 1);
             P.eq("offer.allow.factory_no", u1.factory, 2);
             P.eq("offer.allow.not_due_again", u1.offer ? 1 : 0, 0);
@@ -641,7 +641,7 @@ PROBE(plugin, updates)
             const std::shared_ptr<up::Check> c = up::process();
             if (c != nullptr)
                 (void)settle(*c);
-            const pg::EditorPort::UpdateState u = port.updateState();
+            const pg::UpdateState u = port.updateState();
             P.eq("offer.not_now.later", c != nullptr && c->answer() == up::Answer::later && u.updatesAnswered && !u.updatesOn ? 1 : 0, 1);
             P.eq("offer.not_now.factory_unasked", u.factory, 0);
             P.eq("offer.not_now.nothing_asked", s->count(), 0);

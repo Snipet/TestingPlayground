@@ -10,7 +10,9 @@
 //             set, no index and no file (not even a temporary). The other product's taken rows are its own run's (its
 //             projects are of its kind, which this product's store refuses): skipped here, said.
 //   GATE      nothing is asked of the site before an editor opens, nor with the answer not given or no, nor with
-//             <ENV_PREFIX>FACTORY=off (processConfig reads it); the site the environment may name (siteFrom)
+//             <ENV_PREFIX>FACTORY=off (processConfig reads it); the site the environment may name (siteFrom); the
+//             offer's answer given through the processor (EditorPort::answerOffer): a yes fetches only once an editor
+//             opens, a no never
 //   FIRST     a first fetch: the set appears, the generation moves, the files are on disk, the request sends a
 //             User-Agent alone; a second store on the folder reads it with no request; the same index again asks for
 //             the index alone; an editor's open again asks nothing within 24 hours, and the index alone after
@@ -538,6 +540,34 @@ PROBE(plugin, factorystore)
         {
             const std::unique_ptr<fsx::Store> s = storeOf(me, home, site, fsx::Answer::yes);
             P.eq("gate.yes_no_editor.nothing_asked", site->requests().empty() && s->state().status == fsx::Status::none ? 1 : 0, 1);
+        }
+        {
+            // The offer's answer through the processor (EditorPort::answerOffer, package 08's card): a yes asks nothing
+            // before an editor opens, and the editor's open fetches; a no, nothing even then.
+            for (const bool yes : { true, false })
+            {
+                const juce::File h = freshHome();
+                auto s = std::make_shared<Site>(fixtures().getChildFile("good-1"));
+                const fsx::Config c = configOf(me, h, s);
+                fsx::useConfigForTests(&c);
+                {
+                    pg::Processor a;
+                    std::shared_ptr<fsx::Store> store = fsx::process();
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    a.editorPort().answerOffer(true, yes, false);
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    const std::string label = yes ? "gate.offer_yes" : "gate.offer_no";
+                    P.eq(label + ".answer", store != nullptr && store->answer() == (yes ? fsx::Answer::yes : fsx::Answer::no) ? 1 : 0, 1);
+                    P.eq(label + ".nothing_before_an_editor", s->requests().empty() ? 1 : 0, 1);
+                    a.editorPort().editorOpened();
+                    if (store != nullptr)
+                        (void)settle(*store);
+                    P.eq(label + (yes ? ".editor_fetches" : ".editor_asks_nothing"), s->asked("index.json") == yes ? 1 : 0, 1);
+                }
+                fsx::useConfigForTests(nullptr);
+            }
         }
         {
             fsx::Config c = configOf(me, home, site);

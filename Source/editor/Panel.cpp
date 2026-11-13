@@ -6540,7 +6540,7 @@ namespace playground::ui
             return;
         updateSeen_ = r;
         updateState_ = port_.updateState();
-        const EditorPort::UpdateState& u = updateState_;
+        const UpdateState& u = updateState_;
         if (!offerDecided_ && u.loaded && !dialogOpen())
         {
             offerDecided_ = true;

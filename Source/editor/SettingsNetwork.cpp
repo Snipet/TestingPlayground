@@ -47,10 +47,10 @@ namespace playground::ui::settings
             return std::string("on ") + day + " at " + clock;
         }
 
-        using Check = EditorPort::UpdateState::Check;
+        using Check = UpdateState::Check;
 
         // What the update check says now, and whether it is a failure (drawn as an error line).
-        std::string checkWords(const EditorPort::UpdateState& u, bool& error)
+        std::string checkWords(const UpdateState& u, bool& error)
         {
             error = false;
             if (u.envOff)
@@ -75,7 +75,7 @@ namespace playground::ui::settings
 
         void build(Builder& b)
         {
-            const EditorPort::UpdateState u = b.ctx.port.updateState();
+            const UpdateState u = b.ctx.port.updateState();
 
             b.heading("UPDATES");
             b.label("Updates");
@@ -121,7 +121,7 @@ namespace playground::ui::settings
         {
             if (c.act != Act::item)
                 return;
-            const EditorPort::UpdateState u = ctx.port.updateState();
+            const UpdateState u = ctx.port.updateState();
             if (c.index == kCheckUpdates)
                 ctx.port.setUpdates(!u.updatesOn);
             else if (c.index == kFactoryProjects)
@@ -133,7 +133,7 @@ namespace playground::ui::settings
 
         uint64_t key(const Context& ctx)
         {
-            const EditorPort::UpdateState u = ctx.port.updateState();
+            const UpdateState u = ctx.port.updateState();
             uint64_t h = u.revision * 0x100000001B3ull;
             h ^= std::hash<std::string>{}(u.factoryWords) + static_cast<uint64_t>(u.factory) * 0x9E3779B97F4A7C15ull;
             return h;

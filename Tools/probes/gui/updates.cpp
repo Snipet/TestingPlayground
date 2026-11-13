@@ -260,7 +260,7 @@ PROBE(gui, updates)
         P.eq("offer.allow.closed", offer.isOpen() ? 1 : 0, 0);
         P.eq("offer.allow.said", panel.statusText().find("UPDATE NOTES ARE ON") != std::string::npos ? 1 : 0, 1);
         {
-            const pg::EditorPort::UpdateState u = port.updateState();
+            const pg::UpdateState u = port.updateState();
             P.eq("offer.allow.answers", u.updatesOn && u.factory == 2 ? 1 : 0, 1);
         }
         P.eq("offer.allow.no_pill_yet", panel.centreOfUpdatePill().has_value() ? 1 : 0, 0);
@@ -355,7 +355,7 @@ PROBE(gui, updates)
         if (const auto p = control(st::kCheckNow))
             host.click(p->x, p->y);
         P.eq("network.check_now.asks", tickUntil(host, [&] {
-                 return home.site->count() > before && port.updateState().check == pg::EditorPort::UpdateState::Check::failed;
+                 return home.site->count() > before && port.updateState().check == pg::UpdateState::Check::failed;
              }) ? 1 : 0, 1);
         settle();
         {
@@ -399,7 +399,7 @@ PROBE(gui, updates)
         }
         P.eq("card.skip.no_pill", tickUntil(host, [&] { return !panel.centreOfUpdatePill().has_value(); }) && !card.isOpen() ? 1 : 0, 1);
         P.eq("card.skip.kept", port.updateState().skipped == newer ? 1 : 0, 1);
-        P.eq("card.no_browser_but_the_hook", opened.size(), 1);
+        P.eq("card.no_browser_but_the_hook", static_cast<int64_t>(opened.size()), 1);
     }
 
     // ---- PAPER: OFFER (Not now), again from Settings, PILL, CARD ------------------------------------------------------
@@ -425,7 +425,7 @@ PROBE(gui, updates)
             const pg::ui::OfferCard::Places at = offer.places(W(), H());
             host.click(at.notNow.centreX(), at.notNow.centreY());
             settle();
-            const pg::EditorPort::UpdateState u = port.updateState();
+            const pg::UpdateState u = port.updateState();
             P.eq("notnow.closed", offer.isOpen() ? 1 : 0, 0);
             P.eq("notnow.answers", u.updatesAnswered && !u.updatesOn && u.factory == 0 ? 1 : 0, 1);
             P.eq("notnow.said", panel.statusText().find("NOT NOW") != std::string::npos ? 1 : 0, 1);
@@ -440,7 +440,7 @@ PROBE(gui, updates)
             if (const auto p = settings.centreOf(Act::item, st::kCheckUpdates, W(), H()))
                 host.click(p->x, p->y);
             settle();
-            const pg::EditorPort::UpdateState v = port.updateState();
+            const pg::UpdateState v = port.updateState();
             P.eq("again_from_settings", v.updatesOn && v.factory == 1 ? 1 : 0, 1);
             host.keys("escape");
             P.eq("paper.pill.shown", tickUntil(host, [&] { return panel.centreOfUpdatePill().has_value(); }) ? 1 : 0, 1);

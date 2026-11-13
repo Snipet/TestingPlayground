@@ -239,7 +239,7 @@ namespace playground::ui
 
     // ---- the update card ------------------------------------------------------------------------------------------------
 
-    void UpdateCard::open(const EditorPort::UpdateState& state)
+    void UpdateCard::open(const UpdateState& state)
     {
         version_ = state.latest;
         current_ = state.current;

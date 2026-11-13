@@ -1,7 +1,7 @@
 // Source/editor/UpdateCards.h: the website's two cards (docs/plan/08-updates-and-whats-new.md, sections 2.1 and 2.4).
 //
 // OfferCard: "Use the website?", made the first time an editor opens for a user who has answered neither question
-// (EditorPort::UpdateState::offer), never in a picture's Panel. Two lines, each ticked at first: the factory projects,
+// (UpdateState::offer), never in a picture's Panel. Two lines, each ticked at first: the factory projects,
 // kept up to date; a note when a new version is out. Allow stores a yes for each ticked line and a no for each unticked
 // one; Not now stores "later" for the update check and leaves the factory projects unasked, and the offer is not made
 // again by itself (EditorPort::answerOffer). Both can be changed on the Settings card's Network page. It stops nothing:
@@ -76,7 +76,7 @@ namespace playground::ui
         explicit UpdateCard(EditorPort& port) : port_(port) {}
 
         bool isOpen() const noexcept { return open_; }
-        void open(const EditorPort::UpdateState& state);   // of the version the state names
+        void open(const UpdateState& state);   // of the version the state names
         void close();
 
         struct Places

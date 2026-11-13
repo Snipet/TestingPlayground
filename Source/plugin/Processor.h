@@ -562,6 +562,7 @@ namespace playground
         // The update check (the process's, UpdateCheck.h), held the same way: the first processor starts it (its thread
         // reads app.json), the last one gone joins it. Nothing here checks: that waits for an editor and the user's yes.
         std::shared_ptr<updates::Check> updateCheck_ = updates::attach();
+        bool editorSeen_ = false;                                // an editor of this processor opened (editorOpened)
         std::vector<ProjectEntry> entriesOf(const std::vector<projectstore::Entry>& list) const;
         // The presets in turn (EditorPort::presetCycle; the host's programs; MIDI's program change): the project open's
         // presets as the store's cache has them (presetsCached: never a file read whole here; one not in the cache
