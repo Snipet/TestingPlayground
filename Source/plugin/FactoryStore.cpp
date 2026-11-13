@@ -8,9 +8,9 @@
 #include "plugin/Verify.h"
 
 #include "dsp/Sources.h"
+#include "fminus/Failure.h"
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-#include "fminus/Failure.h"
 #include "fminus/Xdg.h"
 #endif
 
